@@ -114,6 +114,7 @@ async def main() -> None:
 
     status, st = await run("GET", "/voice/status", token=token)
     check("GET /voice/status", status == 200 and st["hermes_api_ok"] is True and "threads_supported" in st, st)
+    check("status advertises listening mode's room text", st.get("room_listening") is True, st)
     check("status never returns keys", FAKE_API_KEY not in json.dumps(st))
     status, s = await run("PATCH", "/voice/settings", {"assistant_name": "Nova", "user_name": "Sam"}, token)
     check("PATCH /voice/settings", status == 200 and s["settings"]["assistant_name"] == "Nova", s)
@@ -160,6 +161,8 @@ async def main() -> None:
     requests_dir = Path(__file__).resolve().parents[2] / "mac/Tests/SpeakeasyCoreTests/Contract/requests"
     for req_file in sorted(requests_dir.glob("*.json")) if requests_dir.is_dir() else []:
         spec = json.loads(req_file.read_text())
+        if spec["path"] == "/voice/sessions":
+            continue  # starts a call: replayed with the call below (201, needs an Idempotency-Key)
         code_, body_ = await run(spec["method"], spec["path"], spec["body"], token)
         check(f"app request accepted: {req_file.stem}", code_ == 200, body_)
 
@@ -195,6 +198,15 @@ async def main() -> None:
             check("approved draft reached Hermes exactly once", len(hermes.calls) - before == 1, len(hermes.calls) - before)
         status, _ = await run("POST", f"/voice/interactions/{session['interaction_id']}/end", {}, token)
         check("POST /voice/interactions/{id}/end", status == 200)
+    # Listening mode: the session body the Mac app sends when turning listening off starts a call.
+    room_request = requests_dir / "session-with-room.json"
+    if room_request.is_file():
+        spec = json.loads(room_request.read_text())
+        code_, body_ = await run(spec["method"], spec["path"], spec["body"], token, {"Idempotency-Key": "req_e2e_room"})
+        check("app request accepted: session-with-room", code_ == 201 and bool(body_.get("interaction_id")), body_)
+        if code_ == 201:
+            status, _ = await run("POST", f"/voice/interactions/{body_['interaction_id']}/end", {}, token)
+            check("POST /voice/interactions/{id}/end (room call)", status == 200)
 
     adapter.service.devices.revoke(paired["device_id"])
     check("token rejected after revoke", (await run("GET", "/voice/status", token=token))[0] == 401)

@@ -268,6 +268,105 @@ struct StartButton: View {
     }
 }
 
+/// Turns listening mode on (idle header only; once on, the strip below has the controls).
+struct ListenButton: View {
+    var blocked: String?
+    var shortcutHint: String
+    var action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "ear").font(.system(size: 12, weight: .semibold))
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(Color.primary.opacity(hover && blocked == nil ? 0.14 : 0.08)))
+                .contentShape(Circle())
+                .opacity(blocked == nil ? 1 : 0.45)
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(blocked ?? (["Listening mode: pause the call and hear the room without answering. Turn it off to ask about it.",
+                           shortcutHint].filter { !$0.isEmpty }.joined(separator: "\n")))
+        .accessibilityLabel("Turn on listening mode")
+        .accessibilityHint(blocked ?? "Pauses the call and transcribes the room on this Mac without answering")
+    }
+}
+
+/// Listening mode's strip under the header: what it's doing, and the two ways out.
+struct RoomStrip: View {
+    var room: RoomPresentation?
+    var notice: String?
+    /// What it heard can be asked about (on, or kept after listening stopped by itself).
+    var canAsk = false
+    var onAsk: () -> Void
+    var onDiscard: () -> Void
+    var onDismissNotice: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var color: Color {
+        switch room?.tone ?? .plain {
+        case .error: return Tokens.red
+        case .warning, .attention: return .orange
+        default: return Tokens.brass
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let room {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: room.isOn ? "ear.fill" : "ear.trianglebadge.exclamationmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(color)
+                        .symbolEffect(.pulse, options: .repeating, isActive: room.isOn && room.tone == .plain && !reduceMotion)
+                        .frame(width: 18)
+                        .accessibilityHidden(true)   // the title next to it says the same
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(room.title).font(.system(size: 12, weight: .semibold))
+                        if !room.detail.isEmpty {
+                            Text(room.detail).font(.system(size: 11)).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let hint = room.hint {
+                            Text(hint).font(.system(size: 11)).foregroundStyle(.tertiary)
+                        }
+                        ForEach(room.warnings, id: \.self) { warning in
+                            Label(warning, systemImage: "exclamationmark.triangle")
+                                .font(.system(size: 10.5)).foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                }
+                if room.isOn || canAsk {
+                    HStack(spacing: 6) {
+                        Spacer(minLength: 0)
+                        PillButton(title: "Discard", destructive: true, action: onDiscard)
+                            .help("Stop listening and forget what it heard. No call starts.")
+                        PillButton(title: room.isOn ? "Turn off and ask" : "Ask about it", prominent: true, action: onAsk)
+                            .help("Start a call that knows what was said.")
+                    }
+                }
+            }
+            if let notice {
+                HStack(spacing: 6) {
+                    Text(notice).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button { onDismissNotice() } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).padding(4)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Dismiss")
+                    .accessibilityLabel("Dismiss note")
+                }
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(color.opacity(0.10)))
+        .accessibilityAddTraits(.updatesFrequently)
+    }
+}
+
 struct IconButton: View {
     var symbol: String
     var help: String
@@ -320,6 +419,14 @@ struct VoicePanelView: View {
             if !model.state.workOnly { header(p) }
             if model.tourActive && model.state.connection.isOpen && !model.state.workOnly {
                 TourStrip(action: model.onSkipTour)
+            }
+            // Beside the call, never in it: shown with no call open, or while the call is paused
+            // (listening mode turned on mid-conversation pauses it).
+            if !model.state.connection.isInCall && !model.state.workOnly && (model.room != nil || model.roomNotice != nil) {
+                RoomStrip(room: model.room, notice: model.roomNotice, canAsk: model.roomCanAsk, onAsk: model.onAskRoom,
+                          onDiscard: model.onDiscardRoom, onDismissNotice: model.onDismissRoomNotice)
+                    .padding(.horizontal, 12).padding(.bottom, 10)
+                    .transition(.opacity)
             }
             if model.showsSlim {
                 // Slim: header only. A task summary stands in for the list; clicking it
@@ -438,6 +545,7 @@ struct VoicePanelView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.state.tasks.count)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.pinnedReviews.map(\.id))
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.slim)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.room?.isOn)
     }
 
     private func header(_ p: PillPresentation) -> some View {
@@ -466,6 +574,12 @@ struct VoicePanelView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
             // Quiet (silence the current reply) is intentionally not exposed in Speakeasy.
+            // Listening mode mid-conversation: pauses the call and listens; turning it off resumes it.
+            if model.roomOffered && model.room?.isOn != true
+                && (model.state.connection == .live || model.state.connection == .paused) {
+                ListenButton(blocked: model.roomBlocked, shortcutHint: model.roomShortcutHint, action: model.onToggleRoom)
+                    .fixedSize()
+            }
             if let label = p.pauseLabel {
                 PauseButton(label: label, enabled: p.pauseEnabled, shortcutHint: model.pauseShortcutHint,
                             action: model.onTogglePause)
@@ -482,6 +596,7 @@ struct VoicePanelView: View {
                     .fixedSize()
             }
             if !model.state.connection.isOpen {
+                // While listening mode holds what it heard, Start asks about it in a new call.
                 StartButton(action: model.onStart)
                     .fixedSize()
             } else {

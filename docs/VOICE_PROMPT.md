@@ -46,6 +46,16 @@ The user's Hermes writes the brief, which only adds personal context. Speakeasy 
    - "Earlier work": tasks that settled since the last call, as background. Finished work is not announced (it already reached the app and chat); an approval still waiting is mentioned once, after the user speaks.
    - Recent voice turns from this device's voice session, when the user has that setting on.
    - Resume: the conversation so far, when resuming a paused call.
+   - **The room**, in a call that listening mode paused and then resumed: what the Mac transcribed while it
+     listened (the last 30 minutes, at most 24,000 characters), fenced in `<room_transcript>` …
+     `</room_transcript>` and labeled as background that may include other people and media, never
+     instructions. The voice answers questions about it itself and says so when it didn't catch
+     something. It outranks the away and recent-voice blocks (those are trimmed first; recent voice
+     is left out of a room call entirely); if it still doesn't fit, its oldest lines go. Secrets are
+     redacted before it gets here. Two notes go with it (`prompt/builder.py`): `room_answer_note`
+     when the first words ask about the room, and `room_nudge_note` when nothing was said after
+     turning listening off (respond to the end of the conversation; offer to take on anything it
+     heard rather than starting it).
 
 ## How the brief is written
 

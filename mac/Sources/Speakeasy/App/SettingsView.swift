@@ -80,6 +80,14 @@ private struct GeneralSettings: View {
     @AppStorage(Prefs.notifyWhenDone) private var notifyWhenDone = true
     @AppStorage(Prefs.panelOnAllSpaces) private var panelOnAllSpaces = true
     @AppStorage(Prefs.tourPending) private var tourPending = false
+    /// Why listening mode can't run here (nil when it can).
+    @State private var listeningUnavailable: String?
+
+    private static func listeningReason(app: AppModel) async -> String? {
+        if let reason = await RoomListener.unavailability() { return reason.message }
+        if app.status != nil && app.status?.roomListening != true { return RoomUnavailability.pluginTooOld.message }
+        return nil
+    }
 
     var body: some View {
         Form {
@@ -100,6 +108,18 @@ private struct GeneralSettings: View {
                 Toggle("Notify me when work from a call finishes", isOn: $notifyWhenDone)
                     .help("A macOS notification when a task you started keeps running after you hang up and then finishes")
             }
+            Section {
+                LabeledContent("Listening mode") {
+                    if let reason = listeningUnavailable {
+                        Text(reason).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                    } else {
+                        Text("Ear button in the panel during a call, or the menu bar").foregroundStyle(.secondary)
+                    }
+                }
+            } footer: {
+                Text("During a call: pauses the call and transcribes the room on this Mac without answering, keeping the last 30 minutes as text. Turn it off and the call picks up again, knowing what was said. What it heard goes to the voice and to tasks from that call; Speakeasy keeps none of it, but Hermes keeps what its tasks receive in its own history. It stops when the call ends, after 2 hours, or when your Mac sleeps.")
+            }
+            .task { listeningUnavailable = await Self.listeningReason(app: app) }
             Section("Tour") {
                 LabeledContent {
                     if tourPending {
@@ -141,6 +161,12 @@ private struct ShortcutSettings: View {
 
     private var mute: KeyShortcut? { AppModel.storedShortcut(Prefs.muteShortcut, default: .defaultMute) }
     private var pause: KeyShortcut? { AppModel.storedShortcut(Prefs.pauseShortcut, default: .defaultPause) }
+    /// No default: nil until the user sets one.
+    private var listening: KeyShortcut? {
+        guard let raw = UserDefaults.standard.string(forKey: Prefs.listeningShortcut),
+              case .success(let s) = KeyShortcut.parse(raw, reserved: nil) else { return nil }
+        return s
+    }
 
     var body: some View {
         Form {
@@ -175,6 +201,20 @@ private struct ShortcutSettings: View {
                 if let problem = app.pauseShortcutProblem, pause != nil { Text(problem).foregroundStyle(.orange) }
             } footer: {
                 Text("A paused call stops listening and billing; tasks keep running.")
+            }
+            if RoomListener.isSupported {
+                Section {
+                    LabeledContent("Listening mode on or off") {
+                        ShortcutRecorder(shortcut: listening, name: "Listening", defaultShortcut: .suggestedListening,
+                                         taken: [app.callShortcut] + [mute, pause].compactMap { $0 },
+                                         onTurnOff: { app.setExtraShortcut(Prefs.listeningShortcut, nil) }) {
+                            app.setExtraShortcut(Prefs.listeningShortcut, $0)
+                        }
+                    }
+                    if let problem = app.listeningShortcutProblem, listening != nil { Text(problem).foregroundStyle(.orange) }
+                } footer: {
+                    Text("Off until you set one. Works during a call: turns listening mode on (pausing the call) and off again (resuming it, knowing what was said). The call and pause shortcuts also turn it off while it's on.")
+                }
             }
             Section {
                 Button("Restore default shortcuts") { app.resetShortcuts() }

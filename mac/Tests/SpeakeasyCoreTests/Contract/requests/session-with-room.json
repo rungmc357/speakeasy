@@ -1,0 +1,8 @@
+{
+  "body" : {
+    "room" : "[08:53] Sam says the deadline is Friday the 14th, and we can't move it.\n[08:54] Priya promises to send the deck to everyone by Wednesday.",
+    "sdp" : "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+  },
+  "method" : "POST",
+  "path" : "\/voice\/sessions"
+}

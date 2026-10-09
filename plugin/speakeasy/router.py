@@ -788,6 +788,41 @@ def is_conversation(request: str) -> bool:
     return bool(text) and bool(_TALK.search(text)) and not _WORK.search(_HYPOTHETICAL.sub(" ", text))
 
 
+# Listening mode: a question about what was said in the room before the call ("what did Sam say the
+# deadline was?", "who said we'd ship Monday?", "remind me what Priya promised"). It opens with a
+# question and points back at something said, close by. A question word alone is a lookup ("what did
+# Apple announce today"), and "remind me to…" is always a reminder: only "remind me what/who/…" asks.
+_ROOM_ASK = re.compile(
+    r"(?i)^\W*(?:(?:so|okay|ok|um+|uh+|hey|wait|sorry|and|but|quick\s+question)\W+)*(?:[a-z]+\s*,\s*)?"
+    r"(?P<lead>(?:remind\s+me|tell\s+me|(?:can|could)\s+you\s+(?:remind|tell)\s+me|do\s+you\s+remember)\s+)?"
+    # It opens with a question word (not a "what if" musing)…
+    r"(?!what\s+if\b)(?=(?:what|who|whom|whose|when|where|which|how|why|did|didn'?t|was|wasn'?t|were|is|are"
+    r"|has|have|had|do|does)(?:'s|'re|'d)?\b)"
+    # …and soon points back at something said in the room.
+    r".{0,80}?\b(?:said|mentioned|talked\s+about|agreed|decided|asked|promised|suggested|brought\s+up"
+    r"|(?:did|didn'?t)\b.{0,60}?\b(?:say|mention|talk\s+about|agree|decide|ask|promise|suggest|tell)"
+    r"|just\s+now|in\s+the\s+meeting|earlier)\b")
+# Work asked for after the question, joined on ("…, and email it to Dana"): that's a task.
+_THEN_WORK = re.compile(r"(?i)(?:\band\b|\bthen\b|[,;.!?])\s*(?:then\s+|also\s+|please\s+|(?:can|could|would)\s+you\s+)?"
+                        r"(?=\S)")
+
+
+def asks_about_room(request: str) -> bool:
+    """A question about what was said in the room (or earlier in the call), which the voice answers
+    from the room transcript instead of starting work. Built like ``is_conversation``: anything that
+    asks for work is never a room question. What someone said ("who said we'd ship Monday") is not an
+    ask, so work words count only in the question itself and in a request joined on after it."""
+    text = " ".join((request or "").split())
+    match = _ROOM_ASK.match(text)
+    if not match:
+        return False
+    question = text[match.end("lead") if match.group("lead") else 0:match.end()]
+    if _WORK.search(question):
+        return False
+    tail = text[match.end():]
+    return not any(_WORK.match(tail, joined.end()) for joined in _THEN_WORK.finditer(tail))
+
+
 def asks_for_work(request: str) -> bool:
     return bool(_WORK.search(" ".join((request or "").split())))
 

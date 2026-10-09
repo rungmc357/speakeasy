@@ -49,9 +49,13 @@ ABSORB_WINDOW_S = 15.0 # a handoff of words already folded into an earlier task 
 
 def _same_words(fragment: str, request: str) -> bool:
     """The transcript of words already in the request (it often lands just after the handoff)."""
-    norm = lambda t: " ".join(re.findall(r"[a-z0-9']+", t.lower()))  # noqa: E731
-    f = norm(fragment)
-    return not f or f in norm(request)
+    f = _words(fragment)
+    return not f or f in _words(request)
+
+
+def _words(text: str) -> str:
+    """Just the words, lowercased: to tell whether the same thing was said again."""
+    return " ".join(re.findall(r"[a-z0-9']+", (text or "").lower()))
 
 
 def is_greeting(request: str) -> bool:
@@ -271,6 +275,12 @@ class Interaction:
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)
     resumed_from: str | None = None
     device_id: str = ""
+    # Listening mode: what the Mac heard in the room before this call (cleaned "[HH:MM] text" lines).
+    # Memory only, never in history, logs or reprs; it moves to a resumed call and is cleared when
+    # the call ends (or a pause runs out). Empty = an ordinary call.
+    room: str = dataclasses.field(default="", repr=False)
+    # Listening mode: the voice already responded from the room on this call (any leg of it).
+    room_nudged: bool = False
     last_activity: float = dataclasses.field(default_factory=time.monotonic)
     successor: "Interaction | None" = dataclasses.field(default=None, repr=False)
     worker: Any = dataclasses.field(default=None, repr=False)
@@ -476,6 +486,16 @@ class SidebandWorker:
         self.dispatch_tasks: set[asyncio.Task[Any]] = set()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.connected = False
+        # When this call's voice session came up (monotonic): the worker is made right after the
+        # provider admitted the session, and the provider's worker updates it once its channel attaches.
+        self.connected_at = time.monotonic()
+        # Listening mode (a call with room text): room questions the voice was told to answer itself
+        # (normalized words), so the same question handed off again goes on to Hermes; and the room
+        # text each handoff was made with, so work asked for just before hang-up still gets it after
+        # the call drops the room (removed when that handoff's work ends). Whether the voice already
+        # responded from the room lives on the Interaction, so a resumed call never does it twice.
+        self.room_answered: set[str] = set()
+        self.handoff_rooms: dict[str, str] = {}
         interaction.worker = self
 
     # -- plumbing -------------------------------------------------------------------------
@@ -557,7 +577,8 @@ class SidebandWorker:
     def call_closed(self) -> None:
         """Once per call: persist the end time, keep recent turns, notify about work in flight.
 
-        A paused call keeps its transcript for Resume and defers the "Still working" notices.
+        A paused call keeps its transcript (and listening mode's room text) for Resume and defers the
+        "Still working" notices. An ended call drops its room text: it never outlives the call.
         """
         with self.interaction.lock:
             if self.interaction.call_closed:
@@ -566,6 +587,8 @@ class SidebandWorker:
             self.interaction.history = (self.interaction.history + self.turns())[-400:]
             paused = self.interaction.paused
             history = list(self.interaction.history)
+            if not paused:
+                self.interaction.room = ""
         try:
             if history:
                 self.store.set_meta("recent_voice", json.dumps(history[-30:]))
@@ -651,6 +674,9 @@ class SidebandWorker:
         with self.interaction.lock:
             self.interaction.revision += 1
             revision = self.interaction.revision
+            if self.interaction.room:
+                # Asked during a room call: the work gets the room even if the call ends first.
+                self.handoff_rooms[delegation_id] = self.interaction.room
         task = asyncio.get_running_loop().create_task(self.dispatch(delegation_id, revision, context, marked))
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
@@ -709,12 +735,41 @@ class SidebandWorker:
         await self.follow_up(delegation_id, 0, f"User: {text}", router.Part("follow_up", text, task_id))
         return delegation_id
 
+    def in_room_call(self) -> bool:
+        """This call was started by turning listening mode off and still has the room text."""
+        with self.interaction.lock:
+            return bool(self.interaction.room)
+
+    def room_handoff_text(self, task_id: str) -> str:
+        """The room text for work started by a handoff: what it was made with (kept even after the
+        call ends), else the call's own while it lasts (a question-card answer on a live call)."""
+        if task_id in self.handoff_rooms:
+            return self.handoff_rooms[task_id]
+        with self.interaction.lock:
+            return self.interaction.room
+
     async def early_request(self, text: str) -> str | None:
         """Words the app heard while the call was still connecting (transcribed on the device).
         They become the call's first request, handled like any handoff, and the voice is told so it
-        acknowledges them instead of greeting the user or asking them to repeat it."""
+        acknowledges them instead of greeting the user or asking them to repeat it.
+
+        In a call started from listening mode, a question about the room is answered by the voice
+        (no task), and no words at all mean "respond from the room" (one note, once per call). Outside
+        listening mode, no words start nothing, as before."""
         text = clean_transcript(text or "").strip()[:EARLY_MAX_CHARS]
         if not text:
+            if self.in_room_call():
+                await self.room_nudge()
+            return None
+        if self.in_room_call() and router.asks_about_room(text):
+            self.touch()
+            # The user's turn, like any early words; the voice never heard it, so the note quotes it.
+            self.fragments.append({"speaker": "user", "text": text, "at": time.monotonic(), "start_ms": 0, "end_ms": 0})
+            self.room_answered.add(_words(text))
+            logger.info("speakeasy: question about the room heard while connecting (%d words); answered by the voice",
+                        len(text.split()))
+            # Spoken now, with no handoff waiting on it: a commentary append (a thinking note isn't spoken).
+            await self.append("session.commentary.append", None, P.room_answer_note(self.names, text))
             return None
         delegation_id = EARLY_PREFIX + secrets.token_hex(8)
         self.delegations.add(delegation_id)
@@ -725,6 +780,22 @@ class SidebandWorker:
         await self.append("session.thinking.append", None, P.early_request_note(self.names, text))
         self.schedule_dispatch(delegation_id, f"User: {text}")
         return delegation_id
+
+    async def room_nudge(self) -> None:
+        """Listening mode was turned off and nothing was said: the voice speaks first, from the room.
+        The app only asks when it heard no words; this is the backstop for speech that reached the
+        call anyway. At most once per call (a resumed call counts as the same call), and never once
+        the user has spoken."""
+        with self.interaction.lock:
+            if self.interaction.room_nudged:
+                return
+            self.interaction.room_nudged = True
+        if self.user_spoke_since(self.connected_at):
+            logger.info("speakeasy: room call: the user already spoke; no prompt to respond from the room")
+            return
+        logger.info("speakeasy: room call opened in silence; the voice responds from the room")
+        # Spoken now, with no handoff waiting on it: a commentary append (a thinking note isn't spoken).
+        await self.append("session.commentary.append", None, P.room_nudge_note(self.names))
 
     async def send_on_own_loop(self, kind: str, delegation_id: str | None, content: str) -> None:
         loop, current = self.loop, asyncio.get_running_loop()
@@ -860,6 +931,8 @@ class SidebandWorker:
             logger.warning("speakeasy: handoff failed before the task started (%s: %s)",
                            type(exc).__name__, str(exc)[:200])
             await self._handoff_failed(delegation_id, revision, exc)
+        finally:
+            self.handoff_rooms.pop(delegation_id, None)  # this handoff's work is over (or never started)
 
     async def settle(self, request: str) -> str:
         """Wait SETTLE_S after the handoff; every new user turn in that time restarts the wait (up to
@@ -883,7 +956,7 @@ class SidebandWorker:
         return f"{request.rstrip()} {more}"
 
     def _already_absorbed(self, request: str) -> bool:
-        norm = lambda t: " ".join(re.findall(r"[a-z0-9']+", t.lower()))  # noqa: E731
+        norm = _words
         want = norm(request)
         now = time.monotonic()
         return bool(want) and any(now - at < ABSORB_WINDOW_S and (want in norm(t) or norm(t) in want)
@@ -891,7 +964,19 @@ class SidebandWorker:
 
     async def _talk_not_work(self, delegation_id: str, revision: int, request: str, context: str) -> bool:
         """Ideas, opinions and reactions are conversation: the voice answers them, no task starts.
-        "Just talk to me" holds all work until the user asks for something."""
+        "Just talk to me" holds all work until the user asks for something. In a call started from
+        listening mode, a question about what was said in the room is the voice's to answer too."""
+        if self.in_room_call() and router.asks_about_room(request):
+            if _words(request) in self.room_answered:
+                # The voice was already told to answer this from the room and handed it off anyway:
+                # it needs real work. Hermes gets it, with the room as background.
+                logger.info("speakeasy: room question handed off again; starting it as work")
+            else:
+                self.room_answered.add(_words(request))
+                logger.info("speakeasy: question about the room, answered by the voice (no task)")
+                await self._drop(delegation_id, revision, "Answered from the room", None)
+                await self.append("session.thinking.append", delegation_id, P.room_answer_note(self.names))
+                return True
         last_said = next((l for l in reversed(context.splitlines()) if l.startswith("Assistant: ")), "")
         offered = last_said.rstrip().endswith("?")  # "Want me to dig into that?" "Yeah" is a go-ahead
         if router.starts_talk_mode(request):
@@ -1462,7 +1547,8 @@ class SidebandWorker:
         show = self._take_show(voice_id or task_id, idem)
         if show:
             focus = (focus or request) + P.SHOW_IT_FOCUS
-        prompt = P.build_task_prompt(self.names, revision, context, focus, label)
+        prompt = P.build_task_prompt(self.names, revision, context, focus, label,
+                                     room=self.room_handoff_text(voice_id or task_id))
         state, known_run = self.store.reserve_run(idem, self.interaction.interaction_id, task_id, revision)
         if state != "created":
             if known_run:
@@ -1591,7 +1677,8 @@ class SidebandWorker:
             waited += CONTINUITY_POLL_S
         try:
             asked = request + (P.SHOW_IT_FOCUS if self._take_show(task_id, idem) else "")
-            message = P.continuation_message(self.names, asked, notice_text(request, 200) or "voice request")
+            message = P.continuation_message(self.names, asked, notice_text(request, 200) or "voice request",
+                                             room=self.room_handoff_text(task_id))
             loop = asyncio.get_running_loop()
             final: dict[str, Any] = {}
 

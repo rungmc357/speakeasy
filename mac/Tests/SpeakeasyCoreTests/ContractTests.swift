@@ -73,6 +73,17 @@ final class ContractTests: XCTestCase {
         try record("brief_put", "PUT", "/voice/brief", VoiceBrief.putBody(text: brief))
         let home = try HomeControlInfo.decode(fixture("home_put"))
         try record("home_put", "PUT", "/voice/home", HomeControlInfo.putBody(enabled: true, entities: Array(home.includedIDs.prefix(2))))
+        // A call started by turning listening mode off: the e2e test replays it (with an
+        // Idempotency-Key, against the faked OpenAI negotiation) and expects 201.
+        var room = RoomTranscript()
+        let start = Date(timeIntervalSince1970: 1_760_000_000)
+        room.appendFinal("Sam says the deadline is Friday the 14th, and we can't move it.", at: start)
+        room.appendFinal("Priya promises to send the deck to everyone by Wednesday.", at: start.addingTimeInterval(40))
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let sdp = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+        try record("session-with-room", "POST", "/voice/sessions",
+                   sessionRequestBody(sdp: sdp, room: room.snapshot(now: start.addingTimeInterval(60), calendar: utc).text))
     }
 
     func testHomeControl() throws {

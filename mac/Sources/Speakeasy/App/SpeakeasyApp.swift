@@ -38,6 +38,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pauseItem: NSMenuItem?
     private var statusLine: NSMenuItem?
     private(set) var native: NativeVoiceClient!
+    /// Listening mode: hears the room without answering; turning it off starts a call that knows.
+    private var room: RoomListeningController!
+    private var listenItem: NSMenuItem?
+    private var discardListenItem: NSMenuItem?
+    /// Listening mode on/off shortcut: registered whenever one is set (off until the user sets it).
+    private var listenHotKey: GlobalHotKey?
+    private var listenShortcut: KeyShortcut?
+    private var badgeOn = false
     private var active = false
     private var quitPending = false
     private var idle: IdleContinuity?
@@ -60,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if args.contains("--native-offer-smoke") { NativeSmoke.offer(); return }
         if args.contains("--native-mic-smoke") { NativeSmoke.mic(); return }
         if args.contains("--live-call-smoke") { LiveCallSmoke.run(); return }
+        if let i = args.firstIndex(of: "--room-smoke"), i + 1 < args.count { RoomSmoke.run(path: args[i + 1]); return }
         if let i = args.firstIndex(of: "--onboarding-snapshot"), i + 1 < args.count {
             OnboardingSnapshot.render(to: args[i + 1], step: i + 2 < args.count && !args[i + 2].hasPrefix("--") ? args[i + 2] : nil); return
         }
@@ -85,10 +94,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         native = NativeVoiceClient(config: app.config)
+        room = RoomListeningController()
         applyClientPrefs()
         resolveMuteShortcut()
         resolvePauseShortcut()
         configureClient()
+        configureListening()
         configureStatusItem()
         configureIdle()
         registerCallHotKey(app.callShortcut)
@@ -128,6 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if active { native.end() }
+        room?.discard()   // what listening mode heard lives only in memory; quitting drops it
     }
 
     // MARK: Model wiring
@@ -138,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .sink { [weak self] _, _ in
                 guard let self else { return }
                 self.updateMenu()
+                self.refreshListening()   // the plugin's room_listening support may have changed
                 if let version = self.app.pluginUpdateAvailable {
                     self.idle?.notifyPluginUpdate(version: version)
                 }
@@ -159,6 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             self.resolveMuteShortcut()
             self.resolvePauseShortcut()
+            self.resolveListenShortcut()
             if self.active {  // swap live hotkeys without ending the call
                 self.unregisterMuteHotKey(); self.pauseHotKey = nil
                 if !self.native.isPaused { self.registerMuteHotKey() }
@@ -193,7 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         continuity.onOpenSettings = { [weak self] in self?.openSettings() }
         continuity.onResume = { [weak self] in
             guard let self, self.native.isPaused else { self?.showRecentWork(); return }
-            self.native.togglePause()
+            self.togglePause()
         }
         continuity.onBadge = { [weak self] on in self?.setBadge(on) }
         continuity.notifyWhenDone = UserDefaults.standard.bool(forKey: Prefs.notifyWhenDone)
@@ -201,7 +215,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setBadge(_ on: Bool) {
-        statusItem?.button?.image = BrandGlyph.menuBarImage(badge: on)
+        badgeOn = on
+        statusItem?.button?.image = BrandGlyph.menuBarImage(badge: on, listening: room?.isOn == true)
     }
 
     // MARK: Pairing links
@@ -262,6 +277,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let call = NSMenuItem(title: "Start call", action: #selector(toggleConversation), keyEquivalent: "")
         call.target = self
         menu.addItem(call); callItem = call
+        let listen = NSMenuItem(title: "Turn on listening mode", action: #selector(toggleListeningFromMenu), keyEquivalent: "")
+        listen.target = self
+        menu.addItem(listen); listenItem = listen
+        let discardListen = NSMenuItem(title: "Discard what listening mode heard", action: #selector(discardListeningFromMenu),
+                                       keyEquivalent: "")
+        discardListen.target = self
+        menu.addItem(discardListen); discardListenItem = discardListen
         let pause = NSMenuItem(title: "Pause call", action: #selector(togglePauseFromMenu), keyEquivalent: "")
         pause.target = self
         menu.addItem(pause); pauseItem = pause
@@ -346,6 +368,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         callItem?.title = (active ? "End call" : "Start call") + " (\(app.callShortcut.display))"
         callItem?.isEnabled = app.isPaired
+        if let room, let listenItem {
+            let shortcut = listenShortcut.map { " (\($0.display))" } ?? ""
+            if room.isOn {
+                statusLine?.title = room.presentation().map { "\($0.title) · \($0.detail)" } ?? statusLine?.title ?? ""
+                callItem?.title = "Turn off listening mode and ask (\(app.callShortcut.display))"
+                listenItem.title = "Turn off listening mode and ask" + shortcut
+            } else if room.canAsk {
+                callItem?.title = "Ask about what listening mode heard (\(app.callShortcut.display))"
+                listenItem.title = "Ask about what listening mode heard" + shortcut
+            } else {
+                listenItem.title = "Turn on listening mode" + shortcut
+            }
+            listenItem.isHidden = !room.isSupported || !(room.callActive() || room.canAsk)   // during a call only
+            listenItem.isEnabled = app.isPaired && (room.canAsk || room.blocker == nil)
+            listenItem.toolTip = room.canAsk ? nil : room.blocker
+            discardListenItem?.isHidden = !room.canAsk
+        }
         if let pauseItem {
             let shortcut = pauseShortcut.map { " (\($0.display))" } ?? ""
             pauseItem.title = (native.isPaused ? "Resume call" : "Pause call") + shortcut
@@ -379,7 +418,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// The global hotkey: start when idle and hidden, hide when idle and shown, end during a call.
+    /// While listening mode is on it turns listening off into the call, panel shown or not.
     private func hotkeyPressed() {
+        if room.canAsk { startConversation(); return }
         let connection = native.model.state.connection
         switch hotkeyAction(connection: active ? connection : (connection.isOpen ? connection : .idle),
                             panelVisible: native.panelVisible) {
@@ -390,14 +431,132 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Every way of starting a call (menu, panel Start, hotkey, Settings) comes through here, so
+    /// while listening mode is on each of them turns it off into a call that knows what was said.
     private func startConversation() {
         guard app.isPaired else { showOnboarding(); return }
+        if room.canAsk { room.takeOff(); return }   // continues in beginCall(room:takeoffAt:)
+        beginCall(room: nil, takeoffAt: nil)
+    }
+
+    private func beginCall(room text: String?, takeoffAt: Date?) {
+        if native.isPaused, let text, let takeoffAt {
+            // Listening mode was turned on mid-conversation: back to that conversation, with what was heard.
+            native.start(room: text, takeoffAt: takeoffAt)
+            updateMenu()
+            refreshListening()
+            return
+        }
         active = true
         idle?.callStarted()
         native.pendingTour = UserDefaults.standard.bool(forKey: Prefs.tourPending) ? tourShortcuts() : nil
-        native.start()
+        if let text, let takeoffAt { native.start(room: text, takeoffAt: takeoffAt) } else { native.start() }
         registerMuteHotKey()
         registerPauseHotKey()
+        updateMenu()
+        refreshListening()
+    }
+
+    // MARK: Listening mode
+
+    private func configureListening() {
+        // nil = no status yet (Hermes unreachable at launch): turning listening on asks again.
+        // Listening mode always resumes the call it paused, so the plugin must take room text on a resume.
+        room.pluginSupportsRoom = { [weak self] in
+            self?.app.status.map { $0.roomListening == true && $0.roomOnResume == true }
+        }
+        room.refreshStatus = { [weak self] in await self?.app.refresh() }
+        room.callBusy = { [weak self] in
+            guard let self else { return false }
+            let connection = self.native.model.state.connection
+            return connection == .connecting || connection == .ending
+        }
+        room.callActive = { [weak self] in
+            guard let self else { return false }
+            let connection = self.native.model.state.connection
+            return connection == .live || connection == .paused
+        }
+        // Mid-conversation, the call pauses first: the voice stops hearing and answering.
+        room.prepareMic = { [weak self] in
+            guard let self else { return false }
+            guard self.native.model.state.connection == .live else { return true }
+            let paused = await self.native.pauseForListening()
+            self.updateMenu()
+            return paused
+        }
+        room.onChange = { [weak self] in self?.refreshListening() }
+        room.onShowPanel = { [weak self] in self?.native.showPanel() }
+        room.onTakeoff = { [weak self] text, at in
+            self?.beginCall(room: text, takeoffAt: at)
+        }
+        native.onRoomTakeoffOutcome = { [weak self] outcome in self?.room.callOutcome(outcome) }
+        native.model.onToggleRoom = { [weak self] in
+            guard let self else { return }
+            if self.room.isOn { self.startConversation() } else { self.room.turnOn() }
+        }
+        native.model.onAskRoom = { [weak self] in self?.startConversation() }
+        native.model.onDiscardRoom = { [weak self] in self?.room.discard() }
+        native.model.onDismissRoomNotice = { [weak self] in self?.room.dismissNotice() }
+        resolveListenShortcut()
+        refreshListening()
+    }
+
+    /// Mirror listening mode into the panel, the menu and the menu bar glyph.
+    private func refreshListening() {
+        guard let room, let native else { return }
+        let model = native.model
+        let presentation = room.presentation()
+        let notice = room.notice
+        let offered = room.isSupported && app.isPaired
+        let blocked = room.isOn ? nil : room.blocker
+        let changedShape = (model.room == nil) != (presentation == nil) || (model.roomNotice == nil) != (notice == nil)
+            || model.room?.warnings != presentation?.warnings
+        if model.room != presentation { model.room = presentation }
+        if model.roomNotice != notice { model.roomNotice = notice }
+        if model.roomOffered != offered { model.roomOffered = offered }
+        if model.roomBlocked != blocked { model.roomBlocked = blocked }
+        if model.roomCanAsk != room.canAsk { model.roomCanAsk = room.canAsk }
+        if changedShape { native.surface.setNeedsResize() }
+        setBadge(badgeOn)
+        updateMenu()
+    }
+
+    @objc private func toggleListeningFromMenu() {
+        if room.canAsk { startConversation() } else { room.turnOn() }
+    }
+
+    @objc private func discardListeningFromMenu() { room.discard() }
+
+    /// `defaults write <bundle id> listeningShortcut "ctrl+opt+l"`; unset or empty = no shortcut.
+    private func resolveListenShortcut() {
+        listenHotKey = nil
+        listenShortcut = nil
+        let raw = UserDefaults.standard.string(forKey: Prefs.listeningShortcut)?.trimmingCharacters(in: .whitespaces)
+        var problem: String?
+        if let raw, !raw.isEmpty {
+            switch KeyShortcut.parse(raw, reserved: app.callShortcut) {
+            case .failure(let error):
+                problem = "Listening shortcut '\(raw)' rejected: \(error)"
+            case .success(let shortcut):
+                if shortcut == muteShortcut || shortcut == pauseShortcut {
+                    problem = "Listening shortcut \(shortcut.display) is already another Speakeasy shortcut"
+                } else if GlobalHotKey.collidesWithSystemShortcut(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) {
+                    problem = "Listening shortcut \(shortcut.display) is used by a macOS system shortcut"
+                } else {
+                    do {
+                        listenHotKey = try GlobalHotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers,
+                                                        display: shortcut.display) { [weak self] in
+                            self?.toggleListeningFromMenu()
+                        }
+                        listenShortcut = shortcut
+                    } catch {
+                        problem = error.localizedDescription
+                    }
+                }
+            }
+        }
+        app.listeningShortcutProblem = problem
+        native.model.roomShortcutHint = listenShortcut.map { "\($0.display): turn listening mode on or off" } ?? ""
         updateMenu()
     }
 
@@ -421,6 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.updateMenu()
         }
         native.model.onStart = { [weak self] in self?.startConversation() }
+        native.model.onTogglePause = { [weak self] in self?.togglePause() }
         native.model.onSkipTour = { [weak self] in self?.native.skipTour() }
         native.onTourStarted = { UserDefaults.standard.set(false, forKey: Prefs.tourPending) }
         native.onPausedTaskSettled = { [weak self] notice in
@@ -436,6 +596,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let state = self.native.model.state
             // A delegated run whose first work update never arrived is still in flight.
             self.idle?.callEnded(lastWork: state.workInfo ?? state.runID.map { WorkInfo(runID: $0, status: "running") })
+            self.room.callEnded()   // listening mode only exists during a call
+            self.refreshListening()
             if self.quitPending { NSApp.terminate(nil) }
         }
     }
@@ -511,8 +673,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Pause / Resume (panel, menu, shortcut, the paused-task notice). While listening mode holds a
+    /// paused call, Resume turns listening off into that conversation, with what was heard.
     private func togglePause() {
         guard active else { return }
+        if native.isPaused && room.canAsk { startConversation(); return }
         native.togglePause()
         updateMenu()
     }

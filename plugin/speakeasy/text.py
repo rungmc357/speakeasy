@@ -265,6 +265,46 @@ def safe_full_text(value: Any) -> str | None:
     return text[:MAX_RESULT_FULL] or None
 
 
+# Listening mode: what the Mac transcribed in the room before a call, as "[HH:MM] text" lines.
+MAX_ROOM_CHARS = 24_000  # Unicode code points, as sent (about 6,000 tokens)
+ROOM_STAMP_RE = re.compile(r"^\[\d{1,2}:\d{2}(?::\d{2})?\]\s*")
+# A secret said out loud has no "password:" syntax: "the password is hunter2", "my PIN's 4412".
+SPOKEN_SECRET_RE = re.compile(
+    r"(?i)\b(?:pass(?:word|code|phrase)|pin(?:\s+(?:code|number))?|api\s+key|secret\s+key|"
+    r"access\s+(?:code|key|token)|security\s+code|token|cvv|cvc|(?:card|account|routing|social\s+security)\s+number|ssn)"
+    r"(?:\s*['’]s\b|\s*[:,=]|\s+(?:is|was|will\s+be|should\s+be)\b)"
+    # "use password hunter2", "enter the pin 4321"
+    r"|(?i:\b(?:use|try|enter|type)\s+(?:the\s+|my\s+|our\s+)?(?:pass(?:word|code)|pin)\s+\S)")
+# Numbers that are secrets on their own, said out loud: a card-length run of digits ("4111 1111 1111
+# 1111"; phone numbers, dates and [HH:MM] stamps are too short), a US social security number, and a
+# card's security code.
+SPOKEN_NUMBER_SECRET_RE = re.compile(
+    r"(?<![\d:])(?:\d[ -]?){12,18}\d(?![\d:])"
+    r"|\b\d{3}-\d{2}-\d{4}\b"
+    r"|(?i:\b(?:cvv|cvc|security\s+code)\W{0,3}\d{3,4}\b)")
+
+
+def safe_room_text(value: str) -> str:
+    """Listening mode's room transcript, made safe to hand to the voice and Hermes.
+
+    Like ``safe_full_text``: control characters go, and a line that looks like it holds a secret
+    (a key, "password: …", a password, PIN or card number said out loud, a card-length number or a
+    social security number) becomes "[redacted]"
+    behind its time stamp. A long opaque token anywhere in a line is redacted on its own. Never
+    shortened here: MAX_RESULT_FULL would cut a full room transcript to a third; the caller checks
+    MAX_ROOM_CHARS instead."""
+    lines = []
+    for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", line).rstrip()
+        if SENSITIVE_TEXT_RE.search(line) or SPOKEN_SECRET_RE.search(line) or SPOKEN_NUMBER_SECRET_RE.search(line):
+            stamp = ROOM_STAMP_RE.match(line)
+            line = (stamp.group(0) if stamp else "") + "[redacted]"
+        else:
+            line = OPAQUE_RE.sub("[redacted]", line)
+        lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def valid_done_label(value: Any) -> str | None:
     """Short past-tense label for the panel's one-line "Done · <label>" status."""
     text = safe_user_text(value, 40)

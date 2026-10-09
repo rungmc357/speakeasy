@@ -30,6 +30,9 @@ public struct KeyShortcut: Equatable, Sendable {
     /// Default Pause/Resume shortcut: Control–Option–P, registered while a call
     /// is open or paused.
     public static let defaultPause = KeyShortcut(keyCode: 0x23, modifiers: control | option, keyName: "P")
+    /// Suggested listening mode shortcut: Control–Option–L. Off until the user sets one (Settings ›
+    /// Shortcuts); Delete in the recorder picks this.
+    public static let suggestedListening = KeyShortcut(keyCode: 0x25, modifiers: control | option, keyName: "L")
 
     /// ANSI virtual key codes (kVK_ANSI_*), cross-checked against Carbon in tests.
     public static let keyCodes: [String: UInt32] = [

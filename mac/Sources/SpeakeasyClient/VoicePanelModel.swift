@@ -41,6 +41,29 @@ public final class VoicePanelModel: ObservableObject {
     @Published public var tourActive = false
     public var onSkipTour: () -> Void = {}
 
+    // Listening mode (Mac). It lives beside the call, not in it: the strip shows only while no
+    // call is open, and turning listening off starts the call.
+    /// What the listening strip shows; nil hides it.
+    @Published public var room: RoomPresentation?
+    /// A one-off note about listening mode ("stopped when your Mac went to sleep…"), shown in the
+    /// strip until dismissed or listening is turned on again.
+    @Published public var roomNotice: String?
+    /// The panel offers the Listening mode button (supported here, and no call is open).
+    @Published public var roomOffered = false
+    /// Why the button is disabled (e.g. the plugin needs an update); nil when it can be turned on.
+    @Published public var roomBlocked: String?
+    /// What it heard can still be asked about or discarded (on, or kept after it stopped by itself).
+    @Published public var roomCanAsk = false
+    /// e.g. "⌃⌥L: turn listening mode on or off". Empty when no shortcut.
+    @Published public var roomShortcutHint = ""
+    /// Turn listening mode on, or off into a call.
+    public var onToggleRoom: () -> Void = {}
+    /// Stop listening and drop what was heard, without a call.
+    public var onDiscardRoom: () -> Void = {}
+    /// Start the call that carries what was heard (turning listening off if it's on).
+    public var onAskRoom: () -> Void = {}
+    public var onDismissRoomNotice: () -> Void = {}
+
     public var onToggleMic: () -> Void = {}
     public var onStart: () -> Void = {}
     public var onEnd: () -> Void = {}

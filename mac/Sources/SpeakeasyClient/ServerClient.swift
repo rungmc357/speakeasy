@@ -177,8 +177,8 @@ public final class ServerClient: @unchecked Sendable {
 
     /// POST the SDP offer byte-for-byte (the body encoder never trims it).
     public func admitSession(sdp: String, idempotencyKey: String, resumeFrom: String? = nil,
-                      tour: [String: String]? = nil) async throws -> SessionAdmission {
-        let body = try sessionRequestBody(sdp: sdp, resumeFrom: resumeFrom, tour: tour)
+                      tour: [String: String]? = nil, room: String? = nil) async throws -> SessionAdmission {
+        let body = try sessionRequestBody(sdp: sdp, resumeFrom: resumeFrom, tour: tour, room: room)
         let object = try await json("/voice/sessions", method: "POST", body: body,
                                     headers: ["Idempotency-Key": idempotencyKey])
         guard let admission = SessionAdmission(json: object) else {

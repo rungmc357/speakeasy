@@ -144,6 +144,19 @@ def test_busy_is_true_only_for_a_live_call_or_an_active_task(service):
     assert service.busy() is False
 
 
+def test_a_paused_call_holds_back_a_reload_only_until_its_pause_runs_out(service):
+    """A paused call (listening mode pauses calls too) can be resumed, so a reload waits for it; but a
+    call paused and never resumed, or ended on the device while paused, must not block updates forever."""
+    from speakeasy.calls import Interaction
+    call = Interaction("int_p", "sess_p")
+    call.call_closed = True
+    call.paused = True
+    service.interactions["int_p"] = call
+    assert service.busy() is True
+    service.pause_expired(call)          # PAUSE_NOTICE_AFTER_S later
+    assert call.pause_bookkept and service.busy() is False
+
+
 def test_hermes_style_reinstall_drops_and_reimports_the_whole_package(plugin):
     """`hermes plugins install` swaps the folder in one step; a plugin re-discovery then evicts the
     package and every submodule and imports it again. The running server must keep one consistent

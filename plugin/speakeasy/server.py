@@ -17,10 +17,15 @@ from urllib.parse import urlsplit
 from . import __version__
 from .service import VoiceService
 from .calls import ServiceError, Interaction, publish_state
+from .text import MAX_ROOM_CHARS
 
 logger = logging.getLogger(__name__)
 
 MAX_BODY = 128 * 1024
+# POST /voice/sessions can also carry listening mode's room text: up to MAX_ROOM_CHARS code points,
+# each at worst 12 bytes of JSON (a character outside the BMP written as two \uXXXX escapes), on top
+# of the usual body (whose 128 KiB already fits the largest SDP offer, MAX_SDP, with its escaping).
+MAX_SESSION_BODY = MAX_BODY + MAX_ROOM_CHARS * 12
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 _ID = r"([A-Za-z0-9_-]+)"
 
@@ -46,12 +51,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _body(self) -> dict[str, Any]:
+    def _body(self, limit: int = MAX_BODY) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             raise ServiceError(400, "invalid content length") from None
-        if length <= 0 or length > MAX_BODY:
+        if length <= 0 or length > limit:
             raise ServiceError(413, "request body size rejected")
         try:
             body = json.loads(self.rfile.read(length))
@@ -193,7 +198,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             device_id = self._auth()
             if path == "/voice/sessions":
-                self._reply(201, self.service.create_session(self._body(), self.headers.get("Idempotency-Key", ""),
+                self._reply(201, self.service.create_session(self._body(MAX_SESSION_BODY),
+                                                            self.headers.get("Idempotency-Key", ""),
                                                             device_id))
                 return
             if path == "/voice/tasks/dismiss":

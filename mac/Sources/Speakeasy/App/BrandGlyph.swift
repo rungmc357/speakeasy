@@ -3,11 +3,12 @@ import AppKit
 /// The Speakeasy mark (a keyhole with a soundwave cut into its round top), drawn in code so the
 /// menu bar gets a crisp template image at any scale. Shapes match brand/build.py.
 enum BrandGlyph {
-    /// Menu-bar template image; `badge` adds a dot for "something finished while you were away".
-    static func menuBarImage(badge: Bool = false, height: CGFloat = 16) -> NSImage {
+    /// Menu-bar template image; `badge` adds a dot for "something finished while you were away";
+    /// `listening` adds a ring at the bottom right while listening mode holds the mic.
+    static func menuBarImage(badge: Bool = false, listening: Bool = false, height: CGFloat = 16) -> NSImage {
         let box = CGRect(x: 156, y: 86, width: 200, height: 338)   // the mark's bounds in its 512 design space
         let scale = height / box.height
-        let width = (box.width * scale).rounded(.up) + (badge ? 5 : 0)
+        let width = (box.width * scale).rounded(.up) + (badge || listening ? 6 : 0)
         let image = NSImage(size: NSSize(width: width, height: height), flipped: true) { _ in
             let t = NSAffineTransform()
             t.scale(by: scale)
@@ -19,10 +20,17 @@ enum BrandGlyph {
             if badge {
                 NSBezierPath(ovalIn: NSRect(x: width - 5, y: 0, width: 5, height: 5)).fill()
             }
+            if listening {
+                let ring = NSBezierPath(ovalIn: NSRect(x: width - 5.5, y: height - 6, width: 5, height: 5))
+                ring.lineWidth = 1.4
+                NSColor.black.setStroke()
+                ring.stroke()
+            }
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = badge ? "Speakeasy, work finished" : "Speakeasy"
+        image.accessibilityDescription = ["Speakeasy", badge ? "work finished" : nil, listening ? "listening mode on" : nil]
+            .compactMap { $0 }.joined(separator: ", ")
         return image
     }
 

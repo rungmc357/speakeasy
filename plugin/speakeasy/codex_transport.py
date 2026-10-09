@@ -292,6 +292,7 @@ class CodexSidebandWorker(SidebandWorker):
 
     async def run(self) -> None:
         self.loop = asyncio.get_running_loop()
+        self.connected_at = time.monotonic()  # the transport started during admission; events flow from here
         with self.interaction.lock:
             self.interaction.status = "listening"
         self.publish()

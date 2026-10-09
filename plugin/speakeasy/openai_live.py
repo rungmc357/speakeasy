@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -78,6 +79,7 @@ class OpenAISidebandWorker(SidebandWorker):
                                           max_size=2 * 1024 * 1024, ping_interval=20) as ws:
                 self.ws = ws
                 self.connected = True
+                self.connected_at = time.monotonic()
                 with self.interaction.lock:
                     self.interaction.status = "listening"
                 self.publish()

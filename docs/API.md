@@ -32,6 +32,9 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/interactions/{id}/approval` | device | Answer a Hermes tool approval |
 | POST | `/voice/interactions/{id}/cancel-backend` | device | Stop a task's Hermes run |
 | POST | `/voice/interactions/{id}/skip-tour` | device | End the first-call tour |
+| POST | `/voice/interactions/{id}/early-request` | device | Words heard while the call connected: the first request (or, in a call from listening mode, "answer from the room") |
+| POST | `/voice/interactions/{id}/answer` | device | Answer a task's question card |
+| POST | `/voice/interactions/{id}/mic-check` | device | Log a mic repair (numbers only, no audio or words) |
 | GET | `/voice/work/latest` | device | Latest task + task list + recap |
 | GET | `/voice/work/{run_id}` | device | One task |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
@@ -100,6 +103,24 @@ retry with the same key and body returns the same session instead of starting a 
 the voice walks the user through a real task, the controls and where results go, in its own
 words, and drops it the moment they say skip. Its value names the shortcuts to mention, all
 optional: `{"call": "⌃⌥Space", "mute": "⌃⌥M", "pause": "⌃⌥P"}` (`{}` for none).
+
+`room` (optional, plugin 0.2.51+, only when `GET /voice/status` has `room_listening: true`) is what
+listening mode heard: `[HH:MM] text` lines, at most 24,000 Unicode code points. The app sends it
+with `resume_from` when listening mode (turned on mid-call, which paused the call) is turned off:
+it's added to any room text the call already had (newest kept within the cap) and the voice may
+respond from the room once more. A new call can carry it too (a resume that fell back to a new
+call). A plain resume keeps the server's copy. `""` means no room. With a room, `tour` is ignored.
+The room is part of the idempotency fingerprint (a retry with the same key must send the same room).
+
+```json
+{"sdp": "v=0\r\n...", "room": "[14:02] Sam says the deadline is Friday the 14th.\n[14:03] Priya will send the deck by Wednesday."}
+```
+
+What happens to it: secret-looking lines and tokens are redacted on intake; the voice gets it as a
+fenced background block in its instructions (never as instructions); tasks started from that call
+get it in their Hermes input (not in posts to a chat thread). It is held in memory on this
+interaction only: never in the call log, recent voice, Tune or the task store. It moves to a resumed
+call, and is dropped when the call ends or 15 minutes after it was paused.
 `201`
 ```json
 {
@@ -117,8 +138,33 @@ optional: `{"call": "⌃⌥Space", "mute": "⌃⌥M", "pause": "⌃⌥P"}` (`{}`
 
 `voice_provider` is `codex` (default: the user's own `codex login`, via `codex app-server`) or
 `openai` (`SPEAKEASY_OPENAI_API_KEY` in the profile `.env`). A resumed call also carries
-`"resumed_from": "<old interaction_id>"`. Errors: 400 bad body, 409 the call was already resumed,
-502 the voice provider could not start (see `GET /voice/status` → `codex_message`).
+`"resumed_from": "<old interaction_id>"`. Errors: 400 bad body (including a `room` over the cap), 409 the call was already resumed or the Idempotency-Key was reused with a
+different SDP or room, 502 the voice provider could not start (see `GET /voice/status` →
+`codex_message`).
+
+## POST /voice/interactions/{id}/early-request
+
+Words the app transcribed on the device while the call was connecting. Body `{"text": "..."}`
+(at most 4,000 characters; the first 1,000 are used). Waits up to 8 s for the call to connect
+(409 if it doesn't). Returns `{"interaction_id", "task_id"}`.
+
+- Usually the text is the call's first request and is handled like any request (`task_id` is the
+  task it started, or `null` when the voice answers it itself).
+- In a call started from listening mode (one with a `room`): a question about what was said in the
+  room ("what did Sam say the deadline was?") is answered by the voice from the room, with no task.
+  An empty text means the user said nothing after turning listening off: the voice responds to the
+  conversation once, unless the user has already spoken in the call. Both return `task_id: null`.
+- An empty text in any other call does nothing.
+
+## POST /voice/interactions/{id}/answer
+
+A tap on a question card's option (or a typed answer). Body `{"task_id": "...", "text": "..."}`
+(text at most 400 characters); it goes back to that task as a follow-up.
+
+## POST /voice/interactions/{id}/mic-check
+
+The app found the call's mic wasn't getting through and reopened the connection. Body
+`{"note": "..."}` (at most 400 characters of numbers and state, no audio or words). Logged only.
 
 ## GET /voice/interactions/{id}
 
@@ -660,7 +706,7 @@ then marked edited, so auto-refresh leaves it alone). Calls are kept locally in 
 
 ## GET /voice/status
 
-Readiness. `voice_ready` is true when the chosen provider can start a call. When Codex is missing or signed out, `codex_message` says what to do. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only).
+Readiness. `voice_ready` is true when the chosen provider can start a call. When Codex is missing or signed out, `codex_message` says what to do. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only). `room_listening` (plugin 0.2.51+) is true when the server takes listening mode's `room` with `POST /voice/sessions`; missing on older plugins, which reject unknown session fields. `room_on_resume` is true when it also takes `room` with `resume_from`, which listening mode during a call needs (the app checks it before pausing the call for listening).
 
 `200`
 ```json
@@ -687,6 +733,8 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
   "routing_hint": "Change it with `hermes model` → auxiliary tasks, or in your Hermes config under auxiliary → speakeasy_router.",
   "advertised_url": "",
   "tailscale_name": "",
+  "room_listening": true,
+  "room_on_resume": true,
   "version": "0.2.0"
 }
 ```
