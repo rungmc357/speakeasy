@@ -300,7 +300,7 @@ private struct VoiceChooser: View {
         let chosen = option.id == effective
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Button {
-                selection = option.id == VoiceCatalog.defaultVoice(for: provider) ? "" : option.id
+                selection = option.id
             } label: {
                 Image(systemName: chosen ? "largecircle.fill.circle" : "circle")
                     .foregroundStyle(chosen ? Color.accentColor : Color.secondary)
@@ -313,7 +313,7 @@ private struct VoiceChooser: View {
                 if !option.summary.isEmpty { Text(option.summary).font(.caption).foregroundStyle(.secondary) }
             }
             .contentShape(Rectangle())
-            .onTapGesture { selection = option.id == VoiceCatalog.defaultVoice(for: provider) ? "" : option.id }
+            .onTapGesture { selection = option.id }
             Spacer(minLength: 12)
             if option.hasPreview {
                 let playing = player.playing == option.id
