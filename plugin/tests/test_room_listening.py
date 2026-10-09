@@ -261,7 +261,7 @@ def test_a_call_paused_for_listening_mode_resumes_with_what_was_heard(server, se
     assert interaction.room == ROOM and not interaction.room_nudged
     assert http(server.base_url, "POST", f"/voice/interactions/{resumed['interaction_id']}/early-request",
                 {"text": ""}, server.token)[0] == 200
-    assert [kind for kind, _, _ in service.workers[-1].sent] == ["session.commentary.append"]
+    assert service.workers[-1].sent == []  # silence after listening: it waits for a request
 
 
 def test_listening_again_mid_call_adds_to_the_room_and_allows_one_more_response(server, service):

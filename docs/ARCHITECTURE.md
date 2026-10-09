@@ -71,9 +71,8 @@ call, and every way of resuming or starting a call while it's on turns it off in
   resumes the call with the rendered transcript as `room` on `POST /voice/sessions` + `resume_from`
   (sent only when `GET /voice/status` says `room_listening`). The call comes back unmuted; the
   existing listen-while-connecting capture (`EarlyCapture`) catches what's said next as the request.
-  If nothing is said, ~2 s after turning it off (once the call is live, with no speech on its mic)
-  the app sends an empty early request and the voice responds from the room (`RoomCall` /
-  `RoomTakeoffPolicy`), once per take-off. If the call can't come back, what was heard is kept (not
+  If nothing is said, the voice stays quiet and keeps the room as context until it's asked
+  something; it never speaks first from the room. If the call can't come back, what was heard is kept (not
   listening) to ask about in a new call or discard; if the server can't take room text, the call
   carries on without it.
 - **On the server:** the room text is redacted for secrets, kept only on the in-memory

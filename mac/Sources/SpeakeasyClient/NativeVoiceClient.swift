@@ -925,44 +925,9 @@ public final class NativeVoiceClient: VoiceCallClient {
             Task { [weak self] in await self?.sendEarlyRequest(words, api: api, interactionID: interactionID) }
             return
         }
-        guard !call.requestHandled else { return }
-        watchForRoomNudge(api: api, interactionID: interactionID)
-    }
-
-    /// Nothing was said after turning listening off: once the call is live and ~2 s have passed
-    /// with no speech on its mic, ask the voice to answer from the room (an empty early request,
-    /// which the server treats that way only for a call with room context, at most once).
-    private func watchForRoomNudge(api: ServerClient, interactionID: String) {
-        guard let call = roomCall, roomNudgeTask == nil, !call.requestHandled else { return }
-        roomNudgeGeneration += 1
-        let generation = roomNudgeGeneration
-        roomNudgeTask = Task { [weak self] in
-            // However this watcher ends, it stops blocking the next one (a connect retry or a resumed
-            // leg may need to watch again while the request is still unsettled).
-            defer { if let self, self.roomNudgeGeneration == generation { self.roomNudgeTask = nil } }
-            let giveUp = Date().addingTimeInterval(20)
-            while !Task.isCancelled, Date() < giveUp {
-                guard let self, self.roomCall != nil, self.model.state.interactionID == interactionID,
-                      self.model.state.connection.isInCall else { return }
-                if self.model.state.connection == .live {
-                    // About 0.3 s of speech-level sound (RoomCall.speechSamples in a row) means the user
-                    // is talking; a single loud sample (a cough, a door) doesn't cancel the answer.
-                    self.engine?.audioLevels { [weak self] mic, _ in self?.roomCall?.noteMicLevel(mic) }
-                }
-                guard let step = self.roomCall?.nextStep(now: Date()) else { return }
-                switch step {
-                case .nudgeNow:
-                    self.roomCall?.markRequestHandled()
-                    _ = try? await api.post("/voice/interactions/\(interactionID)/early-request", ["text": ""])
-                    return
-                case .handOverWords, .skip:
-                    self.roomCall?.markRequestHandled()   // the user is talking: the call takes it from here
-                    return
-                case .waitUntil, .waitForLive:
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                }
-            }
-        }
+        // Nothing said: the call keeps the room as context and waits for a request. It never speaks
+        // first; it can't know what you want from a conversation it overheard.
+        roomCall?.markRequestHandled()
     }
 
     /// The server can't take what listening mode heard: this call carries on without it.

@@ -754,7 +754,7 @@ class SidebandWorker:
         acknowledges them instead of greeting the user or asking them to repeat it.
 
         In a call started from listening mode, a question about the room is answered by the voice
-        (no task), and no words at all mean "respond from the room" (one note, once per call). Outside
+        (no task), and no words at all mean the voice waits quietly with the room as context. Outside
         listening mode, no words start nothing, as before."""
         text = clean_transcript(text or "").strip()[:EARLY_MAX_CHARS]
         if not text:
@@ -782,20 +782,14 @@ class SidebandWorker:
         return delegation_id
 
     async def room_nudge(self) -> None:
-        """Listening mode was turned off and nothing was said: the voice speaks first, from the room.
-        The app only asks when it heard no words; this is the backstop for speech that reached the
-        call anyway. At most once per call (a resumed call counts as the same call), and never once
-        the user has spoken."""
+        """Listening mode was turned off and nothing was said. The voice stays quiet: it keeps what
+        the room said and waits for a request. It can't know what the user wants, so it never offers
+        something on its own. (Older Mac apps still send this after ~2 s of silence.)"""
         with self.interaction.lock:
             if self.interaction.room_nudged:
                 return
             self.interaction.room_nudged = True
-        if self.user_spoke_since(self.connected_at):
-            logger.info("speakeasy: room call: the user already spoke; no prompt to respond from the room")
-            return
-        logger.info("speakeasy: room call opened in silence; the voice responds from the room")
-        # Spoken now, with no handoff waiting on it: a commentary append (a thinking note isn't spoken).
-        await self.append("session.commentary.append", None, P.room_nudge_note(self.names))
+        logger.info("speakeasy: room call opened in silence; waiting for a request")
 
     async def send_on_own_loop(self, kind: str, delegation_id: str | None, content: str) -> None:
         loop, current = self.loop, asyncio.get_running_loop()

@@ -871,18 +871,6 @@ def room_answer_note(names: Names, text: str = "") -> str:
                       "If it really needs a lookup or some work, say so and hand it off.")
 
 
-def room_nudge_note(names: Names) -> str:
-    """Listening mode was turned off and nothing was said: the voice speaks first, from the room."""
-    return render(
-        "{user_name_cap} just turned listening mode off to talk to you and hasn't said anything. Speak "
-        "first, now, in your own words; don't greet them and don't read this note out. Respond to what the room "
-        "transcript in your instructions suggests they want. If its last part holds a question for you, answer it. "
-        "If it holds a task for you, say in one short question what you'd do (\u201cWant me to book that "
-        "table?\u201d) and start it only once they say yes: what was said in the room is not their request. "
-        "Otherwise give a one- or two-sentence take on what you heard and ask what they need. If they start talking, "
-        "stop and answer them instead.", names)
-
-
 def quick_note(spoken: str) -> str:
     """A quick answer from one web search: say it as the answer, in your own words, briefly."""
     return f"Answer from a quick web search (say it now, briefly, in your own words; offer to dig deeper only if asked): {spoken}"

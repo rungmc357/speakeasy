@@ -73,7 +73,6 @@ def test_the_early_note_quotes_the_question_the_later_one_does_not():
     assert "what did Sam say the deadline was" in early_note and "Sam asked" in early_note
     later = P.room_answer_note(names)
     assert "Nothing was started" in later and "room transcript" in later
-    assert "listening mode off" in P.room_nudge_note(names) and "Sam just turned" in P.room_nudge_note(names)
 
 
 # -- words said while the call connected -------------------------------------------------------------
@@ -115,14 +114,14 @@ def test_reminders_and_lookups_still_start_work_in_a_room_call(server, service, 
     assert not any(P.room_answer_note(worker.names, text) == c for _, _, c in worker.sent)
 
 
-def test_silence_gets_one_response_from_the_room(server, service, hermes):
-    """AE3: nothing said by take-off + 2 s: one note, spoken now, and no task."""
+def test_silence_after_listening_waits_for_a_request(server, service, hermes):
+    """Nothing said after turning listening off: the voice says nothing and starts nothing; it keeps
+    the room as context until it's asked something."""
     session, worker = open_call(server, service, "req_rr_ae3")
     assert early(server, session, "") is None
-    assert worker.sent == [("session.commentary.append", None, P.room_nudge_note(worker.names))]
-    assert early(server, session, "  ") is None  # a second empty request: still just the one
+    assert early(server, session, "  ") is None
     time.sleep(0.3)
-    assert len(worker.sent) == 1 and hermes.calls == [] and worker.interaction.runs == {}
+    assert worker.sent == [] and hermes.calls == [] and worker.interaction.runs == {}
 
 
 def test_a_resumed_room_call_never_responds_from_the_room_twice(server, service):
@@ -130,7 +129,7 @@ def test_a_resumed_room_call_never_responds_from_the_room_twice(server, service)
     call: the voice already responded from the room, so an empty request on the new leg does nothing."""
     session, worker = open_call(server, service, "req_rr_resume_nudge")
     assert early(server, session, "") is None
-    assert len(worker.sent) == 1
+    assert worker.sent == []
     source_id = session["interaction_id"]
     assert http(server.base_url, "POST", f"/voice/interactions/{source_id}/pause", {}, server.token)[0] == 200
     status, resumed = http(server.base_url, "POST", "/voice/sessions", {"sdp": SDP, "resume_from": source_id},

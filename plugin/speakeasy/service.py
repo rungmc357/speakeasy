@@ -470,7 +470,7 @@ class VoiceService:
             room_nudged = source.room_nudged
         interaction.runs.update(runs)
         interaction.room = room
-        interaction.room_nudged = room_nudged   # the voice responds from the room once per call
+        interaction.room_nudged = room_nudged   # an empty request after listening is handled once per call (the voice waits)
         interaction.history = history
         interaction.resumed_from = source.interaction_id
         interaction.revision = source.revision
