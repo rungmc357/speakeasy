@@ -76,6 +76,7 @@ private struct GeneralSettings: View {
     @AppStorage(Prefs.showPanelOnStart) private var showPanelOnStart = true
     @AppStorage(Prefs.followSystemAudio) private var followSystemAudio = true
     @AppStorage(Prefs.startSlim) private var startSlim = false
+    @AppStorage(Prefs.listeningBeta) private var listeningBeta = false
     @AppStorage(Prefs.showCaptions) private var showCaptions = true
     @AppStorage(Prefs.notifyWhenDone) private var notifyWhenDone = true
     @AppStorage(Prefs.panelOnAllSpaces) private var panelOnAllSpaces = true
@@ -109,6 +110,14 @@ private struct GeneralSettings: View {
                     .help("A macOS notification when a task you started keeps running after you hang up and then finishes")
             }
             Section {
+                Toggle("Listening mode", isOn: $listeningBeta)
+            } header: {
+                Text("Beta")
+            } footer: {
+                Text("Pause a call to let Speakeasy transcribe the room, then ask about the conversation without repeating it.")
+            }
+            if listeningBeta {
+            Section {
                 LabeledContent("Listening mode") {
                     if let reason = listeningUnavailable {
                         Text(reason).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
@@ -120,6 +129,7 @@ private struct GeneralSettings: View {
                 Text("During a call: pauses the call and transcribes the room on this Mac without answering, keeping the last 30 minutes as text. Turn it off and the call picks up again, knowing what was said. What it heard goes to the voice and to tasks from that call; Speakeasy keeps none of it, but Hermes keeps what its tasks receive in its own history. It stops when the call ends, after 2 hours, or when your Mac sleeps.")
             }
             .task { listeningUnavailable = await Self.listeningReason(app: app) }
+            }
             Section("Tour") {
                 LabeledContent {
                     if tourPending {
@@ -157,6 +167,7 @@ private struct GeneralSettings: View {
 // MARK: Shortcuts
 
 private struct ShortcutSettings: View {
+    @AppStorage(Prefs.listeningBeta) private var listeningBeta = false
     @EnvironmentObject var app: AppModel
 
     private var mute: KeyShortcut? { AppModel.storedShortcut(Prefs.muteShortcut, default: .defaultMute) }
@@ -202,7 +213,7 @@ private struct ShortcutSettings: View {
             } footer: {
                 Text("A paused call stops listening and billing; tasks keep running.")
             }
-            if RoomListener.isSupported {
+            if RoomListener.isSupported && listeningBeta {
                 Section {
                     LabeledContent("Listening mode on or off") {
                         ShortcutRecorder(shortcut: listening, name: "Listening", defaultShortcut: .suggestedListening,

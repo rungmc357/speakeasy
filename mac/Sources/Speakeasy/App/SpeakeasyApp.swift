@@ -45,6 +45,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Listening mode on/off shortcut: registered whenever one is set (off until the user sets it).
     private var listenHotKey: GlobalHotKey?
     private var listenShortcut: KeyShortcut?
+    /// Listening mode is a beta: hidden everywhere until it's turned on in Settings › Beta.
+    private var listeningBeta: Bool { UserDefaults.standard.bool(forKey: Prefs.listeningBeta) }
+    private var lastListeningBeta: Bool?
     private var badgeOn = false
     private var active = false
     private var quitPending = false
@@ -186,7 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.applyClientPrefs(); self?.applyDockPolicy() }
+            .sink { [weak self] _ in self?.applyClientPrefs(); self?.applyDockPolicy(); self?.applyListeningBeta() }
             .store(in: &bag)
     }
 
@@ -380,7 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else {
                 listenItem.title = "Turn on listening mode" + shortcut
             }
-            listenItem.isHidden = !room.isSupported || !(room.callActive() || room.canAsk)   // during a call only
+            listenItem.isHidden = !listeningBeta || !room.isSupported || !(room.callActive() || room.canAsk)   // during a call only
             listenItem.isEnabled = app.isPaired && (room.canAsk || room.blocker == nil)
             listenItem.toolTip = room.canAsk ? nil : room.blocker
             discardListenItem?.isHidden = !room.canAsk
@@ -507,7 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let model = native.model
         let presentation = room.presentation()
         let notice = room.notice
-        let offered = room.isSupported && app.isPaired
+        let offered = listeningBeta && room.isSupported && app.isPaired
         let blocked = room.isOn ? nil : room.blocker
         let changedShape = (model.room == nil) != (presentation == nil) || (model.roomNotice == nil) != (notice == nil)
             || model.room?.warnings != presentation?.warnings
@@ -521,7 +524,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateMenu()
     }
 
+    private func applyListeningBeta() {
+        let on = listeningBeta
+        guard on != lastListeningBeta, room != nil, native != nil else { return }
+        lastListeningBeta = on
+        if !on && (room.isOn || room.canAsk) { room.discard() }
+        resolveListenShortcut()
+        refreshListening()
+    }
+
     @objc private func toggleListeningFromMenu() {
+        guard listeningBeta else { return }
         if room.canAsk { startConversation() } else { room.turnOn() }
     }
 
@@ -533,7 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         listenShortcut = nil
         let raw = UserDefaults.standard.string(forKey: Prefs.listeningShortcut)?.trimmingCharacters(in: .whitespaces)
         var problem: String?
-        if let raw, !raw.isEmpty {
+        if listeningBeta, let raw, !raw.isEmpty {
             switch KeyShortcut.parse(raw, reserved: app.callShortcut) {
             case .failure(let error):
                 problem = "Listening shortcut '\(raw)' rejected: \(error)"

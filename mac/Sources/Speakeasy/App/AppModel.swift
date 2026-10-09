@@ -19,6 +19,8 @@ enum Prefs {
     static let followSystemAudio = "followSystemAudio"
     static let onboardingDone = "onboardingDone"
     static let startSlim = "startSlim"
+    /// Beta: listening mode (off by default; Settings › Beta).
+    static let listeningBeta = "betaListeningMode"
     static let showCaptions = "showCaptions"
     static let notifyWhenDone = "notifyWhenDone"
     static let panelOnAllSpaces = "panelOnAllSpaces"
