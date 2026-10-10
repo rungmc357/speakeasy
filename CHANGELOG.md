@@ -13,6 +13,10 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **iPhone: no more "Fixing the mic…" loop at the start of a call.** The mic check judged the mic dead 2.5 seconds after the call took it over from the talk-while-connecting listener, before the phone's call audio (and AirPods' call mode) had started, then reconnected twice. A phone now gets 7 seconds for the first sound, the listener fully lets go of the mic, and a repair reconnects without the listener. Repairs log what the check saw.
 - No more "didn't get that" while a task is clearly still working. It showed 45 seconds after any follow-up or status question that didn't start a new task.
 
+## Plugin 0.2.53 — Tasks rename themselves as they grow
+
+- **A task's name keeps up with it.** When you add to a task ("now make it a weekend in Porto"), it gets a new name for what it has become. Quick answers get a proper name too, not just your first few words.
+
 ## Plugin 0.2.52 — Talk to what you're facing (Vision Pro)
 
 - **The Vision Pro room view can tell Speakeasy which task you're facing.** Say something without naming a task ("make it lighter") and it goes to the task in front of you. "New thing" or "something else" still starts fresh. The voice is told what you're looking at, so "what is this?" gets answered right away.

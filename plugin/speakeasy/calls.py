@@ -539,6 +539,25 @@ class SidebandWorker:
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
 
+    def retitle(self, idem: str, request: str | None, earlier: str | None = None) -> None:
+        """Rename a task for what it has become: the titler sees the first ask and the newest one,
+        and its name replaces the current one unless something else renamed it meanwhile."""
+        current = self.store.title(idem)
+        if not request:
+            return
+        titler = self.rt.title_call or router.smart_title
+        prompt = f"{earlier}\nThen: {request}" if earlier and earlier.strip() != request.strip() else request
+
+        async def upgrade() -> None:
+            title = await asyncio.to_thread(titler, prompt)
+            if title and title != current and self.store.title(idem) == current:
+                self.store.set_title(idem, title)
+                self.publish()
+
+        task = asyncio.get_running_loop().create_task(upgrade())
+        self.dispatch_tasks.add(task)
+        task.add_done_callback(self.dispatch_tasks.discard)
+
     def publish(self) -> None:
         name = self.names.assistant_name
         publish_state(self.store, self.interaction, name)
@@ -1298,6 +1317,7 @@ class SidebandWorker:
         try:
             self.store.reserve_run(idem, self.interaction.interaction_id, delegation_id, revision)
             self.store.set_title(idem, short_title(request) or "Quick answer")
+            self.retitle(idem, request)
             self.store.progress(idem, "request", request)
             self.store.update_run(idem, None, "completed")
             result = split_result(spoken, ()) or {"spoken": spoken, "full": spoken}
@@ -1686,6 +1706,8 @@ class SidebandWorker:
                     self.store.dismiss_key(replaced_key)
                 self.store.set_title(idem, self.store.title(joins.idem_key) or short_title(request))
                 self.publish()
+                # The task grew: name it for what it is now, not just the first ask.
+                self.retitle(idem, request, self.store.request_text(joins.idem_key))
                 joins = None
                 break
             await asyncio.sleep(CONTINUITY_POLL_S)
