@@ -189,6 +189,20 @@ class StateStore:
             if summary:
                 self._db.execute("UPDATE runs SET summary=? WHERE idem_key=?", (summary, key))
 
+    def add_shape(self, key: str, shape: dict[str, Any]) -> bool:
+        """Attach a result's structure to its stored result (kept beside spoken/full)."""
+        with self._lock, self._db:
+            row = self._db.execute("SELECT result_json FROM runs WHERE idem_key=?", (key,)).fetchone()
+            try:
+                result = json.loads(row[0]) if row and row[0] else None
+            except ValueError:
+                result = None
+            if not isinstance(result, dict):
+                return False
+            result["shape"] = shape
+            self._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?", (json.dumps(result), key))
+            return True
+
     def set_plan(self, key: str, steps: list[str]) -> None:
         with self._lock, self._db:
             self._db.execute("UPDATE runs SET plan=? WHERE idem_key=?", (json.dumps(steps[:5]), key))

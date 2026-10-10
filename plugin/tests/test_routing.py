@@ -809,6 +809,35 @@ def test_plan_output_is_validated():
     assert router.clean_plan("no json") is None
 
 
+def test_shape_output_is_validated():
+    from speakeasy import router
+    raw = json.dumps({"type": "build", "headline": "Dice app is live and tested",
+                      "checks": [{"label": "Roll parser", "value": "passed", "good": True}, {"label": "", "value": "x"}],
+                      "shipped": ["Dice app is live", ""], "open": ["Public link needs your go-ahead"],
+                      "sections": [{"title": "Dice", "points": ["Tap a die to build a roll"]}, {"points": ["no title"]}],
+                      "undo": False})
+    shape = router.clean_shape("here you go " + raw)
+    assert shape["type"] == "build" and shape["checks"] == [{"label": "Roll parser", "value": "passed", "good": True}]
+    assert shape["shipped"] == ["Dice app is live"] and [s["title"] for s in shape["sections"]] == ["Dice"]
+    assert router.clean_shape(json.dumps({"type": "poem", "open": ["x"]})) is None          # unknown type
+    assert router.clean_shape(json.dumps({"type": "answer", "headline": "Nothing else"})) is None   # no body
+    assert router.clean_shape('{"type": "build", "open": ["cut off') is None
+
+
+def test_a_long_finished_report_gets_its_shape(server, service, hermes):
+    seen = []
+    service.rt.shape_call = lambda request, report: seen.append(report) or {
+        "type": "build", "headline": "Fixed and deployed", "checks": [], "shipped": ["Fix is live"],
+        "open": ["Reindex one book"], "sections": [], "undo": True}
+    hermes.responder = lambda prompt, sid: ("Fixed it and deployed. " + "Details of the fix and the checks I ran. " * 20
+                                            + "\nDONE: Fixed\nSPOKEN: Fixed and deployed.")
+    _, worker = start_call(server, service)
+    worker.delegate("call_shape", "fix the library bug and deploy it")
+    task = wait_for(lambda: [t for t in tasks(server) if ((t.get("result") or {}).get("shape") or {}).get("type")])[0]
+    assert task["result"]["shape"]["open"] == ["Reindex one book"]
+    assert seen and seen[0].startswith("Fixed it and deployed.")
+
+
 def test_handoff_status_never_overrides_real_progress(service):
     store = service.store
     store.reserve_run("se_x", "vi_x", "item_x", 1)

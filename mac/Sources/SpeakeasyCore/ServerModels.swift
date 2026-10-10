@@ -85,10 +85,50 @@ public struct WorkResult: Equatable, Sendable {
     public var images: [ImageCard]
     /// Visual cards for the answer (a price chart, the weather, a game…), drawn above the text.
     public var views: [ViewCard]
+    /// The report's structure (type, checks, what shipped, what's open, sections), when the api sorted it.
+    public var shape: ResultShape?
     public init(spoken: String?, full: String?, label: String? = nil, products: [ProductCard] = [],
                 images: [ImageCard] = [], views: [ViewCard] = []) {
         self.spoken = spoken; self.full = full; self.label = label; self.products = products; self.images = images
         self.views = views
+    }
+}
+
+/// A long report sorted into parts, so it can be laid out as panels instead of a wall of text.
+public struct ResultShape: Equatable, Sendable {
+    public struct Check: Equatable, Sendable { public let label: String; public let value: String; public let good: Bool }
+    public struct Section: Equatable, Sendable { public let title: String; public let points: [String] }
+    /// build, setup, research, ideas or answer.
+    public let type: String
+    public let headline: String
+    public let checks: [Check]
+    public let shipped: [String]
+    public let open: [String]
+    public let sections: [Section]
+    public let undo: Bool
+
+    public init(type: String, headline: String, checks: [Check] = [], shipped: [String] = [], open: [String] = [],
+                sections: [Section] = [], undo: Bool = false) {
+        self.type = type; self.headline = headline; self.checks = checks; self.shipped = shipped; self.open = open
+        self.sections = sections; self.undo = undo
+    }
+
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let type = o["type"] as? String else { return nil }
+        func strings(_ k: String) -> [String] { (o[k] as? [Any] ?? []).compactMap { $0 as? String }.filter { !$0.isEmpty } }
+        self.type = type
+        headline = o["headline"] as? String ?? ""
+        checks = (o["checks"] as? [Any] ?? []).compactMap { raw in
+            guard let c = raw as? [String: Any], let l = c["label"] as? String, let v = c["value"] as? String else { return nil }
+            return Check(label: l, value: v, good: c["good"] as? Bool ?? true)
+        }
+        shipped = strings("shipped")
+        open = strings("open")
+        sections = (o["sections"] as? [Any] ?? []).compactMap { raw in
+            guard let s = raw as? [String: Any], let t = s["title"] as? String else { return nil }
+            return Section(title: t, points: (s["points"] as? [Any] ?? []).compactMap { $0 as? String })
+        }
+        undo = o["undo"] as? Bool ?? false
     }
 }
 
@@ -187,8 +227,9 @@ public struct WorkInfo: Equatable, Sendable {
                 ? nil : ProductCard(json: $0.element, number: $0.offset + 1) }
             let images = cards.compactMap { ImageCard(json: $0.element, number: $0.offset + 1) }
             let views = ViewCard.list(json: raw["views"])
-            let value = WorkResult(spoken: nonEmpty(raw["spoken"]), full: nonEmpty(raw["full"]),
+            var value = WorkResult(spoken: nonEmpty(raw["spoken"]), full: nonEmpty(raw["full"]),
                                    label: nonEmpty(raw["label"]), products: products, images: images, views: views)
+            value.shape = ResultShape(json: raw["shape"])
             // Cards alone are still a result: never drop cards because the text is empty.
             result = (value.spoken == nil && value.full == nil && products.isEmpty && images.isEmpty && views.isEmpty)
                 ? nil : value

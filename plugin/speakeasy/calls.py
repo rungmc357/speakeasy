@@ -134,6 +134,7 @@ class Runtime:
     polish_call: Callable[[str], str | None] | None = None
     status_call: Callable[[str], str | None] | None = None
     plan_call: Callable[[str], list[str] | None] | None = None
+    shape_call: Callable[[str, str], dict[str, Any] | None] | None = None
     progress_call: Callable[..., str | None] | None = None
     # Instant home control (home_control.HomeControl); None or turned off = every request goes to Hermes.
     home: Any = None
@@ -542,6 +543,21 @@ class SidebandWorker:
                 self.publish()
 
         task = asyncio.get_running_loop().create_task(upgrade())
+        self.dispatch_tasks.add(task)
+        task.add_done_callback(self.dispatch_tasks.discard)
+
+    def shape_result(self, idem: str, report: str) -> None:
+        """Sort a long finished report into its parts (checks, shipped, open, sections) in the background,
+        so apps can lay it out; the answer itself is already delivered and never waits on this."""
+        shaper = self.rt.shape_call or router.result_shape
+        request = self.store.request_text(idem) or ""
+
+        async def run() -> None:
+            shape = await asyncio.to_thread(shaper, request, report)
+            if shape and self.store.add_shape(idem, shape):
+                self.publish()
+
+        task = asyncio.get_running_loop().create_task(run())
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
 
@@ -2028,6 +2044,8 @@ class SidebandWorker:
             with self.interaction.lock:
                 backend.status, backend.approval = status, None
             stored_drafts = [self.store.add_draft(idem, self.store.session_for(idem), d) for d in drafts]
+            if status == "completed" and result and len(result.get("full") or "") >= 400:
+                self.shape_result(idem, result["full"])
             with self.interaction.lock:
                 wanted = idem in self.show_pending
                 self.show_pending.discard(idem)

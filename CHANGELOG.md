@@ -2,6 +2,11 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Plugin 0.2.55 — Long answers come sorted
+
+- **Long reports are sorted into parts.** When a task finishes with a long answer, Speakeasy sorts it into what kind of work it was (a build, a setup, research, options, or a plain answer) and pulls out its parts: the checks it ran, what's now done, what's still open, and its main sections. The answer itself arrives exactly as before; the sorting happens right after and never delays it. Apps use it to lay a report out as panels instead of a wall of text.
+- **Task plans fit real work.** A task's plan now reads like the work most people hand off ("Find the cause", "Fix and test", "Deploy", "Your review"), not like booking a trip.
+
 ## Plugin 0.2.54 — Tasks come with a plan
 
 - **Every task you hand off gets a short plan.** When a task goes to Hermes, it's laid out as three to five steps ("Compare flights", "Draft itinerary", "Your review"). Steps are checked off as Hermes reports progress. Apps that show a task's progress line use it; nothing changes in how tasks run.

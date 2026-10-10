@@ -564,8 +564,8 @@ def working_status(request: str, timeout: float = TITLE_TIMEOUT_S) -> str | None
 _PLAN_PROMPT = (
     "You lay out the plan for a task a user just handed to their AI assistant, as the short steps a person "
     "would see on a progress line. Give 3 to 5 steps in order, each 2 to 4 words, starting with a verb "
-    "(\"Compare flights\", \"Draft itinerary\", \"Check availability\"). The last step is the hand-back "
-    "to the user (\"Your review\", \"Confirm booking\"). Plain words, no numbering, no punctuation at the "
+    "(\"Find the cause\", \"Fix and test\", \"Deploy\", \"Compare options\"). The last step is the hand-back "
+    "to the user (\"Your review\", \"Try it\", \"Pick one\"). Plain words, no numbering, no punctuation at the "
     "end, nothing the request doesn't need. Reply with JSON only: {\"steps\": [\"...\"]}"
 )
 
@@ -612,6 +612,90 @@ def plan_steps(request: str, timeout: float = TITLE_TIMEOUT_S) -> list[str] | No
         logger.info("speakeasy: task plan unavailable (%s)", type(exc).__name__)
         return None
     return clean_plan(raw)
+
+
+SHAPE_TYPES = ("build", "research", "ideas", "setup", "answer")
+_SHAPE_PROMPT = (
+    "You read the final report an AI agent wrote for its user and pull out its structure, so an app can lay it "
+    "out as panels instead of a wall of text. Never add facts that aren't in the report; copy numbers exactly. "
+    "type: build (code/apps/features written, fixed, shipped or deployed), setup (machines, installs, accounts, "
+    "configuration), research (findings, comparisons, evidence, reviews), ideas (options, designs, "
+    "brainstorms, plans), answer (anything else). "
+    "headline: the outcome in under 12 words. "
+    "checks: only tests, verifications or measurements the agent actually ran (tests passed, live check, "
+    "benchmark), never specs, prices or facts; each {\"label\": 2-4 words, \"value\": \"15/15\" or \"passed\" or a number, "
+    "\"good\": true/false}; at most 4. "
+    "shipped: what is now live, released, merged, installed or changed, each under 10 words; at most 5. "
+    "open: what is still unfinished, blocked, or waiting on the user, each under 12 words; at most 4. "
+    "sections: the report's main parts in order, each {\"title\": 1-4 words, \"points\": [up to 4 points, each "
+    "under 16 words]}; at most 5. For research and ideas, each option or finding is a section. "
+    "undo: true only if the report says the change can be rolled back. Leave a field empty when the report "
+    "has nothing for it. Reply with JSON only: {\"type\": ..., \"headline\": ..., \"checks\": [], "
+    "\"shipped\": [], \"open\": [], \"sections\": [], \"undo\": false}"
+)
+
+
+def _short(value: Any, words: int, chars: int = 140) -> str | None:
+    text = " ".join(str(value or "").split()).strip(" -•*")
+    if not text or len(text.split()) > words + 4:
+        return None
+    return text[:chars]
+
+
+def clean_shape(raw: str | None) -> dict[str, Any] | None:
+    """Model output as a validated result shape, or None when it isn't usable."""
+    match = re.search(r"\{.*\}", str(raw or ""), re.S)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("type") not in SHAPE_TYPES:
+        return None
+
+    def strings(key: str, words: int, cap: int) -> list[str]:
+        items = data.get(key) if isinstance(data.get(key), list) else []
+        return [s for s in (_short(x, words) for x in items) if s][:cap]
+
+    checks = []
+    for c in data.get("checks") if isinstance(data.get("checks"), list) else []:
+        if isinstance(c, dict) and (label := _short(c.get("label"), 5, 40)) and (value := _short(c.get("value"), 3, 24)):
+            checks.append({"label": label, "value": value, "good": bool(c.get("good", True))})
+    sections = []
+    for s in data.get("sections") if isinstance(data.get("sections"), list) else []:
+        if not isinstance(s, dict) or not (title := _short(s.get("title"), 5, 48)):
+            continue
+        points = [p for p in (_short(x, 18, 160) for x in (s.get("points") or [])[:6]) if p][:4]
+        sections.append({"title": title, "points": points})
+    shape = {"type": data["type"], "headline": _short(data.get("headline"), 14, 120) or "",
+             "checks": checks[:4], "shipped": strings("shipped", 12, 5), "open": strings("open", 14, 4),
+             "sections": sections[:5], "undo": bool(data.get("undo"))}
+    return shape if any(shape[k] for k in ("checks", "shipped", "open", "sections")) else None
+
+
+def result_shape(request: str, report: str, timeout: float = 12.0) -> dict[str, Any] | None:
+    """The structure of a long finished report (type, checks, shipped, open, sections) for spatial and
+    card layouts. Same model as Hermes' session titles. None when unavailable or unusable."""
+    text = str(report or "").strip()
+    if len(text) < 400:
+        return None
+    try:
+        from agent.auxiliary_client import call_llm  # type: ignore
+    except Exception:
+        return None
+    try:
+        with _profile_scope():
+            response = call_llm(task="title_generation",
+                                messages=[{"role": "system", "content": _SHAPE_PROMPT},
+                                          {"role": "user", "content": f"Request: {str(request or '')[:400]}\n\nReport:\n{text[:9000]}"}],
+                                max_tokens=2400, temperature=None, timeout=timeout,
+                                reasoning_config={"enabled": False})
+        raw = (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.info("speakeasy: result shape unavailable (%s)", type(exc).__name__)
+        return None
+    return clean_shape(raw)
 
 
 _PROGRESS_PROMPT = (

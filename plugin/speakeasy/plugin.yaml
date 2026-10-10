@@ -1,7 +1,7 @@
 name: speakeasy
 label: Speakeasy
 kind: platform
-version: 0.2.54
+version: 0.2.55
 description: >
   Talk to your Hermes agent by voice from a Mac. Adds a local `voice` platform
   (a small HTTPS/HTTP endpoint the Speakeasy Mac app connects to) and the
