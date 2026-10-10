@@ -129,6 +129,13 @@ public final class RoomListener {
     private var deviceWatcher: DefaultAudioDeviceWatcher?
     /// The Mac's default input when the mic was last opened.
     private var openedOnInput = AudioObjectID(0)
+    #else
+    /// Listening mode activated WebRTC's shared audio session (once per session, however many
+    /// times the mic reopens). Balanced by exactly one deactivation when it lets go, so the call
+    /// that follows starts from the same clean state as any fresh call.
+    private var activatedSession = false
+    /// Interruption (phone call, Siri, another app) and media-services-reset observers.
+    private var sessionObservers: [NSObjectProtocol] = []
     #endif
 
     /// `locale` is the language to transcribe (the user's, by default). `now` is the clock, so the
@@ -177,6 +184,7 @@ public final class RoomListener {
         let session = detachSession()
         feed = nil
         releaseMic()
+        releaseAudioSession()
         micWanted = false
         stopTicking()
         state = .off
@@ -201,6 +209,7 @@ public final class RoomListener {
         detachSession()?.cancel()
         feed = nil
         releaseMic()
+        releaseAudioSession()
         micWanted = false
         stopTicking()
         since = nil
@@ -245,6 +254,7 @@ public final class RoomListener {
         detachSession()?.cancel()
         feed = nil
         releaseMic()
+        releaseAudioSession()
         micWanted = false
         stopTicking()
         state = outcome
@@ -324,6 +334,7 @@ public final class RoomListener {
         detachSession()?.cancel()
         feed = nil
         releaseMic()
+        releaseAudioSession()
         micWanted = false
         stopTicking()
         transcript.commitVolatile()
@@ -362,10 +373,18 @@ public final class RoomListener {
         #if os(iOS) || os(visionOS)
         // Nothing may have opened the audio session yet. Open it the way the call will use it,
         // through WebRTC's own session object so the two never disagree (as `EarlyCapture` does).
+        // Activated once per session (a mic reopen only reapplies the configuration): every
+        // activation must be balanced by one deactivation, which `releaseAudioSession()` does.
         let audioSession = RTCAudioSession.sharedInstance()
         audioSession.lockForConfiguration()
         defer { audioSession.unlockForConfiguration() }
-        try audioSession.setConfiguration(RTCAudioSessionConfiguration.webRTC(), active: true)
+        if activatedSession {
+            try audioSession.setConfiguration(RTCAudioSessionConfiguration.webRTC())
+        } else {
+            try audioSession.setConfiguration(RTCAudioSessionConfiguration.webRTC(), active: true)
+            activatedSession = true
+            observeSessionInterruptions()
+        }
         #endif
         let engine = AVAudioEngine()
         try tap(engine, into: feed)
@@ -417,6 +436,53 @@ public final class RoomListener {
         engine.stop()
         engine.reset()
     }
+
+    /// iPhone, iPad, Vision Pro: give back the audio session listening mode activated (one
+    /// balanced deactivation) and stop watching for interruptions. After `releaseMic()`, so no
+    /// audio I/O is running. The call's own audio configures and activates it from scratch, as
+    /// for any fresh call; nothing is held for it (holding WebRTC's audio left calls deaf in
+    /// builds 18-25). No-op on the Mac.
+    private func releaseAudioSession() {
+        #if os(iOS) || os(visionOS)
+        for observer in sessionObservers { NotificationCenter.default.removeObserver(observer) }
+        sessionObservers = []
+        guard activatedSession else { return }
+        activatedSession = false
+        let audioSession = RTCAudioSession.sharedInstance()
+        audioSession.lockForConfiguration()
+        defer { audioSession.unlockForConfiguration() }
+        do {
+            try audioSession.setActive(false)
+        } catch {
+            log("couldn't deactivate the audio session (\(error.localizedDescription))")
+        }
+        #endif
+    }
+
+    #if os(iOS) || os(visionOS)
+    /// A phone or FaceTime call, Siri, an alarm or another app recording takes the audio: stop
+    /// listening for good (keeping what was heard) and say so. It never restarts by itself.
+    private func observeSessionInterruptions() {
+        let center = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
+        sessionObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: session,
+                                                   queue: .main) { [weak self] note in
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            guard raw == AVAudioSession.InterruptionType.began.rawValue else { return }
+            Task { @MainActor [weak self] in self?.interrupted("audio interrupted (call, Siri or another app)") }
+        })
+        sessionObservers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
+                                                   object: session, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.interrupted("the system reset its audio services") }
+        })
+    }
+
+    private func interrupted(_ why: String) {
+        guard state.isOn else { return }
+        log("\(why); stopped, words kept")
+        fail(.interrupted)
+    }
+    #endif
 
     /// A Bluetooth headset switching to call audio (or any device format change) stops the engine.
     /// Restart once the burst settles. The engine is never torn down inside the handler itself.

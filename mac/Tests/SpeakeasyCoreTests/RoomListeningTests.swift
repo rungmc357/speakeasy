@@ -194,6 +194,9 @@ final class RoomListeningTests: XCTestCase {
         XCTAssertFalse(transcriber.isOn)
         XCTAssertEqual(presentRoom(.failed(.micStopped), now: t0, heardWords: true).detail,
                        "Lost the microphone · turn it on again")
+        XCTAssertEqual(presentRoom(.failed(.interrupted), now: t0, heardWords: true).detail,
+                       "A call, Siri or another app took the microphone · turn it on again")
+        XCTAssertFalse(RoomListeningState.failed(.interrupted).isOn)
     }
 
     func testUnavailableGivesTheReason() {

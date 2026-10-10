@@ -60,11 +60,15 @@ public enum RoomFailure: Equatable, Sendable {
     case transcriberStopped
     /// The mic couldn't be reopened (after a device change, for example).
     case micStopped
+    /// iPhone, iPad, Vision Pro: the system took the audio (a phone or FaceTime call, Siri, an
+    /// alarm, another app recording). Listening doesn't restart by itself afterwards.
+    case interrupted
 
     public var message: String {
         switch self {
         case .transcriberStopped: return "Transcription kept stopping · turn it on again"
         case .micStopped: return "Lost the microphone · turn it on again"
+        case .interrupted: return "A call, Siri or another app took the microphone · turn it on again"
         }
     }
 }
@@ -88,12 +92,22 @@ public enum RoomUnavailability: Equatable, Sendable {
 
     public var message: String {
         switch self {
+        #if os(macOS)
         case .systemTooOld: return "Needs macOS 26 or later"
-        case .pluginTooOld: return "Your Hermes runs an older Speakeasy plugin: update it, then run hermes voice reload"
         case .noTranscriber: return "On-device transcription isn't available on this Mac"
+        case .micDenied: return "Allow Speakeasy to use the microphone in System Settings › Privacy & Security › Microphone"
+        #elseif os(visionOS)
+        case .systemTooOld: return "Needs visionOS 26 or later"
+        case .noTranscriber: return "On-device transcription isn't available on this Vision Pro"
+        case .micDenied: return "Allow Speakeasy to use the microphone in Settings › Apps › Speakeasy"
+        #else
+        case .systemTooOld: return "Needs iOS 26 or later"
+        case .noTranscriber: return "On-device transcription isn't available on this device"
+        case .micDenied: return "Allow Speakeasy to use the microphone in Settings › Apps › Speakeasy"
+        #endif
+        case .pluginTooOld: return "Your Hermes runs an older Speakeasy plugin: update it, then run hermes voice reload"
         case .languageNotSupported(let language): return "On-device transcription doesn't support \(language) yet"
         case .modelDownloadFailed: return "Couldn't download the speech model · check the connection and try again"
-        case .micDenied: return "Allow Speakeasy to use the microphone in System Settings › Privacy & Security › Microphone"
         case .noMicrophone: return "No microphone found"
         }
     }
@@ -247,8 +261,12 @@ public func presentRoom(_ state: RoomListeningState, now: Date, heardWords: Bool
         let elapsed = formatElapsed(now.timeIntervalSince(since))
         return make("Listening mode on", heardWords ? elapsed : "\(elapsed) · nothing heard yet", hint: notAnswering)
     case .notHearing:
-        return make("Listening mode can't hear anything", "No sound from the mic · check the input in Sound settings",
-                    hint: notAnswering, tone: .warning)
+        #if os(macOS)
+        let check = "No sound from the mic · check the input in Sound settings"
+        #else
+        let check = "No sound from the mic · check that no other app is using it"
+        #endif
+        return make("Listening mode can't hear anything", check, hint: notAnswering, tone: .warning)
     case .failed(let failure):
         return make("Listening mode stopped", failure.message, tone: .error)
     case .unavailable(let reason):
