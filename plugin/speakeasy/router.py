@@ -561,6 +561,59 @@ def working_status(request: str, timeout: float = TITLE_TIMEOUT_S) -> str | None
     return clean_status(raw)
 
 
+_PLAN_PROMPT = (
+    "You lay out the plan for a task a user just handed to their AI assistant, as the short steps a person "
+    "would see on a progress line. Give 3 to 5 steps in order, each 2 to 4 words, starting with a verb "
+    "(\"Compare flights\", \"Draft itinerary\", \"Check availability\"). The last step is the hand-back "
+    "to the user (\"Your review\", \"Confirm booking\"). Plain words, no numbering, no punctuation at the "
+    "end, nothing the request doesn't need. Reply with JSON only: {\"steps\": [\"...\"]}"
+)
+
+
+def clean_plan(raw: str | None) -> list[str] | None:
+    """Model output as 3-5 short steps, or None when it isn't usable."""
+    text = str(raw or "").strip()
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return None
+    try:
+        steps = json.loads(match.group(0)).get("steps")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(steps, list):
+        return None
+    out = []
+    for step in steps:
+        words = " ".join(str(step).split()).strip(" .;:-")
+        if words and len(words) <= 40 and len(words.split()) <= 6:
+            out.append(words[0].upper() + words[1:])
+    return out[:5] if len(out) >= 3 else None
+
+
+def plan_steps(request: str, timeout: float = TITLE_TIMEOUT_S) -> list[str] | None:
+    """The steps a handed-off task will go through, for the progress line. Same model as Hermes'
+    session titles (task ``title_generation``). None when unavailable or unusable."""
+    text = " ".join(str(request or "").split())
+    if not text:
+        return None
+    try:
+        from agent.auxiliary_client import call_llm  # type: ignore
+    except Exception:
+        return None
+    try:
+        with _profile_scope():
+            response = call_llm(task="title_generation",
+                                messages=[{"role": "system", "content": _PLAN_PROMPT},
+                                          {"role": "user", "content": text[:1200]}],
+                                max_tokens=120, temperature=None, timeout=timeout,
+                                reasoning_config={"enabled": False})
+        raw = (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.info("speakeasy: task plan unavailable (%s)", type(exc).__name__)
+        return None
+    return clean_plan(raw)
+
+
 _PROGRESS_PROMPT = (
     "You write one short spoken progress update for a voice assistant whose background agent is working on "
     "a task for the user. You get the user's request, the agent's recent steps (newest last) and updates "

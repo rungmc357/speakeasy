@@ -116,6 +116,8 @@ public struct WorkInfo: Equatable, Sendable {
     public var liveImage: LiveImage?
     /// Why a `failed` task failed (out of credits, rejected key, …); nil for any other status.
     public var failure: WorkFailure?
+    /// The steps the task will go through, for the progress line; empty until the api plans it.
+    public var plan: [String] = []
 
     public init(runID: String?, status: String, stale: Bool = false, updated: Date? = nil,
                 shortStatus: String? = nil, detail: String? = nil, updatedAt: Date? = nil,
@@ -171,6 +173,7 @@ public struct WorkInfo: Equatable, Sendable {
         title = nonEmpty(object["title"])
         summary = nonEmpty(object["summary"])
         emailDrafts = EmailDraft.list(json: object["email_drafts"])
+        plan = (object["plan"] as? [Any] ?? []).compactMap { $0 as? String }.filter { !$0.isEmpty }
         liveImage = LiveImage(json: object["live_image"])
         failure = status == "failed" ? WorkFailure(json: object["failure"]) : nil
         if let review = object["review"] as? [String: Any] {

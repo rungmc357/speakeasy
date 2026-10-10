@@ -789,6 +789,26 @@ def test_new_task_shows_what_it_was_handed_instead_of_a_bare_wait(server, servic
     assert task["detail"] == "Handed to Hermes: Write me a note summarizing the Portugal plans."
 
 
+def test_a_handed_off_task_gets_a_plan_for_its_progress_line(server, service, hermes):
+    service.rt.title_call = lambda request: "Plan Portugal trip"
+    service.rt.plan_call = lambda request: ["Compare flights", "Draft itinerary", "Your review"]
+    hermes.hold = True
+    _, worker = start_call(server, service)
+    worker.delegate("call_p", "plan me a long weekend in Portugal")
+    task = wait_for(lambda: [t for t in tasks(server) if t.get("plan")])[0]
+    assert task["plan"] == ["Compare flights", "Draft itinerary", "Your review"]
+
+
+def test_plan_output_is_validated():
+    from speakeasy import router
+    assert router.clean_plan('{"steps": ["compare flights", "Draft itinerary.", "Your review"]}') == [
+        "Compare flights", "Draft itinerary", "Your review"]
+    assert router.clean_plan('{"steps": ["Only one", "two"]}') is None   # too few to be a plan
+    assert router.clean_plan('{"steps": ["Search", "a step that rambles on for far too many words here", "Done", "Review"]}') == [
+        "Search", "Done", "Review"]
+    assert router.clean_plan("no json") is None
+
+
 def test_handoff_status_never_overrides_real_progress(service):
     store = service.store
     store.reserve_run("se_x", "vi_x", "item_x", 1)

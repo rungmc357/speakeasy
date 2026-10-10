@@ -74,6 +74,8 @@ class StateStore:
                 self._db.execute("ALTER TABLE runs ADD COLUMN timings TEXT")
             if "failure" not in columns:  # why a run failed: a failures.py kind, never provider text
                 self._db.execute("ALTER TABLE runs ADD COLUMN failure TEXT")
+            if "plan" not in columns:  # the steps a handed-off task will go through (JSON list)
+                self._db.execute("ALTER TABLE runs ADD COLUMN plan TEXT")
             # Finished tasks that never had a Hermes run id (quick answers, home control) could not be
             # cleared: "Clear done" and the x address tasks by run id. Give them their local id.
             settled = sorted(TERMINAL | {"rejected"})
@@ -186,6 +188,19 @@ class StateStore:
                 self._db.execute("UPDATE runs SET title=? WHERE idem_key=?", (title, key))
             if summary:
                 self._db.execute("UPDATE runs SET summary=? WHERE idem_key=?", (summary, key))
+
+    def set_plan(self, key: str, steps: list[str]) -> None:
+        with self._lock, self._db:
+            self._db.execute("UPDATE runs SET plan=? WHERE idem_key=?", (json.dumps(steps[:5]), key))
+
+    def plan(self, key: str) -> list[str]:
+        with self._lock:
+            row = self._db.execute("SELECT plan FROM runs WHERE idem_key=?", (key,)).fetchone()
+        try:
+            steps = json.loads(row[0]) if row and row[0] else []
+        except ValueError:
+            return []
+        return [str(s) for s in steps][:5] if isinstance(steps, list) else []
 
     def dismiss(self, run_ids: list[str]) -> list[str]:
         """Hide finished tasks from the task list. Running tasks are never dismissed."""
@@ -639,6 +654,7 @@ class StateStore:
             "status_source": source, "result": public_result(result),
             "title": title, "summary": summary, "dismissed": bool(dismissed),
             "email_drafts": self.drafts_for(key),
+            "plan": self.plan(key),
         }
         why = public_failure(failure, self.hermes_home) if status == "failed" else None
         if why:

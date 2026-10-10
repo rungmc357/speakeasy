@@ -2,6 +2,10 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Plugin 0.2.54 — Tasks come with a plan
+
+- **Every task you hand off gets a short plan.** When a task goes to Hermes, it's laid out as three to five steps ("Compare flights", "Draft itinerary", "Your review"). Steps are checked off as Hermes reports progress. Apps that show a task's progress line use it; nothing changes in how tasks run.
+
 ## Mac 0.2.18 — Listening mode (beta), and calls that actually hear you
 
 - **Listening mode (beta).** Turn it on in Settings › General › Beta. During a call, tap the ear button with the call's controls (or use the menu bar, or a shortcut you set in Settings › Shortcuts): the call pauses and Speakeasy transcribes the room on your Mac without answering. Nothing leaves the Mac and nothing is billed while it listens. Turn it off (or press Resume) and the call picks up again knowing the last 30 minutes of what was said: ask about it ("what did Sam say the deadline was?"), ask for something ("email Dana what we agreed"), or say nothing and it stays quiet, keeping what it heard until you ask. It stops when the call ends, after 2 hours, or when the Mac sleeps; Discard drops what it heard. Needs macOS 26 and the Hermes plugin 0.2.51. When the room text hits its size limit, the oldest lines go first and the newest stay.

@@ -133,6 +133,7 @@ class Runtime:
     # The spoken request as clean written text (None = the title model; returns None when unavailable).
     polish_call: Callable[[str], str | None] | None = None
     status_call: Callable[[str], str | None] | None = None
+    plan_call: Callable[[str], list[str] | None] | None = None
     progress_call: Callable[..., str | None] | None = None
     # Instant home control (home_control.HomeControl); None or turned off = every request goes to Hermes.
     home: Any = None
@@ -516,12 +517,17 @@ class SidebandWorker:
         titler = self.rt.title_call or router.smart_title
         polisher = self.rt.polish_call or router.polish_request
         statuser = self.rt.status_call or router.working_status
+        planner = self.rt.plan_call or router.plan_steps
 
         async def upgrade() -> None:
-            title, polished, status = await asyncio.gather(asyncio.to_thread(titler, request),
-                                                           asyncio.to_thread(polisher, request),
-                                                           asyncio.to_thread(statuser, request))
+            title, polished, status, plan = await asyncio.gather(asyncio.to_thread(titler, request),
+                                                                 asyncio.to_thread(polisher, request),
+                                                                 asyncio.to_thread(statuser, request),
+                                                                 asyncio.to_thread(planner, request))
             changed = False
+            if plan:
+                self.store.set_plan(idem, plan)
+                changed = True
             if status:
                 handed = polished or request
                 changed = self.store.handoff_status(
