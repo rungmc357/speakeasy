@@ -13,6 +13,10 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **iPhone: no more "Fixing the mic…" loop at the start of a call.** The mic check judged the mic dead 2.5 seconds after the call took it over from the talk-while-connecting listener, before the phone's call audio (and AirPods' call mode) had started, then reconnected twice. A phone now gets 7 seconds for the first sound, the listener fully lets go of the mic, and a repair reconnects without the listener. Repairs log what the check saw.
 - No more "didn't get that" while a task is clearly still working. It showed 45 seconds after any follow-up or status question that didn't start a new task.
 
+## Plugin 0.2.52 — Talk to what you're facing (Vision Pro)
+
+- **The Vision Pro room view can tell Speakeasy which task you're facing.** Say something without naming a task ("make it lighter") and it goes to the task in front of you. "New thing" or "something else" still starts fresh. The voice is told what you're looking at, so "what is this?" gets answered right away.
+
 ## Plugin 0.2.51 — Listening mode
 
 - **A call picks up after listening mode knowing what was said in the room.** The room transcript (sent with the resume) reaches the voice as background (never as instructions), and any task from that call gets it too, except in posts to a chat thread. Listening again later in the same call adds to it. Questions about the room are answered by the voice right away; a request that sounds like work still goes to Hermes. If you say nothing, the voice stays quiet and keeps the room as context until you ask it something; it never offers things up on its own.

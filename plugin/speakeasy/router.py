@@ -39,6 +39,12 @@ TITLE_TIMEOUT_S = 15.0
 _EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="speakeasy-router")
 NEW = "new"
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+# "New thing", "something else", "separately": not about whatever the user is facing.
+_WANTS_NEW = re.compile(r"(?i)\b(?:new (?:thing|task|one|idea)|something (?:else|new)|separate(?:ly)?|start (?:a )?(?:fresh|new)|another thing)\b")
+
+
+def wants_new(request: str) -> bool:
+    return bool(_WANTS_NEW.search(request or ""))
 
 _FOLLOW_UP_CUE = re.compile(
     r"(?i)^(?:and |also |oh,? |actually,? |wait,? |no,? |okay,? |ok,? )*(?:"

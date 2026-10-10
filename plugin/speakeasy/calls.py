@@ -261,6 +261,9 @@ class Interaction:
     interaction_id: str
     live_session_id: str
     talking_only: bool = False  # "just talk to me": hold work until they ask for some
+    # Vision Pro: the task the user is facing or holding, and what part of it ("day two of the draft").
+    focus_task_id: str | None = None
+    focus_detail: str = ""
     status: str = "connecting"
     revision: int = 0
     finalization: str = "open"
@@ -735,6 +738,25 @@ class SidebandWorker:
         await self.follow_up(delegation_id, 0, f"User: {text}", router.Part("follow_up", text, task_id))
         return delegation_id
 
+    def focus(self) -> tuple[str | None, str]:
+        """The task the user is facing in the headset, if it's one of this call's open tasks."""
+        with self.interaction.lock:
+            task_id, detail = self.interaction.focus_task_id, self.interaction.focus_detail
+        if not task_id or not any(t.task_id == task_id for t in self.open_tasks()):
+            return None, ""
+        return task_id, detail
+
+    async def focus_changed(self) -> None:
+        """Tell the voice what the user is looking at, so "what is this?" is answered on the spot."""
+        task_id, detail = self.focus()
+        if not self.call_connected():
+            return
+        if task_id is None:
+            await self.append("session.thinking.append", None, P.focus_cleared_note(self.names))
+            return
+        name = next((t.request for t in self.open_tasks() if t.task_id == task_id), "")
+        await self.append("session.thinking.append", None, P.focus_note(self.names, name, detail))
+
     def in_room_call(self) -> bool:
         """This call was started by turning listening mode off and still has the room text."""
         with self.interaction.lock:
@@ -1080,6 +1102,14 @@ class SidebandWorker:
             last_request = await self.settle(last_request)
         if not marked and await self.quick_answer(delegation_id, revision, last_request):
             return
+        if not marked:
+            focused, detail = self.focus()
+            if focused and not router.wants_new(last_request):
+                # Facing or holding a task in the headset: unnamed requests go to that task.
+                marked = focused
+                if detail:
+                    last_request = f"{last_request}\n\n({self.names.user} is looking at: {detail})"
+                logger.info("speakeasy: routed by focus")
         candidates = await self.conversation_candidates(last_request)
         now = time.time()
         chats = [router.Chat(f"c{i + 1}", c.conv.where, c.snippets, c.voice_request,

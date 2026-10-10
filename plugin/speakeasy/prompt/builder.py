@@ -745,6 +745,17 @@ def pictures_note(count: int) -> str:
 STOPPED_SPOKEN = "I stopped that task. I'm still here."
 FAILED_SPOKEN = "I couldn't finish that one; the app shows what went wrong."
 NO_TRANSCRIPT_SPOKEN = "I did not receive enough transcript to act. Please repeat the request."
+def focus_note(names: "Names", task: str, detail: str) -> str:
+    where = f" Specifically: {detail}." if detail else ""
+    return (f"Background, not a request: {names.user} is now looking at the task \"{task[:160]}\".{where} "
+            "\"This\", \"here\" and \"it\" mean that task. Answer questions about it from what you know; "
+            "don't say this note out loud.")
+
+
+def focus_cleared_note(names: "Names") -> str:
+    return f"Background, not a request: {names.user} isn't looking at any one task now. Don't say this out loud."
+
+
 def talk_note(names: "Names") -> str:
     return (f"Nothing was started: {names.user} is thinking out loud or asking for your take. Answer it yourself now, "
             "in conversation: a real opinion in a few natural sentences, building on what they said. Don't say you're "

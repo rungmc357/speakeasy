@@ -194,6 +194,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         let before = model.state
         let after = reduce(before, event, now: Date())
         model.state = after
+        if after.interactionID != nil, after.interactionID != before.interactionID { postFocus() }
         if after.connection != .connecting, connectWatchdog != nil { connectWatchdog?.cancel(); connectWatchdog = nil }
         applySideEffects(from: before, to: after)
         watchMic(event, from: before, to: after)
@@ -337,6 +338,24 @@ public final class NativeVoiceClient: VoiceCallClient {
         parts.append(NativeCallEngine.sharedAudioSummary())
         #endif
         return parts.joined(separator: ", ")
+    }
+
+    /// Vision Pro: the task you're facing or holding (nil = none), and which part of it. Unnamed
+    /// requests go to that task, and the voice is told what you're looking at.
+    private var focusSent: (task: String?, detail: String)?
+    private var focusPosted: (interaction: String, task: String?, detail: String)?
+
+    public func setFocus(taskID: String?, detail: String = "") {
+        focusSent = (taskID, String(detail.prefix(200)))
+        postFocus()
+    }
+
+    private func postFocus() {
+        guard let focus = focusSent, let api, let id = model.state.interactionID else { return }
+        if let p = focusPosted, p.interaction == id, p.task == focus.task, p.detail == focus.detail { return }
+        focusPosted = (id, focus.task, focus.detail)
+        let body: [String: Any] = ["task_id": focus.task ?? NSNull(), "detail": focus.detail]
+        Task { _ = try? await api.post("/voice/interactions/\(id)/focus", body) }
     }
 
     private func reportMic(_ note: String) {

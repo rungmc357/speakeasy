@@ -596,6 +596,25 @@ class VoiceService:
             raise ServiceError(404, "that task isn't in this call")
         return {"interaction_id": interaction_id, "task_id": task_id, "sent": True}
 
+    def focus(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Vision Pro: the task the user is facing or holding (or none). Unnamed requests go there."""
+        if not isinstance(body, dict) or not set(body) <= {"task_id", "detail"} or "task_id" not in body:
+            raise ServiceError(400, "body must contain task_id and optionally detail")
+        task_id, detail = body["task_id"], body.get("detail") or ""
+        if task_id is not None and (not isinstance(task_id, str) or not ID_RE.fullmatch(task_id)):
+            raise ServiceError(400, "task_id must be a task id or null")
+        if not isinstance(detail, str) or len(detail) > 200:
+            raise ServiceError(400, "detail must be a short string")
+        interaction = self.interaction(interaction_id)
+        detail = re.sub(r"[\x00-\x1f\x7f]", " ", detail).strip()
+        with interaction.lock:
+            changed = (interaction.focus_task_id, interaction.focus_detail) != (task_id, detail)
+            interaction.focus_task_id, interaction.focus_detail = task_id, detail
+        worker = interaction.worker
+        if changed and worker is not None and worker.loop is not None and not worker.loop.is_closed():
+            asyncio.run_coroutine_threadsafe(worker.focus_changed(), worker.loop)
+        return {"interaction_id": interaction_id, "task_id": task_id}
+
     def mic_check(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """The app found the call's mic wasn't getting through and reopened the connection.
         Logged (no audio, no words) so dead-mic calls show up in the logs with a reason."""
@@ -989,6 +1008,7 @@ class VoiceService:
             # also with resume_from (listening mode during a call pauses it, then resumes it with "room").
             "room_listening": True,
             "room_on_resume": True,
+            "focus": True,
             "version": __version__,
         }
 
