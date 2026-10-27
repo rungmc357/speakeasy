@@ -19,6 +19,9 @@ from typing import Any
 DEFAULT_PORT = 8795
 DEFAULT_HERMES_API_PORT = 8642
 OPENAI_KEY_NAME = "SPEAKEASY_OPENAI_API_KEY"
+XAI_KEY_NAME = "XAI_API_KEY"  # fallback for Grok voice when Hermes holds no xAI sign-in
+GROK_BETA_OFF = ("Grok voice is a beta and it's off. Turn it on first: "
+                 "`hermes voice config set beta.grok_voice true`")
 
 DEFAULTS: dict[str, Any] = {
     "assistant_name": "Hermes",
@@ -56,8 +59,11 @@ DEFAULTS: dict[str, Any] = {
     "server": {"advertised_url": "", "tailscale_name": ""},
     # Set by POST /voice/onboarding (or `hermes voice config set`) when the user confirmed them.
     "onboarding": {"names_set": False, "delivery_set": False, "home_offered": False},
+    # Beta features, all off unless turned on. grok_voice: voice.provider may be "grok" (xAI realtime
+    # voice through the plugin's audio relay).
+    "beta": {"grok_voice": False},
 }
-DEFAULT_VOICES = {"codex": "cove", "openai": "marin"}
+DEFAULT_VOICES = {"codex": "cove", "openai": "marin", "grok": "Ara"}
 # Voices each provider accepts; they do not overlap (the ChatGPT-sign-in voice model rejects API
 # voice names). Keep in sync with mac/Sources/SpeakeasyCore/VoiceCatalog.swift.
 PROVIDER_VOICES = {
@@ -67,14 +73,17 @@ PROVIDER_VOICES = {
               "bubbie", "aube", "rivage", "haetsal", "hanul", "himari", "miko", "rindo", "sonna",
               "leher", "neer", "rio", "tinta", "viola"),
     "openai": ("alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"),
+    # xAI's built-in voices (names are case-insensitive here; sent capitalized).
+    "grok": ("Ara", "Rex", "Sal", "Eve", "Leo"),
 }
+PROVIDERS = ("codex", "openai", "grok")
 
 # Hermes `hermes send` target: platform, platform:chat_id, platform:chat_id:thread_id, platform:#name.
 DELIVERY_TARGET_RE = re.compile(r"^[a-z][a-z0-9_-]{1,31}(?::(?:#[A-Za-z0-9_.-]{1,80}|[A-Za-z0-9_@+.=-]{1,128})(?::[A-Za-z0-9_.-]{1,64})?)?$")
 MAX_CHANNELS = 8
 CHANNEL_LABEL_RE = re.compile(r"^#?[^\x00-\x1f{}<>`#]{1,40}$")
 NAME_RE = re.compile(r"^[^\x00-\x1f{}<>`]{0,40}$")
-VOICE_RE = re.compile(r"^[a-z0-9_-]{0,32}$")
+VOICE_RE = re.compile(r"^[A-Za-z0-9_-]{0,32}$")
 PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]{0,64}$")
 
 
@@ -111,8 +120,8 @@ def validate(settings: dict[str, Any]) -> dict[str, Any]:
         raise SettingsError("machine_description must be 1-80 characters")
     s["machine_description"] = s["machine_description"].strip()
     voice = s["voice"]
-    if voice.get("provider") not in {"codex", "openai"}:
-        raise SettingsError("voice.provider must be codex or openai")
+    if voice.get("provider") not in PROVIDERS:
+        raise SettingsError("voice.provider must be codex, openai or grok")
     if not isinstance(voice.get("voice"), str) or not VOICE_RE.fullmatch(voice["voice"]):
         raise SettingsError("voice.voice must be a voice name")
     if not isinstance(voice.get("codex_path"), str) or len(voice["codex_path"]) > 512:
@@ -136,7 +145,7 @@ def validate(settings: dict[str, Any]) -> dict[str, Any]:
         raise SettingsError("fast_routing.jev must be one of: venice, openrouter, typesafe (or empty for off)")
     if not isinstance(fast.get("home_place", ""), str) or len(fast.get("home_place", "")) > 80:
         raise SettingsError("fast_routing.home_place must be a city name")
-    for group, keys in (("continuity", ("enabled",)), ("speech", ("progress",)), ("brief", ("auto_refresh", "include_recent_voice")),
+    for group, keys in (("beta", ("grok_voice",)), ("continuity", ("enabled",)), ("speech", ("progress",)), ("brief", ("auto_refresh", "include_recent_voice")),
                         ("onboarding", ("names_set", "delivery_set", "home_offered"))):
         for key in keys:
             if not isinstance(s[group].get(key), bool):
@@ -277,6 +286,15 @@ class Settings:
 
     def save(self, settings: dict[str, Any]) -> dict[str, Any]:
         clean = validate(settings)
+        if clean["voice"]["provider"] == "grok" and not grok_beta_on(clean):
+            # Refused when this save would choose Grok, or turn the beta off under it. A hand-edited
+            # file that already has both still loads and saves (calls refuse until the beta is on).
+            old = self.get()
+            if old["voice"]["provider"] != "grok":
+                raise SettingsError(GROK_BETA_OFF)
+            if grok_beta_on(old):
+                raise SettingsError("voice.provider is grok: switch it to codex or openai before "
+                                    "turning the Grok voice beta off")
         with self._lock:
             _write_private(self.path, json.dumps(clean, indent=2) + "\n")
         return clean
@@ -489,9 +507,16 @@ def codex_too_old(binary: Path | None, version_fn: Any = None) -> bool:
     return version is not None and version < MIN_CODEX_VERSION
 
 
+def grok_beta_on(settings: dict[str, Any]) -> bool:
+    return bool((settings.get("beta") or {}).get("grok_voice"))
+
+
 def default_voice(settings: dict[str, Any]) -> str:
     """The saved voice when the provider accepts it; otherwise that provider's default, so switching
     providers never leaves a call unable to start."""
     voice = settings["voice"]
     chosen, provider = voice.get("voice"), voice["provider"]
+    if provider == "grok":  # xAI names are capitalized; accept any case
+        return next((v for v in PROVIDER_VOICES["grok"] if v.lower() == str(chosen or "").lower()),
+                    DEFAULT_VOICES["grok"])
     return chosen if chosen in PROVIDER_VOICES[provider] else DEFAULT_VOICES[provider]

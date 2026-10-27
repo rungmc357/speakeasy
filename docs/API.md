@@ -157,6 +157,43 @@ call, and is dropped when the call ends or 15 minutes after it was paused.
 different SDP or room, 502 the voice provider could not start (see `GET /voice/status` →
 `codex_message`).
 
+**Grok voice (beta).** With `voice.provider` `grok` (allowed only while the `beta.grok_voice`
+setting is on) the body needs no `sdp` (one sent is ignored) and the response's transport is a
+relay instead of WebRTC:
+
+```json
+{
+  "interaction_id": "vi_2436cf97524f58de64775b5a9ecc3e58",
+  "session": {"id": "grok_2436cf97524f58de64775b5a9ecc3e58"},
+  "transport": {"type": "relay", "path": "/voice/interactions/vi_2436cf97524f58de64775b5a9ecc3e58/audio",
+                "format": {"encoding": "pcm16le", "rate": 24000, "channels": 1}},
+  "voice_provider": "grok"
+}
+```
+
+The plugin holds the one xAI realtime socket (credential: the xAI sign-in Hermes holds, else
+`XAI_API_KEY` in the profile `.env`; never returned). 409 when the beta is off or there is no xAI
+credential (the message says how to sign in).
+
+## GET /voice/interactions/{id}/audio (WebSocket, Grok calls)
+
+The app's audio relay for a call whose transport is `relay`. A WebSocket upgrade (RFC 6455, no
+extensions) on the same port, with the device bearer token like every route. 404 unknown call, 409
+a call without a relay or already ended, 426 not an upgrade. One client per call: a second
+connection replaces the first (the first gets `closed` with reason `replaced`).
+
+- App → plugin, binary: raw PCM16LE 24 kHz mono mic audio, 20–100 ms chunks.
+- App → plugin, text JSON: `{"type":"mute","muted":true|false}` (audio is dropped while muted),
+  `{"type":"end"}` (ends the call; same as `POST /end`).
+- Plugin → app, binary: PCM16LE 24 kHz mono assistant audio, to play in order.
+- Plugin → app, text JSON: `{"type":"speech_started"}` (the user barged in: drop unplayed audio;
+  the plugin also cancels the reply), `{"type":"response_done"}` (a reply finished),
+  `{"type":"closed","reason":"..."}` (`ended`, `paused`, `replaced`, `relay lost`,
+  `max call length`, `voice connection lost`) just before the plugin closes the socket.
+
+The plugin pings every 5 s. The call ends when the app sends `end`, when no relay is connected for
+more than 10 s (20 s for the first connection), or at `voice.max_call_minutes`.
+
 ## POST /voice/interactions/{id}/early-request
 
 Words the app transcribed on the device while the call was connecting. Body `{"text": "..."}`
@@ -862,7 +899,7 @@ then marked edited, so auto-refresh leaves it alone). Calls are kept locally in 
 
 ## GET /voice/status
 
-Readiness. `voice_ready` is true when the chosen provider can start a call. When Codex is missing or signed out, `codex_message` says what to do. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only). `room_listening` (plugin 0.2.51+) is true when the server takes listening mode's `room` with `POST /voice/sessions`; missing on older plugins, which reject unknown session fields. `room_on_resume` is true when it also takes `room` with `resume_from`, which listening mode during a call needs (the app checks it before pausing the call for listening).
+Readiness. `voice_ready` is true when the chosen provider can start a call. When Codex is missing or signed out, `codex_message` says what to do. Grok voice (beta): `grok_beta` (the setting), `grok_signed_in` (Hermes holds an xAI sign-in), `grok_api_key_set` (`XAI_API_KEY` fallback), `grok_ready` and `grok_message` (what to do, e.g. run `hermes auth add xai-oauth`); with provider `grok`, onboarding's `codex_message` carries the Grok message. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only). `room_listening` (plugin 0.2.51+) is true when the server takes listening mode's `room` with `POST /voice/sessions`; missing on older plugins, which reject unknown session fields. `room_on_resume` is true when it also takes `room` with `resume_from`, which listening mode during a call needs (the app checks it before pausing the call for listening).
 `attachments` says whether runs can carry images (`images`) and how Hermes reads them (`vision`:
 `native` the main model sees them, `described` an auxiliary vision model describes them, `none`, or
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse

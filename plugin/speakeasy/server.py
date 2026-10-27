@@ -192,6 +192,21 @@ class Handler(BaseHTTPRequestHandler):
     def _auth(self) -> str:
         return self.service.authenticate(self.headers)
 
+    def _audio_relay(self, interaction_id: str) -> None:
+        """The app's audio relay for a call whose voice socket the plugin owns (Grok): a WebSocket
+        upgrade on this handler's own connection, held for the life of the relay."""
+        from .relay import RelaySocket, accept_value, upgrade_problem
+        worker = self.service.relay_worker(interaction_id)  # 404 / 409 before any upgrade
+        problem = upgrade_problem(self.headers)
+        if problem:
+            raise ServiceError(426 if "upgrade" in problem else 400, problem)
+        # Written by hand: this handler speaks HTTP/1.0, and WebSocket clients require a 1.1 status line.
+        self.wfile.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                          f"Sec-WebSocket-Accept: {accept_value(self.headers['Sec-WebSocket-Key'])}\r\n\r\n").encode())
+        self.wfile.flush()
+        self.close_connection = True
+        worker.serve_client(RelaySocket(self.connection, self.rfile))
+
     def _sse(self, seq: int, kind: str, payload: Any) -> None:
         data = json.dumps(payload, separators=(",", ":"))
         self.wfile.write(f"id: {seq}\nevent: {kind}\ndata: {data}\n\n".encode())
@@ -279,6 +294,10 @@ class Handler(BaseHTTPRequestHandler):
             events = re.fullmatch(rf"/voice/interactions/{_ID}/events", path)
             if events:
                 self._events(self.service.interaction(events.group(1)))
+                return
+            audio = re.fullmatch(rf"/voice/interactions/{_ID}/audio", path)
+            if audio:
+                self._audio_relay(audio.group(1))
                 return
             match = re.fullmatch(rf"/voice/interactions/{_ID}", path)
             work = re.fullmatch(rf"/voice/work/{_ID}", path)
