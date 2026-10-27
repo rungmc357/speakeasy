@@ -336,8 +336,15 @@ private struct VoiceSettings: View {
                                                              v.voice = VoiceCatalog.compatible(v.voice, provider: p)
                                                              draft.voice = v })) {
                 // Grok Voice is a beta: listed only when the server has its beta on and Grok available.
-                ForEach(VoiceProvider.offered(status: app.status, current: draft.resolvedProvider)) { Text($0.label).tag($0) }
+                ForEach(VoiceProvider.offered(status: app.status, current: draft.resolvedProvider,
+                                               betaOn: draft.beta?.grokVoice)) { Text($0.label).tag($0) }
             }
+            Toggle("Grok Voice (beta)", isOn: Binding(get: { draft.beta?.grokVoice ?? false },
+                                                     set: { v in var b = draft.beta ?? .init(); b.grokVoice = v; draft.beta = b
+                                                         if !v, draft.resolvedProvider == .grok {
+                                                             var voice = draft.voice ?? .init(); voice.provider = VoiceProvider.codex.rawValue
+                                                             voice.voice = VoiceCatalog.compatible(voice.voice, provider: .codex); draft.voice = voice
+                                                         } }))
             providerStatus
             VoiceChooser(provider: draft.resolvedProvider,
                          selection: Binding(get: { draft.voice?.voice ?? "" },
@@ -366,7 +373,7 @@ private struct VoiceSettings: View {
         case .grok:
             LabeledContent("Grok Voice via your X/SuperGrok sign-in") {
                 if let signed = app.status?.grokSignedIn {
-                    Text(signed ? "Signed in" : "Not signed in — sign in with X on the Hermes machine (hermes voice setup)")
+                    Text(signed ? "Signed in" : (app.status?.grokMessage ?? "Not signed in — run hermes auth add xai-oauth on the Hermes machine"))
                         .foregroundStyle(signed ? Color.secondary : Color.orange)
                 } else { Text("Unknown").foregroundStyle(.secondary) }
             }

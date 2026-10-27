@@ -19,9 +19,10 @@ public enum VoiceProvider: String, Codable, CaseIterable, Sendable, Identifiable
 
     /// The providers the picker offers. Grok is a beta: only when the server says its beta is on
     /// and Grok is available there. A saved choice stays listed so the picker never shows blank.
-    public static func offered(status: ServerStatus?, current: VoiceProvider? = nil) -> [VoiceProvider] {
+    public static func offered(status: ServerStatus?, current: VoiceProvider? = nil, betaOn: Bool? = nil) -> [VoiceProvider] {
         var out: [VoiceProvider] = [.codex, .openai]
-        if status?.grokOffered == true || current == .grok { out.append(.grok) }
+        let available = status?.grokAvailable == true && (betaOn ?? status?.beta) == true
+        if available || current == .grok { out.append(.grok) }
         return out
     }
 }
@@ -89,6 +90,13 @@ public struct ServerSettings: Codable, Equatable, Sendable {
             try c.encodeIfPresent(mode, forKey: .mode)
         }
     }
+    /// Plugin beta features (`beta`); all off unless turned on.
+    public struct Beta: Codable, Equatable, Sendable {
+        public var grokVoice: Bool?
+        enum CodingKeys: String, CodingKey { case grokVoice = "grok_voice" }
+        public init(grokVoice: Bool? = nil) { self.grokVoice = grokVoice }
+    }
+
     public struct Continuity: Codable, Equatable, Sendable {
         public var enabled: Bool?
         public init(enabled: Bool? = nil) { self.enabled = enabled }
@@ -120,11 +128,12 @@ public struct ServerSettings: Codable, Equatable, Sendable {
     public var instructionsExtra: String?
     public var brief: Brief?
     public var audioDuck: AudioDuck?
+    public var beta: Beta?
 
     enum CodingKeys: String, CodingKey {
         case assistantName = "assistant_name", userName = "user_name", voice, idlePauseMinutes = "idle_pause_minutes"
         case notifyTarget = "notify_target", delivery, continuity, speech, instructionsExtra = "instructions_extra", brief
-        case audioDuck = "audio_duck"
+        case audioDuck = "audio_duck", beta
     }
 
     public init(assistantName: String? = nil, userName: String? = nil, voice: Voice? = nil, idlePauseMinutes: Double? = nil,
@@ -149,6 +158,7 @@ public struct ServerSettings: Codable, Equatable, Sendable {
         instructionsExtra = try? c.decodeIfPresent(String.self, forKey: .instructionsExtra)
         brief = try? c.decodeIfPresent(Brief.self, forKey: .brief)
         audioDuck = try? c.decodeIfPresent(AudioDuck.self, forKey: .audioDuck)
+        beta = try? c.decodeIfPresent(Beta.self, forKey: .beta)
     }
 
     /// The effective delivery target (nil = off).
@@ -201,6 +211,7 @@ public struct ServerSettings: Codable, Equatable, Sendable {
             object["brief"] = b
         }
         if let enabled = audioDuck?.enabled { object["audio_duck"] = ["enabled": enabled] }
+        if let on = beta?.grokVoice { object["beta"] = ["grok_voice": on] }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
@@ -398,6 +409,11 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     public var grokAvailable: Bool?
     /// Signed in to X/SuperGrok on the Hermes machine.
     public var grokSignedIn: Bool?
+    /// Grok can take a call now (beta on and a sign-in or key), and the plugin's hint when it can't.
+    public var grokReady: Bool?
+    public var grokMessage: String?
+    /// The plugin's own beta flag (`grok_beta`); also folded into `beta` when decoding.
+    public var grokBeta: Bool?
 
     enum CodingKeys: String, CodingKey {
         case assistantName = "assistant_name", provider, codexSignedIn = "codex_signed_in"
@@ -410,6 +426,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         case attachments
         case roomListening = "room_listening", roomOnResume = "room_on_resume"
         case beta, grokAvailable = "grok_available", grokSignedIn = "grok_signed_in"
+        case grokBeta = "grok_beta", grokReady = "grok_ready", grokMessage = "grok_message"
     }
 
     public init(assistantName: String? = nil, provider: String? = nil, codexSignedIn: Bool? = nil, apiKeySet: Bool? = nil,
@@ -441,8 +458,11 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         attachments = try? c.decodeIfPresent(AttachmentSupport.self, forKey: .attachments)
         roomListening = try? c.decodeIfPresent(Bool.self, forKey: .roomListening)
         roomOnResume = try? c.decodeIfPresent(Bool.self, forKey: .roomOnResume)
-        beta = try? c.decodeIfPresent(Bool.self, forKey: .beta)
-        grokAvailable = try? c.decodeIfPresent(Bool.self, forKey: .grokAvailable)
+        grokBeta = try? c.decodeIfPresent(Bool.self, forKey: .grokBeta)
+        beta = grokBeta ?? (try? c.decodeIfPresent(Bool.self, forKey: .beta))
+        grokAvailable = (try? c.decodeIfPresent(Bool.self, forKey: .grokAvailable)) ?? (grokBeta != nil ? true : nil)
+        grokReady = try? c.decodeIfPresent(Bool.self, forKey: .grokReady)
+        grokMessage = try? c.decodeIfPresent(String.self, forKey: .grokMessage)
         grokSignedIn = try? c.decodeIfPresent(Bool.self, forKey: .grokSignedIn)
     }
 

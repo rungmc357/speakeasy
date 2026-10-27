@@ -174,4 +174,26 @@ final class RelayTransportTests: XCTestCase {
         XCTAssertEqual((object["voice"] as? [String: Any])?["provider"] as? String, "grok")
         XCTAssertEqual(try JSONDecoder().decode(ServerSettings.self, from: data).resolvedProvider, .grok)
     }
+
+    func testPluginGrokStatusFields() throws {
+        func status(_ json: String) throws -> ServerStatus { try JSONDecoder().decode(ServerStatus.self, from: Data(json.utf8)) }
+        let off = try status(#"{"provider":"codex","grok_beta":false,"grok_signed_in":true,"grok_ready":false}"#)
+        XCTAssertEqual(VoiceProvider.offered(status: off), [.codex, .openai])
+        XCTAssertEqual(VoiceProvider.offered(status: off, betaOn: true), [.codex, .openai, .grok])
+        let on = try status(#"{"grok_beta":true,"grok_signed_in":false,"grok_ready":false,"grok_message":"sign in"}"#)
+        XCTAssertEqual(VoiceProvider.offered(status: on), [.codex, .openai, .grok])
+        XCTAssertEqual(on.grokMessage, "sign in")
+        XCTAssertEqual(on.grokReady, false)
+        let old = try status(#"{"provider":"codex"}"#)
+        XCTAssertEqual(VoiceProvider.offered(status: old, betaOn: true), [.codex, .openai])
+    }
+
+    func testBetaSwitchIsSaved() throws {
+        var settings = ServerSettings()
+        settings.beta = .init(grokVoice: true)
+        let body = try JSONSerialization.jsonObject(with: settings.patchBody()) as? [String: Any]
+        XCTAssertEqual((body?["beta"] as? [String: Any])?["grok_voice"] as? Bool, true)
+        let back = try ServerSettings.decode(Data(#"{"beta":{"grok_voice":true}}"#.utf8))
+        XCTAssertEqual(back.beta?.grokVoice, true)
+    }
 }
