@@ -466,17 +466,32 @@ public struct InteractionSnapshot: Equatable, Sendable {
 
 /// Response of `POST /voice/sessions`. The live api returns
 /// `{"interaction_id", "transport": {"sdp"}}`; contract v2 documents a top-level `sdp`.
+/// Grok Voice answers `transport: {"type": "relay", "path", "format"}` with no SDP: the plugin
+/// relays the audio over a WebSocket and the prepared peer connection is dropped.
 public struct SessionAdmission: Equatable, Sendable {
     public var interactionID: String
+    /// The WebRTC answer; empty for a relay call.
     public var answerSDP: String
     public var voiceProvider: String
+    public var transport: SessionTransport
+    public var relay: RelayTransport? {
+        if case .relay(let relay) = transport { return relay }
+        return nil
+    }
     public init?(json: Any?) {
         guard let object = json as? [String: Any],
               let interactionID = object["interaction_id"] as? String else { return nil }
         let transport = object["transport"] as? [String: Any]
-        guard let sdp = (transport?["sdp"] as? String) ?? (object["sdp"] as? String), !sdp.isEmpty else { return nil }
+        if (transport?["type"] as? String) == "relay" {
+            guard let relay = RelayTransport(json: transport) else { return nil }
+            self.transport = .relay(relay)
+            self.answerSDP = ""
+        } else {
+            guard let sdp = (transport?["sdp"] as? String) ?? (object["sdp"] as? String), !sdp.isEmpty else { return nil }
+            self.transport = .webrtc(sdp: sdp)
+            self.answerSDP = sdp
+        }
         self.interactionID = interactionID
-        self.answerSDP = sdp
         self.voiceProvider = object["voice_provider"] as? String ?? "openai"
     }
 }
