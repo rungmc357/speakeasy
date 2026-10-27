@@ -10,7 +10,7 @@ enum RelaySmoke {
     static func run(url: String, seconds: Double) {
         guard let socketURL = URL(string: url) else { print("relay-smoke failed: bad url"); exit(2) }
         var request = URLRequest(url: socketURL)
-        request.setValue("Bearer relay-smoke", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer " + (ProcessInfo.processInfo.environment["SPEAKEASY_SMOKE_TOKEN"] ?? "relay-smoke"), forHTTPHeaderField: "Authorization")
         let engine = RelayCallEngine(options: .init(syntheticMic: true, playbackVolume: 0))
         var opened = false, started = false, closedCallback = false
         engine.onChannelOpen = { opened = true }
@@ -47,7 +47,8 @@ enum RelaySmoke {
                 ]
                 let data = try! JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
                 print("relay-smoke " + String(data: data, encoding: .utf8)!)
-                let ok = opened && started && s.framesSent > 0 && s.framesReceived > 0 && s.flushes > 0 && hungUp
+                let needFlush = ProcessInfo.processInfo.environment["SPEAKEASY_SMOKE_TOKEN"] == nil  // the echo server barges in; a real call may not
+                let ok = opened && started && s.framesSent > 0 && s.framesReceived > 0 && (!needFlush || s.flushes > 0) && hungUp
                 exit(ok ? 0 : 1)
             }
         }
