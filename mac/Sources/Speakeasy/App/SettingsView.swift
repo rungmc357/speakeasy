@@ -335,7 +335,8 @@ private struct VoiceSettings: View {
                                                              var v = draft.voice ?? .init(); v.provider = p.rawValue
                                                              v.voice = VoiceCatalog.compatible(v.voice, provider: p)
                                                              draft.voice = v })) {
-                ForEach(VoiceProvider.allCases) { Text($0.label).tag($0) }
+                // Grok Voice is a beta: listed only when the server has its beta on and Grok available.
+                ForEach(VoiceProvider.offered(status: app.status, current: draft.resolvedProvider)) { Text($0.label).tag($0) }
             }
             providerStatus
             VoiceChooser(provider: draft.resolvedProvider,
@@ -361,6 +362,15 @@ private struct VoiceSettings: View {
                 } else { Text("Unknown").foregroundStyle(.secondary) }
             }
             Text("The key stays on the Hermes machine. Speakeasy never asks for it or stores it on this Mac.")
+                .font(.caption).foregroundStyle(.secondary)
+        case .grok:
+            LabeledContent("Grok Voice via your X/SuperGrok sign-in") {
+                if let signed = app.status?.grokSignedIn {
+                    Text(signed ? "Signed in" : "Not signed in — sign in with X on the Hermes machine (hermes voice setup)")
+                        .foregroundStyle(signed ? Color.secondary : Color.orange)
+                } else { Text("Unknown").foregroundStyle(.secondary) }
+            }
+            Text("Beta. Audio goes through your Hermes server to xAI; the sign-in stays on the Hermes machine.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
