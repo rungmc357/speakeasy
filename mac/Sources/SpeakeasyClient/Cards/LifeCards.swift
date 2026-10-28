@@ -7,7 +7,7 @@ import SpeakeasyCore
 struct EventRow: View {
     let event: JSONValue
     var body: some View {
-        LinkedRow(url: event["url"].url) { row }
+        CardDetailRow(value: event, keys: ["title", "start", "end", "place"], showsLinkArrow: true) { row }
     }
 
     private var row: some View {
@@ -44,7 +44,7 @@ struct DayCard: View {
     var body: some View {
         CardBox {
             CardHeader(icon: "calendar", title: card["title"].string ?? card["date"].string ?? "Today")
-            let events = card["events"].array
+            let events = CardDetail.rows(card["events"].array, keys: ["title", "start", "end", "place"])
             if events.isEmpty {
                 Text("Nothing scheduled.").font(.system(size: 12)).foregroundStyle(.secondary)
             }
@@ -68,7 +68,7 @@ struct AgendaCard: View {
             ForEach(Array(card["days"].array.prefix(7).enumerated()), id: \.offset) { i, day in
                 if i > 0 { Divider().opacity(0.4) }
                 Text(day["date"].string ?? "").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                ForEach(Array(day["events"].array.prefix(6).enumerated()), id: \.offset) { _, e in EventRow(event: e) }
+                ForEach(Array(CardDetail.rows(day["events"].array, keys: ["title", "start", "end", "place"]).prefix(6).enumerated()), id: \.offset) { _, e in EventRow(event: e) }
             }
         }
     }
@@ -126,14 +126,15 @@ struct PlaceCard: View {
             } else if let lat = card["lat"].double, let lon = card["lon"].double {
                 MiniMap(lat: lat, lon: lon, title: card["name"].string ?? "")
             }
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(card["name"].string ?? "").font(.system(size: 13.5, weight: .semibold))
-                    Text([card["category"].string, card["price"].string, card["distance"].string].compactMap { $0 }
-                        .joined(separator: " · ")).font(.system(size: 11)).foregroundStyle(.secondary)
+            CardDetailRow(value: card.data, keys: ["name", "address", "rating", "hours_today", "distance", "phone"]) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(card["name"].string ?? "").font(.system(size: 13.5, weight: .semibold))
+                        Text([card["category"].string, card["price"].string, card["distance"].string].compactMap { $0 }
+                            .joined(separator: " · ")).font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
                 }
-                Spacer()
-                openable(card["url"].url ?? mapsURL(card["name"].string, lat: card["lat"].double, lon: card["lon"].double))
             }
             HStack(spacing: 10) {
                 if let rating = card["rating"].double {
@@ -158,23 +159,24 @@ struct PlacesCard: View {
     var body: some View {
         CardBox {
             CardHeader(icon: "mappin.and.ellipse", title: card["title"].string ?? "Places")
-            ForEach(Array(card["items"].array.prefix(6).enumerated()), id: \.offset) { i, p in
+            ForEach(Array(CardDetail.rows(card["items"].array, keys: ["name", "address", "rating", "distance"]).prefix(6).enumerated()), id: \.offset) { i, p in
                 if i > 0 { Divider().opacity(0.4) }
-                HStack(spacing: 10) {
-                    if let photo = p["photo_url"].url { CardImage(url: photo, size: 40, corner: 8, fill: true).frame(width: 40) }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(i + 1). \(p["name"].string ?? "")").font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        HStack(spacing: 6) {
-                            if let r = p["rating"].double { Text("★ " + String(format: "%.1f", r)).foregroundStyle(.orange) }
-                            if let c = p["category"].string { Text(c) }
-                            if let price = p["price"].string { Text(price) }
-                            if let d = p["distance"].string { Text(d) }
-                            if let open = p["open_now"].bool { Text(open ? "Open" : "Closed").foregroundStyle(open ? Color.green : Color.red) }
+                CardDetailRow(value: p, keys: ["name", "address", "rating", "category", "price", "hours_today", "distance"]) {
+                    HStack(spacing: 10) {
+                        if let photo = p["photo_url"].url { CardImage(url: photo, size: 40, corner: 8, fill: true).frame(width: 40) }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(i + 1). \(p["name"].string ?? "")").font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            HStack(spacing: 6) {
+                                if let r = p["rating"].double { Text("★ " + String(format: "%.1f", r)).foregroundStyle(.orange) }
+                                if let c = p["category"].string { Text(c) }
+                                if let price = p["price"].string { Text(price) }
+                                if let d = p["distance"].string { Text(d) }
+                                if let open = p["open_now"].bool { Text(open ? "Open" : "Closed").foregroundStyle(open ? Color.green : Color.red) }
+                            }
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
                         }
-                        .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
-                    openable(p["url"].url ?? mapsURL(p["name"].string, lat: p["lat"].double, lon: p["lon"].double))
                 }
             }
         }
@@ -308,18 +310,27 @@ struct PackageCard: View {
                 Text(card["status"].string ?? "").font(.system(size: 13, weight: .semibold))
                 if let eta = card["eta"].string { Text(eta).font(.system(size: 11)).foregroundStyle(.secondary) }
             }
-            let steps = card["steps"].array
-            ForEach(Array(steps.prefix(6).enumerated()), id: \.offset) { i, s in
-                HStack(alignment: .top, spacing: 8) {
-                    VStack(spacing: 0) {
-                        Circle().fill(s["done"].bool == false ? Color.primary.opacity(0.2) : Color.green).frame(width: 8, height: 8)
-                        if i < min(steps.count, 6) - 1 { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1.5, height: 16) }
+            let steps = CardDetail.rows(card["steps"].array, keys: ["text", "when"])
+            CardDisclosure(count: steps.count, spoken: steps.map { [$0["text"].string, $0["when"].string].compactMap { $0 }.joined(separator: ", ") }.joined(separator: "; ")) {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(steps.prefix(6).enumerated()), id: \.offset) { i, s in
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(spacing: 0) {
+                                Circle().fill(s["done"].bool == false ? Color.primary.opacity(0.2) : Color.green).frame(width: 8, height: 8)
+                                if i < min(steps.count, 6) - 1 { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1.5, height: 16) }
+                            }
+                            .padding(.top, 3)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(s["text"].string ?? "").font(.system(size: 11)).lineLimit(2)
+                                if let w = s["when"].string { Text(w).font(.system(size: 9.5)).foregroundStyle(.tertiary) }
+                            }
+                        }
                     }
-                    .padding(.top, 3)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(s["text"].string ?? "").font(.system(size: 11)).lineLimit(2)
-                        if let w = s["when"].string { Text(w).font(.system(size: 9.5)).foregroundStyle(.tertiary) }
-                    }
+                }
+            } detail: {
+                ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
+                    Text([step["text"].string, step["when"].string].compactMap { $0 }.joined(separator: " · "))
+                        .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -330,16 +341,18 @@ struct ContactCard: View {
     let card: ViewCard
     var body: some View {
         CardBox {
-            HStack(spacing: 12) {
-                if let photo = card["photo_url"].url {
-                    CardImage(url: photo, size: 44, corner: 22, fill: true).frame(width: 44)
-                } else {
-                    Text(initials(card["name"].string)).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
-                        .frame(width: 44, height: 44).background(Circle().fill(Color.gray.gradient))
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(card["name"].string ?? "").font(.system(size: 14, weight: .semibold))
-                    if let s = card["subtitle"].string { Text(s).font(.system(size: 11)).foregroundStyle(.secondary) }
+            CardDetailRow(value: card.data, keys: ["phone", "email", "birthday", "note"]) {
+                HStack(spacing: 12) {
+                    if let photo = card["photo_url"].url {
+                        CardImage(url: photo, size: 44, corner: 22, fill: true).frame(width: 44)
+                    } else {
+                        Text(initials(card["name"].string)).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                            .frame(width: 44, height: 44).background(Circle().fill(Color.gray.gradient))
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(card["name"].string ?? "").font(.system(size: 14, weight: .semibold))
+                        if let s = card["subtitle"].string { Text(s).font(.system(size: 11)).foregroundStyle(.secondary) }
+                    }
                 }
             }
             HStack(spacing: 8) {
@@ -418,18 +431,20 @@ struct InboxCard: View {
         let items: [JSONValue] = card.kind == "message" ? [card.data] : card["items"].array
         CardBox {
             CardHeader(icon: "tray.full.fill", title: card["title"].string ?? (card.kind == "message" ? (card["channel"].string ?? "Message") : "Inbox"))
-            ForEach(Array(items.prefix(6).enumerated()), id: \.offset) { i, m in
+            ForEach(Array(CardDetail.rows(items, keys: ["from", "when", "subject", "preview", "body"]).prefix(6).enumerated()), id: \.offset) { i, m in
                 if i > 0 { Divider().opacity(0.4) }
-                HStack(alignment: .top, spacing: 8) {
-                    Circle().fill(m["unread"].bool == true ? Color.accentColor : Color.clear).frame(width: 6, height: 6).padding(.top, 5)
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack {
-                            Text(m["from"].string ?? "").font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                            Spacer(minLength: 0)
-                            Text(m["when"].string ?? "").font(.system(size: 10)).foregroundStyle(.tertiary)
+                CardDetailRow(value: m, keys: ["from", "when", "subject", "preview", "body"]) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle().fill(m["unread"].bool == true ? Color.accentColor : Color.clear).frame(width: 6, height: 6).padding(.top, 5)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack {
+                                Text(m["from"].string ?? "").font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Text(m["when"].string ?? "").font(.system(size: 10)).foregroundStyle(.tertiary)
+                            }
+                            if let s = m["subject"].string { Text(s).font(.system(size: 11.5)).lineLimit(1) }
+                            if let p = m["preview"].string { Text(p).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2) }
                         }
-                        if let s = m["subject"].string { Text(s).font(.system(size: 11.5)).lineLimit(1) }
-                        if let p = m["preview"].string { Text(p).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2) }
                     }
                 }
             }

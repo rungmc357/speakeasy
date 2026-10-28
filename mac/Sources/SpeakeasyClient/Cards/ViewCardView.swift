@@ -7,6 +7,7 @@ import SpeakeasyCore
 /// list. Remote images (logos, art, photos) load through `CardImage`, https only.
 public struct ViewCardView: View {
     let card: ViewCard
+    @State private var expandedText: [String: String] = [:]
     public init(_ card: ViewCard) { self.card = card }
 
     public var body: some View {
@@ -54,8 +55,10 @@ public struct ViewCardView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(card.summary)
+        .onPreferenceChange(ExpandedCardText.self) { expandedText = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(([card.summary] + expandedText.keys.sorted().compactMap { expandedText[$0] }).joined(separator: ", "))
+        .onChange(of: card) { _, _ in expandedText = [:] }
     }
 }
 

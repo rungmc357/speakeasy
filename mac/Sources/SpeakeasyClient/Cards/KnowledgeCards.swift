@@ -9,27 +9,29 @@ struct MediaCard: View {
     var body: some View {
         let nowPlaying = card.kind == "now_playing"
         CardBox {
-            HStack(alignment: .top, spacing: 12) {
-                if let art = card["art_url"].url {
-                    CardImage(url: art, size: nowPlaying ? 64 : 92, corner: 8, fill: true).frame(width: 64)
-                } else {
-                    Image(systemName: nowPlaying ? "music.note" : "film").font(.system(size: 20)).foregroundStyle(.secondary)
-                        .frame(width: 44, height: 44).background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    if let label = card["kind_label"].string {
-                        Text(label.uppercased()).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.secondary)
+            CardDetailRow(value: card.data, keys: ["title", "subtitle", "artist", "album", "runtime", "rating"]) {
+                HStack(alignment: .top, spacing: 12) {
+                    if let art = card["art_url"].url {
+                        CardImage(url: art, size: nowPlaying ? 64 : 92, corner: 8, fill: true).frame(width: 64)
+                    } else {
+                        Image(systemName: nowPlaying ? "music.note" : "film").font(.system(size: 20)).foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44).background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
                     }
-                    Text(card["title"].string ?? "").font(.system(size: 13.5, weight: .semibold)).lineLimit(2)
-                    Text([card["subtitle"].string ?? card["artist"].string, card["album"].string, card["year"].string,
-                          card["runtime"].string].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
-                    if let rating = card["rating"].string { Label(rating, systemImage: "star.fill").font(.system(size: 10.5)).foregroundStyle(.orange) }
-                    let where_ = card["where"].strings
-                    if !where_.isEmpty { Text("On " + where_.joined(separator: ", ")).font(.system(size: 10.5)).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let label = card["kind_label"].string {
+                            Text(label.uppercased()).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.secondary)
+                        }
+                        Text(card["title"].string ?? "").font(.system(size: 13.5, weight: .semibold)).lineLimit(2)
+                        Text([card["subtitle"].string ?? card["artist"].string, card["album"].string, card["year"].string,
+                              card["runtime"].string].compactMap { $0 }.joined(separator: " · "))
+                            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                        if let rating = card["rating"].string { Label(rating, systemImage: "star.fill").font(.system(size: 10.5)).foregroundStyle(.orange) }
+                        let where_ = card["where"].strings
+                        if !where_.isEmpty { Text("On " + where_.joined(separator: ", ")).font(.system(size: 10.5)).foregroundStyle(.secondary) }
+                    }
+                    Spacer(minLength: 0)
+                    if card["url"].url != nil { Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
                 }
-                Spacer(minLength: 0)
-                openable(card["url"].url)
             }
             if nowPlaying, let duration = card["duration"].double, duration > 0 {
                 Bar(fraction: (card["position"].double ?? 0) / duration, tint: .primary.opacity(0.7), height: 4)
@@ -39,7 +41,9 @@ struct MediaCard: View {
                 .font(.system(size: 9.5).monospacedDigit()).foregroundStyle(.tertiary)
             }
             if let overview = card["overview"].string {
-                Text(overview).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4)
+                CardDisclosure(count: 1, spoken: overview) {
+                    Text(overview).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4)
+                } detail: { Text(overview).font(.system(size: 11)).textSelection(.enabled) }
             }
         }
     }
@@ -91,15 +95,17 @@ struct EntityCard: View {
     let card: ViewCard
     var body: some View {
         CardBox {
-            HStack(alignment: .top, spacing: 12) {
-                if let img = card["image_url"].url { CardImage(url: img, size: 64, corner: 8, fill: true).frame(width: 64) }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(card["title"].string ?? "").font(.system(size: 14, weight: .semibold))
-                    if let s = card["subtitle"].string { Text(s).font(.system(size: 11)).foregroundStyle(.secondary) }
-                    if let s = card["summary"].string { Text(s).font(.system(size: 11)).lineLimit(4).padding(.top, 2) }
+            CardDetailRow(value: card.data, keys: ["title", "subtitle", "summary"]) {
+                HStack(alignment: .top, spacing: 12) {
+                    if let img = card["image_url"].url { CardImage(url: img, size: 64, corner: 8, fill: true).frame(width: 64) }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(card["title"].string ?? "").font(.system(size: 14, weight: .semibold))
+                        if let s = card["subtitle"].string { Text(s).font(.system(size: 11)).foregroundStyle(.secondary) }
+                        if let s = card["summary"].string { Text(s).font(.system(size: 11)).lineLimit(4).padding(.top, 2) }
+                    }
+                    Spacer(minLength: 0)
+                    if card["url"].url != nil { Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary) }
                 }
-                Spacer(minLength: 0)
-                openable(card["url"].url)
             }
             KeyValueRows(rows: card["facts"].array)
         }
@@ -111,7 +117,7 @@ struct KeyValueRows: View {
     var body: some View {
         if !rows.isEmpty {
             VStack(spacing: 4) {
-                ForEach(Array(rows.prefix(10).enumerated()), id: \.offset) { _, r in
+                ForEach(Array(rows.filter { !CardDetail.fields($0, keys: ["label", "value"]).isEmpty }.enumerated()), id: \.offset) { _, r in
                     HStack(alignment: .firstTextBaseline) {
                         Text(r["label"].string ?? "").foregroundStyle(.secondary)
                         Spacer(minLength: 12)
@@ -200,9 +206,14 @@ struct StatsCard: View {
     let card: ViewCard
     var body: some View {
         CardBox {
-            HStack {
-                CardHeader(icon: card.kind == "nutrition" ? "fork.knife" : "chart.bar.fill", title: card["title"].string ?? "")
-                if let serving = card["serving"].string { Text(serving).font(.system(size: 10.5)).foregroundStyle(.tertiary) }
+            let allRows = CardDetail.rows(card[card.kind == "nutrition" ? "rows" : "items"].array, keys: ["label", "value", "delta"])
+            CardDisclosure(count: allRows.count, spoken: allRows.flatMap { CardDetail.fields($0, keys: ["label", "value", "delta"]) }.map(\.text).joined(separator: ", ")) {
+                HStack {
+                    CardHeader(icon: card.kind == "nutrition" ? "fork.knife" : "chart.bar.fill", title: card["title"].string ?? "")
+                    if let serving = card["serving"].string { Text(serving).font(.system(size: 10.5)).foregroundStyle(.tertiary) }
+                }
+            } detail: {
+                KeyValueRows(rows: allRows)
             }
             if let cal = card["calories"].double {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -213,7 +224,7 @@ struct StatsCard: View {
             if card.kind == "nutrition" {
                 KeyValueRows(rows: card["rows"].array)
             } else {
-                let items = card["items"].array
+                let items = CardDetail.rows(card["items"].array, keys: ["label", "value", "delta"])
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                     ForEach(Array(items.prefix(8).enumerated()), id: \.offset) { _, s in
                         VStack(alignment: .leading, spacing: 2) {
@@ -245,16 +256,24 @@ struct ComparisonCard: View {
                 GridRow {
                     Text("")
                     ForEach(columns, id: \.self) { c in
-                        HStack(spacing: 3) {
-                            Text(c).font(.system(size: 11.5, weight: .semibold)).lineLimit(2)
-                            if c == winner { Image(systemName: "checkmark.seal.fill").font(.system(size: 10)).foregroundStyle(.green) }
-                        }
+                        CardDisclosure(count: c == winner ? 1 : 0, spoken: "Winner: " + c) {
+                            HStack(spacing: 3) {
+                                Text(c).font(.system(size: 11.5, weight: .semibold)).lineLimit(2)
+                                if c == winner { Image(systemName: "checkmark.seal.fill").font(.system(size: 10)).foregroundStyle(.green) }
+                            }
+                        } detail: { Text("Winner: " + c).font(.system(size: 11.5)) }
                     }
                 }
                 Divider().gridCellUnsizedAxes(.horizontal)
                 ForEach(Array(card["rows"].array.prefix(10).enumerated()), id: \.offset) { _, row in
                     GridRow {
-                        Text(row["label"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
+                        CardDisclosure(count: row["values"].strings.count, spoken: zip(columns, row["values"].strings).map { "\($0): \($1)" }.joined(separator: ", ")) {
+                            Text(row["label"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
+                        } detail: {
+                            ForEach(Array(row["values"].strings.enumerated()), id: \.offset) { index, value in
+                                Text((index < columns.count ? columns[index] + ": " : "") + value).font(.system(size: 11))
+                            }
+                        }
                         ForEach(Array(row["values"].strings.prefix(columns.count).enumerated()), id: \.offset) { _, v in
                             Text(v).font(.system(size: 11.5)).lineLimit(3)
                         }
@@ -272,15 +291,17 @@ struct ListCard: View {
             CardHeader(icon: card.kind == "steps" ? "list.number" : "checklist", title: card["title"].string ?? "List")
             if card.kind == "steps" {
                 ForEach(Array(card["items"].strings.prefix(12).enumerated()), id: \.offset) { n, s in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("\(n + 1)").font(.system(size: 10, weight: .bold)).frame(width: 18, height: 18)
-                            .background(Circle().fill(Color.accentColor.opacity(0.18)))
-                        Text(s).font(.system(size: 12)).textSelection(.enabled)
-                    }
+                    CardDisclosure(count: 1, spoken: s) {
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("\(n + 1)").font(.system(size: 10, weight: .bold)).frame(width: 18, height: 18)
+                                .background(Circle().fill(Color.accentColor.opacity(0.18)))
+                            Text(s).font(.system(size: 12)).textSelection(.enabled)
+                        }
+                    } detail: { Text(s).font(.system(size: 12)).textSelection(.enabled) }
                 }
             } else {
-                ForEach(Array(card["items"].array.prefix(16).enumerated()), id: \.offset) { _, item in
-                    LinkedRow(url: item["url"].url) { HStack(alignment: .top, spacing: 8) {
+                ForEach(Array(CardDetail.rows(card["items"].array, keys: ["text", "detail"]).prefix(16).enumerated()), id: \.offset) { _, item in
+                    CardDetailRow(value: item, keys: ["text", "detail"], showsLinkArrow: true) { HStack(alignment: .top, spacing: 8) {
                         Image(systemName: item["done"].bool == true ? "checkmark.circle.fill" : "circle")
                             .font(.system(size: 13)).foregroundStyle(item["done"].bool == true ? Color.green : Color.secondary)
                         VStack(alignment: .leading, spacing: 0) {
@@ -298,16 +319,10 @@ struct ListCard: View {
 
 struct ChartCard: View {
     let card: ViewCard
-    struct Point: Identifiable { let id: Int; let series: String; let label: String; let value: Double }
+    @State private var selectedLabel: String?
     var body: some View {
-        let labels = card["labels"].strings
         let series = card["series"].array
-        let points: [Point] = series.enumerated().flatMap { s, entry in
-            entry["values"].doubles.enumerated().map { i, v in
-                Point(id: s * 1000 + i, series: entry["name"].string ?? "Series \(s + 1)",
-                      label: i < labels.count ? labels[i] : "\(i + 1)", value: v)
-            }
-        }
+        let points = card.chartPoints
         let style = card["style"].string ?? "bar"
         CardBox {
             HStack {
@@ -324,7 +339,28 @@ struct ChartCard: View {
                 }
             }
             .chartLegend(series.count > 1 ? .visible : .hidden)
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            if case .active(let location) = phase, let frame = proxy.plotFrame {
+                                selectedLabel = proxy.value(atX: location.x - geometry[frame].minX, as: String.self)
+                            }
+                        }
+                        .gesture(SpatialTapGesture().onEnded { tap in
+                            guard let frame = proxy.plotFrame else { return }
+                            selectedLabel = proxy.value(atX: tap.location.x - geometry[frame].minX, as: String.self)
+                        })
+                }
+            }
             .frame(height: 150)
+            if let selectedLabel {
+                let readout = points.filter { $0.label == selectedLabel }.map {
+                    "\($0.series): \(JSONValue.number($0.value).string ?? "")\(card["unit"].string.map { " " + $0 } ?? "")"
+                }.joined(separator: ", ")
+                Text(selectedLabel + " — " + readout).font(.system(size: 11)).textSelection(.enabled)
+                    .preference(key: ExpandedCardText.self, value: ["chart": selectedLabel + ", " + readout])
+            }
         }
     }
 }
@@ -354,7 +390,7 @@ struct NewsCard: View {
     var body: some View {
         CardBox {
             CardHeader(icon: "newspaper.fill", title: card["title"].string ?? "News")
-            ForEach(Array(card["items"].array.prefix(5).enumerated()), id: \.offset) { i, n in
+            ForEach(Array(CardDetail.rows(card["items"].array, keys: ["headline", "source", "when"]).prefix(5).enumerated()), id: \.offset) { i, n in
                 if i > 0 { Divider().opacity(0.4) }
                 let row = HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -366,7 +402,7 @@ struct NewsCard: View {
                     Spacer(minLength: 0)
                     if let img = n["image_url"].url { CardImage(url: img, size: 48, corner: 6, fill: true).frame(width: 64) }
                 }
-                if let url = n["url"].url { Link(destination: url) { row }.buttonStyle(.plain) } else { row }
+                CardDetailRow(value: n, keys: ["headline", "source", "when"]) { row }
             }
         }
     }

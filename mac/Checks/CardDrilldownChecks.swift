@@ -1,0 +1,27 @@
+// Executed against the real core sources by check-card-drilldown.py on CLT-only hosts.
+var expansion = CardExpansion()
+expansion.toggle("items/0")
+expansion.toggle("items/0/body")
+expansion.toggle("items/1")
+precondition(expansion.isExpanded("items/0/body"))
+expansion.toggle("items/0")
+precondition(!expansion.isExpanded("items/0/body"))
+precondition(expansion.isExpanded("items/1"))
+expansion.toggle("items/0")
+precondition(!expansion.isExpanded("items/0/body"))
+
+let missing = JSONValue(any: ["body": NSNull(), "preview": "  ", "from": "Ada", "url": "javascript:alert(1)"])
+precondition(CardDetail.fields(missing, keys: ["body", "preview", "from", "url"]).map(\.text) == ["Ada"])
+precondition(CardDetail.fields(.null, keys: ["body"]).isEmpty)
+for unsafe in ["http://example.com", "file:///etc/passwd", "javascript:alert(1)", "https://", "https://localhost"] {
+    precondition(CardDetail.destination(JSONValue(any: ["url": unsafe])) == nil)
+}
+precondition(CardDetail.destination(JSONValue(any: ["url": "https://example.com/a"]))?.absoluteString == "https://example.com/a")
+let message = JSONValue(any: ["from": "Ada", "when": "Today", "preview": "Hello", "body": "Full message"])
+precondition(CardDetail.fields(message, keys: ["from", "when", "preview", "body"]).map(\.text) == ["Ada", "Today", "Hello", "Full message"])
+precondition(ViewCard(json: ["kind": "future"], number: 1) == nil)
+let chart = ViewCard(kind: "chart", data: ["labels": ["Mon", "Tue", "Wed"], "series": [["name": "Revenue", "values": [1, NSNull(), 3]]]])
+precondition(chart.chartPoints.map(\.label) == ["Mon", "Wed"])
+precondition(chart.chartPoints.map(\.value) == [1, 3])
+precondition(CardDetail.rows([.null, .object([:]), message], keys: ["from"]) == [message])
+print("PASS: expansion isolation, collapse/pruning, reopen, null/blank filtering, https routing, supplied body, unknown-kind skip, chart point readout alignment")
