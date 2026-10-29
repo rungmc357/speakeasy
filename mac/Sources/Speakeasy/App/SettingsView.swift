@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import SpeakeasyCore
 import SpeakeasyClient
@@ -1168,6 +1169,40 @@ enum SettingsSmoke {
                 await settle(); bar("6 restored ok=\(back)")
             }
             exit(0)
+        }
+    }
+}
+
+
+/// `--voice-smoke <dir>`: renders the real ChatGPT-sign-in voice picker, snapshots it, and checks that
+/// every voice marked with a preview resolves to a bundled clip AVAudioPlayer can open. Development only.
+@MainActor
+enum VoiceSmoke {
+    static func run(dir: String) {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        var failures = 0
+        for option in VoiceCatalog.codex where option.hasPreview {
+            let url = VoicePreviewPlayer.url(for: option.id)
+            let player = url.flatMap { try? AVAudioPlayer(contentsOf: $0) }
+            let seconds = player?.duration ?? 0
+            if player == nil || seconds < 1 { failures += 1 }
+            print("clip \(option.id): \(player == nil ? "MISSING" : String(format: "%.2fs", seconds))")
+        }
+        let height = CGFloat(VoiceCatalog.codex.count) * 36 + 70
+        let host = NSHostingController(rootView: Form { VoiceChooser(provider: .codex, selection: .constant("cove")) }
+            .formStyle(.grouped).frame(width: 520, height: height))
+        let window = NSWindow(contentViewController: host)
+        window.setContentSize(NSSize(width: 520, height: height))
+        window.makeKeyAndOrderFront(nil)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            if let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/voices.png"))
+                print("snapshot \(dir)/voices.png")
+            }
+            print(failures == 0 ? "voice smoke ok" : "voice smoke FAILED: \(failures)")
+            exit(failures == 0 ? 0 : 1)
         }
     }
 }

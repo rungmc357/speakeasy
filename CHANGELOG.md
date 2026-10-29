@@ -2,6 +2,10 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Mac 0.3.7 — Hear the new voices
+
+- **Every GPT-Live 1.1 voice has a preview.** Settings › Voice now plays a short sample for all 14 new voices (Rivage, Hanul, Rio, Miko, Neer, Rindo, Haetsal, Leher, Tinta, Aube, Sonna, Himari, Bubbie, Viola), each saying the same line as the others, with a one-line note on how it sounds. The list runs from the deepest voice to the highest so you can browse by ear. *(Mac app)*
+
 ## Mac 0.3.6 and Plugin 0.3.14 — Honest follow-ups, approvals by voice, one task per project
 
 - **You can see whether a task actually read what you added.** When you add something to a running task, its card shows it as *queued* until the task really reads it, then *read by the task*. If the task finishes or is stopped first, the card says so, and the voice tells you and offers to start it as new work instead of letting it drop. *(Plugin and Mac app)*

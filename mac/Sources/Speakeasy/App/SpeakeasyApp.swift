@@ -97,6 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let i = args.firstIndex(of: "--home-smoke"), i + 1 < args.count {
             HomeSmoke.run(app: app, dir: args[i + 1]); return
         }
+        if let i = args.firstIndex(of: "--voice-smoke"), i + 1 < args.count {
+            VoiceSmoke.run(dir: args[i + 1]); return
+        }
         if let i = args.firstIndex(of: "--settings-smoke"), i + 3 < args.count {
             SettingsSmoke.run(app: app, dir: args[i + 1], provider: args[i + 2], model: args[i + 3]); return
         }
