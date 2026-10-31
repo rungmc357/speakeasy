@@ -35,8 +35,8 @@ RESTART_NEEDED = ("Speakeasy was updated while Hermes was running. Restart the H
 from .prompt import builder as P
 from .router import home_plan_call as router_home_plan_call, routing_model
 from .threads import THREAD_PLATFORMS
-from .settings import (OPENAI_KEY_NAME, Settings, SettingsError, default_voice, find_codex, hermes_api_base,
-                       hermes_secret, valid_delivery_target)
+from .settings import (GROK_BETA_OFF, OPENAI_KEY_NAME, Settings, SettingsError, default_voice, find_codex, hermes_api_base,
+                       grok_beta_on, hermes_secret, valid_delivery_target)
 from .store import StateStore
 from .suggest import SuggestError, suggest
 from .threads import ThreadRunner, capability, sync_routes
@@ -112,7 +112,10 @@ class VoiceService:
                  status_call: Callable[[str], str | None] | None = None,
                  home_plan_call: Callable[..., Any] | None = None, home_client: Callable[..., Any] | None = None,
                  tune_run: Callable[[str, str], tuple[str, str]] | None = None,
-                 volume_backend: duck_mod.VolumeBackend | None = None):
+                 volume_backend: duck_mod.VolumeBackend | None = None,
+                 grok_credential: Callable[[], tuple[str, str]] | None = None,
+                 grok_connect: Callable[..., Any] | None = None,
+                 grok_signin: Callable[[], tuple[bool, bool, str]] | None = None):
         self.home = Path(hermes_home)
         self.dir = self.home / "speakeasy"
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -157,6 +160,9 @@ class VoiceService:
         self._openai_negotiate = openai_negotiate
         self._openai_worker = openai_worker
         self._codex_login = codex_login
+        self._grok_credential = grok_credential
+        self._grok_connect = grok_connect
+        self._grok_signin = grok_signin
         self._stop = threading.Event()
         if start_threads:
             threading.Thread(target=self._idle_loop, daemon=True, name="speakeasy-idle").start()
@@ -259,6 +265,9 @@ class VoiceService:
         if self.updated_underneath():
             raise ServiceError(503, RESTART_NEEDED)
         resume_from = body.get("resume_from")
+        relay = self.settings.get()["voice"]["provider"] == "grok"
+        if relay:
+            body = {"sdp": "", **body}  # Grok calls relay audio through the plugin: no SDP needed
         if (not set(body) <= {"sdp", "resume_from", "tour", "screen", "room"} or not isinstance(body.get("sdp"), str)
                 or resume_from is not None and not (isinstance(resume_from, str) and ID_RE.fullmatch(resume_from))):
             raise ServiceError(400, "body must contain only an SDP offer, an optional resume_from, tour, screen and room")
@@ -282,7 +291,7 @@ class VoiceService:
         source = self.resumable(resume_from) if resume_from else None
         sdp = body["sdp"]
         # SDP is a wire format: its final CRLF is significant. Never strip it.
-        if not sdp.strip() or len(sdp.encode()) > MAX_SDP or not sdp.startswith("v=0"):
+        if not relay and (not sdp.strip() or len(sdp.encode()) > MAX_SDP or not sdp.startswith("v=0")):
             raise ServiceError(400, "invalid SDP offer")
         if not ID_RE.fullmatch(request_id):
             raise ServiceError(400, "invalid Idempotency-Key")
@@ -324,6 +333,18 @@ class VoiceService:
             if provider == "codex":
                 transport = self._start_codex(sdp, instructions, seed, voice, s)
                 live_id, answer = transport.thread_id, transport_answer(transport)
+            elif provider == "grok":
+                if not grok_beta_on(s):
+                    raise ServiceError(409, GROK_BETA_OFF)
+                token, base = self.grok_credential()
+                if not token:
+                    from .grok_live import SIGN_IN_HINT
+                    raise ServiceError(409, SIGN_IN_HINT)
+                from .grok_live import realtime_url
+                # The voice socket opens in the worker; the app connects its relay to this call.
+                transport = {"token": token, "url": realtime_url(base), "instructions": instructions,
+                             "seed": seed, "voice": voice, "max_call_s": s["voice"]["max_call_minutes"] * 60}
+                live_id, answer = "grok_" + interaction_id[3:], "relay"
             else:
                 key = self.openai_key()
                 if not key:
@@ -336,7 +357,7 @@ class VoiceService:
             self.store.fail_session(request_id)
             raise
         except Exception as exc:
-            if transport is not None:
+            if transport is not None and hasattr(transport, "stop"):
                 transport.stop()
             self.store.fail_session(request_id)
             from .codex_transport import CodexStartError
@@ -346,13 +367,17 @@ class VoiceService:
             logger.warning("speakeasy: voice start failed (%s)", type(exc).__name__)
             raise ServiceError(502, f"Voice session creation failed: {type(exc).__name__}") from None
         if not isinstance(live_id, str) or not live_id or not isinstance(answer, str) or not answer:
-            if transport is not None:
+            if transport is not None and hasattr(transport, "stop"):
                 transport.stop()
             self.store.fail_session(request_id)
             raise ServiceError(502, "voice provider returned an invalid session response")
+        wire: dict[str, Any] = {"type": "webrtc", "sdp": answer}
+        if provider == "grok":
+            from .grok_live import RELAY_FORMAT
+            wire = {"type": "relay", "path": f"/voice/interactions/{interaction_id}/audio", "format": dict(RELAY_FORMAT)}
         client_result: dict[str, Any] = {
             "interaction_id": interaction_id, "session": {"id": live_id},
-            "transport": {"type": "webrtc", "sdp": answer}, "voice_provider": provider,
+            "transport": wire, "voice_provider": provider,
         }
         if screen is None and source is not None:
             screen = source.attachments.declared  # a resume that doesn't say keeps the call's declaration
@@ -395,10 +420,37 @@ class VoiceService:
         if provider == "codex":
             from .codex_transport import CodexSidebandWorker
             return CodexSidebandWorker(self.rt, interaction, transport)
+        if provider == "grok":
+            from .grok_live import GrokRelayWorker
+            return GrokRelayWorker(self.rt, interaction, connector=self._grok_connect, **transport)
         if self._openai_worker is not None:
             return self._openai_worker(self.rt, interaction)
         from .openai_live import OpenAISidebandWorker
         return OpenAISidebandWorker(self.rt, interaction, self.openai_key)
+
+    def grok_credential(self) -> tuple[str, str]:
+        """(token, base_url) for xAI realtime; read per call, never stored or returned."""
+        if self._grok_credential is not None:
+            return self._grok_credential()
+        from .grok_live import resolve_credential
+        return resolve_credential(self.home)
+
+    def grok_state(self) -> tuple[bool, bool, str]:
+        """(signed in to xAI, XAI_API_KEY set, message) for status and onboarding. No network."""
+        if self._grok_signin is not None:
+            return self._grok_signin()
+        from .grok_live import signin_state
+        return signin_state(self.home)
+
+    def relay_worker(self, interaction_id: str) -> Any:
+        """The call's relay-owning worker, for the app's audio relay connection."""
+        interaction = self.interaction(interaction_id)
+        worker = interaction.worker
+        if worker is None or not hasattr(worker, "serve_client"):
+            raise ServiceError(409, "this call has no audio relay")
+        if interaction.call_closed:
+            raise ServiceError(409, "call ended")
+        return worker
 
     def finish_transport(self, interaction_id: str) -> dict[str, Any]:
         """End: close the provider session once the client saw it close (Codex needs an explicit stop)."""
@@ -407,6 +459,14 @@ class VoiceService:
         with interaction.lock:
             if interaction.finalization == "confirmed":
                 return {"finalization": "confirmed"}
+        if hasattr(worker, "end_call"):  # relayed call (Grok): the plugin owns the voice socket
+            worker.end_call("ended")
+            for _ in range(40):
+                with interaction.lock:
+                    if interaction.finalization == "confirmed":
+                        return {"finalization": "confirmed"}
+                time.sleep(.05)
+            return {"finalization": interaction.finalization}
         transport = getattr(worker, "transport", None)
         if transport is None:
             return {"finalization": interaction.finalization}
@@ -437,7 +497,8 @@ class VoiceService:
             with interaction.lock:
                 if not interaction.history:
                     interaction.history = worker.turns()[-400:]
-        if stop_transport and worker is not None:
+        # A relayed call (Grok) has no app-side voice session to close: the plugin closes it.
+        if (stop_transport or hasattr(worker, "serve_client")) and worker is not None:
             try:
                 worker.stop_transport()
             except Exception:
@@ -1334,6 +1395,10 @@ class VoiceService:
         api_key_set = bool(self.openai_key())
         provider = s["voice"]["provider"]
         voice_ready = signed_in if provider == "codex" else api_key_set
+        grok_signed_in, grok_key_set, grok_message = self.grok_state()
+        grok_ready = grok_beta_on(s) and (grok_signed_in or grok_key_set)
+        if provider == "grok":
+            voice_ready = grok_ready
         return {
             "assistant_name": s["assistant_name"], "user_name": s["user_name"], "provider": provider,
             "voice": default_voice(s), "voice_ready": voice_ready and not self.updated_underneath(),
@@ -1348,6 +1413,9 @@ class VoiceService:
             "routing_choice": self.routing_choices(),
             "advertised_url": s["server"]["advertised_url"], "tailscale_name": s["server"]["tailscale_name"],
             "attachments": self.attachment_status(),
+            # Grok voice (beta): calls relay audio through the plugin (transport type "relay").
+            "grok_beta": grok_beta_on(s), "grok_signed_in": grok_signed_in, "grok_api_key_set": grok_key_set,
+            "grok_ready": grok_ready, "grok_message": grok_message,
             # Listening mode: POST /voice/sessions takes "room" (the app sends it only when this is true),
             # also with resume_from (listening mode during a call pauses it, then resumes it with "room").
             "room_listening": True,
@@ -1415,6 +1483,9 @@ class VoiceService:
         s = self.settings.get()
         _, signed_in, message = self.codex_state()
         voice_ready = signed_in if s["voice"]["provider"] == "codex" else bool(self.openai_key())
+        if s["voice"]["provider"] == "grok":
+            grok_signed_in, grok_key_set, message = self.grok_state()
+            voice_ready = grok_beta_on(s) and (grok_signed_in or grok_key_set)
         brief_state = self.brief.status()["state"]
         steps = {
             "paired": bool(self.devices.devices()),

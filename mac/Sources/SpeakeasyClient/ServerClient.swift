@@ -67,6 +67,15 @@ public final class ServerClient: @unchecked Sendable {
         return request
     }
 
+    /// The relay call's audio socket on this server (Grok Voice), with the same bearer as every
+    /// other call to it. Nil when the address can't be made into ws/wss.
+    public func relaySocketRequest(_ relay: RelayTransport) -> URLRequest? {
+        guard let url = relay.socketURL(base: base) else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
     /// Raw response for the Speakeasy settings routes (typed decoding lives in the core).
     public func data(_ path: String, method: String = "GET", body: Data? = nil, timeout: TimeInterval = 30) async throws -> Data {
         let (data, response) = try await sessionFor(timeout).data(for: request(path, method: method, body: body, timeout: timeout))

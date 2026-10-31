@@ -6,12 +6,24 @@ import Foundation
 
 public enum VoiceProvider: String, Codable, CaseIterable, Sendable, Identifiable {
     case codex, openai
+    /// Beta: the plugin holds the xAI socket and relays the audio (no WebRTC).
+    case grok
     public var id: String { rawValue }
     public var label: String {
         switch self {
         case .codex: return "GPT-Live-1 via Codex OAuth (ChatGPT account)"
         case .openai: return "GPT-Live-1 via the OpenAI API (API key)"
+        case .grok: return "Grok Voice via your X/SuperGrok sign-in"
         }
+    }
+
+    /// The providers the picker offers. Grok is a beta: only when the server says its beta is on
+    /// and Grok is available there. A saved choice stays listed so the picker never shows blank.
+    public static func offered(status: ServerStatus?, current: VoiceProvider? = nil, betaOn: Bool? = nil) -> [VoiceProvider] {
+        var out: [VoiceProvider] = [.codex, .openai]
+        let available = status?.grokAvailable == true && (betaOn ?? status?.beta) == true
+        if available || current == .grok { out.append(.grok) }
+        return out
     }
 }
 
@@ -78,6 +90,13 @@ public struct ServerSettings: Codable, Equatable, Sendable {
             try c.encodeIfPresent(mode, forKey: .mode)
         }
     }
+    /// Plugin beta features (`beta`); all off unless turned on.
+    public struct Beta: Codable, Equatable, Sendable {
+        public var grokVoice: Bool?
+        enum CodingKeys: String, CodingKey { case grokVoice = "grok_voice" }
+        public init(grokVoice: Bool? = nil) { self.grokVoice = grokVoice }
+    }
+
     public struct Continuity: Codable, Equatable, Sendable {
         public var enabled: Bool?
         public init(enabled: Bool? = nil) { self.enabled = enabled }
@@ -109,11 +128,12 @@ public struct ServerSettings: Codable, Equatable, Sendable {
     public var instructionsExtra: String?
     public var brief: Brief?
     public var audioDuck: AudioDuck?
+    public var beta: Beta?
 
     enum CodingKeys: String, CodingKey {
         case assistantName = "assistant_name", userName = "user_name", voice, idlePauseMinutes = "idle_pause_minutes"
         case notifyTarget = "notify_target", delivery, continuity, speech, instructionsExtra = "instructions_extra", brief
-        case audioDuck = "audio_duck"
+        case audioDuck = "audio_duck", beta
     }
 
     public init(assistantName: String? = nil, userName: String? = nil, voice: Voice? = nil, idlePauseMinutes: Double? = nil,
@@ -138,6 +158,7 @@ public struct ServerSettings: Codable, Equatable, Sendable {
         instructionsExtra = try? c.decodeIfPresent(String.self, forKey: .instructionsExtra)
         brief = try? c.decodeIfPresent(Brief.self, forKey: .brief)
         audioDuck = try? c.decodeIfPresent(AudioDuck.self, forKey: .audioDuck)
+        beta = try? c.decodeIfPresent(Beta.self, forKey: .beta)
     }
 
     /// The effective delivery target (nil = off).
@@ -190,6 +211,7 @@ public struct ServerSettings: Codable, Equatable, Sendable {
             object["brief"] = b
         }
         if let enabled = audioDuck?.enabled { object["audio_duck"] = ["enabled": enabled] }
+        if let on = beta?.grokVoice { object["beta"] = ["grok_voice": on] }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
@@ -381,6 +403,17 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     /// The server takes `room` with `resume_from` too (listening mode during a call pauses it, then
     /// resumes it with what was heard). Missing on plugins from before that.
     public var roomOnResume: Bool?
+    /// The server's beta features are on (plugin setting); Grok Voice is offered only then.
+    public var beta: Bool?
+    /// Grok Voice can be used on this server (the plugin has the relay and an X/SuperGrok sign-in path).
+    public var grokAvailable: Bool?
+    /// Signed in to X/SuperGrok on the Hermes machine.
+    public var grokSignedIn: Bool?
+    /// Grok can take a call now (beta on and a sign-in or key), and the plugin's hint when it can't.
+    public var grokReady: Bool?
+    public var grokMessage: String?
+    /// The plugin's own beta flag (`grok_beta`); also folded into `beta` when decoding.
+    public var grokBeta: Bool?
 
     enum CodingKeys: String, CodingKey {
         case assistantName = "assistant_name", provider, codexSignedIn = "codex_signed_in"
@@ -392,6 +425,8 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         case advertisedURL = "advertised_url", tailscaleName = "tailscale_name"
         case attachments
         case roomListening = "room_listening", roomOnResume = "room_on_resume"
+        case beta, grokAvailable = "grok_available", grokSignedIn = "grok_signed_in"
+        case grokBeta = "grok_beta", grokReady = "grok_ready", grokMessage = "grok_message"
     }
 
     public init(assistantName: String? = nil, provider: String? = nil, codexSignedIn: Bool? = nil, apiKeySet: Bool? = nil,
@@ -423,7 +458,16 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         attachments = try? c.decodeIfPresent(AttachmentSupport.self, forKey: .attachments)
         roomListening = try? c.decodeIfPresent(Bool.self, forKey: .roomListening)
         roomOnResume = try? c.decodeIfPresent(Bool.self, forKey: .roomOnResume)
+        grokBeta = try? c.decodeIfPresent(Bool.self, forKey: .grokBeta)
+        beta = grokBeta ?? (try? c.decodeIfPresent(Bool.self, forKey: .beta))
+        grokAvailable = (try? c.decodeIfPresent(Bool.self, forKey: .grokAvailable)) ?? (grokBeta != nil ? true : nil)
+        grokReady = try? c.decodeIfPresent(Bool.self, forKey: .grokReady)
+        grokMessage = try? c.decodeIfPresent(String.self, forKey: .grokMessage)
+        grokSignedIn = try? c.decodeIfPresent(Bool.self, forKey: .grokSignedIn)
     }
+
+    /// Grok Voice goes in the provider picker: beta on and Grok available on the server.
+    public var grokOffered: Bool { beta == true && grokAvailable == true }
 
     /// The screen button, drops and pastes are offered: the plugin takes attachments and Hermes can
     /// read images (natively or described by a vision model).
@@ -471,6 +515,10 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         case .openai:
             out.append(Check(id: "voice", ok: apiKeySet == true, title: "OpenAI API key",
                              fix: apiKeySet == true ? nil : "On the Hermes machine, run hermes voice setup --api-key"))
+        case .grok:
+            let ok = grokSignedIn ?? voiceReady ?? false
+            out.append(Check(id: "voice", ok: ok, title: "Grok Voice via your X/SuperGrok sign-in",
+                             fix: ok ? nil : "On the Hermes machine, run hermes voice setup and sign in with X"))
         }
         let briefReady = briefState == "ready" || briefState == "edited"
         out.append(Check(id: "brief", ok: briefReady, title: "Voice brief",

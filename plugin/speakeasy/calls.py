@@ -23,7 +23,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from . import channels, continuity, failures, router, threads
+from . import channels, continuity, failures, liveness, router, threads
 from .duck import Ducker
 from . import home_control as home_control_mod
 from . import instant as instant_mod
@@ -3067,6 +3067,36 @@ class SidebandWorker:
             await self.append("session.commentary.append", delegation_id,
                               P.failed_because(said) if said else P.continuing_failed_note(where))
 
+    def vouch_for_thread(self, backend: "BackendRun", platform: str, thread_id: str) -> threading.Event:
+        """While a thread task waits on its Hermes turn, ask the gateway every 20s whether that turn
+        is really still running. If it is, keep the card live (no "Status unconfirmed" during one
+        long step) and, when the turn has said nothing for a while, show what it is in the middle of.
+        A turn the gateway no longer runs gets no vouching, so a dead one still goes stale. Set the
+        returned event to stop."""
+        stop = threading.Event()
+        loop = asyncio.get_running_loop()
+        idem, state_db = backend.idem_key, self.rt.state_db
+
+        def session_of() -> str | None:
+            return threads.thread_session(state_db, platform, str(thread_id))
+
+        def on_alive(summary: dict[str, Any]) -> None:
+            def apply() -> None:
+                if backend.status in TERMINAL:
+                    return
+                work = self.store.work(idem_key=idem) or {}
+                said_at = work.get("updated_at") or 0
+                if time.time() - float(said_at) > liveness.QUIET_SAY_S:
+                    self.store.thread_progress(idem, liveness.doing(summary))
+                else:
+                    self.store.touch(idem)
+                self.publish()
+            loop.call_soon_threadsafe(apply)
+
+        threading.Thread(target=liveness.watch, args=(session_of, on_alive, stop),
+                         name=f"speakeasy-vouch-{idem[:12]}", daemon=True).start()
+        return stop
+
     async def continue_in_thread(self, backend: "BackendRun", conv: continuity.Conversation, message: str,
                                  where: str) -> bool:
         """Put the request into the chat thread as if typed there, so the agent works inside that
@@ -3091,7 +3121,11 @@ class SidebandWorker:
         def on_activity(kind: str, text: str) -> None:
             event = {"event": "message.interim" if kind == "commentary" else "tool.completed", "text": text}
             asyncio.run_coroutine_threadsafe(self.thread_activity(backend, kind, text, event), loop).result()
-        answer = await asyncio.to_thread(runner.wait_turn, conv.platform, str(thread_id), after, on_activity)
+        vouch = self.vouch_for_thread(backend, conv.platform, str(thread_id))
+        try:
+            answer = await asyncio.to_thread(runner.wait_turn, conv.platform, str(thread_id), after, on_activity)
+        finally:
+            vouch.set()
         if answer is None:
             self.store.progress(idem, "result", f"Still going in {where}; the answer will land there")
             await self.handle_hermes_event(backend, {"event": "run.completed",
@@ -3203,6 +3237,7 @@ class SidebandWorker:
             asyncio.run_coroutine_threadsafe(self.thread_activity(backend, kind, text, event), loop)
 
         LIVE_THREAD_WAITS[idem] = time.monotonic()
+        vouch = self.vouch_for_thread(backend, opened.platform, str(opened.thread_id))
         try:
             try:
                 answer = await asyncio.to_thread(self.rt.threads.wait, opened, on_session, on_title, on_activity)
@@ -3211,6 +3246,7 @@ class SidebandWorker:
         except Exception as exc:
             answer, backend.error = None, type(exc).__name__
         finally:
+            vouch.set()
             LIVE_THREAD_WAITS.pop(idem, None)
         if answer is None:
             self.store.user_progress(idem, "In the thread", f"The answer will land in {where}")

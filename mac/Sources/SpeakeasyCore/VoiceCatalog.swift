@@ -47,13 +47,25 @@ public enum VoiceCatalog {
     public static let openai: [VoiceOption] = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"]
         .map { VoiceOption(id: $0, summary: "", hasPreview: false) }
 
+    /// Grok Voice via your X/SuperGrok sign-in. xAI's voice names, as its API spells them.
+    public static let grok: [VoiceOption] = ["Ara", "Rex", "Sal", "Eve", "Leo"]
+        .map { VoiceOption(id: $0, summary: "", hasPreview: false) }
+
     public static func voices(for provider: VoiceProvider) -> [VoiceOption] {
-        provider == .codex ? codex : openai
+        switch provider {
+        case .codex: return codex
+        case .openai: return openai
+        case .grok: return grok
+        }
     }
 
     /// The voice a call uses when none is chosen (mirrors the server's defaults).
     public static func defaultVoice(for provider: VoiceProvider) -> String {
-        provider == .codex ? "cove" : "marin"
+        switch provider {
+        case .codex: return "cove"
+        case .openai: return "marin"
+        case .grok: return "Ara"
+        }
     }
 
     public static func option(_ id: String, provider: VoiceProvider) -> VoiceOption? {

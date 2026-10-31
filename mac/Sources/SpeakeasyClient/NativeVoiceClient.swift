@@ -96,7 +96,8 @@ public final class NativeVoiceClient: VoiceCallClient {
     public private(set) lazy var surface: any VoiceSurface = makeSurface(model)
     private let makeSurface: @MainActor (VoicePanelModel) -> any VoiceSurface
 
-    private var engine: NativeCallEngine?
+    /// The call's audio transport: WebRTC, or the plugin's relay socket (Grok Voice).
+    private var engine: CallTransport?
     private var startTask: Task<Void, Never>?
     private var streamTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
@@ -631,23 +632,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         let engine = NativeCallEngine()
         self.engine = engine
         if earlyCapture != nil { engine.holdAudio() }
-        engine.onMessage = { [weak self] data in
-            guard let self else { return }
-            for event in parseDataChannelMessage(data) {
-                if case .sessionClosed = event, self.voiceProvider == "codex" {
-                    self.finishCodexCall()
-                } else {
-                    self.dispatch(event)
-                }
-            }
-        }
-        engine.onChannelClosed = { [weak self] in self?.channelClosed() }
-        engine.onChannelOpen = { [weak self] in self?.connectStage = "channel open; waiting for the call to start" }
-        engine.onAudioFormatChanged = { [weak self] in self?.audioDevicesChanged() }
-        engine.onConnectionFailed = { [weak self] in
-            guard let self, self.model.state.connection == .live || self.model.state.connection == .connecting else { return }
-            self.dispatch(.transportLost)
-        }
+        wire(engine)
         // A new admission of a call from listening mode carries what was heard. Whether the
         // server still takes it (the plugin can be updated or rolled back during a long listen) is
         // asked while the offer is made, so the check never delays the call.
@@ -659,6 +644,8 @@ public final class NativeVoiceClient: VoiceCallClient {
             } : nil
         startTask = Task { [weak self] in
             var sentRoom = false
+            // The WebRTC engine until the answer says the plugin relays the audio instead.
+            var call: CallTransport = engine
             do {
                 await engine.warmAudioRoute()
                 try engine.prepare(captureAudio: true)
@@ -700,8 +687,22 @@ public final class NativeVoiceClient: VoiceCallClient {
                 self.dispatch(.sessionAdmitted(interactionID: admission.interactionID))
                 self.connectStage = "admitted; connecting audio"
                 let early = self.earlyCapture
-                if early != nil { engine.setMicEnabled(false) }
-                try await engine.setRemoteAnswer(admission.answerSDP)
+                if let relay = admission.relay {
+                    // Grok Voice: drop the prepared peer connection; the plugin relays PCM over a socket.
+                    guard let request = api.relaySocketRequest(relay) else { throw RelayCallEngine.EngineError.badURL }
+                    engine.close()
+                    let relayEngine = RelayCallEngine()
+                    self.wire(relayEngine)
+                    if early != nil { relayEngine.holdAudio() }
+                    relayEngine.setMicEnabled(early == nil && self.model.state.localAudioEnabled)
+                    self.engine = relayEngine
+                    call = relayEngine
+                    self.connectStage = "admitted; opening the relay"
+                    try relayEngine.start(request: request)
+                } else {
+                    if early != nil { engine.setMicEnabled(false) }
+                    try await engine.setRemoteAnswer(admission.answerSDP)
+                }
                 self.appliedMic = nil; self.appliedRemote = nil
                 self.dispatch(.tick)
                 self.startServerEvents(api, interactionID: admission.interactionID)
@@ -710,20 +711,20 @@ public final class NativeVoiceClient: VoiceCallClient {
                     // Mid-sentence? Let the listener hear you out before the call takes the mic.
                     await early.waitForPause()
                     early.stopListening()
-                    engine.releaseAudio()
+                    call.releaseAudio()
                     self.handOverEarlyWords(early, api: api, interactionID: admission.interactionID)
                 } else {
-                    engine.releaseAudio()
+                    call.releaseAudio()
                     self.handOverRoomRequest("", api: api, interactionID: admission.interactionID)
                 }
                 if self.model.state.connection == .ending { self.sendClose() }
             } catch {
-                guard let self, self.engine === engine else { return }
+                guard let self, self.engine === call else { return }
                 // The server wouldn't take what listening mode heard (an older plugin, or the
                 // transcript was refused): don't loop back into listening, start a normal call.
                 if sentRoom, let http = error as? ServerClient.HTTPError, http.status == 400 || http.status == 413,
                    self.model.state.connection == .connecting {
-                    engine.close()
+                    call.close()
                     self.dropRoomContext("Couldn't use what listening mode heard; carried on without it")
                     self.connect(api)
                     return
@@ -732,7 +733,7 @@ public final class NativeVoiceClient: VoiceCallClient {
                 // already resumed): start a fresh call rather than failing.
                 if self.model.state.resumeFrom != nil, let http = error as? ServerClient.HTTPError,
                    http.status == 404 || http.status == 409, self.model.state.connection == .connecting {
-                    engine.close()
+                    call.close()
                     self.model.state.resumeFrom = nil
                     self.dispatch(.error("Couldn't resume the paused call; started a new one"))
                     self.connect(api)
@@ -740,6 +741,27 @@ public final class NativeVoiceClient: VoiceCallClient {
                 }
                 self.dispatch(.failed(ConnectionTrouble.message(for: error, server: self.config.serverURL)))
             }
+        }
+    }
+
+    /// Same callbacks for either transport.
+    private func wire(_ transport: CallTransport) {
+        transport.onMessage = { [weak self] data in
+            guard let self else { return }
+            for event in parseDataChannelMessage(data) {
+                if case .sessionClosed = event, self.voiceProvider == "codex" {
+                    self.finishCodexCall()
+                } else {
+                    self.dispatch(event)
+                }
+            }
+        }
+        transport.onChannelClosed = { [weak self] in self?.channelClosed() }
+        transport.onChannelOpen = { [weak self] in self?.connectStage = "channel open; waiting for the call to start" }
+        transport.onAudioFormatChanged = { [weak self] in self?.audioDevicesChanged() }
+        transport.onConnectionFailed = { [weak self] in
+            guard let self, self.model.state.connection == .live || self.model.state.connection == .connecting else { return }
+            self.dispatch(.transportLost)
         }
     }
 

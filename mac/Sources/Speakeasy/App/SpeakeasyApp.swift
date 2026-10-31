@@ -77,6 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if args.contains("--native-mic-smoke") { NativeSmoke.mic(); return }
         if args.contains("--live-call-smoke") { LiveCallSmoke.run(); return }
         if let i = args.firstIndex(of: "--room-smoke"), i + 1 < args.count { RoomSmoke.run(path: args[i + 1]); return }
+        if let i = args.firstIndex(of: "--relay-smoke"), i + 1 < args.count {
+            RelaySmoke.run(url: args[i + 1], seconds: i + 2 < args.count ? Double(args[i + 2]) ?? 5 : 5); return
+        }
         if let i = args.firstIndex(of: "--onboarding-snapshot"), i + 1 < args.count {
             OnboardingSnapshot.render(to: args[i + 1], step: i + 2 < args.count && !args[i + 2].hasPrefix("--") ? args[i + 2] : nil); return
         }

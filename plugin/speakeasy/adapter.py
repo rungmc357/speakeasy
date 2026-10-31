@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_PORT = 8795
 
 
+# The gateway runner, kept here because this module is never swapped by a live reload: liveness.py
+# asks it whether a thread task's turn is really still running.
+GATEWAY_RUNNER = None
+
+
 class VoiceAdapter(BasePlatformAdapter):
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("voice"))
@@ -60,6 +65,8 @@ class VoiceAdapter(BasePlatformAdapter):
     async def connect(self, **_kwargs) -> bool:
         from pathlib import Path
         from .reloader import LiveReloader
+        global GATEWAY_RUNNER
+        GATEWAY_RUNNER = getattr(self, "gateway_runner", None)
         # The reloader owns the server so a reinstalled plugin loads without a gateway restart.
         self._reloader = LiveReloader(__package__, Path(__file__).parent, self.hermes_home, self.host, self.port)
         try:
