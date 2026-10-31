@@ -2,6 +2,11 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Mac 0.3.8 and Plugin 0.3.15 — Talk to Grok, and no more "Status unconfirmed"
+
+- **Grok as your voice (beta).** Speakeasy can now use xAI's Grok realtime voice instead of GPT-Live. Open Settings › Voice, turn on **Grok Voice (beta)**, then pick Grok as the voice provider (voices Ara, Rex, Sal, Eve and Leo). It uses the X / SuperGrok sign-in your Hermes already has, so no API key is needed. If Hermes isn't signed in to xAI, Settings tells you how. Tasks, cards and approvals work the same as with the other voices. *(Plugin and Mac app)*
+- **Long steps no longer look stuck.** A task working in a chat thread used to show *Status unconfirmed* whenever one step ran longer than about a minute and a half. Speakeasy now asks Hermes whether the task is really still running, keeps the card live while it is, and shows what it's in the middle of when it has been quiet for a while. A task that has actually died still shows as stale. *(Plugin)*
+
 ## Mac 0.3.7 — Hear the new voices
 
 - **Every GPT-Live 1.1 voice has a preview.** Settings › Voice now plays a short sample for all 14 new voices (Rivage, Hanul, Rio, Miko, Neer, Rindo, Haetsal, Leher, Tinta, Aube, Sonna, Himari, Bubbie, Viola), each saying the same line as the others, with a one-line note on how it sounds. The list runs from the deepest voice to the highest so you can browse by ear. *(Mac app)*
