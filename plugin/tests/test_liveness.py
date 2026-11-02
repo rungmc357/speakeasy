@@ -1,5 +1,6 @@
 """A thread task's card stays live while the gateway is really running its turn, and only then."""
 import threading
+import time
 
 from speakeasy import liveness
 
@@ -61,7 +62,11 @@ def test_watch_calls_back_only_while_alive_and_stops():
     t = threading.Thread(target=liveness.watch, args=(lambda: "s1", on_alive, stop),
                          kwargs={"every_s": 0.01, "runner": runner})
     t.start()
-    threading.Event().wait(0.2)
+    # Wait for the condition, not a fixed time: a loaded machine can starve the watcher thread.
+    deadline = time.monotonic() + 5
+    while len(seen) < 2 and time.monotonic() < deadline:
+        threading.Event().wait(0.01)
+    threading.Event().wait(0.1)  # room for a wrong third vouch to show up
     stop.set()
     t.join(1)
     assert not t.is_alive()
