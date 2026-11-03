@@ -154,75 +154,86 @@ enum FilmFrames {
     static func siteBeats() -> [(String, VoiceState, String?)] {
         let now = Date()
         func base() -> VoiceState {
-            var s = VoiceState(); s.now = now; s.connection = .live; s.interactionID = "vi_site"; return s
+            var s = VoiceState(); s.now = now; s.connection = .live; s.interactionID = "vi_site"; s.speech = .speaking(lastDelta: now); return s
         }
-        let flightsReq = "Find me flights to Lisbon for the 14th, back the 21st"
-        let flights = task("f", "completed", flightsReq, title: "Lisbon flights", short: "Done", age: 40, now: now,
-                           result: WorkResult(spoken: "Best one's a nonstop on the 14th, $612 round trip, landing at 7 AM.",
-                                              full: nil, views: []),
-                           milestones: ["Searched 4 airlines", "Nonstop, $612 round trip"])
+        let signupChart = card(["kind": "chart", "title": "Signups per hour, yesterday", "style": "bar",
+                                "labels": ["10", "11", "12", "1", "2", "3", "4", "5", "6"],
+                                "series": [["name": "Signups", "values": [42, 45, 40, 44, 6, 4, 31, 47, 43]]]])
+        let signups = task("s", "completed", "Signups look low yesterday. What happened?", title: "Signups dip yesterday",
+                           short: "Done", age: 30, now: now,
+                           result: WorkResult(spoken: "The signup page was broken for two hours after Tuesday's deploy. It's back to normal.",
+                                              full: nil, views: [signupChart]),
+                           milestones: ["Signups down 38% from a normal Wednesday", "Signup page errored from 2 to 4 PM",
+                                        "Started with Tuesday's deploy, fixed at 4"])
         let weather = card(["kind": "weather", "place": "Brooklyn", "temp": 41, "feels_like": 36, "unit": "F",
                             "condition": "Rain until 3 PM", "icon": "rain", "high": 47, "low": 38])
         let weatherTask = task("w", "completed", "Do I need an umbrella today?", title: "Umbrella today?", short: "Done",
                                age: 3, now: now,
                                result: WorkResult(spoken: "Yes, rain until about 3, then it clears. High of 47.", full: nil,
                                                   views: [weather]))
-        let deskReq = "Find a standing desk under $600 that fits a 48-inch wall"
-        let desk = task("k", "working", deskReq, title: "Standing desk under $600", short: "Reading reviews of the last 4",
-                        age: 25, now: now, milestones: ["Searched 6 stores", "Found 11 that fit a 48-inch wall", "Cut to 4 under $600 with good reviews"])
-        let giftReq = "Find Mom a birthday gift that gets there by Saturday"
-        let gift = task("g", "working", giftReq, title: "Mom's birthday gift", short: "Checking what arrives by Saturday",
-                        age: 4, now: now, milestones: ["Looked at what she liked last year", "Checking what arrives by Saturday"])
-        let dinnerReq = "Book dinner for four near the office Thursday and send the team an invite"
+        let testReq = "The checkout test keeps failing at random. Find out why and fix it."
+        let flaky = task("t", "working", testReq, title: "Fix the flaky checkout test", short: "Running it 50 times to be sure",
+                         age: 25, now: now, milestones: ["Reproduced it: fails about 1 run in 6",
+                                                         "Found it: the test doesn't wait for the payment step",
+                                                         "Added the wait"])
+        let pricingReq = "Compare our pricing to our top three competitors"
+        let pricing = task("p", "working", pricingReq, title: "Pricing vs. competitors",
+                           short: "Reading 3 pricing pages", age: 4, now: now, milestones: ["Found the top 3 by search share"])
+        let acmeReq = "Reply to Acme: we fixed the invoice, apologize, and attach the new one"
         let draft = EmailDraft(draftID: "site_draft", sha256: "s1te", from: "you@example.com",
-                               to: ["team@example.com"], cc: [], subject: "Dinner Thursday, 7 PM",
-                               body: "Hi all,\n\nI booked a table for four at Osteria Nove this Thursday at 7. It's a five-minute walk from the office.\n\nSee you there!")
-        var invite = task("d", "waiting_for_approval", dinnerReq, title: "Team dinner Thursday",
-                          short: "Booked 7 PM · invite ready", age: 8, now: now,
-                          milestones: ["Booked Osteria Nove for 7 PM", "Drafted the invite"])
+                               to: ["billing@acme.example"], cc: [], subject: "Re: Invoice #1042",
+                               body: "Hi Priya,\n\nYou're right, invoice #1042 charged you for 30 seats instead of 25. Sorry about that. The corrected invoice is attached, and the $95 difference has been credited to your account.\n\nThanks for flagging it,\nAlex")
+        var invite = task("a", "waiting_for_approval", acmeReq, title: "Acme invoice reply",
+                          short: "Ready to send, with the corrected invoice", age: 8, now: now,
+                          milestones: ["Found the overcharge: 30 seats billed, 25 used", "Made the corrected invoice", "Drafted the reply"])
         invite.info.emailDrafts = [draft]
-        let question = card(["kind": "question", "question": "Three places have a table for four at 7. Which one?",
-                             "context": "All within a 10-minute walk of the office, all take reservations for Thursday.",
+        let question = card(["kind": "question", "question": "The dashboard takes 9 seconds to load. How should I fix it?",
+                             "context": "Almost all of that time is one database query that reads every order to add up today's totals.",
+                             "why": "An index fixes the actual cause, needs no code changes, and can be dropped in seconds if anything looks off.",
+                             "affects": "Sales dashboard · orders database",
                              "options": [
-                                ["text": "Osteria Nove", "detail": "Italian · 5 min walk · quiet back room",
-                                 "tags": [["text": "Best for talking", "tone": "good"]]],
-                                ["text": "Hearth & Vine", "detail": "New American · 8 min walk · busier, bar seating"],
-                                ["text": "Baan Lime", "detail": "Thai · 6 min walk · cheapest of the three"]],
+                                ["text": "Add an index · about 20 min", "detail": "Loads in under a second. No code changes.",
+                                 "risk": "low", "reversible": true],
+                                ["text": "Cache the totals · about 2 hours", "detail": "Also fast, but numbers can be 5 minutes behind.",
+                                 "risk": "medium", "reversible": true],
+                                ["text": "Leave it", "detail": "Nothing changes."]],
                              "recommended": 0])
-        let pick = task("d", "completed", dinnerReq, title: "Team dinner Thursday", short: "Needs your pick", age: 3, now: now,
-                        result: WorkResult(spoken: "Three places have a table at 7. I'd go with Osteria Nove.", full: nil,
-                                           views: [question]),
-                        milestones: ["Checked 9 places near the office", "Three have a table at 7"])
+        let loadChart = card(["kind": "chart", "title": "Load time, last 7 days", "style": "line", "unit": "s",
+                              "labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+                              "series": [["name": "Dashboard", "values": [3.1, 3.4, 4.2, 5.8, 7.1, 8.3, 9.2]]]])
+        let dashReq = "The sales dashboard is really slow. Figure out why."
+        let pick = task("d", "completed", dashReq, title: "Speed up the dashboard", short: "Needs your pick", age: 3, now: now,
+                        result: WorkResult(spoken: "One query reads every order. An index would get it under a second.", full: nil,
+                                           views: [question, loadChart]),
+                        milestones: ["Timed every query on the page", "One query takes 8.7 of the 9 seconds"])
 
         var out: [(String, VoiceState, String?)] = []
-        // The board: one call, a few things at once.
-        var s = base(); s.speech = .speaking(lastDelta: now)
-        s.exchange = Exchange(you: "And a gift for Mom by Saturday.",
-                              assistant: "On it. The dinner invite's ready.", replyStarted: true)
-        s.tasks = [weatherTask, flights, desk, invite, gift]; s.runID = "run_g"; s.delegationAt = now - 4
-        s.workInfo = gift.info
+        var s = base()
+        s.exchange = Exchange(you: "And check our pricing against competitors.",
+                              assistant: "On it. The Acme reply is ready to look at.", replyStarted: true)
+        s.tasks = [weatherTask, signups, flaky, invite, pick, pricing]; s.runID = "run_p"; s.delegationAt = now - 4
+        s.workInfo = pricing.info
         out.append(("site-board", s, nil))
-        // Watch it work: a running job opened.
-        s = base(); s.speech = .speaking(lastDelta: now)
-        s.exchange = Exchange(you: "How's the desk search going?", assistant: "Down to four. Comparing reviews now.", replyStarted: true)
-        s.tasks = [desk]; s.runID = "run_k"; s.workInfo = desk.info
-        out.append(("site-working", s, "task:k"))
-        // A quick answer with its card.
-        s = base(); s.speech = .speaking(lastDelta: now)
-        s.exchange = Exchange(you: "Do I need an umbrella today?",
-                              assistant: "Yes, rain until about 3.", replyStarted: true)
+        s = base()
+        s.exchange = Exchange(you: "How's the test fix going?", assistant: "Found it. Running it 50 times to be sure.", replyStarted: true)
+        s.tasks = [flaky]; s.runID = "run_t"; s.workInfo = flaky.info
+        out.append(("site-working", s, "task:t"))
+        s = base()
+        s.exchange = Exchange(you: "Why did signups drop yesterday?", assistant: "The signup page was broken for two hours.", replyStarted: true)
+        s.tasks = [signups]; s.workInfo = signups.info
+        out.append(("site-answer", s, "task:s"))
+        s = base()
+        s.exchange = Exchange(you: "Do I need an umbrella today?", assistant: "Yes, rain until about 3.", replyStarted: true)
         s.tasks = [weatherTask]; s.workInfo = weatherTask.info
-        out.append(("site-answer", s, "task:w"))
-        // A decision.
-        s = base(); s.speech = .speaking(lastDelta: now)
-        s.exchange = Exchange(you: "", assistant: "I'd go with Osteria Nove.", replyStarted: true)
-        s.tasks = [desk, pick]; s.runID = "run_d"; s.workInfo = pick.info
+        out.append(("site-quick", s, "task:w"))
+        s = base()
+        s.exchange = Exchange(you: "", assistant: "I'd add the index. Want me to?", replyStarted: true)
+        s.tasks = [flaky, pick]; s.runID = "run_d"; s.workInfo = pick.info
         out.append(("site-decide", s, "task:d"))
-        // The draft, waiting for you.
-        s = base(); s.speech = .speaking(lastDelta: now)
-        s.exchange = Exchange(you: "Osteria Nove.", assistant: "Booked. Invite's on screen.", replyStarted: true)
-        s.tasks = [desk, invite]; s.workInfo = invite.info
-        out.append(("site-draft", s, "task:d"))
+        s = base()
+        s.exchange = Exchange(you: "Show me the Acme reply.", assistant: "It's on screen. Tap Send when it looks right.", replyStarted: true)
+        s.tasks = [flaky, invite]; s.workInfo = invite.info
+        out.append(("site-draft", s, "task:a"))
         return out.map { name, state, open in var st = state; st.work = deriveWork(st, now: now); return (name, st, open) }
     }
 }
