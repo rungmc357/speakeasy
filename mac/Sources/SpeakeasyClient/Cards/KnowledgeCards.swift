@@ -18,7 +18,7 @@ struct MediaCard: View {
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     if let label = card["kind_label"].string {
-                        Text(label.uppercased()).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.secondary)
+                        Text(label.uppercased()).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
                     }
                     Text(card["title"].string ?? "").font(.system(size: 13.5, weight: .semibold)).lineLimit(2)
                     Text([card["subtitle"].string ?? card["artist"].string, card["album"].string, card["year"].string,
@@ -26,7 +26,7 @@ struct MediaCard: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
                     if let rating = card["rating"].string { Label(rating, systemImage: "star.fill").font(.system(size: 10.5)).foregroundStyle(.orange) }
                     let where_ = card["where"].strings
-                    if !where_.isEmpty { Text("On " + where_.joined(separator: ", ")).font(.system(size: 10.5)).foregroundStyle(.secondary) }
+                    if !where_.isEmpty { Text("On " + where_.joined(separator: ", ")).font(.system(size: 11.5)).foregroundStyle(.secondary) }
                 }
                 Spacer(minLength: 0)
                 openable(card["url"].url)
@@ -81,7 +81,7 @@ struct FactCard: View {
                     Spacer(minLength: 0)
                     if let img = card["image_url"].url { CardImage(url: img, size: 56, corner: 8, fill: true).frame(width: 56) }
                 }
-                if let source = card["source"].string { Text(source).font(.system(size: 9.5)).foregroundStyle(.tertiary) }
+                if let source = card["source"].string { Text(source).font(.system(size: 11.5)).foregroundStyle(.secondary) }
             }
         }
     }
@@ -154,7 +154,7 @@ struct TranslationCard: View {
             }
             Text(card["text"].string ?? "").font(.system(size: 18, weight: .medium)).textSelection(.enabled)
             if let p = card["phonetic"].string { Text(p).font(.system(size: 12).italic()).foregroundStyle(.secondary) }
-            if let lang = card["target_lang"].string { Text(lang.uppercased()).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.tertiary) }
+            if let lang = card["target_lang"].string { Text(lang.uppercased()).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary) }
         }
     }
 }
@@ -176,17 +176,17 @@ struct RecipeCard: View {
             .font(.system(size: 11)).foregroundStyle(.secondary)
             let ingredients = card["ingredients"].strings
             if !ingredients.isEmpty {
-                Text("INGREDIENTS").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.secondary)
+                Text("INGREDIENTS").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
                 ForEach(Array(ingredients.prefix(14).enumerated()), id: \.offset) { _, i in
                     Text("· " + i).font(.system(size: 11.5))
                 }
             }
             let steps = card["steps"].strings
             if !steps.isEmpty {
-                Text("STEPS").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.secondary).padding(.top, 2)
+                Text("STEPS").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary).padding(.top, 2)
                 ForEach(Array(steps.prefix(10).enumerated()), id: \.offset) { n, s in
                     HStack(alignment: .top, spacing: 6) {
-                        Text("\(n + 1)").font(.system(size: 10, weight: .bold)).frame(width: 16, height: 16)
+                        Text("\(n + 1)").font(.system(size: 11, weight: .bold)).frame(width: 16, height: 16)
                             .background(Circle().fill(Color.primary.opacity(0.08)))
                         Text(s).font(.system(size: 11.5))
                     }
@@ -202,7 +202,7 @@ struct StatsCard: View {
         CardBox {
             HStack {
                 CardHeader(icon: card.kind == "nutrition" ? "fork.knife" : "chart.bar.fill", title: card["title"].string ?? "")
-                if let serving = card["serving"].string { Text(serving).font(.system(size: 10.5)).foregroundStyle(.tertiary) }
+                if let serving = card["serving"].string { Text(serving).font(.system(size: 11.5)).foregroundStyle(.secondary) }
             }
             if let cal = card["calories"].double {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -217,11 +217,11 @@ struct StatsCard: View {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                     ForEach(Array(items.prefix(8).enumerated()), id: \.offset) { _, s in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(s["label"].string ?? "").font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                            Text(s["label"].string ?? "").font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
                             Text(s["value"].string ?? "").font(.system(size: 16, weight: .semibold).monospacedDigit()).lineLimit(1)
                                 .minimumScaleFactor(0.7)
                             if let d = s["delta"].string {
-                                Text(d).font(.system(size: 10.5, weight: .medium))
+                                Text(d).font(.system(size: 11.5, weight: .medium))
                                     .foregroundStyle(s["good"].bool == true ? Color.green : s["good"].bool == false ? Color.red : Color.secondary)
                             }
                         }
@@ -273,7 +273,7 @@ struct ListCard: View {
             if card.kind == "steps" {
                 ForEach(Array(card["items"].strings.prefix(12).enumerated()), id: \.offset) { n, s in
                     HStack(alignment: .top, spacing: 8) {
-                        Text("\(n + 1)").font(.system(size: 10, weight: .bold)).frame(width: 18, height: 18)
+                        Text("\(n + 1)").font(.system(size: 11, weight: .bold)).frame(width: 18, height: 18)
                             .background(Circle().fill(Color.accentColor.opacity(0.18)))
                         Text(s).font(.system(size: 12)).textSelection(.enabled)
                     }
@@ -286,7 +286,7 @@ struct ListCard: View {
                         VStack(alignment: .leading, spacing: 0) {
                             Text(item["text"].string ?? "").font(.system(size: 12))
                                 .strikethrough(item["done"].bool == true).foregroundStyle(item["done"].bool == true ? .secondary : .primary)
-                            if let d = item["detail"].string { Text(d).font(.system(size: 10.5)).foregroundStyle(.secondary) }
+                            if let d = item["detail"].string { Text(d).font(.system(size: 11.5)).foregroundStyle(.secondary) }
                         }
                         Spacer(minLength: 0)
                     } }
@@ -380,7 +380,7 @@ struct NewsCard: View {
                         Text(n["headline"].string ?? "").font(.system(size: 12, weight: .medium)).lineLimit(3)
                             .multilineTextAlignment(.leading)
                         Text([n["source"].string, n["when"].string].compactMap { $0 }.joined(separator: " · "))
-                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
                     if let img = n["image_url"].url { CardImage(url: img, size: 48, corner: 6, fill: true).frame(width: 64) }
@@ -400,12 +400,12 @@ struct HomeCard: View {
                            trailing: card["mode"].string?.capitalized)
                 HStack(alignment: .firstTextBaseline, spacing: 14) {
                     VStack(alignment: .leading) {
-                        Text("Now").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        Text("Now").font(.system(size: 11.5)).foregroundStyle(.secondary)
                         Text(ViewCard.degrees(card["current"].double)).font(.system(size: 30, weight: .light))
                     }
                     Image(systemName: "arrow.right").foregroundStyle(.tertiary)
                     VStack(alignment: .leading) {
-                        Text("Set to").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        Text("Set to").font(.system(size: 11.5)).foregroundStyle(.secondary)
                         Text(ViewCard.degrees(card["target"].double)).font(.system(size: 30, weight: .semibold)).foregroundStyle(.orange)
                     }
                     Spacer()
@@ -421,7 +421,7 @@ struct HomeCard: View {
                                 .foregroundStyle(on ? (d["color"].string.map { lineColor($0) } ?? Color.yellow) : Color.secondary)
                             Text(d["name"].string ?? "").font(.system(size: 11, weight: .medium)).lineLimit(2)
                             Text(d["state"].string ?? (on ? (d["level"].double.map { "\(Int($0))%" } ?? "On") : "Off"))
-                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                         .padding(9).frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 10).fill(on ? Color.yellow.opacity(0.14) : Color.primary.opacity(0.05)))

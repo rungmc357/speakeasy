@@ -21,11 +21,9 @@ public struct DecisionCompare: View {
             ForEach(Array(options.enumerated()), id: \.offset) { i, option in
                 let rec = i == decision.recommended
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .firstTextBaseline, spacing: 5) {
-                        NumberBadge(number: i + 1, chosen: chosen == option.text)
-                        Text(option.text).font(.system(size: 12 * s, weight: .semibold))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    NumberBadge(number: i + 1, chosen: chosen == option.text)
+                    Text(option.text).font(.system(size: 12 * s, weight: .semibold))
+                        .fixedSize(horizontal: false, vertical: true)
                     if rec { JobPill(text: "Recommended", style: .blue) }
                     row("Risk", Self.risk(option))
                     row("Undo", option.reversible.map { $0 ? "Reversible" : "Can't undo" })
@@ -42,7 +40,7 @@ public struct DecisionCompare: View {
                         TileButton(title: "Pick \(i + 1)", primary: rec) { onPick(i + 1) }
                     }
                 }
-                .padding(8)
+                .padding(7)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .fill(rec ? JobStyle.blue.opacity(0.13) : Color.primary.opacity(0.05)))
@@ -58,7 +56,7 @@ public struct DecisionCompare: View {
     @ViewBuilder private func row(_ label: String, _ value: String?) -> some View {
         if let value {
             VStack(alignment: .leading, spacing: 1) {
-                Text(label.uppercased()).font(.system(size: 9.5 * s, weight: .semibold)).tracking(0.4).foregroundStyle(.secondary)
+                Text(label.uppercased()).font(.system(size: 10.5 * s, weight: .semibold)).tracking(0.4).foregroundStyle(.secondary)
                 Text(value).font(.system(size: 11 * s, weight: .medium)).fixedSize(horizontal: false, vertical: true)
             }
         }

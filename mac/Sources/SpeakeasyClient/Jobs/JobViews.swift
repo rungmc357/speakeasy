@@ -80,7 +80,7 @@ public struct JobPill: View {
     public init(text: String, style: JobStyle.Pill) { self.text = text; self.style = style }
     public var body: some View {
         let (bg, fg) = JobStyle.pillColors(style)
-        Text(text).font(.system(size: 10 * s, weight: .semibold)).lineLimit(1)
+        Text(text).font(.system(size: 11 * s, weight: .semibold)).lineLimit(1)
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(Capsule().fill(bg)).foregroundStyle(fg)
             .fixedSize()
@@ -92,7 +92,7 @@ public struct SectionLabel: View {
     var text: String
     public init(text: String) { self.text = text }
     public var body: some View {
-        Text(text.uppercased()).font(.system(size: 9.5 * s, weight: .semibold)).tracking(0.7).foregroundStyle(.tertiary)
+        Text(text.uppercased()).font(.system(size: 10.5 * s, weight: .semibold)).tracking(0.7).foregroundStyle(.secondary)
     }
 }
 
@@ -346,8 +346,10 @@ public struct AnswerTile: View {
     var action: () -> Void
     /// Dismiss without opening (the x, or Dismiss in the long-press menu): it moves to Done today.
     var onDismiss: (() -> Void)?
-    public init(job: Job, focused: Bool, onDismiss: (() -> Void)? = nil, action: @escaping () -> Void) {
-        self.job = job; self.focused = focused; self.onDismiss = onDismiss; self.action = action
+    /// What the voice is saying right now: the tile doesn't print the same line again under it.
+    var spokenNow: String?
+    public init(job: Job, focused: Bool, spokenNow: String? = nil, onDismiss: (() -> Void)? = nil, action: @escaping () -> Void) {
+        self.job = job; self.focused = focused; self.spokenNow = spokenNow; self.onDismiss = onDismiss; self.action = action
     }
     @State private var hover = false
 
@@ -361,7 +363,7 @@ public struct AnswerTile: View {
                         Circle().fill(JobOrb.answerBlue).frame(width: 6, height: 6)
                         Text(job.name).font(.system(size: 13 * s, weight: .semibold)).lineLimit(1)
                     }
-                    if let headline = JobAnswer.headline(info) {
+                    if let headline = JobAnswer.headline(info), !TextEcho.repeats(headline, in: spokenNow) {
                         Text(headline).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -436,7 +438,7 @@ public struct DoneChip: View {
                     .font(.system(size: 8 * s, weight: .bold)).foregroundStyle(JobStyle.green.opacity(0.9))
                 Text(job.name).font(.system(size: 11 * s)).lineLimit(1)
                 if job.setAside {
-                    Text("· Set aside").font(.system(size: 10.5 * s)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                    Text("· Set aside").font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
                 }
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
@@ -506,7 +508,7 @@ public struct JobTile: View {
                 if let rec = d.recommendedOption {
                     // The question is one click away; the tile leads with what to do.
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("RECOMMENDED").font(.system(size: 9 * s, weight: .semibold)).tracking(0.6).foregroundStyle(.tertiary)
+                        Text("RECOMMENDED").font(.system(size: 10 * s, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
                             .fixedSize()
                         Text(rec.text).font(.system(size: 12 * s, weight: .medium)).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
@@ -693,7 +695,7 @@ public struct JobDetailBody: View {
                         Image(systemName: "link").font(.system(size: 9.5 * s, weight: .semibold)).foregroundStyle(.tertiary)
                         Text(link.title).font(.system(size: 11.5 * s)).lineLimit(1)
                         Spacer(minLength: 4)
-                        Text(link.url.host ?? "").font(.system(size: 10.5 * s)).foregroundStyle(.tertiary).lineLimit(1)
+                        Text(link.url.host ?? "").font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .foregroundStyle(JobStyle.blueInk)
                 }
@@ -718,10 +720,7 @@ public struct JobDetailBody: View {
     /// (the spoken line, said again under it).
     public static func bodyText(_ info: WorkInfo) -> String? {
         guard let text = info.result?.full ?? info.result?.spoken else { return nil }
-        let headline = JobAnswer.headline(info) ?? info.result?.spoken
-        func norm(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
-        if let headline, norm(headline) == norm(text) || norm(text).isEmpty { return nil }
-        return text
+        return TextEcho.remainder(text, after: JobAnswer.headline(info) ?? info.result?.spoken)
     }
 
     /// Markdown links `[name](url)` as just their names; bold markers dropped.
@@ -750,13 +749,13 @@ public struct JobDetailBody: View {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(JobStyle.green).font(.system(size: 12 * s))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("You picked").font(.system(size: 10 * s, weight: .semibold)).foregroundStyle(.tertiary)
+                    Text("You picked").font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(.secondary)
                     Text(picked).font(.system(size: 12 * s, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                     if let until = model.pendingPicks[task.id] {
                         PickUndoBar(picked: picked, until: until) { model.undoPick(task.id) }.padding(.top, 4)
                     }
                     if let q = task.info.decision?.question {
-                        Text(q).font(.system(size: 10.5 * s)).foregroundStyle(.tertiary).lineLimit(2)
+                        Text(q).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
             }
@@ -772,11 +771,11 @@ public struct JobDetailBody: View {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: "arrow.uturn.down.circle.fill").foregroundStyle(.secondary).font(.system(size: 12 * s))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Set aside").font(.system(size: 10 * s, weight: .semibold)).foregroundStyle(.tertiary)
+                    Text("Set aside").font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(.secondary)
                     Text("Already handled or not needed. Nothing is waiting on you here.")
                         .font(.system(size: 12 * s, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                     if let q = job.tasks.last(where: { $0.info.decision != nil })?.info.decision?.question {
-                        Text(q).font(.system(size: 10.5 * s)).foregroundStyle(.tertiary).lineLimit(2)
+                        Text(q).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
             }
@@ -837,7 +836,7 @@ public struct JobDetailBody: View {
                         Text(task.name).font(.system(size: 11.5 * s)).lineLimit(1)
                         Spacer(minLength: 4)
                         Text(task.isActive ? "running" : (task.info.status == "completed" ? "done" : task.info.status.replacingOccurrences(of: "_", with: " ")))
-                            .font(.system(size: 10.5 * s)).foregroundStyle(.tertiary)
+                            .font(.system(size: 11.5 * s)).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -879,7 +878,7 @@ public struct DecisionBrief: View {
             if part != .options {
                 HStack(spacing: 6) {
                     Circle().fill(answer == nil ? JobStyle.tileAmber : JobStyle.green).frame(width: 7, height: 7)
-                    Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 10.5 * s, weight: .semibold)).foregroundStyle(.secondary)
+                    Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 11.5 * s, weight: .semibold)).foregroundStyle(.secondary)
                 }
                 Text(decision.question).font(.system(size: 14 * s, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                 if let context = decision.context {
@@ -1028,13 +1027,13 @@ public struct NotReadNotice: View {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Color.orange).font(.system(size: 12 * s))
             VStack(alignment: .leading, spacing: 2) {
                 Text(finished ? "Finished before reading what you added" : "Stopped before reading what you added")
-                    .font(.system(size: 10 * s, weight: .semibold)).foregroundStyle(.secondary)
+                    .font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(.secondary)
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     Text("\u{201C}\(item.text)\u{201D}").font(.system(size: 12 * s, weight: .medium))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Text("It wasn't part of this answer. Ask again to run it as new work.")
-                    .font(.system(size: 10.5 * s)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                    .font(.system(size: 11.5 * s)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .combine)
@@ -1243,7 +1242,7 @@ public struct ReportBoard: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(c.value).font(.system(size: 15 * s, weight: .bold)).lineLimit(1).minimumScaleFactor(0.6)
                                 .foregroundStyle(c.good ? JobStyle.green : JobStyle.amber)
-                            Text(c.label).font(.system(size: 10 * s)).lineLimit(2)
+                            Text(c.label).font(.system(size: 11 * s)).lineLimit(2)
                                 .foregroundStyle(c.good ? JobStyle.green.opacity(0.75) : JobStyle.amber.opacity(0.8))
                         }
                         .padding(.horizontal, 8).padding(.vertical, 6)
@@ -1553,7 +1552,7 @@ public struct ApprovalContext: View {
     }
     private func row(_ label: String, _ text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Text(label.uppercased()).font(.system(size: 9.5 * s, weight: .semibold)).tracking(0.5).foregroundStyle(.secondary)
+            Text(label.uppercased()).font(.system(size: 10.5 * s, weight: .semibold)).tracking(0.5).foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .leading)
             Text(text).font(.system(size: (compact ? 11.5 : 12) * s, weight: label == "Will" ? .medium : .regular))
                 .foregroundStyle(label == "Will" ? Color.primary : Color.secondary)

@@ -824,7 +824,7 @@ struct TranscriptBubble: View {
         HStack(spacing: 0) {
             if mine { Spacer(minLength: 36) }
             VStack(alignment: mine ? .trailing : .leading, spacing: 2) {
-                Text(mine ? "You" : assistantName).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.tertiary)
+                Text(mine ? "You" : assistantName).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
                 Text(turn.cleanedText).font(.system(size: 11.5))
                     .foregroundStyle(mine ? Color.white : Color.primary.opacity(0.9))
                     .textSelection(.enabled)
@@ -845,7 +845,7 @@ struct TranscriptBubble: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(turn.taskName.map { "\(assistantName) · \($0)" } ?? "\(assistantName) · written reply")
-                    .font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.tertiary).lineLimit(1)
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
                 Text(Self.markdown(turn.cleanedText)).font(.system(size: 11.5))
                     .foregroundStyle(Color.primary.opacity(0.9))
                     .textSelection(.enabled)
@@ -909,7 +909,7 @@ struct CaptionView: View {
                 }
             } else {
                 // The live caption: just the line being said now, cut on a word, up to two lines.
-                if let now = LiveCaption.current(exchange, phase: phase) {
+                if let now = LiveCaption.current(Self.desktopWording(exchange), phase: phase) {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(now.you ? "You" : assistantName).font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(now.you ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
@@ -944,10 +944,19 @@ struct CaptionView: View {
         .help(expanded ? "Scroll to read back · collapse with the corner button" : "Read the full exchange")
     }
 
+    /// The voice sometimes says "tap" (it's the same model the phone talks to); on a Mac it's a click.
+    static func desktopWording(_ e: Exchange) -> Exchange {
+        var out = e
+        out.assistant = e.assistant
+            .replacingOccurrences(of: #"\bTap\b"#, with: "Click", options: .regularExpression)
+            .replacingOccurrences(of: #"\btap\b"#, with: "click", options: .regularExpression)
+        return out
+    }
+
     @ViewBuilder
     private func line(_ speaker: String, _ text: String, full: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Text(speaker).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.tertiary)
+            Text(speaker).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
                 .lineLimit(1).fixedSize()
                 .frame(minWidth: 30, alignment: .leading)
             if full {
@@ -1057,12 +1066,12 @@ struct TaskListView: View {
         VStack(alignment: .leading, spacing: compact ? 2 : 4) {
             if compact {
                 HStack(spacing: 6) {
-                    Text(summary(tasks)).font(.system(size: 9.5, weight: .semibold)).tracking(0.6)
+                    Text(summary(tasks)).font(.system(size: 10.5, weight: .semibold)).tracking(0.6)
                         .foregroundStyle(.tertiary)
                     Spacer()
                     if tasks.count > shown.count {
                         Button(action: { model.onSelectTask(nil) }) {
-                            Text("+\(tasks.count - shown.count) earlier").font(.system(size: 10)).foregroundStyle(.tertiary)
+                            Text("+\(tasks.count - shown.count) earlier").font(.system(size: 11)).foregroundStyle(.secondary)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -1098,7 +1107,7 @@ struct ClearDoneButton: View {
         let done = model.state.tasks.filter(\.isSettled).compactMap(\.info.runID)
         if done.count >= 2 {
             Button(action: { model.onDismissTasks(done) }) {
-                Text("Clear done").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                Text("Clear done").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Capsule().fill(Color.primary.opacity(0.07)))
                     .contentShape(Capsule())
@@ -1499,7 +1508,7 @@ struct WorkDetailView: View {
                                     .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                             }
                             if let fresh = freshness {
-                                Text(fresh).font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                                Text(fresh).font(.system(size: 11.5)).foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -1507,7 +1516,7 @@ struct WorkDetailView: View {
                         section(live.label) {
                             VStack(alignment: .leading, spacing: 4) {
                                 LiveImageView(runID: runID, live: live, height: 170, load: model.loadLiveImage)
-                                Text(live.name).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                Text(live.name).font(.system(size: 11.5)).foregroundStyle(.secondary)
                                     .lineLimit(1).truncationMode(.middle)
                             }
                         }
@@ -1533,7 +1542,7 @@ struct WorkDetailView: View {
                             VStack(alignment: .leading, spacing: 5) {
                                 ForEach(Array(milestones.enumerated()), id: \.offset) { _, item in
                                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                        Text(item.at.map(Self.time) ?? "").font(.system(size: 10.5).monospacedDigit())
+                                        Text(item.at.map(Self.time) ?? "").font(.system(size: 11.5).monospacedDigit())
                                             .foregroundStyle(.tertiary).frame(width: 44, alignment: .leading)
                                         Text(item.text).font(.system(size: 11.5)).textSelection(.enabled)
                                             .fixedSize(horizontal: false, vertical: true)
@@ -1569,7 +1578,7 @@ struct WorkDetailView: View {
                                                     if let rating = product.rating { Text("★ \(rating)") }
                                                 }.font(.system(size: 11)).foregroundStyle(.secondary)
                                                 ForEach(product.specs, id: \.self) { spec in
-                                                    Text("· \(spec)").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                                    Text("· \(spec)").font(.system(size: 11.5)).foregroundStyle(.secondary)
                                                         .fixedSize(horizontal: false, vertical: true)
                                                 }
                                             }
@@ -1668,7 +1677,7 @@ struct WorkDetailView: View {
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased()).font(.system(size: 9.5, weight: .semibold)).tracking(0.6).foregroundStyle(.tertiary)
+            Text(title.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
             content()
         }
     }

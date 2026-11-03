@@ -38,7 +38,7 @@ struct LanesCard: View {
                             let labels = ticks.isEmpty ? [card["start_label"].string ?? "", card["end_label"].string ?? ""] : ticks
                             ForEach(Array(labels.enumerated()), id: \.offset) { i, t in
                                 if i > 0 { Spacer(minLength: 2) }
-                                Text(t).font(.system(size: 9.5).monospacedDigit()).foregroundStyle(.tertiary).lineLimit(1)
+                                Text(t).font(.system(size: 11.5).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                     }
@@ -98,14 +98,14 @@ struct BeforeAfterCard: View {
                     } else if let n = v["image"].double, let load = actions.image {
                         NumberedImage(number: Int(n), load: load).frame(height: 96)
                     }
-                    Text(v["label"].string ?? fallback).font(.system(size: 9.5, weight: .bold))
+                    Text(v["label"].string ?? fallback).font(.system(size: 11.5, weight: .bold))
                         .padding(.horizontal, 5).padding(.vertical, 2)
                         .background(Capsule().fill(Color.black.opacity(0.6))).foregroundStyle(.white).padding(4)
                 }
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             } else {
-                Text((v["label"].string ?? fallback).uppercased()).font(.system(size: 9.5, weight: .semibold)).tracking(0.5)
+                Text((v["label"].string ?? fallback).uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.5)
                     .foregroundStyle(.secondary)
             }
             if let text = v["text"].string {
@@ -173,7 +173,7 @@ struct FlowCard: View {
             Text(node["label"].string ?? "").font(.system(size: 11.5, weight: .semibold)).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             if let d = node["detail"].string {
-                Text(d).font(.system(size: 10.5)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text(d).font(.system(size: 11.5)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -217,7 +217,7 @@ struct DevicesCard: View {
                 .frame(height: 12)
             }
             if let detail = item["detail"].string {
-                Text(detail).font(.system(size: 9.5)).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.center)
+                Text(detail).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.center)
             }
         }
         .padding(.horizontal, 6).padding(.vertical, 8)
@@ -254,7 +254,7 @@ public struct AnswerGlance: View {
                     Text(card["price"].double.map { ViewCard.money($0, currency: card["currency"].string) } ?? "")
                         .font(.system(size: 14, weight: .semibold).monospacedDigit()).lineLimit(1)
                     if let c = card["change_pct"].double {
-                        Text(ViewCard.signed(c)).font(.system(size: 10, weight: .medium).monospacedDigit())
+                        Text(ViewCard.signed(c)).font(.system(size: 11, weight: .medium).monospacedDigit())
                             .foregroundStyle(c >= 0 ? toneColor("good") : toneColor("bad"))
                     }
                 }
@@ -293,7 +293,7 @@ public struct AnswerGlance: View {
             Text(v).font(.system(size: 16, weight: .semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.6)
                 .frame(maxWidth: 96, alignment: .trailing)
                 .foregroundStyle(tone.map { toneColor($0) } ?? Color.primary)
-            if let label { Text(label).font(.system(size: 9.5)).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 96, alignment: .trailing) }
+            if let label { Text(label).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 96, alignment: .trailing) }
         }
     }
 }

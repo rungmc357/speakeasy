@@ -144,3 +144,30 @@ public enum MapsLink {
         return URL(string: "https://maps.apple.com/?q=\(q)")
     }
 }
+
+// MARK: - Saying it once (contract §5)
+
+public enum TextEcho {
+    static func norm(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+
+    /// `line` is already shown by `shown` (equal, or contained in it).
+    public static func repeats(_ line: String?, in shown: String?) -> Bool {
+        guard let line, let shown else { return false }
+        let a = norm(line), b = norm(shown)
+        return !a.isEmpty && b.contains(a)
+    }
+
+    /// `text` with a leading `headline` taken off, so a page that leads with the headline doesn't
+    /// say it again underneath. nil when nothing is left.
+    public static func remainder(_ text: String, after headline: String?) -> String? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let headline, !norm(headline).isEmpty else { return t.isEmpty ? nil : t }
+        let h = headline.trimmingCharacters(in: .whitespacesAndNewlines)
+        if norm(t) == norm(h) { return nil }
+        if t.hasPrefix(h) {
+            let rest = t.dropFirst(h.count).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            return rest.isEmpty ? nil : String(t.dropFirst(h.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return t
+    }
+}

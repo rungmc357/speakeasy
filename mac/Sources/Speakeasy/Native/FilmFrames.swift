@@ -27,6 +27,7 @@ enum FilmFrames {
                 let (name, state, open) = (shot.name, shot.state, shot.open)
                 let m = client.model
                 m.orbLevel = 0; m.previewProblem = nil; m.pendingPicks = [:]; m.toast = nil; m.openSections = []
+                if set == "ux" { for id in ["c", "a", "p", "f", "h", "m", "b"] { m.answers[id] = nil } }
                 m.capabilities = set == "ux" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true) : nil
                 client.showPreview(state, workExpanded: false)
                 client.model.onOpenJob(open)
@@ -132,7 +133,7 @@ enum FilmFrames {
         var s = base()
         s.exchange = Exchange(you: "", assistant: "", replyStarted: false)
         out.append(("01-idle", s))
-        s = base(); s.exchange = Exchange(you: "What's Nvidia at?", assistant: "", replyStarted: false)
+        s = base(); s.exchange = Exchange(you: "What's Nvidia at?", assistant: "", replyStarted: false); s.lastInputAt = now
         out.append(("02-ask-quote", s))
         s = base(); s.speech = .speaking(lastDelta: now)
         s.exchange = Exchange(you: "What's Nvidia at?", assistant: "Nvidia's at 187.42, up 2.1% today.", replyStarted: true)

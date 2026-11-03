@@ -15,14 +15,14 @@ struct QuoteCard: View {
                     CardImage(url: logo, size: 30, corner: 15)
                 } else {
                     Text(String((card["symbol"].string ?? "?").prefix(4)))
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
                         .frame(width: 34, height: 34)
                         .background(Circle().fill(Color.primary.opacity(0.08)))
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(card["name"].string ?? card["symbol"].string ?? "").font(.system(size: 13, weight: .semibold)).lineLimit(1)
                     Text([card["symbol"].string, card["exchange"].string].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                        .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 1) {
@@ -41,7 +41,7 @@ struct QuoteCard: View {
             let points = card["points"].doubles
             if points.count > 2 { Sparkline(points: points, up: up) }
             if let asOf = card["as_of"].string {
-                Text(asOf).font(.system(size: 10)).foregroundStyle(.tertiary)
+                Text(asOf).font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }
     }
@@ -73,7 +73,7 @@ struct WeatherCard: View {
                 HStack(spacing: 0) {
                     ForEach(Array(hours.prefix(6).enumerated()), id: \.offset) { _, h in
                         VStack(spacing: 4) {
-                            Text(h["label"].string ?? "").font(.system(size: 9.5)).foregroundStyle(.secondary)
+                            Text(h["label"].string ?? "").font(.system(size: 11.5)).foregroundStyle(.secondary)
                             Image(systemName: weatherSymbol(h["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 13))
                             Text(ViewCard.degrees(h["temp"].double)).font(.system(size: 11, weight: .medium).monospacedDigit())
                         }
@@ -132,7 +132,7 @@ struct TeamRow: View {
                 Text(side["name"].string ?? side["abbr"].string ?? "").font(.system(size: 12.5, weight: side["winner"].bool == true ? .semibold : .regular))
                     .lineLimit(1)
                 if let record = side["record"].string {
-                    Text(record).font(.system(size: 10)).foregroundStyle(.tertiary)
+                    Text(record).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 0)
@@ -152,10 +152,10 @@ struct GameCard: View {
             HStack {
                 CardHeader(icon: "sportscourt.fill", title: card["league"].string ?? "Game")
                 if status == "live" {
-                    Text("LIVE").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white)
+                    Text("LIVE").font(.system(size: 11.5, weight: .bold)).foregroundStyle(.white)
                         .padding(.horizontal, 5).padding(.vertical, 1.5).background(Capsule().fill(.red))
                 } else if status == "projected" {
-                    Text("PROJECTED").font(.system(size: 9.5, weight: .bold)).foregroundStyle(.secondary)
+                    Text("PROJECTED").font(.system(size: 11.5, weight: .bold)).foregroundStyle(.secondary)
                         .padding(.horizontal, 5).padding(.vertical, 1.5).background(Capsule().fill(.primary.opacity(0.08)))
                 }
             }
@@ -191,7 +191,7 @@ struct GamesCard: View {
                         }
                     }
                     Text(g["status"].string == "final" ? "Final" : g["status"].string == "live" ? "Live" : (g["when"].string ?? ""))
-                        .font(.system(size: 10)).foregroundStyle(g["status"].string == "live" ? Color.red : Color.secondary)
+                        .font(.system(size: 11)).foregroundStyle(g["status"].string == "live" ? Color.red : Color.secondary)
                         .frame(width: 110, alignment: .trailing).lineLimit(2).multilineTextAlignment(.trailing)
                 }
             }
@@ -212,7 +212,7 @@ struct StandingsCard: View {
                     Text(row["name"].string ?? "").font(.system(size: 11.5)).lineLimit(1)
                     Spacer(minLength: 0)
                     Text(row["record"].string ?? "").font(.system(size: 11).monospacedDigit())
-                    if let note = row["note"].string { Text(note).font(.system(size: 10)).foregroundStyle(.tertiary) }
+                    if let note = row["note"].string { Text(note).font(.system(size: 11)).foregroundStyle(.secondary) }
                 }
             }
         }
@@ -230,7 +230,7 @@ struct ClockCard: View {
                         Text(z["time"].string ?? "").font(.system(size: 24, weight: .light).monospacedDigit())
                             .minimumScaleFactor(0.7).lineLimit(1)
                         Text([z["day"].string, z["offset"].string, z["zone"].string].compactMap { $0 }.joined(separator: " · "))
-                            .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)

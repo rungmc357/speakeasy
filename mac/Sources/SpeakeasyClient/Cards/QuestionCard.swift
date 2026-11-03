@@ -173,7 +173,7 @@ private struct PictureOption: View {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     Text("\(number)")
-                        .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
                         .frame(width: 18, height: 18)
                         .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
                             .fill(chosen ? Color.accentColor : Color.black.opacity(0.55)))

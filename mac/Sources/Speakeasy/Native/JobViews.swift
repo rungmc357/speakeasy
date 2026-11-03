@@ -95,6 +95,7 @@ struct JobBoardView: View {
                     SectionLabel(text: "New answers").padding(.top, sections.needsYou.isEmpty ? 0 : 4)
                     ForEach(sections.newAnswers) { job in
                         AnswerTile(job: job, focused: model.boardFocusID == job.id,
+                                   spokenNow: model.state.connection == .live ? model.state.exchange.cleaned.assistant : nil,
                                    onDismiss: { model.dismissAnswer(job) }) { model.onOpenJob(job.id) }
                             .modifier(TileFrame(id: job.id))
                     }
@@ -113,7 +114,7 @@ struct JobBoardView: View {
                     }
                 }
                 if !FilmFrames.cleanShots {
-                    Text(hint(sections)).font(.system(size: 10)).foregroundStyle(.tertiary).padding(.top, 3)
+                    Text(hint(sections)).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 3)
                 }
             }
             .padding(.trailing, 6)
@@ -174,7 +175,7 @@ struct JobDetailView: View {
             HStack(spacing: 8) {
                 AllJobsButton { model.onOpenJob(nil) }
                 Spacer(minLength: 4)
-                Text("esc").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary)
+                Text("esc").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.75))
                     .help("Esc goes back to all jobs")
@@ -198,7 +199,8 @@ struct JobDetailView: View {
                     Text(job.stage.needsYou || job.setAside ? JobDetailBody.stageLine(job) : line.0).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
-            PanelScrollView(maxHeight: min(JobStyle.scrollCap, 560 + model.extraHeight)) {
+            let footer: CGFloat = job.decisionTask.map { model.answers[$0.id] == nil && !model.openSections.contains("\($0.id)|compare") } == true ? 76 : 0
+            PanelScrollView(maxHeight: min(JobStyle.scrollCap, 560 + model.extraHeight) - footer) {
                 VStack(alignment: .leading, spacing: 12) {
                     JobDetailBody(job: job, model: model, revision: UUID())
                         // The scroller hosts its content apart, so the environment is set inside it.
@@ -206,6 +208,11 @@ struct JobDetailView: View {
                 }
                     .padding(.trailing, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // The decision's buttons stay in reach however long the brief above them is.
+            if let task = job.decisionTask, let d = task.info.decision, model.answers[task.id] == nil,
+               !model.openSections.contains("\(task.id)|compare") {
+                DecisionFooter(job: job, decision: d, model: model)
             }
             if let next {
                 Button { model.onOpenJob(next.id) } label: {
@@ -226,3 +233,38 @@ struct JobDetailView: View {
     }
 }
 
+
+/// Pinned under a decision's scrolling brief: Approve the recommendation (when the plugin allows it)
+/// and a numbered button per option, so a long brief never pushes the choice off the panel.
+struct DecisionFooter: View {
+    var job: Job
+    var decision: Decision
+    @ObservedObject var model: VoicePanelModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if decision.approvable, let rec = decision.recommendedOption {
+                TileButton(title: "Approve: \(rec.text)", primary: true) { model.approve(job) }
+                    .lineLimit(1)
+            }
+            HStack(spacing: 5) {
+                Text("Pick").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
+                ForEach(Array(decision.options.prefix(4).enumerated()), id: \.offset) { i, o in
+                    Button { model.pick(i + 1, in: job) } label: {
+                        HStack(spacing: 4) {
+                            NumberBadge(number: i + 1)
+                            Text(o.text).font(.system(size: 11.5, weight: .medium)).lineLimit(1).truncationMode(.tail)
+                        }
+                        .padding(.horizontal, 6).frame(height: 26).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(i == decision.recommended ? JobStyle.blue.opacity(0.22) : Color.primary.opacity(0.07)))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(o.text)
+                }
+            }
+        }
+        .padding(.top, 4)
+        .overlay(alignment: .top) { Divider().opacity(0.5).offset(y: -4) }
+    }
+}

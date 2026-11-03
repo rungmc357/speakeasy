@@ -392,7 +392,11 @@ public final class VoicePanelModel: ObservableObject {
     /// A fresh screen-sharing notice ("Screen Recording is off · Set up", "Up to 3 at a time") is on
     /// the status line now: it wins over the orb's summary, which would otherwise hide it (and its tap).
     private var showingShareNotice: Bool { shareNotice.map { $0.text == shownStatus } ?? false }
-    public var headerStatus: String { showingShareNotice ? shownStatus : (orbReason?.text ?? shownStatus) }
+    public var headerStatus: String {
+        // A problem with a fix button under the header: the status line points at it, not repeats it.
+        if callProblem != nil && !showingShareNotice && orbReason == nil { return "One click to fix it, below" }
+        return showingShareNotice ? shownStatus : (orbReason?.text ?? shownStatus)
+    }
     public var headerTone: StatusTone { showingShareNotice ? shownTone : (orbReason?.tone ?? shownTone) }
     public var selectedJob: Job? { selectedJobID.flatMap { id in jobs.first { $0.id == id } } }
     /// The board replaces the task list once there's more than one task, anything needs you, or a

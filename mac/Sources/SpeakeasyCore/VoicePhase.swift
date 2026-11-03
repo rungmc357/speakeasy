@@ -132,7 +132,7 @@ public struct CallProblem: Equatable, Sendable {
                                    fix: .openMicSettings)
             }
             if failure.localizedCaseInsensitiveContains("pair") { return nil }   // Settings › Connection says how
-            return CallProblem(title: "Couldn't connect", detail: failure.replacingOccurrences(of: " Tap to try again.", with: ""),
+            return CallProblem(title: "Couldn't connect", detail: failure.replacingOccurrences(of: " Tap to try again.", with: "").replacingOccurrences(of: " Click Try again.", with: ""),
                                fix: .retry)
         }
         if s.connection == .live, s.micHealth == .broken, s.mic == .live {

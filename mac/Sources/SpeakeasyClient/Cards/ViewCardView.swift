@@ -86,7 +86,7 @@ struct CardHeader: View {
             Text(title.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.4).foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 0)
-            if let trailing { Text(trailing).font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1) }
+            if let trailing { Text(trailing).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1) }
         }
     }
 }

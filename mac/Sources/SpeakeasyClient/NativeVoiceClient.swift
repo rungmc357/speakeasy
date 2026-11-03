@@ -353,7 +353,11 @@ public final class NativeVoiceClient: VoiceCallClient {
             connect(api)
         } else {
             connectWatchdog?.cancel(); connectWatchdog = nil
+                        #if os(macOS)
+            dispatch(.failed("Couldn't connect to \(model.state.assistantName). Click Try again."))
+            #else
             dispatch(.failed("Couldn't connect to \(model.state.assistantName). Tap to try again."))
+            #endif
         }
     }
 
