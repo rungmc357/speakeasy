@@ -235,7 +235,10 @@ public enum JobBoard {
     }
 
     static func isDecisionPending(_ t: TaskItem, answered: Set<String>, dismissed: Set<String>, now: Date) -> Bool {
-        guard t.info.isTerminal, t.info.decision != nil, !answered.contains(t.id), !dismissed.contains(t.id),
+        // A question card waits on the user whether or not the run has wrapped up (a run that asks
+        // and keeps going must not sit under a Running pill).
+        guard t.info.isTerminal || t.info.status == "working" || t.info.status == "running",
+              t.info.decision != nil, !answered.contains(t.id), !dismissed.contains(t.id),
               let at = t.info.updatedAt ?? t.info.updated else { return false }
         return now.timeIntervalSince(at) < decisionKeptFor
     }

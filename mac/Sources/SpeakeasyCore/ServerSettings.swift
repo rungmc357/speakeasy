@@ -414,6 +414,8 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     public var grokMessage: String?
     /// The plugin's own beta flag (`grok_beta`); also folded into `beta` when decoding.
     public var grokBeta: Bool?
+    /// The UX-overhaul features this server has (`capabilities`); nil from older plugins.
+    public var capabilities: ServerCapabilities?
 
     enum CodingKeys: String, CodingKey {
         case assistantName = "assistant_name", provider, codexSignedIn = "codex_signed_in"
@@ -427,6 +429,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         case roomListening = "room_listening", roomOnResume = "room_on_resume"
         case beta, grokAvailable = "grok_available", grokSignedIn = "grok_signed_in"
         case grokBeta = "grok_beta", grokReady = "grok_ready", grokMessage = "grok_message"
+        case capabilities
     }
 
     public init(assistantName: String? = nil, provider: String? = nil, codexSignedIn: Bool? = nil, apiKeySet: Bool? = nil,
@@ -464,6 +467,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         grokReady = try? c.decodeIfPresent(Bool.self, forKey: .grokReady)
         grokMessage = try? c.decodeIfPresent(String.self, forKey: .grokMessage)
         grokSignedIn = try? c.decodeIfPresent(Bool.self, forKey: .grokSignedIn)
+        capabilities = try? c.decodeIfPresent(ServerCapabilities.self, forKey: .capabilities)
     }
 
     /// Grok Voice goes in the provider picker: beta on and Grok available on the server.
@@ -782,5 +786,29 @@ public struct HomeControlInfo: Codable, Equatable, Sendable {
         if let enabled { body["enabled"] = enabled }
         if let entities { body["entities"] = entities.sorted() }
         return try JSONSerialization.data(withJSONObject: body)
+    }
+}
+
+/// What a server can do beyond the base api (GET /voice/status `capabilities`). A missing object or
+/// flag means an older plugin: the app hides the matching controls and behaves as before.
+public struct ServerCapabilities: Codable, Equatable, Sendable {
+    /// Card buttons call `POST …/card-action`.
+    public var cardActions: Bool
+    /// Tasks carry started_at, step_index/step_count, eta_seconds and failure_reason.
+    public var jobProgress: Bool
+    /// Choices the voice offers arrive as question cards.
+    public var spokenChoices: Bool
+
+    public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false) {
+        self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
+    }
+    enum CodingKeys: String, CodingKey {
+        case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cardActions = (try? c.decodeIfPresent(Bool.self, forKey: .cardActions)) ?? false
+        jobProgress = (try? c.decodeIfPresent(Bool.self, forKey: .jobProgress)) ?? false
+        spokenChoices = (try? c.decodeIfPresent(Bool.self, forKey: .spokenChoices)) ?? false
     }
 }

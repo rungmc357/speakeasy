@@ -41,6 +41,17 @@ public enum JSONValue: Equatable, Sendable {
         return u
     }
     public var strings: [String] { array.compactMap(\.string) }
+    /// Back to Foundation types for a JSON request body.
+    public var foundation: Any {
+        switch self {
+        case .string(let s): return s
+        case .number(let n): return n
+        case .bool(let b): return b
+        case .array(let a): return a.map(\.foundation)
+        case .object(let o): return o.mapValues(\.foundation)
+        case .null: return NSNull()
+        }
+    }
     public var doubles: [Double] { array.compactMap(\.double) }
 }
 
