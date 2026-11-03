@@ -11,13 +11,14 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from fakes import SDP, FakeTransport, http, wait_for
 from speakeasy import codex_transport as C
-from speakeasy.calls import INPUT_TEXT_TYPE, MAX_INPUT_TEXT, Interaction, typed_text
+from speakeasy.calls import INPUT_TEXT_TYPE, MAX_INPUT_TEXT, Interaction, ServiceError, typed_text
 from speakeasy.prompt import builder as P
 from speakeasy.service import VoiceService as ServiceVoice
 
@@ -48,6 +49,62 @@ def test_typed_text_is_one_clean_line():
     assert typed_text("  turn off\nthe   lights\t\x00now ") == "turn off the lights now"
     assert typed_text("\n\t ") == ""
     assert INPUT_TEXT_TYPE == "session.input_text" and MAX_INPUT_TEXT == 1000
+
+
+# -- the text rule, against the table the apps run too ------------------------------------------------
+# mac/Tests/SpeakeasyCoreTests/Contract/typed_text.json holds hand-written answers; SpeakeasyCore's
+# TypedTextTests checks the app's normalizer against the same file, so a drift on either side fails.
+
+CONTRACT = Path(__file__).resolve().parents[2] / "mac" / "Tests" / "SpeakeasyCoreTests" / "Contract"
+
+
+def _vector_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return value["before"] + value["repeat"] * value["times"] + value["after"]
+
+
+def _typed_text_table() -> dict[str, Any]:
+    return json.loads((CONTRACT / "typed_text.json").read_text())
+
+
+@pytest.mark.parametrize("vector", _typed_text_table()["vectors"], ids=lambda v: v["name"])
+def test_typed_text_matches_the_shared_table(service, vector):
+    raw, want = _vector_text(vector["input"]), _vector_text(vector["normalized"])
+    assert typed_text(raw) == want
+    assert len(want) == vector["scalars"]
+    # The route's own checks decide the verdict: 400 with a reason, or (for text it would take) on to
+    # the call lookup, which this unknown id fails.
+    with pytest.raises(ServiceError) as caught:
+        service.input_text("vi_contract_none", turn(raw))
+    if vector["verdict"] == "ok":
+        assert (caught.value.status, caught.value.reason) == (404, "unknown_interaction")
+    else:
+        assert (caught.value.status, caught.value.reason) == (400, vector["verdict"])
+
+
+def test_typed_text_separators_are_exactly_the_shared_set():
+    table = _typed_text_table()
+    assert table["max_scalars"] == MAX_INPUT_TEXT
+    separators = {c for lo, hi in table["separators"] for c in range(lo, hi + 1)}
+    for code in range(0x110000):
+        if 0xD800 <= code <= 0xDFFF:
+            continue
+        splits = typed_text(f"a{chr(code)}b") == "a b"
+        assert splits == (code in separators), hex(code)
+
+
+def test_the_apps_typed_turn_request_is_taken(server, service):
+    """The request SpeakeasyCore builds (Contract/requests/call/input_text.json, written by
+    ContractTests.testRecordCallRequests) goes through the real handler as one typed turn."""
+    spec = json.loads((CONTRACT / "requests" / "call" / "input_text.json").read_text())
+    assert spec["method"] == "POST"
+    iid = open_call(server, "req_typed_contract")
+    status, body = http(server.base_url, spec["method"], spec["path"].replace("{interaction_id}", iid),
+                        spec["body"], server.token)
+    assert status == 200 and body == {"interaction_id": iid, "type": INPUT_TEXT_TYPE, "sent": True}
+    assert typed_events(service.interaction(iid)) == [
+        {"role": "user", "text": typed_text(spec["body"]["text"]), "source": "typed"}]
 
 
 def test_gpt_live_note_quotes_the_words_and_asks_for_a_spoken_reply():

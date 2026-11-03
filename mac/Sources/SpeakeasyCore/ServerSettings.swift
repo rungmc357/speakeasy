@@ -403,6 +403,9 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     /// The server takes `room` with `resume_from` too (listening mode during a call pauses it, then
     /// resumes it with what was heard). Missing on plugins from before that.
     public var roomOnResume: Bool?
+    /// The server takes a turn typed on a live call (`POST /voice/interactions/{id}/input-text`).
+    /// Missing on older plugins, which 404 that route: read it through `takesTypedTurns`.
+    public var inputText: Bool?
     /// The server's beta features are on (plugin setting); Grok Voice is offered only then.
     public var beta: Bool?
     /// Grok Voice can be used on this server (the plugin has the relay and an X/SuperGrok sign-in path).
@@ -425,6 +428,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         case advertisedURL = "advertised_url", tailscaleName = "tailscale_name"
         case attachments
         case roomListening = "room_listening", roomOnResume = "room_on_resume"
+        case inputText = "input_text"
         case beta, grokAvailable = "grok_available", grokSignedIn = "grok_signed_in"
         case grokBeta = "grok_beta", grokReady = "grok_ready", grokMessage = "grok_message"
     }
@@ -458,6 +462,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         attachments = try? c.decodeIfPresent(AttachmentSupport.self, forKey: .attachments)
         roomListening = try? c.decodeIfPresent(Bool.self, forKey: .roomListening)
         roomOnResume = try? c.decodeIfPresent(Bool.self, forKey: .roomOnResume)
+        inputText = try? c.decodeIfPresent(Bool.self, forKey: .inputText)
         grokBeta = try? c.decodeIfPresent(Bool.self, forKey: .grokBeta)
         beta = grokBeta ?? (try? c.decodeIfPresent(Bool.self, forKey: .beta))
         grokAvailable = (try? c.decodeIfPresent(Bool.self, forKey: .grokAvailable)) ?? (grokBeta != nil ? true : nil)
@@ -465,6 +470,10 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         grokMessage = try? c.decodeIfPresent(String.self, forKey: .grokMessage)
         grokSignedIn = try? c.decodeIfPresent(Bool.self, forKey: .grokSignedIn)
     }
+
+    /// Show the call screen's composer: only a server that says `input_text: true` (a missing key,
+    /// or a value that isn't a boolean, means an older plugin without the route).
+    public var takesTypedTurns: Bool { inputText == true }
 
     /// Grok Voice goes in the provider picker: beta on and Grok available on the server.
     public var grokOffered: Bool { beta == true && grokAvailable == true }

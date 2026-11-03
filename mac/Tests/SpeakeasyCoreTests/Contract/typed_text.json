@@ -1,0 +1,303 @@
+{
+ "about": "The typed-turn text rule (POST /voice/interactions/{id}/input-text). Hand-written answers, checked by mac/Tests/SpeakeasyCoreTests/TypedTextTests.swift and plugin/tests/test_input_text.py. An input or normalized value is a string or {before, repeat, times, after}. scalars counts Unicode code points of the normalized text; verdict is ok, empty_text or text_too_long.",
+ "max_scalars": 1000,
+ "separators": [
+  [
+   0,
+   32
+  ],
+  [
+   127,
+   127
+  ],
+  [
+   133,
+   133
+  ],
+  [
+   160,
+   160
+  ],
+  [
+   5760,
+   5760
+  ],
+  [
+   8192,
+   8202
+  ],
+  [
+   8232,
+   8233
+  ],
+  [
+   8239,
+   8239
+  ],
+  [
+   8287,
+   8287
+  ],
+  [
+   12288,
+   12288
+  ]
+ ],
+ "vectors": [
+  {
+   "name": "plain",
+   "input": "turn off the lights",
+   "normalized": "turn off the lights",
+   "scalars": 19,
+   "verdict": "ok"
+  },
+  {
+   "name": "whitespace runs and ends",
+   "input": "  turn off\nthe   lights\t now ",
+   "normalized": "turn off the lights now",
+   "scalars": 23,
+   "verdict": "ok"
+  },
+  {
+   "name": "crlf and tabs",
+   "input": "line one\r\n\tline two",
+   "normalized": "line one line two",
+   "scalars": 17,
+   "verdict": "ok"
+  },
+  {
+   "name": "C0 controls and DEL become spaces",
+   "input": "a\u0000b\u0007c\u001bd\u007fe",
+   "normalized": "a b c d e",
+   "scalars": 9,
+   "verdict": "ok"
+  },
+  {
+   "name": "unicode whitespace collapses",
+   "input": "a\u00a0b\u2003c\u3000d\u2028e\u2029f\u0085g\u202fh\u205fi\u1680j\u000bk\fl",
+   "normalized": "a b c d e f g h i j k l",
+   "scalars": 23,
+   "verdict": "ok"
+  },
+  {
+   "name": "ZWJ family emoji survives",
+   "input": "\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67 ok",
+   "normalized": "\ud83d\udc68\u200d\ud83d\udc69\u200d\ud83d\udc67 ok",
+   "scalars": 8,
+   "verdict": "ok"
+  },
+  {
+   "name": "ZWJ profession emoji survives",
+   "input": "\ud83d\udc69\ud83c\udffd\u200d\ud83d\udcbb",
+   "normalized": "\ud83d\udc69\ud83c\udffd\u200d\ud83d\udcbb",
+   "scalars": 4,
+   "verdict": "ok"
+  },
+  {
+   "name": "ZWNJ inside a Persian word survives",
+   "input": "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+   "normalized": "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+   "scalars": 8,
+   "verdict": "ok"
+  },
+  {
+   "name": "bidi marks and isolates survive",
+   "input": "\u200f\u05e9\u05dc\u05d5\u05dd\u200e ok \u202aemb\u202c \u2066iso\u2069",
+   "normalized": "\u200f\u05e9\u05dc\u05d5\u05dd\u200e ok \u202aemb\u202c \u2066iso\u2069",
+   "scalars": 21,
+   "verdict": "ok"
+  },
+  {
+   "name": "zero width space and BOM are not whitespace",
+   "input": "a\u200bb\ufeffc",
+   "normalized": "a\u200bb\ufeffc",
+   "scalars": 5,
+   "verdict": "ok"
+  },
+  {
+   "name": "C1 controls stay, except NEL",
+   "input": "a\u0080b\u009fc\u0085d",
+   "normalized": "a\u0080b\u009fc d",
+   "scalars": 7,
+   "verdict": "ok"
+  },
+  {
+   "name": "a space before a combining mark is still a space",
+   "input": " \u0301a b",
+   "normalized": "\u0301a b",
+   "scalars": 4,
+   "verdict": "ok"
+  },
+  {
+   "name": "skin tone modifier counts as its own code point",
+   "input": "\ud83d\udc4d\ud83c\udffd",
+   "normalized": "\ud83d\udc4d\ud83c\udffd",
+   "scalars": 2,
+   "verdict": "ok"
+  },
+  {
+   "name": "a flag is two code points",
+   "input": "\ud83c\uddf5\ud83c\uddf9",
+   "normalized": "\ud83c\uddf5\ud83c\uddf9",
+   "scalars": 2,
+   "verdict": "ok"
+  },
+  {
+   "name": "a lone ZWJ is not empty",
+   "input": "\u200d",
+   "normalized": "\u200d",
+   "scalars": 1,
+   "verdict": "ok"
+  },
+  {
+   "name": "empty",
+   "input": "",
+   "normalized": "",
+   "scalars": 0,
+   "verdict": "empty_text"
+  },
+  {
+   "name": "only separators",
+   "input": " \n\t\u00a0\u3000\u0000\u007f ",
+   "normalized": "",
+   "scalars": 0,
+   "verdict": "empty_text"
+  },
+  {
+   "name": "exactly 1000 ASCII",
+   "input": {
+    "before": "",
+    "repeat": "y",
+    "times": 1000,
+    "after": ""
+   },
+   "normalized": {
+    "before": "",
+    "repeat": "y",
+    "times": 1000,
+    "after": ""
+   },
+   "scalars": 1000,
+   "verdict": "ok"
+  },
+  {
+   "name": "1001 ASCII",
+   "input": {
+    "before": "",
+    "repeat": "y",
+    "times": 1001,
+    "after": ""
+   },
+   "normalized": {
+    "before": "",
+    "repeat": "y",
+    "times": 1001,
+    "after": ""
+   },
+   "scalars": 1001,
+   "verdict": "text_too_long"
+  },
+  {
+   "name": "whitespace around 1000 does not count",
+   "input": {
+    "before": "  \n",
+    "repeat": "y",
+    "times": 1000,
+    "after": " \t"
+   },
+   "normalized": {
+    "before": "",
+    "repeat": "y",
+    "times": 1000,
+    "after": ""
+   },
+   "scalars": 1000,
+   "verdict": "ok"
+  },
+  {
+   "name": "500 thumbs with a skin tone are 1000 code points",
+   "input": {
+    "before": "",
+    "repeat": "\ud83d\udc4d\ud83c\udffd",
+    "times": 500,
+    "after": ""
+   },
+   "normalized": {
+    "before": "",
+    "repeat": "\ud83d\udc4d\ud83c\udffd",
+    "times": 500,
+    "after": ""
+   },
+   "scalars": 1000,
+   "verdict": "ok"
+  },
+  {
+   "name": "501 thumbs: 501 Characters but 1002 code points",
+   "input": {
+    "before": "",
+    "repeat": "\ud83d\udc4d\ud83c\udffd",
+    "times": 501,
+    "after": ""
+   },
+   "normalized": {
+    "before": "",
+    "repeat": "\ud83d\udc4d\ud83c\udffd",
+    "times": 501,
+    "after": ""
+   },
+   "scalars": 1002,
+   "verdict": "text_too_long"
+  },
+  {
+   "name": "1000 Characters, 1001 code points",
+   "input": {
+    "before": "",
+    "repeat": "a",
+    "times": 999,
+    "after": "\ud83d\udc4d\ud83c\udffd"
+   },
+   "normalized": {
+    "before": "",
+    "repeat": "a",
+    "times": 999,
+    "after": "\ud83d\udc4d\ud83c\udffd"
+   },
+   "scalars": 1001,
+   "verdict": "text_too_long"
+  },
+  {
+   "name": "1000 flags: 1000 Characters, 2000 code points",
+   "input": {
+    "before": "",
+    "repeat": "\ud83c\uddf5\ud83c\uddf9",
+    "times": 1000,
+    "after": ""
+   },
+   "normalized": {
+    "before": "",
+    "repeat": "\ud83c\uddf5\ud83c\uddf9",
+    "times": 1000,
+    "after": ""
+   },
+   "scalars": 2000,
+   "verdict": "text_too_long"
+  },
+  {
+   "name": "collapsing brings a long draft under the limit",
+   "input": {
+    "before": "",
+    "repeat": "a  ",
+    "times": 400,
+    "after": ""
+   },
+   "normalized": {
+    "before": "",
+    "repeat": "a ",
+    "times": 399,
+    "after": "a"
+   },
+   "scalars": 799,
+   "verdict": "ok"
+  }
+ ]
+}

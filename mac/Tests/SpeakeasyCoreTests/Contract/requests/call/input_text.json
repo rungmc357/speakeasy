@@ -1,0 +1,8 @@
+{
+  "body" : {
+    "text" : "Add oat milk for the 👨‍👩‍👧 trip",
+    "type" : "session.input_text"
+  },
+  "method" : "POST",
+  "path" : "\/voice\/interactions\/{interaction_id}\/input-text"
+}
