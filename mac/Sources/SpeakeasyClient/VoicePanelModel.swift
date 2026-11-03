@@ -76,6 +76,75 @@ public final class VoicePanelModel: ObservableObject {
     public var onStopTask: (String) -> Void = { _ in }
     /// Answer a task's question card (task id, picked option).
     public var onAnswer: (String, String) -> Void = { _, _ in }
+    /// How long a pick waits before it's sent, so Undo can take it back.
+    public static let undoWindow: TimeInterval = 5
+    /// Picks waiting out the undo window (task id → when it sends).
+    @Published public var pendingPicks: [String: Date] = [:]
+    private var pickTimers: [String: DispatchWorkItem] = [:]
+    /// Take back a pick still inside its undo window.
+    public func undoPick(_ taskID: String) {
+        pickTimers.removeValue(forKey: taskID)?.cancel()
+        pendingPicks[taskID] = nil
+        answers[taskID] = nil
+    }
+    /// Shows the pick at once and sends it after `undoWindow` unless undone.
+    func commitPick(_ taskID: String, _ text: String) {
+        answers[taskID] = text
+        pickTimers.removeValue(forKey: taskID)?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.pendingPicks[taskID] != nil else { return }
+            self.pendingPicks[taskID] = nil
+            self.pickTimers[taskID] = nil
+            self.onAnswer(taskID, text)
+        }
+        pickTimers[taskID] = item
+        pendingPicks[taskID] = Date().addingTimeInterval(Self.undoWindow)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.undoWindow, execute: item)
+    }
+
+    // MARK: Server features, card actions, toasts
+    /// What the server can do beyond the base api; nil = an older plugin (new controls hidden).
+    @Published public var capabilities: ServerCapabilities?
+    /// Runs a card button (task id, the card, the action); the reply calls back with (ok, message).
+    public var onCardAction: (String, ViewCard, CardAction, @escaping (Bool, String) -> Void) -> Void = { _, _, _, done in
+        done(false, "This server can't do that yet")
+    }
+    /// Retry a failed task (task id); only offered while a call can take it.
+    public var onRetry: (String) -> Void = { _ in }
+    public var canRetry: Bool { state.connection.isOpen && !state.workOnly }
+    /// The fix button on a call problem (Open Settings, Restart call, Try again).
+    public var onFixProblem: (CallProblem.Fix) -> Void = { _ in }
+    /// A short note at the bottom of the panel ("Office lamp is off.").
+    @Published public var toast: PanelToast?
+    public func showToast(_ text: String, ok: Bool = true) {
+        let t = PanelToast(text: text, ok: ok)
+        toast = t
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
+            if self?.toast?.id == t.id { self?.toast = nil }
+        }
+    }
+    /// Card buttons with a request in flight ("task|view|action").
+    @Published public var cardActionBusy: Set<String> = []
+    public func runCardAction(taskID: String, card: ViewCard, action: CardAction) {
+        let key = "\(taskID)|\(card.viewIndex)|\(action.id)"
+        guard !cardActionBusy.contains(key) else { return }
+        cardActionBusy.insert(key)
+        onCardAction(taskID, card, action) { [weak self] ok, message in
+            self?.cardActionBusy.remove(key)
+            self?.showToast(message, ok: ok)
+        }
+    }
+    /// Job-view sections the user opened ("job|details", "job|steps").
+    @Published public var openSections: Set<String> = []
+    public func toggleSection(_ key: String) {
+        if openSections.contains(key) { openSections.remove(key) } else { openSections.insert(key) }
+    }
+    /// The voice's state right now: listening, hearing you, thinking, speaking.
+    public var voicePhase: VoicePhase { state.voicePhase(userTalking: userTalking) }
+    /// A call problem with a one-click fix, if there is one.
+    public var callProblem: CallProblem? { previewProblem ?? CallProblem.of(state) }
+    /// Film frames show a problem without a real failure.
+    @Published public var previewProblem: CallProblem?
     /// Answers already given, by task id, so a card stays settled after the tap (kept across launches).
     @Published public var answers: [String: String] = VoicePanelModel.loadAnswers() {
         didSet { VoicePanelModel.save(answers.suffix(200), key: VoicePanelModel.answersKey) }
@@ -86,9 +155,9 @@ public final class VoicePanelModel: ObservableObject {
         let runID = state.tasks.first(where: { $0.id == taskID })?.info.runID
         let load = loadCardImage
         return QuestionActions(onAnswer: { [weak self] text in
-            self?.answers[taskID] = text
-            self?.onAnswer(taskID, text)
-        }, answered: answers[taskID], image: runID.map { run in { number in await load(run, number) } })
+            self?.commitPick(taskID, text)
+        }, answered: answers[taskID], image: runID.map { run in { number in await load(run, number) } },
+           undoUntil: pendingPicks[taskID], onUndo: { [weak self] in self?.undoPick(taskID) })
     }
     /// "Not needed": set aside a task's question, decision or approval without answering it (run id).
     public var onSetAside: (String) -> Void = { _ in }
@@ -356,7 +425,7 @@ public final class VoicePanelModel: ObservableObject {
         cardOpen["\(job)|pictures:\(run)"] = !isPicturesOpen(job: job, run: run)
     }
     /// The mic is open and hearing the user right now.
-    public var userTalking: Bool { presentation.mark == .listening && orbLevel > 0.08 }
+    public var userTalking: Bool { (presentation.mark == .listening || presentation.mark == .thinking) && orbLevel > 0.08 }
     public var orbState: OrbState { OrbState.of(jobs: jobs, approvalPending: approvalPending, userTalking: userTalking) }
     /// The call's approval, unless the user set its task aside (amber only while something still needs them).
     var approvalPending: Bool {
@@ -458,4 +527,11 @@ public struct PendingAttachmentItem: Identifiable {
     public init(id: String, kind: PendingAttachment.Kind, name: String, phase: PendingAttachment.Phase, thumbnail: CGImage?) {
         self.id = id; self.kind = kind; self.name = name; self.phase = phase; self.thumbnail = thumbnail
     }
+}
+
+/// A short note shown at the bottom of the panel for a few seconds.
+public struct PanelToast: Equatable, Identifiable {
+    public let id = UUID()
+    public var text: String
+    public var ok: Bool
 }

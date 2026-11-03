@@ -299,6 +299,8 @@ struct ListCard: View {
 struct ChartCard: View {
     let card: ViewCard
     struct Point: Identifiable { let id: Int; let series: String; let label: String; let value: Double }
+    /// The x label under the pointer (hover or drag): its values show above the chart.
+    @State private var selected: String?
     var body: some View {
         let labels = card["labels"].strings
         let series = card["series"].array
@@ -312,8 +314,17 @@ struct ChartCard: View {
         CardBox {
             HStack {
                 CardHeader(icon: "chart.xyaxis.line", title: card["title"].string ?? "Chart")
-                if let unit = card["unit"].string { Text(unit).font(.system(size: 10.5)).foregroundStyle(.tertiary) }
+                if let unit = card["unit"].string { Text(unit).font(.system(size: 11)).foregroundStyle(.secondary) }
             }
+            // Hover or drag across the chart to read exact values.
+            let unit = card["unit"].string.map { $0.count <= 2 ? $0 : " \($0)" } ?? ""
+            Text(selected.map { label in
+                let vals = points.filter { $0.label == label }
+                return "\(label): " + vals.map { (series.count > 1 ? "\($0.series) " : "") + CardText.number($0.value) + unit }.joined(separator: " · ")
+            } ?? "Hover or drag to read values")
+                .font(.system(size: 11.5, weight: selected == nil ? .regular : .semibold).monospacedDigit())
+                .foregroundStyle(selected == nil ? Color.secondary : Color.primary)
+                .lineLimit(1)
             Chart(points) { p in
                 if style == "line" {
                     LineMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
@@ -321,8 +332,16 @@ struct ChartCard: View {
                 } else {
                     BarMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
                         .position(by: .value("s", p.series))
+                        .opacity(selected == nil || selected == p.label ? 1 : 0.45)
+                }
+                if let selected, selected == p.label, style == "line" {
+                    PointMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
+                }
+                if let selected, p.id % 1000 == 0 || series.count == 1, selected == p.label {
+                    RuleMark(x: .value("x", selected)).foregroundStyle(Color.primary.opacity(0.25))
                 }
             }
+            .chartXSelection(value: $selected)
             .chartLegend(series.count > 1 ? .visible : .hidden)
             .frame(height: 150)
         }

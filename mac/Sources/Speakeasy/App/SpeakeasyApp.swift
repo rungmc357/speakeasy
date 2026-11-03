@@ -125,6 +125,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task { await app.refresh() }
         AppUpdater.shared.start()
         app.checkForUpdatesIfDue()
+        // Card buttons, job progress and spoken choices show only on servers that have them.
+        app.$status
+            .map { $0?.capabilities }
+            .removeDuplicates()
+            .sink { [weak self] caps in self?.native.model.capabilities = caps }
+            .store(in: &bag)
         Timer.publish(every: 24 * 3600, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in self?.app.checkForUpdatesIfDue() }
             .store(in: &bag)

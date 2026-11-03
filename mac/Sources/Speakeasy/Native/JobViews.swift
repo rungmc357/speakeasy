@@ -24,7 +24,8 @@ extension JobStyle {
                 return AnyView(ImageReviewCard(review: review, shownCount: 1, model: model, inJob: true, previewCap: JobCardStack.imageCap))
             },
             draft: { AnyView(EmailDraftCard(draft: $0, model: model)) },
-            approval: { AnyView(ApprovalRow(approval: $0, busy: model.busy, onChoice: model.onApproval)) })
+            approval: { a in AnyView(ApprovalRow(approval: a, task: model.state.tasks.last { $0.info.runID == a.runID },
+                                                 busy: model.busy, onChoice: model.onApproval)) })
     }
 }
 
@@ -37,8 +38,10 @@ struct OrbBar: View {
         let p = model.presentation
         HStack(spacing: 6) {
             Button(action: model.onToggleSlim) {
-                JobOrb(state: model.orbState, size: 36, level: model.orbLevel, mark: model.presentation.mark,
-                       unreadAnswers: model.unreadAnswers, placement: "folded").contentShape(Circle())
+                JobOrb(state: model.orbState, size: 40, level: model.orbLevel,
+                       mark: model.voicePhase == .hearing ? .listening : model.presentation.mark,
+                       unreadAnswers: model.unreadAnswers, placement: "folded", hearing: model.voicePhase == .hearing)
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .help(orbLabel)

@@ -55,7 +55,7 @@ struct WeatherCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(card["place"].string ?? "Weather").font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
                     Text(ViewCard.degrees(card["temp"].double)).font(.system(size: 38, weight: .light))
-                    Text((card["condition"].string ?? "").capitalized).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    Text(sentenceCase(card["condition"].string ?? "")).font(.system(size: 11.5)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {

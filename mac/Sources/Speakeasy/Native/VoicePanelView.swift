@@ -550,6 +550,12 @@ struct VoicePanelView: View {
         let holding = model.hold?.isWaiting == true
         return VStack(alignment: .leading, spacing: 0) {
             if !model.state.workOnly { header(p) }
+            // A call problem with a one-click fix (mic permission, a dead mic, a failed connect).
+            if !model.state.workOnly, let problem = model.callProblem {
+                ProblemBanner(problem: problem, action: { model.onFixProblem(problem.fix) })
+                    .padding(.horizontal, 12).padding(.bottom, 10)
+                    .transition(.opacity)
+            }
             // Pictures and files waiting for the next request: under the header in every layout.
             if !model.state.workOnly && !pending.isEmpty {
                 PendingAttachmentsRow(items: pending, onRemove: model.onRemoveAttachment)
@@ -578,7 +584,7 @@ struct VoicePanelView: View {
                     VStack(spacing: 0) {
                         CaptionView(exchange: model.state.exchange.cleaned, transcript: model.state.transcript,
                                     assistantName: model.state.assistantName, expanded: $model.captionExpanded,
-                                    extraHeight: model.extraHeight)
+                                    extraHeight: model.extraHeight, phase: model.voicePhase)
                         TranscriptGripBar()
                     }
                     .padding(.horizontal, 14).padding(.bottom, 4)
@@ -631,7 +637,8 @@ struct VoicePanelView: View {
             }
             if let approval = model.state.approval, !(model.workExpanded || model.state.workOnly),
                !(board && model.jobs.contains { j in j.tasks.contains { $0.info.runID == approval.runID } }) {
-                ApprovalRow(approval: approval, busy: model.busy, onChoice: model.onApproval)
+                ApprovalRow(approval: approval, task: model.state.tasks.last { $0.info.runID == approval.runID },
+                            busy: model.busy, onChoice: model.onApproval)
                     .padding(.horizontal, 12).padding(.bottom, 12)
             }
             // Nothing pins under the board: every card opens from its job's tile (see `showsBoard`,
@@ -639,7 +646,7 @@ struct VoicePanelView: View {
             let loose = Self.looseCards(model)
             if let pinned = loose.views {
                 VStack(spacing: 8) {
-                    ForEach(pinned.views.prefix(2)) { card in ViewCardView(card) }
+                    ForEach(pinned.views.prefix(2)) { card in ActionableCard(taskID: pinned.taskID, card: card, model: model) }
                         .environment(\.questionActions, model.questionActions(for: pinned.taskID))
                 }
                 .overlay(alignment: .topTrailing) {
@@ -661,6 +668,11 @@ struct VoicePanelView: View {
                                 compact: review.runID != open, model: model)
                     .padding(.horizontal, 12).padding(.bottom, review.runID == loose.reviews.last?.runID ? 12 : 6)
             }
+            // A card button's result: a line at the bottom that never covers a control.
+            if let toast = model.toast {
+                ToastView(toast: toast).frame(maxWidth: .infinity).padding(.bottom, 12)
+                    .transition(.opacity)
+            }
         }
         .frame(width: model.panelWidth, alignment: .top)
         .onHover { model.hovering = $0 }
@@ -681,6 +693,7 @@ struct VoicePanelView: View {
             .opacity(model.dropTargeted ? 1 : 0)
             .allowsHitTesting(false))
         .overlay(alignment: .bottomTrailing) { CornerGrip().padding(5).allowsHitTesting(false) }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: model.toast)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.workExpanded)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.captionExpanded)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.state.approval)
@@ -714,8 +727,8 @@ struct VoicePanelView: View {
             // The orb: clicking it folds the panel into it (the call keeps running).
             Button(action: { if model.state.connection.isOpen && !model.state.workOnly { model.onToggleSlim() } }) {
                 // The same orb as the folded panel: one colour language for the whole call.
-                JobOrb(state: model.orbState, size: 28, level: model.orbLevel, mark: p.mark, unreadAnswers: model.unreadAnswers,
-                       placement: "header")
+                JobOrb(state: model.orbState, size: 38, level: model.orbLevel, mark: model.voicePhase == .hearing ? .listening : p.mark,
+                       unreadAnswers: model.unreadAnswers, placement: "header", hearing: model.voicePhase == .hearing)
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -723,7 +736,7 @@ struct VoicePanelView: View {
             .help(model.state.connection.isOpen ? "Fold into the orb (the call keeps running)" : "")
             .padding(.trailing, 2)
             VStack(alignment: .leading, spacing: 2) {
-                Text(p.primary).font(.system(size: 13.5, weight: .semibold)).lineLimit(1)
+                Text(model.voicePhase == .hearing ? "Hearing you" : p.primary).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                     .minimumScaleFactor(0.85)
                     .help(p.primary)
                     .contentTransition(.opacity)
@@ -776,12 +789,7 @@ struct VoicePanelView: View {
             if model.state.connection != .paused {
                 MediaCapsule(model: model, presentation: p)
             }
-            if !model.state.workOnly && model.state.connection.isOpen {
-                IconButton(symbol: model.slim ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left",
-                           help: model.slim ? "Open the panel" : "Fold into the orb (the call keeps running)",
-                           action: model.onToggleSlim)
-                    .fixedSize()
-            }
+            // No separate fold button: clicking the orb folds the panel (one way to shrink, one to hide).
             if !model.state.connection.isOpen {
                 // While listening mode holds what it heard, Start asks about it in a new call.
                 StartButton(action: model.onStart)
@@ -795,8 +803,8 @@ struct VoicePanelView: View {
                        : "Close panel (Esc)", size: 22, action: model.onClosePanel)
                 .fixedSize()
         }
-        .padding(.leading, 12).padding(.trailing, 12).padding(.vertical, 8)
-        .frame(minHeight: 64)
+        .padding(.leading, 10).padding(.trailing, 12).padding(.vertical, 8)
+        .frame(minHeight: 68)
     }
 }
 
@@ -869,6 +877,8 @@ struct CaptionView: View {
     var assistantName: String = VoiceState.defaultAssistantName
     @Binding var expanded: Bool
     var extraHeight: CGFloat = 0
+    /// What the voice is doing: the collapsed caption shows the line being said now.
+    var phase: VoicePhase = .off
 
     /// The call's turns; a state without a transcript (older server, previews) shows the exchange.
     private var shownTurns: [TranscriptTurn] {
@@ -898,9 +908,21 @@ struct CaptionView: View {
                     .transaction { $0.animation = nil }
                 }
             } else {
-                VStack(alignment: .leading, spacing: 3) {
-                    if !exchange.you.isEmpty { line("You", exchange.you, full: false) }
-                    if !exchange.assistant.isEmpty { line(assistantName, exchange.assistant, full: false) }
+                // The live caption: just the line being said now, cut on a word, up to two lines.
+                if let now = LiveCaption.current(exchange, phase: phase) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text(now.you ? "You" : assistantName).font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(now.you ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                            .lineLimit(1).fixedSize()
+                        Text(now.text).font(.system(size: 13)).foregroundStyle(.primary.opacity(0.9))
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .transaction { $0.animation = nil }
+                        if phase == .thinking {
+                            ThinkingDots().padding(.trailing, 12)
+                        }
+                    }
+                    .padding(.trailing, 14)
                 }
             }
         }
@@ -975,6 +997,7 @@ struct CornerGrip: View {
 
 struct ApprovalRow: View {
     var approval: ApprovalInfo
+    var task: TaskItem? = nil
     var busy: Bool
     var onChoice: (String) -> Void
     @Environment(\.colorScheme) private var scheme
@@ -984,9 +1007,10 @@ struct ApprovalRow: View {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: "hand.raised.fill").font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(scheme == .dark ? Tokens.amber : Color(red: 0.62, green: 0.36, blue: 0))
-                Text(approval.description).font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
-                    .lineLimit(4).textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Needs your OK").font(.system(size: 12, weight: .semibold))
+                    ApprovalContext(approval: approval, task: task)
+                }
             }
             HStack(spacing: 8) {
                 Spacer()
@@ -1456,7 +1480,8 @@ struct WorkDetailView: View {
                 }
             }
             if let approval = s.approval {
-                ApprovalRow(approval: approval, busy: model.busy, onChoice: model.onApproval)
+                ApprovalRow(approval: approval, task: model.state.tasks.last { $0.info.runID == approval.runID },
+                            busy: model.busy, onChoice: model.onApproval)
             }
         }
         .padding(.horizontal, 14).padding(.top, 11).padding(.bottom, 13)
@@ -1666,5 +1691,69 @@ struct WorkDetailView: View {
             attributed[lower..<upper].foregroundColor = Tokens.blue
         }
         return attributed
+    }
+}
+
+// MARK: - Problems and toasts
+
+/// A call problem and its fix, like Screen Recording's "Set up": one cause, one button.
+struct ProblemBanner: View {
+    var problem: CallProblem
+    var action: () -> Void
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: problem.fix == .openMicSettings ? "mic.slash.fill" : "exclamationmark.triangle.fill")
+                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Color(red: 0.92, green: 0.38, blue: 0.32))
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(problem.title).font(.system(size: 12.5, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                if let detail = problem.detail {
+                    Text(detail).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer(minLength: 4)
+            PillButton(title: problem.fixLabel, prominent: true, action: action).fixedSize()
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.red.opacity(0.09)))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.red.opacity(0.3), lineWidth: 0.75))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(problem.title). \(problem.detail ?? "")")
+    }
+}
+
+/// A short confirmation at the bottom of the panel ("Office lamp is off.").
+struct ToastView: View {
+    var toast: PanelToast
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: toast.ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .foregroundStyle(toast.ok ? Color.green : Color.orange)
+            Text(toast.text).font(.system(size: 12, weight: .medium)).lineLimit(2)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Capsule().fill(scheme == .dark ? Color(white: 0.22) : Color.white).shadow(color: .black.opacity(0.25), radius: 8, y: 2))
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
+        .accessibilityAddTraits(.updatesFrequently)
+    }
+}
+
+/// Three dots that pulse while the reply is being worked out.
+struct ThinkingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 15, paused: reduceMotion)) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { i in
+                    Circle().fill(Color.secondary)
+                        .frame(width: 4.5, height: 4.5)
+                        .opacity(reduceMotion ? 0.7 : 0.3 + 0.7 * (sin(t * 5 - Double(i) * 0.8) + 1) / 2)
+                }
+            }
+        }
+        .accessibilityLabel("Thinking")
     }
 }

@@ -8,8 +8,13 @@ public struct QuestionActions {
     public var answered: String?
     /// Loads a task picture by card number (the authenticated card-image route); nil = no pictures.
     public var image: ((Int) async -> Data?)?
-    public init(onAnswer: ((String) -> Void)? = nil, answered: String? = nil, image: ((Int) async -> Data?)? = nil) {
+    /// The pick is held until then so it can be undone; nil once sent.
+    public var undoUntil: Date?
+    public var onUndo: (() -> Void)?
+    public init(onAnswer: ((String) -> Void)? = nil, answered: String? = nil, image: ((Int) async -> Data?)? = nil,
+                undoUntil: Date? = nil, onUndo: (() -> Void)? = nil) {
         self.onAnswer = onAnswer; self.answered = answered; self.image = image
+        self.undoUntil = undoUntil; self.onUndo = onUndo
     }
 }
 
@@ -27,22 +32,29 @@ struct QuestionCard: View {
     let card: ViewCard
     @Environment(\.questionActions) private var actions
     @State private var picked: String?
+    @State private var comparing = false
 
     var body: some View {
         // Options are strings (older plugins) or objects with a detail line, tags and a picture.
         let decision = Decision(card: card)
         let options = decision?.options.map(\.text) ?? []
         let recommended = decision?.recommended
-        let answer = picked ?? actions.answered
+        let answer = actions.undoUntil != nil ? actions.answered : (picked ?? actions.answered)
         CardBox(tint: answer == nil ? .orange : nil) {
             HStack(spacing: 6) {
                 Circle().fill(answer == nil ? Color.orange : Color.green).frame(width: 7, height: 7)
                 Text(answer == nil ? "Needs you" : "Answered")
-                    .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
             Text(card["question"].string ?? "").font(.system(size: 14, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
+            if let context = decision?.context {
+                Text(context).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let decision, DecisionCompare.worthComparing(decision) {
+                HStack { Spacer(minLength: 0); CompareToggle(comparing: $comparing) }
+            }
             let pictures = card["images"].doubles.isEmpty ? (decision?.options.map { $0.image ?? 0 } ?? [])
                 : card["images"].doubles.map { Int($0) }
             if pictures.contains(where: { $0 > 0 }), let load = actions.image {
@@ -57,6 +69,10 @@ struct QuestionCard: View {
                         }
                     }
                 }
+            } else if comparing, let decision {
+                DecisionCompare(decision: decision, chosen: answer,
+                                onPick: answer == nil && actions.onAnswer != nil ? { n in
+                                    let o = decision.options[n - 1].text; picked = o; actions.onAnswer?(o) } : nil)
             } else {
             VStack(spacing: 6) {
                 ForEach(Array(options.prefix(4).enumerated()), id: \.offset) { i, option in
@@ -69,11 +85,23 @@ struct QuestionCard: View {
                 }
             }
             }
-            Text(answer != nil ? "Sent to the task." :
-                    actions.onAnswer != nil ? "Tap, press 1–\(min(options.count, 4)), or just say it." : "Say your answer.")
-                .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            if let answer, let until = actions.undoUntil, let undo = actions.onUndo {
+                PickUndoBar(picked: answer, until: until) { picked = nil; undo() }
+            } else {
+                Text(answer != nil ? "Sent to the task." :
+                        actions.onAnswer != nil ? Self.hint(min(options.count, 4)) : "Say your answer.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: answer)
+    }
+
+    static func hint(_ n: Int) -> String {
+        #if os(macOS)
+        return "Click, press 1–\(n), or just say it."
+        #else
+        return "Tap one, or just say it."
+        #endif
     }
 }
 
@@ -90,16 +118,11 @@ private struct OptionRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Text("\(number)")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .frame(width: 20, height: 20)
-                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(chosen ? Color.accentColor : Color.primary.opacity(0.08)))
-                    .foregroundStyle(chosen ? Color.white : Color.secondary)
+                NumberBadge(number: number, chosen: chosen)
                 Text(text).font(.system(size: 12.5, weight: chosen ? .semibold : .regular)).lineLimit(2)
                 Spacer(minLength: 4)
                 if recommended && !chosen && !dimmed {
-                    Text("Recommended").font(.system(size: 9.5, weight: .semibold))
+                    Text("Recommended").font(.system(size: 11, weight: .semibold))
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(Color.accentColor.opacity(0.14)))
                         .foregroundStyle(Color.accentColor)
@@ -169,7 +192,7 @@ private struct PictureOption: View {
                     if chosen { Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.accentColor) }
                 }
                 if recommended && !chosen && !dimmed {
-                    Text("Recommended").font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Color.accentColor)
+                    Text("Recommended").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.accentColor)
                 }
             }
             .contentShape(Rectangle())

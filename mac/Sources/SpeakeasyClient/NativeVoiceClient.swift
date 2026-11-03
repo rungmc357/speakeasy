@@ -207,6 +207,11 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.onStopTask = { [weak self] runID in self?.stopWork(runID: runID) }
         model.onAnswer = { [weak self] taskID, text in self?.answerQuestion(taskID: taskID, text: text) }
         model.onSetAside = { [weak self] runID in self?.setAside(runID) }
+        model.onCardAction = { [weak self] taskID, card, action, done in
+            self?.runCardAction(taskID: taskID, card: card, action: action, done: done)
+        }
+        model.onRetry = { [weak self] taskID in self?.retryTask(taskID) }
+        model.onFixProblem = { [weak self] fix in self?.fixProblem(fix) }
         model.loadCardImage = { [weak self] runID, number in
             guard let api = await self?.api else { return nil }
             return try? await api.image(runID: runID, index: number)
@@ -1472,6 +1477,61 @@ public final class NativeVoiceClient: VoiceCallClient {
         }
     }
 
+    /// A card button (contract §2): through the call when one is open, else on the run itself.
+    private func runCardAction(taskID: String, card: ViewCard, action: CardAction, done: @escaping (Bool, String) -> Void) {
+        guard let api, !previewMode, model.capabilities?.cardActions == true,
+              let run = model.state.tasks.first(where: { $0.id == taskID })?.info.runID else {
+            done(false, "Ask out loud instead: this server can't run card buttons yet"); return
+        }
+        let interaction = model.state.connection.isOpen ? (model.state.interactionID ?? model.state.resumeFrom) : nil
+        let value: Any? = { if case .null = action.value { return nil }; return action.value.foundation }()
+        Task {
+            do {
+                let message = try await api.cardAction(interactionID: interaction, runID: run, view: card.viewIndex,
+                                                       action: action.id, value: value)
+                done(true, message ?? "Done")
+            } catch let http as ServerClient.HTTPError {
+                done(false, http.message.isEmpty ? "That didn't work" : http.message)
+            } catch {
+                done(false, "Couldn't reach Hermes")
+            }
+        }
+    }
+
+    /// Retry a failed task: ask its job to try again through the same answer route as anything
+    /// else said to it (the agent re-runs it with what it already knows).
+    private func retryTask(_ taskID: String) {
+        guard let task = model.state.tasks.first(where: { $0.id == taskID }) else { return }
+        let what = task.info.request ?? task.name
+        answerQuestion(taskID: taskID, text: "That failed. Please try again: \(what)")
+        model.showToast("Asked it to try again")
+    }
+
+    /// The fix button on a call problem.
+    public func fixProblem(_ fix: CallProblem.Fix) {
+        switch fix {
+        case .openMicSettings:
+            #if os(macOS)
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+                NSWorkspace.shared.open(url)
+            }
+            #else
+            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            #endif
+        case .restartCall:
+            guard model.state.canPause, !reconnectAfterPause else { return }
+            micRepairPending = true
+            skipEarlyCapture = true
+            dispatch(.micHealth(.repairing))
+            reportMic("restart requested from the panel; \(micReportDetail())")
+            reconnectAfterPause = true
+            pause()
+        case .retry:
+            dispatch(.reset)
+            start()
+        }
+    }
+
     private func stopWork(runID run: String) {
         guard let api, let id = model.state.interactionID ?? model.state.resumeFrom else { return }
         Task { [weak self] in
@@ -1498,6 +1558,7 @@ public final class NativeVoiceClient: VoiceCallClient {
             guard let status = try? await api.status() else { return }
             guard let self else { return }
             self.attachmentSupport = status.attachments
+            self.model.capabilities = status.capabilities
             if self.model.state.connection == .connecting, self.model.state.interactionID == nil {
                 self.dispatch(.sharing(.declared(self.screenDeclaration())))
             }

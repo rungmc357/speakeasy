@@ -242,7 +242,7 @@ public struct AnswerGlance: View {
                     Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 16))
                     VStack(alignment: .leading, spacing: 0) {
                         Text(ViewCard.degrees(card["temp"].double)).font(.system(size: 17, weight: .medium).monospacedDigit())
-                        if let c = card["condition"].string { Text(c.capitalized).font(.system(size: 9.5)).foregroundStyle(.secondary).lineLimit(1) }
+                        if let c = card["condition"].string { Text(sentenceCase(c)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1) }
                     }
                 }
             case "chart":
