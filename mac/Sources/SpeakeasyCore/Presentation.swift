@@ -59,6 +59,12 @@ public func parseServerStreamEvent(_ event: SSEEvent) -> [VoiceEvent] {
     case "screen.state":
         // Sharing changed on the plugin's side ("stop looking at my screen").
         return ScreenToggle(json: json).map { [.sharing(.state($0))] } ?? []
+    case "transcript":
+        // A turn typed on a call screen joined the call (plugin input-text). Spoken turns don't come
+        // here; the sender's own local echo of the same turn is matched in the reducer, not shown twice.
+        guard let object = json as? [String: Any], object["role"] as? String == "user",
+              object["source"] as? String == "typed", let text = nonEmpty(object["text"]) else { return [] }
+        return [.typedTurn(text, origin: .stream(id: event.id))]
     case "closed":
         let object = json as? [String: Any]
         let fin: Finalization = (object?["finalization"] as? String) == "complete" ? .complete : .incomplete

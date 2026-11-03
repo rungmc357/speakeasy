@@ -302,6 +302,15 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await post("/voice/interactions/\(escape(interactionID))/answer", ["task_id": taskID, "text": text])
     }
 
+    /// A turn typed on the call screen (plugins with `input_text: true`). `text` must already be
+    /// `TypedText.check(...)`'s `.ok` value. True only when the server says it took it (`sent: true`);
+    /// refusals throw `HTTPError` with the plugin's reason (400 invalid_body / empty_text /
+    /// text_too_long, 404 unknown_interaction (no reason = a plugin without the route), 409
+    /// call_ended / call_paused / not_connected, 502 transport_error, 504 timeout).
+    public func inputText(interactionID: String, text: String) async throws -> Bool {
+        TypedText.taken(try await post(TypedText.path(interactionID: interactionID), TypedText.body(text)))
+    }
+
     public func cancelBackend(interactionID: String, runID: String) async throws {
         _ = try await post("/voice/interactions/\(escape(interactionID))/cancel-backend", ["run_id": runID])
     }
