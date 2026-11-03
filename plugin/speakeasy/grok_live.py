@@ -249,6 +249,21 @@ class GrokRelayWorker(SidebandWorker):
         self.response_active = True  # until response.created/done says otherwise
         await self._send_json({"type": "response.create"})
 
+    # -- typed turns -------------------------------------------------------------------------------
+    async def forward_typed(self, text: str) -> bool:
+        """xAI takes real user text: a user message item. The reply is asked for once it's in the
+        transcript (typed_recorded), so a handoff it leads to finds the words already there."""
+        if not self.call_connected():
+            return False
+        return await self._send_json({"type": "conversation.item.create", "item": {
+            "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}})
+
+    def typed_offset(self) -> int:
+        return self.now_ms()
+
+    async def typed_recorded(self) -> None:
+        await self._respond()
+
     # -- the app's relay (handler threads) ---------------------------------------------------------
     def serve_client(self, ws: RelaySocket) -> None:
         """Runs on the HTTP handler thread for as long as the app's relay is open. A second

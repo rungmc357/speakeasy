@@ -1203,6 +1203,14 @@ def early_request_note(names: Names, text: str) -> str:
         "greeting or small talk, just answer it briefly.")
 
 
+def typed_turn_note(names: Names, text: str) -> str:
+    """GPT-Live: a turn the user typed on the call screen instead of saying it. The sideband takes no
+    user text, so the note quotes the words and asks for the same reply as if they had been spoken."""
+    return render("{user_name_cap} typed this in the app instead of saying it: \u201c", names) + text.strip()[:1000] + (
+        "\u201d\nTreat it exactly as if they had just said it out loud: answer them out loud, and hand it off "
+        "if it needs work. Don't read this note out or mention that it was typed.")
+
+
 def room_answer_note(names: Names, text: str = "") -> str:
     """Listening mode: a question about what was said in the room. Nothing was started; the voice
     answers it from the room transcript in its instructions. ``text`` is quoted when the voice never

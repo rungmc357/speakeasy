@@ -7,6 +7,7 @@ gateway's profile scope.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import datetime as _dt
 import hashlib
 import json
@@ -23,8 +24,9 @@ from . import attachments as A
 from . import delivery as D
 from . import duck as duck_mod
 from .brief import BriefInvalid, BriefManager
-from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, MAX_TASKS, ServiceError, Interaction, Notices, Runtime, SidebandWorker,
-                    end_shared, interaction_tasks, publish_state)
+from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_INPUT_TEXT, MAX_TASKS, ServiceError,
+                    Interaction, Notices, Runtime, SidebandWorker, end_shared, interaction_tasks, publish_state,
+                    typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
 from .devices import DeviceStore
 from .emails import canonical_json, extract_email_drafts
@@ -712,6 +714,44 @@ class VoiceService:
         if not sent:
             raise ServiceError(404, "that task isn't in this call")
         return {"interaction_id": interaction_id, "task_id": task_id, "sent": True}
+
+    def input_text(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """A turn typed on the call screen instead of spoken (``session.input_text``): into the live
+        call as the user's turn. After Pause/Resume the newest call in the chain takes it."""
+        text = body.get("text") if isinstance(body, dict) else None
+        if (not isinstance(body, dict) or set(body) != {"type", "text"} or body.get("type") != INPUT_TEXT_TYPE
+                or not isinstance(text, str)):
+            raise ServiceError(400, f"body must be exactly type={INPUT_TEXT_TYPE} and text", reason="invalid_body")
+        text = typed_text(text)
+        if not text:
+            raise ServiceError(400, "text is empty", reason="empty_text")
+        if len(text) > MAX_INPUT_TEXT:
+            raise ServiceError(400, f"text is longer than {MAX_INPUT_TEXT} characters", reason="text_too_long")
+        try:
+            interaction = self.interaction(interaction_id).head()
+        except ServiceError:
+            raise ServiceError(404, "interaction not found", reason="unknown_interaction") from None
+        with interaction.lock:
+            closed, paused = interaction.call_closed, interaction.paused
+        if closed or paused:
+            raise ServiceError(409, "the call isn't connected",
+                               reason="call_paused" if paused else "call_ended")
+        worker = interaction.worker
+        loop = getattr(worker, "loop", None)
+        if worker is None or loop is None or loop.is_closed() or not worker.call_connected():
+            raise ServiceError(409, "the call isn't connected", reason="not_connected")
+        future = asyncio.run_coroutine_threadsafe(worker.input_text(text), loop)
+        try:
+            sent = future.result(15)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise ServiceError(504, "the call didn't take the message in time", reason="timeout") from None
+        except Exception as exc:
+            logger.warning("speakeasy: typed turn failed (%s)", type(exc).__name__)
+            raise ServiceError(502, f"typed message failed ({type(exc).__name__})", reason="transport_error") from None
+        if not sent:
+            raise ServiceError(409, "the call isn't connected", reason="not_connected")
+        return {"interaction_id": interaction.interaction_id, "type": INPUT_TEXT_TYPE, "sent": True}
 
     def focus(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """Vision Pro: the task the user is facing or holding (or none). Unnamed requests go there."""
@@ -1421,6 +1461,9 @@ class VoiceService:
             "room_listening": True,
             "room_on_resume": True,
             "focus": True,
+            # POST /voice/interactions/{id}/input-text takes a typed turn on a live call (the app shows
+            # its composer only when this is true; older plugins 404 the route).
+            "input_text": True,
             "version": __version__,
         }
 

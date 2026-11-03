@@ -391,12 +391,14 @@ class Handler(BaseHTTPRequestHandler):
             if capture:
                 self._reply(200, self.service.capture_status(capture.group(1), capture.group(2), self._body()))
                 return
-            action = re.fullmatch(rf"/voice/interactions/{_ID}/(end|pause|approval|cancel-backend|skip-tour|early-request|mic-check|answer|screen|focus)", path)
+            action = re.fullmatch(rf"/voice/interactions/{_ID}/(end|pause|approval|cancel-backend|skip-tour|early-request|mic-check|answer|screen|focus|input-text)", path)
             if not action:
                 raise ServiceError(404, "not found")
             interaction_id, verb = action.groups()
             if verb == "screen":
                 self._reply(200, self.service.set_screen(interaction_id, self._body()))
+            elif verb == "input-text":
+                self._reply(200, self.service.input_text(interaction_id, self._body()))
             elif verb == "end":
                 self._reply(200, self.service.finish_transport(interaction_id))
             elif verb == "early-request":

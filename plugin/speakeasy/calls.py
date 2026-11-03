@@ -78,6 +78,11 @@ def _words(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9']+", (text or "").lower()))
 
 
+def typed_text(text: str) -> str:
+    """A typed turn as one clean line: control characters and runs of whitespace become one space."""
+    return " ".join(_CONTROL_CHARS_RE.sub(" ", text).split())
+
+
 def is_greeting(request: str) -> bool:
     return bool(GREETING_RE.match(request or ""))
 
@@ -106,6 +111,11 @@ TASK_SESSION_PREFIX = "speakeasy_task_"
 LOCAL_RUN_PREFIX = "lr_"   # ids for tasks Hermes ran without a run id (thread tasks)
 EARLY_PREFIX = "early_"    # handoffs for words said while the call was still connecting
 EARLY_MAX_CHARS = 1000
+# A turn typed on the call screen instead of spoken (POST /voice/interactions/{id}/input-text).
+INPUT_TEXT_TYPE = "session.input_text"
+MAX_INPUT_TEXT = 1000
+TYPED_ECHO_S = 30.0  # a provider transcript of a typed turn this soon after it is the same turn
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 MAX_TASKS = 8
 ACTIVE_RUN_STATES = {"admitting", "running", "working", "waiting_for_approval", "resolving_approval",
                      "cancel_requested", "waiting_on_task"}
@@ -1147,6 +1157,48 @@ class SidebandWorker:
                 return
             self.interaction.room_nudged = True
         logger.info("speakeasy: room call opened in silence; waiting for a request")
+
+    # -- typed turns (session.input_text) ---------------------------------------------------
+    # The user can type on the call screen instead of speaking. The turn goes to the voice model as
+    # theirs, joins this call's transcript as a user turn (so the next handoff carries it), and goes out
+    # on the live event stream as `transcript` so every client of the call can show it.
+
+    async def input_text(self, text: Any) -> bool:
+        """One typed turn. False when the call is gone or the voice model didn't take it; then nothing
+        is recorded."""
+        if not isinstance(text, str):
+            return False
+        text = typed_text(text)
+        if not text or len(text) > MAX_INPUT_TEXT or not self.call_connected():
+            return False
+        if not await self.forward_typed(text):
+            return False
+        self.touch()
+        at = self.typed_offset()
+        spaced = " " + text if self.fragments and self.fragments[-1]["speaker"] == "user" else text
+        await self.handle_event({"type": "session.input_transcript.delta", "delta": spaced,
+                                 "start_ms": at, "end_ms": at})
+        self.interaction.feed.publish("transcript", {"role": "user", "text": text, "source": "typed"})
+        logger.info("speakeasy: typed turn on the call (%d chars)", len(text))
+        await self.typed_recorded()
+        return True
+
+    async def forward_typed(self, text: str) -> bool:
+        """Hand a typed turn to the voice model. GPT-Live: its sideband takes no user text, so the
+        words go in as a session-wide note (no delegation id) quoting them, the same append path as
+        every other update. Providers that take real user text override this."""
+        if not self.call_connected():
+            return False
+        await self._send("session.thinking.append", None, P.typed_turn_note(self.names, text)[:2000])
+        return self.call_connected()
+
+    def typed_offset(self) -> int:
+        """Where a typed turn sits in this call's transcript clock: at the end of what was said, so a
+        handoff made after it (context()) carries it."""
+        return max(((f["end_ms"] or f["start_ms"]) for f in self.fragments), default=0)
+
+    async def typed_recorded(self) -> None:
+        """After a typed turn is in the transcript: providers that must be asked to reply do it here."""
 
     async def send_on_own_loop(self, kind: str, delegation_id: str | None, content: str) -> None:
         loop, current = self.loop, asyncio.get_running_loop()
