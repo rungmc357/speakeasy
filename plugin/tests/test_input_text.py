@@ -70,10 +70,11 @@ def test_typed_turn_goes_into_the_live_call(server, service):
     status, body = typed(server, iid, turn("What's on my\ncalendar  today?"))
     assert status == 200, body
     assert body == {"interaction_id": iid, "type": "session.input_text", "sent": True}
-    # Into the live session: one session-wide note quoting the words, no delegation id.
+    # Into the live session: one session-wide note quoting the words, no delegation id. Commentary,
+    # not thinking: a thinking note is background the voice may hold silently (see TYPED_TURN_KIND).
     assert len(worker.sent) == 1
     kind, delegation_id, content = worker.sent[0]
-    assert kind == "session.thinking.append" and delegation_id is None
+    assert kind == "session.commentary.append" and delegation_id is None
     assert "\u201cWhat's on my calendar today?\u201d" in content and "typed" in content
     # A user turn in the call's transcript, after what was already said ...
     assert worker.turns()[-1] == {"role": "user", "text": "What's on my calendar today?"}
@@ -216,10 +217,14 @@ class RecordingTransport(FakeTransport):
     def __init__(self, fail: Exception | None = None) -> None:
         super().__init__()
         self.fail = fail
+        self.gate: threading.Event | None = None  # set: a user appendText blocks until it's released
 
     def request(self, method: str, params: dict | None = None, timeout: float = 20) -> dict:
         self.requests.append((method, params or {}))
-        if self.fail is not None and method == "thread/realtime/appendText" and (params or {}).get("role") == "user":
+        user_text = method == "thread/realtime/appendText" and (params or {}).get("role") == "user"
+        if self.gate is not None and user_text:
+            self.gate.wait(10)
+        if self.fail is not None and user_text:
             raise self.fail
         return {}
 
@@ -268,18 +273,26 @@ def test_codex_echo_of_a_typed_turn_is_not_recorded_twice(server, codex_call):
                               {"role": "user", "text": "And the porch"}]
     assert len(typed_events(interaction)) == 1
     # A real spoken repeat much later is a new turn again.
-    worker.typed_echoes.append(("say it again", time.monotonic() - 60))
+    worker.typed_echoes.append(["say it again", time.monotonic() - 60])
     run_on(worker, worker._user_turn("Say it again"))
     assert worker.fragments[-1]["text"] == "Say it again"
 
 
-def test_codex_rejected_append_records_nothing(server, codex_call):
+def test_codex_rejected_append_records_nothing_and_does_not_break_the_call(server, codex_call):
     interaction, worker, transport = codex_call
     transport.fail = C.CodexStartError("Codex request rejected")
     status, body = typed(server, interaction.interaction_id, turn("hello"))
-    assert status == 409 and body["reason"] == "not_connected"
+    # The call is still up: this one send failed. Not a 409 "isn't connected", which would tell the
+    # app the call dropped and steer the user away from a retry that works.
+    assert status == 502 and body["reason"] == "not_delivered", body
     assert list(worker.fragments) == [] and list(worker.typed_echoes) == []
     assert typed_events(interaction) == []
+    # Nothing sticky on the call: no error on its snapshot, and the next send goes through.
+    assert interaction.error is None and interaction.snapshot()["error"] is None
+    transport.fail = None
+    status, body = typed(server, interaction.interaction_id, turn("hello again"))
+    assert status == 200, body
+    assert worker.turns() == [{"role": "user", "text": "hello again"}]
 
 
 def test_codex_closed_transport_sends_nothing(server, codex_call):
@@ -288,6 +301,257 @@ def test_codex_closed_transport_sends_nothing(server, codex_call):
     status, body = typed(server, interaction.interaction_id, turn("hello"))
     assert status == 409 and body["reason"] == "not_connected"
     assert transport.requests == []
+
+
+# -- Codex echo guard: bounded in time, consumed once, loose about wording ------------------------------
+
+def user_texts(worker) -> list[str]:
+    return [f["text"].strip() for f in worker.fragments if f["speaker"] == "user"]
+
+
+def test_typed_turn_never_echoed_does_not_swallow_the_same_words_said_out_loud_later(server, codex_call):
+    interaction, worker, transport = codex_call
+    assert typed(server, interaction.interaction_id, turn("Turn on the den lights"))[0] == 200
+    # Codex never transcribes the appended text back. The voice answers ...
+    run_on(worker, worker.handle_event({"type": "session.output_transcript.delta", "delta": "Done.",
+                                        "start_ms": 9, "end_ms": 9}))
+    # ... and a while later the user says the very same words out loud: a new turn, recorded.
+    worker.typed_echoes[0][1] -= C.TYPED_ECHO_S + 1
+    run_on(worker, worker._user_turn("Turn on the den lights."))
+    assert worker.turns() == [{"role": "user", "text": "Turn on the den lights"},
+                              {"role": "assistant", "text": "Done."},
+                              {"role": "user", "text": "Turn on the den lights."}]
+    assert list(worker.typed_echoes) == []
+
+
+def test_a_different_user_turn_ends_the_echo_window(server, codex_call):
+    interaction, worker, transport = codex_call
+    assert typed(server, interaction.interaction_id, turn("yes please"))[0] == 200
+    # Still inside the window, but the user is now talking: whatever they say is theirs.
+    run_on(worker, worker._user_turn("No wait"))
+    run_on(worker, worker._user_turn("Yes please"))
+    assert user_texts(worker) == ["yes please", "No wait", "Yes please"]
+
+
+def test_an_echo_is_suppressed_once_only(server, codex_call):
+    interaction, worker, transport = codex_call
+    assert typed(server, interaction.interaction_id, turn("Turn on the den lights"))[0] == 200
+    run_on(worker, worker._user_turn("Turn on the den lights."))  # the echo
+    run_on(worker, worker._user_turn("Turn on the den lights"))   # the user, saying it again
+    assert user_texts(worker) == ["Turn on the den lights", "Turn on the den lights"]
+
+
+def test_a_reworded_echo_is_not_recorded_twice(server, codex_call):
+    interaction, worker, transport = codex_call
+    assert typed(server, interaction.interaction_id, turn("Turn on the den lights please"))[0] == 200
+    run_on(worker, worker._user_turn("turn on the den light, please."))
+    assert user_texts(worker) == ["Turn on the den lights please"]
+    assert len(typed_events(interaction)) == 1
+
+
+def test_echo_matching_is_loose_about_wording_but_exact_for_short_turns():
+    assert C._same_words("What's up?", "whats up")
+    assert C._same_words("Turn on the den lights please", "Turn on the den light, please.")
+    assert not C._same_words("yes", "yeah")
+    assert not C._same_words("turn it off", "turn it on")
+    assert not C._same_words("Turn on the den lights", "Tell me about the weather tomorrow")
+    assert not C._same_words("", "")
+
+
+# -- client_id: a retry never reaches the call twice ---------------------------------------------------
+
+def turn_with_id(text: str, client_id: str) -> dict[str, str]:
+    return {"type": INPUT_TEXT_TYPE, "text": text, "client_id": client_id}
+
+
+def test_the_same_client_id_twice_sends_once(server, service):
+    iid = open_call(server, "req_typed_idem")
+    worker = service.workers[-1]
+    status, first = typed(server, iid, turn_with_id("Order more coffee", "turn_1"))
+    assert status == 200
+    assert first == {"interaction_id": iid, "type": INPUT_TEXT_TYPE, "sent": True, "client_id": "turn_1"}
+    # The app didn't hear back (a dropped connection) and sends it again with the same id.
+    status, again = typed(server, iid, turn_with_id("Order more coffee", "turn_1"))
+    assert status == 200 and again == {**first, "duplicate": True}
+    assert len(worker.sent) == 1 and worker.turns() == [{"role": "user", "text": "Order more coffee"}]
+    # The SSE copy carries the id, so the sending app can tell it from its own local echo.
+    assert typed_events(service.interaction(iid)) == [
+        {"role": "user", "text": "Order more coffee", "source": "typed", "client_id": "turn_1"}]
+    # A new id is a new turn.
+    assert typed(server, iid, turn_with_id("Order more coffee", "turn_2"))[1].get("duplicate") is None
+    assert len(worker.sent) == 2
+
+
+def test_without_a_client_id_nothing_changes(server, service):
+    iid = open_call(server, "req_typed_noid")
+    worker = service.workers[-1]
+    for _ in range(2):
+        status, body = typed(server, iid, turn("Order more coffee"))
+        assert (status, body) == (200, {"interaction_id": iid, "type": INPUT_TEXT_TYPE, "sent": True})
+    assert len(worker.sent) == 2
+    assert worker.turns() == [{"role": "user", "text": "Order more coffee Order more coffee"}]
+    # (The SSE feed collapses identical consecutive payloads of a kind, as it always has, so two
+    # identical id-less typed turns publish once; a client_id makes each copy distinct.)
+    assert typed_events(service.interaction(iid)) == [
+        {"role": "user", "text": "Order more coffee", "source": "typed"}]
+
+
+def test_client_id_must_be_an_id_and_mean_one_message(server, service):
+    iid = open_call(server, "req_typed_idbad")
+    worker = service.workers[-1]
+    for bad in ("", "has space", "x" * 129, 7, None):
+        status, body = typed(server, iid, {"type": INPUT_TEXT_TYPE, "text": "hi", "client_id": bad})
+        assert status == 400 and body["reason"] == "invalid_body", bad
+    assert typed(server, iid, turn_with_id("hi", "turn_9"))[0] == 200
+    status, body = typed(server, iid, turn_with_id("something else", "turn_9"))
+    assert status == 409 and body["reason"] == "client_id_reused"
+    assert len(worker.sent) == 1
+
+
+def test_a_client_id_whose_send_failed_can_be_sent_again(server, service):
+    iid = open_call(server, "req_typed_idfail")
+    worker = service.workers[-1]
+    real = worker.send_typed_note
+    calls: list[str] = []
+
+    async def flaky(kind, content):
+        calls.append(kind)
+        return False if len(calls) == 1 else await real(kind, content)
+    worker.send_typed_note = flaky  # type: ignore[method-assign]
+    status, body = typed(server, iid, turn_with_id("hello", "turn_f"))
+    assert status == 502 and body["reason"] == "not_delivered"
+    assert list(worker.fragments) == []
+    status, body = typed(server, iid, turn_with_id("hello", "turn_f"))
+    assert status == 200 and "duplicate" not in body  # the first one never got through
+    assert worker.turns() == [{"role": "user", "text": "hello"}]
+
+
+def test_a_client_id_is_one_turn_across_pause_and_resume(server, service):
+    iid = open_call(server, "req_typed_idres")
+    first = service.workers[-1]
+    assert typed(server, iid, turn_with_id("Where were we?", "turn_r"))[0] == 200
+    assert http(server.base_url, "POST", f"/voice/interactions/{iid}/pause", {}, server.token)[0] == 200
+    status, resumed = http(server.base_url, "POST", "/voice/sessions", {"sdp": SDP, "resume_from": iid},
+                           server.token, {"Idempotency-Key": "req_typed_idres_2"})
+    assert status == 201
+    second = service.workers[-1]
+    # The app retries on the resumed call's id: the first call already took it.
+    status, body = typed(server, resumed["interaction_id"], turn_with_id("Where were we?", "turn_r"))
+    assert status == 200 and body["duplicate"] is True and body["interaction_id"] == iid
+    assert len(first.sent) == 1 and second.sent == []
+
+
+# -- a failed send is that send's, not the call's ------------------------------------------------------
+
+def test_a_failed_send_on_a_live_call_is_not_reported_as_disconnected(server, service):
+    iid = open_call(server, "req_typed_iso")
+    worker = service.workers[-1]
+    real = worker.send_typed_note
+    failures = [True]  # the first send fails, the socket stays up
+
+    async def once_failing(kind, content):
+        if failures:
+            failures.pop()
+            return False
+        return await real(kind, content)
+    worker.send_typed_note = once_failing  # type: ignore[method-assign]
+    status, body = typed(server, iid, turn("first"))
+    assert status == 502 and body["reason"] == "not_delivered"
+    interaction = service.interaction(iid)
+    assert interaction.error is None and interaction.snapshot()["error"] is None
+    status, body = typed(server, iid, turn("second"))
+    assert status == 200, body
+    assert worker.turns() == [{"role": "user", "text": "second"}]
+
+
+class FlakySocket:
+    def __init__(self) -> None:
+        self.fail: BaseException | None = None
+        self.sent: list[dict] = []
+
+    async def send(self, raw: str) -> None:
+        if self.fail is not None:
+            raise self.fail
+        self.sent.append(json.loads(raw))
+
+
+def test_gpt_live_failed_typed_send_leaves_the_socket_alone(service):
+    from websockets.exceptions import ConnectionClosedError
+    from speakeasy.calls import TYPED_NOT_CONNECTED, TYPED_NOT_DELIVERED, TYPED_SENT
+    from speakeasy.openai_live import OpenAISidebandWorker
+    interaction = Interaction("vi_" + "g" * 32, "sess_fake")
+    worker = OpenAISidebandWorker(service.rt, interaction, key_fn=lambda: "k")
+    ws = worker.ws = FlakySocket()
+    ws.fail = RuntimeError("one bad send")
+    assert asyncio.run(worker.forward_typed("hello")) == TYPED_NOT_DELIVERED
+    assert worker.ws is ws and worker.call_connected() and interaction.error is None
+    ws.fail = None
+    assert asyncio.run(worker.forward_typed("hello")) == TYPED_SENT
+    assert ws.sent[-1]["type"] == "session.commentary.append" and ws.sent[-1]["delegation_id"] is None
+    assert "\u201chello\u201d" in ws.sent[-1]["content"]
+    # A socket that really closed is the call, not the send.
+    ws.fail = ConnectionClosedError(None, None)
+    assert asyncio.run(worker.forward_typed("hello")) == TYPED_NOT_CONNECTED
+    assert worker.ws is None
+
+
+# -- 504: the outcome isn't known, and the answer says so ------------------------------------------------
+
+def test_timeout_without_client_id_is_honest_and_records_nothing(server, service, monkeypatch):
+    from speakeasy import service as service_module
+    monkeypatch.setattr(service_module, "INPUT_TEXT_WAIT_S", 0.3)
+    iid = open_call(server, "req_typed_504")
+    worker = service.workers[-1]
+
+    async def stalled(kind, delegation_id, content):
+        await asyncio.sleep(3)
+    worker._send = stalled  # type: ignore[method-assign]
+    status, body = typed(server, iid, turn("hello"))
+    assert status == 504 and body["reason"] == "timeout"
+    assert "may already have it" in body["error"]  # not "nothing was sent"
+    time.sleep(0.5)  # the send was cancelled: nothing turns up in the transcript later
+    assert list(worker.fragments) == [] and typed_events(service.interaction(iid)) == []
+
+
+def test_timeout_with_client_id_lets_a_retry_learn_the_outcome(server, service, monkeypatch):
+    from speakeasy import service as service_module
+    monkeypatch.setattr(service_module, "INPUT_TEXT_WAIT_S", 0.3)
+    iid = open_call(server, "req_typed_504id")
+    worker = service.workers[-1]
+    gate, sends = threading.Event(), []
+
+    async def slow(kind, delegation_id, content):
+        while not gate.is_set():
+            await asyncio.sleep(0.02)
+        sends.append(kind)
+    worker._send = slow  # type: ignore[method-assign]
+    status, body = typed(server, iid, turn_with_id("hello", "turn_t"))
+    assert status == 504 and body["reason"] == "timeout" and "same client_id" in body["error"]
+    # Still pending: a retry waits on the same send, it doesn't start a second one.
+    assert typed(server, iid, turn_with_id("hello", "turn_t"))[0] == 504
+    gate.set()
+    wait_for(lambda: worker.fragments)
+    status, body = typed(server, iid, turn_with_id("hello", "turn_t"))
+    assert status == 200 and body["duplicate"] is True
+    assert sends == ["session.commentary.append"] and worker.turns() == [{"role": "user", "text": "hello"}]
+    assert len(typed_events(service.interaction(iid))) == 1
+
+
+def test_codex_timeout_leaves_no_echo_guard_behind(server, codex_call, monkeypatch):
+    from speakeasy import service as service_module
+    monkeypatch.setattr(service_module, "INPUT_TEXT_WAIT_S", 0.3)
+    interaction, worker, transport = codex_call
+    transport.gate = threading.Event()
+    try:
+        status, body = typed(server, interaction.interaction_id, turn("Turn on the den lights"))
+        assert status == 504 and body["reason"] == "timeout"
+        wait_for(lambda: not worker.typed_echoes)  # dropped with the cancelled send
+    finally:
+        transport.gate.set()
+    # Codex did get it after all and transcribes it back: that is the transcript's only copy, kept.
+    run_on(worker, worker._user_turn("Turn on the den lights"))
+    assert user_texts(worker) == ["Turn on the den lights"]
+    assert typed_events(interaction) == []
 
 
 # -- Grok: a user message item, then a reply ---------------------------------------------------------------

@@ -217,31 +217,50 @@ A tap on a question card's option (or a typed answer). Body `{"task_id": "...", 
 ## POST /voice/interactions/{id}/input-text
 
 A turn typed on the call screen instead of spoken (plugin with `input_text: true` in
-`GET /voice/status`). Body exactly `{"type": "session.input_text", "text": "..."}`. The text is made
-one line (control characters and runs of whitespace become one space) and must then be 1 to 1,000
-characters. It goes to the live call as the user's turn:
+`GET /voice/status`). Body `{"type": "session.input_text", "text": "...", "client_id": "..."}`, where
+`client_id` is optional and nothing else is allowed. The text is made one line (control characters and
+runs of whitespace become one space) and must then be 1 to 1,000 characters. It goes to the live call
+as the user's turn:
 
 - Codex voice: `thread/realtime/appendText` with `role: "user"`. If Codex transcribes it back as a
-  user turn, that copy isn't recorded again.
-- GPT-Live: a session-wide `session.thinking.append` (no delegation id) quoting the words and asking
-  for a spoken reply, since its event channel takes no user text.
+  user turn, that copy isn't recorded again. Only the next user transcript within 6 s of Codex taking
+  the text can be that copy, and each typed turn absorbs at most one. A different user turn ends the
+  window, so saying the same words out loud later is always recorded.
+- GPT-Live: a session-wide `session.commentary.append` (no delegation id). Its event channel takes no
+  user text, so the note quotes the words and asks for a spoken reply. It goes on the commentary channel
+  because thinking notes are background the voice may hold without answering.
 - Grok voice: a user `message` item, then a reply is asked for.
 
 The turn joins the call's transcript (so the next task the voice hands off carries it) and is
-published on the call's event stream as `transcript` `{"role": "user", "text", "source": "typed"}`.
+published on the call's event stream as `transcript` `{"role": "user", "text", "source": "typed"}`,
+plus `client_id` when the send had one, so the sending app can tell that copy from its own echo.
 After Pause and Resume the newest call in the chain takes it.
 
+**`client_id` (optional; same rules as an `Idempotency-Key`: 1 to 128 of `A-Z a-z 0-9 _ -`).** The
+app's id for this turn, which makes retries safe. Send the same id again on the same call, before or
+after a Pause and Resume (for example after a 504 or a dropped connection), and the voice never gets the
+turn twice:
+
+- The first send went through: `200` with the same body plus `"duplicate": true`.
+- It's still in flight: the retry waits on it, and may itself get a 504.
+- It failed (409, 502): the retry is a new send.
+- The same id with different text gets `409 client_id_reused`.
+
+Without a `client_id` the route works as before and every send is a new turn.
+
 `200 {"interaction_id", "type": "session.input_text", "sent": true}` (`interaction_id` is the call
-that took it). Errors carry `error` and `reason`:
+that took it; `client_id` is echoed back when sent). Errors carry `error` and `reason`:
 
 | status | reason | when |
 |---|---|---|
-| 400 | `invalid_body`, `empty_text`, `text_too_long` | any other body, nothing left after cleanup, over 1,000 characters |
+| 400 | `invalid_body`, `empty_text`, `text_too_long` | any other body (including a malformed `client_id`), nothing left after cleanup, over 1,000 characters |
 | 401 | | missing or wrong device token |
 | 404 | `unknown_interaction` | no such call (a plugin without the route also answers 404, with no `reason`) |
-| 409 | `call_ended`, `call_paused`, `not_connected` | the call ended or is paused, or its voice connection is gone or didn't take the turn |
+| 409 | `call_ended`, `call_paused`, `not_connected` | the call ended or is paused, or its voice connection is gone |
+| 409 | `client_id_reused` | this `client_id` was already used for different text on this call |
+| 502 | `not_delivered` | the call is still up, but this one send failed. Nothing was recorded, the call is not marked as failed, and sending again is safe |
 | 502 | `transport_error` | the voice connection failed unexpectedly |
-| 504 | `timeout` | the call didn't take it within 15 s |
+| 504 | `timeout` | the call didn't confirm within 15 s. **The outcome is unknown: the voice may already have the words.** With a `client_id` the send keeps going, and retrying with the same id gives the outcome without sending twice. Without one the send is abandoned and never recorded, so check the call before sending the same words again |
 
 Nothing is recorded or published unless the voice took the turn.
 
@@ -301,7 +320,7 @@ The stream ends after `closed`.
 | `capture` | `{"capture_id"}`: capture the user's window for one request (see Look at this) |
 | `screen.hint` | `{"reason": "screen_off" \| "no_permission" \| "share_request"}`: draw the user's eye to the screen button |
 | `screen.state` | `{"on", "seq"}`: sharing changed on the server side ("stop looking at my screen") |
-| `transcript` | `{"role": "user", "text", "source": "typed"}`: a turn typed on a call screen (`input-text`) joined the call's transcript. Spoken turns don't come here (they arrive on the voice connection) |
+| `transcript` | `{"role": "user", "text", "source": "typed"[, "client_id"]}`: a turn typed on a call screen (`input-text`) joined the call's transcript. Spoken turns don't come here (they arrive on the voice connection) |
 
 ```
 id: 1

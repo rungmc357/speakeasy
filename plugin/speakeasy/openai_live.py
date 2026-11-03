@@ -113,3 +113,22 @@ class OpenAISidebandWorker(SidebandWorker):
                                            "delegation_id": delegation_id, "content": content}))
         except Exception:
             self.ws = None
+
+    async def send_typed_note(self, kind: str, content: str) -> bool:
+        """A typed turn's note: True when the socket took it. A failed send is reported for this send
+        only; unlike `_send` it leaves `self.ws` alone, so one failed typed message can't make a call
+        whose socket is still open look disconnected to every later send (run() clears `ws` when the
+        socket really closes)."""
+        ws = self.ws
+        if ws is None or len(content) > 2000:
+            return False
+        from websockets.exceptions import ConnectionClosed  # lazy, as in run()
+        try:
+            await ws.send(json.dumps({"type": kind, "event_id": new_event_id(),
+                                      "delegation_id": None, "content": content}))
+        except ConnectionClosed:
+            self.ws = None  # the socket really is gone: that's the call, not this send
+            return False
+        except Exception:
+            return False
+        return True
