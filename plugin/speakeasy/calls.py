@@ -39,7 +39,7 @@ from .settings import valid_delivery_target
 from .prompt import builder as P
 from . import text as text_mod
 from .text import (ID_RE, MAX_TRANSCRIPT, TERMINAL, clean_transcript, delivery_text, derive_tool_status,
-                   interim_progress, live_images_in, notice_text, safe_user_text, short_title, split_result,
+                   interim_progress, live_images_in, notice_text, safe_user_text, short_title, home_title, split_result,
                    thread_commentary, vetted_live_ref)
 
 logger = logging.getLogger(__name__)
@@ -709,6 +709,11 @@ class SidebandWorker:
         """Show the instant word-based label now, then swap in a proper name once Hermes' titler
         answers, unless something better (a thread's name) has replaced the label meanwhile."""
         provisional = short_title(request)
+        own = provisional is not None
+        if not own:
+            # "Leave it", "Yeah, ship it": a confirmation names nothing itself; it carries on the task
+            # it answers, so it takes that task's name rather than none at all.
+            provisional = self._parent_title(idem)
         self.store.set_title(idem, provisional)
         if not request or not provisional:
             return
@@ -730,7 +735,7 @@ class SidebandWorker:
                 handed = polished or request
                 changed = self.store.handoff_status(
                     idem, status, f"Handed to {self.names.assistant_name}: {handed}") or changed
-            if title and title != provisional and self.store.title(idem) == provisional:
+            if own and title and title != provisional and self.store.title(idem) == provisional:
                 self.store.set_title(idem, title)
                 changed = True
             if polished:
@@ -765,6 +770,19 @@ class SidebandWorker:
         task = asyncio.get_running_loop().create_task(run())
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
+
+    def _parent_title(self, idem: str) -> str | None:
+        """The name of the newest other task on this call (what a bare confirmation goes on with)."""
+        with self.interaction.lock:
+            keys = [r.idem_key for r in self.interaction.runs.values() if r.idem_key and r.idem_key != idem]
+        for key in reversed(keys):
+            try:
+                title = self.store.title(key)
+            except Exception:
+                title = None
+            if title:
+                return title
+        return None
 
     def retitle(self, idem: str, request: str | None, earlier: str | None = None) -> None:
         """Rename a task for what it has become: the titler sees the first ask and the newest one,
@@ -2073,7 +2091,8 @@ class SidebandWorker:
             self.interaction.latest_delegation_id = delegation_id
         try:
             self.store.reserve_run(idem, self.interaction.interaction_id, delegation_id, revision)
-            self.store.set_title(idem, short_title(request) or "Home")
+            # Named for what the house did ("Office lamp off · Bedroom lamps on"), else the ask itself.
+            self.store.set_title(idem, (home_title(reply.spoken) if reply.ok else None) or short_title(request) or "Home")
             self.store.progress(idem, "request", request)
             self.store.update_run(idem, None, backend.status)
             self.store.set_result(idem, split_result(reply.spoken, ()))

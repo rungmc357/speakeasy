@@ -67,7 +67,7 @@ def test_two_different_asks_back_to_back_stay_separate():
 def test_titles_are_never_made_of_filler():
     assert text.short_title("Uh, sure") is None
     assert text.short_title("that") is None
-    assert text.short_title("Find a taco spot open near me") == "Find a taco spot open near"
+    assert text.short_title("Find a taco spot open near me") == "Find a taco spot open near me"
 
 
 def test_status_answer_uses_reported_steps_not_plumbing():

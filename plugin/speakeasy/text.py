@@ -707,16 +707,85 @@ _TITLE_FILLER = set("""a an the and or but so um uh oh okay ok yeah yes no sure 
 there is are was be do did like well just maybe i you we me my huh hmm right cool""".split())
 
 
+_TITLE_LEAD = re.compile(
+    r"(?i)^(?:(?:hey|ok|okay|so|also|and|then|plus|oh|um+|uh+|er+|please|todd|hermes|"
+    r"can you|could you|would you|will you|can we|could we|i need you to|i want you to|i'?d like you to|"
+    r"go ahead and|let'?s|now)[\s,]+)+")
+# A self-correction mid-request ("Turn on my be- er, sorry, turn off..."): the words after it count.
+_TITLE_CORRECTION = re.compile(r"(?i)(?:\b(?:sorry|i mean|i meant|no wait|scratch that|or rather)\b|\ber\b,|\w+-\s)[\s,.;:!-]*")
+_TITLE_CLAUSE = re.compile(r"(?i)\s*(?:[,;:]|\.\s|\s(?:and then|then|and also|but)\s)\s*")
+_TITLE_DANGLING = set("""a an the my our your his her their its to of for in at with from into onto by and or but
+so than as about like then this these those some any please now""".split())
+TITLE_WORDS = 8
+
+
+def _title_content(text: str) -> list[str]:
+    return [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in _TITLE_FILLER]
+
+
 def short_title(request: str | None) -> str | None:
-    """A to-do style label from the spoken request (no classifier): first few content words."""
+    """A to-do style label from the spoken request (no classifier). Self-corrections are dropped,
+    the first clause is used when it stands on its own, and a cut never ends on a dangling word
+    ("Turn off the office lamp", not "Turn off the office lamp, turn")."""
+    text = notice_text(request, 200)
+    if not text:
+        return None
+    parts = _TITLE_CORRECTION.split(text)
+    if len(parts) > 1:
+        after = parts[-1].strip(" ,.;:!-")
+        if len(_title_content(after)) >= 2:
+            text = after
+    text = _TITLE_LEAD.sub("", text.strip(" ,.;:!-")).strip()
+    clauses = [c for c in _TITLE_CLAUSE.split(text) if c.strip()]
+    if clauses and len(_title_content(clauses[0])) >= 2:
+        text = clauses[0]
+    text = _TITLE_LEAD.sub("", text).strip()
+    words = text.rstrip(".!?").split()
+    if not words or len(_title_content(text)) < 2:
+        return None  # "Uh, sure", "that": no name is better than a name made of filler
+    words = words[:TITLE_WORDS]
+    while len(words) > 2 and (re.sub(r"[^a-z']", "", words[-1].lower()) in _TITLE_DANGLING or words[-1].endswith("-")):
+        words.pop()
+    title = " ".join(words).strip(" ,.;:!-")
+    return (title[0].upper() + title[1:])[:60]
+
+
+def legacy_short_title(request: str | None) -> str | None:
+    """The label older versions saved (first six words), so a task named by one still counts as a
+    stand-in that a proper name may replace."""
     text = notice_text(request, 200)
     if not text:
         return None
     text = re.sub(r"(?i)^(?:(?:hey|ok|okay|so|um+|uh+|please|can you|could you|would you|i need you to|"
                   r"i want you to|go ahead and|let'?s)[\s,]+)+", "", text).strip()
     words = text.rstrip(".!?").split()
-    content = [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in _TITLE_FILLER]
-    if not words or len(content) < 2:
-        return None  # "Uh, sure", "that": no name is better than a name made of filler
+    if not words or len(_title_content(text)) < 2:
+        return None
     title = " ".join(words[:6])
     return (title[0].upper() + title[1:])[:60]
+
+
+_HOME_STATE = re.compile(
+    r"(?i)^(?:ok(?:ay)?[,.]?\s+|done[,.]?\s+|all set[,.]?\s+)?(?:the\s+|your\s+)?(?P<what>[\w' -]{2,40}?)\s+"
+    r"(?:is|are|was|were)\s+(?:now\s+)?(?P<state>on|off|open|closed|locked|unlocked|playing|paused|"
+    r"(?:set\s+)?(?:to|at)\s+[\w%°. -]{1,20})$")
+
+
+def home_title(spoken: str | None) -> str | None:
+    """A card name from what the house did ("Office lamp is off. Bedroom lamps are on." ->
+    "Office lamp off · Bedroom lamps on"). None unless every sentence reads as a device state."""
+    text = " ".join(str(spoken or "").split())
+    sentences = [s.strip() for s in re.split(r"(?<=[.!])\s+|\s+and\s+(?=(?:the\s+)?\w[\w' -]*\s+(?:is|are)\s)", text)
+                 if s.strip(" .!")]
+    if not sentences or len(sentences) > 3:
+        return None
+    parts = []
+    for sentence in sentences:
+        match = _HOME_STATE.match(sentence.strip(" .!"))
+        if not match:
+            return None
+        state = re.sub(r"(?i)^set\s+", "", match.group("state")).strip()
+        what = match.group("what").strip()
+        parts.append(f"{what[0].upper()}{what[1:]} {state}")
+    title = " · ".join(parts)
+    return title if len(title) <= 60 else None

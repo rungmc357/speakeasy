@@ -19,7 +19,7 @@ from typing import Any
 from .emails import canonical_json, draft_sha256
 from .failures import public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
-                   short_title, valid_short_status)
+                   legacy_short_title, short_title, valid_short_status)
 
 STALE_AFTER_S = 90
 MAX_REVIEWS = 3  # finished-image review cards carried onto the call panel
@@ -61,7 +61,8 @@ def _is_stand_in(title: str | None, request: str | None, continued: str | None =
     in a chat thread shows the thread's name, which a rename here would split from the thread itself."""
     if '"thread_id"' in (continued or ""):
         return False
-    return not title or title == short_title(notice_text(request, 1200) or "")
+    asked = notice_text(request, 1200) or ""
+    return not title or title in {short_title(asked), legacy_short_title(asked)}
 
 
 class StateStore:
@@ -872,6 +873,7 @@ class StateStore:
                 # The job this task named takes the new name only while it still has the stand-in's
                 # name; a job named any other way keeps its name.
                 stand_ins = {n for n in (job_name(row[0]), job_name(short_title(notice_text(row[2], 1200) or "")),
+                                         job_name(legacy_short_title(notice_text(row[2], 1200) or "")),
                                          "Voice task") if n}
                 marks = ",".join("?" * len(stand_ins))
                 self._db.execute(f"UPDATE jobs SET name=?, updated=? WHERE from_key=? AND name IN ({marks})",
