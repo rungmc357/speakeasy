@@ -632,6 +632,10 @@ def cmd_reload(home: Path, timeout: float = 30) -> int:
             if answer.get("ok"):
                 print(f"Speakeasy {answer.get('version')} loaded. No gateway restart needed.")
                 return 0
+            if answer.get("running") is False:
+                print(f"Speakeasy couldn't start, so the voice server is down for now. It keeps retrying on its own, "
+                      f"and `hermes voice reload` tries again right away. Error: {answer.get('error')}")
+                return 1
             print(f"The new Speakeasy didn't load, so {answer.get('version')} is still running: {answer.get('error')}")
             return 1
         time.sleep(.3)

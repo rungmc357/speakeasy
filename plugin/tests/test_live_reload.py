@@ -181,3 +181,62 @@ def test_hermes_style_reinstall_drops_and_reimports_the_whole_package(plugin):
     assert r.tick() == "reloaded"                          # ...until the new version loads whole
     assert _health(port)["version"] == "2.0.0"
     assert sys.modules[f"{name}.calls"] is not running_calls
+
+
+def _fail_builds(r, count: int) -> list:
+    """Make the next ``count`` server builds fail like the live incident (a transient disk error)."""
+    real, failures = r._build, []
+
+    def flaky():
+        if len(failures) < count:
+            failures.append(1)
+            raise OSError("disk I/O error")
+        return real()
+    r._build = flaky
+    return failures
+
+
+def _down_after_a_failed_reload(r, pkg):
+    _fail_builds(r, 2)                                  # the new code and the fallback both fail
+    _set_version(pkg, "1.0.5")
+    assert _settle(r)[-1] == "failed"
+    assert r.server is None
+    result = json.loads((r.state_dir / "reload-result.json").read_text())
+    assert result["ok"] is False and result["running"] is False
+
+
+def test_a_server_left_down_by_a_failed_reload_comes_back_on_the_next_check(plugin):
+    r, pkg, port, name, mod = plugin
+    _down_after_a_failed_reload(r, pkg)
+    assert r.tick() is None                             # backing off: not every 2 s
+    r.retry_at = 0.0                                    # the backoff is up
+    assert r.tick() == "recovered"
+    assert _health(port)["version"] == "1.0.5"
+    result = json.loads((r.state_dir / "reload-result.json").read_text())
+    assert result["ok"] is True and result["running"] is True
+    assert r.tick() is None                             # and it is back to normal watching
+
+
+def test_hermes_voice_reload_retries_a_down_server_at_once(plugin):
+    r, pkg, port, name, mod = plugin
+    _down_after_a_failed_reload(r, pkg)
+    (r.state_dir / "reload-request").write_text("now")
+    assert r.tick() == "recovered"                      # no waiting out the backoff when asked
+    assert _health(port)["version"] == "1.0.5"
+    assert not (r.state_dir / "reload-request").exists()
+
+
+def test_a_down_server_backs_off_and_records_every_attempt(plugin):
+    r, pkg, port, name, mod = plugin
+    _down_after_a_failed_reload(r, pkg)
+    _fail_builds(r, 4)                                  # the next two attempts fail (disk + previous each)
+    waits = []
+    for _ in range(2):
+        r.retry_at = 0.0
+        before = time.monotonic()
+        assert r.tick() == "failed"
+        waits.append(r.retry_at - before)
+        assert json.loads((r.state_dir / "reload-result.json").read_text())["running"] is False
+    assert waits[0] < waits[1] <= mod.RETRY_MAX_S + 1
+    r.retry_at = 0.0
+    assert r.tick() == "recovered" and _health(port)["version"] == "1.0.5"

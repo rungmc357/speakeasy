@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 SHELL = {"adapter", "reloader"}   # never swapped: the gateway holds the adapter instance
 CHECK_S = 2.0
+RETRY_MIN_S = 5.0     # with no server running, try to start one again this soon...
+RETRY_MAX_S = 60.0    # ...backing off to this
 REQUEST_FILE = "reload-request"
 RESULT_FILE = "reload-result.json"
 
@@ -76,6 +78,9 @@ class LiveReloader:
         self.failed_fp = ""        # a fingerprint that failed to load: don't retry until files change
         self.pending = False
         self.version = ""
+        self.retry_s = RETRY_MIN_S  # with no server: wait before the next attempt (doubles to RETRY_MAX_S)
+        self.retry_at = 0.0         # monotonic time of the next attempt to start a server again
+        self.attempts = 0           # failed attempts since the server went down
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -155,7 +160,7 @@ class LiveReloader:
         Returns what happened ("restored", "reloaded", "failed") or None."""
         with self._lock:
             if self.server is None:
-                return None
+                return self._recover()
             outcome = None
             owned = self._owned()
             if any(owned.get(name) is not mod for name, mod in self.modules.items()) or set(owned) - set(self.modules):
@@ -200,9 +205,15 @@ class LiveReloader:
                 self.server = None
                 try:
                     self.server = self._build()
-                except Exception as again:  # pragma: no cover - the old code started once already
-                    logger.error("speakeasy: restarting the previous version failed: %s", again)
+                except Exception as again:
+                    # Seen live: a transient "disk I/O error" failed both. Never stay down: tick() keeps
+                    # trying (at once on `hermes voice reload`, otherwise with backoff).
+                    logger.error("speakeasy: restarting the previous version failed too, voice server is down; "
+                                 "retrying in %.0fs: %s: %s", RETRY_MIN_S, type(again).__name__, again)
+                    self._schedule_retry(reset=True)
                 self.modules = self._owned()
+                if self.server is None:
+                    self.modules = old_modules  # what to fall back to while recovering
                 self._write_result(False, old_version, f"{type(exc).__name__}: {exc}")
                 self.pending = False
                 return "failed"
@@ -215,11 +226,68 @@ class LiveReloader:
             self._write_result(True, self.version, "")
             return "reloaded"
 
+    # -- no server running: keep trying --------------------------------------------------------
+    def _schedule_retry(self, reset: bool = False) -> None:
+        if reset:
+            self.retry_s, self.attempts = RETRY_MIN_S, 0
+        self.retry_at = time.monotonic() + self.retry_s
+        self.retry_s = min(self.retry_s * 2, RETRY_MAX_S)
+
+    def _recover(self) -> str | None:
+        """The server is down (a reload and its fallback both failed). Try again: right away when
+        `hermes voice reload` asks, otherwise once the backoff (5s doubling to 60s) is up. The code
+        on disk goes first, then the last code that ran."""
+        forced = (self.state_dir / REQUEST_FILE).exists()
+        if not forced and time.monotonic() < self.retry_at:
+            return None
+        self.attempts += 1
+        current = fingerprint(self.plugin_dir)
+        fallback = dict(self.modules)
+        # The disk code goes first even if it failed before: the failure may have been transient.
+        tries: list[tuple[str, dict[str, ModuleType] | None]] = [("disk", None)]
+        if fallback:
+            tries.append(("previous", fallback))
+        errors: list[str] = []
+        for label, modules in tries:
+            if modules is None:
+                self._evict()
+            else:
+                self._restore(modules)
+            importlib.invalidate_caches()
+            try:
+                self.server = self._build()
+            except Exception as exc:
+                self.server = None
+                errors.append(f"{label}: {type(exc).__name__}: {exc}")
+                continue
+            self.modules = self._owned()
+            if modules is None:
+                self.loaded_fp = self.seen_fp = current
+                self.failed_fp = ""
+            self.pending = self.loaded_fp != current
+            logger.info("speakeasy: voice server recovered (%s code, version %s) after %d attempt%s%s",
+                        label, self.version, self.attempts, "" if self.attempts == 1 else "s",
+                        " (asked)" if forced else "")
+            self._schedule_retry(reset=True)
+            self.retry_at = 0.0
+            self._write_result(True, self.version, "")
+            return "recovered"
+        if fallback:
+            self._restore(fallback)  # keep the last good set for the next try
+        wait = self.retry_s
+        self._schedule_retry()
+        error = "; ".join(errors) or "nothing to load"
+        logger.warning("speakeasy: voice server still down after attempt %d, next try in %.0fs: %s",
+                       self.attempts, wait, error)
+        self._write_result(False, self.version, error)
+        return "failed"
+
     def _write_result(self, ok: bool, version: str, error: str) -> None:
         try:
             self.state_dir.mkdir(parents=True, exist_ok=True)
             (self.state_dir / REQUEST_FILE).unlink(missing_ok=True)
             (self.state_dir / RESULT_FILE).write_text(json.dumps(
-                {"ok": ok, "version": version, "error": error[:500], "at": time.time()}))
+                {"ok": ok, "version": version, "error": error[:500], "at": time.time(),
+                 "running": self.server is not None}))
         except OSError as exc:
             logger.warning("speakeasy: could not record the reload result: %s", exc)
