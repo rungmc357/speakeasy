@@ -2,6 +2,10 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Mac 0.3.9 — Know what each new voice is
+
+- **The new voices say where they're from.** Each GPT-Live 1.1 voice in Settings › Voice now names the language it was made for (French, German, Hindi, Japanese, Korean, Mexican Spanish, Brazilian Portuguese or English), followed by a short note on how it sounds. On iPhone, the new voices also get their play buttons. *(Mac app and iPhone)*
+
 ## Mac 0.3.8 and Plugin 0.3.15 — Talk to Grok, and no more "Status unconfirmed"
 
 - **Grok as your voice (beta).** Speakeasy can now use xAI's Grok realtime voice instead of GPT-Live. Open Settings › Voice, turn on **Grok Voice (beta)**, then pick Grok as the voice provider (voices Ara, Rex, Sal, Eve and Leo). It uses the X / SuperGrok sign-in your Hermes already has, so no API key is needed. If Hermes isn't signed in to xAI, Settings tells you how. Tasks, cards and approvals work the same as with the other voices. *(Plugin and Mac app)*
