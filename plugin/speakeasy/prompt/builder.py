@@ -1102,6 +1102,11 @@ def reaction_note(names: "Names") -> str:
 GREETING_SPOKEN = "That was just a hello, so nothing's started. Go ahead, I'm listening."
 
 
+def nothing_started_note(names: "Names") -> str:
+    return (f"Correction: nothing was started for what {names.user} just said. If you told them you were on it, say "
+            "plainly, in a few words, that you haven't started it yet, and ask them to say what they want done.")
+
+
 def lost_track_note(names: Names) -> str:
     return f"I lost track of that task's progress, so approval and stop are blocked until {names.user} asks again."
 

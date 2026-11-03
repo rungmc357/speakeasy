@@ -1281,17 +1281,126 @@ _TALK_MODE_ON = re.compile(
     r"|no\s+(?:tasks?|work)\s+(?:yet|for\s+now)|stop\s+(?:sending|starting|delegating))")
 # A reaction, not a request: "what, bro", "wait", "yeah okay", "hang on".
 _REACTION = re.compile(
-    r"(?i)^\W*(?:(?:what|huh|wait|hang\s+on|hold\s+on|yeah|yes|yep|no|nope|nah|okay|ok|right|sure|cool|nice|wow|damn|bro|dude|man|lol|haha|the\s+fuck|what\s+the\s+fuck|todd|hermes|really|seriously|for\s+real|got\s+it|i\s+see|interesting)\W*){1,4}$")
+    r"(?i)^\W*(?:(?:um+|uh+|er+|oh|well)\W+)*(?:(?:what|huh|wait|hang\s+on|hold\s+on|yeah|yes|yep|no|nope|nah|okay|ok|right|sure|cool|nice|wow|damn|bro|dude|man|lol|haha|the\s+fuck|what\s+the\s+fuck|todd|hermes|really|seriously|for\s+real|got\s+it|i\s+see|interesting)\W*){1,4}$")
 
 
 # "could I make…", "if you were to build…", "should we send…": a verb inside a what-if isn't an ask.
 _HYPOTHETICAL = re.compile(r"(?i)\b(?:(?:could|should|would|might|if|what\s+if|can)\s+(?:i|we|they|people|someone|it)|if\s+you|(?:i|we|they)\s+(?:could|should|would|might))\s+(?:were\s+to\s+|ever\s+|just\s+)?\w+(?:\s+(?:a|an|the|it|this|that|me))?")
 
 
+# A polite ask about something that already exists ("can we make the logo match", "could you fix my
+# script"): a request, not a what-if. A what-if names something new ("could I make a sleep app").
+_POLITE_ASK = re.compile(
+    r"(?i)\b(?:can|could|would)\s+(?:we|you)\s+(?:please\s+|just\s+|maybe\s+)?"
+    r"(?:make|build|do|change|update|fix|get|set|switch|turn|add|move|put|swap|match|start|try|redo|rename|"
+    r"clean|finish|ship|send|run|open|close|merge|deploy|remove|delete)\s+"
+    r"(?:the|my|our|this|that|these|those|it|them|his|her|their)\b")
+# A question about where things stand ("where did our PRs leave off?", "any work we have to keep
+# doing?"): it needs facts the voice doesn't have, so it is work.
+_STATE_QUESTION = re.compile(
+    r"(?i)\b(?:(?:where|what|which|how)\s+(?:did|do|does|is|are|was|were|has|have)\s+(?:our|my)\b"
+    r"|where\s+(?:are|were|did)\s+we\s+(?:at|leave|land)"
+    r"|(?:any|what)\s+(?:work|prs?|pull\s+requests?|tasks?|jobs?|tickets?|issues?|bugs?)\b.{0,40}?\b(?:we|i)\s+"
+    r"(?:have|need|got|still))")
+
+
 def is_conversation(request: str) -> bool:
     """Thinking out loud or asking for a take, with no ask to go do anything."""
     text = " ".join((request or "").split())
-    return bool(text) and bool(_TALK.search(text)) and not _WORK.search(_HYPOTHETICAL.sub(" ", text))
+    if not text or _POLITE_ASK.search(text) or _STATE_QUESTION.search(text):
+        return False
+    return bool(_TALK.search(text)) and not _WORK.search(_HYPOTHETICAL.sub(" ", text))
+
+
+# What the voice says when it takes on work ("On it", "let me pull that together", "I'll fix that").
+# If it says this and nothing starts, the user is left waiting for work that never happens.
+_WORK_ACK = re.compile(
+    r"(?i)\b(?:on\s+it|doing\s+(?:that|it|so)\s+now|on\s+(?:that|it)\s+now"
+    r"|(?:i'?m|i\s+am)\s+(?:getting|starting|jumping)\s+on\s+(?:it|that|this)"
+    r"|let\s+me\s+(?:pull|look|check|dig|find|get|grab|take\s+a\s+look|go\s+(?:do|check|look|find)|fix|make|"
+    r"set|start|kick|run|build|put|line|sort|track|round)"
+    r"|i'?ll\s+(?:get|start|look|check|pull|dig|take\s+care|go\s+(?:do|check|look|find)|make|set|fix|handle|"
+    r"kick|run|build|track|find|grab|sort|put|line)"
+    r"|starting\s+(?:on\s+)?(?:that|it)(?:\s+now)?|kicking\s+(?:that|it|this)\s+off"
+    r"|(?:switching|turning)\s+(?:those|them|it|that|the)\b"
+    r"|let'?s\s+(?:make|get|fix|set|build)\s+(?:those|that|it|them|this|the)\b)")
+
+
+def acknowledges_work(said: str) -> bool:
+    """The voice said it is taking the work on (so a task must exist for it)."""
+    return bool(_WORK_ACK.search(" ".join((said or "").split())))
+
+
+# A scrap with nothing to act on: "that", "there it is", "uh, so". Only these words, at most 4.
+_FRAGMENT_WORDS = set("""that this it it's its there here is are was the a an so and but or um umm uh er oh
+well like what hmm mm mhm okay ok yeah yes yep sure right then now one those these them they thing
+just i you we me hey""".split())
+
+
+def is_fragment(request: str) -> bool:
+    """Too little to start anything on its own: up to four words, none of them saying what to do."""
+    words = re.findall(r"[a-z']+", (request or "").lower())
+    return 0 < len(words) <= 4 and all(w in _FRAGMENT_WORDS for w in words)
+
+
+# -- corrections: "living room... dining room, sorry", "no, turn them on" -------------------------
+_CORRECTION_LEAD = re.compile(
+    r"(?i)^\W*(?:(?:um+|uh+|er+|oh|wait)\W+)*(?:no|nope|nah|not\s+that|i\s+mean(?:t)?|or\s+rather|rather"
+    r"|scratch\s+that|actually|correction)\b[\s,.;:!-]+(?P<rest>\S.*)$")
+_CORRECTION_TAIL = re.compile(r"(?i)^(?P<rest>.*?\S)[\s,.;:!-]+(?:sorry|i\s+mean(?:t)?(?:\s+that)?)\W*$")
+_CORRECTION_VERB = re.compile(
+    r"(?i)^(?:please\s+)?(?:turn|switch|set|make|dim|brighten|open|close|play|pause|stop|start|send|book|"
+    r"check|find|look|get|put|move|add|remove|cancel|use|go|do|keep|leave|change|show|tell|text|email|call)\b")
+_LEADING_JUNK = re.compile(r"(?i)^(?:(?:or|our|and|but|so|um+|uh+|er+|oh|the)\s+)+")
+
+
+def correction(request: str) -> tuple[str, str] | None:
+    """("phrase", "dining room") for "Our dining room, sorry"; ("replace", "turn them on") for "no, turn
+    them on"; None when it isn't a correction. A bare "no" is an answer, never a correction."""
+    text = " ".join((request or "").split())
+    if not text or len(text.split()) > 12:
+        return None
+    lead, tail = _CORRECTION_LEAD.match(text), _CORRECTION_TAIL.match(text)
+    if lead:
+        rest, by_lead = lead.group("rest"), True
+    elif tail:
+        rest, by_lead = tail.group("rest"), False
+    else:
+        return None
+    trailing = _CORRECTION_TAIL.match(rest)
+    rest = trailing.group("rest") if trailing else rest
+    rest = rest.strip(" ,.;:!-")
+    if re.match(r"(?i)^(?:thanks|thank\s+you|worries|problem|way|need|wait|rush|it'?s\s+fine|that'?s\s+fine)\b", rest):
+        return None  # "no thanks", "no worries": an answer, not a correction
+    if _CORRECTION_VERB.match(rest):
+        # "No, turn them on": a whole new command (only after "no"/"I mean", never a polite "sorry").
+        return ("replace", rest) if by_lead and re.match(r"(?i)^\W*(?:no|nope|nah|i\s+mean)", text) else None
+    # "living room... dining room": what came before the break is the slip, the rest is the fix.
+    rest = re.split(r"\s*(?:\.{2,}|…|—|--)\s*", rest)[-1]
+    phrase = _LEADING_JUNK.sub("", rest).strip(" ,.;:!-")
+    if not phrase or len(phrase.split()) > 5 or is_fragment(phrase) or not re.search(r"[a-z]{3,}", phrase.lower()):
+        return None
+    if all(re.sub(r"[^a-z]", "", w) in _FRAGMENT_WORDS | {"er", "erm", "be", ""} for w in phrase.lower().split()):
+        return None
+    return "phrase", phrase
+
+
+def apply_correction(original: str, phrase: str) -> str:
+    """Put the corrected words in place of the ones they correct: the same number of words ending in
+    the phrase's last word ("in the living room" + "dining room" -> "in the dining room"). With no such
+    word to anchor on, the correction is stated plainly instead of being run on as more words."""
+    original = " ".join((original or "").split())
+    words, fix = original.split(), phrase.split()
+    if not words or not fix:
+        return original
+    anchor = re.sub(r"[^a-z0-9']", "", fix[-1].lower())
+    norm = [re.sub(r"[^a-z0-9']", "", w.lower()) for w in words]
+    for end in range(len(words) - 1, -1, -1):
+        if norm[end] == anchor and anchor:
+            start = max(0, end - len(fix) + 1)
+            trail = re.sub(r"^[a-z0-9']*", "", words[end], flags=re.I)  # keep "room," punctuation
+            return " ".join(words[:start] + fix[:-1] + [fix[-1] + trail] + words[end + 1:])
+    return f"{original.rstrip(' .')} (correction: {phrase}, not what I said before)"
 
 
 # Listening mode: a question about what was said in the room before the call ("what did Sam say the

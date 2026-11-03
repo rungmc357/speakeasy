@@ -54,6 +54,9 @@ SETTLE_S = 1.5         # wait this long after a handoff for the user to keep goi
 SETTLE_MAX_S = 6.0     # and never longer than this in total
 ABSORB_WINDOW_S = 15.0 # a handoff of words already folded into an earlier task is dropped
 ECHO_WINDOW_S = 8.0    # a second handoff this soon that only repeats the last request's words is dropped
+DUPLICATE_WINDOW_S = 15.0  # the very same words handed off again this soon start nothing new
+CORRECTION_WINDOW_S = 30.0  # "dining room, sorry" this soon after a request replaces it
+ACK_GRACE_S = 5.0      # the voice said "on it": a task must exist (or start) within this long
 # The card's step for an approval answered from the call (the panel's buttons record the same words).
 APPROVED_MILESTONE = {"once": "Approved", "session": "Approved for the rest of this task", "deny": "Approval denied"}
 FOLLOW_UP_POLL_S = 2.0 # how often a queued follow-up is looked for in the task's transcript (receipts.py)
@@ -78,19 +81,35 @@ def _words(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9']+", (text or "").lower()))
 
 
+def _with_request(context: str, request: str) -> str:
+    """The transcript with its last user turn(s) put as the request that actually goes (a correction
+    applied, or words said just after the handoff), so the task reads one clean request."""
+    lines = context.splitlines()
+    while lines and lines[-1].startswith("User: "):
+        lines.pop()
+    return "\n".join(lines + [f"User: {request}"])
+
+
 def is_greeting(request: str) -> bool:
     return bool(GREETING_RE.match(request or ""))
 
 
-def whole_request(context: str) -> str:
+def whole_request(context: str, started: "set[str] | None" = None) -> str:
     """The user's last request, whole. Speech often lands as two transcript lines with nothing said
     in between ("Bedroom lamps at forty percent" / "purple"); handing on only the last scrap lost the
-    rest. Consecutive user lines at the end are joined when the final one is short."""
+    rest. Consecutive user lines at the end are joined when the final one is short. A line that was
+    already its own request (``started``: their words) is never joined on again: "Turn on the lamps"
+    after a lamp command that already ran is a new request, not a replay of the old one."""
     lines = context.splitlines()
     picked: list[str] = []
     for line in reversed(lines):
         if line.startswith("User: "):
-            picked.append(line[6:].strip())
+            said = line[6:].strip()
+            if picked and started and _words(said) and any(_words(said) in s for s in started):
+                break
+            if picked and _words(said) and set(_words(said).split()) <= set(_words(" ".join(picked)).split()):
+                continue  # the same words said twice ("what work... Yeah, what work...") count once
+            picked.append(said)
             if len(picked) >= 3 or len(picked[0].split()) > 4:
                 break
             continue
@@ -626,6 +645,12 @@ class SidebandWorker:
         self.recent_requests: list[tuple[str, float]] = []  # requests started this call, for echo checks
         self.recent_answers: dict[tuple[str, str], tuple[str, float]] = {}  # tapped answers, for double sends
         self.handoff_at: dict[str, float] = {}   # delegation id -> when the handoff arrived (monotonic)
+        # Requests that went on as work this call: (words, when, delegation id, the request), newest last.
+        self.started: list[tuple[str, float, str, str]] = []
+        self.last_handoff_at = float("-inf")     # when the newest handoff (or tapped answer) arrived
+        self.drops: list[tuple[str, float, str, str]] = []  # (reason, when, request, context) not started
+        self.ack_checked = float("-inf")         # the user turn whose "on it" was last checked
+        self.force_work: set[str] = set()        # handoffs started because the voice promised the work
         self.quiet_notes: dict[str, str] = {}    # held background notes, newest per kind
         self.show_pending: set[str] = set()      # task keys asked for a screenshot by "show me"
         # Home control: the question just asked (original request, question, when) and answers given
@@ -878,6 +903,8 @@ class SidebandWorker:
                 self.rt.duck.note(speaker, self.interaction.interaction_id)
             if speaker == "user":
                 self.listen_for_stop()
+            else:
+                self.watch_acknowledgement()
             return
         if kind == "session.delegation.created":
             delegation = event.get("delegation") or {}
@@ -902,7 +929,7 @@ class SidebandWorker:
             self.publish()
 
     def schedule_dispatch(self, delegation_id: str, context: str, marked: Any = None) -> None:
-        self.handoff_at[delegation_id] = time.monotonic()
+        self.handoff_at[delegation_id] = self.last_handoff_at = time.monotonic()
         with self.interaction.lock:
             self.interaction.revision += 1
             revision = self.interaction.revision
@@ -912,6 +939,121 @@ class SidebandWorker:
         task = asyncio.get_running_loop().create_task(self.dispatch(delegation_id, revision, context, marked))
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
+
+    # -- "on it" must mean a task -----------------------------------------------------------------
+    def watch_acknowledgement(self) -> None:
+        """The voice is speaking. If it is promising work ("On it", "let me pull that together"), check
+        a beat later that a task really started for what the user just said; the call once said "On
+        it" to "make the mobile logo match", started nothing, and the user found out much later."""
+        fragments = list(self.fragments)
+        turn = next((i for i in range(len(fragments) - 1, -1, -1) if fragments[i]["speaker"] == "user"), None)
+        if turn is None:
+            return
+        turn_at = fragments[turn]["at"]
+        if turn_at <= getattr(self, "ack_checked", float("-inf")):
+            return
+        said = "".join(f["text"] for f in fragments[turn + 1:] if f["speaker"] == "assistant")
+        if not router.acknowledges_work(said):
+            return
+        self.ack_checked = turn_at
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._ack_guard(turn_at))
+        self.dispatch_tasks.add(task)
+        task.add_done_callback(self.dispatch_tasks.discard)
+
+    async def _ack_guard(self, turn_at: float) -> None:
+        await asyncio.sleep(ACK_GRACE_S)
+        drops = [d for d in getattr(self, "drops", []) if d[1] >= turn_at - 1.0]
+        talked = next((d for d in reversed(drops) if d[0] == "Talked it through"), None)
+        if talked is not None:
+            # The gate took it for conversation but the voice promised the work: do the work.
+            logger.info("speakeasy: the voice said it was on it but nothing started; starting it now")
+            self._force_dispatch(talked[3])
+            return
+        if getattr(self, "last_handoff_at", float("-inf")) >= turn_at - 2.0 and not drops:
+            return  # a handoff came for this turn: it is a task (or was answered on the spot)
+        if drops:
+            if any(d[0] in {"Just a greeting", "Just a reaction", "Just talking", "Didn't catch it"} for d in drops):
+                await self.append("session.thinking.append", None, P.nothing_started_note(self.names))
+            return
+        context = self.context(1 << 62)
+        lines = context.splitlines()
+        while lines and not lines[-1].startswith("User: "):
+            lines.pop()
+        context = "\n".join(lines)
+        request = whole_request(context, self._started_words())
+        if (not request or is_greeting(request) or router.is_fragment(request) or router.is_reaction(request)
+                or router.starts_talk_mode(request)):
+            await self.append("session.thinking.append", None, P.nothing_started_note(self.names))
+            return
+        logger.info("speakeasy: the voice said it was on it with no handoff; starting the request now")
+        self._force_dispatch(context)
+
+    def _force_dispatch(self, context: str) -> None:
+        delegation_id = "ack_" + secrets.token_hex(8)
+        self.delegations.add(delegation_id)
+        if getattr(self, "force_work", None) is None:
+            self.force_work = set()
+        self.force_work.add(delegation_id)
+        self.schedule_dispatch(delegation_id, context)
+
+    def _started_words(self) -> set[str]:
+        return {w for w, *_ in getattr(self, "started", [])}
+
+    def _note_started(self, delegation_id: str, request: str) -> None:
+        started = getattr(self, "started", None)
+        if started is None:
+            started = self.started = []
+        started[:] = [s for s in started if s[2] != delegation_id][-19:]
+        started.append((_words(request), time.monotonic(), delegation_id, request))
+
+    def _duplicate(self, request: str) -> bool:
+        """The very same words as a request started moments ago ("Fix it now" handed off twice)."""
+        words, now = _words(request), time.monotonic()
+        return bool(words) and any(w == words and now - at < DUPLICATE_WINDOW_S for w, at, *_ in getattr(self, "started", []))
+
+    async def _apply_correction(self, last_request: str, context: str) -> str:
+        """\"Our dining room, sorry\" / \"no, turn them on\": the corrected request, in place of the one it
+        corrects. Joined onto words not yet started, it fixes them; said after a request already went,
+        the corrected request goes instead, and the old one is stopped if it is still running."""
+        line = next((l[6:].strip() for l in reversed(context.splitlines()) if l.startswith("User: ")), last_request)
+        found = router.correction(line)
+        if not found:
+            return last_request
+        how, words = found
+        before = last_request[:-len(line)].strip() if last_request.endswith(line) and last_request != line else ""
+        if before:
+            fixed = words if how == "replace" else router.apply_correction(before, words)
+            logger.info("speakeasy: a correction replaced part of the request before it started")
+            return fixed
+        now = time.monotonic()
+        recent = [s for s in getattr(self, "started", []) if now - s[1] < CORRECTION_WINDOW_S]
+        if not recent:
+            return words if how == "replace" else last_request
+        _, _, old_id, old_request = recent[-1]
+        fixed = words if how == "replace" else router.apply_correction(old_request, words)
+        await self._supersede(old_id)
+        logger.info("speakeasy: a correction replaced the request just before it")
+        return fixed
+
+    async def _supersede(self, task_id: str) -> None:
+        """A corrected request replaces this one: stop it if it is still working."""
+        with self.interaction.lock:
+            run = self.interaction.runs.get(task_id)
+            if run is None or run.status not in ACTIVE_RUN_STATES or not run.run_id:
+                return
+            run.status = "cancel_requested"
+            key, run_id = run.idem_key, run.run_id
+        self.store.update_run(key, None, "cancel_requested")
+        self.store.progress(key, "milestone", "Replaced by your correction")
+        self.publish()
+        try:
+            await asyncio.to_thread(self.hermes.stop, run_id)
+        except Exception as exc:
+            logger.warning("speakeasy: could not stop the corrected task (%s)", type(exc).__name__)
 
     def context(self, offset_ms: int) -> str:
         selected = [f for f in self.fragments if (f["end_ms"] or f["start_ms"]) <= offset_ms]
@@ -996,6 +1138,7 @@ class SidebandWorker:
         delegation_id = "answer_" + secrets.token_hex(8)
         answers[key] = (delegation_id, now)
         self.delegations.add(delegation_id)
+        self.last_handoff_at = time.monotonic()
         self.touch()
         self.fragments.append({"speaker": "user", "text": text, "at": time.monotonic(), "start_ms": 0, "end_ms": 0})
         if self.call_connected():
@@ -1303,6 +1446,14 @@ class SidebandWorker:
         more = " ".join(" ".join(extra).split())
         self.absorbed = [(t, at) for t, at in self.absorbed if time.monotonic() - at < ABSORB_WINDOW_S]
         self.absorbed.append((more, time.monotonic()))
+        content = set(_words(more).split()) - router._FRAGMENT_WORDS
+        if not content or content <= set(_words(request).split()):
+            return request  # "yeah, what work do we have" again: the same words count once
+        fixed = router.correction(more)
+        if fixed:
+            # "...in the living room" + "dining room, sorry": the fix replaces, it isn't run on.
+            logger.info("speakeasy: kept listening; a correction replaced part of the request")
+            return fixed[1] if fixed[0] == "replace" else router.apply_correction(request, fixed[1])
         logger.info("speakeasy: kept listening, added %d more words to the request", len(more.split()))
         return f"{request.rstrip()} {more}"
 
@@ -1370,7 +1521,7 @@ class SidebandWorker:
             return True
         if talking_only or (router.is_conversation(request) and not offered):
             logger.info("speakeasy: conversation, answered by the voice (no task)")
-            await self._drop(delegation_id, revision, "Talked it through", None)
+            await self._drop(delegation_id, revision, "Talked it through", None, context=context)
             await self.append("session.thinking.append", delegation_id, P.talk_note(self.names))
             return True
         return False
@@ -1593,8 +1744,13 @@ class SidebandWorker:
         if held:
             self.publish()
 
-    async def _drop(self, delegation_id: str, revision: int, reason: str, spoken: str | None) -> None:
+    async def _drop(self, delegation_id: str, revision: int, reason: str, spoken: str | None,
+                    context: str = "") -> None:
         """A handoff that should never become a task. It ends visibly (no lingering "Waiting for")."""
+        drops = getattr(self, "drops", None)
+        if drops is None:
+            drops = self.drops = []
+        drops[:] = drops[-9:] + [(reason, time.monotonic(), "", context)]
         backend = BackendRun(delegation_id, revision, self._idem(delegation_id, revision))
         with self.interaction.lock:
             self.interaction.runs[delegation_id] = backend
@@ -1638,7 +1794,7 @@ class SidebandWorker:
             self.publish()
             await self.append("session.commentary.append", delegation_id, P.NO_TRANSCRIPT_SPOKEN)
             return
-        last_request = whole_request(context)
+        last_request = whole_request(context, self._started_words())
         if is_greeting(last_request):
             # "Hey" opens a conversation; it never starts work.
             logger.info("speakeasy: greeting, no task started")
@@ -1651,16 +1807,31 @@ class SidebandWorker:
             return
         if await self._fence_by_voice(delegation_id, revision, last_request, marked):
             return
-        if not marked and await self._talk_not_work(delegation_id, revision, last_request, context):
+        forced = delegation_id in getattr(self, "force_work", set())
+        if not marked and not forced and await self._talk_not_work(delegation_id, revision, last_request, context):
             return
         offer = next((l[len("Assistant: "):] for l in reversed(context.splitlines()) if l.startswith("Assistant: ")), "")
-        if not marked and router.is_reaction(last_request) and offer.rstrip().endswith("?"):
+        offered = offer.rstrip().endswith("?")
+        if (not marked and not forced and not offered and router.is_fragment(last_request)
+                and not self.waiting_on_user() and self.home_question is None):
+            # "that", "there it is": a scrap with nothing to act on, and no question waiting for it.
+            logger.info("speakeasy: a %d-word fragment with nothing waiting on it; no task started",
+                        len(last_request.split()))
+            await self._drop(delegation_id, revision, "Didn't catch it", None)
+            await self.append("session.commentary.append", delegation_id, P.DIDNT_CATCH)
+            return
+        if not marked and router.is_reaction(last_request) and offered:
             # "Yeah" to "Want me to look up what they charge?": the yes carries the offer with it.
             last_request = f"{last_request.rstrip('.!')}: {offer.strip()}"
         if self._already_absorbed(last_request):
             logger.info("speakeasy: handoff already folded into the task before it; not started twice")
             await self._drop(delegation_id, revision, "Added to the previous request", None)
             return
+        if not marked:
+            # "Our dining room, sorry" / "no, turn them on": replaces what it corrects, never runs on.
+            corrected = await self._apply_correction(last_request, context)
+            if corrected != last_request:
+                last_request, context = corrected, _with_request(context, corrected)
         # "Stop looking at my screen" and "share my screen" are about sharing itself, never work: answered
         # here, in calls whose app said it can share (others go on as words, as before).
         intent = router.screen_intent(last_request) if self.interaction.attachments.declared else None
@@ -1690,12 +1861,13 @@ class SidebandWorker:
             self.handoff_at.pop(delegation_id, None)
             await self._drop(delegation_id, revision, "Already on its way with your screen", None)
             return
-        if not marked and self._echoes_recent(last_request):
+        if not marked and (self._echoes_recent(last_request) or (self._duplicate(last_request) and not offered)):
             logger.info("speakeasy: handoff repeats a request started seconds ago; not started twice")
             await self._drop(delegation_id, revision, "Added to the previous request", None)
             return
         if not marked:
             self._remember_request(last_request)
+        self._note_started(delegation_id, last_request)
         self.end_hold("superseded")  # a newer request ends one waiting for the screen
         # Pointing at their own screen, or with pictures waiting on the panel, "show me this" is about
         # what they're showing; only "show me what you're looking at" still means a task's own view.
@@ -1737,10 +1909,14 @@ class SidebandWorker:
         # Home commands stay instant. Anything else waits a beat in case the user is still talking,
         # so a breath mid-thought doesn't send half a request.
         if not released and not marked and router.continues_newest(last_request, self.open_tasks()) is None:
+            before_settle = last_request
             settled = await self.settle(last_request)
             if settled != last_request and self.interaction.attachments.declared and router.refers_to_screen(settled):
                 self.share_refs[delegation_id] = showing = True  # "what's" ... "this error?"
             last_request = settled
+            if settled != before_settle:
+                context = _with_request(context, last_request)
+            self._note_started(delegation_id, last_request)
         if not released and await self.wait_for_screen(delegation_id, revision, context, marked, last_request):
             return
         if not marked and not showing and await self.quick_answer(delegation_id, revision, last_request):
