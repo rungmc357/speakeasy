@@ -109,7 +109,9 @@ struct JobBoardView: View {
                         }
                     }
                 }
-                Text(hint(sections)).font(.system(size: 10)).foregroundStyle(.tertiary).padding(.top, 3)
+                if !FilmFrames.cleanShots {
+                    Text(hint(sections)).font(.system(size: 10)).foregroundStyle(.tertiary).padding(.top, 3)
+                }
             }
             .padding(.trailing, 6)
             .frame(maxWidth: .infinity, alignment: .leading)

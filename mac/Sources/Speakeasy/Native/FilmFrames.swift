@@ -8,6 +8,8 @@ import SpeakeasyClient
 @MainActor
 enum FilmFrames {
     private static var retained: NativeVoiceClient?
+    /// Website screenshots (`SPEAKEASY_FILM_SET=site`): no keyboard hints under the board.
+    static var cleanShots = false
 
     static func run(config: AppConfig, dir: String) {
         let client = NativeVoiceClient(config: config)
@@ -17,8 +19,13 @@ enum FilmFrames {
         FileHandle.standardError.write("film: start\n".data(using: .utf8)!)
         Task { @MainActor in
             FileHandle.standardError.write("film: task\n".data(using: .utf8)!)
-            for (name, state) in beats() {
-                                client.showPreview(state, workExpanded: false)
+            let site = ProcessInfo.processInfo.environment["SPEAKEASY_FILM_SET"] == "site"
+            cleanShots = site
+            let shots: [(String, VoiceState, String?)] = site ? siteBeats() : beats().map { ($0.0, $0.1, nil) }
+            for (name, state, open) in shots {
+                client.showPreview(state, workExpanded: false)
+                client.model.onOpenJob(open)
+                client.model.boardFocusID = nil
                 try? await Task.sleep(nanoseconds: 900_000_000)
                 do { try snapshot(client, to: "\(dir)/\(name).png"); print("film \(name)") }
                 catch { print("film FAILED \(name): \(error)") }
@@ -141,5 +148,81 @@ enum FilmFrames {
         s.tasks = [gameQuiet, dinnerDraft]; s.runID = "run_d"; s.workInfo = dinnerDraft.info
         out.append(("08-draft", s))
         return out.map { name, state in var st = state; st.work = deriveWork(st, now: now); return (name, st) }
+    }
+
+    /// Website screenshots: one full-looking call per shot, everyday asks, invented data.
+    static func siteBeats() -> [(String, VoiceState, String?)] {
+        let now = Date()
+        func base() -> VoiceState {
+            var s = VoiceState(); s.now = now; s.connection = .live; s.interactionID = "vi_site"; return s
+        }
+        let flightsReq = "Find me flights to Lisbon for the 14th, back the 21st"
+        let flights = task("f", "completed", flightsReq, title: "Lisbon flights", short: "Done", age: 40, now: now,
+                           result: WorkResult(spoken: "Best one's a nonstop on the 14th, $612 round trip, landing at 7 AM.",
+                                              full: nil, views: []),
+                           milestones: ["Searched 4 airlines", "Nonstop, $612 round trip"])
+        let weather = card(["kind": "weather", "place": "Brooklyn", "temp": 41, "feels_like": 36, "unit": "F",
+                            "condition": "Rain until 3 PM", "icon": "rain", "high": 47, "low": 38])
+        let weatherTask = task("w", "completed", "Do I need an umbrella today?", title: "Umbrella today?", short: "Done",
+                               age: 3, now: now,
+                               result: WorkResult(spoken: "Yes, rain until about 3, then it clears. High of 47.", full: nil,
+                                                  views: [weather]))
+        let deskReq = "Find a standing desk under $600 that fits a 48-inch wall"
+        let desk = task("k", "working", deskReq, title: "Standing desk under $600", short: "Reading reviews of the last 4",
+                        age: 25, now: now, milestones: ["Searched 6 stores", "Found 11 that fit a 48-inch wall", "Cut to 4 under $600 with good reviews"])
+        let giftReq = "Find Mom a birthday gift that gets there by Saturday"
+        let gift = task("g", "working", giftReq, title: "Mom's birthday gift", short: "Checking what arrives by Saturday",
+                        age: 4, now: now, milestones: ["Looked at what she liked last year", "Checking what arrives by Saturday"])
+        let dinnerReq = "Book dinner for four near the office Thursday and send the team an invite"
+        let draft = EmailDraft(draftID: "site_draft", sha256: "s1te", from: "you@example.com",
+                               to: ["team@example.com"], cc: [], subject: "Dinner Thursday, 7 PM",
+                               body: "Hi all,\n\nI booked a table for four at Osteria Nove this Thursday at 7. It's a five-minute walk from the office.\n\nSee you there!")
+        var invite = task("d", "waiting_for_approval", dinnerReq, title: "Team dinner Thursday",
+                          short: "Booked 7 PM · invite ready", age: 8, now: now,
+                          milestones: ["Booked Osteria Nove for 7 PM", "Drafted the invite"])
+        invite.info.emailDrafts = [draft]
+        let question = card(["kind": "question", "question": "Three places have a table for four at 7. Which one?",
+                             "context": "All within a 10-minute walk of the office, all take reservations for Thursday.",
+                             "options": [
+                                ["text": "Osteria Nove", "detail": "Italian · 5 min walk · quiet back room",
+                                 "tags": [["text": "Best for talking", "tone": "good"]]],
+                                ["text": "Hearth & Vine", "detail": "New American · 8 min walk · busier, bar seating"],
+                                ["text": "Baan Lime", "detail": "Thai · 6 min walk · cheapest of the three"]],
+                             "recommended": 0])
+        let pick = task("d", "completed", dinnerReq, title: "Team dinner Thursday", short: "Needs your pick", age: 3, now: now,
+                        result: WorkResult(spoken: "Three places have a table at 7. I'd go with Osteria Nove.", full: nil,
+                                           views: [question]),
+                        milestones: ["Checked 9 places near the office", "Three have a table at 7"])
+
+        var out: [(String, VoiceState, String?)] = []
+        // The board: one call, a few things at once.
+        var s = base(); s.speech = .speaking(lastDelta: now)
+        s.exchange = Exchange(you: "And a gift for Mom by Saturday.",
+                              assistant: "On it. The dinner invite's ready.", replyStarted: true)
+        s.tasks = [weatherTask, flights, desk, invite, gift]; s.runID = "run_g"; s.delegationAt = now - 4
+        s.workInfo = gift.info
+        out.append(("site-board", s, nil))
+        // Watch it work: a running job opened.
+        s = base(); s.speech = .speaking(lastDelta: now)
+        s.exchange = Exchange(you: "How's the desk search going?", assistant: "Down to four. Comparing reviews now.", replyStarted: true)
+        s.tasks = [desk]; s.runID = "run_k"; s.workInfo = desk.info
+        out.append(("site-working", s, "task:k"))
+        // A quick answer with its card.
+        s = base(); s.speech = .speaking(lastDelta: now)
+        s.exchange = Exchange(you: "Do I need an umbrella today?",
+                              assistant: "Yes, rain until about 3.", replyStarted: true)
+        s.tasks = [weatherTask]; s.workInfo = weatherTask.info
+        out.append(("site-answer", s, "task:w"))
+        // A decision.
+        s = base(); s.speech = .speaking(lastDelta: now)
+        s.exchange = Exchange(you: "", assistant: "I'd go with Osteria Nove.", replyStarted: true)
+        s.tasks = [desk, pick]; s.runID = "run_d"; s.workInfo = pick.info
+        out.append(("site-decide", s, "task:d"))
+        // The draft, waiting for you.
+        s = base(); s.speech = .speaking(lastDelta: now)
+        s.exchange = Exchange(you: "Osteria Nove.", assistant: "Booked. Invite's on screen.", replyStarted: true)
+        s.tasks = [desk, invite]; s.workInfo = invite.info
+        out.append(("site-draft", s, "task:d"))
+        return out.map { name, state, open in var st = state; st.work = deriveWork(st, now: now); return (name, st, open) }
     }
 }
