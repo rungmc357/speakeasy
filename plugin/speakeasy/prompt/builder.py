@@ -83,6 +83,12 @@ def rules_text(names: Names, delivery_label: str = "", channels: list[dict[str, 
     return render(template, names).strip()
 
 
+def identity_reminder(names: Names) -> str:
+    """Closes the call prompt: the realtime model otherwise greets as its provider (\"I'm ChatGPT\")."""
+    return render("# Who you are\nYour name is {assistant_name}. Greet {user_name} as {assistant_name}; never "
+                  "introduce yourself as ChatGPT, Codex, OpenAI or any model name.", names)
+
+
 def truthfulness(names: Names) -> str:
     return render(
         "Speak in the first person as {assistant_name}: the backend work is your own work, not someone you hand off to. "
@@ -311,6 +317,7 @@ def build_live_instructions(names: Names, *, brief: str = "", away: list[dict[st
         head += f"\n\n# Now\nLocal date and time: {now}."
     if tour:
         head += "\n\n" + tour
+    head += "\n\n" + identity_reminder(names)  # the voice model's own persona must not win
     tail = [resume.strip()] if resume.strip() else []
     optional = []  # lowest priority last so it is trimmed first
     block = away_block(away or [], names)

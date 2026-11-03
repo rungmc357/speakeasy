@@ -183,8 +183,8 @@ def test_away_and_recent_voice_go_before_any_room_line_then_oldest_lines():
 def test_a_resumed_room_call_keeps_the_resume_block_and_trims_room_lines():
     names = P.Names("Nova", "Sam")
     resume = P.resume_block([], names)
-    text = P.build_live_instructions(names, brief="B" * 3000, room=room_lines(200), resume=resume, max_chars=15_000)
-    assert len(text) <= 15_000 and text.endswith(resume) and "line 0199" in text and "line 0000" not in text
+    text = P.build_live_instructions(names, brief="B" * 3000, room=room_lines(200), resume=resume, max_chars=16_000)
+    assert len(text) <= 16_000 and text.endswith(resume) and "line 0199" in text and "line 0000" not in text
 
 
 def test_without_room_the_instructions_are_unchanged():

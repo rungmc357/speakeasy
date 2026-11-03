@@ -2,6 +2,10 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Plugin 0.3.16 — Your assistant answers to its own name
+
+- **No more "Hey, I'm ChatGPT."** On a GPT-Live call, the voice could open by introducing itself as ChatGPT instead of the name you gave your assistant. The call instructions now end by restating its name, so a "hey, what's up" gets your assistant, not the voice provider. *(Plugin)*
+
 ## Mac 0.3.9 — Know what each new voice is
 
 - **The new voices say where they're from.** Each GPT-Live 1.1 voice in Settings › Voice now names the language it was made for (French, German, Hindi, Japanese, Korean, Mexican Spanish, Brazilian Portuguese or English), followed by a short note on how it sounds. On iPhone, the new voices also get their play buttons. *(Mac app and iPhone)*
