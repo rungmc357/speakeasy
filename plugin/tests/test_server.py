@@ -194,3 +194,16 @@ def test_destinations_skip_chats_another_profile_answers(server, home):
     targets = [c["target"] for d in body["destinations"] for c in d["chats"]]
     assert "discord:111" in targets and "discord:333" in targets
     assert "discord:222" not in targets
+
+
+def test_a_failing_settings_or_brief_write_answers_with_a_json_500(server, service, monkeypatch):
+    """PATCH and PUT had no catch-all: an unexpected error dropped the connection, which the app
+    shows as "can't reach Hermes" instead of the server's error."""
+    def boom(_body):
+        raise RuntimeError("disk full")
+    monkeypatch.setattr(service, "patch_settings", boom)
+    monkeypatch.setattr(service, "put_brief", boom)
+    status, body = http(server.base_url, "PATCH", "/voice/settings", {"assistant_name": "Nova"}, server.token)
+    assert status == 500 and body == {"error": "internal error (RuntimeError)"}
+    status, body = http(server.base_url, "PUT", "/voice/brief", {"text": "x"}, server.token)
+    assert status == 500 and "disk full" not in json.dumps(body)

@@ -326,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 raise ServiceError(404, "not found")
         except ServiceError as exc:
-            self._reply(exc.status, {"error": exc.message})
+            self._reply(exc.status, self._error(exc))
         except Exception as exc:
             logger.exception("speakeasy: GET %s failed", path)
             self._reply(500, {"error": f"internal error ({type(exc).__name__})"})
@@ -450,7 +450,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ServiceError(404, "not found")
             self._reply(200, self.service.patch_settings(self._body()))
         except ServiceError as exc:
-            self._reply(exc.status, {"error": exc.message})
+            self._reply(exc.status, self._error(exc))
+        except Exception as exc:  # a JSON 500, not a dropped connection the app reads as offline
+            logger.exception("speakeasy: PATCH %s failed", self.route)
+            self._reply(500, {"error": f"internal error ({type(exc).__name__})"})
 
     def do_PUT(self) -> None:
         try:
@@ -462,7 +465,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ServiceError(404, "not found")
             self._reply(200, self.service.put_brief(self._body()))
         except ServiceError as exc:
-            self._reply(exc.status, {"error": exc.message})
+            self._reply(exc.status, self._error(exc))
+        except Exception as exc:
+            logger.exception("speakeasy: PUT %s failed", self.route)
+            self._reply(500, {"error": f"internal error ({type(exc).__name__})"})
 
 
 class SpeakeasyServer:
