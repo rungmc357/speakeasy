@@ -1269,3 +1269,40 @@ def set_aside_note(task: str, by_voice: bool = False) -> str:
     if by_voice:
         return head + " A couple of words at most (\"Sure, dropped it.\"), or nothing."
     return head + " Say nothing about it now."
+
+
+# -- messages sent to one task on purpose (messages.py) ----------------------------------------
+
+def typed_note(task: str, text: str, muted: bool) -> str:
+    """Told to the voice (never spoken) when the user typed a message to a task during the call."""
+    name = notice_text(task, 120) or "a task"
+    said = notice_text(text, 600)
+    tail = ("They are muted: say nothing about it." if muted else
+            "Don't read it back or repeat it. At most a five-word acknowledgement (\"Sent.\"), or nothing.")
+    return (f"Background, not a request: the user typed to the task \"{name}\": \"{said}\". It is already "
+            f"on its way to that task. Don't hand it off again and don't answer it yourself. {tail}")[:2000]
+
+
+def adding_to_note(task: str) -> str:
+    """The router attached what was just said to an existing task: the voice says where, first."""
+    name = notice_text(task, 80) or "that task"
+    return (f"What they just said was added to the existing task \"{name}\". Start your next line with "
+            f"\"Adding that to {name}.\" and keep the rest short.")
+
+
+def moved_note(task: str) -> str:
+    name = notice_text(task, 80) or "that task"
+    return (f"The user said it went to the wrong task; it was moved to \"{name}\" (not started twice). "
+            f"Say \"Moved it to {name}.\" and nothing more.")
+
+
+WHICH_ONE_LINE = "Which one?"
+
+
+def retract_steer_text(names: Names, words: str) -> str:
+    return (f"{names.user_cap} says the message \"{notice_text(words, 300)}\" was meant for a different task. "
+            "Ignore it and carry on as before.")
+
+
+def typed_steer_text(names: Names, text: str) -> str:
+    return f"{names.user_cap} typed to this task: {text} Fold it into the work you are doing; do not start over."

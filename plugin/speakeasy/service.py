@@ -22,6 +22,7 @@ from . import __version__
 from . import attachments as A
 from . import delivery as D
 from . import duck as duck_mod
+from . import messages as M
 from .brief import BriefInvalid, BriefManager
 from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, MAX_TASKS, ServiceError, Interaction, Notices, Runtime, SidebandWorker,
                     end_shared, interaction_tasks, publish_state)
@@ -56,7 +57,8 @@ ROUTING_HINT = ("Also: `hermes voice routing` on the machine that runs Hermes. "
 
 MAX_SDP = 96 * 1024
 # UX contract flags in GET /voice/status ("capabilities"); clients hide what a server lacks.
-CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True}
+CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True,
+                "task_messages": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
 IDLE_CHECK_S = 15
 IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model setup rarely changes)
@@ -142,6 +144,11 @@ class VoiceService:
         self.shared = A.SharedFolder(self.home)
         self.rt.shared = self.shared
         self.rt.discard_files = self.discard_shared_files
+        # Messages sent to a task by id (POST /voice/work/{id}/message): replies by client_id for
+        # MESSAGE_REPLAY_S, and the voiceless worker for tasks whose call is gone.
+        self._message_replies: dict[str, tuple[float, threading.Event, dict[str, Any] | None]] = {}
+        self._message_lock = threading.Lock()
+        self._text_worker: Any = None
         self._suggest_run = suggest_run or self._brief_run
         self.brief = BriefManager(self.home, brief_run or self._brief_run, self.settings.get,
                                   error_fn=lambda: getattr(self.hermes, "last_error", "") or "")
@@ -219,6 +226,8 @@ class VoiceService:
                 except Exception:
                     pass
         self.duck.close()  # put the volume back before a reload swaps this code out
+        if self._text_worker is not None:
+            self._text_worker.stop()
 
     # -- auth ---------------------------------------------------------------------------------
     def authenticate(self, headers: Any) -> str:
@@ -952,6 +961,166 @@ class VoiceService:
         if not ID_RE.fullmatch(run_id):
             raise ServiceError(404, "not found")
         return {"work": self.store.work(run_id, assistant_name=self.settings.get()["assistant_name"])}
+
+    # -- messages sent to one task on purpose (docs/API.md "Messages to a task") -------------------
+    MESSAGE_REPLAY_S = 600
+
+    def task_message(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/work/{run_id}/message``: text typed to one task. Goes to that task by id, never
+        through routing: a steer while it runs, the answer while it waits on the user, a follow-up job
+        once it has finished. Idempotent on client_id."""
+        if not isinstance(body, dict) or "text" not in body or not set(body) <= {
+                "text", "source", "client_id", "interaction_id", "choice_task_id"}:
+            raise ServiceError(400, "Send the message as text.")
+        text, source = body.get("text"), body.get("source") or "typed"
+        client_id, interaction_id = body.get("client_id"), body.get("interaction_id")
+        choice_task_id = body.get("choice_task_id")
+        if not isinstance(text, str) or not text.strip():
+            raise ServiceError(400, "The message is empty.")
+        text = text.strip()
+        if len(text) > M.MAX_TEXT:
+            raise ServiceError(400, f"The message is too long (at most {M.MAX_TEXT} characters).")
+        if source != "typed":
+            raise ServiceError(400, "source must be typed.")
+        for name, value in (("client_id", client_id), ("interaction_id", interaction_id),
+                            ("choice_task_id", choice_task_id)):
+            if value is not None and (not isinstance(value, str) or not ID_RE.fullmatch(value)):
+                raise ServiceError(400, f"{name} must be an id.")
+        if not ID_RE.fullmatch(run_id or ""):
+            raise ServiceError(404, "I couldn't find that task.")
+        if client_id is None:
+            return self._task_message(run_id, text, interaction_id, choice_task_id)
+        mine, event = self._claim_message(client_id)
+        if not mine:
+            event.wait(M.START_WAIT_S + 15)
+            with self._message_lock:
+                done = self._message_replies.get(client_id)
+            if done is None or done[2] is None:
+                raise ServiceError(409, "That message is still being sent. Try again in a moment.")
+            return done[2]
+        try:
+            reply = self._task_message(run_id, text, interaction_id, choice_task_id)
+        except Exception:
+            with self._message_lock:
+                self._message_replies.pop(client_id, None)  # a failed send may be retried with the same id
+            event.set()
+            raise
+        with self._message_lock:
+            self._message_replies[client_id] = (time.monotonic(), event, reply)
+        event.set()
+        return reply
+
+    def _claim_message(self, client_id: str) -> tuple[bool, threading.Event]:
+        now = time.monotonic()
+        with self._message_lock:
+            for cid, (at, _, reply) in list(self._message_replies.items()):
+                if reply is not None and now - at > self.MESSAGE_REPLAY_S:
+                    del self._message_replies[cid]
+            found = self._message_replies.get(client_id)
+            if found is not None:
+                return False, found[1]
+            event = threading.Event()
+            self._message_replies[client_id] = (now, event, None)
+            return True, event
+
+    def _message_target(self, run_id: str) -> tuple[str, dict[str, Any]]:
+        """The task a message by run id goes to: (idem key, its row). A follow-up replaces its parent's
+        row, so a message to the parent goes to the newest task of the same job."""
+        key = self.store.key_for_run(run_id) or self.store.key_for_task(run_id)
+        row = self.store.run_row(key) if key else None
+        if row is None:
+            raise ServiceError(404, "I couldn't find that task.")
+        if row["dismissed"]:
+            newer = self.store.newest_in_job(key)
+            row = self.store.run_row(newer) if newer and newer != key else None
+            if row is None:
+                raise ServiceError(409, "That task was deleted, so it can't take messages.")
+            key = row["idem_key"]
+        if row["status"] in {"cancelled", "cancel_requested"}:
+            raise ServiceError(409, "That task was cancelled, so it can't take messages. Start a new one instead.")
+        if row["status"] == "rejected":
+            raise ServiceError(409, "That task never started, so it can't take messages.")
+        return key, row
+
+    def _live_worker(self, key: str | None = None, interaction_id: str | None = None) -> Any:
+        """The open call's worker: the one holding this task (key), else the call named, else any open
+        call. None when no call is open."""
+        with self.lock:
+            live = list(self.interactions.values())
+        def usable(i: Interaction) -> bool:
+            w = i.worker
+            return (w is not None and w.loop is not None and not w.loop.is_closed() and not i.call_closed
+                    and not i.paused and i.successor is None)
+        if key is not None:
+            for interaction in live:
+                with interaction.lock:
+                    has = any(r.idem_key == key for r in interaction.runs.values())
+                if has and usable(interaction):
+                    return interaction.worker
+            return None
+        if interaction_id:
+            found = self.interactions.get(interaction_id)
+            if found is not None and usable(found.head()):
+                return found.head().worker
+        open_calls = [i for i in live if usable(i)]
+        return open_calls[-1].worker if open_calls else None
+
+    def text_worker(self) -> Any:
+        """The voiceless worker for tasks whose call is gone (made on first use)."""
+        with self._message_lock:
+            if self._text_worker is None:
+                self._text_worker = M.make_text_worker(self.rt)
+            return self._text_worker
+
+    def _task_message(self, run_id: str, text: str, interaction_id: str | None,
+                      choice_task_id: str | None) -> dict[str, Any]:
+        if interaction_id:
+            self.interaction(interaction_id)  # 404 for an unknown call
+        if choice_task_id and choice_task_id.startswith("choice_"):
+            # A spoken choice's card ("Something else..."): only the voice that asked it can take it.
+            worker = self._live_worker(interaction_id=interaction_id)
+            if worker is None or choice_task_id not in worker.choice_tasks:
+                raise ServiceError(409, "That question has closed. Say your answer instead.")
+            asyncio.run_coroutine_threadsafe(M.deliver(worker, choice_task_id, text, choice_task_id),
+                                             worker.loop).result(M.START_WAIT_S + 5)
+            return {"ok": True, "run_id": None, "delivered_as": "answer", "task": None}
+        key, row = self._message_target(run_id)
+        worker = self._live_worker(key)
+        if worker is None:
+            worker = self.text_worker()
+        with worker.interaction.lock:
+            task_id = next((t for t, r in worker.interaction.runs.items() if r.idem_key == key), None)
+        if task_id is None or worker is self._text_worker:
+            task_id = M.adopt_row(worker, row)
+        future = asyncio.run_coroutine_threadsafe(M.deliver(worker, task_id, text), worker.loop)
+        try:
+            got = future.result(M.START_WAIT_S + 10)
+        except LookupError:
+            raise ServiceError(404, "I couldn't find that task.") from None
+        except Exception as exc:
+            logger.warning("speakeasy: a message to a task could not be delivered (%s)", type(exc).__name__)
+            raise ServiceError(502, "I couldn't get that to the task. Try again.") from None
+        with worker.interaction.lock:
+            run = worker.interaction.runs.get(got["task_id"])
+            new_key, new_run = (run.idem_key, run.run_id) if run else (key, row["run_id"])
+        name = self.settings.get()["assistant_name"]
+        task = self.store.work(idem_key=new_key, assistant_name=name)
+        if task is not None:
+            task["task_id"] = got["task_id"]
+        name_for = M.name_for_key(self.store, key)
+        call = self._live_worker(interaction_id=interaction_id)
+        if call is not None:
+            call.interaction.feed.publish("transcript", {"kind": "text", "role": "user", "source": "typed",
+                                                      "text": text, "task_id": got["task_id"],
+                                                      "run_id": new_run, "at": time.time()})
+            asyncio.run_coroutine_threadsafe(self._note_message(call, name_for, text), call.loop)
+        self.publish_all(new_key)
+        logger.info("speakeasy: a typed message went to a task as a %s", got["delivered_as"])
+        return {"ok": True, "run_id": new_run, "delivered_as": got["delivered_as"], "task": task}
+
+    @staticmethod
+    async def _note_message(worker: Any, task_name: str, text: str) -> None:
+        M.note_message(worker, task_name, text)
 
     # -- AI thread titles ------------------------------------------------------------------------
 

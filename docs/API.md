@@ -45,6 +45,7 @@ used in the tests (timestamps and IDs will differ).
 | GET | `/voice/work/latest` | device | Latest task + task list + recap |
 | GET | `/voice/work/{run_id}` | device | One task |
 | POST | `/voice/work/{run_id}/card-action` | device | Press a button on a task's card with no call open |
+| POST | `/voice/work/{run_id}/message` | device | Send typed text to one task (reply bar, decision card's "Something else…") |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
 | GET | `/voice/titles` | device | Past tasks still under their stand-in title: what the app's Apple Intelligence sweep may rename |
 | POST | `/voice/titles` | device | Set one task's title (from the app's on-device titler); the job's name follows |
@@ -616,6 +617,45 @@ per light, switch or fan it moved (up to four), each with a `toggle` button that
 `value`, sets a light's brightness; 0 turns it off). Client-only actions (open a place in Maps, open
 a link, copy, chart scrubbing) need no server call.
 
+## Messages to a task
+
+Capability `task_messages` (plugin 0.3.19+). The app sends typed words to **one task, by its id**:
+from the task's reply bar or a decision card's "Something else…" field. These never go through task
+routing, and live speech routing is unchanged.
+
+### POST /voice/work/{run_id}/message
+
+Body `{"text": "...", "source": "typed", "client_id": "<uuid>", "interaction_id":
+"<optional, the open call>", "choice_task_id": "<optional, the decision card this answers>"}`.
+`text` is trimmed, 1–4,000 characters; `source` defaults to `typed`. Works with or without a call.
+
+- A running task gets it as an added instruction (`delivered_as: "steer"`).
+- A task waiting on the user gets it as the answer (`"answer"`): its question card, or the approval
+  it is waiting on (a plain yes/no answers it; anything else declines it and becomes the instruction).
+  With `choice_task_id` naming a spoken-choice card, it is the user's answer to the voice's question.
+- A finished or failed task gets a follow-up task in the same job, continuing its context
+  (`"follow_up"`, `run_id` is the new run's). A message to a task a follow-up already replaced goes
+  to the newest task of that job.
+- Idempotent on `client_id`: the same id again within 10 minutes gets the same response and nothing
+  is sent twice (a send that failed may be retried with the same id).
+- While a call is open, the message is added to the call as a `transcript` event `{"kind": "text",
+  "role": "user", "source", "text", "task_id", "run_id", "at"}` (it is in the call's transcript as a
+  typed turn, never spoken), and the voice gets a silent note. It never reads the message back: at
+  most a few words ("Sent."), nothing while the user is muted.
+
+`200 {"ok": true, "run_id": "run_0002", "delivered_as": "steer" | "answer" | "follow_up", "task": {...}}`
+(`task` is the updated task, as in `/voice/work/{run_id}`). Errors carry one plain sentence in
+`error`, fit to show: `400` empty or too long, `404 "I couldn't find that task."`, `409` the task
+was cancelled or deleted ("That task was cancelled, so it can't take messages. Start a new one
+instead."), `502` Hermes didn't take it ("I couldn't get that to the task. Try again.").
+
+### Where a spoken follow-up went
+
+When routing adds something the user said to an existing task (not a new one), the voice starts its
+next line with "Adding that to *task name*." Right after, "no, the dashboard one", "wrong task" or
+"not that one" moves what was added to the task they name (or the voice asks "Which one?"): the
+wrong task is told to ignore it (or the follow-up it started is stopped), and nothing is started twice.
+
 ## POST /voice/tasks/dismiss
 
 Hides finished tasks from the list. Only terminal runs are dismissed; the rest are ignored.
@@ -949,7 +989,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`
@@ -982,7 +1022,8 @@ hide the matching controls and keep the old behaviour.
   "room_listening": true,
   "room_on_resume": true,
   "version": "0.2.0",
-  "capabilities": {"card_actions": true, "job_progress": true, "spoken_choices": true, "summary_points": true}
+  "capabilities": {"card_actions": true, "job_progress": true, "spoken_choices": true, "summary_points": true,
+                   "task_messages": true}
 }
 ```
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import channels, continuity, failures, liveness, router, threads
+from . import messages as messages_mod
 from .duck import Ducker
 from . import home_control as home_control_mod
 from . import instant as instant_mod
@@ -702,6 +703,12 @@ class SidebandWorker:
         # responded from the room lives on the Interaction, so a resumed call never does it twice.
         self.room_answered: set[str] = set()
         self.handoff_rooms: dict[str, str] = {}
+        # Messages sent to a task on purpose (messages.py): handoffs the voice says nothing about while
+        # they start, what was typed this call, and the spoken follow-up the router placed last (an
+        # immediate "no, the X one" moves it).
+        self.silent_ids: set[str] = set()
+        self.typed: list[dict[str, Any]] = []
+        self.last_routed: dict[str, Any] | None = None
         interaction.worker = self
 
     # -- plumbing -------------------------------------------------------------------------
@@ -835,15 +842,22 @@ class SidebandWorker:
 
     def turns(self) -> list[dict[str, str]]:
         """This call's whole transcript as cleaned speaker turns."""
-        out: list[dict[str, str]] = []
+        out: list[dict[str, Any]] = []
         for fragment in self.fragments:
             role = fragment["speaker"]
             if out and out[-1]["role"] == role:
                 out[-1]["text"] += fragment["text"]
             else:
-                out.append({"role": role, "text": fragment["text"]})
-        return [{"role": t["role"], "text": clean_transcript(t["text"]).strip()}
-                for t in out if clean_transcript(t["text"]).strip()]
+                out.append({"role": role, "text": fragment["text"], "at": fragment["at"]})
+        turns = [{"role": t["role"], "text": clean_transcript(t["text"]).strip(), "at": t["at"]}
+                 for t in out if clean_transcript(t["text"]).strip()]
+        typed = getattr(self, "typed", None)
+        if typed:
+            # Typed to a task during the call: a user turn of kind "text", never spoken.
+            turns = sorted(turns + [{"role": "user", "kind": "text", "at": t["at"],
+                                     "text": f"(typed to {t['task']}) {t['text']}"} for t in typed],
+                           key=lambda t: t["at"])
+        return [{k: v for k, v in t.items() if k != "at"} for t in turns]
 
     def call_closed(self) -> None:
         """Once per call: persist the end time, keep recent turns, notify about work in flight.
@@ -1200,6 +1214,8 @@ class SidebandWorker:
     async def quiet(self, key: str, delegation_id: str | None, content: str) -> None:
         """Background the voice should know but never answer out loud (work started, where a task
         went, status, what's on screen). Held when the transport would make the voice reply to it."""
+        if delegation_id and delegation_id in getattr(self, "silent_ids", ()):
+            return  # a message sent to a task on purpose: the voice got its own note
         if not self.HOLD_QUIET_NOTES:
             await self.append("session.thinking.append", delegation_id, content)
             return
@@ -1218,11 +1234,13 @@ class SidebandWorker:
     async def append(self, kind: str, delegation_id: str | None, content: str) -> None:
         """Send context to the live call. After Pause/Resume, results of runs started in an earlier
         call go to the resumed call as session-wide context."""
+        if delegation_id and delegation_id in getattr(self, "silent_ids", ()):
+            return  # a message sent to a task on purpose: the voice got its own note
         head = self.interaction.head()
         target = head.worker if head is not self.interaction else self
         if target is None or target is not self and not target.call_connected():
             return
-        if delegation_id and delegation_id.startswith(EARLY_PREFIX):
+        if delegation_id and (delegation_id.startswith(EARLY_PREFIX) or messages_mod.is_message_id(delegation_id)):
             delegation_id = None  # the provider never issued this handoff: say it session-wide
         if kind == "session.thinking.append" and self.quiet_notes:
             held = self.take_quiet_notes()
@@ -1926,6 +1944,13 @@ class SidebandWorker:
             logger.info("speakeasy: greeting, no task started")
             await self._drop(delegation_id, revision, "Just a greeting", P.GREETING_SPOKEN)
             return
+        if self.typed and messages_mod.typed_echo(self, last_request):
+            # The voice handed off what the user typed to a task (it only heard it in a note): sent already.
+            await self._drop(delegation_id, revision, "Already sent to the task", None)
+            return
+        if self.last_routed is not None and await messages_mod.retarget(self, delegation_id, revision,
+                                                                        last_request, marked):
+            return  # "no, the dashboard one" right after a follow-up: moved there, not a new task
         aside = router.set_aside_kind(last_request)
         if aside and await self._set_aside_by_voice(delegation_id, revision, aside, marked):
             return
@@ -2098,6 +2123,7 @@ class SidebandWorker:
                 # an instruction for the task, which must still reach it.
             self.wants_show.add(delegation_id)
         if part.kind == "follow_up" and part.task_id:
+            await messages_mod.announce_routed(self, delegation_id, revision, context, part)
             await self.follow_up(delegation_id, revision, context, part)
             return
         named = self.rt.explicit_channel(last_request)
@@ -2964,7 +2990,8 @@ class SidebandWorker:
                 shared = await self.collect_shared(delegation_id, key)
                 items = self.save_shared(shared, key) if shared else []
             text = (P.shared_steer_text(self.names, part.request, P.shared_block(self.names, items, attached=False))
-                    if items else P.steer_text(self.names, part.request))
+                    if items else P.typed_steer_text(self.names, part.request)
+                    if delegation_id.startswith(messages_mod.TYPED_PREFIX) else P.steer_text(self.names, part.request))
             nameable = all(i["path"] for i in items)  # an image with no saved copy can't be pointed at
             accepted = nameable and await self.steer_follow_up(target, key, part.request, text)
             if accepted:

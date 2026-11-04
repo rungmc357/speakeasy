@@ -2,6 +2,13 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Plugin 0.3.19 — Type to a job
+
+- **Reply to a job in writing.** Typing in a job's reply bar sends it straight to that job: added to it while it runs, the answer when it's waiting on you, or a follow-up that picks up where it left off once it's done. During a call, the voice knows but doesn't read it back. *(Plugin; the reply bar appears once the apps update)*
+- **"Something else…" on decisions.** Answer a decision card in your own words instead of picking an option. *(Plugin; needs the app update)*
+- **It tells you where your follow-up went.** When something you say is added to a job already going, the voice says "Adding that to *the job*." Say "no, the dashboard one" right after and it moves there instead of starting a new job. *(Plugin)*
+- Where your spoken words go is otherwise unchanged. *(Plugin)*
+
 ## Plugin 0.3.18 — Pre-launch fixes
 
 - **Card buttons do what they say.** "Turn on" always turns a light on, even if the card was out of date or tapped on two devices at once.

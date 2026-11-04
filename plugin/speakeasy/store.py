@@ -271,6 +271,26 @@ class StateStore:
             row = self._db.execute("SELECT idem_key FROM runs WHERE run_id=?", (run_id,)).fetchone()
         return row[0] if row else None
 
+    def run_row(self, key: str) -> dict[str, Any] | None:
+        """One task's bookkeeping row: what a message sent to it by id needs (messages.py)."""
+        with self._lock:
+            row = self._db.execute("SELECT delegation_id, revision, run_id, status, dismissed, session_id, "
+                                   "interaction_id FROM runs WHERE idem_key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        names = ("delegation_id", "revision", "run_id", "status", "dismissed", "session_id", "interaction_id")
+        return dict(zip(names, row), idem_key=key)
+
+    def newest_in_job(self, key: str) -> str | None:
+        """The newest task still shown of the same job (a follow-up replaces its parent's row), or None."""
+        with self._lock:
+            row = self._db.execute("SELECT session_id FROM runs WHERE idem_key=?", (key,)).fetchone()
+            if not row or not row[0]:
+                return None
+            newer = self._db.execute("SELECT idem_key FROM runs WHERE session_id=? AND COALESCE(dismissed,0)=0 "
+                                     "AND status!='rejected' ORDER BY rowid DESC LIMIT 1", (row[0],)).fetchone()
+        return newer[0] if newer else None
+
     def title(self, key: str) -> str | None:
         with self._lock:
             row = self._db.execute("SELECT title FROM runs WHERE idem_key=?", (key,)).fetchone()
