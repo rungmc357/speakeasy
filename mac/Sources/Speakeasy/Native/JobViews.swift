@@ -199,7 +199,8 @@ struct JobDetailView: View {
                     Text(JobDetailBody.pickedLine(job, model: model) ?? (job.stage.needsYou || job.setAside ? JobDetailBody.stageLine(job) : line.0)).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
-            let footer: CGFloat = job.decisionTask.map { model.answers[$0.id] == nil && !model.openSections.contains("\($0.id)|compare") } == true ? 76 : 0
+            // Compare hides the footer but keeps its room, so the panel never grows past the window.
+            let footer: CGFloat = job.decisionTask.map { model.answers[$0.id] == nil } == true ? 76 : 0
             PanelScrollView(maxHeight: min(JobStyle.scrollCap, 560 + model.extraHeight) - footer) {
                 VStack(alignment: .leading, spacing: 12) {
                     JobDetailBody(job: job, model: model, revision: UUID())
