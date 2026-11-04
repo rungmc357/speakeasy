@@ -12,6 +12,7 @@ import pytest
 
 from speakeasy import cli, setup_flow as F
 from speakeasy import settings as S
+from fakes import read_profile_env
 
 
 class Fake:
@@ -188,7 +189,7 @@ def test_api_key_path_stores_key_privately_and_never_prints_it(home):
     fake = Fake(secret=key)
     rc, _ = run_setup(fake, api_key=True, yes=True)
     assert rc == 0
-    assert S.read_env_file(home / ".env")[S.OPENAI_KEY_NAME] == key
+    assert read_profile_env(home)[S.OPENAI_KEY_NAME] == key
     assert stat.S_IMODE(os.stat(home / ".env").st_mode) == 0o600
     assert S.Settings(home).get()["voice"]["provider"] == "openai"
     assert key not in "\n".join(fake.lines)
@@ -198,7 +199,7 @@ def test_api_key_path_stores_key_privately_and_never_prints_it(home):
 def test_rejects_something_that_is_not_an_api_key(home):
     fake = Fake(secret="hunter2")
     rc, _ = run_setup(fake, api_key=True, yes=True)
-    assert rc == 1 and S.OPENAI_KEY_NAME not in S.read_env_file(home / ".env")
+    assert rc == 1 and S.OPENAI_KEY_NAME not in read_profile_env(home)
 
 
 def test_tailscale_serves_tailnet_only_and_links_to_it(home):

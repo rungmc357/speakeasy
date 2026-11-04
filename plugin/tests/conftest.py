@@ -27,6 +27,17 @@ def no_real_volume(monkeypatch):
     monkeypatch.setattr(_duck, "default_backend", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def no_global_hermes_sign_ins(monkeypatch):
+    """Hermes' credential pool falls back to the real global ~/.hermes/auth.json when a profile has no
+    entries of its own; tests see only their temp profile's sign-ins."""
+    try:
+        import hermes_cli.auth as auth
+    except ImportError:
+        return
+    monkeypatch.setattr(auth, "_global_auth_file_path", lambda: None)
+
+
 @pytest.fixture
 def real_default_backend():
     """The unpatched ``duck.default_backend``, for tests of the platform check itself."""

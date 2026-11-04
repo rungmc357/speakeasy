@@ -201,6 +201,12 @@ class FakeHermesServer:
         self.httpd.server_close()
 
 
+def read_profile_env(home: Path) -> dict[str, str]:
+    """A test's view of a profile .env, parsed by Hermes' own tokenizer (the plugin never reads it)."""
+    from agent.secret_scope import load_env_file
+    return dict(load_env_file(Path(home) / ".env"))
+
+
 def make_home(api_port: int | None = None) -> Path:
     home = Path(tempfile.mkdtemp(prefix="speakeasy-test-"))
     env = [f"API_SERVER_KEY={FAKE_API_KEY}", "SPEAKEASY_OPENAI_API_KEY=test-openai-key-not-real"]

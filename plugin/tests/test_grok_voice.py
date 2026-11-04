@@ -371,7 +371,7 @@ def test_missing_credential_is_a_clear_409(home, xai):
         service.close()
 
 
-def test_signin_state_reads_the_auth_store_offline(home):
+def test_signin_state_asks_hermes_credential_pool_offline(home):
     assert grok_live.signin_state(home)[0] is False
     (home / "auth.json").write_text(json.dumps({"providers": {"xai-oauth": {"tokens": {"access_token": "x"}}}}))
     assert grok_live.signin_state(home)[0] is True

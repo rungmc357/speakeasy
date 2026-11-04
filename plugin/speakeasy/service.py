@@ -37,7 +37,7 @@ from .prompt import builder as P
 from .router import home_plan_call as router_home_plan_call, routing_model
 from .threads import THREAD_PLATFORMS
 from .settings import (GROK_BETA_OFF, OPENAI_KEY_NAME, Settings, SettingsError, default_voice, find_codex, hermes_api_base,
-                       grok_beta_on, hermes_secret, valid_delivery_target)
+                       grok_beta_on, hermes_secret, openai_api_key, valid_delivery_target)
 from .store import StateStore
 from .suggest import SuggestError, suggest
 from .threads import ThreadRunner, capability, sync_routes
@@ -184,7 +184,7 @@ class VoiceService:
         return hermes_secret(self.home, "API_SERVER_KEY")
 
     def openai_key(self) -> str:
-        return hermes_secret(self.home, OPENAI_KEY_NAME)
+        return openai_api_key(self.home)
 
     def image_roots(self) -> tuple[Path, ...]:
         return default_image_roots(self.home, self.settings.get()["image_roots"])
@@ -361,7 +361,7 @@ class VoiceService:
             else:
                 key = self.openai_key()
                 if not key:
-                    raise ServiceError(409, f"voice.provider is openai but {OPENAI_KEY_NAME} is not set in the Hermes .env")
+                    raise ServiceError(409, f"voice.provider is openai but {OPENAI_KEY_NAME} is not set in this Hermes profile")
                 from .openai_live import negotiate, session_payload
                 result = (self._openai_negotiate or negotiate)(key, session_payload(instructions, voice, sdp, seed))
                 live_id = (result.get("session") or {}).get("id")

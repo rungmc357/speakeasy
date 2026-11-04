@@ -1,40 +1,64 @@
 # Speakeasy
 
-Talk to your Hermes agent by voice from your Mac.
+Talk to your Hermes agent by voice from your Mac, iPhone or iPad.
 
-Speakeasy is a Hermes plugin plus a Mac app. The plugin runs inside your Hermes gateway; the app is a
-floating voice panel you open with a hotkey. The conversation runs on **OpenAI's GPT-Live-1** realtime
-speech model, and anything that needs real work goes to your own Hermes, with its tools, memory,
-skills and approvals.
+Speakeasy is a Hermes plugin plus a Mac app (and an iPhone/iPad app, in beta). The plugin runs inside
+your Hermes gateway; the Mac app is a floating voice panel you open with a hotkey. The conversation
+runs on **OpenAI's GPT-Live-1** realtime speech model, and anything that needs real work goes to your
+own Hermes, with its tools, memory, skills and approvals.
 
 **Download the Mac app:** [Speakeasy.dmg](https://github.com/rungmc357/speakeasy/releases/latest/download/Speakeasy.dmg) (all versions: [releases](https://github.com/rungmc357/speakeasy/releases); what's new: [changelog](CHANGELOG.md))
-(signed and notarized, macOS 14+) · Website: https://speakeasyvoice.ai
+(signed and notarized, macOS 14+) · **iPhone and iPad beta:** [TestFlight](https://testflight.apple.com/join/2v7PfpRM) · Website: https://speakeasyvoice.ai
 
-Status: early. Mac only.
+Status: early. Mac app, plus an iPhone and iPad app in beta on TestFlight (it reaches Hermes over
+Tailscale).
+
+## Quick start (Hermes on the Mac you talk from, ChatGPT plan)
+
+1. Download and open [Speakeasy.dmg](https://github.com/rungmc357/speakeasy/releases/latest/download/Speakeasy.dmg).
+2. In Terminal:
+
+   ```bash
+   hermes plugins install rungmc357/speakeasy/plugin/speakeasy --enable
+   hermes voice setup --here --yes   # installs the Codex CLI if needed and opens the ChatGPT sign-in
+   ```
+
+3. If setup says Hermes needs a restart (exit code 2, first install only): `hermes gateway restart`
+   (or stop and start `hermes gateway` if it runs in a terminal), then run
+   `hermes voice setup --here --yes` again.
+4. The pairing link opens Speakeasy: allow the microphone, pick names and where finished work
+   goes, and the first call shows you around.
 
 ## Voice model: GPT-Live-1, two ways to pay for it
 
 | | How it signs in | Model | Who pays |
 |---|---|---|---|
-| **Codex OAuth** (default) | Your ChatGPT account, through `codex login` on the Hermes machine | `gpt-live-1-codex`, via `codex app-server` | Your ChatGPT plan, no API key |
-| **OpenAI API** | An OpenAI API key (`hermes voice setup --api-key`) | `gpt-live-1`, via the Realtime API over WebRTC | Per-minute API usage on that key |
+| **Codex OAuth** (default) | Your ChatGPT account, through `codex login` on the Hermes machine (Codex CLI 0.150.0+) | `gpt-live-1-codex`, via `codex app-server` | Your ChatGPT plan, no API key |
+| **OpenAI API** | An OpenAI API key (`hermes voice setup --api-key`, stored in the Hermes profile as `SPEAKEASY_OPENAI_API_KEY`) | `gpt-live-1`, via the Realtime API over WebRTC | Per-minute API usage on that key |
+| **Grok voice** (beta, off by default) | Your xAI sign-in in Hermes (`hermes auth add xai-oauth`) or `XAI_API_KEY` | `grok-voice-latest`, relayed through the plugin | Your xAI plan or key |
 
-Either way the key or sign-in stays on the Hermes machine, never on the Mac. Switch any time in the
-app (Settings › Voice) or with `hermes voice setup` / `hermes voice setup --api-key`. GPT-Live-1 only
-talks and hands off; the actual work runs on whatever model your Hermes uses.
+Either way the key or sign-in stays on the Hermes machine, never on your device. Switch any time in
+the app (Settings › Voice) or with `hermes voice setup` / `hermes voice setup --api-key`. Grok voice
+has to be turned on first: `hermes voice config set beta.grok_voice true`, then
+`hermes voice config set voice.provider grok`. The voice model only talks and hands off; the actual
+work runs on whatever model your Hermes uses.
+
+Speakeasy reads keys and sign-ins only through Hermes (its secret scope, env and credential-pool
+APIs); it never opens Hermes' `.env` or `auth.json` itself, and checks Codex with
+`codex login status`.
 
 ## Install
 
 **Let your agent do it.** Send this to your Hermes agent in any chat you already use with it:
 
-> Set up Speakeasy for me, so I can talk to you by voice from my Mac. Follow the instructions at https://speakeasyvoice.ai/setup.md
+> Set up Speakeasy for me, so I can talk to you by voice from my Mac (or iPhone). Follow the instructions at https://speakeasyvoice.ai/setup.md
 
 The agent installs the plugin on the machine Hermes runs on, turns on voice, and sends you one link.
 Two things are yours to do:
 
-1. **Restart Hermes when it asks.** Setup never restarts anything itself. Once Hermes is back, the
-   link arrives in that chat by itself.
-2. **Open the link on the Mac you'll talk from.** It opens Speakeasy and connects it. If the app
+1. **Restart Hermes once when it asks** (first install only). Setup never restarts anything itself.
+   Once Hermes is back, the link arrives in that chat by itself.
+2. **Open the link on the device you'll talk from.** It opens Speakeasy and connects it. If the app
    isn't installed yet, the page offers the download first, and the same link connects it after.
 
 Hermes can run on the Mac you talk from or on another computer; the agent checks which, then
@@ -93,7 +117,8 @@ Settings › Home, or from the terminal:
 - **Safety:** every planned command is checked against your ticked devices and Home Assistant's own
   limits before anything runs. Locks are never included unless you tick them. It only says "done"
   after Home Assistant accepts the command.
-- **Privacy:** the token stays in Hermes' `.env`; turning this on never changes your Hermes config.
+- **Privacy:** the token stays in Hermes (Speakeasy reads it through Hermes' secret readers); turning
+  this on never changes your Hermes config.
   The device names you tick are sent to your task-routing model to plan each request.
 
 ## Listening mode (Mac, macOS 26+)
@@ -111,12 +136,13 @@ task. It stops when the call ends, after 2 hours, or when the Mac sleeps. Needs 
 On the machine that runs Hermes:
 
 ```bash
-hermes plugins install rungmc357/speakeasy/plugin/speakeasy --enable
+hermes plugins update speakeasy
 ```
 
-No gateway restart needed (Speakeasy 0.2.17 and later). The new version loads by itself within a
-few seconds once no call is live and no voice task is running. To load it right away, even
-mid-call, run `hermes voice reload`: a live call ends and you redial; tasks already running keep
+No gateway restart needed (Speakeasy 0.2.17 and later). Speakeasy never downloads or installs
+anything itself: `hermes plugins update` puts the new files on disk, and the running plugin loads
+them within a few seconds once no call is live and no voice task is running. To load it right away,
+even mid-call, run `hermes voice reload`: a live call ends and you redial; tasks already running keep
 going in Hermes. If the new version fails to load, the previous one keeps running and the command
 says why. Updating from 0.2.16 or earlier needs one last `hermes gateway restart`.
 

@@ -1,6 +1,14 @@
 # What's new in Speakeasy
 
-Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
+Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
+
+## Plugin 0.3.22 — Keys and sign-ins only through Hermes
+
+- **Keys and sign-ins are read only through Hermes.** API keys, the Hermes API key and the xAI sign-in now come from Hermes' own secret, env and credential-pool readers, for the right profile; Speakeasy no longer opens the `.env` or `auth.json` files itself, and setup saves values through Hermes' env writer. Everything you already set keeps working, unchanged. *(Plugin)*
+- **Codex sign-in is checked with `codex login status` alone.** Speakeasy no longer looks at Codex's credential file. After a call proves the sign-in no longer works, Settings says "not signed in" for two minutes, then trusts Codex again. *(Plugin)*
+- **`OPENAI_API_KEY` works for the API-key voice.** `SPEAKEASY_OPENAI_API_KEY` is still the documented name and wins when both are set. *(Plugin)*
+- **Clearer setup.** The restart message names the exact commands and says it's a first-install step only; the setup guide covers installing Codex (0.150.0 or newer), the iPhone and iPad beta, and Grok voice (beta, off by default). *(Plugin, docs)*
+- Declares the oldest Hermes it supports (`requires_hermes` in plugin.yaml). *(Plugin)*
 
 ## Mac 0.3.11 — Watch the work, and type to any job
 
