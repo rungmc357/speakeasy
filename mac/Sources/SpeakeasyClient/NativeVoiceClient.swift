@@ -223,7 +223,6 @@ public final class NativeVoiceClient: VoiceCallClient {
             guard let self else { done(nil, nil); return }
             self.deliver(message, done: done)
         }
-        model.onHoldTalk = { [weak self] jobID, on in self?.holdTalk(jobID: jobID, on: on) }
         model.onMessageNotice = { [weak model] m in
             guard let model else { return }
             if case .failed(let why) = m.state { model.showToast(why, ok: false) }
@@ -463,8 +462,6 @@ public final class NativeVoiceClient: VoiceCallClient {
             surface.setNeedsResize()
         }
         if new.connection == .paused, old.connection != .paused { callPaused() }
-        // Hold-to-talk ends with the call (the server lets go on its own as well).
-        if new.connection != .live, old.connection == .live, let held = model.heldJobID { model.holdToTalk(held, false); releaseHold() }
         if old.exchange != new.exchange { surface.setNeedsResize() }
         if new.connection == .live, old.connection != .live, roomCall != nil {
             roomCall?.noteLive(at: Date())
@@ -1379,12 +1376,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         surface.setNeedsResize()
     }
 
-    // MARK: Messages to one task (contract: typed messages + hold-to-talk)
-
-    /// Hold-to-talk: the run the call is held on, its 20 s refresh, and whether the mic was muted before.
-    private var heldRun: (interaction: String, run: String)?
-    private var holdRefresh: Task<Void, Never>?
-    private var mutedBeforeHold = false
+    // MARK: Messages to one task (contract: typed messages)
 
     /// Typed text to one task by run id (`POST /voice/work/{run}/message`). Works with or without a call.
     public func sendMessage(runID: String, text: String, source: TaskMessageSource = .typed,
@@ -1393,45 +1385,6 @@ public final class NativeVoiceClient: VoiceCallClient {
         let interaction = model.state.connection.isOpen ? (model.state.interactionID ?? model.state.resumeFrom) : nil
         return try await api.sendMessage(runID: runID, text: text, source: source, clientID: clientID,
                                          interactionID: interaction, choiceTaskID: choiceTaskID)
-    }
-
-    /// Hold (or release) the call on one run: while held, everything said goes to it. Re-posted every
-    /// 20 s while held (the server lets go after 60 s without a refresh).
-    public func setTarget(runID: String, hold: Bool) {
-        holdRefresh?.cancel(); holdRefresh = nil
-        guard let api, !previewMode, let id = model.state.interactionID else { heldRun = nil; return }
-        if hold {
-            heldRun = (id, runID)
-            holdRefresh = Task { [weak self] in
-                while !Task.isCancelled {
-                    _ = try? await api.setTarget(interactionID: id, runID: runID, hold: true)
-                    try? await Task.sleep(for: .seconds(HoldToTalk.refreshInterval))
-                    guard let self, self.heldRun?.run == runID else { return }
-                }
-            }
-        } else {
-            let target = heldRun ?? (id, runID)
-            heldRun = nil
-            Task { _ = try? await api.setTarget(interactionID: target.interaction, runID: target.run, hold: false) }
-        }
-    }
-
-    private func releaseHold() {
-        holdRefresh?.cancel(); holdRefresh = nil
-        heldRun = nil
-    }
-
-    private func holdTalk(jobID: String, on: Bool) {
-        guard let job = model.jobs.first(where: { $0.id == jobID }), let target = model.replyTarget(job) else { return }
-        if on {
-            mutedBeforeHold = model.state.mic == .muted
-            if mutedBeforeHold { dispatch(.toggleMic) }
-            setTarget(runID: target.runID, hold: true)
-        } else {
-            setTarget(runID: heldRun?.run ?? target.runID, hold: false)
-            if mutedBeforeHold, model.state.mic != .muted, model.state.connection.isOpen { dispatch(.toggleMic) }
-            mutedBeforeHold = false
-        }
     }
 
     private func deliver(_ m: OutgoingMessage, done: @escaping (TaskMessageReply?, String?) -> Void) {

@@ -138,5 +138,14 @@ final class JobActivityTests: XCTestCase {
         XCTAssertNil(info.activity.last?.endedAt, "still running")
         XCTAssertTrue(info.activity.first { $0.status == .failed }?.result?.contains("2 failed") ?? false)
         XCTAssertEqual(info.toolCalls.count, 13)
+        // Every tool call carries its own start; all but the running one an end; args and results as recorded.
+        XCTAssertEqual(info.activity.filter { $0.tool != nil && $0.startedAt != nil }.count, 13)
+        XCTAssertEqual(info.activity.filter { $0.endedAt != nil }.count, 12)
+        XCTAssertEqual(info.activity.filter { $0.args != nil }.count, 13)
+        XCTAssertEqual(info.activity.filter { $0.result != nil }.count, 9)
+        let first = try XCTUnwrap(info.activity.first)
+        XCTAssertEqual(first.startedAt?.timeIntervalSince1970, 1793820000)
+        XCTAssertEqual(first.duration(now: Date()), 2)
+        XCTAssertEqual(info.activity.first { $0.status == .failed }?.duration(now: Date()), 61)
     }
 }

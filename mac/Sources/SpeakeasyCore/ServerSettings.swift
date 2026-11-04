@@ -798,8 +798,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var jobProgress: Bool
     /// Choices the voice offers arrive as question cards.
     public var spokenChoices: Bool
-    /// Typed messages and hold-to-talk to one task (`POST /voice/work/{run}/message`,
-    /// `POST /voice/interactions/{id}/target`): the reply bar, "Something else…" and the held mic.
+    /// Typed messages to one task (`POST /voice/work/{run}/message`): the reply bar and "Something else…".
     public var taskMessages: Bool
     /// Tasks carry `activity`, `findings`, `touched` and `hero` (the live job page).
     public var jobActivity: Bool

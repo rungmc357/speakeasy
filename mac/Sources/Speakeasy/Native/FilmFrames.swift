@@ -32,8 +32,7 @@ enum FilmFrames {
                 ChartPreview.selection = nil
                 m.orbLevel = 0; m.previewProblem = nil; m.pendingPicks = [:]; m.toast = nil; m.openSections = []
                 if set == "ux" || set == "typing" || set == "redesign" { for id in ["c", "a", "p", "f", "h", "m", "b", "d", "q"] { m.answers[id] = nil } }
-                m.outbox = TaskOutbox(); m.replyDrafts = [:]; m.heldJobID = nil; SomethingElsePreview.open = nil; m.captionExpanded = false
-                ReplyDictation.shared.previewOnly = true; ReplyDictation.shared.stop()
+                m.outbox = TaskOutbox(); m.replyDrafts = [:]; SomethingElsePreview.open = nil; m.captionExpanded = false
                 m.capabilities = set == "ux" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true)
                     : set == "typing" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true, taskMessages: true)
                     : set == "redesign" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true, taskMessages: true, jobActivity: true)
@@ -381,7 +380,7 @@ enum FilmFrames {
     }
 
 
-    /// Typing / hold-to-talk to one task (`SPEAKEASY_FILM_SET=typing`; `typing-old` = an older plugin
+    /// Typing to one task (`SPEAKEASY_FILM_SET=typing`; `typing-old` = an older plugin
     /// without `task_messages`: no reply bar, no "Something else…"). Invented data.
     static func typingBeats(old: Bool = false) -> [Shot] {
         let now = Date()
@@ -409,7 +408,7 @@ enum FilmFrames {
         let dashOpen = "task:d", priceOpen = "task:q"
         let suffix = old ? "-old" : ""
 
-        // Not in a call: type (the mic dictates into the field on this Mac).
+        // Not in a call: type.
         var s = base(call: false); s.tasks = [dash, pricing]
         out.append(Shot("typing-01-reply-bar\(suffix)", done(s), dashOpen))
         if old {
@@ -419,10 +418,6 @@ enum FilmFrames {
         }
         out.append(Shot("typing-02-draft", done(s), dashOpen) { m in
             m.replyDrafts[dashOpen] = "Skip the admin pages, only the sales dashboard matters for Friday."
-        })
-        out.append(Shot("typing-03-dictating", done(s), dashOpen) { m in
-            ReplyDictation.shared.preview(jobID: dashOpen, heard: "Also check the export button, it times out")
-            m.replyDrafts[dashOpen] = "Also check the export button, it times out"
         })
         // Sent / queued while sending / failed with Retry.
         out.append(Shot("typing-04-sent", done(s), dashOpen) { m in
@@ -446,7 +441,7 @@ enum FilmFrames {
                 m.outbox.markFailed(a.id, why); m.showToast(why, ok: false)
             }
         })
-        // In a call: "Something else…" on a decision; hold-to-talk.
+        // In a call: "Something else…" on a decision.
         s = base(); s.tasks = [dash, pricing]
         out.append(Shot("typing-07-decision", done(s), priceOpen))
         out.append(Shot("typing-08-something-else", done(s), priceOpen) { m in
@@ -454,7 +449,6 @@ enum FilmFrames {
             SomethingElsePreview.open = "Just Northwind and Contoso, the others don't sell to schools."
         })
         out.append(Shot("typing-09-in-call", done(s), dashOpen))
-        out.append(Shot("typing-10-holding", done(s), dashOpen) { m in m.heldJobID = dashOpen })
         var t = base(); t.tasks = [dash, pricing]
         t.transcript = [TranscriptTurn(id: 0, speaker: .you, text: "How's the dashboard coming along?"),
                         TranscriptTurn(id: 1, speaker: .assistant, text: "It's timing every query on the page now."),

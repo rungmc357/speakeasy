@@ -18,9 +18,9 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(r.body["client_id"] as? String, "c1")
         XCTAssertEqual(r.body["interaction_id"] as? String, "vi_1")
         XCTAssertEqual(r.body["choice_task_id"] as? String, "t9")
-        let bare = TaskMessageRequest(runID: "r", text: "x", source: .heldVoice, clientID: "c")
+        let bare = TaskMessageRequest(runID: "r", text: "x", clientID: "c")
         XCTAssertNil(bare.body["interaction_id"]); XCTAssertNil(bare.body["choice_task_id"])
-        XCTAssertEqual(bare.body["source"] as? String, "held_voice")
+        XCTAssertEqual(bare.body["source"] as? String, "typed")
     }
 
     func testCleanTrimsAndCaps() {
@@ -63,7 +63,6 @@ final class TaskMessagesTests: XCTestCase {
     func testCopy() {
         XCTAssertEqual(TaskMessageCopy.shortName("Speed up the dashboard"), "Speed up the dashboard")
         XCTAssertEqual(TaskMessageCopy.shortName("Compare our pricing to our top three competitors"), "Compare our pricing to our…")
-        XCTAssertEqual(TaskMessageCopy.holding("Pricing vs. competitors"), "Talking to Pricing vs. competitors · release to stop")
         XCTAssertEqual(TaskMessageCopy.failure(status: 409, serverMessage: "That task was cancelled"), "That task was cancelled.")
         XCTAssertEqual(TaskMessageCopy.failure(status: 502, serverMessage: "Server HTTP 502"), "Your Hermes couldn't take that message right now.")
         XCTAssertEqual(TaskMessageCopy.failure(status: 0, serverMessage: nil), "Couldn't reach your Hermes. Check your connection and try again.")
@@ -72,12 +71,6 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(TaskMessageCopy.sent(m), "Sent to Speed up the dashboard")
         m.state = .sent(.followUp)
         XCTAssertEqual(TaskMessageCopy.sent(m), "Started a follow-up to Speed up the dashboard")
-    }
-
-    func testHoldToTalkContract() {
-        XCTAssertEqual(HoldToTalk.path(interactionID: "vi_1"), "/voice/interactions/vi_1/target")
-        XCTAssertEqual(HoldToTalk.body(runID: "run_d", hold: true)["hold"] as? Bool, true)
-        XCTAssertEqual(HoldToTalk.refreshInterval, 20)
     }
 
     func testTypedTurnIsTheUsersAndNeverSpoken() {

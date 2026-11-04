@@ -497,30 +497,23 @@ public final class VoicePanelModel: ObservableObject {
         onAnswer(job.newest.id, "Undo this step: \(step)")
     }
 
-    // MARK: Messages to one task (typed, or hold-to-talk in a call)
+    // MARK: Messages to one task (typed)
 
-    /// The server takes typed / held messages to a task (`capabilities.task_messages`). Without it the
-    /// reply bar, "Something else…" and hold-to-talk are not shown at all.
+    /// The server takes typed messages to a task (`capabilities.task_messages`). Without it the
+    /// reply bar and "Something else…" are not shown at all.
     public var taskMessagesEnabled: Bool { capabilities?.taskMessages == true }
     /// Messages on their way to tasks (and the last ones sent), one at a time in order.
     @Published public var outbox = TaskOutbox()
     /// What's in each job's reply field (job id → text), kept while the user moves around.
     @Published public var replyDrafts: [String: String] = [:]
-    /// The job the mic is held for (hold-to-talk); nil when not holding.
-    @Published public var heldJobID: String?
     /// Put the cursor in this job's reply field (the Live Activity's Reply, `?reply=1`).
     @Published public var replyFocusJobID: String?
     /// Sends one message (the client posts it); call back with the reply, or a plain failure sentence.
     public var deliverMessage: (OutgoingMessage, @escaping (TaskMessageReply?, String?) -> Void) -> Void = { _, done in
         done(nil, "This server can't take typed messages yet.")
     }
-    /// Hold-to-talk began (job id, true) or ended (false).
-    public var onHoldTalk: (String, Bool) -> Void = { _, _ in }
     /// A note after a send ("Sent to Speed up the dashboard", or the failure). The iPhone shows its own toast.
     public var onMessageNotice: (OutgoingMessage) -> Void = { _ in }
-
-    /// A call is live, so the reply bar's mic is hold-to-talk (else it dictates into the field).
-    public var replyMicHolds: Bool { state.connection == .live && !state.workOnly }
 
     /// Where a job's reply goes: the run that's working, else the one waiting on the user, else the newest.
     public func replyTarget(_ job: Job) -> (runID: String, taskName: String)? {
@@ -570,20 +563,6 @@ public final class VoicePanelModel: ObservableObject {
             }
             if let settled = self.outbox.message(next.id) { self.onMessageNotice(settled) }
             self.pumpOutbox()
-        }
-    }
-
-    /// Hold-to-talk: start (the mic opens; what's said goes to this job until release) or stop.
-    public func holdToTalk(_ jobID: String, _ on: Bool) {
-        guard taskMessagesEnabled else { return }
-        if on {
-            guard replyMicHolds, heldJobID != jobID else { return }
-            heldJobID = jobID
-            onHoldTalk(jobID, true)
-        } else {
-            guard heldJobID == jobID else { return }
-            heldJobID = nil
-            onHoldTalk(jobID, false)
         }
     }
 

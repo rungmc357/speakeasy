@@ -185,10 +185,10 @@ struct JobDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 AllJobsButton { model.onOpenJob(nil) }
-                if model.state.connection.isInCall { TalkingToChip(job: job, held: model.heldJobID == job.id) }
+                if model.state.connection.isInCall { TalkingToChip(job: job) }
                 Spacer(minLength: 4)
-                // The page draws the steps itself, so Stop (otherwise under the steps) sits up here.
-                if live && LiveJobBlock.drawsSteps(job), let task = job.activeTask, task.canStop, let run = task.info.runID {
+                // The redesigned page's one Stop: up here, never also under the steps.
+                if live, let task = job.activeTask, task.canStop, let run = task.info.runID {
                     HeaderStopButton { model.onStopTask(run) }
                 }
                 KeyCap("esc").help("Esc goes back to all jobs")
@@ -204,6 +204,7 @@ struct JobDetailView: View {
                         // The scroller hosts its content apart, so the environment is set inside it.
                         .environment(\.jobRenderers, JobStyle.renderers(model))
                         .environment(\.jobHostDrawsSteps, live && LiveJobBlock.drawsSteps(job))
+                        .environment(\.jobHostShowsNow, live)
                 }
                     .padding(.trailing, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -252,15 +253,14 @@ struct JobDetailView: View {
 /// "Talking to: <job>" while a call is open: what's said now goes to this job.
 struct TalkingToChip: View {
     var job: Job
-    var held: Bool
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "mic.fill").font(.system(size: 8.5, weight: .semibold))
-            Text(held ? "Only this job hears you" : "Talking to this job").font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
+            Text("Talking to this job").font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
         }
         .padding(.horizontal, 8).frame(height: 22)
-        .background(Capsule().fill(held ? JobStyle.stopRed.opacity(0.4) : JobStyle.blue.opacity(0.18)))
-        .foregroundStyle(held ? Color.white : JobStyle.blueInk)
+        .background(Capsule().fill(JobStyle.blue.opacity(0.18)))
+        .foregroundStyle(JobStyle.blueInk)
         .help("What you say now goes to “\(job.name)” unless it's clearly about something else")
     }
 }

@@ -22,6 +22,7 @@ public struct JobRenderers {
 private struct JobRenderersKey: EnvironmentKey { static let defaultValue = JobRenderers() }
 private struct JobTextScaleKey: EnvironmentKey { static let defaultValue: CGFloat = 1 }
 private struct JobHostDrawsStepsKey: EnvironmentKey { static let defaultValue = false }
+private struct JobHostShowsNowKey: EnvironmentKey { static let defaultValue = false }
 
 public extension EnvironmentValues {
     var jobRenderers: JobRenderers {
@@ -38,6 +39,12 @@ public extension EnvironmentValues {
     var jobHostDrawsSteps: Bool {
         get { self[JobHostDrawsStepsKey.self] }
         set { self[JobHostDrawsStepsKey.self] = newValue }
+    }
+    /// The host page already says what a running job is doing now (status line, pinned tool call) and
+    /// has Stop in its header, so the steps card drops its "Now" line and its Stop. Off by default.
+    var jobHostShowsNow: Bool {
+        get { self[JobHostShowsNowKey.self] }
+        set { self[JobHostShowsNowKey.self] = newValue }
     }
 }
 
@@ -1185,6 +1192,7 @@ public struct LiveSteps: View {
     /// "undo that" takes). Only for jobs whose pick or report says it can be undone.
     var allowUndo = false
     @Environment(\.jobTextScale) private var s
+    @Environment(\.jobHostShowsNow) private var hostShowsNow
 
     public init(job: Job, model: VoicePanelModel, allowUndo: Bool = false) {
         self.job = job; self.model = model; self.allowUndo = allowUndo
@@ -1203,11 +1211,19 @@ public struct LiveSteps: View {
             // doesn't say it again: just the way into all the steps.
             let dupCurrent = JobLook.touch && focus.map { all[$0].state == .current && TextEcho.nearDuplicate(all[$0].text, statusLine(task)) } == true
             let echoed = dupCurrent && !open
-            let shown: [Row] = echoed ? (all.count > 2 ? [] : all.filter { $0.state != .current })
+            // The host page says the current step itself and has Stop up top: no "Now" line, no Stop
+            // here. Collapsed, only what it doesn't say: earlier steps when few, follow-up receipts.
+            let hostNow = hostShowsNow && task.isActive
+            let shown: [Row] = hostNow && !open ? (all.count > 2 ? all.filter { $0.receipt != nil } : all.filter { $0.state != .current })
+                : echoed ? (all.count > 2 ? [] : all.filter { $0.state != .current })
                 : open || all.count <= 2 ? all : focus.map { [all[$0]] } ?? []
+            let more = all.count > 2 || dupCurrent || (hostNow && open && all.count > 1)
+            let tell = task.isActive && model.state.connection.isOpen && !(JobLook.touch && model.taskMessagesEnabled)
+                && (!model.taskMessagesEnabled || (!hostNow && task.canStop && info.runID != nil && !JobLook.touch))
+            if !(hostNow && shown.isEmpty && !more && !tell) {
             VStack(alignment: .leading, spacing: JobLook.touch ? 10 : 6) {
                 // Touch: the page's status block above already says the step, time and ETA.
-                if !JobLook.touch {
+                if !JobLook.touch && !hostNow {
                     HStack(alignment: .firstTextBaseline) {
                         SectionLabel(text: task.isActive ? "Now" : "Steps")
                         Spacer(minLength: 4)
@@ -1223,7 +1239,7 @@ public struct LiveSteps: View {
                                 receipt: row.receipt)
                     }
                 }
-                if all.count > 2 || dupCurrent {
+                if more {
                     if JobLook.touch {
                         // A disclosure row, like a grouped list's: the count, a chevron that turns.
                         if !shown.isEmpty { Divider().opacity(0.6) }
@@ -1248,13 +1264,13 @@ public struct LiveSteps: View {
                     }
                 }
                 // Touch: Stop lives in the page's toolbar menu (with a confirm), not as a slab here.
-                if task.isActive && model.state.connection.isOpen && !(JobLook.touch && model.taskMessagesEnabled) {
+                if tell {
                     HStack(spacing: 6) {
-                        // With typed messages the reply bar under the job does this (and hold-to-talk).
+                        // With typed messages the reply bar under the job does this.
                         if !model.taskMessagesEnabled {
                             TileButton(title: "Tell it something") { model.onTellJob(job.id) }
                         }
-                        if task.canStop, let run = info.runID, !JobLook.touch {
+                        if task.canStop, let run = info.runID, !JobLook.touch, !hostNow {
                             Button { model.onStopTask(run) } label: {
                                 Text("Stop").font(.system(size: 11.5 * s, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 26)
                                     .foregroundStyle(Color(red: 1, green: 0.7, blue: 0.66))
@@ -1271,6 +1287,7 @@ public struct LiveSteps: View {
                 }
             }
             .touchCard()
+            }
         }
     }
 

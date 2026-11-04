@@ -1,8 +1,5 @@
 import SwiftUI
 import SpeakeasyCore
-#if os(iOS)
-import UIKit
-#endif
 
 // The job page's reply bar and the decision card's "Something else…" field (servers with
 // `task_messages` only). What's typed goes to this job by run id, never through the voice's router,
@@ -101,30 +98,24 @@ public struct SentMessages: View {
     }
 }
 
-/// The bottom of a job page: a text field and a mic. In a call the mic is hold-to-talk to this job
-/// ("Talking to … · release to stop"); otherwise it dictates into the field to review and send.
+/// The bottom of a job page: a text field and a send button. Typing only: in a call you just talk,
+/// and the keyboard's own dictation types into the field.
 public struct TaskReplyBar: View {
     @ObservedObject var model: VoicePanelModel
     var job: Job
-    @ObservedObject var dictation: ReplyDictation
     /// Draw what was sent above the field. The iPhone shows it in the page instead (the bar stays small).
     var showsSent = true
     @FocusState private var focused: Bool
     @Environment(\.jobTextScale) private var s
     @Environment(\.jobReplyBarAnswers) private var answersDecision
-    /// Text in the field before dictation started (heard words are added after it).
-    @State private var dictationBase = ""
-    @State private var pressing = false
 
-    @MainActor public init(model: VoicePanelModel, job: Job, showsSent: Bool = true, dictation: ReplyDictation? = nil) {
-        self.model = model; self.job = job; self.showsSent = showsSent; self.dictation = dictation ?? .shared
+    @MainActor public init(model: VoicePanelModel, job: Job, showsSent: Bool = true) {
+        self.model = model; self.job = job; self.showsSent = showsSent
     }
 
     private var draft: Binding<String> {
         Binding(get: { model.replyDrafts[job.id] ?? "" }, set: { model.replyDrafts[job.id] = $0.isEmpty ? nil : $0 })
     }
-    private var holding: Bool { model.heldJobID == job.id }
-    private var dictating: Bool { dictation.isListening(to: job.id) }
     private var canSend: Bool { TaskMessageRequest.clean(draft.wrappedValue) != nil }
     /// Touch, a decision waiting and no in-card field: what's typed here is "Something else…"
     /// (sent with `choice_task_id`, so it answers that decision and nothing else).
@@ -141,9 +132,6 @@ public struct TaskReplyBar: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 8 * s) {
             if showsSent { SentMessages(model: model, jobID: job.id) }
-            if holding {
-                holdBanner
-            }
             HStack(alignment: .bottom, spacing: (JobLook.touch ? 4 : 8) * s) {
                 field
                 // Typing only. In a call you just talk (the voice says which task it went to); outside
@@ -153,14 +141,6 @@ public struct TaskReplyBar: View {
         }
         .onAppear { takeFocusIfAsked() }
         .onChange(of: model.replyFocusJobID) { _, _ in takeFocusIfAsked() }
-        .onChange(of: model.replyMicHolds) { _, holds in
-            // The call ended while held: the hold is over (the server lets go on its own too).
-            if !holds, holding { model.holdToTalk(job.id, false) }
-        }
-        .onDisappear {
-            if holding { model.holdToTalk(job.id, false) }
-            if dictating { dictation.stop() }
-        }
     }
 
     private func takeFocusIfAsked() {
@@ -170,28 +150,20 @@ public struct TaskReplyBar: View {
     }
 
     private var field: some View {
-        ZStack(alignment: .leading) {
-            if holding {
-                Text("Speak now. Only this task hears it.").font(.system(size: 12.5 * s))
-                    .foregroundStyle(.secondary).lineLimit(1)
-                    .padding(.horizontal, 12 * s)
-            } else {
-                // Touch: the page's title already names the job, so the field just says what it's for.
-                TextField(placeholder, text: draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13 * s))
-                    .lineLimit(1...5)
-                    .focused($focused)
-                    .submitLabel(.send)
-                    .onSubmit(submit)
-                    .padding(.horizontal, 12 * s).padding(.vertical, 8 * s)
-                    .accessibilityIdentifier("reply-field")
-                    .accessibilityHint(openChoice != nil ? "Answers the decision in your own words" : "")
-            }
-        }
-        .frame(minHeight: 34 * s)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(FieldFrame(focused: focused, holding: holding, s: s))
+        // Touch: the page's title already names the job, so the field just says what it's for.
+        TextField(placeholder, text: draft, axis: .vertical)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13 * s))
+            .lineLimit(1...5)
+            .focused($focused)
+            .submitLabel(.send)
+            .onSubmit(submit)
+            .padding(.horizontal, 12 * s).padding(.vertical, 8 * s)
+            .accessibilityIdentifier("reply-field")
+            .accessibilityHint(openChoice != nil ? "Answers the decision in your own words" : "")
+            .frame(minHeight: 34 * s)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .modifier(FieldFrame(focused: focused, s: s))
     }
 
     private var send: some View {
@@ -210,69 +182,9 @@ public struct TaskReplyBar: View {
         .accessibilityIdentifier("reply-send")
     }
 
-    private var holdButton: some View {
-        HStack(spacing: 6 * s) {
-            Image(systemName: holding ? "waveform" : "mic.fill").font(.system(size: 12.5 * s, weight: .semibold))
-            Text(holding ? "Release to send" : "Hold to talk").font(.system(size: 12.5 * s, weight: .semibold))
-                .lineLimit(1).fixedSize()
-        }
-        .padding(.horizontal, 13 * s)
-        .frame(height: 34 * s)
-        .foregroundStyle(holding ? Color.white : JobStyle.blueInk)
-        .background(Capsule().fill(holding ? JobStyle.stopRed : JobStyle.blue.opacity(0.18)))
-        .overlay(Capsule().strokeBorder(holding ? JobStyle.stopRed.opacity(0.35) : JobStyle.blueInk.opacity(0.35), lineWidth: holding ? 5 : 0.75))
-        .scaleEffect(holding ? 1.06 : 1)
-        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: holding)
-        .contentShape(Capsule())
-        .gesture(DragGesture(minimumDistance: 0)
-            .onChanged { _ in
-                guard !pressing else { return }
-                pressing = true
-                focused = false
-                haptic(.begin)
-                model.holdToTalk(job.id, true)
-            }
-            .onEnded { _ in
-                pressing = false
-                if holding { haptic(.end) }
-                model.holdToTalk(job.id, false)
-            })
-        .help("Hold to talk to \(TaskMessageCopy.shortName(job.name)) only; release to send")
-        .accessibilityLabel(holding ? "Talking to \(job.name). Release to send" : "Hold to talk to \(job.name) only")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityIdentifier("reply-hold")
-    }
-
-    private var holdBanner: some View {
-        HStack(spacing: 8 * s) {
-            PulseDot(color: JobStyle.stopRed)
-            Text(TaskMessageCopy.holding(job.name)).font(.system(size: 12 * s, weight: .semibold)).lineLimit(2)
-                .foregroundStyle(Color.primary).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 11 * s).padding(.vertical, 7 * s)
-        .background(RoundedRectangle(cornerRadius: 14 * s, style: .continuous).fill(JobStyle.stopRed.opacity(0.18)))
-        .overlay(RoundedRectangle(cornerRadius: 14 * s, style: .continuous).strokeBorder(JobStyle.stopRed.opacity(0.45), lineWidth: 0.75))
-        .accessibilityIdentifier("hold-banner")
-    }
-
-    private func note(_ text: String, tone: Color, symbol: String) -> some View {
-        Label(text, systemImage: symbol).font(.system(size: 11.5 * s, weight: .medium)).foregroundStyle(tone)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
     private func submit() {
         guard canSend else { return }
-        if dictating { dictation.stop() }
         model.sendReply(jobID: job.id, choiceTaskID: openChoice?.id)
-    }
-
-    private enum Haptic { case begin, end }
-    private func haptic(_ h: Haptic) {
-        #if os(iOS)
-        let g = UIImpactFeedbackGenerator(style: h == .begin ? .medium : .light)
-        g.impactOccurred()
-        #endif
     }
 }
 
@@ -280,7 +192,6 @@ public struct TaskReplyBar: View {
 /// field and the send button (like Messages), so the field itself is bare.
 private struct FieldFrame: ViewModifier {
     var focused: Bool
-    var holding: Bool
     var s: CGFloat
     func body(content: Content) -> some View {
         if JobLook.touch {
@@ -289,8 +200,8 @@ private struct FieldFrame: ViewModifier {
             content
                 .background(RoundedRectangle(cornerRadius: 17 * s, style: .continuous).fill(Color.primary.opacity(focused ? 0.11 : 0.08)))
                 .overlay(RoundedRectangle(cornerRadius: 17 * s, style: .continuous)
-                    .strokeBorder(holding ? JobStyle.stopRed.opacity(0.7) : focused ? JobStyle.blueInk.opacity(0.55) : Color.primary.opacity(0.10),
-                                  lineWidth: holding || focused ? 1.2 : 0.75))
+                    .strokeBorder(focused ? JobStyle.blueInk.opacity(0.55) : Color.primary.opacity(0.10),
+                                  lineWidth: focused ? 1.2 : 0.75))
         }
     }
 }
@@ -310,17 +221,6 @@ public struct TouchGlass<S: Shape>: ViewModifier {
         #else
         content.background(shape.fill(.ultraThinMaterial))
         #endif
-    }
-}
-
-/// A small dot that breathes while the mic is held.
-struct PulseDot: View {
-    var color: Color
-    @State private var on = false
-    var body: some View {
-        Circle().fill(color).frame(width: 8, height: 8)
-            .overlay(Circle().stroke(color.opacity(0.5), lineWidth: 2).scaleEffect(on ? 2.2 : 1).opacity(on ? 0 : 1))
-            .onAppear { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { on = true } }
     }
 }
 

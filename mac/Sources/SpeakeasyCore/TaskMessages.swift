@@ -1,13 +1,12 @@
 import Foundation
 
-// Typed and held-to-talk messages to one task (contract: ~/.../se-typing/CONTRACT.md).
-// The target is always picked by the user (a job's reply bar, a decision's "Something else…", or
-// holding the mic on a job) and sent by run id: nothing here goes through the voice's router.
+// Typed messages to one task (contract: ~/.../se-typing/CONTRACT.md).
+// The target is always picked by the user (a job's reply bar or a decision's "Something else…")
+// and sent by run id: nothing here goes through the voice's router.
 
 /// How the words reached the task.
 public enum TaskMessageSource: String, Equatable, Sendable {
     case typed
-    case heldVoice = "held_voice"
 }
 
 /// What the server made of a message (`delivered_as`).
@@ -184,9 +183,6 @@ public enum TaskMessageCopy {
         }
     }
 
-    /// The hold-to-talk banner while the mic button is held.
-    public static func holding(_ taskName: String) -> String { "Talking to \(shortName(taskName)) · release to stop" }
-
     public static func placeholder(_ taskName: String) -> String { "Type to \(shortName(taskName, limit: 24))" }
 
     /// A plain sentence for a failed send: the server's own when it gives one.
@@ -202,18 +198,5 @@ public enum TaskMessageCopy {
         case nil, 0?: return "Couldn't reach your Hermes. Check your connection and try again."
         default: return "Your Hermes couldn't take that message right now."
         }
-    }
-}
-
-/// Hold-to-talk to one task during a call (`POST /voice/interactions/{id}/target`).
-public enum HoldToTalk {
-    /// The server lets go after 60 s without a refresh; the client re-posts every 20 s while held.
-    public static let refreshInterval: TimeInterval = 20
-
-    public static func body(runID: String, hold: Bool) -> [String: Any] { ["run_id": runID, "hold": hold] }
-
-    public static func path(interactionID: String) -> String {
-        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
-        return "/voice/interactions/\(interactionID.addingPercentEncoding(withAllowedCharacters: allowed) ?? interactionID)/target"
     }
 }

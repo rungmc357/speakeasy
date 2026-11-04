@@ -318,11 +318,6 @@ public final class ServerClient: @unchecked Sendable {
                                                  interactionID: interactionID, choiceTaskID: choiceTaskID))
     }
 
-    /// Hold-to-talk: while held, everything said in the call goes to this run (bypassing the router).
-    public func setTarget(interactionID: String, runID: String, hold: Bool) async throws {
-        _ = try await post(HoldToTalk.path(interactionID: interactionID), HoldToTalk.body(runID: runID, hold: hold))
-    }
-
     public func cancelBackend(interactionID: String, runID: String) async throws {
         _ = try await post("/voice/interactions/\(escape(interactionID))/cancel-backend", ["run_id": runID])
     }
