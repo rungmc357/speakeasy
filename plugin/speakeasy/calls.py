@@ -33,6 +33,7 @@ from . import jev as jev_mod
 from . import receipts
 from . import quick as quick_mod
 from . import views as views_mod
+from . import activity as activity_mod
 from . import attachments as A
 from .attachments import Attachment, CallAttachments
 from .hermes_api import HermesError, user_content
@@ -3376,6 +3377,9 @@ class SidebandWorker:
                 elif name == "tool.started":
                     event = {"event": "tool.started", "tool": payload.get("tool_name"), "preview": payload.get("preview")}
                     asyncio.run_coroutine_threadsafe(self.handle_hermes_event(backend, event), loop).result()
+                elif name in {"tool.completed", "tool.failed"}:  # settles the step in the live activity
+                    self.observe_activity(backend, {"event": name, "tool": payload.get("tool_name"),
+                                                    "preview": payload.get("preview")})
                 elif name == "assistant.completed":
                     final["text"] = payload.get("content") or ""
                 elif name.startswith("run.") and name != "run.started":
@@ -3624,6 +3628,8 @@ class SidebandWorker:
             if backend.status in TERMINAL:
                 return
             self._see_images(backend, event)
+            if kind == "commentary":
+                self.observe_activity(backend, event)
             if kind != "commentary":
                 self.store.touch(backend.idem_key)  # alive: never "Status unconfirmed" while it works
                 self.publish()
@@ -3667,10 +3673,18 @@ class SidebandWorker:
         await self.append("session.commentary.append", backend.say_id, P.lost_track_note(self.names))
 
     async def handle_hermes_event(self, backend: BackendRun, event: dict[str, Any]) -> None:
+        self.observe_activity(backend, event)
         try:
             await self._handle_hermes_event(backend, event)
         finally:
             self.publish()
+
+    def observe_activity(self, backend: BackendRun, event: dict[str, Any]) -> None:
+        """Live job activity (activity.py) from the run's own events; saved at most once a second."""
+        try:
+            activity_mod.observe(self.store, backend.idem_key, event, on_flush=self.publish)
+        except Exception:
+            logger.debug("speakeasy: activity update failed", exc_info=True)
 
     def _see_images(self, backend: BackendRun, event: dict[str, Any]) -> None:
         """Live view: remember the latest image the task produced or is looking at. Sources are the
