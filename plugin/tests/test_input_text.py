@@ -19,6 +19,7 @@ from fakes import SDP, FakeTransport, http, wait_for
 from speakeasy import codex_transport as C
 from speakeasy.calls import INPUT_TEXT_TYPE, MAX_INPUT_TEXT, Interaction, typed_text
 from speakeasy.prompt import builder as P
+from speakeasy.service import VoiceService as ServiceVoice
 
 
 def open_call(server, key: str) -> str:
@@ -552,6 +553,33 @@ def test_codex_timeout_leaves_no_echo_guard_behind(server, codex_call, monkeypat
     run_on(worker, worker._user_turn("Turn on the den lights"))
     assert user_texts(worker) == ["Turn on the den lights"]
     assert typed_events(interaction) == []
+
+
+class LandingAsTheWaitExpires:
+    """A send that finishes in the same instant the 15 s wait gives up: `result(timeout)` raises
+    TimeoutError, and by the time the route asks, the future is done and it was `sent`."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def result(self, timeout: float | None = None) -> tuple[str, str]:
+        if timeout is not None:
+            raise TimeoutError()
+        return ("sent", "vi_landed")
+
+    def done(self) -> bool:
+        return True
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+def test_a_send_that_lands_as_the_wait_expires_is_reported_as_sent():
+    # CWE-362: the wait and the send race. The turn is in the call, so the route must say `sent`;
+    # a 502 here would tell the app nothing was recorded and invite a duplicate.
+    future = LandingAsTheWaitExpires()
+    assert ServiceVoice._typed_wait(future, retry_safe=False) == ("sent", "vi_landed")
+    assert future.cancelled is False
 
 
 # -- Grok: a user message item, then a reply ---------------------------------------------------------------

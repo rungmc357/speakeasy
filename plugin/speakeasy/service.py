@@ -840,7 +840,12 @@ class VoiceService:
                 future.cancel()
                 raise ServiceError(504, "the call didn't confirm the message in time; the voice may already "
                                         "have it, so check before sending it again", reason="timeout") from None
-            exc: BaseException | None = future.exception()
+            # It finished between the timeout and this check: report what the send actually did. A send
+            # that went through is `sent`, never a 502 (which tells the app nothing was recorded).
+            try:
+                return future.result()
+            except Exception as caught:
+                exc = caught
         except Exception as caught:
             exc = caught
         logger.warning("speakeasy: typed turn failed (%s)", type(exc).__name__)
