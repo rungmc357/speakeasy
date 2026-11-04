@@ -85,6 +85,7 @@ public final class RelayCallEngine: NSObject, CallTransport, URLSessionWebSocket
     private var synthTimer: DispatchSourceTimer?
     private var synthPhase = 0.0
     private var configObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
 
     public init(options: Options = Options()) {
         self.options = options
@@ -150,8 +151,34 @@ public final class RelayCallEngine: NSObject, CallTransport, URLSessionWebSocket
         lock.unlock()
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: audio,
                                                                 queue: .main) { [weak self] _ in self?.configurationChanged() }
+        #if os(iOS)
+        if interruptionObserver == nil {
+            interruptionObserver = NotificationCenter.default.addObserver(
+                forName: AVAudioSession.interruptionNotification, object: AVAudioSession.sharedInstance(),
+                queue: .main) { [weak self] note in
+                    self?.interrupted(typeRaw: note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                                      optionsRaw: note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt)
+                }
+        }
+        #endif
         if options.syntheticMic { startSyntheticMic() }
     }
+
+    #if os(iOS)
+    /// A phone call or Siri stopped the engine; when it ends, take the session back and restart it.
+    private func interrupted(typeRaw: UInt?, optionsRaw: UInt?) {
+        lock.lock(); let running = audioRunning, isClosed = closed; lock.unlock()
+        guard AudioInterruption.action(typeRaw: typeRaw, optionsRaw: optionsRaw,
+                                       audioRunning: running, closed: isClosed) == .restart else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            if !audio.isRunning { try audio.start() }
+            player.play()
+        } catch {
+            NSLog("Speakeasy relay: audio didn't come back after an interruption: \(error.localizedDescription)")
+        }
+    }
+    #endif
 
     private func configurationChanged() {
         lock.lock(); let active = audioRunning && !closed; lock.unlock()
@@ -463,6 +490,8 @@ public final class RelayCallEngine: NSObject, CallTransport, URLSessionWebSocket
         synthTimer?.cancel(); synthTimer = nil
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
         configObserver = nil
+        if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
+        interruptionObserver = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         session?.invalidateAndCancel()
         if running {
