@@ -121,17 +121,12 @@ public struct TaskReplyBar: View {
             if showsSent { SentMessages(model: model, jobID: job.id) }
             if holding {
                 holdBanner
-            } else if dictating {
-                note("Listening… tap the mic to stop, then review and send.", tone: JobStyle.blueInk, symbol: "waveform")
-            } else if case .denied(let why) = dictation.phase, dictation.jobID == job.id {
-                note(why, tone: JobStyle.tileAmber, symbol: "mic.slash")
-            } else if case .failed(let why) = dictation.phase, dictation.jobID == job.id {
-                note(why, tone: JobStyle.tileAmber, symbol: "exclamationmark.circle")
             }
             HStack(alignment: .bottom, spacing: 8 * s) {
                 field
-                mic
-                if !holding { send }
+                // Typing only. In a call you just talk (the voice says which task it went to); outside
+                // a call the keyboard's own dictation types into the field.
+                send
             }
         }
         .onAppear { takeFocusIfAsked() }
@@ -194,52 +189,37 @@ public struct TaskReplyBar: View {
         .accessibilityIdentifier("reply-send")
     }
 
-    @ViewBuilder private var mic: some View {
-        let live = model.replyMicHolds
-        let on = holding || dictating
-        let icon = Image(systemName: on ? (holding ? "mic.fill" : "stop.fill") : "mic")
-            .font(.system(size: 13.5 * s, weight: .semibold))
-            .frame(width: 34 * s, height: 34 * s)
-            .foregroundStyle(on ? Color.white : Color.primary.opacity(0.85))
-            .background(Circle().fill(holding ? JobStyle.stopRed : dictating ? JobStyle.blue : Color.primary.opacity(0.10)))
-            .overlay(Circle().strokeBorder(holding ? JobStyle.stopRed.opacity(0.35) : .clear, lineWidth: 6).scaleEffect(holding ? 1.25 : 1))
-            .scaleEffect(holding ? 1.12 : 1)
-            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: holding)
-            .contentShape(Circle())
-        if live {
-            // Hold to talk: press and hold, speak, release. A tap alone just shows how.
-            icon
-                .gesture(DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        guard !pressing else { return }
-                        pressing = true
-                        focused = false
-                        haptic(.begin)
-                        model.holdToTalk(job.id, true)
-                    }
-                    .onEnded { _ in
-                        pressing = false
-                        if holding { haptic(.end) }
-                        model.holdToTalk(job.id, false)
-                    })
-                .help("Hold to talk to \(TaskMessageCopy.shortName(job.name)); release to stop")
-                .accessibilityLabel(holding ? "Talking to \(job.name). Release to stop" : "Hold to talk to \(job.name)")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityIdentifier("reply-hold")
-        } else {
-            Button {
-                if !dictating { dictationBase = draft.wrappedValue }
-                dictation.toggle(jobID: job.id) { heard in
-                    let base = dictationBase.trimmingCharacters(in: .whitespaces)
-                    draft.wrappedValue = base.isEmpty ? heard : base + " " + heard
-                }
-                if dictating { focused = true }
-            } label: { icon }
-            .buttonStyle(.plain)
-            .help(dictating ? "Stop dictating" : "Dictate a message (on this device)")
-            .accessibilityLabel(dictating ? "Stop dictating" : "Dictate a message")
-            .accessibilityIdentifier("reply-dictate")
+    private var holdButton: some View {
+        HStack(spacing: 6 * s) {
+            Image(systemName: holding ? "waveform" : "mic.fill").font(.system(size: 12.5 * s, weight: .semibold))
+            Text(holding ? "Release to send" : "Hold to talk").font(.system(size: 12.5 * s, weight: .semibold))
+                .lineLimit(1).fixedSize()
         }
+        .padding(.horizontal, 13 * s)
+        .frame(height: 34 * s)
+        .foregroundStyle(holding ? Color.white : JobStyle.blueInk)
+        .background(Capsule().fill(holding ? JobStyle.stopRed : JobStyle.blue.opacity(0.18)))
+        .overlay(Capsule().strokeBorder(holding ? JobStyle.stopRed.opacity(0.35) : JobStyle.blueInk.opacity(0.35), lineWidth: holding ? 5 : 0.75))
+        .scaleEffect(holding ? 1.06 : 1)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: holding)
+        .contentShape(Capsule())
+        .gesture(DragGesture(minimumDistance: 0)
+            .onChanged { _ in
+                guard !pressing else { return }
+                pressing = true
+                focused = false
+                haptic(.begin)
+                model.holdToTalk(job.id, true)
+            }
+            .onEnded { _ in
+                pressing = false
+                if holding { haptic(.end) }
+                model.holdToTalk(job.id, false)
+            })
+        .help("Hold to talk to \(TaskMessageCopy.shortName(job.name)) only; release to send")
+        .accessibilityLabel(holding ? "Talking to \(job.name). Release to send" : "Hold to talk to \(job.name) only")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("reply-hold")
     }
 
     private var holdBanner: some View {

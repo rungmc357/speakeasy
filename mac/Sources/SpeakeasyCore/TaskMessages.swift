@@ -184,7 +184,7 @@ public enum TaskMessageCopy {
     /// The hold-to-talk banner while the mic button is held.
     public static func holding(_ taskName: String) -> String { "Talking to \(shortName(taskName)) · release to stop" }
 
-    public static func placeholder(_ taskName: String) -> String { "Message \(shortName(taskName, limit: 24))" }
+    public static func placeholder(_ taskName: String) -> String { "Type to \(shortName(taskName, limit: 24))" }
 
     /// A plain sentence for a failed send: the server's own when it gives one.
     public static func failure(status: Int?, serverMessage: String?) -> String {

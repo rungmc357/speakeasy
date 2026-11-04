@@ -300,6 +300,11 @@ struct ListCard: View {
 @MainActor public enum ChartPreview { public static var selection: String? }
 
 struct ChartCard: View {
+    #if os(macOS)
+    static let chartHint = "Hover or drag to read values"
+    #else
+    static let chartHint = "Drag across to read values"
+    #endif
     let card: ViewCard
     struct Point: Identifiable { let id: Int; let series: String; let label: String; let value: Double }
     /// The x label under the pointer (hover or drag): its values show above the chart.
@@ -319,12 +324,12 @@ struct ChartCard: View {
                 CardHeader(icon: "chart.xyaxis.line", title: card["title"].string ?? "Chart")
                 if let unit = card["unit"].string { Text(unit).font(.system(size: 11)).foregroundStyle(.secondary) }
             }
-            // Hover or drag across the chart to read exact values.
+            // Hover (Mac) or drag (iPhone/iPad) across the chart to read exact values.
             let unit = card["unit"].string.map { ["%", "°", "x", "×"].contains($0) ? $0 : " \($0)" } ?? ""
             Text(selected.map { label in
                 let vals = points.filter { $0.label == label }
                 return "\(label): " + vals.map { (series.count > 1 ? "\($0.series) " : "") + CardText.number($0.value) + unit }.joined(separator: " · ")
-            } ?? "Hover or drag to read values")
+            } ?? Self.chartHint)
                 .font(.system(size: 11.5, weight: selected == nil ? .regular : .semibold).monospacedDigit())
                 .foregroundStyle(selected == nil ? Color.secondary : Color.primary)
                 .lineLimit(1)
