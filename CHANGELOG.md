@@ -2,6 +2,13 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Mac 0.3.11 — Watch the work, and type to any job
+
+- **See what a job is doing while it works.** The job page shows the latest tool call live, with every earlier call one click away (what it was given, what came back, how long it took), plus what it has found so far and the files, pages and commands it touched. *(Mac, with plugin 0.3.20+)*
+- **A picture of the work.** Test reruns show a pass/fail grid, research shows its sources, code changes show their size, and plans show each step with how long it took. *(Mac)*
+- **Type to a job.** Every job has a reply field: it steers a running job, answers one that's waiting, or starts a follow-up on a finished one. Decisions take "Something else…" in your own words. *(Mac, with plugin 0.3.20+)*
+- **A calmer board.** A greeting with what needs you, new answers with the answer showing, running jobs as live tiles, and one Stop button per job. *(Mac)*
+
 ## Plugin 0.3.21 — Live activity for every kind of job
 
 - **Jobs that work inside a Discord or Telegram thread show their steps too.** A follow-up typed to a job that lives in a chat thread, and jobs started in a new thread, now show each tool call live (name, what it was given, how long it took), like every other job. *(Plugin)*
