@@ -334,7 +334,7 @@ enum FilmFrames {
             "actions": [["id": "toggle", "label": "Turn off lamp", "style": "primary"],
                         ["id": "dim", "label": "Back to 60%", "value": 60]]])
         let homeTask = task("h", "completed", "Is the office lamp on?", title: "Office lights", short: "Done", age: 2, now: now,
-                            result: WorkResult(spoken: "The desk lamp is on at 60%.", full: nil, views: [lamp]))
+                            result: WorkResult(spoken: "The desk lamp is on, dimmed to 20%.", full: nil, views: [lamp]))
         s = base(); s.tasks = [homeTask]; s.workInfo = homeTask.info
         out.append(Shot("ux-13-card-actions", done(s), "task:h") { $0.showToast("Desk lamp dimmed to 20%.") })
         let chart = card(["kind": "chart", "title": "API p95 latency", "style": "line", "unit": "ms",
