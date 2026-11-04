@@ -67,8 +67,6 @@ struct OrbBar: View {
 
 // MARK: - Board
 
-// MARK: - Board
-
 struct JobBoardView: View {
     @ObservedObject var model: VoicePanelModel
 
@@ -83,16 +81,22 @@ struct JobBoardView: View {
 
     var body: some View {
         let sections = model.boardSections
-        PanelScrollView(maxHeight: Self.scrollHeight(model), reveal: model.boardFocusID.flatMap { tileFrames[$0] }) {
-            VStack(alignment: .leading, spacing: 7) {
-                Text(summary(sections)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.secondary)
-                    .padding(.bottom, 1)
+        // The first tile reveals from the very top, so the greeting above it comes back into view too.
+        let reveal = model.boardFocusID.flatMap { id in
+            tileFrames[id].map { id == sections.all.first?.id ? CGRect(x: 0, y: 0, width: $0.maxX, height: $0.maxY) : $0 }
+        }
+        PanelScrollView(maxHeight: Self.scrollHeight(model), reveal: reveal) {
+            VStack(alignment: .leading, spacing: 8) {
+                BoardGreetingView(sections: sections, now: model.state.now)
+                    .padding(.bottom, 4)
+                // One label per section; the tiles under it never repeat it.
                 if !sections.needsYou.isEmpty {
-                    SectionLabel(text: "Needs you")
+                    BoardSectionLabel(text: "Needs you", count: sections.needsYou.count, color: Live.amber)
                     ForEach(sections.needsYou) { job in tile(job) }
                 }
                 if !sections.newAnswers.isEmpty {
-                    SectionLabel(text: "New answers").padding(.top, sections.needsYou.isEmpty ? 0 : 4)
+                    BoardSectionLabel(text: "New answers", count: sections.newAnswers.count, color: Tokens.blue)
+                        .padding(.top, sections.needsYou.isEmpty ? 0 : 6)
                     ForEach(sections.newAnswers) { job in
                         AnswerTile(job: job, focused: model.boardFocusID == job.id,
                                    spokenNow: model.state.connection == .live ? model.state.exchange.cleaned.assistant : nil,
@@ -101,11 +105,21 @@ struct JobBoardView: View {
                     }
                 }
                 if !sections.running.isEmpty {
-                    SectionLabel(text: "Running").padding(.top, sections.needsYou.isEmpty && sections.newAnswers.isEmpty ? 0 : 4)
-                    ForEach(sections.running) { job in tile(job) }
+                    BoardSectionLabel(text: "Running", count: sections.running.count, color: Live.brass)
+                        .padding(.top, sections.needsYou.isEmpty && sections.newAnswers.isEmpty ? 0 : 6)
+                    let wide = JobDetailView.isWide(model)
+                    let cols = wide && sections.running.count > 1 ? [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+                                                                 : [GridItem(.flexible())]
+                    LazyVGrid(columns: cols, alignment: .leading, spacing: 8) {
+                        ForEach(sections.running) { job in
+                            RunningTile(job: job, model: model, focused: model.boardFocusID == job.id)
+                                .modifier(TileFrame(id: job.id))
+                        }
+                    }
                 }
                 if !sections.doneToday.isEmpty {
-                    SectionLabel(text: "Done today").padding(.top, sections.needsYou.isEmpty && sections.newAnswers.isEmpty && sections.running.isEmpty ? 0 : 4)
+                    BoardSectionLabel(text: "Done today", count: sections.doneToday.count, color: Live.green)
+                        .padding(.top, sections.needsYou.isEmpty && sections.newAnswers.isEmpty && sections.running.isEmpty ? 0 : 6)
                     WrapLayout(spacing: 5) {
                         ForEach(sections.doneToday) { job in
                             DoneChip(job: job, focused: model.boardFocusID == job.id) { model.onOpenJob(job.id) }
@@ -114,7 +128,7 @@ struct JobBoardView: View {
                     }
                 }
                 if !FilmFrames.cleanShots {
-                    Text(hint(sections)).font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 3)
+                    Text(hint(sections)).font(.system(size: 11)).foregroundStyle(.tertiary).padding(.top, 4)
                 }
             }
             .padding(.trailing, 6)
@@ -124,15 +138,6 @@ struct JobBoardView: View {
                 MainActor.assumeIsolated { if frames != tileFrames { tileFrames = frames } }
             }
         }
-    }
-
-    private func summary(_ s: JobBoard.Sections) -> String {
-        var parts: [String] = []
-        if !s.needsYou.isEmpty { parts.append("\(s.needsYou.count) need\(s.needsYou.count == 1 ? "s" : "") you") }
-        if !s.newAnswers.isEmpty { parts.append(s.newAnswers.count == 1 ? "1 new answer" : "\(s.newAnswers.count) new answers") }
-        if !s.running.isEmpty { parts.append("\(s.running.count) running") }
-        if !s.doneToday.isEmpty { parts.append("\(s.doneToday.count) done today") }
-        return parts.joined(separator: " · ")
     }
 
     private func hint(_ s: JobBoard.Sections) -> String {
@@ -169,43 +174,36 @@ struct JobDetailView: View {
     var job: Job
     @ObservedObject var model: VoicePanelModel
 
+    /// Wide enough for the live block's two columns.
+    static func isWide(_ model: VoicePanelModel) -> Bool { model.panelWidth >= 560 }
+
     var body: some View {
         let next = model.nextJobNeedingYou(after: job.id)
-        VStack(alignment: .leading, spacing: 9) {
+        let wide = Self.isWide(model)
+        let live = LiveJobBlock.has(job)
+        let mood = LiveMood.of(job)
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 AllJobsButton { model.onOpenJob(nil) }
+                if model.state.connection.isInCall { TalkingToChip(job: job, held: model.heldJobID == job.id) }
                 Spacer(minLength: 4)
-                Text("esc").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.75))
-                    .help("Esc goes back to all jobs")
-                    .accessibilityHidden(true)
-            }
-            HStack(spacing: 5) {
-                Image(systemName: "mic.fill").font(.system(size: 9, weight: .semibold))
-                Text("Talking to: \(job.name)").font(.system(size: 11, weight: .semibold)).lineLimit(1)
-            }
-            .padding(.horizontal, 9).padding(.vertical, 3)
-            .background(Capsule().fill(model.heldJobID == job.id ? JobStyle.stopRed.opacity(0.4) : JobStyle.blue.opacity(0.35)))
-            .foregroundStyle(model.heldJobID == job.id ? Color.white : JobStyle.blueInk)
-            .help("What you say now goes to this job unless it's clearly about something else")
-            if let answer = job.answerTask, let headline = JobAnswer.headline(answer.info) {
-                // An answer: the chip above names what was asked about; the answer itself leads, big.
-                Text(headline).font(.system(size: 16, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-            } else {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(job.name).font(.system(size: 15, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
-                    let line = taskStatusLine(job.activeTask?.info ?? job.newest.info, now: model.state.now, assistantName: model.state.assistantName)
-                    Text(JobDetailBody.pickedLine(job, model: model) ?? (job.stage.needsYou || job.setAside ? JobDetailBody.stageLine(job) : line.0)).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
+                // The page draws the steps itself, so Stop (otherwise under the steps) sits up here.
+                if live && LiveJobBlock.drawsSteps(job), let task = job.activeTask, task.canStop, let run = task.info.runID {
+                    HeaderStopButton { model.onStopTask(run) }
                 }
+                KeyCap("esc").help("Esc goes back to all jobs")
             }
+            LiveJobTitle(job: job, title: title, line: line, wide: wide, extra: extra)
+                .padding(.top, 2)
             // Compare hides the footer but keeps its room, so the panel never grows past the window.
             let footer: CGFloat = job.decisionTask.map { model.answers[$0.id] == nil } == true ? 76 : 0
             PanelScrollView(maxHeight: min(JobStyle.scrollCap, 560 + model.extraHeight) - footer) {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 14) {
+                    if live { LiveJobBlock(job: job, model: model, wide: wide) }
                     JobDetailBody(job: job, model: model, revision: UUID())
                         // The scroller hosts its content apart, so the environment is set inside it.
                         .environment(\.jobRenderers, JobStyle.renderers(model))
+                        .environment(\.jobHostDrawsSteps, live && LiveJobBlock.drawsSteps(job))
                 }
                     .padding(.trailing, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -222,21 +220,97 @@ struct JobDetailView: View {
                     .overlay(alignment: .top) { Divider().opacity(0.5).offset(y: -5) }
             }
             if let next {
-                Button { model.onOpenJob(next.id) } label: {
-                    HStack(spacing: 4) {
-                        Spacer(minLength: 0)
-                        Text(job.stage.needsYou ? "After you decide · Next:" : "Next:").foregroundStyle(.secondary)
-                        Text("\(next.name) ›").fontWeight(.semibold)
-                        Spacer(minLength: 0)
-                    }
-                    .font(.system(size: 11.5)).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Open the next job that needs you")
+                NextJobLink(next: next, after: job.stage.needsYou) { model.onOpenJob(next.id) }
             }
         }
-        .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
+        .padding(.horizontal, wide ? 20 : 14).padding(.top, 10).padding(.bottom, 12)
+        .background(alignment: .top) { MoodGlow(mood: mood).frame(height: 230) }
         .environment(\.jobRenderers, JobStyle.renderers(model))
+    }
+
+    /// An answer leads with what it found; anything else with the job's name.
+    private var title: String {
+        if let answer = job.answerTask, let headline = JobAnswer.headline(answer.info) { return headline }
+        return job.name
+    }
+
+    private var line: String? {
+        if job.answerTask != nil { return job.name }
+        if let picked = JobDetailBody.pickedLine(job, model: model) { return picked }
+        if job.stage.needsYou || job.setAside { return JobDetailBody.stageLine(job) }
+        if job.stage == .failed { return nil }   // the body says what went wrong
+        return taskStatusLine(job.activeTask?.info ?? job.newest.info, now: model.state.now, assistantName: model.state.assistantName).0
+    }
+
+    /// Next to a finished job's mood: how long it took.
+    private var extra: String? {
+        guard !LiveMood.of(job).isLive else { return nil }
+        return JobProgress.elapsed(job.newest.info, now: model.state.now).map { "took \($0)" }
+    }
+}
+
+/// "Talking to: <job>" while a call is open: what's said now goes to this job.
+struct TalkingToChip: View {
+    var job: Job
+    var held: Bool
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "mic.fill").font(.system(size: 8.5, weight: .semibold))
+            Text(held ? "Only this job hears you" : "Talking to this job").font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
+        }
+        .padding(.horizontal, 8).frame(height: 22)
+        .background(Capsule().fill(held ? JobStyle.stopRed.opacity(0.4) : JobStyle.blue.opacity(0.18)))
+        .foregroundStyle(held ? Color.white : JobStyle.blueInk)
+        .help("What you say now goes to “\(job.name)” unless it's clearly about something else")
+    }
+}
+
+struct HeaderStopButton: View {
+    var action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            Label("Stop", systemImage: "stop.fill").font(.system(size: 11, weight: .semibold))
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(hover ? Color.white : JobStyle.red)
+                .padding(.horizontal, 9).frame(height: 22)
+                .background(Capsule().fill(JobStyle.stopRed.opacity(hover ? 0.55 : 0.2)))
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help("Stop this task. The call and other jobs continue.")
+    }
+}
+
+struct KeyCap: View {
+    var key: String
+    init(_ key: String) { self.key = key }
+    var body: some View {
+        Text(key).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.75))
+            .accessibilityHidden(true)
+    }
+}
+
+struct NextJobLink: View {
+    var next: Job
+    var after: Bool
+    var action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Spacer(minLength: 0)
+                Text(after ? "After you decide · Next:" : "Next:").foregroundStyle(.secondary)
+                Text("\(next.name) ›").fontWeight(.semibold).foregroundStyle(hover ? JobStyle.blueInk : .primary)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11.5)).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help("Open the next job that needs you")
     }
 }
 
