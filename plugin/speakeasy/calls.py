@@ -141,6 +141,12 @@ CONTINUITY_POLL_S = 5
 # since the last update. No forced silence: it's a conversation, just without filler updates.
 PROGRESS_AFTER_S = 45.0
 PROGRESS_EVERY_S = 45.0
+# With the mic open the user is in the conversation and hears what's happening: the first line lands
+# early and, after that, one lands at least every UNMUTED_EVERY_S whether or not there is fresh news
+# (the same step, said again in new words, beats silence on a long run). Muted or unreported keeps
+# the classic gate above, unchanged: nothing new means nothing spoken.
+UNMUTED_FIRST_S = 12.0
+UNMUTED_EVERY_S = 45.0
 ACTIVITY_KEEP = 10
 # Silent status notes to the voice model (so it can answer "how's it going?"): at most this often.
 # Every note used to go straight in, and the voice answered each one out loud ("Still on it")
@@ -330,6 +336,10 @@ class Interaction:
     away: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     call_closed: bool = False
     progress_spoken_at: float = 0.0  # last spoken progress update on this call, any task (monotonic)
+    # Whether the call's mic is open, as the client last reported it: False = open (the user is
+    # listening), True = muted, None = never reported, which behaves like muted so older clients are
+    # unchanged. Read at decision time, never cached: they can unmute mid-task.
+    mic_muted: bool | None = None
     paused: bool = False
     pause_bookkept: bool = False
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)
@@ -379,6 +389,7 @@ class Interaction:
                 "error": (latest.error if latest else None) or self.error,
                 "paused": self.paused,
                 "resumed_from": self.resumed_from,
+                "mic_muted": self.mic_muted,
                 **self.attachments.snapshot(),  # screen, captures, attachments
                 "hold": self.hold,
             }
@@ -1499,8 +1510,9 @@ class SidebandWorker:
             backend.activity_count += 1
 
     async def maybe_speak_progress(self, backend: BackendRun, milestone: str) -> bool:
-        """A long task that has done something new gets one brief spoken update naming what it is
-        actually doing, at most once per PROGRESS_EVERY_S across the call."""
+        """A long task gets one brief spoken update naming what it is actually doing: at most once per
+        PROGRESS_EVERY_S across the call, and only when there is news — unless the mic is open, when a
+        line lands at least every UNMUTED_EVERY_S because the user is listening."""
         if not self.rt.settings()["speech"]["progress"]:
             return False
         now = time.monotonic()
@@ -1509,13 +1521,28 @@ class SidebandWorker:
         urgent = bool(milestone and text_mod.HEADS_UP_RE.search(milestone))
         with self.interaction.lock:
             last_any = self.interaction.progress_spoken_at
-            if (now - backend.started < PROGRESS_AFTER_S or backend.status not in {"running", "working"}
-                    or (last_any and now - last_any < PROGRESS_EVERY_S and not urgent)
-                    or backend.activity_count <= backend.told_count):
+            # Read the mic at decision time, never cache it at task start: they can unmute ten seconds
+            # into a three-minute task. Unknown (None) behaves like muted, so older clients are
+            # unchanged.
+            listening = self.interaction.mic_muted is False
+            first_after = UNMUTED_FIRST_S if listening else PROGRESS_AFTER_S
+            spacing = UNMUTED_EVERY_S if listening else PROGRESS_EVERY_S
+            news = backend.activity_count > backend.told_count
+            # A heartbeat is only allowed while listening: with the mic shut, filler updates are what
+            # "no forced silence" was never about.
+            if (now - backend.started < first_after or backend.status not in {"running", "working"}
+                    or (last_any and now - last_any < spacing and not urgent)
+                    or (not news and not listening)):
                 return False
             self.interaction.progress_spoken_at = now  # claim the slot before the (slow) wording call
             backend.spoken_at = now
-            new_steps = backend.activity[-min(ACTIVITY_KEEP, backend.activity_count - backend.told_count):]
+            if news:
+                new_steps = backend.activity[-min(ACTIVITY_KEEP, backend.activity_count - backend.told_count):]
+            else:
+                # Nothing new since the last line: re-say the latest step in fresh words rather than
+                # leave the listening user in silence. The wording call gets the lines already said so
+                # it does not repeat one verbatim.
+                new_steps = backend.activity[-2:] or ([milestone.strip()] if milestone.strip() else [])
             covered = backend.activity_count
             told = list(backend.told[-3:])
         request = self.store.request_text(backend.idem_key) or ""

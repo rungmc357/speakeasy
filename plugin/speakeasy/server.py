@@ -403,7 +403,7 @@ class Handler(BaseHTTPRequestHandler):
             if capture:
                 self._reply(200, self.service.capture_status(capture.group(1), capture.group(2), self._body()))
                 return
-            action = re.fullmatch(rf"/voice/interactions/{_ID}/(end|pause|approval|cancel-backend|skip-tour|early-request|mic-check|answer|screen|focus)", path)
+            action = re.fullmatch(rf"/voice/interactions/{_ID}/(end|pause|approval|cancel-backend|skip-tour|early-request|mic-check|mic|answer|screen|focus)", path)
             if not action:
                 raise ServiceError(404, "not found")
             interaction_id, verb = action.groups()
@@ -419,6 +419,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.focus(interaction_id, self._body()))
             elif verb == "mic-check":
                 self._reply(200, self.service.mic_check(interaction_id, self._body()))
+            elif verb == "mic":
+                self._reply(200, self.service.set_mic(interaction_id, self._body()))
             elif verb == "pause":
                 self._reply(200, self.service.pause(interaction_id))
             elif verb == "skip-tour":

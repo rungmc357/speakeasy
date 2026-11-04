@@ -755,6 +755,18 @@ class VoiceService:
         logger.warning("speakeasy: mic check on %s: %s", interaction_id[:10], re.sub(r"[^\w :.,()/;+-]", "", note))
         return {"interaction_id": interaction_id, "logged": True}
 
+    def set_mic(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The app reports whether the call's mic is open. Narration follows it: with the mic open the
+        user hears a progress line at least every UNMUTED_EVERY_S; muted keeps the classic gate. Only a
+        real bool is accepted, so an old client that never reports stays exactly as it was (unknown is
+        treated as muted)."""
+        if not isinstance(body, dict) or set(body) != {"muted"} or not isinstance(body["muted"], bool):
+            raise ServiceError(400, "body must contain only muted (true or false)")
+        interaction = self.interaction(interaction_id)
+        with interaction.lock:
+            interaction.mic_muted = body["muted"]
+        return {"interaction_id": interaction_id, "mic_muted": body["muted"]}
+
     def skip_tour(self, interaction_id: str) -> dict[str, Any]:
         """Skip button in the panel: tell the live call to drop the first-call tour."""
         interaction = self.interaction(interaction_id)
