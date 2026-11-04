@@ -395,6 +395,8 @@ public final class VoicePanelModel: ObservableObject {
     public var headerStatus: String {
         // A problem with a fix button under the header: the status line points at it, not repeats it.
         if callProblem != nil && !showingShareNotice && orbReason == nil { return "One click to fix it, below" }
+        // While the user is talking, the line under "Hearing you" must not say a reply is coming.
+        if voicePhase == .hearing && !showingShareNotice && orbReason == nil { return "Keep going" }
         return showingShareNotice ? shownStatus : (orbReason?.text ?? shownStatus)
     }
     public var headerTone: StatusTone { showingShareNotice ? shownTone : (orbReason?.tone ?? shownTone) }

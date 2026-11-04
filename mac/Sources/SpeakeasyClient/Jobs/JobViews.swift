@@ -730,6 +730,13 @@ public struct JobDetailBody: View {
     }
 
     /// The job view's status line while the job waits on the user.
+    /// After the user picks (still inside the Undo window, or before the agent reports back), the
+    /// task's own "Needs your pick" status is stale: say the pick is on its way instead.
+    @MainActor public static func pickedLine(_ job: Job, model: VoicePanelModel) -> String? {
+        guard let t = job.tasks.last(where: { $0.info.decision != nil && model.answers[$0.id] != nil }), t.isActive else { return nil }
+        return model.pendingPicks[t.id] != nil ? "Sending your pick" : "Got your pick · carrying on"
+    }
+
     public static func stageLine(_ job: Job) -> String {
         switch job.stage {
         case .needsYou(.decide): return "Waiting for your decision"
@@ -1128,7 +1135,9 @@ public struct LiveSteps: View {
             return info.plan.enumerated().map { i, step in
                 let sub = i < milestones.count && milestones[i].text != step ? milestones[i].text : nil
                 if i < p.done { return Row(text: step, sub: sub, state: .done) }
-                if i == p.done && !info.isTerminal { return Row(text: step, sub: info.shortStatus, state: .current) }
+                if i == p.done && !info.isTerminal {
+                    return Row(text: step, sub: JobDetailBody.pickedLine(job, model: model) ?? info.shortStatus, state: .current)
+                }
                 return Row(text: step, sub: nil, state: info.isTerminal && info.status == "completed" ? .done : .next)
             }
         }
@@ -1143,7 +1152,9 @@ public struct LiveSteps: View {
         for i in out.indices.dropLast() where out[i].receipt == nil && out[i].sub != nil && out[i].sub == out[i + 1].sub {
             out[i].sub = nil
         }
-        if !info.isTerminal, let now = info.shortStatus { out.append(Row(text: now, sub: info.detail, state: .current)) }
+        if !info.isTerminal, let now = JobDetailBody.pickedLine(job, model: model) ?? info.shortStatus {
+            out.append(Row(text: now, sub: info.detail, state: .current))
+        }
         return out
     }
 }

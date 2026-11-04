@@ -296,6 +296,9 @@ struct ListCard: View {
     }
 }
 
+/// Film frames only: a chart x label to show as if the pointer were over it.
+@MainActor public enum ChartPreview { public static var selection: String? }
+
 struct ChartCard: View {
     let card: ViewCard
     struct Point: Identifiable { let id: Int; let series: String; let label: String; let value: Double }
@@ -317,7 +320,7 @@ struct ChartCard: View {
                 if let unit = card["unit"].string { Text(unit).font(.system(size: 11)).foregroundStyle(.secondary) }
             }
             // Hover or drag across the chart to read exact values.
-            let unit = card["unit"].string.map { $0.count <= 2 ? $0 : " \($0)" } ?? ""
+            let unit = card["unit"].string.map { ["%", "°", "x", "×"].contains($0) ? $0 : " \($0)" } ?? ""
             Text(selected.map { label in
                 let vals = points.filter { $0.label == label }
                 return "\(label): " + vals.map { (series.count > 1 ? "\($0.series) " : "") + CardText.number($0.value) + unit }.joined(separator: " · ")
@@ -344,6 +347,7 @@ struct ChartCard: View {
             .chartXSelection(value: $selected)
             .chartLegend(series.count > 1 ? .visible : .hidden)
             .frame(height: 150)
+            .onAppear { if let p = ChartPreview.selection, labels.contains(p) { selected = p } }
         }
     }
 }

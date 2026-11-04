@@ -26,6 +26,7 @@ enum FilmFrames {
             for shot in shots {
                 let (name, state, open) = (shot.name, shot.state, shot.open)
                 let m = client.model
+                ChartPreview.selection = nil
                 m.orbLevel = 0; m.previewProblem = nil; m.pendingPicks = [:]; m.toast = nil; m.openSections = []
                 if set == "ux" { for id in ["c", "a", "p", "f", "h", "m", "b"] { m.answers[id] = nil } }
                 m.capabilities = set == "ux" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true) : nil
@@ -347,6 +348,10 @@ enum FilmFrames {
                                             views: [chart, place]))
         s = base(); s.tasks = [mixed]; s.workInfo = mixed.info
         out.append(Shot("ux-14-chart-place", done(s), "task:m"))
+        var scrub = mixed; scrub.id = "n"
+        s = base(); s.tasks = [scrub]; s.workInfo = scrub.info
+        ChartPreview.selection = nil
+        out.append(Shot("ux-14b-chart-scrub", done(s), "task:n") { _ in ChartPreview.selection = "Thu" })
 
         // 15: a light answer page: headline, cards, key points, the long text folded.
         var report = WorkResult(spoken: "The nightly backup failed twice this week, both times on the photos volume.",
