@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import activity as activity_mod
 from .emails import canonical_json, draft_sha256
 from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
@@ -146,6 +147,11 @@ class StateStore:
                 milestone TEXT NOT NULL, state TEXT NOT NULL, after_id INTEGER NOT NULL,
                 created REAL NOT NULL, settled REAL)""")
             self._db.execute("CREATE INDEX IF NOT EXISTS follow_ups_key ON follow_ups(idem_key, created)")
+            # What a task is doing, has found and has touched (activity.py), saved as it runs so a
+            # reopened app shows the same feed. ``state_json`` is the tracker's state; clients get
+            # activity.public() of it on the work object.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS activity (
+                idem_key TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated REAL NOT NULL)""")
             # A new task held back because a running task is already editing the same project: it
             # starts when that one ends. Clients get the blocker's name in ``waiting``.
             columns = {row[1] for row in self._db.execute("PRAGMA table_info(runs)")}
@@ -1092,6 +1098,8 @@ class StateStore:
             # Speakeasy's own words for why it failed: a row label when the reason is known, and a
             # sentence for the detail. The provider's error text never reaches here.
             work["failure"] = why
+        # Live activity (capability job_activity): activity, findings, touched, hero; each only when known.
+        work.update(activity_mod.public(self.activity_state(key)))
         live = self.public_live_image(key)
         if live is not None:
             # Addressed by /voice/live-image/<run_id>; the path or URL stays on the server.
@@ -1111,6 +1119,23 @@ class StateStore:
             except ValueError:
                 pass
         return work
+
+    # -- live activity (activity.py) ---------------------------------------------------------
+    def set_activity(self, key: str, state: dict[str, Any]) -> None:
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO activity VALUES (?,?,?)",
+                             (key, json.dumps(state, separators=(",", ":")), time.time()))
+
+    def activity_state(self, key: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute("SELECT state_json FROM activity WHERE idem_key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        try:
+            state = json.loads(row[0])
+        except ValueError:
+            return None
+        return state if isinstance(state, dict) else None
 
     # -- email drafts ------------------------------------------------------------------
     def add_draft(self, key: str, session_id: str | None, draft: dict[str, Any]) -> dict[str, Any]:

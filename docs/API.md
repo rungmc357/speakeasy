@@ -595,6 +595,51 @@ One task by Hermes run ID (including tasks from past calls). 404 if unknown.
 }
 ```
 
+## Live job activity
+
+Capability `job_activity`. A task's work object (`GET /voice/work/{run_id}`, `GET /voice/work/latest`
+`tasks[]`, and the `work` / `tasks` events on the call's event stream) may carry four more fields,
+each left out when there is nothing real to show. Clients that don't know them ignore them.
+
+```json
+"activity": [{"id": "a7", "at": 1793820082.0, "kind": "search",
+              "text": "Searched the web for “playwright wait for mock server ready”", "status": "done"},
+             {"id": "a13", "at": 1793820113.0, "kind": "run", "text": "Ran the tests",
+              "detail": "npx playwright test checkout.spec.ts --repeat-each=50", "status": "running"}],
+"findings": [{"id": "f1", "at": 1793820080.0,
+              "text": "The test doesn't wait for the payment mock to start, so it fails about 1 in 6 runs"}],
+"touched":  [{"kind": "file", "label": "checkout.spec.ts", "detail": "+3 −2"},
+             {"kind": "url", "label": "playwright.dev/docs/test-fixtures", "url": "https://playwright.dev/docs/test-fixtures"},
+             {"kind": "command", "label": "npx tsc --noEmit"}],
+"hero": {"type": "trials", "total": 50, "passed": 31, "failed": 0}
+```
+
+- **`activity`** — newest last, at most 40. One item per tool call the Hermes run made (from its
+  `tool.started` / `tool.completed` events), plus `STATUS:` lines it wrote (`kind: "message"`), a
+  "Thinking it over" item when it reasons (never the reasoning itself), helpers it started and
+  approvals it asked for. `kind` is one of `read`, `edit`, `run`, `search`, `browse`, `think`,
+  `message`, `tool`; `status` is `running`, `done` or `failed` (items still running when the run ends
+  take its outcome). `text` ≤ 80 characters, optional `detail` ≤ 100. Ids are stable for the task.
+- **`findings`** — at most 8, ≤ 120 characters: statements from the agent's own commentary while it
+  works (`FINDING:` lines when it writes them), never its plans ("Let me…") or questions. Absent
+  when it hasn't said anything learned.
+- **`touched`** — de-duplicated, most recent last, at most 20. `kind` is `file`, `url` or
+  `command`. A file's `detail` is `+added −removed` when the edit's line counts are known
+  (a whole `patch` result, or `files.changed` from a coding backend), `edited` when it was written
+  but the counts aren't known, else absent (read only). A `url` may carry an `https` link
+  (no query string).
+- **`hero`** — at most one, only when the data clearly supports it:
+  `trials` (`total`, `passed` and/or `failed`) from a repeated-run count the run itself reported
+  ("31/50 passed"); else `diff` (`files`, `added`, `removed`, optional `preview` ≤ 6 lines) from
+  counted edits; else `sources` (`items[]` of `{title, site}`) when it read two or more pages and
+  edited nothing; else `steps` once there are three or more activity items. `series` is reserved:
+  this server doesn't derive it yet.
+
+Everything is plain language built from the run's events on the server: secrets, tokens, keys,
+environment values, emails and query strings are removed and paths are shortened to their file
+name. Updates are saved at most once a second per task (immediately when the run ends) and kept with
+the task, so reopening the app shows the same feed.
+
 ## Card actions
 
 Capability `card_actions`. Cards (entries of `result.views`) may carry buttons:
@@ -949,7 +994,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `job_activity` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`
@@ -982,7 +1027,8 @@ hide the matching controls and keep the old behaviour.
   "room_listening": true,
   "room_on_resume": true,
   "version": "0.2.0",
-  "capabilities": {"card_actions": true, "job_progress": true, "spoken_choices": true, "summary_points": true}
+  "capabilities": {"card_actions": true, "job_progress": true, "spoken_choices": true, "summary_points": true,
+                   "job_activity": true}
 }
 ```
 

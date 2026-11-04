@@ -61,6 +61,7 @@ PAUSE_NOTICE_AFTER_S = 15 * 60
 IDLE_CHECK_S = 15
 IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model setup rarely changes)
 EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the call's event channel
+CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
 
 
 

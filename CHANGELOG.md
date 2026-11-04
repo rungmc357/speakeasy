@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Plugin 0.3.20 — See what a job is doing while it works
+
+- **Live activity on the job page.** While a job runs you see what it's doing right now, in plain words: "Read checkout.spec.ts", "Ran the tests", "Searched the web for…". Each step shows whether it's still going, done or failed. *(Plugin; shown by the apps once they update)*
+- **What it has found so far.** Things the job says it has learned along the way appear as short findings, before the final answer. *(Plugin; shown by the apps once they update)*
+- **What it touched.** The files, pages and commands a job worked with, listed once each, with lines added and removed for edited files when known. *(Plugin; shown by the apps once they update)*
+- **A picture of the work when there is one.** A job rerunning a test shows how many runs passed, a code change shows its size, and research shows the sources it read. *(Plugin; shown by the apps once they update)*
+- **Private by design.** Passwords, keys, tokens and full folder paths never appear in the activity. It's kept with the job, so reopening the app shows the same feed.
+
 ## Plugin 0.3.18 — Pre-launch fixes
 
 - **Card buttons do what they say.** "Turn on" always turns a light on, even if the card was out of date or tapped on two devices at once.
