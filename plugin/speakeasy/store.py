@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .emails import canonical_json, draft_sha256
-from .failures import public_failure
+from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
                    legacy_short_title, short_title, valid_short_status)
 
@@ -63,6 +63,31 @@ def _is_stand_in(title: str | None, request: str | None, continued: str | None =
         return False
     asked = notice_text(request, 1200) or ""
     return not title or title in {short_title(asked), legacy_short_title(asked)}
+
+
+RECEIPTS = {"Request received", "Started working"}  # milestones that are receipts, not progress
+
+
+def job_progress(status: str, created: float | None, settled_at: float | None, plan: list[str],
+                 events: list[dict[str, Any]], now: float | None = None) -> dict[str, Any]:
+    """The additive job-progress fields (docs/API.md "Job progress"). ``step_index`` is the step it is
+    on (1-based) out of its plan, counted from its milestones the way the apps already count them;
+    ``eta_seconds`` only once two steps are done at a measured pace (never a guess from nothing)."""
+    now = time.time() if now is None else now
+    finished = settled_at if status in TERMINAL else None
+    out: dict[str, Any] = {"started_at": created, "finished_at": finished, "step_index": None,
+                           "step_count": None, "eta_seconds": None}
+    if not plan:
+        return out
+    count = len(plan)
+    done = count if status == "completed" else min(
+        sum(1 for e in events if e.get("kind") == "milestone" and e.get("text") not in RECEIPTS), count - 1)
+    out["step_count"] = count
+    out["step_index"] = count if status == "completed" else done + 1
+    if status not in TERMINAL and created and done >= 2:
+        elapsed = max(0.0, now - created)
+        out["eta_seconds"] = int(round(elapsed / done * (count - done)))
+    return out
 
 
 class StateStore:
@@ -133,6 +158,10 @@ class StateStore:
                 self._db.execute("ALTER TABLE runs ADD COLUMN timings TEXT")
             if "failure" not in columns:  # why a run failed: a failures.py kind, never provider text
                 self._db.execute("ALTER TABLE runs ADD COLUMN failure TEXT")
+            if "failure_hint" not in columns:  # the coarse shape of an unexplained failure (failures.failure_hint)
+                self._db.execute("ALTER TABLE runs ADD COLUMN failure_hint TEXT")
+            if "created" not in columns:  # when the task was admitted (job progress: started_at)
+                self._db.execute("ALTER TABLE runs ADD COLUMN created REAL")
             if "shared" not in columns:  # what the user shared with the task (its card), see add_shared
                 self._db.execute("ALTER TABLE runs ADD COLUMN shared TEXT")
             if "plan" not in columns:  # the steps a handed-off task will go through (JSON list)
@@ -178,9 +207,9 @@ class StateStore:
             if row:
                 return row[1], row[0]
             self._db.execute(
-                """INSERT INTO runs (idem_key,interaction_id,delegation_id,revision,run_id,status,updated)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (key, interaction_id, delegation_id, revision, None, "admitting", time.time()))
+                """INSERT INTO runs (idem_key,interaction_id,delegation_id,revision,run_id,status,updated,created)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (key, interaction_id, delegation_id, revision, None, "admitting", time.time(), time.time()))
             return "created", None
 
     def set_session(self, key: str, session_id: str) -> None:
@@ -521,10 +550,11 @@ class StateStore:
             if status in SETTLED:
                 self._db.execute("UPDATE runs SET settled_at=? WHERE idem_key=?", (now, key))
 
-    def set_failure(self, key: str, kind: str | None) -> None:
-        """Why the run failed, as a ``failures`` kind (the app and voice get Speakeasy's own words)."""
+    def set_failure(self, key: str, kind: str | None, hint: str | None = None) -> None:
+        """Why the run failed, as a ``failures`` kind (the app and voice get Speakeasy's own words),
+        plus, when no kind fits, the coarse shape of the error (``failures.failure_hint``)."""
         with self._lock, self._db:
-            self._db.execute("UPDATE runs SET failure=? WHERE idem_key=?", (kind, key))
+            self._db.execute("UPDATE runs SET failure=?, failure_hint=? WHERE idem_key=?", (kind, hint, key))
 
     # -- notices / meta ----------------------------------------------------------------
     def claim_notice(self, dedupe_key: str) -> bool:
@@ -972,7 +1002,8 @@ class StateStore:
              assistant_name: str = "Hermes") -> dict[str, Any] | None:
         """The latest admitted job or one exact server-owned run, including past calls."""
         cols = """idem_key,run_id,status,updated,short_status,detail,progress_updated,
-                  status_source,result_json,title,dismissed,summary,continued,settled_at,failure,shared,session_id,set_aside,seen,waiting"""
+                  status_source,result_json,title,dismissed,summary,continued,settled_at,failure,shared,session_id,set_aside,seen,waiting,
+                  created,failure_hint"""
         with self._lock:
             if idem_key:
                 row = self._db.execute(f"SELECT {cols} FROM runs WHERE idem_key=?", (idem_key,)).fetchone()
@@ -984,9 +1015,12 @@ class StateStore:
                 return None
             (key, actual_run_id, status, updated, short_status, detail, progress_updated,
              status_source, result_json, title, dismissed, summary, continued, settled_at, failure, shared,
-             session_id, set_aside, seen, waiting) = row
+             session_id, set_aside, seen, waiting, created, failure_hint) = row
             events = self._db.execute(
                 "SELECT kind,text,created FROM work_events WHERE idem_key=? ORDER BY seq DESC LIMIT 30", (key,)).fetchall()
+            if not created:  # saved before tasks kept their start time: the first thing recorded
+                first = self._db.execute("SELECT MIN(created) FROM work_events WHERE idem_key=?", (key,)).fetchone()
+                created = first[0] if first and first[0] else None
         stale = status not in TERMINAL | {"waiting_for_approval", "waiting_on_task"} and time.time() - updated > STALE_AFTER_S
         display_status, display_detail, display_updated = short_status, detail, progress_updated
         source = (status_source or "authored") if short_status else None
@@ -1038,6 +1072,9 @@ class StateStore:
                 work["short_status"] = "Waiting for another task"
                 work["detail"] = f"Starts when \"{work['waiting']['name']}\" finishes (same project)."
                 work["status_source"] = "system"
+        work.update(job_progress(status, created, settled_at, work["plan"], work["events"]))
+        # One short plain sentence for a failed (or restart-interrupted) task, never "unknown".
+        work["failure_reason"] = failure_reason(status, failure, failure_hint)
         why = public_failure(failure, self.hermes_home) if status == "failed" else None
         if why:
             # Speakeasy's own words for why it failed: a row label when the reason is known, and a

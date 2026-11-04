@@ -3099,8 +3099,9 @@ class SidebandWorker:
         failed_as = failures.start_failure_kind(exc) or failures.UNKNOWN
         reason = failures.reason_text(failed_as)
         self.store.update_run(idem, None, "failed")
-        self.store.set_failure(idem, failed_as)
-        self.store.progress(idem, "result", f"Work failed: {reason}" if reason else "Work failed; details unavailable")
+        self.store.set_failure(idem, failed_as, failures.failure_hint(str(exc)) or "start")
+        self.store.progress(idem, "result", f"Work failed: {reason}" if reason else
+                            f"Work failed: {failures.failure_reason('failed', failed_as, failures.failure_hint(str(exc)) or 'start')}")
         with self.interaction.lock:
             backend.status, backend.error = "failed", str(exc)[:240]
         self.publish()
@@ -3621,7 +3622,7 @@ class SidebandWorker:
                 # Hermes' error line maps to Speakeasy's own sentence; with neither a known reason nor
                 # an answer, the app points at Hermes' errors.log instead.
                 failed_as = failures.failure_kind(error) or (None if result else failures.UNKNOWN)
-                self.store.set_failure(idem, failed_as)
+                self.store.set_failure(idem, failed_as, None if failed_as in failures.REASONS else failures.failure_hint(error))
                 if failed_as in failures.REASONS:
                     logger.info("speakeasy: Hermes run %s failed (%s)", backend.run_id, failed_as)
                 else:
@@ -3631,7 +3632,8 @@ class SidebandWorker:
             reason = failures.reason_text(failed_as)
             safe_output = safe_user_text(result["full"], 4000) if result else None
             self.store.progress(idem, "result", safe_output or (f"Work failed: {reason}" if reason else {
-                "completed": "Work complete", "cancelled": "Work stopped", "failed": "Work failed",
+                "completed": "Work complete", "cancelled": "Work stopped",
+                "failed": f"Work failed: {failures.failure_reason('failed', failed_as, failures.failure_hint(error))}",
                 "interrupted": "Work interrupted"}.get(status, "Work ended")))
             with self.interaction.lock:
                 backend.status, backend.approval = status, None

@@ -184,3 +184,49 @@ def voice_text(kind: str | None) -> str | None:
     if kind == UNKNOWN:
         return "Hermes didn't say why; its error log on the Hermes machine has the details."
     return SPOKEN.get(kind) if kind else None
+
+
+# -- failure_reason: one short plain sentence for every failed task ---------------------------------
+# Even when no kind above fits, a coarse hint about the error's shape is kept (never its words), so
+# the card can say more than "Work failed". Each hint maps to a fixed sentence of our own.
+_HINT_RES: list[tuple[str, re.Pattern[str]]] = [
+    ("blocked", _BLOCK_PAGE_RE),
+    ("context", re.compile(r"context (?:length|window)|maximum context|too many tokens|prompt is too long"
+                           r"|token limit|context_length_exceeded")),
+    ("timeout", re.compile(r"timed? ?out|timeout|deadline exceeded")),
+    ("offline", re.compile(r"can't reach|cannot reach|could not reach|connection (?:refused|reset|error|aborted)"
+                           r"|network|offline|name resolution|getaddrinfo|unreachable")),
+    ("provider_error", re.compile(r"\b(?:http|error code:?|status(?: code)?:?)\s*5\d\d\b|overloaded"
+                                  r"|internal server error|bad gateway|service unavailable")),
+]
+HINT_REASONS = {
+    "blocked": "A firewall in front of Hermes's model provider blocked the request.",
+    "context": "The work got too long for the model to keep in view.",
+    "timeout": "It timed out waiting on Hermes's model provider.",
+    "offline": "Hermes couldn't reach its model provider.",
+    "provider_error": "Hermes's model provider had a server error.",
+    "start": "Speakeasy couldn't start it on Hermes.",
+}
+NO_REASON = "Hermes stopped with an error and didn't say why."
+INTERRUPTED_REASON = "Speakeasy restarted while it was running, so it lost track of it."
+
+
+def failure_hint(error: Any) -> str | None:
+    """The coarse shape of an error no kind fits (\"timeout\", \"offline\", ...), or None."""
+    if not isinstance(error, str) or not error.strip():
+        return None
+    text = error.lower()
+    return next((hint for hint, pattern in _HINT_RES if pattern.search(text)), None)
+
+
+def failure_reason(status: str | None, kind: str | None, hint: str | None = None) -> str | None:
+    """Why a task didn't finish, as one short plain sentence for the card (never "unknown"); None
+    unless it failed or was interrupted."""
+    if status == "interrupted":
+        return INTERRUPTED_REASON
+    if status != "failed":
+        return None
+    if kind in REASONS:
+        text = REASONS[kind][1]
+        return text.split(". ")[0].rstrip(".") + "."
+    return HINT_REASONS.get(hint or "") or NO_REASON
