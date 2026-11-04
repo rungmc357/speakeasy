@@ -2,6 +2,16 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Mac 0.3.10 — See what the voice is doing, and act on what it finds
+
+- **Know when it's listening, hearing you, thinking or talking.** The orb is bigger, moves with your voice and its voice, and there's a new "Thinking" state between you finishing and the reply starting. The line being said shows as a live caption. *(Mac)*
+- **Decisions you can weigh.** Options are numbered, Compare puts them side by side with risk, undo and time, and you get 5 seconds to undo a pick. The buttons stay in reach however long the brief is. *(Mac)*
+- **Approvals with the full picture.** Each approval says what will happen, to what and why, with real Approve and Deny buttons. *(Mac)*
+- **Progress with numbers.** Jobs show which step they're on, how long they've run and, when there's enough to go on, about how long is left. Failed jobs say why and have a Retry button. *(Mac, with plugin 0.3.17)*
+- **Cards you can use.** Lights have on/off and brightness buttons, charts show values as you move over them, places open in Maps, and a short note confirms what happened. *(Mac, with plugin 0.3.17)*
+- **Lighter job pages.** A job opens with the answer, its cards and a few key points; the long text sits behind Details and the steps fold down to the current one. *(Mac)*
+- **Microphone problems come with a fix.** If the mic is blocked or stops working, the panel says so plainly with an Open Settings or Restart call button. *(Mac)*
+
 ## Plugin 0.3.17 — Clearer task cards, buttons on cards, and no more "On it" with nothing started
 
 - **"On it" always means something started.** If the voice tells you it's on something, a task now really exists for it. If what you said was too short to act on, the voice says plainly that nothing started and asks what you want. *(Plugin)*
