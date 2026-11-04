@@ -688,7 +688,7 @@ def route_messages(request: str, tasks: list[OpenTask], topics: list[Topic],
             "user last sent work to by voice, then the most recently active. Null for anything new, for general "
             "questions, and when unsure: pick one only when you are confident it is the same piece of work, "
             "not just a shared topic or word. A new task is a fine outcome; the wrong conversation is not. "
-            "A conversation is never split into parts. "
+            "A conversation is never split into parts: when the request holds several separate asks, list them in parts and set conversation null. "
             "show: true when the user wants to SEE something rather than just hear about it: how a thing looks "
             "(\"what does the new logo look like\", \"how do those office speakers it recommended look\", "
             "\"let me see the hotel\"), a design, page, product, place or a task's visual state. False for "
@@ -729,20 +729,23 @@ def parse_decision(text: Any, request: str, tasks: list[OpenTask], topics: list[
         if not isinstance(follow, str) or not any(t.task_id == follow for t in tasks[-MAX_OPEN_TASKS:]):
             return None
         return Decision([Part("follow_up", request, follow)], None, "model", show=show)
-    conversation = data.get("conversation")
-    if conversation is not None:
-        if not isinstance(conversation, str):
-            return None
-        if conversation.strip():
-            if not any(c.ref == conversation.strip() for c in chats or []):
-                return None
-            return Decision([Part(NEW, request)], None, "model", conversation=conversation.strip(), show=show)
     parts = data.get("parts")
     if not isinstance(parts, list) or not 1 <= len(parts) <= MAX_PARTS:
         return None
     clean = [" ".join(p.split())[:600] for p in parts if isinstance(p, str) and p.strip()]
     if len(clean) != len(parts):
         return None
+    conversation = data.get("conversation")
+    if conversation is not None:
+        if not isinstance(conversation, str):
+            return None
+        # Several separate asks win over a matching conversation: the model often marks the thread
+        # the first ask fits ("my PRs") while still splitting, and sending the whole request there
+        # buried the other asks (fantasy football, loose ends) inside that one thread.
+        if conversation.strip() and len(clean) == 1:
+            if not any(c.ref == conversation.strip() for c in chats or []):
+                return None
+            return Decision([Part(NEW, request)], None, "model", conversation=conversation.strip(), show=show)
     if len(clean) == 1:
         clean = [request]  # one ask: keep the user's own words
     return Decision([Part(NEW, p) for p in clean], channel, "model", show=show)
