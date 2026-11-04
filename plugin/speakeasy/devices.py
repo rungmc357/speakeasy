@@ -16,6 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PAIR_TTL_S = 600
+# Wrong codes tried against one pending code before it is burned. Six digits over a 10-30 minute
+# window is a million guesses with no limit; this caps them at a handful (hermes voice pair makes a new one).
+MAX_WRONG_CODES = 10
+# last_seen_at is written at most this often: every request used to rewrite devices.json, and a
+# rewrite racing the CLI's ``hermes voice pair`` (another process) could drop its fresh code.
+SEEN_WRITE_S = 60
 _CODE_ALPHABET = "0123456789"
 
 
@@ -59,6 +65,7 @@ class DeviceStore:
         with self._lock:
             data = self._load()
             data["pairing"] = {_hash(code): now + ttl}
+            data["pairing_misses"] = 0
             self._save(data)
         return code
 
@@ -69,6 +76,11 @@ class DeviceStore:
             data = self._load()
             expires = data.get("pairing", {}).pop(_hash(code.strip()), None)
             if expires is None or expires < now:
+                if expires is None and data.get("pairing"):
+                    misses = int(data.get("pairing_misses") or 0) + 1
+                    data["pairing_misses"] = misses
+                    if misses >= MAX_WRONG_CODES:
+                        data["pairing"] = {}  # too many wrong guesses: the pending code is burned
                 self._save(data)
                 return None
             token = secrets.token_urlsafe(32)
@@ -91,8 +103,11 @@ class DeviceStore:
             data = self._load()
             for device_id, device in data["devices"].items():
                 if secrets.compare_digest(device["token_sha256"], digest):
-                    device["last_seen_at"] = time.time() if now is None else now
-                    self._save(data)
+                    seen = time.time() if now is None else now
+                    last = device.get("last_seen_at")
+                    if last is None or seen - last >= SEEN_WRITE_S:
+                        device["last_seen_at"] = seen
+                        self._save(data)
                     return device_id
         return None
 

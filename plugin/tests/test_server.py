@@ -41,6 +41,36 @@ def test_pairing_is_single_use_and_tokens_are_hashed(server, service, home):
     assert stat.S_IMODE(os.stat(home / "speakeasy" / "devices.json").st_mode) == 0o600
 
 
+def test_wrong_pairing_codes_burn_the_pending_code(home):
+    from speakeasy.devices import MAX_WRONG_CODES, DeviceStore
+    store = DeviceStore(home)
+    code = store.new_pairing_code()
+    wrong = "000000" if code != "000000" else "111111"
+    for _ in range(MAX_WRONG_CODES - 1):
+        assert store.redeem(wrong, "Guess") is None
+    assert store.redeem(code, "Mac") is not None  # a few typos never lock the real user out
+    code = store.new_pairing_code()
+    for _ in range(MAX_WRONG_CODES):
+        assert store.redeem(wrong, "Guess") is None
+    assert store.redeem(code, "Mac") is None  # guessed at too often: it no longer pairs
+    assert store.redeem(store.new_pairing_code(), "Mac") is not None  # a new code works again
+
+
+def test_auth_does_not_rewrite_the_device_file_on_every_request(home):
+    from speakeasy.devices import SEEN_WRITE_S, DeviceStore
+    store = DeviceStore(home)
+    device_id, token = store.redeem(store.new_pairing_code(), "Mac", now=1000)
+    assert store.authenticate(token, now=1000) == device_id
+    first = store.path.stat().st_mtime_ns
+    code = DeviceStore(home).new_pairing_code()  # the CLI, in another process, makes a new code
+    after_cli = store.path.stat().st_mtime_ns
+    assert store.authenticate(token, now=1000 + SEEN_WRITE_S / 2) == device_id
+    assert store.path.stat().st_mtime_ns == after_cli and after_cli >= first
+    assert store.authenticate(token, now=1000 + SEEN_WRITE_S) == device_id
+    assert store.devices()[0].last_seen_at == 1000 + SEEN_WRITE_S
+    assert store.redeem(code, "Phone") is not None
+
+
 def test_routes_require_device_token(server, service):
     for method, path in (("GET", "/voice/status"), ("GET", "/voice/work/latest"), ("GET", "/voice/settings"),
                          ("POST", "/voice/sessions"), ("GET", "/voice/brief"), ("GET", "/voice/destinations")):
