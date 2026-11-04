@@ -186,8 +186,8 @@ struct JobDetailView: View {
                 Text("Talking to: \(job.name)").font(.system(size: 11, weight: .semibold)).lineLimit(1)
             }
             .padding(.horizontal, 9).padding(.vertical, 3)
-            .background(Capsule().fill(JobStyle.blue.opacity(0.35)))
-            .foregroundStyle(JobStyle.blueInk)
+            .background(Capsule().fill(model.heldJobID == job.id ? JobStyle.stopRed.opacity(0.4) : JobStyle.blue.opacity(0.35)))
+            .foregroundStyle(model.heldJobID == job.id ? Color.white : JobStyle.blueInk)
             .help("What you say now goes to this job unless it's clearly about something else")
             if let answer = job.answerTask, let headline = JobAnswer.headline(answer.info) {
                 // An answer: the chip above names what was asked about; the answer itself leads, big.
@@ -214,6 +214,12 @@ struct JobDetailView: View {
             if let task = job.decisionTask, let d = task.info.decision, model.answers[task.id] == nil,
                !model.openSections.contains("\(task.id)|compare") {
                 DecisionFooter(job: job, decision: d, model: model)
+            }
+            if model.taskMessagesEnabled {
+                // Type to this job, or (in a call) hold the mic to talk to it alone.
+                TaskReplyBar(model: model, job: job)
+                    .padding(.top, 2)
+                    .overlay(alignment: .top) { Divider().opacity(0.5).offset(y: -5) }
             }
             if let next {
                 Button { model.onOpenJob(next.id) } label: {

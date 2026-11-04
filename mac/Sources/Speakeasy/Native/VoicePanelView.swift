@@ -824,7 +824,8 @@ struct TranscriptBubble: View {
         HStack(spacing: 0) {
             if mine { Spacer(minLength: 36) }
             VStack(alignment: mine ? .trailing : .leading, spacing: 2) {
-                Text(mine ? "You" : assistantName).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
+                Text(mine ? (turn.kind == .typed ? "You typed\(turn.taskName.map { " · to \(TaskMessageCopy.shortName($0))" } ?? "")" : "You")
+                     : assistantName).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
                 Text(turn.cleanedText).font(.system(size: 11.5))
                     .foregroundStyle(mine ? Color.white : Color.primary.opacity(0.9))
                     .textSelection(.enabled)

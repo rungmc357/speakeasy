@@ -798,17 +798,23 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var jobProgress: Bool
     /// Choices the voice offers arrive as question cards.
     public var spokenChoices: Bool
+    /// Typed messages and hold-to-talk to one task (`POST /voice/work/{run}/message`,
+    /// `POST /voice/interactions/{id}/target`): the reply bar, "Something else…" and the held mic.
+    public var taskMessages: Bool
 
-    public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false) {
+    public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false) {
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
+        self.taskMessages = taskMessages
     }
     enum CodingKeys: String, CodingKey {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
+        case taskMessages = "task_messages"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         cardActions = (try? c.decodeIfPresent(Bool.self, forKey: .cardActions)) ?? false
         jobProgress = (try? c.decodeIfPresent(Bool.self, forKey: .jobProgress)) ?? false
         spokenChoices = (try? c.decodeIfPresent(Bool.self, forKey: .spokenChoices)) ?? false
+        taskMessages = (try? c.decodeIfPresent(Bool.self, forKey: .taskMessages)) ?? false
     }
 }

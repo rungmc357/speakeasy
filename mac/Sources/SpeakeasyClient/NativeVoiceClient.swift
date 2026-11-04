@@ -219,6 +219,16 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.onSelectTask = { [weak self] id in self?.selectTask(id) }
         model.onOpenJob = { [weak self] id in self?.openJob(id) }
         model.onTellJob = { [weak self] id in self?.tellJob(id) }
+        model.deliverMessage = { [weak self] message, done in
+            guard let self else { done(nil, nil); return }
+            self.deliver(message, done: done)
+        }
+        model.onHoldTalk = { [weak self] jobID, on in self?.holdTalk(jobID: jobID, on: on) }
+        model.onMessageNotice = { [weak model] m in
+            guard let model else { return }
+            if case .failed(let why) = m.state { model.showToast(why, ok: false) }
+            else if m.isSent && m.choiceTaskID == nil { model.showToast(TaskMessageCopy.sent(m)) }
+        }
         model.onDismissTasks = { [weak self] runIDs in self?.dismissTasks(runIDs) }
         model.onDismissReview = { [weak self] runID in self?.dismissReview(runID) }
         model.loadProductImage = { [weak self] runID, index in
@@ -447,6 +457,8 @@ public final class NativeVoiceClient: VoiceCallClient {
             surface.setNeedsResize()
         }
         if new.connection == .paused, old.connection != .paused { callPaused() }
+        // Hold-to-talk ends with the call (the server lets go on its own as well).
+        if new.connection != .live, old.connection == .live, let held = model.heldJobID { model.holdToTalk(held, false); releaseHold() }
         if old.exchange != new.exchange { surface.setNeedsResize() }
         if new.connection == .live, old.connection != .live, roomCall != nil {
             roomCall?.noteLive(at: Date())
@@ -1359,6 +1371,91 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.workExpanded = false
         if open { setFocus(taskID: nil) }
         surface.setNeedsResize()
+    }
+
+    // MARK: Messages to one task (contract: typed messages + hold-to-talk)
+
+    /// Hold-to-talk: the run the call is held on, its 20 s refresh, and whether the mic was muted before.
+    private var heldRun: (interaction: String, run: String)?
+    private var holdRefresh: Task<Void, Never>?
+    private var mutedBeforeHold = false
+
+    /// Typed text to one task by run id (`POST /voice/work/{run}/message`). Works with or without a call.
+    public func sendMessage(runID: String, text: String, source: TaskMessageSource = .typed,
+                            clientID: String = UUID().uuidString, choiceTaskID: String? = nil) async throws -> TaskMessageReply {
+        guard let api else { throw ServerClient.HTTPError(status: 0, message: "Not paired") }
+        let interaction = model.state.connection.isOpen ? (model.state.interactionID ?? model.state.resumeFrom) : nil
+        return try await api.sendMessage(runID: runID, text: text, source: source, clientID: clientID,
+                                         interactionID: interaction, choiceTaskID: choiceTaskID)
+    }
+
+    /// Hold (or release) the call on one run: while held, everything said goes to it. Re-posted every
+    /// 20 s while held (the server lets go after 60 s without a refresh).
+    public func setTarget(runID: String, hold: Bool) {
+        holdRefresh?.cancel(); holdRefresh = nil
+        guard let api, !previewMode, let id = model.state.interactionID else { heldRun = nil; return }
+        if hold {
+            heldRun = (id, runID)
+            holdRefresh = Task { [weak self] in
+                while !Task.isCancelled {
+                    _ = try? await api.setTarget(interactionID: id, runID: runID, hold: true)
+                    try? await Task.sleep(for: .seconds(HoldToTalk.refreshInterval))
+                    guard let self, self.heldRun?.run == runID else { return }
+                }
+            }
+        } else {
+            let target = heldRun ?? (id, runID)
+            heldRun = nil
+            Task { _ = try? await api.setTarget(interactionID: target.interaction, runID: target.run, hold: false) }
+        }
+    }
+
+    private func releaseHold() {
+        holdRefresh?.cancel(); holdRefresh = nil
+        heldRun = nil
+    }
+
+    private func holdTalk(jobID: String, on: Bool) {
+        guard let job = model.jobs.first(where: { $0.id == jobID }), let target = model.replyTarget(job) else { return }
+        if on {
+            mutedBeforeHold = model.state.mic == .muted
+            if mutedBeforeHold { dispatch(.toggleMic) }
+            setTarget(runID: target.runID, hold: true)
+        } else {
+            setTarget(runID: heldRun?.run ?? target.runID, hold: false)
+            if mutedBeforeHold, model.state.mic != .muted, model.state.connection.isOpen { dispatch(.toggleMic) }
+            mutedBeforeHold = false
+        }
+    }
+
+    private func deliver(_ m: OutgoingMessage, done: @escaping (TaskMessageReply?, String?) -> Void) {
+        let taskID = model.state.tasks.last(where: { $0.info.runID == m.runID })?.id ?? m.runID
+        if previewMode {
+            // Screenshots and the sample: as if it went (no network).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                if self?.model.state.connection.isOpen == true {
+                    self?.dispatch(.typedToTask(text: m.text, taskID: taskID, taskName: m.taskName))
+                }
+                done(TaskMessageReply(runID: m.runID, deliveredAs: m.choiceTaskID == nil ? .steer : .answer), nil)
+            }
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let reply = try await self.sendMessage(runID: m.runID, text: m.text, source: m.source, clientID: m.id,
+                                                       choiceTaskID: m.choiceTaskID)
+                // The user's own turn (typed, not spoken), only while a call is there to show it in.
+                if self.model.state.connection.isOpen {
+                    self.dispatch(.typedToTask(text: m.text, taskID: taskID, taskName: m.taskName))
+                }
+                done(reply, nil)
+            } catch let http as ServerClient.HTTPError {
+                done(nil, TaskMessageCopy.failure(status: http.status, serverMessage: http.message))
+            } catch {
+                done(nil, TaskMessageCopy.failure(status: nil, serverMessage: nil))
+            }
+        }
     }
 
     /// "Tell it something": the job is already in focus; open the mic so the next words go to it.

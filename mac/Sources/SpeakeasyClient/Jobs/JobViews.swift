@@ -927,6 +927,9 @@ public struct DecisionBrief: View {
                                           enabled: answer == nil) { model.pick(i + 1, in: job) }
                     }
                 }
+                if model.taskMessagesEnabled && part != .context && (answer == nil || !decision.options.contains { $0.text == answer }) {
+                    SomethingElseField(model: model, job: job, task: task)
+                }
                 if let answer, let until = model.pendingPicks[task.id] {
                     PickUndoBar(picked: answer, until: until) { model.undoPick(task.id) }
                 }
@@ -1093,7 +1096,10 @@ public struct LiveSteps: View {
                 }
                 if task.isActive && model.state.connection.isOpen {
                     HStack(spacing: 6) {
-                        TileButton(title: "Tell it something") { model.onTellJob(job.id) }
+                        // With typed messages the reply bar under the job does this (and hold-to-talk).
+                        if !model.taskMessagesEnabled {
+                            TileButton(title: "Tell it something") { model.onTellJob(job.id) }
+                        }
                         if task.canStop, let run = info.runID {
                             Button { model.onStopTask(run) } label: {
                                 Text("Stop").font(.system(size: 11.5 * s, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 26)

@@ -492,6 +492,96 @@ public final class VoicePanelModel: ObservableObject {
         onAnswer(job.newest.id, "Undo this step: \(step)")
     }
 
+    // MARK: Messages to one task (typed, or hold-to-talk in a call)
+
+    /// The server takes typed / held messages to a task (`capabilities.task_messages`). Without it the
+    /// reply bar, "Something else…" and hold-to-talk are not shown at all.
+    public var taskMessagesEnabled: Bool { capabilities?.taskMessages == true }
+    /// Messages on their way to tasks (and the last ones sent), one at a time in order.
+    @Published public var outbox = TaskOutbox()
+    /// What's in each job's reply field (job id → text), kept while the user moves around.
+    @Published public var replyDrafts: [String: String] = [:]
+    /// The job the mic is held for (hold-to-talk); nil when not holding.
+    @Published public var heldJobID: String?
+    /// Put the cursor in this job's reply field (the Live Activity's Reply, `?reply=1`).
+    @Published public var replyFocusJobID: String?
+    /// Sends one message (the client posts it); call back with the reply, or a plain failure sentence.
+    public var deliverMessage: (OutgoingMessage, @escaping (TaskMessageReply?, String?) -> Void) -> Void = { _, done in
+        done(nil, "This server can't take typed messages yet.")
+    }
+    /// Hold-to-talk began (job id, true) or ended (false).
+    public var onHoldTalk: (String, Bool) -> Void = { _, _ in }
+    /// A note after a send ("Sent to Speed up the dashboard", or the failure). The iPhone shows its own toast.
+    public var onMessageNotice: (OutgoingMessage) -> Void = { _ in }
+
+    /// A call is live, so the reply bar's mic is hold-to-talk (else it dictates into the field).
+    public var replyMicHolds: Bool { state.connection == .live && !state.workOnly }
+
+    /// Where a job's reply goes: the run that's working, else the one waiting on the user, else the newest.
+    public func replyTarget(_ job: Job) -> (runID: String, taskName: String)? {
+        let task = job.activeTask ?? job.decisionTask ?? job.newest
+        guard let run = task.info.runID ?? job.newest.info.runID else { return nil }
+        return (run, job.name)
+    }
+
+    /// Send what's in a job's reply field (or `text`). False when there's nothing to send or no target.
+    @discardableResult
+    public func sendReply(jobID: String, text: String? = nil, choiceTaskID: String? = nil,
+                          source: TaskMessageSource = .typed) -> Bool {
+        guard taskMessagesEnabled, let job = jobs.first(where: { $0.id == jobID }) else { return false }
+        let body = text ?? replyDrafts[jobID] ?? ""
+        let run: String?
+        if let choiceTaskID { run = state.tasks.first { $0.id == choiceTaskID }?.info.runID ?? replyTarget(job)?.runID }
+        else { run = replyTarget(job)?.runID }
+        guard let run, outbox.enqueue(jobID: jobID, runID: run, taskName: job.name, text: body,
+                                      source: source, choiceTaskID: choiceTaskID) != nil else { return false }
+        if text == nil { replyDrafts[jobID] = nil }
+        if let choiceTaskID, let clean = TaskMessageRequest.clean(body) { answers[choiceTaskID] = clean }
+        pumpOutbox()
+        return true
+    }
+
+    /// Retry a failed message (same client id, so a send that did land isn't doubled).
+    public func retryMessage(_ id: String) {
+        guard let m = outbox.message(id) else { return }
+        outbox.retry(id)
+        if let choice = m.choiceTaskID { answers[choice] = m.text }
+        pumpOutbox()
+    }
+
+    public func discardMessage(_ id: String) { outbox.discard(id) }
+
+    /// Sends the next queued message once nothing else is on the wire.
+    public func pumpOutbox() {
+        guard let next = outbox.startNext() else { return }
+        deliverMessage(next) { [weak self] reply, failure in
+            guard let self else { return }
+            if let reply {
+                self.outbox.markSent(next.id, as: reply.deliveredAs)
+            } else {
+                self.outbox.markFailed(next.id, failure ?? TaskMessageCopy.failure(status: nil, serverMessage: nil))
+                // "Something else…" that didn't go: the decision is open again.
+                if let choice = next.choiceTaskID, self.answers[choice] == next.text { self.answers[choice] = nil }
+            }
+            if let settled = self.outbox.message(next.id) { self.onMessageNotice(settled) }
+            self.pumpOutbox()
+        }
+    }
+
+    /// Hold-to-talk: start (the mic opens; what's said goes to this job until release) or stop.
+    public func holdToTalk(_ jobID: String, _ on: Bool) {
+        guard taskMessagesEnabled else { return }
+        if on {
+            guard replyMicHolds, heldJobID != jobID else { return }
+            heldJobID = jobID
+            onHoldTalk(jobID, true)
+        } else {
+            guard heldJobID == jobID else { return }
+            heldJobID = nil
+            onHoldTalk(jobID, false)
+        }
+    }
+
     /// Board and job-view keys: up/down move between tiles, Return opens, 1-4 picks an option on the
     /// focused decision (or the open job's), N sets it aside ("Not needed"). False lets the key go elsewhere.
     public func handleKey(code: UInt16, characters: String) -> Bool {

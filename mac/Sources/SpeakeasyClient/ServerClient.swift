@@ -302,6 +302,27 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await post("/voice/interactions/\(escape(interactionID))/answer", ["task_id": taskID, "text": text])
     }
 
+    /// Text to one task by run id (servers with `task_messages`): a steer while it runs, the answer
+    /// while it waits, a linked follow-up once it finished. Idempotent on `client_id`.
+    public func sendMessage(_ message: TaskMessageRequest) async throws -> TaskMessageReply {
+        let reply = try await post(message.path, message.body)
+        guard let parsed = TaskMessageReply(json: reply) else {
+            throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't take that message.")
+        }
+        return parsed
+    }
+
+    public func sendMessage(runID: String, text: String, source: TaskMessageSource = .typed, clientID: String,
+                            interactionID: String? = nil, choiceTaskID: String? = nil) async throws -> TaskMessageReply {
+        try await sendMessage(TaskMessageRequest(runID: runID, text: text, source: source, clientID: clientID,
+                                                 interactionID: interactionID, choiceTaskID: choiceTaskID))
+    }
+
+    /// Hold-to-talk: while held, everything said in the call goes to this run (bypassing the router).
+    public func setTarget(interactionID: String, runID: String, hold: Bool) async throws {
+        _ = try await post(HoldToTalk.path(interactionID: interactionID), HoldToTalk.body(runID: runID, hold: hold))
+    }
+
     public func cancelBackend(interactionID: String, runID: String) async throws {
         _ = try await post("/voice/interactions/\(escape(interactionID))/cancel-backend", ["run_id": runID])
     }

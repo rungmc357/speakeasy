@@ -21,15 +21,19 @@ enum FilmFrames {
             FileHandle.standardError.write("film: task\n".data(using: .utf8)!)
             let set = ProcessInfo.processInfo.environment["SPEAKEASY_FILM_SET"]
             let site = set == "site"
-            cleanShots = site || set == "ux"
-            let shots: [Shot] = set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
+            cleanShots = site || set == "ux" || set == "typing"
+            let shots: [Shot] = set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
             for shot in shots {
                 let (name, state, open) = (shot.name, shot.state, shot.open)
                 let m = client.model
                 ChartPreview.selection = nil
                 m.orbLevel = 0; m.previewProblem = nil; m.pendingPicks = [:]; m.toast = nil; m.openSections = []
-                if set == "ux" { for id in ["c", "a", "p", "f", "h", "m", "b"] { m.answers[id] = nil } }
-                m.capabilities = set == "ux" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true) : nil
+                if set == "ux" || set == "typing" { for id in ["c", "a", "p", "f", "h", "m", "b", "d", "q"] { m.answers[id] = nil } }
+                m.outbox = TaskOutbox(); m.replyDrafts = [:]; m.heldJobID = nil; SomethingElsePreview.open = nil; m.captionExpanded = false
+                ReplyDictation.shared.previewOnly = true; ReplyDictation.shared.stop()
+                m.capabilities = set == "ux" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true)
+                    : set == "typing" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true, taskMessages: true)
+                    : set == "typing-old" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true) : nil
                 client.showPreview(state, workExpanded: false)
                 client.model.onOpenJob(open)
                 client.model.boardFocusID = nil
@@ -369,6 +373,91 @@ enum FilmFrames {
                           result: report)
         s = base(); s.tasks = [backup]; s.workInfo = backup.info
         out.append(Shot("ux-15-light-answer", done(s), "task:b"))
+        return out
+    }
+
+
+    /// Typing / hold-to-talk to one task (`SPEAKEASY_FILM_SET=typing`; `typing-old` = an older plugin
+    /// without `task_messages`: no reply bar, no "Something else…"). Invented data.
+    static func typingBeats(old: Bool = false) -> [Shot] {
+        let now = Date()
+        func base(call: Bool = true) -> VoiceState {
+            var s = VoiceState(); s.now = now
+            if call { s.connection = .live; s.interactionID = "vi_typing" } else { s.workOnly = true }
+            return s
+        }
+        func done(_ s: VoiceState) -> VoiceState { var st = s; st.work = deriveWork(st, now: now); return st }
+        let dashReq = "The sales dashboard is really slow. Figure out why and fix it."
+        var dash = task("d", "working", dashReq, title: "Speed up the dashboard", short: "Timing every query on the page",
+                        age: 50, now: now, milestones: ["Opened the dashboard with timing on", "Timing every query on the page"])
+        dash.info.plan = ["Time the page", "Find the slow query", "Fix it", "Check the load time"]
+        dash.info.stepIndex = 2; dash.info.stepCount = 4; dash.info.startedAt = now - 4 * 60; dash.info.etaSeconds = 6 * 60
+        let pricingQ = card(["kind": "question", "question": "Which competitors should the pricing comparison cover?",
+                             "context": "Three show up most when people search for us. Two more are close behind.",
+                             "options": [["text": "The top three", "detail": "Northwind, Contoso and Fabrikam."],
+                                         ["text": "All five", "detail": "Adds Tailspin and Litware. About 10 more minutes."]],
+                             "recommended": 0])
+        var pricing = task("q", "working", "Compare our pricing to our top competitors", title: "Pricing vs. competitors",
+                           short: "Needs your pick", age: 30, now: now, result: WorkResult(spoken: nil, full: nil, views: [pricingQ]),
+                           milestones: ["Found five competitors by search share"])
+        pricing.info.updatedAt = now - 4
+        var out: [Shot] = []
+        let dashOpen = "task:d", priceOpen = "task:q"
+        let suffix = old ? "-old" : ""
+
+        // Not in a call: type (the mic dictates into the field on this Mac).
+        var s = base(call: false); s.tasks = [dash, pricing]
+        out.append(Shot("typing-01-reply-bar\(suffix)", done(s), dashOpen))
+        if old {
+            s = base(); s.tasks = [dash, pricing]
+            out.append(Shot("typing-07-decision-old", done(s), priceOpen))
+            return out
+        }
+        out.append(Shot("typing-02-draft", done(s), dashOpen) { m in
+            m.replyDrafts[dashOpen] = "Skip the admin pages, only the sales dashboard matters for Friday."
+        })
+        out.append(Shot("typing-03-dictating", done(s), dashOpen) { m in
+            ReplyDictation.shared.preview(jobID: dashOpen, heard: "Also check the export button, it times out")
+            m.replyDrafts[dashOpen] = "Also check the export button, it times out"
+        })
+        // Sent / queued while sending / failed with Retry.
+        out.append(Shot("typing-04-sent", done(s), dashOpen) { m in
+            if let a = m.outbox.enqueue(jobID: dashOpen, runID: "run_d", taskName: "Speed up the dashboard",
+                                        text: "Skip the admin pages, only the sales dashboard matters for Friday.") {
+                _ = m.outbox.startNext(); m.outbox.markSent(a.id, as: .steer)
+                m.showToast(TaskMessageCopy.sent(m.outbox.message(a.id)!))
+            }
+        })
+        out.append(Shot("typing-05-queued", done(s), dashOpen) { m in
+            m.outbox.enqueue(jobID: dashOpen, runID: "run_d", taskName: "Speed up the dashboard",
+                             text: "Skip the admin pages, only the sales dashboard matters for Friday.")
+            _ = m.outbox.startNext()
+            m.outbox.enqueue(jobID: dashOpen, runID: "run_d", taskName: "Speed up the dashboard", text: "And keep the old chart colors.")
+        })
+        out.append(Shot("typing-06-failed", done(s), dashOpen) { m in
+            if let a = m.outbox.enqueue(jobID: dashOpen, runID: "run_d", taskName: "Speed up the dashboard",
+                                        text: "Also check the export button, it times out.") {
+                _ = m.outbox.startNext()
+                let why = TaskMessageCopy.failure(status: 0, serverMessage: nil)
+                m.outbox.markFailed(a.id, why); m.showToast(why, ok: false)
+            }
+        })
+        // In a call: "Something else…" on a decision; hold-to-talk.
+        s = base(); s.tasks = [dash, pricing]
+        out.append(Shot("typing-07-decision", done(s), priceOpen))
+        out.append(Shot("typing-08-something-else", done(s), priceOpen) { m in
+            m.replyDrafts[priceOpen] = nil
+            SomethingElsePreview.open = "Just Northwind and Contoso, the others don't sell to schools."
+        })
+        out.append(Shot("typing-09-in-call", done(s), dashOpen))
+        out.append(Shot("typing-10-holding", done(s), dashOpen) { m in m.heldJobID = dashOpen })
+        var t = base(); t.tasks = [dash, pricing]
+        t.transcript = [TranscriptTurn(id: 0, speaker: .you, text: "How's the dashboard coming along?"),
+                        TranscriptTurn(id: 1, speaker: .assistant, text: "It's timing every query on the page now."),
+                        TranscriptTurn(typed: "Skip the admin pages, only the sales dashboard matters for Friday.", id: 2,
+                                       taskID: "d", taskName: "Speed up the dashboard")]
+        t.exchange = Exchange(you: "", assistant: "It's timing every query on the page now.", replyStarted: true)
+        out.append(Shot("typing-11-transcript", done(t), nil) { m in m.captionExpanded = true })
         return out
     }
 

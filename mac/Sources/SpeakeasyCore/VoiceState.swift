@@ -66,8 +66,9 @@ public struct Exchange: Equatable, Sendable {
 public struct TranscriptTurn: Equatable, Sendable, Identifiable {
     public enum Speaker: Equatable, Sendable { case you, assistant }
     /// `speech` is what was said on the call; `text` is a task's full written answer, shown only in the
-    /// expanded transcript (the voice still speaks its short spoken version as usual).
-    public enum Kind: Equatable, Sendable { case speech, text }
+    /// expanded transcript (the voice still speaks its short spoken version as usual). `typed` is a
+    /// message the user typed (or held the mic) to one task: always the user's turn, never spoken.
+    public enum Kind: Equatable, Sendable { case speech, text, typed }
     public var id: Int
     public var speaker: Speaker
     public var text: String
@@ -80,9 +81,14 @@ public struct TranscriptTurn: Equatable, Sendable, Identifiable {
         self.id = id; self.speaker = .assistant; self.text = text; self.kind = .text
         self.taskID = taskID; self.taskName = taskName
     }
+    /// What the user typed to one task (the reply bar, "Something else…").
+    public init(typed text: String, id: Int, taskID: String, taskName: String?) {
+        self.id = id; self.speaker = .you; self.text = text; self.kind = .typed
+        self.taskID = taskID; self.taskName = taskName
+    }
     /// Written replies stay as written: the speech cleaner would eat bracketed markdown link names.
     public var cleanedText: String {
-        kind == .text ? text.trimmingCharacters(in: .whitespacesAndNewlines) : cleanTranscript(text)
+        kind != .speech ? text.trimmingCharacters(in: .whitespacesAndNewlines) : cleanTranscript(text)
     }
 }
 
@@ -226,6 +232,8 @@ public enum VoiceEvent: Equatable, Sendable {
     case micHealth(MicHealth)
     /// Screen sharing, capture requests, pictures and files.
     case sharing(SharingEvent)
+    /// The user typed to a task (sent): the user's turn in the transcript, kind `typed`.
+    case typedToTask(text: String, taskID: String, taskName: String?)
 }
 
 /// Pure reducer. `now` is supplied by the caller so tests are deterministic.
@@ -288,6 +296,10 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
     case .show(let request):
         s.showRequest = request
 
+    case .typedToTask(let text, let taskID, let taskName):
+        guard let clean = TaskMessageRequest.clean(text) else { break }
+        s.transcript.append(TranscriptTurn(typed: clean, id: s.transcript.count, taskID: taskID, taskName: taskName))
+
     case .tasksDismissed(let runIDs):
         let ids = Set(runIDs)
         let cleared = s.tasks.filter { $0.isSettled && ids.contains($0.info.runID ?? "") }
@@ -319,7 +331,7 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
             heardWords = true
         } else {
             s.exchange.you += text
-            if trailing, let i = s.transcript.lastIndex(where: { $0.speaker == .you }) {
+            if trailing, let i = s.transcript.lastIndex(where: { $0.speaker == .you && $0.kind == .speech }) {
                 s.transcript[i].text += text
             } else if let i = s.transcript.lastIndex(where: { $0.kind == .speech }), s.transcript[i].speaker == .you {
                 // A text reply may sit after the user's unfinished sentence; the sentence still continues.
