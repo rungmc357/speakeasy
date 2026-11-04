@@ -345,6 +345,9 @@ public final class VoicePanelModel: ObservableObject {
     @Published public var boardFocusID: String?
     /// Open a job (nil = back to the board). The client also tells the call which job is on screen.
     public var onOpenJob: (String?) -> Void = { _ in }
+    /// One task's full activity with its tool calls' args/result previews (`GET /voice/work/{run_id}`,
+    /// servers with `tool_log`), for the tool-call log; nil when it can't be fetched.
+    public var loadToolLog: (String) async -> [JobActivityItem]? = { _ in nil }
     /// "Tell it something": turn the mic on; what's said next goes to this job (job id).
     public var onTellJob: (String) -> Void = { _ in }
     /// The job waiting to hear from the user after "Tell it something".

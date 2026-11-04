@@ -221,6 +221,8 @@ public struct WorkInfo: Equatable, Sendable {
     // Live activity (servers with `job_activity`; see JobActivity.swift). All optional.
     /// What it did, newest last.
     public var activity: [JobActivityItem] = []
+    /// How many activity items the server has kept for the task (it streams only the newest 40).
+    public var activityTotal: Int?
     /// What it learned so far, newest last.
     public var findings: [JobFinding] = []
     /// Files, sites and commands it touched.

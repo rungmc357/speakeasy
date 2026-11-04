@@ -45,11 +45,38 @@ final class JobActivityTests: XCTestCase {
         XCTAssertTrue(i.hasLiveActivity)
     }
 
-    func testCapsActivityAtForty() {
-        let items = (0..<55).map { ["id": "a\($0)", "kind": "read", "text": "Step \($0)"] }
-        let i = info(["activity": items])
-        XCTAssertEqual(i.activity.count, 40)
-        XCTAssertEqual(i.activity.last?.text, "Step 54", "newest kept")
+    func testCapsActivityAtAHundred() {
+        let items = (0..<130).map { ["id": "a\($0)", "kind": "read", "text": "Step \($0)"] }
+        let i = info(["activity": items, "activity_total": 500])
+        XCTAssertEqual(i.activity.count, 100)
+        XCTAssertEqual(i.activity.last?.text, "Step 129", "newest kept")
+        XCTAssertEqual(i.activityTotal, 100, "a total is never more than the server keeps")
+        XCTAssertNil(info(["activity": items]).activityTotal)
+    }
+
+    func testToolCallFields() {
+        let i = info(["activity": [
+            ["id": "a1", "kind": "run", "text": "Ran the tests", "status": "done", "tool": "terminal",
+             "started_at": 1793820000.0, "ended_at": 1793820007.5, "args": "npm test", "result": String(repeating: "x", count: 900)],
+            ["id": "a2", "kind": "think", "text": "Thinking it over"],
+            ["id": "a3", "kind": "read", "text": "Read a.ts", "tool": "bad name; rm", "status": "running", "started_at": 1793820010.0],
+        ], "activity_total": 23])
+        let a = i.activity[0]
+        XCTAssertEqual(a.tool, "terminal")
+        XCTAssertEqual(a.args, "npm test")
+        XCTAssertEqual(a.result?.count, 500, "result capped")
+        XCTAssertEqual(a.duration(now: Date()) ?? 0, 7.5, accuracy: 0.01)
+        XCTAssertNil(i.activity[2].tool, "an odd tool name isn't shown")
+        XCTAssertEqual(i.activity[2].duration(now: Date(timeIntervalSince1970: 1793820013)) ?? 0, 3, accuracy: 0.01, "running: up to now")
+        XCTAssertEqual(i.toolCalls.map(\.id), ["a1", "a3"], "thinking isn't a tool call")
+        XCTAssertEqual(i.activityTotal, 23)
+        XCTAssertEqual(JobActivityItem.durationText(0.42), "0.4 s")
+        XCTAssertEqual(JobActivityItem.durationText(127), "2 min 7 s")
+        XCTAssertEqual(JobActivityItem.durationText(3840), "1 h 4 min")
+        let slim = JobActivityItem(id: "a1", kind: .run, text: "Ran the tests", tool: "terminal")
+        XCTAssertEqual(slim.merged(with: a).args, "npm test", "the detail fills in the stream's summary")
+        let caps = try? JSONDecoder().decode(ServerCapabilities.self, from: Data(#"{"tool_log": true}"#.utf8))
+        XCTAssertEqual(caps?.toolLog, true)
     }
 
     func testHeroKinds() {
@@ -104,5 +131,12 @@ final class JobActivityTests: XCTestCase {
         XCTAssertEqual(info.touched.first { $0.kind == .url }?.url?.host, "playwright.dev")
         XCTAssertEqual(info.hero, .trials(total: 50, passed: 31, failed: 0))
         XCTAssertEqual(JobHero.select(info), .trials(total: 50, passed: 31, failed: 0))
+        // The tool-call log: names, times and redacted previews from the plugin itself.
+        XCTAssertEqual(info.activityTotal, 15)
+        XCTAssertEqual(info.activity.first?.tool, "search_files")
+        XCTAssertEqual(info.activity.last?.args, "npx playwright test checkout.spec.ts --repeat-each=50")
+        XCTAssertNil(info.activity.last?.endedAt, "still running")
+        XCTAssertTrue(info.activity.first { $0.status == .failed }?.result?.contains("2 failed") ?? false)
+        XCTAssertEqual(info.toolCalls.count, 13)
     }
 }

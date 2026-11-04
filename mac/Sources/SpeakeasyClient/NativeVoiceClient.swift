@@ -235,6 +235,12 @@ public final class NativeVoiceClient: VoiceCallClient {
             guard let self, let api = self.api else { return nil }
             return try? await api.image(runID: runID, index: index)
         }
+        model.loadToolLog = { [weak self] runID in
+            // The task's whole tool-call log with its redacted previews (`tool_log`): only what the
+            // server reported; nothing in preview mode, where the demo carries its own.
+            guard let self, !self.previewMode, let api = self.api else { return nil }
+            return try? await api.work(runID: runID)?.activity
+        }
         model.loadLiveImage = { [weak self] runID in
             guard let self, let api = self.api else { return nil }
             return try? await api.liveImage(runID: runID)

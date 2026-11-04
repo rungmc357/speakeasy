@@ -16,17 +16,65 @@ public struct JobActivityItem: Equatable, Sendable, Identifiable {
     public var text: String
     public var detail: String?
     public var status: Status
+    // A tool call (servers with `tool_log`): the raw tool name, when it ran, and (from
+    // `GET /voice/work/{run_id}` only) the server's redacted previews of its arguments and result.
+    public var tool: String?
+    public var startedAt: Date?
+    public var endedAt: Date?
+    public var args: String?
+    public var result: String?
 
-    public init(id: String, at: Date? = nil, kind: Kind, text: String, detail: String? = nil, status: Status = .done) {
+    public init(id: String, at: Date? = nil, kind: Kind, text: String, detail: String? = nil, status: Status = .done,
+                tool: String? = nil, startedAt: Date? = nil, endedAt: Date? = nil, args: String? = nil, result: String? = nil) {
         self.id = id; self.at = at; self.kind = kind; self.text = text; self.detail = detail; self.status = status
+        self.tool = tool; self.startedAt = startedAt; self.endedAt = endedAt; self.args = args; self.result = result
     }
 
     public init?(json: Any?, index: Int) {
         guard let o = json as? [String: Any], let text = nonEmpty(o["text"]) else { return nil }
+        let tool = nonEmpty(o["tool"]).flatMap { $0.count <= 64 && $0.allSatisfy { $0.isLetter || $0.isNumber || "_.:-".contains($0) } ? $0 : nil }
         self.init(id: nonEmpty(o["id"]) ?? "a\(index)", at: decodeDate(o["at"]),
                   kind: (o["kind"] as? String).flatMap(Kind.init(rawValue:)) ?? .tool,
                   text: String(text.prefix(120)), detail: nonEmpty(o["detail"]).map { String($0.prefix(120)) },
-                  status: (o["status"] as? String).flatMap(Status.init(rawValue:)) ?? .done)
+                  status: (o["status"] as? String).flatMap(Status.init(rawValue:)) ?? .done,
+                  tool: tool, startedAt: decodeDate(o["started_at"]), endedAt: decodeDate(o["ended_at"]),
+                  args: nonEmpty(o["args"]).map { String($0.prefix(Self.argsChars)) },
+                  result: nonEmpty(o["result"]).map { String($0.prefix(Self.resultChars)) })
+    }
+
+    public static let argsChars = 300
+    public static let resultChars = 500
+
+    /// A tool call (as opposed to a "Thinking it over" or a status line): the server named the tool,
+    /// or (an older server) the kind is one only a tool makes.
+    public var isToolCall: Bool { tool != nil || (kind != .think && kind != .message) }
+
+    /// How long it ran: settled, from its start to its end; still running, up to `now`.
+    public func duration(now: Date) -> TimeInterval? {
+        guard let start = startedAt ?? (tool != nil ? at : nil) else { return nil }
+        let end = endedAt ?? (status == .running ? now : nil)
+        guard let end else { return nil }
+        return max(0, end.timeIntervalSince(start))
+    }
+
+    /// "0.4 s", "7 s", "2 min 7 s", "1 h 4 min".
+    public static func durationText(_ seconds: TimeInterval) -> String {
+        if seconds < 1 { return String(format: "%.1f s", seconds) }
+        let s = Int(seconds.rounded())
+        if s < 60 { return "\(s) s" }
+        if s < 3600 { return s % 60 == 0 ? "\(s / 60) min" : "\(s / 60) min \(s % 60) s" }
+        return "\(s / 3600) h \((s % 3600) / 60) min"
+    }
+
+    /// The same item with what a fuller copy (the task's detail) knows filled in.
+    public func merged(with fuller: JobActivityItem) -> JobActivityItem {
+        var out = self
+        out.tool = tool ?? fuller.tool
+        out.startedAt = startedAt ?? fuller.startedAt
+        out.endedAt = endedAt ?? fuller.endedAt
+        out.args = args ?? fuller.args
+        out.result = result ?? fuller.result
+        return out
     }
 
     /// The SF Symbol for the kind of action.
@@ -43,8 +91,9 @@ public struct JobActivityItem: Equatable, Sendable, Identifiable {
         }
     }
 
-    /// The server keeps at most this many (newest last).
-    public static let maxItems = 40
+    /// The server keeps at most this many per task (newest last); its stream carries the newest 40
+    /// and `GET /voice/work/{run_id}` all of them.
+    public static let maxItems = 100
 
     public static func list(json: Any?) -> [JobActivityItem] {
         let raw = json as? [Any] ?? []
@@ -195,10 +244,14 @@ extension WorkInfo {
     /// Fills the live-activity fields from a task's JSON (called from `init?(json:)`).
     mutating func decodeActivity(_ object: [String: Any]) {
         activity = JobActivityItem.list(json: object["activity"])
+        activityTotal = ((object["activity_total"] as? NSNumber)?.intValue).map { min(max($0, activity.count), JobActivityItem.maxItems) }
         findings = JobFinding.list(json: object["findings"])
         touched = JobTouched.list(json: object["touched"])
         hero = JobHero(json: object["hero"])
     }
+
+    /// The task's tool calls, oldest first (what the tool log lists).
+    public var toolCalls: [JobActivityItem] { activity.filter(\.isToolCall) }
 
     /// The server sent any live activity for this task.
     public var hasLiveActivity: Bool { !activity.isEmpty || !findings.isEmpty || !touched.isEmpty || hero != nil }

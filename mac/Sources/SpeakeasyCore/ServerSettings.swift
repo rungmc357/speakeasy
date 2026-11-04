@@ -803,15 +803,18 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var taskMessages: Bool
     /// Tasks carry `activity`, `findings`, `touched` and `hero` (the live job page).
     public var jobActivity: Bool
+    /// Activity items carry `tool`, `started_at`, `ended_at`; `GET /voice/work/{run_id}` adds the
+    /// redacted `args` / `result` previews and every kept item (the tool-call log).
+    public var toolLog: Bool
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
-                jobActivity: Bool = false) {
+                jobActivity: Bool = false, toolLog: Bool = false) {
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
-        self.taskMessages = taskMessages; self.jobActivity = jobActivity
+        self.taskMessages = taskMessages; self.jobActivity = jobActivity; self.toolLog = toolLog
     }
     enum CodingKeys: String, CodingKey {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
-        case taskMessages = "task_messages", jobActivity = "job_activity"
+        case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -820,5 +823,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         spokenChoices = (try? c.decodeIfPresent(Bool.self, forKey: .spokenChoices)) ?? false
         taskMessages = (try? c.decodeIfPresent(Bool.self, forKey: .taskMessages)) ?? false
         jobActivity = (try? c.decodeIfPresent(Bool.self, forKey: .jobActivity)) ?? false
+        toolLog = (try? c.decodeIfPresent(Bool.self, forKey: .toolLog)) ?? false
     }
 }
