@@ -1017,8 +1017,10 @@ class StateStore:
         return list(reversed(keys))
 
     def work(self, run_id: str | None = None, idem_key: str | None = None,
-             assistant_name: str = "Hermes") -> dict[str, Any] | None:
-        """The latest admitted job or one exact server-owned run, including past calls."""
+             assistant_name: str = "Hermes", activity_detail: bool = False) -> dict[str, Any] | None:
+        """The latest admitted job or one exact server-owned run, including past calls.
+        ``activity_detail``: every kept activity item with its tool call's args/result previews
+        (``GET /voice/work/{run_id}``); otherwise the stream's smaller summary."""
         cols = """idem_key,run_id,status,updated,short_status,detail,progress_updated,
                   status_source,result_json,title,dismissed,summary,continued,settled_at,failure,shared,session_id,set_aside,seen,waiting,
                   created,failure_hint"""
@@ -1099,7 +1101,7 @@ class StateStore:
             # sentence for the detail. The provider's error text never reaches here.
             work["failure"] = why
         # Live activity (capability job_activity): activity, findings, touched, hero; each only when known.
-        work.update(activity_mod.public(self.activity_state(key)))
+        work.update(activity_mod.public(self.activity_state(key), detail=activity_detail))
         live = self.public_live_image(key)
         if live is not None:
             # Addressed by /voice/live-image/<run_id>; the path or URL stays on the server.

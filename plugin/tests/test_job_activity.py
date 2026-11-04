@@ -141,9 +141,12 @@ def test_sizes_are_capped():
     events += [{"event": "message.interim", "text": f"The cache entry {i} expires after ten minutes, not one hour as documented "
                                                     f"in the readme which is wrong and has been for a while now honestly {i}."}
                for i in range(30)]
-    _, out = _run(events)
-    assert len(out["activity"]) == A.MAX_ACTIVITY == 40
+    job, out = _run(events)
+    assert len(out["activity"]) == A.MAX_STREAM_ACTIVITY == 40       # the stream: newest 40
+    assert out["activity_total"] == 100
     assert out["activity"][-1]["text"] == "Read file_99.ts"          # newest last
+    full = A.public(job.state, detail=True)
+    assert len(full["activity"]) == A.MAX_ACTIVITY == 100            # GET /voice/work/{id}: all kept
     assert len(out["findings"]) == A.MAX_FINDINGS == 8
     assert all(len(f["text"]) <= A.FINDING_CHARS for f in out["findings"])
     assert len(out["touched"]) == A.MAX_TOUCHED == 20
@@ -332,13 +335,81 @@ def test_older_clients_see_the_same_work_object_plus_optional_fields(store):
     A.observe(store, "k1", started("read_file", "cart.ts"))
     rich = store.work(idem_key="k1")
     added = set(rich) - set(plain)
-    assert added <= {"activity", "touched", "findings", "hero"} and "activity" in added
+    assert added <= {"activity", "activity_total", "touched", "findings", "hero"} and "activity" in added
     for key in plain:
         if key not in {"updated", "updated_at"}:
             assert rich[key] == plain[key], key
     # an older client decoding only the fields it knows gets exactly what it got before
     old_view = {k: v for k, v in json.loads(json.dumps(rich)).items() if k in plain}
     assert set(old_view) == set(plain)
+
+
+# -- the tool-call log (capability tool_log) ---------------------------------------------------------
+
+def test_tool_calls_carry_name_times_args_and_result():
+    job, out = _run([started("terminal", "npx playwright test checkout.spec.ts --repeat-each=50", "c1"),
+                     {"event": "tool.completed", "tool": "terminal", "tool_call_id": "c1",
+                      "preview": '{"output": "31 passed (2.1m)\\n  1 flaky", "exit_code": 0}'},
+                     {"event": "reasoning.available", "text": "hm"}])
+    item = A.public(job.state, detail=True)["activity"][0]
+    assert item["tool"] == "terminal"
+    assert item["started_at"] == 1000.0 and item["ended_at"] == 1001.0
+    assert item["args"] == "npx playwright test checkout.spec.ts --repeat-each=50"
+    assert "31 passed" in item["result"] and item["result"].startswith('{"output"')
+    think = A.public(job.state, detail=True)["activity"][1]
+    assert "tool" not in think and "started_at" not in think             # not a tool call
+    # the stream keeps the name and times but leaves the previews to GET /voice/work/{id}
+    slim = out["activity"][0]
+    assert slim["tool"] == "terminal" and "ended_at" in slim and "args" not in slim and "result" not in slim
+
+
+def test_tool_call_previews_are_redacted_and_bounded():
+    secret, key = "sk-" + "live-abcdef0123456789", "ghp_" + "A" * 30  # built, so the secret scan stays quiet
+    job, _ = _run([
+        started("terminal", f"STRIPE_KEY={secret} curl -H 'Authorization: Bearer {key}' "
+                            f"https://api.example.com/v1/charges?api_key=zzz123 --password hunter2 "
+                            f"cat /Users/someone/private-thing/.env", "c1"),
+        {"event": "tool.completed", "tool": "terminal", "tool_call_id": "c1",
+         "preview": "token: abc123secretvalue\npat.doe@example.com wrote /home/someone/shop/src/cart.ts\n"
+                    + "password=hunter2\n" + "ok line\n" * 400},
+        started("mcp__tracker__create_issue", '{"title": "x", "api_key": "q9q9q9q9q9q9"}', "c2"),
+        {"event": "tool.failed", "tool": "mcp__tracker__create_issue", "tool_call_id": "c2", "preview": "Error: tracker said no. " * 300},
+    ])
+    full = A.public(job.state, detail=True)
+    dumped = json.dumps(full)
+    for gone in (secret, key, "zzz123", "hunter2", "/Users", "someone", "private-thing", "abc123secretvalue",
+                 "pat.doe@example.com", "/home", "q9q9q9q9q9q9"):
+        assert gone not in dumped, gone
+    first, second = full["activity"]
+    assert "cart.ts" in first["result"] and "an email address" in first["result"]
+    assert len(first["args"]) <= A.ARGS_CHARS and len(first["result"]) <= A.RESULT_CHARS
+    assert first["result"].count("\n") < A.BLOCK_LINES
+    assert second["tool"] == "mcp__tracker__create_issue" and second["status"] == "failed"
+    assert len(second["result"]) <= A.RESULT_CHARS
+
+
+def test_odd_tool_names_and_empty_previews_are_left_out():
+    job, _ = _run([started("terminal", "", "c1"), {"event": "tool.completed", "tool": "terminal", "tool_call_id": "c1"},
+                   started("bad name; rm -rf", "x", "c2")])
+    items = A.public(job.state, detail=True)["activity"]
+    assert items[0]["tool"] == "terminal" and "args" not in items[0] and "result" not in items[0]
+    assert all(i.get("tool") != "bad name; rm -rf" for i in items)
+
+
+def test_a_call_still_running_when_the_run_ends_gets_an_end_time():
+    job, _ = _run([started("terminal", "npm test", "c1"), {"event": "run.failed"}])
+    item = A.public(job.state, detail=True)["activity"][0]
+    assert item["status"] == "failed" and item["ended_at"] == 1001.0
+
+
+def test_detail_payload_stays_bounded():
+    events = []
+    for i in range(120):
+        events += [started("terminal", "echo " + "y" * 600, f"c{i}"),
+                   {"event": "tool.completed", "tool": "terminal", "tool_call_id": f"c{i}", "preview": "z " * 900}]
+    job, out = _run(events)
+    assert len(json.dumps(out)) < 12000
+    assert len(json.dumps(A.public(job.state, detail=True))) < 100 * (A.ARGS_CHARS + A.RESULT_CHARS + 300)
 
 
 # -- end to end through a call ----------------------------------------------------------------------
@@ -364,5 +435,8 @@ def test_a_running_task_carries_its_activity_and_status_has_the_flag(server, ser
     assert [i["text"] for i in work["activity"]][:2] == ["Read checkout.spec.ts", "Ran the tests"]
     assert work["findings"][0]["text"] == "The test doesn't wait for the payment mock"
     assert "abc123secretvalue" not in json.dumps(work)
+    assert status["capabilities"]["tool_log"] is True
+    assert work["activity"][0]["tool"] == "read_file" and work["activity"][0]["args"] == "checkout.spec.ts"
+    assert "ended_at" in work["activity"][0] and work["activity"][1]["status"] == "running"
     for r in hermes.runs.values():
         r["done"].set()

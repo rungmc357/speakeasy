@@ -603,9 +603,15 @@ each left out when there is nothing real to show. Clients that don't know them i
 
 ```json
 "activity": [{"id": "a7", "at": 1793820082.0, "kind": "search",
-              "text": "Searched the web for “playwright wait for mock server ready”", "status": "done"},
+              "text": "Searched the web for “playwright wait for mock server ready”", "status": "done",
+              "tool": "web_search", "started_at": 1793820082.0, "ended_at": 1793820085.0,
+              "args": "playwright wait for mock server ready",
+              "result": "5 results: playwright.dev/docs/test-fixtures …"},
              {"id": "a13", "at": 1793820113.0, "kind": "run", "text": "Ran the tests",
-              "detail": "npx playwright test checkout.spec.ts --repeat-each=50", "status": "running"}],
+              "detail": "npx playwright test checkout.spec.ts --repeat-each=50", "status": "running",
+              "tool": "terminal", "started_at": 1793820113.0,
+              "args": "npx playwright test checkout.spec.ts --repeat-each=50"}],
+"activity_total": 13,
 "findings": [{"id": "f1", "at": 1793820080.0,
               "text": "The test doesn't wait for the payment mock to start, so it fails about 1 in 6 runs"}],
 "touched":  [{"kind": "file", "label": "checkout.spec.ts", "detail": "+3 −2"},
@@ -614,12 +620,23 @@ each left out when there is nothing real to show. Clients that don't know them i
 "hero": {"type": "trials", "total": 50, "passed": 31, "failed": 0}
 ```
 
-- **`activity`** — newest last, at most 40. One item per tool call the Hermes run made (from its
+- **`activity`** — newest last. The task keeps its last 100; the event stream, the task feed and
+  `GET /voice/work/latest` carry the newest 40 (without `args`/`result`), and
+  `GET /voice/work/{run_id}` carries all of them with their previews. `activity_total` says how many
+  the task has kept, so a client knows when to fetch the rest. One item per tool call the Hermes run made (from its
   `tool.started` / `tool.completed` events), plus `STATUS:` lines it wrote (`kind: "message"`), a
   "Thinking it over" item when it reasons (never the reasoning itself), helpers it started and
   approvals it asked for. `kind` is one of `read`, `edit`, `run`, `search`, `browse`, `think`,
   `message`, `tool`; `status` is `running`, `done` or `failed` (items still running when the run ends
   take its outcome). `text` ≤ 80 characters, optional `detail` ≤ 100. Ids are stable for the task.
+- **Tool calls** (capability `tool_log`). An item that is a tool call also carries `tool` (the raw
+  tool name, e.g. `terminal`, `mcp__tracker__create_issue`), `started_at` and, once it settles,
+  `ended_at` (epoch seconds). On `GET /voice/work/{run_id}` it may carry `args` (Hermes' own
+  argument preview, ≤ 300 characters) and `result` (its result preview, ≤ 500 characters, up to 16
+  lines). Both go through the same redactor as `text` (tokens, keys — quoted JSON ones too — env
+  values, emails and query strings removed, paths cut to their file name) before they are cut, and
+  are absent when nothing safe is left. They are previews: never the whole argument or output.
+  Items that aren't tool calls (`think`, `STATUS:` messages) have none of these fields.
 - **`findings`** — at most 8, ≤ 120 characters: statements from the agent's own commentary while it
   works (`FINDING:` lines when it writes them), never its plans ("Let me…") or questions. Absent
   when it hasn't said anything learned.
@@ -994,7 +1011,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `job_activity` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `job_activity`, `tool_log` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`
@@ -1028,7 +1045,7 @@ hide the matching controls and keep the old behaviour.
   "room_on_resume": true,
   "version": "0.2.0",
   "capabilities": {"card_actions": true, "job_progress": true, "spoken_choices": true, "summary_points": true,
-                   "job_activity": true}
+                   "job_activity": true, "tool_log": true}
 }
 ```
 

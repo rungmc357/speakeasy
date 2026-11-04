@@ -34,7 +34,11 @@ from typing import Any
 
 from .text import EMAIL_RE, OPAQUE_RE, SECRET_FILE_RE, SENSITIVE_TEXT_RE, URL_SECRET_RE
 
-MAX_ACTIVITY = 40
+MAX_ACTIVITY = 100        # kept per task; GET /voice/work/{run_id} returns them all, with details
+MAX_STREAM_ACTIVITY = 40  # the newest this many ride the event stream / task feed, without details
+ARGS_CHARS = 300          # a tool call's argument preview (Hermes' own, redacted again here)
+RESULT_CHARS = 500        # its result preview
+BLOCK_LINES = 16
 MAX_FINDINGS = 8
 MAX_TOUCHED = 20
 MAX_SOURCES = 6
@@ -68,6 +72,10 @@ _SECRET_FLAG_RE = re.compile(
     r"(?i)(--?[a-z0-9-]*(?:token|key|secret|passw(?:or)?d|auth|credential|cookie)[a-z0-9-]*)(?:[= ]+)(\"[^\"]*\"|'[^']*'|\S+)")
 _SECRET_KV_RE = re.compile(
     r"(?i)\b([a-z0-9_]*(?:token|api[_-]?key|secret|passw(?:or)?d|credential|cookie)[a-z0-9_]*)\s*[:=]\s*(\"[^\"]*\"|'[^']*'|\S+)")
+# The same, quoted (JSON arguments and results): "api_key": "value"
+_SECRET_JSON_RE = re.compile(
+    r"(?i)([\"']?[a-z0-9_-]*(?:token|api[_-]?key|secret|passw(?:or)?d|credential|cookie|authorization)[a-z0-9_-]*[\"']?)"
+    r"(\s*[:=]\s*)(\"(?:[^\"\\\\]|\\\\.)*\"|'[^']*'|[^\s,}\]]+)")
 _PATH_RE = re.compile(r"(?<![\w/.:-])(?:~|\.{1,2})?(?:/[^\s/'\"<>|;,)]+){1,}/?|(?<![\w/.:~-])[\w.-]+(?:/[\w.@+-]+){2,}/?"
                       r"|(?<![\w/.:~-])[A-Za-z_][\w.-]*/[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,7}\b")
 _ELLIPSIS_LEAD_RE = re.compile(r"^(?:\.\.\.|…)\s*")
@@ -123,6 +131,7 @@ def redact(value: Any) -> str:
     text = _URL_RE.sub(keep_url, text)
     for pattern in _TOKEN_RES:
         text = pattern.sub("…", text)
+    text = _SECRET_JSON_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}…", text)
     text = _ENV_RE.sub(lambda m: f"{m.group(1)}=…", text)
     text = _SECRET_FLAG_RE.sub(lambda m: f"{m.group(1)} …", text)
     text = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}=…", text)
@@ -132,6 +141,44 @@ def redact(value: Any) -> str:
     text = re.sub(r"\x00(\d+)\x00", lambda m: urls[int(m.group(1))], text)
     text = re.sub(r"[\"']…[\"']?|…[\"']", "…", text)
     return re.sub(r"(?:…\s*){2,}", "… ", text).strip()
+
+
+_TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
+
+def tool_name(value: Any) -> str | None:
+    """The raw tool name (``terminal``, ``mcp__tracker__create_issue``), or None when it isn't one."""
+    return value.strip() if isinstance(value, str) and _TOOL_NAME_RE.fullmatch(value.strip()) else None
+
+
+def preview_block(value: Any, limit: int) -> str | None:
+    """A tool call's argument or result preview as a few monospaced lines: every line through the
+    same redactor as the feed (secrets, tokens, env values, emails, query strings out; paths to
+    their basename), lines that still look secret dropped, then cut to ``limit`` characters.
+    Redacted before the cut, so a cut never leaves a secret's prefix."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return None
+    lines: list[str] = []
+    for raw in value.replace("\r", "").split("\n")[: BLOCK_LINES * 4]:
+        indent = min(len(raw) - len(raw.lstrip(" \t")), 8)
+        line = redact(raw)
+        if not line:
+            continue
+        probe = re.sub(r"\s*[=:]\s*…", " ", line)
+        if SENSITIVE_TEXT_RE.search(probe) or URL_SECRET_RE.search(probe):
+            line = "…"
+        lines.append(" " * indent + line)
+        if len(lines) >= BLOCK_LINES:
+            break
+    text = "\n".join(lines).strip("\n")
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text if re.search(r"[A-Za-z0-9]", text) else None
 
 
 def _unsafe(text: str) -> bool:
@@ -451,7 +498,8 @@ class JobActivity:
 
     # -- recording --
     def _add(self, kind: str, text: str, now: float, *, detail: str | None = None, status: str = "done",
-             call_id: str | None = None, tool: str | None = None) -> dict[str, Any]:
+             call_id: str | None = None, tool: str | None = None, raw_tool: str | None = None,
+             args: str | None = None) -> dict[str, Any]:
         items = self.state["items"]
         last = items[-1] if items else None
         if last and last["text"] == text and last.get("detail") == detail and last["status"] != "running" \
@@ -465,6 +513,11 @@ class JobActivity:
             item["_call"] = call_id
         if tool:
             item["_tool"] = tool
+        if raw_tool:  # a real tool call: its name, when it started, and what it was given
+            item["tool"] = raw_tool
+            item["started_at"] = round(now, 3)
+            if args:
+                item["args"] = args
         self.state["next"] += 1
         items.append(item)
         del items[:-MAX_ACTIVITY]
@@ -532,7 +585,8 @@ class JobActivity:
             if human:
                 self._add(human["kind"], human["text"], now, detail=human.get("detail"), status="running",
                           call_id=event.get("tool_call_id") if isinstance(event.get("tool_call_id"), str) else None,
-                          tool=event.get("tool"))
+                          tool=event.get("tool"), raw_tool=tool_name(event.get("tool")),
+                          args=preview_block(event.get("preview"), ARGS_CHARS))
                 if human.get("touched"):
                     self._touch(human["touched"])
                 if human.get("source"):
@@ -547,6 +601,11 @@ class JobActivity:
             item = self._find_running(event.get("tool_call_id"), tool)
             if item is not None:
                 item["status"] = "failed" if failed else "done"
+                if "tool" in item:
+                    item["ended_at"] = round(now, 3)
+                    result = preview_block(event.get("preview"), RESULT_CHARS)
+                    if result:
+                        item["result"] = result
                 changed = True
             if not failed and tool in {"patch", "edit_file", "apply_patch"}:
                 result = patch_result(event.get("preview"))
@@ -591,12 +650,14 @@ class JobActivity:
         elif kind == "subagent.start":
             goal = plain(event.get("goal") or event.get("preview"), DETAIL_CHARS)
             self._add("tool", "Handed part of the work to a helper", now, detail=goal, status="running",
-                      tool="subagent")
+                      tool="subagent", raw_tool="delegate_task",
+                      args=preview_block(event.get("goal") or event.get("preview"), ARGS_CHARS))
             changed = True
         elif kind == "subagent.complete":
             item = self._find_running(None, "subagent")
             if item is not None:
                 item["status"] = "failed" if str(event.get("status") or "").lower() in {"failed", "error"} else "done"
+                item["ended_at"] = round(now, 3)
                 changed = True
         elif kind == "approval.request":
             self._add("message", "Asked for your approval", now)
@@ -606,6 +667,8 @@ class JobActivity:
             for item in self.state["items"]:
                 if item["status"] == "running":
                     item["status"] = _status_for(end)
+                    if "tool" in item:
+                        item["ended_at"] = round(now, 3)
                     changed = True
             changed = changed or end in {"completed", "failed", "cancelled", "stopped", "interrupted"}
         self.dirty = self.dirty or changed
@@ -644,14 +707,26 @@ def hero(state: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def public(state: dict[str, Any] | None) -> dict[str, Any]:
-    """The contract fields for one task's work object; empty ones are left out."""
+_DETAIL_KEYS = ("args", "result")
+
+
+def public(state: dict[str, Any] | None, *, detail: bool = False) -> dict[str, Any]:
+    """The contract fields for one task's work object; empty ones are left out.
+
+    ``detail`` (``GET /voice/work/{run_id}``): every kept item (at most ``MAX_ACTIVITY``) with its
+    ``args`` and ``result`` previews. Otherwise (the event stream, the task feed, ``/latest``): the
+    newest ``MAX_STREAM_ACTIVITY`` without them, so the stream stays small. Both carry
+    ``activity_total``, how many items the task has kept."""
     if not isinstance(state, dict) or state.get("v") != 1:
         return {}
     out: dict[str, Any] = {}
-    items = [{k: v for k, v in item.items() if not k.startswith("_")} for item in state.get("items") or []]
+    kept = (state.get("items") or [])[-MAX_ACTIVITY:]
+    shown = kept if detail else kept[-MAX_STREAM_ACTIVITY:]
+    items = [{k: v for k, v in item.items() if not k.startswith("_") and (detail or k not in _DETAIL_KEYS)}
+             for item in shown]
     if items:
-        out["activity"] = items[-MAX_ACTIVITY:]
+        out["activity"] = items
+        out["activity_total"] = len(kept)
     if state.get("findings"):
         out["findings"] = list(state["findings"][-MAX_FINDINGS:])
     edits = state.get("edits") or {}

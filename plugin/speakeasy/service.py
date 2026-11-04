@@ -62,6 +62,7 @@ IDLE_CHECK_S = 15
 IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model setup rarely changes)
 EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the call's event channel
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
+CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 
 
 
@@ -952,7 +953,9 @@ class VoiceService:
     def work(self, run_id: str) -> dict[str, Any]:
         if not ID_RE.fullmatch(run_id):
             raise ServiceError(404, "not found")
-        return {"work": self.store.work(run_id, assistant_name=self.settings.get()["assistant_name"])}
+        # One task by id: its whole tool-call log (args and result previews), not the stream's summary.
+        return {"work": self.store.work(run_id, assistant_name=self.settings.get()["assistant_name"],
+                                        activity_detail=True)}
 
     # -- AI thread titles ------------------------------------------------------------------------
 
