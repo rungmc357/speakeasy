@@ -87,9 +87,17 @@ public final class VoicePanelModel: ObservableObject {
         pendingPicks[taskID] = nil
         answers[taskID] = nil
     }
+    /// Whether this model holds picks for `undoWindow` itself. The iPhone app holds them in its own
+    /// layer (and sends Live Activity picks at once), so only the Mac panel does it here.
+    #if os(macOS)
+    public var holdsPicksForUndo = true
+    #else
+    public var holdsPicksForUndo = false
+    #endif
     /// Shows the pick at once and sends it after `undoWindow` unless undone.
     func commitPick(_ taskID: String, _ text: String) {
         answers[taskID] = text
+        guard holdsPicksForUndo else { onAnswer(taskID, text); return }
         pickTimers.removeValue(forKey: taskID)?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.pendingPicks[taskID] != nil else { return }
