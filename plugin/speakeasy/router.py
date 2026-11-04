@@ -71,6 +71,7 @@ class Part:
     kind: str              # "new" | "follow_up"
     request: str
     task_id: str | None = None
+    conversation: str | None = None  # a Chat.ref this part of a split request continues in
 
 
 def _words(text: str) -> set[str]:
@@ -661,7 +662,7 @@ def route_messages(request: str, tasks: list[OpenTask], topics: list[Topic],
         {"role": "system", "content":
             "You route one spoken request for a voice assistant. Reply with strict JSON only, no prose: "
             '{"status_task_id": string or null, "follow_up_task_id": string or null, "conversation": string or null, '
-            '"parts": [strings], "channel": string or null, "show": true or false}. '
+            '"conversation_part": number or null, "parts": [strings], "channel": string or null, "show": true or false}. '
             "status_task_id: the id of an open task when the request only asks how that task is going, whether "
             "it's stuck, done or still working, or what it's doing now, with no new instruction (\"how's that coming "
             "along\", \"you seem stuck\", \"what's it doing?\"); else null. "
@@ -688,7 +689,10 @@ def route_messages(request: str, tasks: list[OpenTask], topics: list[Topic],
             "user last sent work to by voice, then the most recently active. Null for anything new, for general "
             "questions, and when unsure: pick one only when you are confident it is the same piece of work, "
             "not just a shared topic or word. A new task is a fine outcome; the wrong conversation is not. "
-            "A conversation is never split into parts: when the request holds several separate asks, list them in parts and set conversation null. "
+            "When the request holds several separate asks, list every one in parts even if one of them continues a "
+            "conversation; then set conversation to that conversation's ref and conversation_part to the index "
+            "(0-based) of the one part that continues it. The other parts become new tasks. With a single part, "
+            "conversation_part is null. "
             "show: true when the user wants to SEE something rather than just hear about it: how a thing looks "
             "(\"what does the new logo look like\", \"how do those office speakers it recommended look\", "
             "\"let me see the hotel\"), a design, page, product, place or a task's visual state. False for "
@@ -739,16 +743,31 @@ def parse_decision(text: Any, request: str, tasks: list[OpenTask], topics: list[
     if conversation is not None:
         if not isinstance(conversation, str):
             return None
-        # Several separate asks win over a matching conversation: the model often marks the thread
-        # the first ask fits ("my PRs") while still splitting, and sending the whole request there
-        # buried the other asks (fantasy football, loose ends) inside that one thread.
-        if conversation.strip() and len(clean) == 1:
-            if not any(c.ref == conversation.strip() for c in chats or []):
-                return None
-            return Decision([Part(NEW, request)], None, "model", conversation=conversation.strip(), show=show)
+        ref = conversation.strip()
+        if ref and not any(c.ref == ref for c in chats or []):
+            return None
+        if ref and len(clean) == 1:
+            return Decision([Part(NEW, request)], None, "model", conversation=ref, show=show)
+        if ref:
+            # Several asks, one of which continues a conversation ("where'd we leave off with my PRs,
+            # and how's my fantasy team"): that part goes to the conversation, the rest are new tasks.
+            # Sending the whole request there buried the other asks inside that one thread.
+            at = _conversation_part(data.get("conversation_part"), clean, next(c for c in chats or [] if c.ref == ref))
+            return Decision([Part(NEW, p, conversation=ref if i == at else None) for i, p in enumerate(clean)],
+                            channel, "model", show=show)
     if len(clean) == 1:
         clean = [request]  # one ask: keep the user's own words
     return Decision([Part(NEW, p) for p in clean], channel, "model", show=show)
+
+
+def _conversation_part(index: Any, parts: list[str], chat: Chat) -> int | None:
+    """Which part of a split request continues the chat: the model's index when valid, else the part
+    sharing the most words with that chat (None when none does: every part is then a new task)."""
+    if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(parts):
+        return index
+    seen = _words(" ".join((chat.label, chat.voice_request, *chat.lines)))
+    best = max(range(len(parts)), key=lambda i: len(_words(parts[i]) & seen))
+    return best if _words(parts[best]) & seen else None
 
 
 _COMPOUND = re.compile(r"(?i)\b(?:and|also|plus|then|as well)\b|[,;]")

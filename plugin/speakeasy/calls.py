@@ -2104,7 +2104,12 @@ class SidebandWorker:
         if choice.how == "topic" and choice.channel is not None and not choice.channel.default:
             self.forgo_capture(delegation_id)  # a riding-along capture never goes to a topical channel
         if len(decision.parts) > 1 and not choice.clarify:
-            await self.start_parts(delegation_id, revision, context, [p.request for p in decision.parts], choice)
+            convs = {} if named is not None else {
+                i: conv for i, p in enumerate(decision.parts)
+                if (conv := self.pick_conversation(p.request, router.Decision([p], conversation=p.conversation),
+                                                   candidates, chats)) is not None}
+            await self.start_parts(delegation_id, revision, context, [p.request for p in decision.parts], choice,
+                                   convs)
             return
         await self.start_routed(delegation_id, revision, context, last_request, choice)
 
@@ -2809,17 +2814,25 @@ class SidebandWorker:
         await self.stop_looking(None, handoff=False)
 
     async def start_parts(self, delegation_id: str, revision: int, context: str, parts: list[str],
-                          choice: channels.Choice) -> None:
-        """A compound request: one parallel task per part, one spoken acknowledgement for all."""
+                          choice: channels.Choice,
+                          convs: dict[int, continuity.Conversation] | None = None) -> None:
+        """A compound request: one parallel task per part, one spoken acknowledgement for all. A part
+        that continues an existing conversation runs in that conversation; the rest are new tasks."""
+        convs = convs or {}
         channel = choice.channel
         deliver_to = channel.target if channel is not None and not channel.default else None
-        await self.append("session.thinking.append", delegation_id, P.split_note(self.names, parts))
+        said = [f"{part} (continuing in {notice_text(convs[i].where, 80) or 'an earlier chat'})" if i in convs
+                else part for i, part in enumerate(parts)]
+        await self.append("session.thinking.append", delegation_id, P.split_note(self.names, said))
         self.handoff_at.pop(delegation_id, None)
         self.route_timings.update({f"{delegation_id}-p{i}": self.route_timings.get(delegation_id, 0)
                                    for i in range(len(parts))})
-        await asyncio.gather(*(self.start_task(f"{delegation_id}-p{i}", revision, context, part, focus=part,
-                                               voice_id=delegation_id, deliver_to=deliver_to)
-                               for i, part in enumerate(parts)))
+        await asyncio.gather(*(
+            self.start_continuity_task(f"{delegation_id}-p{i}", revision, context, part, convs[i],
+                                       voice_id=delegation_id) if i in convs else
+            self.start_task(f"{delegation_id}-p{i}", revision, context, part, focus=part,
+                            voice_id=delegation_id, deliver_to=deliver_to)
+            for i, part in enumerate(parts)))
 
     async def start_routed(self, delegation_id: str, revision: int, context: str, request: str,
                            choice: channels.Choice) -> None:
@@ -3217,7 +3230,8 @@ class SidebandWorker:
         return failed_as
 
     async def start_continuity_task(self, task_id: str, revision: int, context: str, request: str,
-                                    conv: continuity.Conversation, joins: "BackendRun | None" = None) -> None:
+                                    conv: continuity.Conversation, joins: "BackendRun | None" = None,
+                                    voice_id: str | None = None) -> None:
         """Run the request inside an existing Hermes conversation's own session: it sees that
         conversation's history, and the reply posts back to that chat.
 
@@ -3226,13 +3240,14 @@ class SidebandWorker:
         answered home instead. That covers follow-ups to finished thread tasks too."""
         if not conv.private and self.carries(task_id):
             logger.info("speakeasy: shared things never go into a group chat; starting a task answered home")
-            await self.start_task(task_id, revision, context, request,
+            await self.start_task(task_id, revision, context, request, voice_id=voice_id,
                                   focus=P.group_chat_focus(request, notice_text(conv.where, 100) or "that chat"))
             return
         if not conv.private:
             self.forgo_capture(task_id)  # a group chat's session never gets a riding-along capture
         idem = self._idem(task_id, revision)
-        backend = BackendRun(task_id, revision, idem, deliver_to=joins.deliver_to if joins else None)
+        backend = BackendRun(task_id, revision, idem, deliver_to=joins.deliver_to if joins else None,
+                             voice_id=voice_id)
         delegation_id = backend.say_id
         if joins is None:
             self._register(task_id, backend)
@@ -3260,8 +3275,9 @@ class SidebandWorker:
         if joins is not None:
             self.store.hide_key(idem)
         self.publish()
-        if joins is None:
+        if joins is None and voice_id is None:  # a split request's parts share one spoken note
             await self.quiet("continuing:" + delegation_id, delegation_id, P.continuing_in_note(where))
+        if joins is None:
             self.handoff_at.pop(delegation_id, None)
         # Taken now, while it's what the user was looking at, even if this turn waits for another.
         shared = await self.collect_shared(task_id, idem) if conv.private else Shared()
