@@ -625,7 +625,9 @@ each left out when there is nothing real to show. Clients that don't know them i
   `GET /voice/work/latest` carry the newest 40 (without `args`/`result`), and
   `GET /voice/work/{run_id}` carries all of them with their previews. `activity_total` says how many
   the task has kept, so a client knows when to fetch the rest. One item per tool call the Hermes run made (from its
-  `tool.started` / `tool.completed` events), plus `STATUS:` lines it wrote (`kind: "message"`), a
+  `tool.started` / `tool.completed` events; for a task Hermes runs in a chat thread, which has no
+  event stream, from the tool calls in that session's transcript, read at most once a second while
+  it runs, with the transcript's own start and end times), plus `STATUS:` lines it wrote (`kind: "message"`), a
   "Thinking it over" item when it reasons (never the reasoning itself), helpers it started and
   approvals it asked for. `kind` is one of `read`, `edit`, `run`, `search`, `browse`, `think`,
   `message`, `tool`; `status` is `running`, `done` or `failed` (items still running when the run ends
@@ -696,8 +698,11 @@ Body `{"text": "...", "source": "typed", "client_id": "<uuid>", "interaction_id"
   it is waiting on (a plain yes/no answers it; anything else declines it and becomes the instruction).
   With `choice_task_id` naming a spoken-choice card, it is the user's answer to the voice's question.
 - A finished or failed task gets a follow-up task in the same job, continuing its context
-  (`"follow_up"`, `run_id` is the new run's). A message to a task a follow-up already replaced goes
-  to the newest task of that job.
+  (`"follow_up"`, `run_id` is the new task's). That `run_id` always opens it with
+  `GET /voice/work/{run_id}`, while it runs and after: when Hermes refuses the run and the task goes
+  into a chat thread instead, or it has no run id yet, the id handed out keeps resolving to the task
+  (which then settles under its own `lr_` id, as in the task feed). A message to a task a follow-up
+  already replaced goes to the newest task of that job.
 - Idempotent on `client_id`: the same id again within 10 minutes gets the same response and nothing
   is sent twice (a send that failed may be retried with the same id).
 - While a call is open, the message is added to the call as a `transcript` event `{"kind": "text",

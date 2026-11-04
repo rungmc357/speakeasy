@@ -1107,6 +1107,9 @@ class VoiceService:
         with worker.interaction.lock:
             run = worker.interaction.runs.get(got["task_id"])
             new_key, new_run = (run.idem_key, run.run_id) if run else (key, row["run_id"])
+        # The id the apps open it by (GET /voice/work/{id}, the task feed): a run id Hermes refuses a
+        # moment later (the task then runs in a chat thread) or no run id yet stays openable (aliases).
+        new_run = self.store.openable_run_id(new_key) or new_run
         name = self.settings.get()["assistant_name"]
         task = self.store.work(idem_key=new_key, assistant_name=name)
         if task is not None:

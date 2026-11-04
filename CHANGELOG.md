@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Unreleased (plugin) — Live activity for jobs that run in a chat thread
+
+- **Jobs that work inside a Discord or Telegram thread show their steps too.** A follow-up typed to a job that lives in a chat thread, and jobs started in a new thread, now show each tool call live (name, what it was given, how long it took), like every other job. *(Plugin)*
+- **A typed follow-up opens.** The job a typed follow-up starts can always be opened from the reply, even when it ends up running in a chat thread. *(Plugin)*
+- **Finished promptly, with the right answer.** A thread job is marked done within about a second of its reply, and is never settled with that thread's previous reply. *(Plugin)*
+
 ## Plugin 0.3.20 — Type to a job, and see what it's doing while it works
 
 - **Reply to a job in writing.** Typing in a job's reply bar sends it straight to that job: added to it while it runs, the answer when it's waiting on you, or a follow-up that picks up where it left off once it's done. During a call, the voice knows but doesn't read it back. *(Plugin; the reply bar appears once the apps update)*

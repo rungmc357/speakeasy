@@ -3375,11 +3375,18 @@ class SidebandWorker:
                     asyncio.run_coroutine_threadsafe(self.thread_activity(
                         backend, "commentary", text, {"event": "message.interim", "text": text}), loop).result()
                 elif name == "tool.started":
-                    event = {"event": "tool.started", "tool": payload.get("tool_name"), "preview": payload.get("preview")}
+                    event = {"event": "tool.started", "tool": payload.get("tool_name") or payload.get("tool"),
+                             "preview": payload.get("preview")}
+                    if isinstance(payload.get("tool_call_id"), str):
+                        event["tool_call_id"] = payload["tool_call_id"]
                     asyncio.run_coroutine_threadsafe(self.handle_hermes_event(backend, event), loop).result()
                 elif name in {"tool.completed", "tool.failed"}:  # settles the step in the live activity
-                    self.observe_activity(backend, {"event": name, "tool": payload.get("tool_name"),
-                                                    "preview": payload.get("preview")})
+                    done = {"event": name, "tool": payload.get("tool_name") or payload.get("tool"),
+                            "preview": payload.get("preview")}
+                    for field in ("tool_call_id", "error"):
+                        if field in payload:
+                            done[field] = payload[field]
+                    self.observe_activity(backend, done)
                 elif name == "assistant.completed":
                     final["text"] = payload.get("content") or ""
                 elif name.startswith("run.") and name != "run.started":
@@ -3481,11 +3488,21 @@ class SidebandWorker:
         def on_activity(kind: str, text: str) -> None:
             event = {"event": "message.interim" if kind == "commentary" else "tool.completed", "text": text}
             asyncio.run_coroutine_threadsafe(self.thread_activity(backend, kind, text, event), loop).result()
+        state_db, platform = self.rt.state_db, conv.platform
+
+        def session_of() -> str | None:
+            return threads.thread_session(state_db, platform, str(thread_id)) or conv.session_id
+        # A webhook turn has no run event stream: its tool calls are read back from the session's
+        # transcript (at most once a second) into the live activity, real names, args and durations.
+        tools = self.watch_session_tools(backend, session_of, after)
+        LIVE_THREAD_WAITS[idem] = time.monotonic()  # being waited on: the stuck-task sweep leaves it
         vouch = self.vouch_for_thread(backend, conv.platform, str(thread_id))
         try:
             answer = await asyncio.to_thread(runner.wait_turn, conv.platform, str(thread_id), after, on_activity)
         finally:
             vouch.set()
+            await asyncio.to_thread(tools.stop)
+            LIVE_THREAD_WAITS.pop(idem, None)
         if answer is None:
             self.store.progress(idem, "result", f"Still going in {where}; the answer will land there")
             await self.handle_hermes_event(backend, {"event": "run.completed",
@@ -3596,6 +3613,10 @@ class SidebandWorker:
                      else {"event": "tool.completed", "tool": "thread", "preview": text})
             asyncio.run_coroutine_threadsafe(self.thread_activity(backend, kind, text, event), loop)
 
+        state_db = self.rt.state_db
+        # The new thread's turn has no run event stream: its tool calls come from its transcript.
+        tools = self.watch_session_tools(
+            backend, lambda: threads.thread_session(state_db, opened.platform, str(opened.thread_id)), 0)
         LIVE_THREAD_WAITS[idem] = time.monotonic()
         vouch = self.vouch_for_thread(backend, opened.platform, str(opened.thread_id))
         try:
@@ -3607,6 +3628,7 @@ class SidebandWorker:
             answer, backend.error = None, type(exc).__name__
         finally:
             vouch.set()
+            await asyncio.to_thread(tools.stop)
             LIVE_THREAD_WAITS.pop(idem, None)
         if answer is None:
             self.store.user_progress(idem, "In the thread", f"The answer will land in {where}")
@@ -3678,6 +3700,25 @@ class SidebandWorker:
             await self._handle_hermes_event(backend, event)
         finally:
             self.publish()
+
+    def watch_session_tools(self, backend: BackendRun, session_of: Callable[[], str | None],
+                            after_id: int) -> threads.SessionToolWatch:
+        """Follow a thread task's session transcript into its live activity while it runs (tool
+        calls only: its commentary already arrives through the thread wait). Stop it before the
+        task's terminal event so the last calls land first."""
+        loop = asyncio.get_running_loop()
+
+        def on_event(event: dict[str, Any]) -> None:
+            if backend.status in TERMINAL:
+                return
+            try:
+                saved = activity_mod.observe(self.store, backend.idem_key, event, on_flush=self.publish)
+            except Exception:
+                logger.debug("speakeasy: activity update failed", exc_info=True)
+                return
+            if saved and not loop.is_closed():
+                loop.call_soon_threadsafe(self.publish)
+        return threads.SessionToolWatch(self.rt.state_db, session_of, after_id, on_event).start()
 
     def observe_activity(self, backend: BackendRun, event: dict[str, Any]) -> None:
         """Live job activity (activity.py) from the run's own events; saved at most once a second."""

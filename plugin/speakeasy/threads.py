@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -358,6 +359,174 @@ def session_activity(state_db: Path, session_id: str, after_id: int = 0) -> list
     return out
 
 
+# Which argument a tool call's preview shows, when Hermes' own preview builder isn't importable.
+_PRIMARY_ARGS = ("command", "path", "file_path", "query", "url", "pattern", "goal", "name", "code", "text")
+TOOL_RESULT_CHARS = 2000
+
+
+def _arg_preview(tool: str, args: Any) -> str:
+    """The one-line argument summary Hermes' run stream sends with ``tool.started``: Hermes' own
+    ``build_tool_preview`` when it is importable (in the gateway), else the primary argument."""
+    if not isinstance(args, dict):
+        return ""
+    try:
+        from agent.display import build_tool_preview  # type: ignore[import-not-found]
+        return build_tool_preview(tool, args) or ""
+    except Exception:
+        pass
+    for name in _PRIMARY_ARGS:
+        value = args.get(name)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[:300]
+    for value in args.values():
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[:300]
+    return ""
+
+
+def _tool_failed(tool: str, content: str) -> bool:
+    """Whether a tool result reports a failure: Hermes' own check when importable, else only an
+    explicit ``success: false`` or a non-empty ``error`` in a JSON result (never guessed from text)."""
+    try:
+        from agent.display import _detect_tool_failure  # type: ignore[import-not-found]
+        return bool(_detect_tool_failure(tool, content)[0])
+    except Exception:
+        pass
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    return parsed.get("success") is False or (isinstance(parsed.get("error"), str) and bool(parsed["error"].strip()))
+
+
+def session_tool_events(state_db: Path, session_id: str, after_id: int = 0,
+                        limit: int = 200) -> tuple[list[dict[str, Any]], int]:
+    """The tool calls a session's transcript recorded since row ``after_id``, as run events for
+    activity.py: ``tool.started`` {tool, preview, tool_call_id, at} for each call an assistant
+    message made, ``tool.completed`` {tool, preview, tool_call_id, error, at} for each tool result.
+    ``at`` (sent as ``transcript_at``) is the row's own timestamp, so durations are the real ones. For tasks Hermes runs in a chat
+    thread (webhook turns), which have no run event stream: the transcript is the record of what
+    the turn did. Returns (events, newest row id read). Read-only; ([], after_id) when anything is off."""
+    try:
+        db = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return [], int(after_id)
+    try:
+        rows = db.execute("SELECT id, role, coalesce(content,''), coalesce(tool_calls,''), coalesce(tool_call_id,''), "
+                          "coalesce(tool_name,''), timestamp FROM messages WHERE session_id=? AND id>? "
+                          "AND role IN ('assistant','tool') ORDER BY id LIMIT ?",
+                          (session_id, int(after_id), int(limit))).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        db.close()
+    events: list[dict[str, Any]] = []
+    newest = int(after_id)
+    names: dict[str, str] = {}
+    for row_id, role, content, calls, call_id, tool_name, at in rows:
+        newest = max(newest, int(row_id))
+        stamp = float(at) if isinstance(at, (int, float)) else None
+        if role == "assistant" and calls not in ("", "[]", "null"):
+            try:
+                parsed = json.loads(calls)
+            except ValueError:
+                parsed = []
+            for call in parsed if isinstance(parsed, list) else []:
+                if not isinstance(call, dict):
+                    continue
+                fn: dict[str, Any] = call["function"] if isinstance(call.get("function"), dict) else call
+                name = fn.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                raw_args = fn.get("arguments")
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except ValueError:
+                    args = None
+                cid = call.get("id") or call.get("call_id")
+                event: dict[str, Any] = {"event": "tool.started", "tool": name, "preview": _arg_preview(name, args)}
+                if isinstance(cid, str) and cid:
+                    event["tool_call_id"] = cid
+                    names[cid] = name
+                if stamp is not None:
+                    event["transcript_at"] = stamp
+                events.append(event)
+        elif role == "tool":
+            name = tool_name or names.get(call_id) or ""
+            if not name:
+                continue
+            event = {"event": "tool.completed", "tool": name, "preview": content[:TOOL_RESULT_CHARS],
+                     "error": _tool_failed(name, content)}
+            if call_id:
+                event["tool_call_id"] = call_id
+            if stamp is not None:
+                event["transcript_at"] = stamp
+            events.append(event)
+    return events, newest
+
+
+class SessionToolWatch:
+    """Follows a thread task's session transcript while it runs (``session_tool_events``) at most
+    once a second and hands each new tool event to ``on_event``. ``session_of`` names the session
+    (it may appear only once the thread's turn starts). ``stop()`` reads what is left once more, so
+    the last tool calls land before the task's terminal event."""
+
+    def __init__(self, state_db: Path, session_of: Callable[[], str | None], after_id: int,
+                 on_event: Callable[[dict[str, Any]], None], poll_s: float = 1.0):
+        self.state_db, self.session_of, self.cursor = state_db, session_of, int(after_id)
+        self.on_event, self.poll_s = on_event, max(1.0, float(poll_s))
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._seen: set[tuple[str, str]] = set()
+        self.session_id: str | None = None
+
+    def start(self) -> "SessionToolWatch":
+        thread = threading.Thread(target=self._run, name="speakeasy-session-tools", daemon=True)
+        self._thread = thread
+        thread.start()
+        return self
+
+    def poll(self) -> int:
+        """Read once; returns how many events were handed on."""
+        with self._lock:
+            try:  # asked every time: a thread can move to a new session (row ids are global)
+                self.session_id = self.session_of() or self.session_id
+            except Exception:
+                pass
+            if not self.session_id:
+                return 0
+            events, self.cursor = session_tool_events(self.state_db, self.session_id, self.cursor)
+            fresh = []
+            for event in events:  # compression can copy rows: one call is one item
+                cid = event.get("tool_call_id")
+                if cid:
+                    mark = (event["event"], cid)
+                    if mark in self._seen:
+                        continue
+                    self._seen.add(mark)
+                fresh.append(event)
+            events = fresh
+            for event in events:
+                try:
+                    self.on_event(event)
+                except Exception:
+                    logger.debug("speakeasy: session tool event failed", exc_info=True)
+            return len(events)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.poll_s):
+            self.poll()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=5)
+        self.poll()
+
+
 def last_message_id(state_db: Path) -> int:
     """The newest message row id in Hermes' state.db (ids are global), so a turn written after it can be told apart."""
     try:
@@ -396,7 +565,7 @@ def turn_answer(state_db: Path, session_id: str, after_id: int) -> str | None:
 
 
 def wait_for_turn(state_db: Path, platform: str, thread_id: str, after_id: int, timeout_s: float,
-                  poll_s: float = 3.0, sleep: Callable[[float], None] = time.sleep,
+                  poll_s: float = 1.0, sleep: Callable[[float], None] = time.sleep,
                   on_activity: Callable[[str, str], None] | None = None) -> str | None:
     """Poll until the turn a message started in an existing thread finishes; None on timeout (the
     reply still lands in the thread, only the call doesn't hear it)."""
@@ -469,21 +638,30 @@ def thread_session(state_db: Path, platform: str, thread_id: str) -> str | None:
     return row[0] if row else None
 
 
-def session_answer(state_db: Path, session_id: str) -> str | None:
-    """The finished reply of a session's turn: its newest message is a plain assistant message."""
+def session_answer(state_db: Path, session_id: str, since: float | None = None) -> str | None:
+    """The finished reply of a session's turn: its newest message is a plain assistant message
+    (written at or after ``since`` when given: a task sent into an existing thread must not settle
+    on that thread's previous reply)."""
     try:
         db = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True, timeout=2)
     except sqlite3.Error:
         return None
     try:
-        row = db.execute("SELECT role, content, tool_calls FROM messages WHERE session_id=? "
-                         "AND role IN ('user', 'assistant', 'tool') ORDER BY id DESC LIMIT 1",
-                         (session_id,)).fetchone()
+        try:
+            row = db.execute("SELECT role, content, tool_calls, timestamp FROM messages WHERE session_id=? "
+                             "AND role IN ('user', 'assistant', 'tool') ORDER BY id DESC LIMIT 1",
+                             (session_id,)).fetchone()
+        except sqlite3.OperationalError:  # a transcript table without timestamps
+            row = db.execute("SELECT role, content, tool_calls, NULL FROM messages WHERE session_id=? "
+                             "AND role IN ('user', 'assistant', 'tool') ORDER BY id DESC LIMIT 1",
+                             (session_id,)).fetchone()
     except sqlite3.Error:
         row = None
     finally:
         db.close()
     if not row or row[0] != "assistant" or (row[2] and row[2] not in ("[]", "null")) or not (row[1] or "").strip():
+        return None
+    if since is not None and isinstance(row[3], (int, float)) and row[3] < since:
         return None
     return row[1]
 
@@ -504,7 +682,7 @@ def session_title(state_db: Path, session_id: str) -> str | None:
     return title[:80] or None
 
 
-def wait_for_answer(state_db: Path, opened: Opened, timeout_s: float, poll_s: float = 3.0,
+def wait_for_answer(state_db: Path, opened: Opened, timeout_s: float, poll_s: float = 1.0,
                     sleep: Callable[[float], None] = time.sleep,
                     on_session: Callable[[str], None] | None = None,
                     on_title: Callable[[str], None] | None = None,

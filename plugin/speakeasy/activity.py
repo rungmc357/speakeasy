@@ -11,6 +11,8 @@ Everything here comes from the run's own events, never from a guess:
   sentence states something learned (or an explicit ``FINDING:`` line), and a ``message`` item for an
   explicit ``STATUS:`` line.
 - ``files.changed`` {files: [{path, added, removed}], diff} and a ``patch`` result's diff -> +/- counts.
+- ``transcript_at`` on an event (tool calls read back from a thread task's session transcript,
+  ``threads.session_tool_events``) is when the row was written: items keep the real start and end.
 - ``reasoning.available`` -> one "Thinking it over" item (never its text); ``subagent.start`` /
   ``subagent.complete`` -> a helper item; ``approval.request`` -> "Asked for your approval".
 
@@ -578,6 +580,9 @@ class JobActivity:
         if not isinstance(event, dict):
             return False
         now = time.time() if now is None else now
+        at = event.get("transcript_at")
+        if isinstance(at, (int, float)) and not isinstance(at, bool) and 0 < at <= time.time() + 5:
+            now = float(at)  # read back from a transcript: when it really happened (real durations)
         kind = event.get("event")
         changed = False
         if kind in {"tool.started", "tool.start"}:

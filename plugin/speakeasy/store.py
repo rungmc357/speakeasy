@@ -152,6 +152,11 @@ class StateStore:
             # activity.public() of it on the work object.
             self._db.execute("""CREATE TABLE IF NOT EXISTS activity (
                 idem_key TEXT PRIMARY KEY, state_json TEXT NOT NULL, updated REAL NOT NULL)""")
+            # Other ids a task was handed out under: a run id Hermes refused at the door (the task then
+            # ran in a chat thread), or the local id a still-running thread task was given before it
+            # had one. GET /voice/work/{id} and messages by id resolve these to the task.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS run_aliases (
+                alias TEXT PRIMARY KEY, idem_key TEXT NOT NULL, created REAL NOT NULL)""")
             # A new task held back because a running task is already editing the same project: it
             # starts when that one ends. Clients get the blocker's name in ``waiting``.
             columns = {row[1] for row in self._db.execute("PRAGMA table_info(runs)")}
@@ -251,16 +256,17 @@ class StateStore:
         the wait for their answer, so nothing else will ever settle them."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT idem_key, interaction_id, status, updated, continued FROM runs "
+                "SELECT idem_key, interaction_id, status, updated, continued, created FROM runs "
                 "WHERE run_id IS NULL AND status IN ('running','ambiguous')").fetchall()
         out = []
-        for key, interaction, status, updated, continued in rows:
+        for key, interaction, status, updated, continued, created in rows:
             try:
                 placed = json.loads(continued) if continued else {}
             except ValueError:
                 placed = {}
             placed = placed if isinstance(placed, dict) else {}
             out.append({"key": key, "interaction_id": interaction, "status": status, "updated": float(updated or 0),
+                        "created": float(created) if created else None,
                         **{k: placed.get(k) for k in ("session_id", "platform", "thread_id", "label")}})
         return out
 
@@ -273,9 +279,32 @@ class StateStore:
             return None
 
     def key_for_run(self, run_id: str) -> str | None:
+        """The task a run id names: its current run id, else an id it was handed out under before
+        (``run_aliases``: a refused run id, or a thread task's local id)."""
         with self._lock:
             row = self._db.execute("SELECT idem_key FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                row = self._db.execute("SELECT idem_key FROM run_aliases WHERE alias=?", (run_id,)).fetchone()
         return row[0] if row else None
+
+    def add_run_alias(self, alias: str, key: str) -> None:
+        with self._lock, self._db:
+            self._db.execute("INSERT OR IGNORE INTO run_aliases (alias, idem_key, created) VALUES (?,?,?)",
+                             (alias, key, time.time()))
+
+    def openable_run_id(self, key: str) -> str | None:
+        """The id a client can open this task by (GET /voice/work/{id}) from now on: its run id, else
+        (a thread task still running, no run id yet) the local id it will settle under, saved as an
+        alias so it resolves while it runs too."""
+        with self._lock:
+            row = self._db.execute("SELECT run_id FROM runs WHERE idem_key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        if row[0]:
+            return row[0]
+        local = local_run_id(key)
+        self.add_run_alias(local, key)
+        return local
 
     def run_row(self, key: str) -> dict[str, Any] | None:
         """One task's bookkeeping row: what a message sent to it by id needs (messages.py)."""
@@ -562,6 +591,11 @@ class StateStore:
     def forget_run_id(self, key: str) -> None:
         """Drop a run id Hermes refused at the door, so nothing polls a run that never ran."""
         with self._lock, self._db:
+            row = self._db.execute("SELECT run_id FROM runs WHERE idem_key=?", (key,)).fetchone()
+            if row and row[0]:
+                # It may already have been handed out (a typed follow-up's reply): keep it openable.
+                self._db.execute("INSERT OR IGNORE INTO run_aliases (alias, idem_key, created) VALUES (?,?,?)",
+                                 (row[0], key, time.time()))
             self._db.execute("UPDATE runs SET run_id=NULL WHERE idem_key=?", (key,))
 
     def update_run(self, key: str, run_id: str | None, status: str) -> None:
@@ -1049,6 +1083,10 @@ class StateStore:
                 row = self._db.execute(f"SELECT {cols} FROM runs WHERE idem_key=?", (idem_key,)).fetchone()
             elif run_id:
                 row = self._db.execute(f"SELECT {cols} FROM runs WHERE run_id=?", (run_id,)).fetchone()
+                if row is None:  # an id it was handed out under before (run_aliases)
+                    alias = self._db.execute("SELECT idem_key FROM run_aliases WHERE alias=?", (run_id,)).fetchone()
+                    if alias is not None:
+                        row = self._db.execute(f"SELECT {cols} FROM runs WHERE idem_key=?", (alias[0],)).fetchone()
             else:
                 row = self._db.execute(f"SELECT {cols} FROM runs ORDER BY rowid DESC LIMIT 1").fetchone()
             if row is None:

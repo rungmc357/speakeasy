@@ -43,7 +43,9 @@ def sweep(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]
             session_id = T.thread_session(state_db, task["platform"], task["thread_id"])
             if session_id:
                 store.set_continued(key, session_id, task.get("label") or "a thread")
-        answer = T.session_answer(state_db, session_id) if session_id else None
+        # Only a reply written after the task began: one sent into an existing thread (a follow-up)
+        # must not settle on that thread's previous reply.
+        answer = T.session_answer(state_db, session_id, since=task.get("created")) if session_id else None
         age = now - task["updated"]
         if answer is not None:
             result = split_result(P.without_voice_header(answer), image_roots())
