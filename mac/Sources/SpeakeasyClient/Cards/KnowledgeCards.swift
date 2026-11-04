@@ -350,10 +350,19 @@ struct ChartCard: View {
                 }
             }
             .chartXSelection(value: $selected)
+            .modifier(OneSeriesTint(on: JobLook.touch && series.count == 1))
             .chartLegend(series.count > 1 ? .visible : .hidden)
             .frame(height: 150)
             .onAppear { if let p = ChartPreview.selection, labels.contains(p) { selected = p } }
         }
+    }
+}
+
+/// Touch: a one-line chart is drawn in the brand accent, not the system's default blue.
+private struct OneSeriesTint: ViewModifier {
+    var on: Bool
+    func body(content: Content) -> some View {
+        if on { content.chartForegroundStyleScale(range: [JobLook.brass]) } else { content }
     }
 }
 

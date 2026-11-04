@@ -33,13 +33,13 @@ public struct SentMessages: View {
     @ViewBuilder private func row(_ m: OutgoingMessage) -> some View {
         VStack(alignment: .trailing, spacing: 3 * s) {
             Text(m.text).font(.system(size: 12.5 * s))
-                .foregroundStyle(Color.white)
+                .foregroundStyle(m.isFailed ? Color.primary : JobStyle.onBlue)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
-                .padding(.horizontal, 10 * s).padding(.vertical, 6 * s)
-                .background(RoundedRectangle(cornerRadius: 12 * s, style: .continuous)
+                .padding(.horizontal, (JobLook.touch ? 12 : 10) * s).padding(.vertical, (JobLook.touch ? 7 : 6) * s)
+                .background(RoundedRectangle(cornerRadius: (JobLook.touch ? 15 : 12) * s, style: .continuous)
                     .fill(m.isFailed ? AnyShapeStyle(Color.primary.opacity(0.10)) : AnyShapeStyle(JobStyle.blue.opacity(m.isPending ? 0.6 : 0.92))))
-                .overlay(RoundedRectangle(cornerRadius: 12 * s, style: .continuous)
+                .overlay(RoundedRectangle(cornerRadius: (JobLook.touch ? 15 : 12) * s, style: .continuous)
                     .strokeBorder(m.isFailed ? JobStyle.red.opacity(0.55) : .clear, lineWidth: 1))
             status(m)
         }
@@ -122,11 +122,11 @@ public struct TaskReplyBar: View {
             if holding {
                 holdBanner
             }
-            HStack(alignment: .bottom, spacing: 8 * s) {
+            HStack(alignment: .bottom, spacing: (JobLook.touch ? 4 : 8) * s) {
                 field
                 // Typing only. In a call you just talk (the voice says which task it went to); outside
                 // a call the keyboard's own dictation types into the field.
-                send
+                send.padding(JobLook.touch ? 2 * s : 0)
             }
         }
         .onAppear { takeFocusIfAsked() }
@@ -154,7 +154,8 @@ public struct TaskReplyBar: View {
                     .foregroundStyle(.secondary).lineLimit(1)
                     .padding(.horizontal, 12 * s)
             } else {
-                TextField(TaskMessageCopy.placeholder(job.name), text: draft, axis: .vertical)
+                // Touch: the page's title already names the job, so the field just says what it's for.
+                TextField(JobLook.touch ? "Message this job" : TaskMessageCopy.placeholder(job.name), text: draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13 * s))
                     .lineLimit(1...5)
@@ -167,17 +168,14 @@ public struct TaskReplyBar: View {
         }
         .frame(minHeight: 34 * s)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 17 * s, style: .continuous).fill(Color.primary.opacity(focused ? 0.11 : 0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 17 * s, style: .continuous)
-            .strokeBorder(holding ? JobStyle.stopRed.opacity(0.7) : focused ? JobStyle.blueInk.opacity(0.55) : Color.primary.opacity(0.10),
-                          lineWidth: holding || focused ? 1.2 : 0.75))
+        .modifier(FieldFrame(focused: focused, holding: holding, s: s))
     }
 
     private var send: some View {
         Button(action: submit) {
             Image(systemName: "arrow.up").font(.system(size: 13 * s, weight: .bold))
-                .frame(width: 34 * s, height: 34 * s)
-                .foregroundStyle(canSend ? Color.white : Color.secondary)
+                .frame(width: (JobLook.touch ? 30 : 34) * s, height: (JobLook.touch ? 30 : 34) * s)
+                .foregroundStyle(canSend ? JobStyle.onBlue : Color.secondary)
                 .background(Circle().fill(canSend ? JobStyle.blue : Color.primary.opacity(0.08)))
                 .contentShape(Circle())
         }
@@ -255,6 +253,43 @@ public struct TaskReplyBar: View {
     }
 }
 
+/// The reply field's own frame on the Mac. On touch the page draws one glass capsule around the
+/// field and the send button (like Messages), so the field itself is bare.
+private struct FieldFrame: ViewModifier {
+    var focused: Bool
+    var holding: Bool
+    var s: CGFloat
+    func body(content: Content) -> some View {
+        if JobLook.touch {
+            content
+        } else {
+            content
+                .background(RoundedRectangle(cornerRadius: 17 * s, style: .continuous).fill(Color.primary.opacity(focused ? 0.11 : 0.08)))
+                .overlay(RoundedRectangle(cornerRadius: 17 * s, style: .continuous)
+                    .strokeBorder(holding ? JobStyle.stopRed.opacity(0.7) : focused ? JobStyle.blueInk.opacity(0.55) : Color.primary.opacity(0.10),
+                                  lineWidth: holding || focused ? 1.2 : 0.75))
+        }
+    }
+}
+
+/// Touch: Liquid Glass where the system has it (iOS 26), a thin material before.
+public struct TouchGlass<S: Shape>: ViewModifier {
+    var shape: S
+    var interactive: Bool
+    public init(_ shape: S, interactive: Bool = true) { self.shape = shape; self.interactive = interactive }
+    public func body(content: Content) -> some View {
+        #if os(iOS)
+        if #available(iOS 26, *) {
+            content.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
+        } else {
+            content.background(shape.fill(.ultraThinMaterial)).overlay(shape.stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+        }
+        #else
+        content.background(shape.fill(.ultraThinMaterial))
+        #endif
+    }
+}
+
 /// A small dot that breathes while the mic is held.
 struct PulseDot: View {
     var color: Color
@@ -263,6 +298,18 @@ struct PulseDot: View {
         Circle().fill(color).frame(width: 8, height: 8)
             .overlay(Circle().stroke(color.opacity(0.5), lineWidth: 2).scaleEffect(on ? 2.2 : 1).opacity(on ? 0 : 1))
             .onAppear { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { on = true } }
+    }
+}
+
+/// "Something else…" closed: a dashed outline on the Mac; on touch a quiet row like the options.
+private struct SomethingElseFrame: View {
+    var s: CGFloat
+    var body: some View {
+        if JobLook.touch {
+            RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.06))
+        } else {
+            RoundedRectangle(cornerRadius: 10 * s, style: .continuous).strokeBorder(Color.primary.opacity(0.14), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        }
     }
 }
 
@@ -293,7 +340,31 @@ public struct SomethingElseField: View {
         VStack(alignment: .leading, spacing: 6 * s) {
             SentMessages(model: model, jobID: job.id, choiceTaskID: task.id, limit: 1)
             if model.answers[task.id] == nil {
-                if open {
+                if open && JobLook.touch {
+                    // One glass field with the send button inside it, like the page's reply bar.
+                    let ready = TaskMessageRequest.clean(text) != nil
+                    HStack(alignment: .bottom, spacing: 4 * s) {
+                        TextField("Something else…", text: $text, axis: .vertical)
+                            .textFieldStyle(.plain).font(.system(size: 12.5 * s)).lineLimit(1...4)
+                            .focused($focused).submitLabel(.send).onSubmit(submit)
+                            .padding(.leading, 14 * s).padding(.vertical, 9 * s)
+                            .frame(minHeight: 34 * s)
+                            .accessibilityIdentifier("something-else-field")
+                        Button(action: submit) {
+                            Image(systemName: "arrow.up").font(.system(size: 12 * s, weight: .bold))
+                                .frame(width: 28 * s, height: 28 * s)
+                                .foregroundStyle(ready ? JobStyle.onBlue : Color.secondary)
+                                .background(Circle().fill(ready ? JobStyle.blue : Color.primary.opacity(0.08)))
+                        }
+                        .buttonStyle(.plain).disabled(!ready)
+                        .padding(3 * s)
+                        .accessibilityLabel("Send")
+                        .accessibilityIdentifier("something-else-send")
+                    }
+                    .modifier(TouchGlass(RoundedRectangle(cornerRadius: 19 * s, style: .continuous)))
+                    Text("Goes only to this decision.")
+                        .font(.system(size: 10.5 * s)).foregroundStyle(.secondary).padding(.leading, 4)
+                } else if open {
                     HStack(alignment: .bottom, spacing: 7 * s) {
                         TextField("Something else…", text: $text, axis: .vertical)
                             .textFieldStyle(.plain).font(.system(size: 12.5 * s)).lineLimit(1...4)
@@ -307,7 +378,7 @@ public struct SomethingElseField: View {
                         Button(action: submit) {
                             Text("Send").font(.system(size: 12 * s, weight: .semibold))
                                 .padding(.horizontal, 12 * s).frame(height: 30 * s)
-                                .foregroundStyle(ready ? Color.white : Color.secondary)
+                                .foregroundStyle(ready ? JobStyle.onBlue : Color.secondary)
                                 .background(Capsule().fill(ready ? JobStyle.blue : Color.primary.opacity(0.08)))
                         }
                         .buttonStyle(.plain).disabled(!ready)
@@ -322,9 +393,9 @@ public struct SomethingElseField: View {
                             Text("Something else…").font(.system(size: 12 * s, weight: .semibold))
                             Spacer(minLength: 0)
                         }
-                        .padding(.horizontal, 10 * s).frame(height: 32 * s)
-                        .foregroundStyle(JobStyle.blueInk)
-                        .background(RoundedRectangle(cornerRadius: 10 * s, style: .continuous).strokeBorder(Color.primary.opacity(0.14), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+                        .padding(.horizontal, (JobLook.touch ? 12 : 10) * s).frame(minHeight: (JobLook.touch ? 36 : 32) * s)
+                        .foregroundStyle(JobLook.touch ? Color.secondary : JobStyle.blueInk)
+                        .background { SomethingElseFrame(s: s) }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)

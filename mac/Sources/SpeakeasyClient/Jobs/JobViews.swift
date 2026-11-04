@@ -45,9 +45,46 @@ public extension JobStyle {
 
 // MARK: - Style
 
+/// The touch look (iPhone, iPad, Vision Pro): inset-grouped cards on the dark background, the
+/// brand's brass as the one accent, colour otherwise only for status. The Mac panel keeps its look.
+public enum JobLook {
+    #if os(macOS)
+    public static let touch = false
+    #else
+    public static let touch = true
+    #endif
+    public static let brass = Color(red: 0.831, green: 0.635, blue: 0.298)     // #d4a24c
+    public static let brassInk = Color(red: 0.09, green: 0.067, blue: 0.039)   // text on brass
+    /// A grouped section's fill and its corner radius.
+    public static let card = Color.primary.opacity(0.075)
+    public static let radius: CGFloat = 16
+}
+
+extension View {
+    /// On touch: a grouped section (16 pt in, continuous corners, no border). On the Mac: unchanged.
+    @ViewBuilder public func touchCard(padding: CGFloat = 16) -> some View {
+        if JobLook.touch {
+            self.padding(padding)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: JobLook.radius, style: .continuous).fill(JobLook.card))
+        } else {
+            self
+        }
+    }
+}
+
 public enum JobStyle {
+    #if os(macOS)
     public static let blue = Color(red: 0.25, green: 0.39, blue: 0.79)        // #3f63c9 Approve
     public static let blueInk = Color(red: 0.62, green: 0.71, blue: 1.0)      // #9fb6ff
+    /// Text on `blue`.
+    public static let onBlue = Color.white
+    #else
+    // Touch: one accent. What the Mac draws blue (primary buttons, links, the current step) is brass.
+    public static let blue = JobLook.brass
+    public static let blueInk = JobLook.brass
+    public static let onBlue = JobLook.brassInk
+    #endif
     public static let amber = Color(red: 0.94, green: 0.74, blue: 0.36)       // #f0bd5c
     public static let green = Color(red: 0.50, green: 0.85, blue: 0.60)       // #7fd99a
     public static let red = Color(red: 0.94, green: 0.54, blue: 0.48)         // #f08a7a
@@ -70,7 +107,11 @@ public enum JobStyle {
     public static let tileAmber = Color(red: 0.97, green: 0.745, blue: 0.44)
     public static let amberInk = Color(red: 0.23, green: 0.15, blue: 0.02)
     public static let stopRed = Color(red: 0.93, green: 0.36, blue: 0.36)
+    #if os(macOS)
     public static let nowBlue = Color(red: 0.37, green: 0.61, blue: 0.94)
+    #else
+    public static let nowBlue = JobLook.brass
+    #endif
 }
 
 public struct JobPill: View {
@@ -80,10 +121,17 @@ public struct JobPill: View {
     public init(text: String, style: JobStyle.Pill) { self.text = text; self.style = style }
     public var body: some View {
         let (bg, fg) = JobStyle.pillColors(style)
-        Text(text).font(.system(size: 11 * s, weight: .semibold)).lineLimit(1)
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(bg)).foregroundStyle(fg)
-            .fixedSize()
+        if JobLook.touch {
+            // A status or a tag in its colour, no capsule: chips on chips read as clutter on a phone.
+            Text(text).font(.system(size: 11 * s, weight: .medium)).lineLimit(1)
+                .foregroundStyle(style == .blue ? Color.secondary : fg)
+                .fixedSize()
+        } else {
+            Text(text).font(.system(size: 11 * s, weight: .semibold)).lineLimit(1)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Capsule().fill(bg)).foregroundStyle(fg)
+                .fixedSize()
+        }
     }
 }
 
@@ -107,9 +155,9 @@ public struct TileButton: View {
     public var body: some View {
         Button(action: action) {
             Text(title).font(.system(size: 11.5 * s, weight: .semibold)).lineLimit(1)
-                .frame(maxWidth: .infinity).frame(height: 26 * s)
-                .foregroundStyle(primary ? Color.white : Color.primary)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .frame(maxWidth: .infinity).frame(minHeight: (JobLook.touch ? 28 : 26) * s)
+                .foregroundStyle(primary ? JobStyle.onBlue : Color.primary)
+                .background(RoundedRectangle(cornerRadius: JobLook.touch ? 100 : 8, style: .continuous)
                     .fill(primary ? JobStyle.blue.opacity(hover ? 1 : 0.92) : Color.primary.opacity(hover ? 0.16 : 0.10)))
                 .contentShape(Rectangle())
         }
@@ -360,7 +408,7 @@ public struct AnswerTile: View {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Circle().fill(JobOrb.answerBlue).frame(width: 6, height: 6)
+                        Circle().fill(JobLook.touch ? JobLook.brass : JobOrb.answerBlue).frame(width: 6, height: 6)
                         Text(job.name).font(.system(size: 13 * s, weight: .semibold)).lineLimit(1)
                     }
                     if let headline = JobAnswer.headline(info), !TextEcho.repeats(headline, in: spokenNow) {
@@ -377,12 +425,13 @@ public struct AnswerTile: View {
                         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.06)))
                 }
             }
-            .padding(.leading, 11).padding(.trailing, onDismiss == nil ? 11 : 30 * s).padding(.vertical, 9)
+            .padding(.leading, JobLook.touch ? 16 : 11).padding(.trailing, onDismiss == nil ? (JobLook.touch ? 16 : 11) : 30 * s)
+            .padding(.vertical, JobLook.touch ? 12 : 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(JobStyle.blueInk.opacity(hover ? 0.12 : 0.08)))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(focused ? JobStyle.blueInk : JobStyle.blueInk.opacity(0.28), lineWidth: focused ? 1.5 : 0.75))
+            .background(RoundedRectangle(cornerRadius: JobLook.touch ? JobLook.radius : 12, style: .continuous)
+                .fill(JobLook.touch ? JobLook.card : JobStyle.blueInk.opacity(hover ? 0.12 : 0.08)))
+            .overlay(RoundedRectangle(cornerRadius: JobLook.touch ? JobLook.radius : 12, style: .continuous)
+                .strokeBorder(focused ? JobStyle.blueInk : JobLook.touch ? .clear : JobStyle.blueInk.opacity(0.28), lineWidth: focused ? 1.5 : 0.75))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -472,12 +521,12 @@ public struct JobTile: View {
             }
             content
         }
-        .padding(.horizontal, 11).padding(.vertical, 9)
+        .padding(.horizontal, JobLook.touch ? 16 : 11).padding(.vertical, JobLook.touch ? 12 : 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(needs ? JobStyle.tileAmber.opacity(hover ? 0.16 : 0.11) : Color.primary.opacity(hover ? 0.09 : 0.06)))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(focused ? JobStyle.blueInk : (needs ? JobStyle.tileAmber.opacity(0.42) : Color.primary.opacity(0.07)),
+        .background(RoundedRectangle(cornerRadius: JobLook.touch ? JobLook.radius : 12, style: .continuous)
+            .fill(JobLook.touch ? JobLook.card : needs ? JobStyle.tileAmber.opacity(hover ? 0.16 : 0.11) : Color.primary.opacity(hover ? 0.09 : 0.06)))
+        .overlay(RoundedRectangle(cornerRadius: JobLook.touch ? JobLook.radius : 12, style: .continuous)
+            .strokeBorder(focused ? JobStyle.blueInk : JobLook.touch ? .clear : (needs ? JobStyle.tileAmber.opacity(0.42) : Color.primary.opacity(0.07)),
                           lineWidth: focused ? 1.5 : 0.75))
         .contentShape(Rectangle())
         .onTapGesture { model.onOpenJob(job.id) }
@@ -489,13 +538,14 @@ public struct JobTile: View {
     @ViewBuilder private var pill: some View {
         switch job.stage {
         // A status, never a button look-alike: the actions are the buttons under it.
-        case .needsYou: JobPill(text: "Needs you", style: .amber)
+        // Touch: the board's "Needs you" section header already says it.
+        case .needsYou: if !JobLook.touch { JobPill(text: "Needs you", style: .amber) }
         case .failed: JobPill(text: "Failed", style: .red)
         case .running:
             if job.activeTask?.info.status == "waiting_on_task" {
                 JobPill(text: "Waiting", style: .grey)   // held so two tasks don't edit one project at once
             } else if let e = JobProgress.elapsed(job.activeTask?.info ?? job.newest.info, now: model.state.now) {
-                JobPill(text: "Running · \(e)", style: .blue)
+                JobPill(text: JobLook.touch ? e : "Running · \(e)", style: .blue)
             } else { JobPill(text: "Running", style: .blue) }
         case .done: JobPill(text: job.setAside ? "Set aside" : "Done", style: job.setAside ? .grey : .green)
         }
@@ -508,8 +558,13 @@ public struct JobTile: View {
                 if let rec = d.recommendedOption {
                     // The question is one click away; the tile leads with what to do.
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("RECOMMENDED").font(.system(size: 10 * s, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
-                            .fixedSize()
+                        if JobLook.touch {
+                            Image(systemName: "star.fill").font(.system(size: 9 * s, weight: .semibold)).foregroundStyle(JobLook.brass)
+                                .accessibilityLabel("Recommended")
+                        } else {
+                            Text("RECOMMENDED").font(.system(size: 10 * s, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
+                                .fixedSize()
+                        }
                         Text(rec.text).font(.system(size: 12 * s, weight: .medium)).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -603,6 +658,24 @@ public struct StepBar: View {
     var total: Int
     public init(done: Int, total: Int) { self.done = done; self.total = total }
     public var body: some View {
+        if JobLook.touch {
+            // One thin bar in the accent, like the system's linear progress.
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.12))
+                    Capsule().fill(JobLook.brass)
+                        .frame(width: g.size.width * CGFloat(min(done + 1, total)) / CGFloat(max(total, 1)))
+                }
+            }
+            .frame(height: 4)
+            .accessibilityElement()
+            .accessibilityLabel("Step \(min(done + 1, total)) of \(total)")
+        } else {
+            segments
+        }
+    }
+
+    private var segments: some View {
         HStack(spacing: 3) {
             ForEach(0..<max(total, 1), id: \.self) { i in
                 Capsule().fill(i < done ? JobStyle.green.opacity(0.85) : i == done ? JobStyle.nowBlue : Color.primary.opacity(0.12))
@@ -766,6 +839,7 @@ public struct JobDetailBody: View {
                     }
                 }
             }
+            .touchCard()
         }
         if let approval = model.state.approval, job.tasks.contains(where: { $0.info.runID == approval.runID }),
            job.stage == .needsYou(.approve) {
@@ -786,6 +860,7 @@ public struct JobDetailBody: View {
                     }
                 }
             }
+            .touchCard()
         }
         if let failed = job.tasks.last, failed.info.status == "failed" {
             VStack(alignment: .leading, spacing: 5) {
@@ -800,6 +875,7 @@ public struct JobDetailBody: View {
                         .padding(.top, 2)
                 }
             }
+            .touchCard()
         }
         // Every card of the job (a review, drafts, result cards): the most relevant open, the rest
         // one-line rows. Nothing else in the panel draws them.
@@ -830,6 +906,7 @@ public struct JobDetailBody: View {
                         }
                     }
                 }
+                .touchCard()
             }
         }
         // Pictures that came along with a report: folded under it.
@@ -847,6 +924,7 @@ public struct JobDetailBody: View {
                     }
                 }
             }
+            .touchCard()
         }
     }
 
@@ -884,8 +962,9 @@ public struct DecisionBrief: View {
         VStack(alignment: .leading, spacing: 8) {
             if part != .options {
                 HStack(spacing: 6) {
-                    Circle().fill(answer == nil ? JobStyle.tileAmber : JobStyle.green).frame(width: 7, height: 7)
-                    Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 11.5 * s, weight: .semibold)).foregroundStyle(.secondary)
+                    Circle().fill(answer == nil ? (JobLook.touch ? Color.orange : JobStyle.tileAmber) : JobStyle.green).frame(width: 7, height: 7)
+                    Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 11.5 * s, weight: .semibold))
+                        .foregroundStyle(JobLook.touch && answer == nil ? Color.orange : Color.secondary)
                 }
                 Text(decision.question).font(.system(size: 14 * s, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                 if let context = decision.context {
@@ -910,7 +989,8 @@ public struct DecisionBrief: View {
                 HStack {
                     SectionLabel(text: "Options")
                     Spacer(minLength: 4)
-                    if DecisionCompare.worthComparing(decision) { CompareToggle(comparing: comparing) }
+                    // The phone's full-width layout has its own Compare (a sheet) under the card.
+                    if DecisionCompare.worthComparing(decision) && !(JobLook.touch && part == .all) { CompareToggle(comparing: comparing) }
                 }
                 .padding(.top, 2)
                 if comparing.wrappedValue {
@@ -947,10 +1027,7 @@ public struct DecisionBrief: View {
                 }
             }
         }
-        .padding(11)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(JobStyle.tileAmber.opacity(answer == nil ? 0.08 : 0.0)))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(answer == nil ? JobStyle.tileAmber.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: 0.75))
+        .modifier(BriefFrame(open: answer == nil))
     }
 
     private var hint: String {
@@ -959,6 +1036,22 @@ public struct DecisionBrief: View {
         #else
         return "Tap one, or just say it."
         #endif
+    }
+}
+
+/// The decision card: an amber-edged box on the Mac; a plain grouped section on touch.
+private struct BriefFrame: ViewModifier {
+    var open: Bool
+    func body(content: Content) -> some View {
+        if JobLook.touch {
+            content.touchCard()
+        } else {
+            content
+                .padding(11)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(JobStyle.tileAmber.opacity(open ? 0.08 : 0.0)))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(open ? JobStyle.tileAmber.opacity(0.4) : Color.primary.opacity(0.08), lineWidth: 0.75))
+        }
     }
 }
 
@@ -973,6 +1066,8 @@ struct DecisionOptionRow: View {
     var enabled: Bool
     var action: () -> Void
     @State private var hover = false
+    /// Under the title, past the number badge.
+    private var indent: CGFloat { JobLook.touch ? 32 : 26 }
 
     private var pills: [(String, JobStyle.Pill)] {
         var out = option.tags.map { ($0.text, JobStyle.pill(tone: $0.tone)) }
@@ -996,26 +1091,37 @@ struct DecisionOptionRow: View {
                     if chosen { Image(systemName: "checkmark").font(.system(size: 11 * s, weight: .bold)).foregroundStyle(JobStyle.blueInk) }
                 }
                 // Its own line: beside the title it squeezed the option onto three hyphenated lines on a phone.
-                if recommended && !dimmed { JobPill(text: "Recommended", style: .blue).padding(.leading, 26) }
+                if recommended && !dimmed {
+                    if JobLook.touch {
+                        Label("Recommended", systemImage: "star.fill").font(.system(size: 11 * s, weight: .semibold))
+                            .foregroundStyle(JobLook.brass).padding(.leading, 32)
+                    } else {
+                        JobPill(text: "Recommended", style: .blue).padding(.leading, indent)
+                    }
+                }
                 if let detail = option.detail {
                     Text(detail).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        .padding(.leading, 26)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, indent)
                 }
                 if let why {
                     Text("Why: \(why)").font(.system(size: 11 * s)).foregroundStyle(.secondary).italic()
-                        .fixedSize(horizontal: false, vertical: true).padding(.leading, 26)
+                        .fixedSize(horizontal: false, vertical: true).padding(.leading, indent)
                 }
                 if !pills.isEmpty {
-                    WrapLayout(spacing: 4) { ForEach(Array(pills.enumerated()), id: \.offset) { JobPill(text: $0.element.0, style: $0.element.1) } }
-                        .padding(.leading, 26)
+                    WrapLayout(spacing: JobLook.touch ? 12 : 4) { ForEach(Array(pills.enumerated()), id: \.offset) { JobPill(text: $0.element.0, style: $0.element.1) } }
+                        .padding(.leading, indent)
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 8)
+            .padding(.horizontal, JobLook.touch ? 12 : 10).padding(.vertical, JobLook.touch ? 11 : 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(recommended && !dimmed ? JobStyle.blue.opacity(hover && enabled ? 0.22 : 0.14) : Color.primary.opacity(hover && enabled ? 0.09 : 0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(chosen || (recommended && !dimmed) ? JobStyle.blueInk.opacity(0.6) : Color.primary.opacity(0.08), lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: JobLook.touch ? 12 : 10, style: .continuous)
+                .fill(JobLook.touch ? Color.primary.opacity(recommended && !dimmed ? 0.1 : 0.06)
+                      : recommended && !dimmed ? JobStyle.blue.opacity(hover && enabled ? 0.22 : 0.14) : Color.primary.opacity(hover && enabled ? 0.09 : 0.05)))
+            .overlay(RoundedRectangle(cornerRadius: JobLook.touch ? 12 : 10, style: .continuous)
+                .strokeBorder(JobLook.touch ? (chosen ? JobLook.brass : recommended && !dimmed ? JobLook.brass.opacity(0.45) : .clear)
+                              : chosen || (recommended && !dimmed) ? JobStyle.blueInk.opacity(0.6) : Color.primary.opacity(0.08),
+                              lineWidth: JobLook.touch && chosen ? 1.5 : 1))
             .opacity(dimmed ? 0.45 : 1)
             .contentShape(Rectangle())
         }
@@ -1072,12 +1178,15 @@ public struct LiveSteps: View {
             // Collapsed: just where it is now (the current step, else the last one).
             let focus = all.lastIndex { $0.state == .current } ?? (all.isEmpty ? nil : all.count - 1)
             let shown: [Row] = open || all.count <= 2 ? all : focus.map { [all[$0]] } ?? []
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline) {
-                    SectionLabel(text: task.isActive ? "Now" : "Steps")
-                    Spacer(minLength: 4)
-                    if let line = JobProgress.line(info, now: model.state.now) {
-                        Text(line).font(.system(size: 11 * s, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: JobLook.touch ? 10 : 6) {
+                // Touch: the page's status block above already says the step, time and ETA.
+                if !JobLook.touch {
+                    HStack(alignment: .firstTextBaseline) {
+                        SectionLabel(text: task.isActive ? "Now" : "Steps")
+                        Spacer(minLength: 4)
+                        if let line = JobProgress.line(info, now: model.state.now) {
+                            Text(line).font(.system(size: 11 * s, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                        }
                     }
                 }
                 VStack(alignment: .leading, spacing: 0) {
@@ -1088,19 +1197,37 @@ public struct LiveSteps: View {
                     }
                 }
                 if all.count > 2 {
-                    Button { model.toggleSection(key) } label: {
-                        Text(open ? "Show less" : "Show all \(all.count) steps").font(.system(size: 11.5 * s, weight: .semibold))
-                            .foregroundStyle(JobStyle.blueInk).contentShape(Rectangle())
+                    if JobLook.touch {
+                        // A disclosure row, like a grouped list's: the count, a chevron that turns.
+                        Divider().opacity(0.6)
+                        Button { withAnimation(.easeOut(duration: 0.2)) { model.toggleSection(key) } } label: {
+                            HStack {
+                                Text(open ? "Hide steps" : "All \(all.count) steps").font(.system(size: 12 * s))
+                                    .foregroundStyle(Color.primary)
+                                Spacer(minLength: 4)
+                                Image(systemName: "chevron.right").font(.system(size: 10 * s, weight: .semibold))
+                                    .foregroundStyle(.tertiary).rotationEffect(.degrees(open ? 90 : 0))
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(open ? "Hide steps" : "Show all \(all.count) steps")
+                    } else {
+                        Button { model.toggleSection(key) } label: {
+                            Text(open ? "Show less" : "Show all \(all.count) steps").font(.system(size: 11.5 * s, weight: .semibold))
+                                .foregroundStyle(JobStyle.blueInk).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
-                if task.isActive && model.state.connection.isOpen {
+                // Touch: Stop lives in the page's toolbar menu (with a confirm), not as a slab here.
+                if task.isActive && model.state.connection.isOpen && !(JobLook.touch && model.taskMessagesEnabled) {
                     HStack(spacing: 6) {
                         // With typed messages the reply bar under the job does this (and hold-to-talk).
                         if !model.taskMessagesEnabled {
                             TileButton(title: "Tell it something") { model.onTellJob(job.id) }
                         }
-                        if task.canStop, let run = info.runID {
+                        if task.canStop, let run = info.runID, !JobLook.touch {
                             Button { model.onStopTask(run) } label: {
                                 Text("Stop").font(.system(size: 11.5 * s, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 26)
                                     .foregroundStyle(Color(red: 1, green: 0.7, blue: 0.66))
@@ -1116,6 +1243,7 @@ public struct LiveSteps: View {
                     }
                 }
             }
+            .touchCard()
         }
     }
 
@@ -1142,7 +1270,8 @@ public struct LiveSteps: View {
                 let sub = i < milestones.count && milestones[i].text != step ? milestones[i].text : nil
                 if i < p.done { return Row(text: step, sub: sub, state: .done) }
                 if i == p.done && !info.isTerminal {
-                    return Row(text: step, sub: JobDetailBody.pickedLine(job, model: model) ?? info.shortStatus, state: .current)
+                    // Touch: the page's status line already says the short status.
+                    return Row(text: step, sub: JobDetailBody.pickedLine(job, model: model) ?? (JobLook.touch ? nil : info.shortStatus), state: .current)
                 }
                 return Row(text: step, sub: nil, state: info.isTerminal && info.status == "completed" ? .done : .next)
             }

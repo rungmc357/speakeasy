@@ -80,9 +80,9 @@ public struct NumberBadge: View {
     public init(number: Int, chosen: Bool = false) { self.number = number; self.chosen = chosen }
     public var body: some View {
         Text("\(number)").font(.system(size: 11 * s, weight: .bold, design: .rounded))
-            .frame(width: 19, height: 19)
-            .background(RoundedRectangle(cornerRadius: 5).fill(chosen ? JobStyle.blue : Color.primary.opacity(0.1)))
-            .foregroundStyle(chosen ? Color.white : Color.primary.opacity(0.75))
+            .frame(width: JobLook.touch ? 24 : 19, height: JobLook.touch ? 24 : 19)
+            .background(RoundedRectangle(cornerRadius: JobLook.touch ? 12 : 5, style: .continuous).fill(chosen ? JobStyle.blue : Color.primary.opacity(0.1)))
+            .foregroundStyle(chosen ? JobStyle.onBlue : Color.primary.opacity(0.75))
     }
 }
 

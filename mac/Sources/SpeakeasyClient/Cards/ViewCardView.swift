@@ -72,7 +72,8 @@ struct CardBox<Content: View>: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(tint.map { AnyShapeStyle($0.opacity(0.14)) } ?? AnyShapeStyle(Color.primary.opacity(0.06)))
             )
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(0.06)))
+            // Touch: no hairline (cards sit on grouped sections already).
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(JobLook.touch ? 0 : 0.06)))
     }
 }
 
