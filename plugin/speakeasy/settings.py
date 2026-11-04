@@ -1,12 +1,13 @@
 """Server-side settings and the Hermes-side values Speakeasy reads (never writes secrets here).
 
 ``<HERMES_HOME>/speakeasy/settings.json`` (0600) holds only non-secret preferences. The optional
-OpenAI API key is read from the Hermes profile scope / ``.env`` as ``SPEAKEASY_OPENAI_API_KEY`` and
-the Hermes API server key/port from ``API_SERVER_KEY`` / ``API_SERVER_PORT``; neither is ever
-stored in settings or returned by a route.
+OpenAI API key (``SPEAKEASY_OPENAI_API_KEY``, or ``OPENAI_API_KEY``) and the Hermes API server
+key/port (``API_SERVER_KEY`` / ``API_SERVER_PORT``) are read through Hermes' own secret and env
+readers (:func:`hermes_secret`); none is ever stored in settings or returned by a route.
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import os
@@ -14,11 +15,12 @@ import re
 import shutil
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 DEFAULT_PORT = 8795
 DEFAULT_HERMES_API_PORT = 8642
 OPENAI_KEY_NAME = "SPEAKEASY_OPENAI_API_KEY"
+OPENAI_KEY_FALLBACK = "OPENAI_API_KEY"  # also accepted; earlier setup docs named it
 XAI_KEY_NAME = "XAI_API_KEY"  # fallback for Grok voice when Hermes holds no xAI sign-in
 GROK_BETA_OFF = ("Grok voice is a beta and it's off. Turn it on first: "
                  "`hermes voice config set beta.grok_voice true`")
@@ -348,55 +350,101 @@ def patch_for(dotted: str, raw: str) -> dict[str, Any]:
 
 # -- Hermes-side values ------------------------------------------------------------------
 
-def read_env_file(path: Path) -> dict[str, str]:
-    """Parse a Hermes .env (via Hermes' own tokenizer when importable)."""
+@contextlib.contextmanager
+def profile_scope(hermes_home: Path) -> Iterator[None]:
+    """Run Hermes' own config/secret readers for this profile.
+
+    HTTP handler threads and the CLI do not carry the gateway's per-turn profile scope, so this binds
+    the same two things Hermes binds for a turn: the profile home override (``hermes_constants``) and
+    the profile's secret mapping as Hermes builds it (``agent.secret_scope.build_profile_secret_scope``:
+    the profile's ``.env``, its external secret sources and any administrator-managed values).
+    Speakeasy itself never opens ``.env`` or ``auth.json``.
+    """
     try:
-        from agent.secret_scope import load_env_file  # type: ignore
-        return dict(load_env_file(path))
-    except Exception:
-        pass
-    out: dict[str, str] = {}
+        from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # type: ignore
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override  # type: ignore
+    except ImportError:  # outside Hermes (never in production): nothing to bind
+        yield
+        return
+    home = Path(hermes_home)
+    home_token = set_hermes_home_override(home)
     try:
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.removeprefix("export ").partition("=")
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-            out[key.strip()] = value
-    except OSError:
-        pass
-    return out
+        scope_token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    except BaseException:
+        reset_hermes_home_override(home_token)
+        raise
+    try:
+        yield
+    finally:
+        reset_secret_scope(scope_token)
+        reset_hermes_home_override(home_token)
 
 
 def hermes_secret(hermes_home: Path, name: str) -> str:
-    """A value from this profile's .env, else the Hermes secret scope, else the process env.
+    """A secret or env setting for this profile, through Hermes' sanctioned reader.
 
-    The profile .env comes first: HTTP handler threads do not carry the gateway's profile scope,
-    and the home is resolved once at construction.
+    ``hermes_cli.config.get_env_value_prefer_dotenv`` inside :func:`profile_scope`: the profile's own
+    value first (what Hermes and earlier Speakeasy versions read), then the profile secret scope and
+    the process environment through ``agent.secret_scope.get_secret``. Never logged or returned by a
+    route.
     """
-    value = read_env_file(Path(hermes_home) / ".env").get(name, "").strip()
-    if value:
-        return value
     try:
-        from agent.secret_scope import get_secret  # type: ignore
-        value = get_secret(name) or ""
-        if value:
-            return str(value).strip()
-    except Exception:
-        pass
-    return os.environ.get(name, "").strip()
+        from hermes_cli.config import get_env_value_prefer_dotenv  # type: ignore
+    except ImportError:
+        return os.environ.get(name, "").strip()
+    try:
+        with profile_scope(hermes_home):
+            return str(get_env_value_prefer_dotenv(name) or "").strip()
+    except Exception:  # an unreadable secret source must not take the voice server down
+        return ""
 
 
-def _hermes_config(hermes_home: Path) -> dict[str, Any]:
+def save_hermes_secret(hermes_home: Path, name: str, value: str) -> None:
+    """Store NAME=value in this profile through Hermes' env writer (``hermes_cli.config.save_env_value``:
+    atomic, private file mode, refuses administrator-managed keys). Raises ValueError when refused."""
+    from hermes_cli.config import require_env_writable, save_env_value  # type: ignore
+    with profile_scope(hermes_home):
+        require_env_writable(name, "set")
+        save_env_value(name, value)
+
+
+def profile_env_defines(hermes_home: Path, name: str) -> bool:
+    """True when this profile itself sets NAME (its ``.env``, as Hermes' ``load_env`` parses it),
+    whatever the process environment holds. Setup uses it to add a value only when it is missing."""
     try:
-        import yaml  # type: ignore
-        data = yaml.safe_load((Path(hermes_home) / "config.yaml").read_text(encoding="utf-8"))
+        from hermes_cli.config import load_env  # type: ignore
+    except ImportError:
+        return False
+    with profile_scope(hermes_home):
+        return name in load_env()
+
+
+def openai_api_key(hermes_home: Path) -> str:
+    """The OpenAI API key for the API-key voice path: ``SPEAKEASY_OPENAI_API_KEY`` (documented), else
+    ``OPENAI_API_KEY`` (accepted because earlier setup docs named it)."""
+    return hermes_secret(hermes_home, OPENAI_KEY_NAME) or hermes_secret(hermes_home, OPENAI_KEY_FALLBACK)
+
+
+def hermes_config(hermes_home: Path) -> dict[str, Any]:
+    """This profile's config.yaml as written, through Hermes' reader (``hermes_cli.config.read_raw_config``).
+    ``{}`` when missing or unreadable. Read-only: changes go through ``hermes_config.update``."""
+    try:
+        from hermes_cli.config import read_raw_config  # type: ignore
+    except ImportError:
+        read_raw_config = None
+    try:
+        if read_raw_config is not None:
+            with profile_scope(hermes_home):
+                data = read_raw_config()
+        else:
+            import yaml  # type: ignore
+            data = yaml.safe_load((Path(hermes_home) / "config.yaml").read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+_hermes_config = hermes_config
 
 
 def _api_server_block(cfg: dict[str, Any]) -> dict[str, Any]:

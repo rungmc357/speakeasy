@@ -1,7 +1,7 @@
 """Optional voice provider: an OpenAI API key (Platform ``gpt-live-1`` over WebRTC).
 
-The key is read only from the Hermes profile secret scope / ``.env`` as ``SPEAKEASY_OPENAI_API_KEY``;
-it never goes into settings, logs, or any route response.
+The key is read through Hermes' secret readers as ``SPEAKEASY_OPENAI_API_KEY`` (or ``OPENAI_API_KEY``,
+see ``settings.openai_api_key``); it never goes into settings, logs, or any route response.
 """
 from __future__ import annotations
 

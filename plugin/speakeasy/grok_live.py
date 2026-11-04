@@ -4,8 +4,9 @@ Unlike the other providers there is no server-side attach to a session the app o
 plugin owns the one xAI socket and relays audio: the app streams mic audio to
 ``/voice/interactions/<id>/audio`` (relay.py) and gets the assistant's audio back on the same
 socket. The xAI credential is the user's xAI sign-in that Hermes holds (``hermes auth add
-xai-oauth``), else ``XAI_API_KEY`` from the profile ``.env``. It is read per call and never logged,
-stored or returned.
+xai-oauth``), resolved and refreshed by Hermes itself, else ``XAI_API_KEY`` read through Hermes'
+secret readers. Speakeasy never opens Hermes' auth store. The credential is fetched per call and
+never logged, stored or returned.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ from typing import Any, Callable
 
 from .calls import SidebandWorker
 from .relay import READ_TIMEOUT_S, RelayClient, RelayProtocolError, RelaySocket
-from .settings import XAI_KEY_NAME, hermes_secret
+from .settings import XAI_KEY_NAME, hermes_secret, profile_scope
 from .text import ID_RE, clean_transcript
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ RELAY_LOST_S = 10.0          # the app's relay gone this long ends the call
 TRANSCRIPT_WAIT_S = 2.0      # a handoff waits this long for the words it came from
 MAX_EARLY_CHUNKS = 400       # mic audio held while the voice socket connects (~8 s of 20 ms chunks)
 SIGN_IN_HINT = ("Grok voice needs your xAI sign-in: run `hermes auth add xai-oauth` "
-                f"(SuperGrok or X Premium+), or put {XAI_KEY_NAME} in the Hermes .env.")
+                f"(SuperGrok or X Premium+), or set {XAI_KEY_NAME} in this Hermes profile.")
 
 HANDOFF_TOOL = {
     "type": "function",
@@ -66,21 +67,15 @@ GROK_RULES = (
 # -- credentials (read per use, never logged or returned) ---------------------------------------
 
 def _oauth_present(hermes_home: Path) -> bool:
-    """Cheap, offline: does this profile hold an xAI sign-in (Hermes' auth store)?"""
+    """Offline: does this profile hold an xAI sign-in? Asked of Hermes' credential pool
+    (``agent.credential_pool.load_pool``), the same store Hermes' own xAI resolver draws from."""
     try:
-        store = json.loads((Path(hermes_home) / "auth.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+        from agent.credential_pool import load_pool  # type: ignore
+        with profile_scope(hermes_home):
+            return bool(load_pool("xai-oauth").has_credentials())
+    except Exception as exc:  # never the message: it could carry account detail
+        logger.debug("speakeasy: Hermes credential pool unavailable (%s)", type(exc).__name__)
         return False
-    if not isinstance(store, dict):
-        return False
-    provider = (store.get("providers") or {}).get("xai-oauth") if isinstance(store.get("providers"), dict) else None
-    tokens = provider.get("tokens") if isinstance(provider, dict) else None
-    if isinstance(tokens, dict) and str(tokens.get("access_token") or "").strip():
-        return True
-    pool = store.get("credential_pool")
-    entries = pool.get("xai-oauth") if isinstance(pool, dict) else None
-    return isinstance(entries, list) and any(
-        isinstance(e, dict) and str(e.get("access_token") or "").strip() for e in entries)
 
 
 def signin_state(hermes_home: Path) -> tuple[bool, bool, str]:
@@ -90,7 +85,7 @@ def signin_state(hermes_home: Path) -> tuple[bool, bool, str]:
     if signed_in:
         return True, key_set, "Signed in to xAI (Grok)."
     if key_set:
-        return False, True, f"Using {XAI_KEY_NAME} from the Hermes .env (no xAI sign-in)."
+        return False, True, f"Using {XAI_KEY_NAME} from this Hermes profile (no xAI sign-in)."
     return False, False, SIGN_IN_HINT
 
 
@@ -99,7 +94,8 @@ def resolve_credential(hermes_home: Path) -> tuple[str, str]:
     first (it refreshes the sign-in when needed); older Hermes without it falls back to the key."""
     try:
         from tools.xai_http import resolve_xai_http_credentials  # type: ignore
-        creds = resolve_xai_http_credentials()
+        with profile_scope(hermes_home):
+            creds = resolve_xai_http_credentials()
         token = str((creds or {}).get("api_key") or "").strip()
         if token:
             base = str(creds.get("base_url") or XAI_BASE).rstrip("/")

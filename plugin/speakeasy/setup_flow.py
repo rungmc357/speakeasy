@@ -14,7 +14,8 @@ only opened once the voice server actually answers:
      restart, the link is sent automatically once it's back.
 
 Every external command goes through ``Env.run`` so tests can replace it. Nothing here prints a
-secret; the API key prompt is hidden and the key is written only to this profile's ``.env``.
+secret; the API key prompt is hidden and the key is stored only in this profile, through Hermes'
+own env writer (``hermes_cli.config.save_env_value``).
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .settings import OPENAI_KEY_NAME, Settings, codex_too_old, find_codex, read_env_file
+from .settings import OPENAI_KEY_NAME, Settings, codex_too_old, find_codex, openai_api_key, save_hermes_secret
 
 HEALTH_TIMEOUT_S = 60
 
@@ -93,29 +94,20 @@ def install_codex(env: Env) -> bool:
         return False
 
 
-def set_env_value(env_path: Path, name: str, value: str) -> None:
-    """Write NAME=value into a Hermes .env (replacing an existing NAME line), mode 0600."""
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    lines = [ln for ln in lines if not ln.split("=", 1)[0].strip().removeprefix("export ").strip() == name]
-    lines.append(f"{name}={value}")
-    tmp = env_path.with_suffix(".speakeasy.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    os.replace(tmp, env_path)
-    os.chmod(env_path, 0o600)
-
-
 def ask_api_key(env: Env, home: Path) -> bool:
     if not env.interactive:
-        env.out(f"  Put your OpenAI API key in {home / '.env'} as {OPENAI_KEY_NAME}, then run setup again.")
+        env.out(f"  Put your OpenAI API key in this Hermes profile as {OPENAI_KEY_NAME} (its .env, or "
+                f"`hermes config set {OPENAI_KEY_NAME} <key>`), then run setup again.")
         return False
     key = env.secret("  Paste your OpenAI API key (hidden, stored only in this Hermes profile's .env): ").strip()
     if not key.startswith("sk-") or len(key) < 20:
         env.out("  That doesn't look like an OpenAI API key (they start with sk-). Skipped.")
         return False
-    set_env_value(home / ".env", OPENAI_KEY_NAME, key)
+    try:
+        save_hermes_secret(home, OPENAI_KEY_NAME, key)
+    except ValueError as exc:  # Hermes refused the write (e.g. the key is administrator-managed)
+        env.out(f"  Hermes did not save the key: {exc}")
+        return False
     env.out("  Saved. Calls will use your OpenAI API key and bill that account.")
     return True
 
@@ -123,7 +115,7 @@ def ask_api_key(env: Env, home: Path) -> bool:
 def voice_sign_in(env: Env, home: Path, settings: Settings, *, api_key: bool, assume: bool | None) -> bool:
     """Leave one working voice provider configured. Returns True when voice is ready."""
     provider = settings.get()["voice"]["provider"]
-    have_key = bool(read_env_file(home / ".env").get(OPENAI_KEY_NAME, "").strip())
+    have_key = bool(openai_api_key(home))
     if api_key or (provider == "openai" and have_key):
         if not have_key and not ask_api_key(env, home):
             return False
@@ -214,8 +206,9 @@ def voice_server_running(env: Env, url: str) -> bool:
     return bool((env.health or voice_health)(url))
 
 
-RESTART_NOTE = ("Hermes needs a restart to turn Speakeasy on. Restart it the way you normally do "
-                "(for example `hermes gateway restart`). Chats pause for a few seconds.")
+RESTART_NOTE = ("Hermes needs a restart, once, to turn Speakeasy on: `hermes gateway restart` if the gateway "
+                "runs as a service, or stop `hermes gateway` and start it again if it runs in a terminal. "
+                "Chats pause for a few seconds. Later updates load without a restart.")
 
 
 # -- 4. tailscale ---------------------------------------------------------------------------------

@@ -112,11 +112,8 @@ def input_hash(hermes_home: Path) -> str:
             h.update(rel.encode() + b"\0" + (home / rel).read_bytes() + b"\0")
         except OSError:
             pass
-    try:
-        import yaml  # type: ignore
-        cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
-    except Exception:
-        cfg = {}
+    from .settings import hermes_config
+    cfg = hermes_config(home)
     if isinstance(cfg, dict):
         picked = {k: cfg.get(k) for k in ("toolsets", "agent", "personality", "display")}
         platforms = cfg.get("platforms")

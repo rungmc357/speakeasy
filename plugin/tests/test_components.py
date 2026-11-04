@@ -14,6 +14,7 @@ import pytest
 from speakeasy import continuity, delivery, settings as S
 from speakeasy.cards import ImageRejected, default_image_roots, read_local_image, vetted_image_url
 from speakeasy.text import media_images, product_cards
+from fakes import read_profile_env
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 64
 
@@ -135,7 +136,7 @@ def test_cli_setup_before_restart_prepares_profile(tmp_path, monkeypatch):
     rc = cli.cmd_setup(Namespace(server="", tailscale=False, api_key=False, send="", yes=False,
                                  no_restart=True, no_open=True), tmp_path, env=env)
     assert rc == 1
-    values = S.read_env_file(tmp_path / ".env")
+    values = read_profile_env(tmp_path)
     assert len(values["API_SERVER_KEY"]) >= 32 and values["API_SERVER_HOST"] == "127.0.0.1"
     assert stat.S_IMODE(os.stat(tmp_path / ".env").st_mode) == 0o600
     import yaml

@@ -1,9 +1,12 @@
 name: speakeasy
 label: Speakeasy
 kind: platform
-version: 0.3.21
+version: 0.3.22
+# Oldest Hermes with every API Speakeasy uses (secret scope + home override, env reader/writer,
+# credential pool, platform/CLI registration); the plugin suite passes against it.
+requires_hermes: ">=0.22.0"
 description: >
-  Talk to your Hermes agent by voice from a Mac. Adds a local `voice` platform
-  (a small HTTPS/HTTP endpoint the Speakeasy Mac app connects to) and the
-  `hermes voice` command for setup, pairing and device management.
+  Talk to your Hermes agent by voice from a Mac, iPhone or iPad. Adds a local
+  `voice` platform (a small HTTPS/HTTP endpoint the Speakeasy apps connect to)
+  and the `hermes voice` command for setup, pairing and device management.
 author: Speakeasy contributors

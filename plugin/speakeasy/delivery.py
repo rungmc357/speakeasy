@@ -70,12 +70,8 @@ def _read_json(path: Path) -> Any:
 
 
 def _hermes_config(hermes_home: Path) -> dict[str, Any]:
-    try:
-        import yaml  # type: ignore
-        data = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    from .settings import hermes_config
+    return hermes_config(Path(hermes_home))
 
 
 def _config_platform_blocks(config: dict[str, Any]) -> dict[str, dict[str, Any]]:

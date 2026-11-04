@@ -60,23 +60,18 @@ def is_auth_error(message: str) -> bool:
     return any(k in text for k in ("401", "unauthorized", "api key", "not logged in", "login", "auth"))
 
 
-_REJECTED: dict[str, tuple[float | None, str]] = {}
-
-
-def _auth_stamp() -> float | None:
-    """When Codex's saved sign-in last changed (a new `codex login` rewrites it)."""
-    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    try:
-        return (home / "auth.json").stat().st_mtime
-    except OSError:
-        return None
+_REJECTED: dict[str, tuple[float, str]] = {}
+# How long a call's sign-in rejection overrides `codex login status`. Speakeasy never looks at
+# Codex's own credential files, so it cannot see a fresh `codex login`; it trusts the status check
+# again after this long, or at once when a call succeeds.
+REJECTED_HOLD_S = 120.0
 
 
 def mark_signed_out(binary: Path | None, reason: str) -> None:
-    """A call just proved the saved sign-in doesn't work. `codex login status` only reads the file,
-    so it keeps saying "logged in"; Settings shows "not signed in" until the user signs in again."""
+    """A call just proved the saved sign-in doesn't work. `codex login status` only checks that a
+    sign-in is saved, so it keeps saying "logged in"; Settings shows "not signed in" for a while."""
     if binary is not None:
-        _REJECTED[str(binary)] = (_auth_stamp(), reason)
+        _REJECTED[str(binary)] = (time.monotonic(), reason)
         _LOGIN_CACHE.pop(str(binary), None)
 
 
@@ -101,9 +96,9 @@ def login_status(binary: Path | None, runner: Callable[..., Any] = subprocess.ru
         return False, "Codex CLI not found. Install it and run `codex login`, or set voice.codex_path."
     rejected = _REJECTED.get(str(binary))
     if rejected is not None:
-        if rejected[0] == _auth_stamp():
+        if time.monotonic() - rejected[0] < REJECTED_HOLD_S:
             return False, rejected[1]
-        _REJECTED.pop(str(binary), None)  # signed in again since the failed call
+        _REJECTED.pop(str(binary), None)  # long enough: trust `codex login status` again
     cached = _LOGIN_CACHE.get(str(binary))
     if cached and time.monotonic() - cached[0] < ttl_s:
         return cached[1]

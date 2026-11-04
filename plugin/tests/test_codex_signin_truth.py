@@ -28,18 +28,33 @@ def status_says(text: str):
     return lambda *a, **k: SimpleNamespace(returncode=0, stdout=text, stderr="")
 
 
-def test_a_rejected_call_flips_settings_to_not_signed_in(codex_home, tmp_path):
+def test_a_rejected_call_flips_settings_to_not_signed_in(codex_home, tmp_path, monkeypatch):
     binary = tmp_path / "codex-bin"
     runner = status_says("Logged in using ChatGPT")
     assert ct.login_status(binary, runner=runner)[0] is True
     ct.mark_signed_out(binary, ct.explain_codex_error("unexpected status 401 Unauthorized: token revoked"))
     ok, message = ct.login_status(binary, runner=runner)
     assert ok is False and "codex login" in message
-    # Signing in again rewrites auth.json: Settings trusts the status check again.
-    time.sleep(0.01)
-    (codex_home / "auth.json").write_text(json.dumps({"auth_mode": "chatgpt", "fresh": True}))
-    os.utime(codex_home / "auth.json", (time.time() + 5, time.time() + 5))
+    # Re-signing in rewrites Codex's own files, which Speakeasy never reads: after the hold,
+    # Settings trusts `codex login status` again.
+    monkeypatch.setattr(ct, "REJECTED_HOLD_S", 0.0)
     assert ct.login_status(binary, runner=runner)[0] is True
+
+
+def test_the_codex_credential_file_is_never_opened(codex_home, tmp_path, monkeypatch):
+    """Rule 11: no stat/read of another tool's login file; only `codex login status`."""
+    import builtins
+    from pathlib import Path as _P
+    touched: list[str] = []
+    real_open, real_stat = builtins.open, _P.stat
+    monkeypatch.setattr(builtins, "open", lambda f, *a, **k: touched.append(str(f)) or real_open(f, *a, **k))
+    monkeypatch.setattr(_P, "stat", lambda self, *a, **k: touched.append(str(self)) or real_stat(self, *a, **k))
+    binary = tmp_path / "codex-bin"
+    runner = status_says("Logged in using ChatGPT")
+    ct.login_status(binary, runner=runner)
+    ct.mark_signed_out(binary, "rejected")
+    ct.login_status(binary, runner=runner)
+    assert not any("auth.json" in p for p in touched)
 
 
 def test_the_error_names_the_real_problem():

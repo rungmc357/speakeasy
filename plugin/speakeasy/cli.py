@@ -1,7 +1,7 @@
 """``hermes voice`` — setup, pairing, devices, config and status for Speakeasy.
 
 ``setup`` touches only this profile: it enables the Hermes API server on loopback (generating
-``API_SERVER_KEY`` into the profile ``.env`` only if it is missing, never overwriting values),
+``API_SERVER_KEY`` through Hermes' env writer only if the profile lacks one, never overwriting values),
 enables the ``voice`` platform in ``config.yaml``, sets up voice sign-in, restarts Hermes (asked
 first) and waits for the voice server, starts the first voice-brief write and only then opens the
 pairing link. See setup_flow.py.
@@ -21,7 +21,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from .devices import PAIR_TTL_S, DeviceStore
-from .settings import valid_delivery_target, DEFAULT_PORT, Settings, SettingsError, get_path, patch_for, read_env_file
+from .settings import valid_delivery_target, DEFAULT_PORT, Settings, SettingsError, get_path, hermes_config as read_hermes_config, hermes_secret, patch_for, profile_env_defines, save_hermes_secret
 
 
 def _home() -> Path:
@@ -92,30 +92,12 @@ def setup_parser(parser) -> None:
 
 # -- helpers --------------------------------------------------------------------------------------
 
-def _read_yaml(path: Path) -> dict[str, Any]:
-    try:
-        import yaml  # type: ignore
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, yaml.YAMLError):  # read-only helper; writes go through hermes_config
-        return {}
-
-
-def append_env_if_missing(env_path: Path, values: dict[str, str]) -> list[str]:
-    """Append KEY=value lines for keys not already present. Never rewrites existing lines."""
-    existing = read_env_file(env_path)
-    added = [k for k in values if k not in existing]
-    if not added:
-        return []
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    prefix = ""
-    if env_path.exists():
-        text = env_path.read_text(encoding="utf-8")
-        prefix = "" if not text or text.endswith("\n") else "\n"
-    fd = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(fd, "a", encoding="utf-8") as f:
-        f.write(prefix + "".join(f"{k}={values[k]}\n" for k in added))
-    os.chmod(env_path, 0o600)
+def add_env_if_missing(home: Path, values: dict[str, str]) -> list[str]:
+    """Store each NAME=value this profile does not set yet, through Hermes' env writer. Never
+    rewrites a value the user already has."""
+    added = [k for k in values if not profile_env_defines(home, k)]
+    for name in added:
+        save_hermes_secret(home, name, values[name])
     return added
 
 
@@ -152,7 +134,7 @@ def enable_voice_platform(home: Path, port: int) -> bool:
 
 
 def voice_port(home: Path) -> int:
-    data = _read_yaml(home / "config.yaml")
+    data = read_hermes_config(home)
     try:
         return int(data["gateway"]["platforms"]["voice"]["extra"]["port"])
     except (KeyError, TypeError, ValueError):
@@ -182,11 +164,11 @@ def _open(url: str) -> bool:
 
 def _prepare_profile(home: Path, port: int, out) -> None:
     """Step 1: what Speakeasy needs in this profile. Never overwrites an existing value."""
-    added = append_env_if_missing(home / ".env", {
+    added = add_env_if_missing(home, {
         "API_SERVER_KEY": secrets.token_urlsafe(32),
         "API_SERVER_HOST": "127.0.0.1",
     })
-    host = read_env_file(home / ".env").get("API_SERVER_HOST", "127.0.0.1")
+    host = hermes_secret(home, "API_SERVER_HOST") or "127.0.0.1"
     if host not in {"127.0.0.1", "localhost", "::1"}:
         out(f"  Note: API_SERVER_HOST is {host}; Speakeasy only talks to it over loopback.")
     if added:
@@ -375,7 +357,8 @@ def cmd_fast(home: Path, args) -> int:
         elif what == "jev" and value in {"off", "", *jev.PROVIDERS}:
             if value not in {"off", ""} and not jev.available(home, value):
                 key = jev.PROVIDERS[value]["key"]
-                print(f"No {key} in this Hermes profile's .env. Add it there first, then run this again.")
+                print(f"No {key} in this Hermes profile. Add it with `hermes config set {key} <value>` "
+                      "(or to the profile's .env), then run this again.")
                 return 2
             settings.patch({"fast_routing": {"jev": "" if value in {"off", ""} else value}})
         elif what == "home":

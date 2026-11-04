@@ -4,7 +4,7 @@ Jev answers "where should this spoken request go?" in well under a second, inste
 seconds a chat model takes. It is optional: Speakeasy works without it, and any failure falls back
 to the normal routing model.
 
-Providers (the user picks one in settings; the key is read from the Hermes profile .env):
+Providers (the user picks one in settings; the key is read through Hermes' secret readers):
   venice      https://api.venice.ai/api/v1/decisions       VENICE_API_KEY      model jev-latest
   openrouter  https://openrouter.ai/api/alpha/decisions    OPENROUTER_API_KEY  model ~typesafe/jev-latest
   typesafe    https://api.typesafe.ai/v1/systemone         TYPESAFE_API_KEY    model jev-latest
