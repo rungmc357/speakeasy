@@ -67,6 +67,28 @@ def test_the_button_flips_the_device_and_the_card(home, hermes):
         svc.close()
 
 
+def test_a_stale_card_does_what_its_button_says_not_the_opposite(home, hermes):
+    """The card says "Turn on" (the light was off). If the light came on since (by voice, the
+    Home app, or the same card tapped on the Mac and the iPhone), the press leaves it on rather
+    than flipping it off, and the card catches up."""
+    svc, ha, interaction_id, task = _home_task(home, hermes)
+    try:
+        for state in ha._states:
+            if state["entity_id"] == "light.kitchen":
+                state["state"] = "on"
+        before = len(ha.calls)
+        out = svc.card_action(task["run_id"], {"view": 0, "action": "toggle"})
+        assert out == {"ok": True, "message": "Kitchen Lights are already on."}
+        assert len(ha.calls) == before  # nothing was switched
+        card = svc.store.work(task["run_id"])["result"]["views"][0]
+        assert card["devices"][0]["on"] is True and card["actions"][0]["label"] == "Turn off"
+        # a double tap (the second press arrives with the refreshed card's label) turns it off once
+        svc.card_action(task["run_id"], {"view": 0, "action": "toggle"})
+        assert ha.calls[-1] == ("light", "turn_off", {"entity_id": ["light.kitchen"]})
+    finally:
+        svc.close()
+
+
 def test_bad_presses_are_refused(home, hermes):
     from speakeasy.service import ServiceError
     svc, ha, interaction_id, task = _home_task(home, hermes)

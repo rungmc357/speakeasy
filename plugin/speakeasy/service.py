@@ -933,7 +933,10 @@ class VoiceService:
                 raise ServiceError(400, "that card has no device")
             if value is not None and not isinstance(value, (int, float)):
                 raise ServiceError(400, "value must be a brightness from 0 to 100")
-            reply, card = self.home_control.toggle(entity_id, value)
+            # The button does what its label said ("Turn off" on a card showing it on), not a blind flip.
+            shown = devices[0].get("on")
+            reply, card = self.home_control.toggle(entity_id, value,
+                                                   want_on=(not shown) if isinstance(shown, bool) else None)
             if not reply.ok:
                 raise ServiceError(409, reply.spoken)
             if card is not None:

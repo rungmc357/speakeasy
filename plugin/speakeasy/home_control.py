@@ -652,9 +652,15 @@ class HomeControl:
         devices = [by_id[i] for i in entity_ids if i in by_id and by_id[i].domain in TOGGLEABLE]
         return [device_view(d) for d in devices[:MAX_CARD_DEVICES]]
 
-    def toggle(self, entity_id: str, value: Any = None) -> tuple[Reply, dict[str, Any] | None]:
+    def toggle(self, entity_id: str, value: Any = None,
+               want_on: bool | None = None) -> tuple[Reply, dict[str, Any] | None]:
         """A card's on/off button: flip the device, or with ``value`` (0-100) set a light's brightness.
-        Only a device home control may touch. Returns the reply and the device's card as it is now."""
+        Only a device home control may touch. Returns the reply and the device's card as it is now.
+
+        ``want_on`` is what the pressed button said ("Turn off" means False). A card can be stale
+        (the device moved since, by voice, another app, or the same card tapped on a second device),
+        and a blind flip would then do the opposite of its label; a device already in that state is
+        left alone and the card is refreshed."""
         if not self.enabled:
             return Reply(False, "Home control is off in Speakeasy settings."), None
         try:
@@ -674,6 +680,9 @@ class HomeControl:
                         f"{name} {verb} at {int(value)}%." if value > 0 else f"{name} {verb} off.")
         else:
             on = device.state == "on"
+            if want_on is not None and on == want_on:
+                views = self.device_views((entity_id,))
+                return Reply(True, f"{name} {verb} already {'on' if on else 'off'}."), (views[0] if views else None)
             plan = Plan((Call(device.domain, "turn_off" if on else "turn_on", (entity_id,), {}),),
                         f"{name} {verb} {'off' if on else 'on'}.")
         reply = self.run(plan)
