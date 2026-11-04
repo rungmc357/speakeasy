@@ -1242,6 +1242,12 @@ def quick_log(request: str, spoken: str) -> str:
     return f"Quick answer: {request.strip()[:200]} → {spoken.strip()[:400]}"
 
 
+def choice_picked_note(text: str, question: str) -> str:
+    """Spoken now: the user tapped one of the options the voice just offered out loud."""
+    return (f"The user tapped \"{text}\" on screen as their answer to your question \"{question}\". Treat it as "
+            "exactly what they said: carry on with that choice now (hand it off if it is work), and don't ask again.")[:2000]
+
+
 def answered_note(text: str) -> str:
     """Told to the voice (not spoken) when the user answered a task's question by tapping."""
     return (f"The user tapped an answer on a task's question card: \"{text}\". It is already on its way to "

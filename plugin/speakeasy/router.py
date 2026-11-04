@@ -1554,3 +1554,43 @@ def fence_choice(request: str) -> str | None:
     if _FENCE_WAIT.search(said):
         return "wait"
     return None
+
+
+# -- spoken choices become cards ------------------------------------------------------------------
+_CHOICE_LEAD = re.compile(
+    r"(?i)^(?:(?:so|okay|ok|alright|great|sure|got it)[,.!]?\s+)*"
+    r"(?:(?:do|would) you (?:want|like|prefer)(?: me)?(?: to)?|should i|shall i|want me to|"
+    r"(?:which|what) (?:one |would you |do you )?(?:want|like|prefer)?(?: me to)?(?: do)?[:,]?|"
+    r"would you rather|do you prefer|are you thinking|want to|is (?:it|this|that)|prefer)\s+")
+_NOT_A_CHOICE = re.compile(r"(?i)\bor (?:not|no|something|anything|so|whatever|nothing|later)\b|\bwhether or\b|\bor else\b")
+MAX_CHOICES = 4
+MAX_CHOICE_WORDS = 10
+
+
+def spoken_choice(said: str) -> tuple[str, list[str]] | None:
+    """The voice offering the user a pick ("Should I book Nopa or Zuni?", "Den, bedroom, or both?"):
+    (the question, its 2-4 options). None for a yes/no question or anything else."""
+    text = " ".join(str(said or "").split())
+    questions = re.findall(r"[^.!?]*\?", text)
+    if not questions:
+        return None
+    question = questions[-1].strip()
+    if not re.search(r"(?i)\bor\b", question) or _NOT_A_CHOICE.search(question):
+        return None
+    body = question.rstrip("?").strip()
+    if ":" in body:  # "Which one do you want: Kayak, Expedia or Google Flights"
+        body = body.split(":", 1)[1]
+    # "Want the quick summary or the full report?" -> "the quick summary or the full report"
+    body = _CHOICE_LEAD.sub("", body, count=1).strip(" ,:")
+    parts = [p.strip(" ,.;:") for p in re.split(r"(?i),\s*(?:or\s+)?|\s+or\s+", body)]
+    options = [p for p in parts if p]
+    if not 2 <= len(options) <= MAX_CHOICES:
+        return None
+    if any(len(o.split()) > MAX_CHOICE_WORDS for o in options):
+        return None
+    if len(question.split()) > 40:
+        return None
+    options = [o[0].upper() + o[1:] for o in options]
+    if len({o.lower() for o in options}) != len(options):
+        return None
+    return question, options

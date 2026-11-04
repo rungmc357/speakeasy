@@ -660,6 +660,10 @@ class SidebandWorker:
         self.set_aside_tasks: set[str] = set()
         self.home_notes: list[str] = []
         self.home_tasks: set[str] = set()        # task ids that were instant home commands
+        # Choices the voice offered out loud, shown as question cards (task id -> question asked).
+        self.choice_tasks: dict[str, str] = {}
+        self.choice_answered: set[str] = set()
+        self.offered_choices: set[frozenset[str]] = set()
         self.replied_task: str | None = None     # the task the voice last spoke an answer from
         self.wants_show: set[str] = set()        # delegation ids the user wants to SEE (routing said show)
         self.show_seq = 0
@@ -923,6 +927,8 @@ class SidebandWorker:
                 self.listen_for_stop()
             else:
                 self.watch_acknowledgement()
+                if delta.rstrip().endswith("?"):
+                    self.watch_choice()
             return
         if kind == "session.delegation.created":
             delegation = event.get("delegation") or {}
@@ -938,6 +944,7 @@ class SidebandWorker:
             marked = delegation.get("task_id") or delegation.get("follow_up_task_id")
             self.schedule_dispatch(delegation_id, context, marked)
         elif kind == "session.closed":
+            self.close_choices()
             self.call_closed()
             with self.interaction.lock:
                 self.interaction.finalization = "confirmed"
@@ -947,6 +954,7 @@ class SidebandWorker:
             self.publish()
 
     def schedule_dispatch(self, delegation_id: str, context: str, marked: Any = None) -> None:
+        self.close_choices()  # answered (or moved past) out loud: the card goes
         self.handoff_at[delegation_id] = self.last_handoff_at = time.monotonic()
         with self.interaction.lock:
             self.interaction.revision += 1
@@ -957,6 +965,96 @@ class SidebandWorker:
         task = asyncio.get_running_loop().create_task(self.dispatch(delegation_id, revision, context, marked))
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
+
+    # -- spoken choices become cards -----------------------------------------------------------------
+    def watch_choice(self) -> None:
+        """The voice just asked something. If it offered a pick ("the quick summary or the full
+        report?"), put the options on screen as a question card the user can tap."""
+        fragments = list(getattr(self, "fragments", []))
+        turn = next((i for i in range(len(fragments) - 1, -1, -1) if fragments[i]["speaker"] == "user"), -1)
+        said = "".join(f["text"] for f in fragments[turn + 1:] if f["speaker"] == "assistant")
+        if said.lstrip().lower().startswith("quick question:"):
+            return  # reading a task's own question card aloud: that card is already up
+        found = router.spoken_choice(said)
+        if found is None:
+            return
+        question, options = found
+        key = frozenset(_words(question).split())
+        if key in self.offered_choices:
+            return
+        self.offered_choices.add(key)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self.offer_choice(question, options))
+        self.dispatch_tasks.add(task)
+        task.add_done_callback(self.dispatch_tasks.discard)
+
+    async def offer_choice(self, question: str, options: list[str]) -> str | None:
+        """A lightweight task holding the question card (no Hermes run). A tap goes back to the voice
+        as the user's answer (``answer``); answering out loud or hanging up sets it aside."""
+        from .views import extract_question
+        waiting = await asyncio.to_thread(self.waiting_on_user)
+        if any(t not in self.choice_tasks for t in waiting):
+            return None  # a task's own question is up; one decision on screen at a time
+        _, view = extract_question("\n```speakeasy-question\n" + json.dumps({"question": question, "options": options})
+                                   + "\n```")
+        if view is None:
+            return None
+        self.close_choices()  # a newer choice replaces an older unanswered one
+        delegation_id = "choice_" + secrets.token_hex(8)
+        idem = self._idem(delegation_id, 0)
+        backend = BackendRun(delegation_id, 0, idem, status="completed")
+        with self.interaction.lock:
+            self.interaction.runs[delegation_id] = backend
+        self.choice_tasks[delegation_id] = question
+        listed = "\n".join(f"{i + 1}. {o}" for i, o in enumerate(options))
+        try:
+            self.store.reserve_run(idem, self.interaction.interaction_id, delegation_id, 0)
+            self.store.set_title(idem, notice_text(question, 60) or "A quick choice")
+            self.store.update_run(idem, None, "completed")
+            self.store.set_result(idem, {"spoken": question, "full": f"**{question}**\n{listed}",
+                                         "question": view, "views": [view]})
+        except Exception:
+            logger.warning("speakeasy: could not record the spoken choice card")
+            return None
+        logger.info("speakeasy: spoken choice shown as a card (%d options)", len(options))
+        self.publish()
+        return delegation_id
+
+    def close_choices(self) -> None:
+        """Set aside every open spoken-choice card on this call."""
+        open_ids = [t for t in getattr(self, "choice_tasks", {}) if t not in self.choice_answered]
+        if not open_ids:
+            return
+        with self.interaction.lock:
+            keys = [self.interaction.runs[t].idem_key for t in open_ids if t in self.interaction.runs]
+        for task_id in open_ids:
+            self.choice_answered.add(task_id)
+        for key in keys:
+            try:
+                self.store.set_aside(key)
+            except Exception:
+                logger.info("speakeasy: could not set a spoken choice aside")
+        self.publish()
+
+    async def pick_choice(self, task_id: str, text: str) -> str:
+        """A tap on a spoken choice's card: the voice hears it as the user's answer."""
+        if task_id in self.choice_answered:
+            return task_id
+        question = self.choice_tasks.get(task_id, "")
+        with self.interaction.lock:
+            run = self.interaction.runs.get(task_id)
+        self.choice_answered.add(task_id)
+        if run is not None:
+            self.store.set_aside(run.idem_key)
+            self.store.progress(run.idem_key, "milestone", f"You picked: {notice_text(text, 120)}")
+        self.touch()
+        self.fragments.append({"speaker": "user", "text": text, "at": time.monotonic(), "start_ms": 0, "end_ms": 0})
+        await self.append("session.commentary.append", None, P.choice_picked_note(text, question))
+        self.publish()
+        return task_id
 
     # -- "on it" must mean a task -----------------------------------------------------------------
     def watch_acknowledgement(self) -> None:
@@ -1142,6 +1240,8 @@ class SidebandWorker:
             known = task_id in self.interaction.runs
         if not text or not known:
             return None
+        if task_id in getattr(self, "choice_tasks", {}):
+            return await self.pick_choice(task_id, text)
         # A double tap, or a tap plus the same answer said aloud, must reach the task once.
         key, now = (task_id, _words(text)), time.monotonic()
         answers = getattr(self, "recent_answers", None)
