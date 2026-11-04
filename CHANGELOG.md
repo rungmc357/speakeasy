@@ -2,6 +2,18 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Plugin 0.3.17 — Clearer task cards, buttons on cards, and no more "On it" with nothing started
+
+- **"On it" always means something started.** If the voice tells you it's on something, a task now really exists for it. If what you said was too short to act on, the voice says plainly that nothing started and asks what you want. *(Plugin)*
+- **Corrections replace, they don't pile up.** Saying "dining room, sorry" right after "turn on the living room lights" fixes the request instead of starting a second one, and saying the same thing twice starts one task. *(Plugin)*
+- **Task names read like to-dos.** Titles no longer stop mid-word ("Turn off the office lamp, turn"), skip your slips ("be- er, sorry"), and a home command is named for what changed, like *Office lamp off · Bedroom lamps on*. A quick "leave it" or "ship it" takes the name of the task it answers instead of a blank. *(Plugin)*
+- **Failed tasks say why.** Every failed task carries one plain sentence about what went wrong, such as "It timed out waiting on Hermes's model provider", never just "unknown". *(Plugin; shown by the apps once they update)*
+- **Progress you can read.** Tasks now report when they started and finished, which step they're on ("Step 3 of 5"), and, once there's enough to go on, about how long is left. *(Plugin; shown by the apps once they update)*
+- **Buttons on cards.** A home command's card has an on/off button for each light, switch or fan it touched, plus brightness for lights, so you can undo or adjust without calling again. *(Plugin; buttons appear once the apps update)*
+- **Pick from the screen.** When the voice offers you a choice out loud ("the quick summary or the full report?"), the options also appear as a card you can tap. *(Plugin; tappable once the apps update)*
+- **Key points first.** Long answers with sections now come with up to four short key points, so the apps can show those and tuck the full text behind Details. *(Plugin)*
+- **Speakeasy comes back by itself after a failed update.** If loading a new version and falling back to the old one both failed (for example, a brief disk error), the voice server used to stay down until Hermes restarted. It now keeps retrying, every few seconds at first, and `hermes voice reload` retries right away. *(Plugin)*
+
 ## Plugin 0.3.16 — Your assistant answers to its own name
 
 - **No more "Hey, I'm ChatGPT."** On a GPT-Live call, the voice could open by introducing itself as ChatGPT instead of the name you gave your assistant. The call instructions now end by restating its name, so a "hey, what's up" gets your assistant, not the voice provider. *(Plugin)*

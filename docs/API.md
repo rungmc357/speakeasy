@@ -35,7 +35,8 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/interactions/{id}/cancel-backend` | device | Stop a task's Hermes run |
 | POST | `/voice/interactions/{id}/skip-tour` | device | End the first-call tour |
 | POST | `/voice/interactions/{id}/early-request` | device | Words heard while the call connected: the first request (or, in a call from listening mode, "answer from the room") |
-| POST | `/voice/interactions/{id}/answer` | device | Answer a task's question card |
+| POST | `/voice/interactions/{id}/answer` | device | Answer a task's question card (or a spoken-choice card) |
+| POST | `/voice/interactions/{id}/card-action` | device | Press a button on a task's card during a call |
 | POST | `/voice/interactions/{id}/mic-check` | device | Log a mic repair (numbers only, no audio or words) |
 | POST | `/voice/interactions/{id}/screen` | device | Turn screen sharing on or off for this call |
 | POST | `/voice/interactions/{id}/captures/{capture_id}` | device | Report on a capture request |
@@ -43,6 +44,7 @@ used in the tests (timestamps and IDs will differ).
 | DELETE | `/voice/interactions/{id}/attachments/{attachment_id}` | device | Remove a pending picture or file |
 | GET | `/voice/work/latest` | device | Latest task + task list + recap |
 | GET | `/voice/work/{run_id}` | device | One task |
+| POST | `/voice/work/{run_id}/card-action` | device | Press a button on a task's card with no call open |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
 | GET | `/voice/titles` | device | Past tasks still under their stand-in title: what the app's Apple Intelligence sweep may rename |
 | POST | `/voice/titles` | device | Set one task's title (from the app's on-device titler); the job's name follows |
@@ -366,7 +368,28 @@ The newest task (`work`), the task list (`tasks`, newest last, finished ones hid
 dismissal) and the recap of results that finished while no call was open (`away`). Each task has
 `task_id`, `run_id`, `status` (`admitting`, `working`, `waiting_for_approval`, `waiting_on_task`,
 `completed`, `failed`, `cancelled`, `interrupted`, `ambiguous`), live `short_status`/`detail`, `events`,
-`result` (`spoken`, `full`, optional `label`, optional `cards`) and `email_drafts`.
+`result` (`spoken`, `full`, optional `label`, optional `cards`, optional `summary_points`) and `email_drafts`.
+
+**Job progress** (capability `job_progress`; all optional, null when unknown):
+`started_at` (unix seconds the task was admitted), `finished_at` (unix seconds it ended, null while
+running), `step_index` / `step_count` (the step it is on, 1-based, out of its `plan`; null without a
+plan; `step_index == step_count` once completed), `eta_seconds` (only once two steps are done, from
+their measured pace; never a guess), and `failure_reason`: one short plain sentence for a `failed`
+or `interrupted` task (e.g. "Hermes's model provider is out of credits.", "It timed out waiting on
+Hermes's model provider.", "Hermes stopped with an error and didn't say why."), never "unknown";
+null otherwise. The richer `failure` object (below) is unchanged.
+
+**Summary points** (capability `summary_points`): when an answer is laid out in sections (two or
+more headings, or a list of three or more), `result.summary_points` holds up to four key points of
+at most ten words each. `result.full` is unchanged; apps show the points and fold `full` behind
+Details.
+
+**Spoken choices** (capability `spoken_choices`): when the voice offers the user a pick out loud
+("the quick summary or the full report?"), a lightweight task appears (`task_id` starting
+`choice_`, status `completed`, no Hermes run) whose `result.question` / `result.views[0]` is a
+`question` view with the options. A tap goes through `POST /voice/interactions/{id}/answer` like any
+question card; the voice hears it as the user's answer and carries on (nothing is sent to Hermes).
+Answering out loud, a newer choice, or the call ending sets the card aside (`set_aside: true`).
 `follow_ups` (only when present) lists what the user added while it ran, oldest first:
 `{"text", "milestone", "state", "at"}`, where `milestone` is the matching `You added: …` event and
 `state` is `queued` (Hermes accepted it; the task has not read it yet), `landed` (it is in the task's
@@ -571,6 +594,27 @@ One task by Hermes run ID (including tasks from past calls). 404 if unknown.
   }
 }
 ```
+
+## Card actions
+
+Capability `card_actions`. Cards (entries of `result.views`) may carry buttons:
+`"actions": [{"id": "toggle", "label": "Turn off", "style": "primary|secondary|destructive", "confirm": false}]`
+(at most four; an action with `"value": "brightness"` also takes a 0–100 value, shown as a slider).
+Apps draw every action they get; the server decides what an id does and refuses ids it doesn't know.
+
+- `POST /voice/interactions/{id}/card-action` during a call: `{"run_id": "...", "view": 0, "action": "toggle", "value": 40}`
+- `POST /voice/work/{run_id}/card-action` with no call open (board browsing): the same body without `run_id`.
+
+`view` is the card's index in `result.views`; `value` is optional. `200 {"ok": true, "message":
+"Office Lamp is off."}` (a short line for a toast); the task's card is updated in place (new state
+and label) and the change is published to open calls. Errors: `400` bad body or an action the card
+doesn't have, `404` unknown run or card, `409 {"error": "..."}` when the action couldn't be done
+(Home Assistant unreachable, home control off, a bad value).
+
+Implemented actions: `toggle` on `home` cards. An instant home command's task shows one `home` card
+per light, switch or fan it moved (up to four), each with a `toggle` button that flips it (with a
+`value`, sets a light's brightness; 0 turns it off). Client-only actions (open a place in Maps, open
+a link, copy, chart scrubbing) need no server call.
 
 ## POST /voice/tasks/dismiss
 
@@ -904,6 +948,9 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `native` the main model sees them, `described` an auxiliary vision model describes them, `none`, or
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
+`capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
+`spoken_choices`, `summary_points` (each `true`). A missing object or flag means an older server:
+hide the matching controls and keep the old behaviour.
 
 `200`
 ```json
@@ -934,7 +981,8 @@ drops when it's missing, `images` is false or `vision` is `none`.
                   "max_request_image_bytes": 6500000, "max_file_bytes": 10000000},
   "room_listening": true,
   "room_on_resume": true,
-  "version": "0.2.0"
+  "version": "0.2.0",
+  "capabilities": {"card_actions": true, "job_progress": true, "spoken_choices": true, "summary_points": true}
 }
 ```
 
