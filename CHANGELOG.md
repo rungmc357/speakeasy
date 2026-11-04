@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates itself in the background; no restart needed). Each entry says which one it came with.
 
+## Plugin 0.3.18 — Pre-launch fixes
+
+- **Card buttons do what they say.** "Turn on" always turns a light on, even if the card was out of date or tapped on two devices at once.
+- **No stuck choice cards.** If the connection drops mid-call, the call's option cards go away instead of waiting for you forever, and an old card can't start a job by accident.
+- **Safer pairing.** Ten wrong pairing-code guesses retire the code; ask your Hermes for a new one.
+- **Grok calls on iPhone come back after a phone call or Siri** instead of going silent.
+- **Saving settings no longer shows a false "can't reach Hermes."**
+
 ## Mac 0.3.10 — See what the voice is doing, and act on what it finds
 
 - **Know when it's listening, hearing you, thinking or talking.** The orb is bigger, moves with your voice and its voice, and there's a new "Thinking" state between you finishing and the reply starting. The line being said shows as a live caption. *(Mac)*
