@@ -78,7 +78,7 @@ public enum StatusTone: Equatable, Sendable {
 }
 
 public struct PillPresentation: Equatable, Sendable {
-    public enum Mark: Equatable, Sendable { case speaking, listening, muted, connecting, idle }
+    public enum Mark: Equatable, Sendable { case speaking, listening, thinking, muted, connecting, idle }
     public var mark: Mark
     public var primary: String
     public var secondary: String
@@ -172,6 +172,8 @@ public func present(_ s: VoiceState) -> PillPresentation {
         else if muted { mark = .muted; primary = "Muted" }
         else if s.micHealth == .broken { mark = .idle; primary = "Mic isn't working" }
         else if s.micHealth == .repairing { mark = .connecting; primary = "Fixing the mic…" }
+        // The user stopped talking and the reply hasn't started: say it's being worked on.
+        else if s.isThinking { mark = .thinking; primary = "Thinking…" }
         // While the mic is still being checked it shows as Listening: the check only speaks up
         // when it finds a real fault, so a working call never flashes a mic status.
         else { mark = .listening; primary = "Listening" }
@@ -215,6 +217,7 @@ public func present(_ s: VoiceState) -> PillPresentation {
             if muted { secondary = "Mic off · call still open" }
             else if s.speech == .quieted { secondary = "Reply silenced · call continues" }
             else if case .speaking = s.speech { secondary = "Talk to interrupt" }
+            else if s.isThinking { secondary = "Working on a reply"; tone = .glimmer }
             else { secondary = "Go ahead" }
         case .ending where s.micHealth == .repairing:
             secondary = "Mic wasn't picking you up · reconnecting, conversation kept"

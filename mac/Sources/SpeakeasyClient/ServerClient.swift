@@ -283,6 +283,21 @@ public final class ServerClient: @unchecked Sendable {
     }
 
     /// A tapped answer on a task's question card; it reaches the task as a follow-up.
+    /// Runs a card's action (contract §2): in a call through the interaction, else on the run.
+    /// Returns the server's short message for a toast.
+    public func cardAction(interactionID: String?, runID: String, view: Int, action: String, value: Any?) async throws -> String? {
+        var body: [String: Any] = ["view": view, "action": action]
+        if let value { body["value"] = value }
+        let reply: [String: Any]
+        if let interactionID {
+            body["run_id"] = runID
+            reply = try await post("/voice/interactions/\(escape(interactionID))/card-action", body)
+        } else {
+            reply = try await post("/voice/work/\(escape(runID))/card-action", body)
+        }
+        return reply["message"] as? String
+    }
+
     public func answer(interactionID: String, taskID: String, text: String) async throws {
         _ = try await post("/voice/interactions/\(escape(interactionID))/answer", ["task_id": taskID, "text": text])
     }

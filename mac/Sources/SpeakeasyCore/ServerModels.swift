@@ -116,6 +116,8 @@ public struct WorkResult: Equatable, Sendable {
     public var views: [ViewCard]
     /// The report's structure (type, checks, what shipped, what's open, sections), when the api sorted it.
     public var shape: ResultShape?
+    /// Up to four short key points (plugin `summary_points`); empty from older plugins.
+    public var summaryPoints: [String] = []
     public init(spoken: String?, full: String?, label: String? = nil, products: [ProductCard] = [],
                 images: [ImageCard] = [], views: [ViewCard] = []) {
         self.spoken = spoken; self.full = full; self.label = label; self.products = products; self.images = images
@@ -206,6 +208,16 @@ public struct WorkInfo: Equatable, Sendable {
     /// Held back so two tasks don't edit one project at once: the running task it waits for.
     public var waitingFor: String?
     public var waitingProject: String?
+    // Job progress (contract §3; servers with `job_progress`). All optional.
+    public var startedAt: Date?
+    public var finishedAt: Date?
+    /// 1-based step the task is on, and how many steps it has.
+    public var stepIndex: Int?
+    public var stepCount: Int?
+    /// Only when the server has a real basis for it.
+    public var etaSeconds: Int?
+    /// One plain sentence; nil unless failed.
+    public var failureReason: String?
 
     /// The receipt for one "You added: …" step, if the api sent one.
     public func followUp(forStep text: String) -> FollowUp? { followUps.last { $0.milestone == text } }
@@ -273,6 +285,12 @@ public struct WorkInfo: Equatable, Sendable {
             waitingFor = nonEmpty(waiting["name"]).map { String($0.prefix(120)) }
             waitingProject = nonEmpty(waiting["project"]).map { String($0.prefix(80)) }
         }
+        startedAt = decodeDate(object["started_at"])
+        finishedAt = decodeDate(object["finished_at"])
+        stepIndex = (object["step_index"] as? NSNumber)?.intValue
+        stepCount = (object["step_count"] as? NSNumber)?.intValue
+        etaSeconds = (object["eta_seconds"] as? NSNumber)?.intValue
+        failureReason = status == "failed" ? nonEmpty(object["failure_reason"]).map { String($0.prefix(240)) } : nil
         plan = (object["plan"] as? [Any] ?? []).compactMap { $0 as? String }.filter { !$0.isEmpty }
         liveImage = LiveImage(json: object["live_image"])
         failure = status == "failed" ? WorkFailure(json: object["failure"]) : nil
@@ -291,6 +309,7 @@ public struct WorkInfo: Equatable, Sendable {
             var value = WorkResult(spoken: nonEmpty(raw["spoken"]), full: nonEmpty(raw["full"]),
                                    label: nonEmpty(raw["label"]), products: products, images: images, views: views)
             value.shape = ResultShape(json: raw["shape"])
+            value.summaryPoints = Array((raw["summary_points"] as? [Any] ?? []).compactMap { nonEmpty($0) }.prefix(4))
             // Cards alone are still a result: never drop cards because the text is empty.
             result = (value.spoken == nil && value.full == nil && products.isEmpty && images.isEmpty && views.isEmpty)
                 ? nil : value
@@ -401,15 +420,32 @@ public struct ApprovalInfo: Equatable, Sendable {
     public var runID: String
     public var requestID: String
     public var description: String
-    public init(runID: String, requestID: String, description: String) {
+    /// Optional detail a newer plugin may send: the command or tool it wants to run, what it acts
+    /// on, and why it needs to.
+    public var command: String?
+    public var target: String?
+    public var reason: String?
+    public init(runID: String, requestID: String, description: String, command: String? = nil,
+                target: String? = nil, reason: String? = nil) {
         self.runID = runID; self.requestID = requestID; self.description = description
+        self.command = command; self.target = target; self.reason = reason
+    }
+
+    /// What will happen, to what, and why, from what the server sent and the task it belongs to.
+    public func context(task: TaskItem?) -> (action: String, target: String?, why: String?) {
+        let action = description
+        let target = self.target ?? command ?? task?.info.title
+        let why = reason ?? task?.info.request.map { "You asked: \u{201C}\($0)\u{201D}" }
+        return (action, target == action ? nil : target, why)
     }
     public init?(json: Any?) {
         guard let object = json as? [String: Any],
               let requestID = object["request_id"] as? String,
               let runID = object["run_id"] as? String else { return nil }
         self.init(runID: runID, requestID: requestID,
-                  description: object["description"] as? String ?? "Approval needed to continue.")
+                  description: object["description"] as? String ?? "Approval needed to continue.",
+                  command: nonEmpty(object["command"]), target: nonEmpty(object["target"]),
+                  reason: nonEmpty(object["reason"]) ?? nonEmpty(object["why"]))
     }
 }
 

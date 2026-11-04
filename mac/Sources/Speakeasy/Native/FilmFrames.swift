@@ -19,13 +19,21 @@ enum FilmFrames {
         FileHandle.standardError.write("film: start\n".data(using: .utf8)!)
         Task { @MainActor in
             FileHandle.standardError.write("film: task\n".data(using: .utf8)!)
-            let site = ProcessInfo.processInfo.environment["SPEAKEASY_FILM_SET"] == "site"
-            cleanShots = site
-            let shots: [(String, VoiceState, String?)] = site ? siteBeats() : beats().map { ($0.0, $0.1, nil) }
-            for (name, state, open) in shots {
+            let set = ProcessInfo.processInfo.environment["SPEAKEASY_FILM_SET"]
+            let site = set == "site"
+            cleanShots = site || set == "ux"
+            let shots: [Shot] = set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
+            for shot in shots {
+                let (name, state, open) = (shot.name, shot.state, shot.open)
+                let m = client.model
+                ChartPreview.selection = nil
+                m.orbLevel = 0; m.previewProblem = nil; m.pendingPicks = [:]; m.toast = nil; m.openSections = []
+                if set == "ux" { for id in ["c", "a", "p", "f", "h", "m", "b"] { m.answers[id] = nil } }
+                m.capabilities = set == "ux" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true) : nil
                 client.showPreview(state, workExpanded: false)
                 client.model.onOpenJob(open)
                 client.model.boardFocusID = nil
+                shot.setup(m)
                 try? await Task.sleep(nanoseconds: 900_000_000)
                 do { try snapshot(client, to: "\(dir)/\(name).png"); print("film \(name)") }
                 catch { print("film FAILED \(name): \(error)") }
@@ -62,6 +70,14 @@ enum FilmFrames {
     }
 
     // MARK: Script
+
+    struct Shot {
+        var name: String; var state: VoiceState; var open: String?
+        var setup: @MainActor (VoicePanelModel) -> Void = { _ in }
+        init(_ name: String, _ state: VoiceState, _ open: String?, setup: @escaping @MainActor (VoicePanelModel) -> Void = { _ in }) {
+            self.name = name; self.state = state; self.open = open; self.setup = setup
+        }
+    }
 
     static func card(_ json: [String: Any]) -> ViewCard { ViewCard(json: json, number: 1)! }
 
@@ -118,7 +134,7 @@ enum FilmFrames {
         var s = base()
         s.exchange = Exchange(you: "", assistant: "", replyStarted: false)
         out.append(("01-idle", s))
-        s = base(); s.exchange = Exchange(you: "What's Nvidia at?", assistant: "", replyStarted: false)
+        s = base(); s.exchange = Exchange(you: "What's Nvidia at?", assistant: "", replyStarted: false); s.lastInputAt = now
         out.append(("02-ask-quote", s))
         s = base(); s.speech = .speaking(lastDelta: now)
         s.exchange = Exchange(you: "What's Nvidia at?", assistant: "Nvidia's at 187.42, up 2.1% today.", replyStarted: true)
@@ -235,5 +251,139 @@ enum FilmFrames {
         s.tasks = [flaky, invite]; s.workInfo = invite.info
         out.append(("site-draft", s, "task:a"))
         return out.map { name, state, open in var st = state; st.work = deriveWork(st, now: now); return (name, st, open) }
+    }
+
+    /// The UX states (`SPEAKEASY_FILM_SET=ux`): the four voice states, mic problems, decisions
+    /// (compare, undo), approvals, progress, failure, card actions, a light answer page. Invented data.
+    static func uxBeats() -> [Shot] {
+        let now = Date()
+        func base(_ speaking: Bool = false) -> VoiceState {
+            var s = VoiceState(); s.now = now; s.connection = .live; s.interactionID = "vi_ux"
+            if speaking { s.speech = .speaking(lastDelta: now) }
+            return s
+        }
+        func done(_ s: VoiceState) -> VoiceState { var st = s; st.work = deriveWork(st, now: now); return st }
+        var out: [Shot] = []
+
+        // 1–4: the four voice states.
+        out.append(Shot("ux-01-listening", done(base()), nil))
+        var s = base(); s.exchange = Exchange(you: "What's on my calendar tomorrow", assistant: ""); s.lastInputAt = now
+        out.append(Shot("ux-02-hearing", done(s), nil) { $0.orbLevel = 0.75 })
+        s = base(); s.exchange = Exchange(you: "What's on my calendar tomorrow?", assistant: ""); s.lastInputAt = now - 1
+        out.append(Shot("ux-03-thinking", done(s), nil))
+        s = base(true)
+        s.exchange = Exchange(you: "What's on my calendar tomorrow?",
+                              assistant: "Three things. Standup at 9:30, then a design review at 11 that runs an hour. "
+                                + "The afternoon is clear until a call with the hiring panel at 4, so you have a good block for the launch notes.",
+                              replyStarted: true)
+        out.append(Shot("ux-04-speaking", done(s), nil) { $0.orbLevel = 0.6 })
+
+        // 5–6: mic problems with a fix.
+        s = base(); s.connection = .failed("Microphone access is off — enable Speakeasy in System Settings › Privacy & Security › Microphone")
+        s.lastError = "Microphone access is off — enable Speakeasy in System Settings › Privacy & Security › Microphone"
+        out.append(Shot("ux-05-mic-permission", done(s), nil))
+        s = base(); s.micHealth = .broken
+        out.append(Shot("ux-06-mic-broken", done(s), nil))
+
+        // 7–9: a decision on a run that's still going: the board says Needs you; compare; undo.
+        let q = card(["kind": "question", "question": "Which caching layer should the API use?",
+                      "context": "Product pages call the pricing service on every view; it's 60% of API time.",
+                      "why": "In-process is the least to run and can be turned off with one flag.",
+                      "options": [
+                        ["text": "In-process cache", "detail": "Fastest to ship. Each server warms its own copy.",
+                         "risk": "low", "reversible": true, "tags": ["~1 hour"]],
+                        ["text": "Shared Redis", "detail": "One copy for every server. A new service to run.",
+                         "risk": "medium", "reversible": true, "tags": ["~half a day"]],
+                        ["text": "Leave it", "detail": "Nothing changes."]],
+                      "recommended": 0])
+        var ask = task("c", "working", "Speed up product pages", title: "Cache pricing calls", short: "Needs your pick",
+                       age: 40, now: now, result: WorkResult(spoken: nil, full: nil, views: [q]),
+                       milestones: ["Profiled the product page", "Pricing calls are 60% of API time"])
+        ask.info.updatedAt = now - 5
+        let running = progressTask(now: now)
+        s = base(); s.tasks = [running, ask]
+        out.append(Shot("ux-07-decide-board", done(s), nil))
+        out.append(Shot("ux-08-decide-compare", done(s), "task:c") { $0.openSections.insert("c|compare") })
+        out.append(Shot("ux-09-decide-undo", done(s), "task:c") { m in
+            m.answers["c"] = "In-process cache"; m.pendingPicks["c"] = Date().addingTimeInterval(4)
+        })
+
+        // 10: an approval with its context, real Approve/Deny on the tile.
+        var deploy = task("a", "waiting_for_approval", "Ship the pricing cache to staging", title: "Deploy to staging",
+                          short: "Waiting for your OK", age: 20, now: now, milestones: ["Tests pass", "Built the image"])
+        deploy.info.updatedAt = now - 3
+        s = base(); s.tasks = [running, deploy]
+        s.approval = ApprovalInfo(runID: "run_a", requestID: "req_1", description: "Run the staging deploy script",
+                                  command: "./deploy.sh staging", reason: "The cache change is ready and tests pass.")
+        out.append(Shot("ux-10-approval", done(s), nil))
+
+        // 11–12: progress with steps, elapsed and ETA; a failure with its reason and Retry.
+        s = base(); s.tasks = [running]; s.runID = "run_p"; s.workInfo = running.info
+        out.append(Shot("ux-11-progress", done(s), "task:p"))
+        var failed = task("f", "failed", "Renew the TLS certificate for the docs site", title: "Renew docs certificate",
+                          short: "Failed", age: 90, now: now, milestones: ["Requested a new certificate"])
+        failed.info.failureReason = "The DNS check failed: the docs domain doesn't point at this server yet."
+        s = base(); s.tasks = [running, failed]
+        out.append(Shot("ux-12-failed", done(s), nil))
+        out.append(Shot("ux-12b-failed-detail", done(s), "task:f"))
+
+        // 13–14: card actions: a device toggle (server action) with its toast; a chart and a place.
+        let lamp = card(["kind": "home", "title": "Office", "devices": [
+            ["name": "Desk lamp", "kind": "light", "on": true, "level": 20],
+            ["name": "Heater", "kind": "climate", "on": false, "state": "Off"]],
+            "actions": [["id": "toggle", "label": "Turn off lamp", "style": "primary"],
+                        ["id": "dim", "label": "Back to 60%", "value": 60]]])
+        let homeTask = task("h", "completed", "Is the office lamp on?", title: "Office lights", short: "Done", age: 2, now: now,
+                            result: WorkResult(spoken: "The desk lamp is on, dimmed to 20%.", full: nil, views: [lamp]))
+        s = base(); s.tasks = [homeTask]; s.workInfo = homeTask.info
+        out.append(Shot("ux-13-card-actions", done(s), "task:h") { $0.showToast("Desk lamp dimmed to 20%.") })
+        let chart = card(["kind": "chart", "title": "API p95 latency", "style": "line", "unit": "ms",
+                          "labels": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+                          "series": [["name": "p95", "values": [420, 410, 455, 180, 175]]]])
+        let place = ViewCard(json: ["kind": "place", "name": "Corner Coffee", "address": "100 Main St", "rating": 4.6,
+                                    "category": "Cafe"], number: 2)!
+        let mixed = task("m", "completed", "Did the cache help, and where's a coffee near the office?", title: "Cache results",
+                         short: "Done", age: 4, now: now,
+                         result: WorkResult(spoken: "Latency dropped by more than half after Wednesday's change.", full: nil,
+                                            views: [chart, place]))
+        s = base(); s.tasks = [mixed]; s.workInfo = mixed.info
+        out.append(Shot("ux-14-chart-place", done(s), "task:m"))
+        var scrub = mixed; scrub.id = "n"
+        s = base(); s.tasks = [scrub]; s.workInfo = scrub.info
+        ChartPreview.selection = nil
+        out.append(Shot("ux-14b-chart-scrub", done(s), "task:n") { _ in ChartPreview.selection = "Thu" })
+
+        // 15: a light answer page: headline, cards, key points, the long text folded.
+        var report = WorkResult(spoken: "The nightly backup failed twice this week, both times on the photos volume.",
+                                full: "I read the backup logs for the last seven nights. Five runs finished normally. "
+                                  + "Tuesday and Thursday stopped about forty minutes in, both while copying the photos volume. "
+                                  + "The error both times was a timeout talking to the storage bucket, and both runs overlapped with the "
+                                  + "weekly media re-index, which saturates the disk. Moving the backup an hour later, or the re-index "
+                                  + "to the weekend, would stop them overlapping. Nothing was lost: each failed night was covered by the next run.",
+                                views: [card(["kind": "stats", "title": "Backups, last 7 nights",
+                                              "items": [["label": "Finished", "value": "5"], ["label": "Failed", "value": "2"],
+                                                        ["label": "Data lost", "value": "None"]]])])
+        report.summaryPoints = ["2 of 7 nights failed, both on photos", "Both overlapped the weekly re-index",
+                                "Timeouts talking to the storage bucket", "Nothing lost: next run covered it"]
+        let backup = task("b", "completed", "Why did the backup fail?", title: "Backup failures", short: "Done", age: 5, now: now,
+                          result: report)
+        s = base(); s.tasks = [backup]; s.workInfo = backup.info
+        out.append(Shot("ux-15-light-answer", done(s), "task:b"))
+        return out
+    }
+
+    static func progressTask(now: Date) -> TaskItem {
+        var t = task("p", "working", "Migrate the search index to the new cluster", title: "Search index migration",
+                     short: "Copying shard 3 of 5", age: 10, now: now,
+                     milestones: ["Snapshotted the old index", "Created the new cluster", "Copying shards"])
+        t.info.plan = ["Snapshot the old index", "Create the new cluster", "Copy the shards", "Switch reads over", "Remove the old index"]
+        t.info.startedAt = now - 14 * 60
+        t.info.stepIndex = 3; t.info.stepCount = 5; t.info.etaSeconds = 9 * 60
+        // Steps logged at different times, so they don't all read the same.
+        t.info.events = [WorkEventItem(kind: "request", text: "Migrate the search index", at: now - 14 * 60),
+                         WorkEventItem(kind: "milestone", text: "Snapshotted the old index", at: now - 12 * 60),
+                         WorkEventItem(kind: "milestone", text: "Created the new cluster", at: now - 7 * 60),
+                         WorkEventItem(kind: "milestone", text: "Copying shards", at: now - 2 * 60)]
+        return t
     }
 }

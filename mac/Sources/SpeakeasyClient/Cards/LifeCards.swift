@@ -53,7 +53,7 @@ struct DayCard: View {
             if !free.isEmpty {
                 HStack(spacing: 5) {
                     Image(systemName: "checkmark.circle").font(.system(size: 10)).foregroundStyle(.green)
-                    Text("Free " + free.joined(separator: ", ")).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+                    Text("Free " + free.joined(separator: ", ")).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
         }
@@ -214,7 +214,7 @@ struct RouteCard: View {
             }
             .font(.system(size: 10.5)).foregroundStyle(.secondary)
             ForEach(Array(card["steps"].strings.prefix(5).enumerated()), id: \.offset) { _, s in
-                Text("· " + s).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                Text("· " + s).font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
         }
     }
@@ -235,7 +235,7 @@ struct TransitCard: View {
             HStack {
                 CardHeader(icon: "tram.fill", title: card["station"].string ?? "Departures")
                 if let status = card["status"].string {
-                    Text(status).font(.system(size: 10.5, weight: .medium))
+                    Text(status).font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(status.lowercased().contains("good") ? Color.green : Color.orange)
                 }
             }
@@ -245,7 +245,7 @@ struct TransitCard: View {
                         .frame(width: 24, height: 24).background(Circle().fill(lineColor(d["color"].string)))
                     VStack(alignment: .leading, spacing: 0) {
                         Text(d["destination"].string ?? "").font(.system(size: 12)).lineLimit(1)
-                        if let note = d["note"].string { Text(note).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(1) }
+                        if let note = d["note"].string { Text(note).font(.system(size: 11)).foregroundStyle(.orange).lineLimit(1) }
                     }
                     Spacer(minLength: 0)
                     if let m = d["minutes"].double {
@@ -267,12 +267,12 @@ struct FlightCard: View {
         CardBox {
             HStack {
                 CardHeader(icon: "airplane", title: [card["airline"].string, card["number"].string].compactMap { $0 }.joined(separator: " "))
-                Text(status).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(late ? Color.red : Color.green)
+                Text(status).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(late ? Color.red : Color.green)
             }
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(card["origin"].string ?? "").font(.system(size: 22, weight: .semibold))
-                    Text(card["departs"].string ?? "").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    Text(card["departs"].string ?? "").font(.system(size: 11.5)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 VStack(spacing: 3) {
@@ -282,7 +282,7 @@ struct FlightCard: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 1) {
                     Text(card["destination"].string ?? "").font(.system(size: 22, weight: .semibold))
-                    Text(card["arrives"].string ?? "").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    Text(card["arrives"].string ?? "").font(.system(size: 11.5)).foregroundStyle(.secondary)
                 }
             }
             HStack(spacing: 12) {
@@ -318,7 +318,7 @@ struct PackageCard: View {
                     .padding(.top, 3)
                     VStack(alignment: .leading, spacing: 0) {
                         Text(s["text"].string ?? "").font(.system(size: 11)).lineLimit(2)
-                        if let w = s["when"].string { Text(w).font(.system(size: 9.5)).foregroundStyle(.tertiary) }
+                        if let w = s["when"].string { Text(w).font(.system(size: 11.5)).foregroundStyle(.secondary) }
                     }
                 }
             }
@@ -392,7 +392,7 @@ struct DraftCard: View {
         CardBox(tint: status == "sent" ? .green : nil) {
             HStack {
                 CardHeader(icon: icon, title: (card["channel"].string ?? "Message") + " to " + (card["to"].string ?? ""))
-                Text(status == "sent" ? "Sent" : "Draft").font(.system(size: 10, weight: .semibold))
+                Text(status == "sent" ? "Sent" : "Draft").font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(status == "sent" ? Color.green : Color.orange)
             }
             if let subject = card["subject"].string { Text(subject).font(.system(size: 12.5, weight: .semibold)) }
@@ -426,7 +426,7 @@ struct InboxCard: View {
                         HStack {
                             Text(m["from"].string ?? "").font(.system(size: 12, weight: .semibold)).lineLimit(1)
                             Spacer(minLength: 0)
-                            Text(m["when"].string ?? "").font(.system(size: 10)).foregroundStyle(.tertiary)
+                            Text(m["when"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                         if let s = m["subject"].string { Text(s).font(.system(size: 11.5)).lineLimit(1) }
                         if let p = m["preview"].string { Text(p).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2) }

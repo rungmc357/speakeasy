@@ -80,7 +80,7 @@ public struct JobPill: View {
     public init(text: String, style: JobStyle.Pill) { self.text = text; self.style = style }
     public var body: some View {
         let (bg, fg) = JobStyle.pillColors(style)
-        Text(text).font(.system(size: 10 * s, weight: .semibold)).lineLimit(1)
+        Text(text).font(.system(size: 11 * s, weight: .semibold)).lineLimit(1)
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(Capsule().fill(bg)).foregroundStyle(fg)
             .fixedSize()
@@ -92,7 +92,7 @@ public struct SectionLabel: View {
     var text: String
     public init(text: String) { self.text = text }
     public var body: some View {
-        Text(text.uppercased()).font(.system(size: 9.5 * s, weight: .semibold)).tracking(0.7).foregroundStyle(.tertiary)
+        Text(text.uppercased()).font(.system(size: 10.5 * s, weight: .semibold)).tracking(0.7).foregroundStyle(.secondary)
     }
 }
 
@@ -192,12 +192,42 @@ public struct JobOrb: View {
     var unreadAnswers: Int = 0
     /// Where this orb sits ("folded", "header"); the smoke test reads what each one drew.
     var placement = ""
+    /// The mic is hearing the user right now (the ring follows the mic level).
+    var hearing = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(state: OrbState, size: CGFloat = 40, level: Double = 0, mark: PillPresentation.Mark? = nil,
-                unreadAnswers: Int = 0, placement: String = "") {
+                unreadAnswers: Int = 0, placement: String = "", hearing: Bool = false) {
         self.state = state; self.size = size; self.level = level; self.mark = mark
-        self.unreadAnswers = unreadAnswers; self.placement = placement
+        self.unreadAnswers = unreadAnswers; self.placement = placement; self.hearing = hearing
+    }
+
+    /// The voice ring around the orb: a quiet blue ring while the mic is open, swelling with your
+    /// voice while it hears you and with the reply while it speaks, and a turning arc while thinking.
+    /// Its colour never fights the orb's (amber still means needs you).
+    @ViewBuilder private var voiceRing: some View {
+        let blue = Color(red: 0.36, green: 0.62, blue: 1.0)
+        let lw = max(1.5, size * 0.055)
+        if mark == .thinking {
+            if reduceMotion {
+                Circle().stroke(blue.opacity(0.6), style: StrokeStyle(lineWidth: lw, dash: [3, 3]))
+            } else {
+                TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
+                    let t = ctx.date.timeIntervalSinceReferenceDate
+                    Circle().trim(from: 0, to: 0.3)
+                        .stroke(blue, style: StrokeStyle(lineWidth: lw, lineCap: .round))
+                        .rotationEffect(.degrees(t * 300))
+                }
+            }
+        } else if mark == .speaking {
+            Circle().stroke(Color.white.opacity(0.35 + 0.5 * Double(voice)), lineWidth: lw)
+                .scaleEffect(1 + (reduceMotion ? 0 : 0.18 * voice))
+                .animation(.easeOut(duration: 0.1), value: voice)
+        } else if mark == .listening {
+            Circle().stroke(blue.opacity(hearing ? 0.55 + 0.45 * Double(voice) : 0.4), lineWidth: lw)
+                .scaleEffect(1 + (reduceMotion || !hearing ? 0 : 0.2 * voice))
+                .animation(.easeOut(duration: 0.1), value: voice)
+        }
     }
 
     public static func colors(_ state: OrbState) -> [Color] {
@@ -225,7 +255,7 @@ public struct JobOrb: View {
                     TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
                         let t = ctx.date.timeIntervalSinceReferenceDate
                         let breath = (sin(t * 2.4) + 1) / 2
-                        orb(scale: 1 + 0.05 * breath + 0.08 * voice, glow: 0.45 + 0.35 * breath)
+                        orb(scale: 1 + 0.04 * breath + 0.2 * voice, glow: 0.45 + 0.35 * breath + 0.3 * Double(voice))
                     }
                 case _ where mark == .connecting:
                     TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
@@ -247,7 +277,8 @@ public struct JobOrb: View {
         }
         .saturation(dim ? 0.25 : 1)
         .opacity(dim ? 0.7 : 1)
-        .frame(width: size + 8, height: size + 8)
+        .overlay { voiceRing.frame(width: size + 6, height: size + 6).allowsHitTesting(false) }
+        .frame(width: size + 10, height: size + 10)
         .overlay(alignment: .topTrailing) {
             if case .needsYou(let n) = state {
                 // The count shows only when something needs you.
@@ -284,7 +315,7 @@ public struct JobOrb: View {
     /// What each placed orb last drew (panel smoke checks the header and the folded orb agree).
     @MainActor public static var drawn: [String: Drawn] = [:]
 
-    private var speakingLift: CGFloat { !reduceMotion && mark == .speaking ? 0.1 * voice : 0 }
+    private var speakingLift: CGFloat { !reduceMotion && mark == .speaking ? 0.2 * voice : 0 }
 
     private var accessibilityText: String {
         guard answerDot else { return state.label }
@@ -315,8 +346,10 @@ public struct AnswerTile: View {
     var action: () -> Void
     /// Dismiss without opening (the x, or Dismiss in the long-press menu): it moves to Done today.
     var onDismiss: (() -> Void)?
-    public init(job: Job, focused: Bool, onDismiss: (() -> Void)? = nil, action: @escaping () -> Void) {
-        self.job = job; self.focused = focused; self.onDismiss = onDismiss; self.action = action
+    /// What the voice is saying right now: the tile doesn't print the same line again under it.
+    var spokenNow: String?
+    public init(job: Job, focused: Bool, spokenNow: String? = nil, onDismiss: (() -> Void)? = nil, action: @escaping () -> Void) {
+        self.job = job; self.focused = focused; self.spokenNow = spokenNow; self.onDismiss = onDismiss; self.action = action
     }
     @State private var hover = false
 
@@ -330,7 +363,7 @@ public struct AnswerTile: View {
                         Circle().fill(JobOrb.answerBlue).frame(width: 6, height: 6)
                         Text(job.name).font(.system(size: 13 * s, weight: .semibold)).lineLimit(1)
                     }
-                    if let headline = JobAnswer.headline(info) {
+                    if let headline = JobAnswer.headline(info), !TextEcho.repeats(headline, in: spokenNow) {
                         Text(headline).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -405,7 +438,7 @@ public struct DoneChip: View {
                     .font(.system(size: 8 * s, weight: .bold)).foregroundStyle(JobStyle.green.opacity(0.9))
                 Text(job.name).font(.system(size: 11 * s)).lineLimit(1)
                 if job.setAside {
-                    Text("· Set aside").font(.system(size: 10.5 * s)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                    Text("· Set aside").font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
                 }
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
@@ -455,13 +488,14 @@ public struct JobTile: View {
 
     @ViewBuilder private var pill: some View {
         switch job.stage {
-        case .needsYou(let need): JobPill(text: need.label, style: .amber)
+        // A status, never a button look-alike: the actions are the buttons under it.
+        case .needsYou: JobPill(text: "Needs you", style: .amber)
         case .failed: JobPill(text: "Failed", style: .red)
         case .running:
             if job.activeTask?.info.status == "waiting_on_task" {
                 JobPill(text: "Waiting", style: .grey)   // held so two tasks don't edit one project at once
-            } else if let p = JobBoard.progress(job.activeTask?.info ?? job.newest.info) {
-                JobPill(text: "\(p.done + 1) of \(p.total)", style: .blue)
+            } else if let e = JobProgress.elapsed(job.activeTask?.info ?? job.newest.info, now: model.state.now) {
+                JobPill(text: "Running · \(e)", style: .blue)
             } else { JobPill(text: "Running", style: .blue) }
         case .done: JobPill(text: job.setAside ? "Set aside" : "Done", style: job.setAside ? .grey : .green)
         }
@@ -474,7 +508,7 @@ public struct JobTile: View {
                 if let rec = d.recommendedOption {
                     // The question is one click away; the tile leads with what to do.
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("RECOMMENDED").font(.system(size: 9 * s, weight: .semibold)).tracking(0.6).foregroundStyle(.tertiary)
+                        Text("RECOMMENDED").font(.system(size: 10 * s, weight: .semibold)).tracking(0.6).foregroundStyle(.secondary)
                             .fixedSize()
                         Text(rec.text).font(.system(size: 12 * s, weight: .medium)).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
@@ -493,9 +527,21 @@ public struct JobTile: View {
             }
         case .needsYou(.approve):
             let approval = model.state.approval.flatMap { a in job.tasks.contains { $0.info.runID == a.runID } ? a : nil }
-            Text(approval?.description ?? job.newest.info.shortStatus ?? "Waiting for your OK to continue")
-                .font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
-            if approval != nil {
+            let drafts = job.tasks.flatMap(\.info.pendingDrafts).count
+            if let approval {
+                ApprovalContext(approval: approval, task: job.tasks.last { $0.info.runID == approval.runID }, compact: true)
+            } else {
+                Text(drafts > 0 ? (drafts == 1 ? "An email is ready to send. Check it first." : "\(drafts) emails are ready to send.")
+                     : job.newest.info.shortStatus ?? "Waiting for your OK to continue")
+                    .font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            }
+            if approval == nil && drafts > 0 {
+                HStack(spacing: 6) {
+                    TileButton(title: drafts == 1 ? "Review & send" : "Review drafts", primary: true) { model.onOpenJob(job.id) }
+                    if model.setAsideTarget(job) != nil { NotNeededButton { model.setAside(job) } }
+                }
+                .padding(.top, 4)
+            } else if approval != nil {
                 HStack(spacing: 6) {
                     TileButton(title: "Approve", primary: true) { model.onApproval("once") }
                     TileButton(title: "Deny") { model.onApproval("deny") }
@@ -508,14 +554,35 @@ public struct JobTile: View {
             }
         case .needsYou(.review):
             let drafts = job.tasks.flatMap(\.info.pendingDrafts).count
-            detailsLine(drafts > 0 ? (drafts == 1 ? "An email draft to check" : "\(drafts) email drafts to check") : "Pictures to look at")
+            Text(drafts > 0 ? (drafts == 1 ? "An email draft to check" : "\(drafts) email drafts to check") : "Pictures to look at")
+                .font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
+            HStack(spacing: 6) {
+                TileButton(title: drafts > 0 ? "Review & send" : "Look", primary: true) { model.onOpenJob(job.id) }
+            }
+            .padding(.top, 3)
         case .failed:
-            detailsLine(job.newest.info.failure?.label ?? job.newest.info.failure?.text ?? "Stopped with an error")
+            let info = job.newest.info
+            Text(JobProgress.failureReason(info) ?? "Stopped with an error")
+                .font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                if model.canRetry { TileButton(title: "Retry", primary: true) { model.onRetry(job.newest.id) } }
+                TileButton(title: "Details") { model.onOpenJob(job.id) }
+            }
+            .padding(.top, 3)
         case .running:
             let info = job.activeTask?.info ?? job.newest.info
             Text(taskStatusLine(info, now: model.state.now, assistantName: model.state.assistantName).0)
                 .font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(1)
-            if let p = JobBoard.progress(info) { StepBar(done: p.done, total: p.total).padding(.top, 3) }
+            if let step = JobProgress.step(info) {
+                HStack(spacing: 8) {
+                    StepBar(done: step.index - 1, total: step.count)
+                    Text(["Step \(step.index) of \(step.count)", JobProgress.eta(info)].compactMap { $0 }.joined(separator: " · "))
+                        .font(.system(size: 11 * s, weight: .medium)).foregroundStyle(.secondary).fixedSize()
+                }
+                .padding(.top, 3)
+            } else if let eta = JobProgress.eta(info) {
+                Text(eta).font(.system(size: 11 * s)).foregroundStyle(.secondary)
+            }
         case .done:
             detailsLine(job.setAside ? "Already handled or not needed" : job.newest.info.result?.label ?? "Done")
         }
@@ -600,12 +667,21 @@ public struct JobDetailBody: View {
             ReportBoard(shape: shape, full: task.info.result?.full ?? task.info.result?.spoken, showHeadline: false,
                         expanded: model.expandedReports.contains(task.id),
                         toggle: { if model.expandedReports.contains(task.id) { model.expandedReports.remove(task.id) } else { model.expandedReports.insert(task.id) } })
-        } else if let text = task.info.result?.full ?? task.info.result?.spoken {
-            VStack(alignment: .leading, spacing: 4) {
-                SectionLabel(text: hasCards ? "In words" : "Answer")
-                // Links read as their names here; the addresses are listed under Sources.
-                Text(Self.readable(text)).font(.system(size: 12 * s)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        } else if let text = Self.bodyText(task.info) {
+            // The headline above already says the answer: key points, then the long text folded.
+            let points = task.info.result?.summaryPoints ?? []
+            VStack(alignment: .leading, spacing: 6) {
+                if !points.isEmpty { KeyPoints(points: points) }
+                if CollapsedText.isShort(text) && points.isEmpty {
+                    Text(Self.readable(text)).font(.system(size: 12 * s)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    CollapsedText(text: Self.readable(text), open: model.openSections.contains("\(task.id)|details")) {
+                        model.toggleSection("\(task.id)|details")
+                    }
+                }
             }
+        } else if let points = task.info.result?.summaryPoints, !points.isEmpty {
+            KeyPoints(points: points)
         }
     }
 
@@ -619,7 +695,7 @@ public struct JobDetailBody: View {
                         Image(systemName: "link").font(.system(size: 9.5 * s, weight: .semibold)).foregroundStyle(.tertiary)
                         Text(link.title).font(.system(size: 11.5 * s)).lineLimit(1)
                         Spacer(minLength: 4)
-                        Text(link.url.host ?? "").font(.system(size: 10.5 * s)).foregroundStyle(.tertiary).lineLimit(1)
+                        Text(link.url.host ?? "").font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .foregroundStyle(JobStyle.blueInk)
                 }
@@ -640,6 +716,13 @@ public struct JobDetailBody: View {
         }
     }
 
+    /// The answer's text beyond its headline: nil when it would only repeat the headline
+    /// (the spoken line, said again under it).
+    public static func bodyText(_ info: WorkInfo) -> String? {
+        guard let text = info.result?.full ?? info.result?.spoken else { return nil }
+        return TextEcho.remainder(text, after: JobAnswer.headline(info) ?? info.result?.spoken)
+    }
+
     /// Markdown links `[name](url)` as just their names; bold markers dropped.
     public static func readable(_ text: String) -> String {
         text.replacingOccurrences(of: #"\[([^\]\n]{1,100})\]\((https?://[^\s)]+)\)"#, with: "$1", options: .regularExpression)
@@ -647,6 +730,13 @@ public struct JobDetailBody: View {
     }
 
     /// The job view's status line while the job waits on the user.
+    /// After the user picks (still inside the Undo window, or before the agent reports back), the
+    /// task's own "Needs your pick" status is stale: say the pick is on its way instead.
+    @MainActor public static func pickedLine(_ job: Job, model: VoicePanelModel) -> String? {
+        guard let t = job.tasks.last(where: { $0.info.decision != nil && model.answers[$0.id] != nil }), t.isActive else { return nil }
+        return model.pendingPicks[t.id] != nil ? "Sending your pick" : "Got your pick · carrying on"
+    }
+
     public static func stageLine(_ job: Job) -> String {
         switch job.stage {
         case .needsYou(.decide): return "Waiting for your decision"
@@ -666,10 +756,13 @@ public struct JobDetailBody: View {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(JobStyle.green).font(.system(size: 12 * s))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("You picked").font(.system(size: 10 * s, weight: .semibold)).foregroundStyle(.tertiary)
+                    Text("You picked").font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(.secondary)
                     Text(picked).font(.system(size: 12 * s, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                    if let until = model.pendingPicks[task.id] {
+                        PickUndoBar(picked: picked, until: until) { model.undoPick(task.id) }.padding(.top, 4)
+                    }
                     if let q = task.info.decision?.question {
-                        Text(q).font(.system(size: 10.5 * s)).foregroundStyle(.tertiary).lineLimit(2)
+                        Text(q).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
             }
@@ -685,20 +778,27 @@ public struct JobDetailBody: View {
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: "arrow.uturn.down.circle.fill").foregroundStyle(.secondary).font(.system(size: 12 * s))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Set aside").font(.system(size: 10 * s, weight: .semibold)).foregroundStyle(.tertiary)
+                    Text("Set aside").font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(.secondary)
                     Text("Already handled or not needed. Nothing is waiting on you here.")
                         .font(.system(size: 12 * s, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                     if let q = job.tasks.last(where: { $0.info.decision != nil })?.info.decision?.question {
-                        Text(q).font(.system(size: 10.5 * s)).foregroundStyle(.tertiary).lineLimit(2)
+                        Text(q).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
             }
         }
         if let failed = job.tasks.last, failed.info.status == "failed" {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 5) {
                 SectionLabel(text: "What went wrong")
-                Text(failed.info.failure?.text ?? "The task stopped with an error.").font(.system(size: 12 * s))
+                Text(JobProgress.failureReason(failed.info) ?? "The task stopped with an error.").font(.system(size: 12.5 * s, weight: .medium))
                     .fixedSize(horizontal: false, vertical: true)
+                if let more = failed.info.failure?.text, more != JobProgress.failureReason(failed.info) {
+                    Text(more).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if model.canRetry {
+                    HStack { TileButton(title: "Retry", primary: true) { model.onRetry(failed.id) }; Spacer(minLength: 0) }
+                        .padding(.top, 2)
+                }
             }
         }
         // Every card of the job (a review, drafts, result cards): the most relevant open, the rest
@@ -718,9 +818,17 @@ public struct JobDetailBody: View {
                             expanded: model.expandedReports.contains(task.id),
                             toggle: { if model.expandedReports.contains(task.id) { model.expandedReports.remove(task.id) } else { model.expandedReports.insert(task.id) } })
             } else if let text = task.info.result?.full ?? task.info.result?.spoken {
-                VStack(alignment: .leading, spacing: 4) {
+                let points = task.info.result?.summaryPoints ?? []
+                VStack(alignment: .leading, spacing: 5) {
                     SectionLabel(text: "Result")
-                    Text(linkedText(text)).font(.system(size: 12 * s)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).tint(JobStyle.blueInk)
+                    if !points.isEmpty { KeyPoints(points: points) }
+                    if CollapsedText.isShort(text) && points.isEmpty {
+                        Text(linkedText(text)).font(.system(size: 12 * s)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true).tint(JobStyle.blueInk)
+                    } else {
+                        CollapsedText(text: text, open: model.openSections.contains("\(task.id)|details")) {
+                            model.toggleSection("\(task.id)|details")
+                        }
+                    }
                 }
             }
         }
@@ -735,7 +843,7 @@ public struct JobDetailBody: View {
                         Text(task.name).font(.system(size: 11.5 * s)).lineLimit(1)
                         Spacer(minLength: 4)
                         Text(task.isActive ? "running" : (task.info.status == "completed" ? "done" : task.info.status.replacingOccurrences(of: "_", with: " ")))
-                            .font(.system(size: 10.5 * s)).foregroundStyle(.tertiary)
+                            .font(.system(size: 11.5 * s)).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -760,6 +868,11 @@ public struct DecisionBrief: View {
     @ObservedObject var model: VoicePanelModel
     var part: Part = .all
     @Environment(\.jobTextScale) private var s
+    private var comparing: Binding<Bool> {
+        let key = "\(task.id)|compare"
+        return Binding(get: { model.openSections.contains(key) }, set: { on in
+            if on { model.openSections.insert(key) } else { model.openSections.remove(key) } })
+    }
 
     public init(job: Job, task: TaskItem, decision: Decision, model: VoicePanelModel, part: Part = .all) {
         self.job = job; self.task = task; self.decision = decision; self.model = model; self.part = part
@@ -772,7 +885,7 @@ public struct DecisionBrief: View {
             if part != .options {
                 HStack(spacing: 6) {
                     Circle().fill(answer == nil ? JobStyle.tileAmber : JobStyle.green).frame(width: 7, height: 7)
-                    Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 10.5 * s, weight: .semibold)).foregroundStyle(.secondary)
+                    Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 11.5 * s, weight: .semibold)).foregroundStyle(.secondary)
                 }
                 Text(decision.question).font(.system(size: 14 * s, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                 if let context = decision.context {
@@ -794,12 +907,28 @@ public struct DecisionBrief: View {
                 }
             }
             if part != .context {
-                SectionLabel(text: "Options").padding(.top, 2)
-                ForEach(Array(decision.options.enumerated()), id: \.offset) { i, option in
-                    DecisionOptionRow(number: i + 1, option: option, recommended: i == decision.recommended,
-                                      why: i == decision.recommended && part == .all ? decision.why : nil,
-                                      chosen: answer == option.text, dimmed: answer != nil && answer != option.text,
-                                      enabled: answer == nil) { model.pick(i + 1, in: job) }
+                HStack {
+                    SectionLabel(text: "Options")
+                    Spacer(minLength: 4)
+                    if DecisionCompare.worthComparing(decision) { CompareToggle(comparing: comparing) }
+                }
+                .padding(.top, 2)
+                if comparing.wrappedValue {
+                    DecisionCompare(decision: decision, chosen: answer, onPick: answer == nil ? { model.pick($0, in: job) } : nil)
+                    if part == .all, let why = decision.why {
+                        Text("Why the recommendation: \(why)").font(.system(size: 11 * s)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    ForEach(Array(decision.options.enumerated()), id: \.offset) { i, option in
+                        DecisionOptionRow(number: i + 1, option: option, recommended: i == decision.recommended,
+                                          why: i == decision.recommended && part == .all ? decision.why : nil,
+                                          chosen: answer == option.text, dimmed: answer != nil && answer != option.text,
+                                          enabled: answer == nil) { model.pick(i + 1, in: job) }
+                    }
+                }
+                if let answer, let until = model.pendingPicks[task.id] {
+                    PickUndoBar(picked: answer, until: until) { model.undoPick(task.id) }
                 }
                 if answer == nil {
                     // One-tap Approve only when the plugin said so; never inferred here.
@@ -807,7 +936,7 @@ public struct DecisionBrief: View {
                         TileButton(title: "Approve: \(rec.text)", primary: true) { model.approve(job) }
                     }
                     HStack(alignment: .center, spacing: 6) {
-                        Text(hint).font(.system(size: 10.5 * s)).foregroundStyle(.tertiary)
+                        Text(hint).font(.system(size: 11 * s)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 4)
                         if model.setAsideTarget(job) != nil { NotNeededButton { model.setAside(job) } }
@@ -858,10 +987,7 @@ struct DecisionOptionRow: View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("\(number)").font(.system(size: 10.5 * s, weight: .bold, design: .rounded))
-                        .frame(width: 18, height: 18)
-                        .background(RoundedRectangle(cornerRadius: 5).fill(chosen ? JobStyle.blue : Color.primary.opacity(0.09)))
-                        .foregroundStyle(chosen ? Color.white : Color.secondary)
+                    NumberBadge(number: number, chosen: chosen)
                     Text(option.text).font(.system(size: 12.5 * s, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
                     if chosen { Image(systemName: "checkmark").font(.system(size: 11 * s, weight: .bold)).foregroundStyle(JobStyle.blueInk) }
@@ -908,13 +1034,13 @@ public struct NotReadNotice: View {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Color.orange).font(.system(size: 12 * s))
             VStack(alignment: .leading, spacing: 2) {
                 Text(finished ? "Finished before reading what you added" : "Stopped before reading what you added")
-                    .font(.system(size: 10 * s, weight: .semibold)).foregroundStyle(.secondary)
+                    .font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(.secondary)
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     Text("\u{201C}\(item.text)\u{201D}").font(.system(size: 12 * s, weight: .medium))
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Text("It wasn't part of this answer. Ask again to run it as new work.")
-                    .font(.system(size: 10.5 * s)).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                    .font(.system(size: 11.5 * s)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .combine)
@@ -937,14 +1063,33 @@ public struct LiveSteps: View {
     public var body: some View {
         if let task = job.activeTask ?? recentPlanned {
             let info = task.info
+            let all = rows(info)
+            let key = "\(job.id)|steps"
+            let open = model.openSections.contains(key)
+            // Collapsed: just where it is now (the current step, else the last one).
+            let focus = all.lastIndex { $0.state == .current } ?? (all.isEmpty ? nil : all.count - 1)
+            let shown: [Row] = open || all.count <= 2 ? all : focus.map { [all[$0]] } ?? []
             VStack(alignment: .leading, spacing: 6) {
-                SectionLabel(text: task.isActive ? "Now" : "Steps")
+                HStack(alignment: .firstTextBaseline) {
+                    SectionLabel(text: task.isActive ? "Now" : "Steps")
+                    Spacer(minLength: 4)
+                    if let line = JobProgress.line(info, now: model.state.now) {
+                        Text(line).font(.system(size: 11 * s, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(rows(info).enumerated()), id: \.offset) { i, row in
-                        StepRow(text: row.text, sub: row.sub, state: row.state, last: i == rows(info).count - 1,
+                    ForEach(Array(shown.enumerated()), id: \.offset) { i, row in
+                        StepRow(text: row.text, sub: row.sub, state: row.state, last: i == shown.count - 1,
                                 undo: undoable && row.state == .done && row.receipt == nil ? { model.undoStep(row.text, in: job) } : nil,
                                 receipt: row.receipt)
                     }
+                }
+                if all.count > 2 {
+                    Button { model.toggleSection(key) } label: {
+                        Text(open ? "Show less" : "Show all \(all.count) steps").font(.system(size: 11.5 * s, weight: .semibold))
+                            .foregroundStyle(JobStyle.blueInk).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
                 if task.isActive && model.state.connection.isOpen {
                     HStack(spacing: 6) {
@@ -984,11 +1129,15 @@ public struct LiveSteps: View {
 
     private func rows(_ info: WorkInfo) -> [Row] {
         let milestones = info.milestones
-        if let p = JobBoard.progress(info) {
+        if var p = JobBoard.progress(info) {
+            // The server's own step number wins over counting milestones.
+            if let i = info.stepIndex, info.stepCount == info.plan.count, !info.isTerminal { p.done = min(max(i - 1, 0), p.total - 1) }
             return info.plan.enumerated().map { i, step in
                 let sub = i < milestones.count && milestones[i].text != step ? milestones[i].text : nil
                 if i < p.done { return Row(text: step, sub: sub, state: .done) }
-                if i == p.done && !info.isTerminal { return Row(text: step, sub: info.shortStatus, state: .current) }
+                if i == p.done && !info.isTerminal {
+                    return Row(text: step, sub: JobDetailBody.pickedLine(job, model: model) ?? info.shortStatus, state: .current)
+                }
                 return Row(text: step, sub: nil, state: info.isTerminal && info.status == "completed" ? .done : .next)
             }
         }
@@ -997,9 +1146,15 @@ public struct LiveSteps: View {
             if let f = info.followUp(forStep: m.text) {
                 return Row(text: m.text, sub: f.label, state: f.state == .landed ? .done : .next, receipt: f.state)
             }
-            return Row(text: m.text, sub: m.at.map(JobStyle.clock), state: .done)
+            return Row(text: m.text, sub: JobProgress.relative(m.at, now: model.state.now), state: .done)
         }
-        if !info.isTerminal, let now = info.shortStatus { out.append(Row(text: now, sub: info.detail, state: .current)) }
+        // Steps logged together read the same time: say it once, on the last of them.
+        for i in out.indices.dropLast() where out[i].receipt == nil && out[i].sub != nil && out[i].sub == out[i + 1].sub {
+            out[i].sub = nil
+        }
+        if !info.isTerminal, let now = JobDetailBody.pickedLine(job, model: model) ?? info.shortStatus {
+            out.append(Row(text: now, sub: info.detail, state: .current))
+        }
         return out
     }
 }
@@ -1059,7 +1214,7 @@ public struct StepRow: View {
                 if let sub {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         if let receiptSymbol { Image(systemName: receiptSymbol).font(.system(size: 9 * s, weight: .semibold)) }
-                        Text(sub).font(.system(size: 10.5 * s, weight: receipt == .notRead ? .semibold : .regular)).lineLimit(2)
+                        Text(sub).font(.system(size: 11 * s, weight: receipt == .notRead ? .semibold : .regular)).lineLimit(2)
                     }
                     .foregroundStyle(subColor)
                     .accessibilityElement(children: .combine)
@@ -1098,7 +1253,7 @@ public struct ReportBoard: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(c.value).font(.system(size: 15 * s, weight: .bold)).lineLimit(1).minimumScaleFactor(0.6)
                                 .foregroundStyle(c.good ? JobStyle.green : JobStyle.amber)
-                            Text(c.label).font(.system(size: 10 * s)).lineLimit(2)
+                            Text(c.label).font(.system(size: 11 * s)).lineLimit(2)
                                 .foregroundStyle(c.good ? JobStyle.green.opacity(0.75) : JobStyle.amber.opacity(0.8))
                         }
                         .padding(.horizontal, 8).padding(.vertical, 6)
@@ -1246,7 +1401,7 @@ public enum JobCards {
         func label(_ fallback: String) -> String { title ?? fallback }
         switch c.kind {
         case "weather":
-            let parts = [c["temp"].double.map { ViewCard.degrees($0) }, c["condition"].string?.capitalized]
+            let parts = [c["temp"].double.map { ViewCard.degrees($0) }, c["condition"].string.map(sentenceCase)]
             return ("cloud.sun", "Weather" + (c["place"].string.map { " · \($0)" } ?? ""), parts.compactMap { $0 }.joined(separator: " · "))
         case "quote":
             let price = c["price"].double.map { ViewCard.money($0, currency: c["currency"].string) }
@@ -1310,7 +1465,7 @@ public struct JobCardStack: View {
         case .draft(let draft):
             renderers.draft(draft)
         case .view(let taskID, let card):
-            ViewCardView(card).environment(\.questionActions, model.questionActions(for: taskID))
+            ActionableCard(taskID: taskID, card: card, model: model)
         }
     }
 }
@@ -1384,5 +1539,81 @@ extension View {
                 .onChange(of: frame) { _, new in LayoutProbe.frames[key] = new }
                 .onDisappear { LayoutProbe.frames[key] = nil }
         })
+    }
+}
+
+// MARK: - Approvals with their context
+
+/// What an approval will do, to what, and why, so the OK is an informed one.
+public struct ApprovalContext: View {
+    @Environment(\.jobTextScale) private var s
+    var approval: ApprovalInfo
+    var task: TaskItem?
+    var compact = false
+    public init(approval: ApprovalInfo, task: TaskItem?, compact: Bool = false) {
+        self.approval = approval; self.task = task; self.compact = compact
+    }
+    public var body: some View {
+        let ctx = approval.context(task: task)
+        VStack(alignment: .leading, spacing: compact ? 4 : 6) {
+            row("Will", ctx.action)
+            if let target = ctx.target { row("On", target) }
+            if let why = ctx.why { row("Why", why) }
+        }
+    }
+    private func row(_ label: String, _ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Text(label.uppercased()).font(.system(size: 10.5 * s, weight: .semibold)).tracking(0.5).foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .leading)
+            Text(text).font(.system(size: (compact ? 11.5 : 12) * s, weight: label == "Will" ? .medium : .regular))
+                .foregroundStyle(label == "Will" ? Color.primary : Color.secondary)
+                .lineLimit(compact ? 2 : 6).fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+// MARK: - Lighter job pages (contract §5)
+
+/// Up to four key points as a tight bullet list.
+public struct KeyPoints: View {
+    @Environment(\.jobTextScale) private var s
+    var points: [String]
+    public init(points: [String]) { self.points = points }
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(points.prefix(4).enumerated()), id: \.offset) { _, p in
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Circle().fill(JobStyle.blueInk.opacity(0.8)).frame(width: 5, height: 5).offset(y: -2)
+                    Text(p).font(.system(size: 12.5 * s)).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
+/// Long text folded to its first three lines, with Details to read the rest.
+public struct CollapsedText: View {
+    @Environment(\.jobTextScale) private var s
+    var text: String
+    var label: String
+    var open: Bool
+    var toggle: () -> Void
+    public init(text: String, label: String = "Details", open: Bool, toggle: @escaping () -> Void) {
+        self.text = text; self.label = label; self.open = open; self.toggle = toggle
+    }
+    /// Short enough to show whole.
+    public static func isShort(_ text: String) -> Bool { text.count <= 180 && !text.contains("\n\n") }
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(linkedText(text)).font(.system(size: 12 * s)).foregroundStyle(open ? Color.primary : Color.secondary)
+                .textSelection(.enabled).tint(JobStyle.blueInk)
+                .lineLimit(open ? nil : 3).fixedSize(horizontal: false, vertical: true)
+            Button(action: toggle) {
+                Text(open ? "Less" : "\(label) ›").font(.system(size: 11.5 * s, weight: .semibold))
+                    .foregroundStyle(JobStyle.blueInk).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
     }
 }

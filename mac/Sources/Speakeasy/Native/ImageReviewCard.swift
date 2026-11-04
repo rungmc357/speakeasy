@@ -45,7 +45,7 @@ struct ImageReviewCard: View {
             .frame(width: 52, height: 36).clipShape(RoundedRectangle(cornerRadius: 6))
             VStack(alignment: .leading, spacing: 1) {
                 Text(review.taskName).font(.system(size: 11.5, weight: .semibold)).lineLimit(1).truncationMode(.tail)
-                Text("Ready to review · \(review.countLabel)").font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                Text("Ready to review · \(review.countLabel)").font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
             PillButton(title: "Show", action: { model.focusedReviewID = review.runID; model.objectWillChange.send() })
@@ -72,12 +72,12 @@ struct ImageReviewCard: View {
                 }
                 Spacer(minLength: 4)
                 Text(review.images.count > 1 ? "\(index + 1) of \(review.images.count)" : review.countLabel)
-                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
+                    .font(.system(size: 11.5, weight: .medium)).foregroundStyle(.secondary)
                     .accessibilityLabel(review.images.count > 1 ? "Image \(index + 1) of \(review.images.count)" : review.countLabel)
             }
             preview
             if let card {
-                Text(card.name).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                Text(card.name).font(.system(size: 11.5)).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
             }
             HStack(spacing: 8) {

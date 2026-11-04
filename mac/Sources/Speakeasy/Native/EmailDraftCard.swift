@@ -52,7 +52,7 @@ struct EmailDraftCard: View {
                 Text("Email draft").font(.system(size: 11.5, weight: .semibold))
                 Spacer()
                 if let label = EmailDraft(draftID: draft.draftID, sha256: draft.sha256, status: status).stateLabel {
-                    Text(label).font(.system(size: 10.5, weight: .medium))
+                    Text(label).font(.system(size: 11.5, weight: .medium))
                         .foregroundStyle(status == .failed ? Tokens.red : (status == .sent ? Tokens.green : .secondary))
                         .accessibilityLabel("Status: \(label)")
                 }
@@ -102,7 +102,7 @@ struct EmailDraftCard: View {
                 }
             } else {
                 HStack(spacing: 8) {
-                    Text(actionable ? "Or just say what to change." : "").font(.system(size: 10)).foregroundStyle(.tertiary)
+                    Text(actionable ? "Or just say what to change." : "").font(.system(size: 11)).foregroundStyle(.secondary)
                     Spacer()
                     PillButton(title: "Deny", destructive: true, action: { model.onDraftAction(draft, .deny, nil) })
                         .accessibilityLabel("Deny: discard this email")
@@ -134,7 +134,7 @@ struct EmailDraftCard: View {
 
     private func field(_ label: String, _ value: String, bold: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(label).font(.system(size: 10.5)).foregroundStyle(.secondary).frame(width: 46, alignment: .leading)
+            Text(label).font(.system(size: 11.5)).foregroundStyle(.secondary).frame(width: 46, alignment: .leading)
             Text(value).font(.system(size: 11.5, weight: bold ? .semibold : .regular))
                 .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         }
