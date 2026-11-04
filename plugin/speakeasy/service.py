@@ -56,7 +56,7 @@ ROUTING_HINT = ("Also: `hermes voice routing` on the machine that runs Hermes. "
 
 MAX_SDP = 96 * 1024
 # UX contract flags in GET /voice/status ("capabilities"); clients hide what a server lacks.
-CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True}
+CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
 IDLE_CHECK_S = 15
 IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model setup rarely changes)

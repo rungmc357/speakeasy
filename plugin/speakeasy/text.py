@@ -607,6 +607,56 @@ def links_in(text: str) -> list[dict[str, str]]:
     return out
 
 
+MAX_SUMMARY_POINTS = 4
+SUMMARY_POINT_WORDS = 10
+_HEADING_RE = re.compile(r"^\s{0,3}(?:#{1,4}\s+(.+?)\s*#*\s*$|\*\*([^*]{2,80})\*\*:?\s*$)")
+_BULLET_RE = re.compile(r"^\s{0,3}(?:[-*•]|\d{1,2}[.)])\s+(.+)$")
+
+
+def _point(text: str) -> str | None:
+    """One key point: plain words, its first clause, at most SUMMARY_POINT_WORDS words."""
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"[*_`]+", "", text).strip()
+    text = re.split(r"(?<=[.!?])\s|\s[—–]\s|:\s", text, maxsplit=1)[0].strip(" .;:,-")
+    words = text.split()
+    if len(words) > SUMMARY_POINT_WORDS:
+        words = words[:SUMMARY_POINT_WORDS]
+        while len(words) > 2 and re.sub(r"[^a-z']", "", words[-1].lower()) in _TITLE_DANGLING:
+            words.pop()
+    point = " ".join(words).strip(" ,;:-")
+    return point if len(words) >= 2 and not SHELL_MARK_RE.search(point) else None
+
+
+def summary_points(full: str | None) -> list[str] | None:
+    """Up to four short key points for an answer laid out in sections (headings, or a list of three
+    or more): each section's first line, else the list's items. None for a plain answer."""
+    lines = [ln for ln in str(full or "").splitlines() if ln.strip()]
+    if any(ln.lstrip().startswith("```") for ln in lines):
+        lines = [ln for ln in re.sub(r"(?s)```.*?```", "", "\n".join(lines)).splitlines() if ln.strip()]
+    heads = [i for i, ln in enumerate(lines) if _HEADING_RE.match(ln)]
+    bullets = [m.group(1) for ln in lines if (m := _BULLET_RE.match(ln))]
+    raw: list[str] = []
+    if len(heads) >= 2:
+        for n, i in enumerate(heads):
+            end = heads[n + 1] if n + 1 < len(heads) else len(lines)
+            body = lines[i + 1:end]
+            first = next((m.group(1) if (m := _BULLET_RE.match(b)) else b for b in body), None)
+            head = _HEADING_RE.match(lines[i])
+            raw.append(first or head.group(1) or head.group(2))
+    elif len(bullets) >= 3:
+        raw = bullets
+    else:
+        return None
+    points: list[str] = []
+    for item in raw:
+        point = _point(item)
+        if point and point.lower() not in {p.lower() for p in points}:
+            points.append(point[0].upper() + point[1:])
+        if len(points) == MAX_SUMMARY_POINTS:
+            break
+    return points if len(points) >= 2 else None
+
+
 def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: str = "Done. The details are in the app.") -> dict[str, Any] | None:
     """Split a final answer into the spoken register and the full display register.
 
@@ -677,6 +727,8 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
                            for i, o in enumerate(question["options"]))
         full = ((full or "") + f"\n\n**{question['question']}**\n{listed}").strip()
     result: dict[str, Any] = {"spoken": spoken, "full": full or spoken}
+    if points := summary_points(full):
+        result["summary_points"] = points  # the job page's key points; "full" stays behind Details
     if question:
         result["question"] = question
     if cards:
