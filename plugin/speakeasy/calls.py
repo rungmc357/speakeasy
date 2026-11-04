@@ -853,6 +853,10 @@ class SidebandWorker:
         """
         if self.rt.duck is not None:  # also when the transport dropped without a session.closed
             self.rt.duck.restore(self.interaction.interaction_id)
+        # A spoken choice's card is only answerable by this call's voice. A dropped connection (no
+        # session.closed) used to leave it up as "needs you" for good, and a tap on it after a resume
+        # became a follow-up Hermes job of a task that never ran. It goes with the call.
+        self.close_choices()
         with self.interaction.lock:
             if self.interaction.call_closed:
                 return
@@ -1242,6 +1246,10 @@ class SidebandWorker:
             return None
         if task_id in getattr(self, "choice_tasks", {}):
             return await self.pick_choice(task_id, text)
+        if task_id.startswith("choice_"):
+            # Another leg's spoken choice (carried over by a resume): only the voice that asked it can
+            # take the pick, and it has no Hermes run to follow up. Refused, so the app says "say it".
+            return None
         # A double tap, or a tap plus the same answer said aloud, must reach the task once.
         key, now = (task_id, _words(text)), time.monotonic()
         answers = getattr(self, "recent_answers", None)

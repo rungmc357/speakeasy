@@ -57,3 +57,28 @@ def test_a_yes_no_question_makes_no_card(server, service, hermes):
     said(worker, "Want me to look up what they charge?")
     time.sleep(0.5)
     assert _choice_task(server) is None
+
+
+def test_a_dropped_connection_takes_the_choice_card_with_it(server, service, hermes):
+    """No session.closed (Wi-Fi drop, transport EOF): the card must not stay up as needing you."""
+    _, worker = start_call(server, service)
+    said(worker, "Coffee or tea?")
+    task = wait_for(lambda: _choice_task(server), timeout=5)
+    assert not task.get("set_aside")
+    worker.call_closed()   # what every transport's finally block does on a drop
+    wait_for(lambda: _choice_task(server).get("set_aside"), timeout=5)
+    assert not hermes.calls
+
+
+def test_a_choice_this_voice_did_not_ask_never_becomes_a_hermes_job(server, service, hermes):
+    """After a resume the new leg carries the old leg's runs, but not its spoken choices: a late tap
+    on the old card is refused rather than sent to Hermes as a follow-up of a task that never ran."""
+    session, worker = start_call(server, service)
+    said(worker, "Coffee or tea?")
+    task = wait_for(lambda: _choice_task(server), timeout=5)
+    worker.choice_tasks.pop(task["task_id"])   # as on the resumed leg's worker
+    status, _ = http(server.base_url, "POST", f"/voice/interactions/{session['interaction_id']}/answer",
+                     {"task_id": task["task_id"], "text": "Tea"}, token=server.token)
+    assert status == 404
+    time.sleep(0.3)
+    assert not hermes.calls
