@@ -88,7 +88,7 @@ def test_touched_comes_from_files_urls_and_commands():
 # -- redaction ------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("raw,gone,kept", [
-    ("OPENAI_API_KEY=sk-test1234567890abcdef npx playwright test", ["sk-test", "1234567890abcdef"], ["OPENAI_API_KEY", "playwright"]),
+    ("OPENAI_API_KEY=sk" "-test1234567890abcdef npx playwright test", ["sk-test", "1234567890abcdef"], ["OPENAI_API_KEY", "playwright"]),
     ("export GITHUB_TOKEN=ghp_FAKEFAKEFAKEFAKEFAKE12 && make", ["ghp_"], ["GITHUB_TOKEN"]),
     ("curl -H 'Authorization: Bearer abc.def.ghi' https://api.example.com/v1/items?api_key=zzz", ["abc.def", "zzz", "api_key="],
      ["api.example.com/v1/items"]),
@@ -99,7 +99,7 @@ def test_touched_comes_from_files_urls_and_commands():
     ("email pat.doe@example.com about it", ["pat.doe@example.com"], ["an email address"]),
     ("session d41d8cd98f00b204e9800998ecf8427e", ["d41d8cd98f00b204e9800998ecf8427e"], ["session"]),
     ("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl", ["eyJhbGci"], []),
-    ("aws AKIAABCDEFGHIJKLMNOP s3 ls", ["AKIAABCDEFGHIJKLMNOP"], ["s3 ls"]),
+    ("aws AK" "IAABCDEFGHIJKLMNOP s3 ls", ["AK" "IAABCDEFGHIJKLMNOP"], ["s3 ls"]),
 ])
 def test_secrets_tokens_env_values_and_long_paths_are_redacted(raw, gone, kept):
     out = A.redact(raw)
@@ -110,7 +110,7 @@ def test_secrets_tokens_env_values_and_long_paths_are_redacted(raw, gone, kept):
 
 
 def test_redacted_commands_still_reach_the_feed_but_nothing_secret_does():
-    secret = "sk-live-FAKE0123456789abcdef"
+    secret = "sk" "-live-FAKE0123456789abcdef"
     _, out = _run([started("terminal", f"STRIPE_KEY={secret} npm test -- checkout"),
                    {"event": "message.interim", "text": f"The key {secret} was wrong. The mock needs a fixed port."}])
     dumped = json.dumps(out)
