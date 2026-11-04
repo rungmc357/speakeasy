@@ -113,9 +113,10 @@ final class JobBoardTests: XCTestCase {
         XCTAssertEqual(stage("ask"), .done)
         jobs = JobBoard.jobs(tasks, dismissed: ["ask"])
         XCTAssertEqual(stage("ask"), .done)
-        // A review waiting.
+        // Pictures waiting to be looked at: nothing to act on, so not Needs you.
         jobs = JobBoard.jobs(tasks, reviewing: ["done"])
-        XCTAssertEqual(stage("done"), .needsYou(.review))
+        XCTAssertEqual(stage("done"), .done)
+        XCTAssertEqual(jobs.first { $0.id == "task:done" }?.lookTaskID, "done")
         // An old question falls off.
         jobs = JobBoard.jobs([task("ask", age: 2 * 86400, views: q)])
         XCTAssertEqual(jobs.first?.stage, .done)
@@ -246,12 +247,12 @@ final class JobBoardTests: XCTestCase {
             XCTAssertEqual(t.info.reviewImages, [1])
             XCTAssertEqual(t.info.reviewIsIncidental, incidental, t.id)
             let job = JobBoard.jobs([t], reviewing: [t.id], now: now).first!
-            XCTAssertEqual(job.stage.needsYou, !incidental, t.id)
+            // Only the question needs you; pictures alone are new (Look), never Needs you.
+            XCTAssertEqual(job.stage.needsYou, t.id == "ask", t.id)
             XCTAssertEqual(job.answerTask != nil, incidental, t.id)
-            if incidental {
+            if t.id != "ask" {
                 XCTAssertEqual(JobBoard.sections([job], now: now).newAnswers.map(\.id), [job.id], t.id)
-            } else if t.id != "ask" {
-                XCTAssertEqual(job.stage, .needsYou(.review), t.id)
+                XCTAssertEqual(job.lookTask != nil, !incidental, t.id)
             }
         }
         // No pictures waiting: nothing incidental (the plain answer path applies).
@@ -279,5 +280,77 @@ final class JobBoardTests: XCTestCase {
         XCTAssertFalse(OrbState.idle.showsAnswerDot(unread: 0))
         XCTAssertFalse(OrbState.needsYou(1).showsAnswerDot(unread: 3))
         XCTAssertFalse(OrbState.failed(needs: 0).showsAnswerDot(unread: 3))
+    }
+
+    // MARK: Needs you only when there is something to act on
+
+    func testPicturesToLookAtAreNewNotNeedsYouAndClearOnceSeen() {
+        let pics = reviewed("pics", result: ["spoken": "Three takes on the landing page."])
+        let job = JobBoard.jobs([pics], reviewing: ["pics"], now: now).first!
+        XCTAssertEqual(job.stage, .done)
+        XCTAssertNil(job.answerTask, "pictures that are the deliverable are not an answer")
+        XCTAssertEqual(job.newTask?.id, "pics")
+        var s = JobBoard.sections([job], now: now)
+        XCTAssertTrue(s.needsYou.isEmpty)
+        XCTAssertEqual(s.newAnswers.map(\.id), [job.id])
+        // Opened (or dismissed): it clears into Done today.
+        s = JobBoard.sections([job], seen: [JobBoard.seenKey(pics)], now: now)
+        XCTAssertTrue(s.newAnswers.isEmpty)
+        XCTAssertEqual(s.doneToday.map(\.id), [job.id])
+        // Pictures from an earlier day still show as new until looked at, then drop off.
+        let later = Calendar.current.date(byAdding: .day, value: 3, to: now)!
+        XCTAssertEqual(JobBoard.sections([job], now: later).newAnswers.map(\.id), [job.id])
+        XCTAssertTrue(JobBoard.sections([job], seen: [JobBoard.seenKey(pics)], now: later).all.isEmpty)
+        XCTAssertEqual(JobAnswer.lookLine(pics.info), "Pictures to look at")
+    }
+
+    func testOnlyActionableThingsNeedYou() {
+        let q: [[String: Any]] = [["kind": "question", "question": "Ship it?", "options": ["Yes", "No"]]]
+        let draft = TaskItem(json: ["task_id": "draft", "run_id": "run_draft", "status": "completed",
+                                    "updated_at": now.timeIntervalSince1970 - 10,
+                                    "email_drafts": [["draft_id": "d1", "sha256": "abc", "from": "me@example.com",
+                                                      "to": ["a@example.com"], "subject": "Hi", "body": "Hello",
+                                                      "status": "pending"]]])!
+        let cases: [(TaskItem, Set<String>, Job.Stage)] = [
+            (task("ask", views: q), [], .needsYou(.decide)),
+            (task("appr", "waiting_for_approval"), [], .needsYou(.approve)),
+            (reviewed("pics", result: ["spoken": "Here they are."]), ["pics"], .done),
+            (reviewed("picsAsk", result: ["views": q]), ["picsAsk"], .needsYou(.decide)),
+            (task("plain"), [], .done),
+            (task("run", "working", plan: ["One", "Two"]), [], .running),
+        ]
+        for (t, reviewing, want) in cases {
+            XCTAssertEqual(JobBoard.jobs([t], reviewing: reviewing, now: now).first?.stage, want, t.id)
+        }
+        XCTAssertFalse(draft.info.pendingDrafts.isEmpty)
+        XCTAssertEqual(JobBoard.jobs([draft], now: now).first?.stage, .needsYou(.review), "a draft to send or deny is an action")
+    }
+
+    // MARK: One source of truth for polled task rows
+
+    func testRefreshNeverWritesBackAStaleCopy() {
+        // The Live Activity's after-call poll started from the call's list: the job was on its last step.
+        let running = task("t", "working", job: ["id": "j", "name": "Where'd we leave off"], age: 300,
+                           plan: ["Check", "Compare", "Fix", "Your review"], milestones: 3)
+        // Meanwhile the board's own poll has it finished, with pictures, plus a follow-up typed later.
+        var done = task("t", "completed", job: ["id": "j", "name": "Where'd we leave off"], age: 5)
+        done.info.reviewImages = [1]
+        let followUp = task("typed", "completed", job: ["id": "j", "name": "Where'd we leave off"], age: 2)
+        let current = [done, followUp]
+        // A row fetched earlier (older than the list) never reopens the finished task.
+        let merged = TaskRefresh.merge(current, fresh: ["t": running.info])
+        XCTAssertEqual(merged, current, "a stale running row must not replace a finished one")
+        XCTAssertEqual(JobBoard.jobs(merged, now: now).first?.stage, .done)
+        // A newer row does apply, onto the current list (nothing it didn't fetch changes).
+        let fresher = task("t", "completed", job: ["id": "j", "name": "Where'd we leave off"], age: 1)
+        let applied = TaskRefresh.merge(current, fresh: ["t": fresher.info, "gone": fresher.info])
+        XCTAssertEqual(applied.map(\.id), ["t", "typed"])
+        XCTAssertEqual(applied[0].info, fresher.info)
+        // A running task moves on with a newer running row.
+        let step4 = task("t", "working", age: 1, plan: ["A", "B"], milestones: 1)
+        XCTAssertEqual(TaskRefresh.merge([task("t", "working", age: 30)], fresh: ["t": step4.info])[0].info, step4.info)
+        // Even a newer-stamped row can't reopen a settled task.
+        let reopened = task("t", "working", age: 0)
+        XCTAssertEqual(TaskRefresh.merge(current, fresh: ["t": reopened.info]), current)
     }
 }

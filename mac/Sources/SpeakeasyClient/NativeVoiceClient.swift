@@ -899,13 +899,13 @@ public final class NativeVoiceClient: VoiceCallClient {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard let self, self.model.state.connection == .paused else { return }
-                var tasks = self.model.state.tasks
-                for (index, task) in tasks.enumerated() where task.isActive {
-                    if let run = task.info.runID, let info = try? await api.work(runID: run) {
-                        tasks[index].info = info
-                    }
+                var fresh: [String: WorkInfo] = [:]
+                for task in self.model.state.tasks where task.isActive {
+                    if let run = task.info.runID, let info = try? await api.work(runID: run) { fresh[task.id] = info }
                 }
                 guard self.model.state.connection == .paused else { return }
+                // Onto the list as it is now (it may have changed while the rows were fetched).
+                let tasks = TaskRefresh.merge(self.model.state.tasks, fresh: fresh)
                 if tasks != self.model.state.tasks {
                     for notice in PausedTaskNotices.settled(before: self.model.state.tasks, after: tasks) {
                         self.onPausedTaskSettled?(notice)

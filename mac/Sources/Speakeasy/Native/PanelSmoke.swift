@@ -637,8 +637,9 @@ enum PanelSmoke {
         await settle(1.2)
         check(c.model.pinnedReviews.count == 1 && c.model.pinnedReviews.first?.images.count == 3,
               "design review: finished images wait for review without opening the task")
-        check(c.model.showsBoard && VoicePanelView.looseCards(c.model).count == 0 && c.model.jobs.first?.stage == .needsYou(.review),
-              "design review: a Needs-you tile on the board, nothing pinned under it")
+        check(c.model.showsBoard && VoicePanelView.looseCards(c.model).count == 0 && c.model.jobs.first?.stage == .done
+              && c.model.jobs.first?.lookTask != nil && c.model.boardSections.newAnswers.first?.id == c.model.jobs.first?.id,
+              "design review: a new tile to look at on the board (not Needs you), nothing pinned under it")
         if let job = c.model.jobs.first { c.model.onOpenJob(job.id) }
         await settle(1.0)
         let win = c.panel.window; let visible = (win.screen ?? NSScreen.main)?.visibleFrame ?? .zero

@@ -113,6 +113,7 @@ struct JobBoardView: View {
                     LazyVGrid(columns: cols, alignment: .leading, spacing: 8) {
                         ForEach(sections.running) { job in
                             RunningTile(job: job, model: model, focused: model.boardFocusID == job.id)
+                                .modifier(BoardCardActions(job: job, model: model, hoverDismiss: true))
                                 .modifier(TileFrame(id: job.id))
                         }
                     }
@@ -123,6 +124,7 @@ struct JobBoardView: View {
                     WrapLayout(spacing: 5) {
                         ForEach(sections.doneToday) { job in
                             DoneChip(job: job, focused: model.boardFocusID == job.id) { model.onOpenJob(job.id) }
+                                .modifier(BoardCardActions(job: job, model: model))
                                 .modifier(TileFrame(id: job.id))
                         }
                     }
@@ -147,6 +149,7 @@ struct JobBoardView: View {
 
     @ViewBuilder private func tile(_ job: Job) -> some View {
         JobTile(job: job, model: model, focused: model.boardFocusID == job.id)
+            .modifier(BoardCardActions(job: job, model: model, hoverDismiss: true))
             .modifier(TileFrame(id: job.id))
     }
 }

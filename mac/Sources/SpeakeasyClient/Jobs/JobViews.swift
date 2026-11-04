@@ -417,8 +417,10 @@ public struct AnswerTile: View {
     @State private var hover = false
 
     public var body: some View {
-        let info = (job.answerTask ?? job.newest).info
-        let glance = JobAnswer.glanceCard(info)
+        let info = (job.newTask ?? job.newest).info
+        let look = job.answerTask == nil && job.lookTask != nil
+        let glance = look ? nil : JobAnswer.glanceCard(info)
+        let headline = look ? JobAnswer.lookLine(info) : JobAnswer.headline(info)
         Button(action: action) {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -426,11 +428,11 @@ public struct AnswerTile: View {
                         Circle().fill(JobLook.touch ? JobLook.brass : JobOrb.answerBlue).frame(width: 6, height: 6)
                         Text(job.name).font(.system(size: 13 * s, weight: .semibold)).lineLimit(1)
                     }
-                    if let headline = JobAnswer.headline(info), !TextEcho.repeats(headline, in: spokenNow) {
+                    if let headline, !TextEcho.repeats(headline, in: spokenNow) {
                         Text(headline).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text("Read ›").font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(JobStyle.blueInk)
+                    Text(look ? "Look ›" : "Read ›").font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(JobStyle.blueInk)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if let glance {
@@ -451,15 +453,15 @@ public struct AnswerTile: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .help("Read \(job.name)")
-        .accessibilityLabel("New answer: \(job.name). \(JobAnswer.headline(info) ?? "")")
+        .help("\(look ? "Look at" : "Read") \(job.name)")
+        .accessibilityLabel("\(look ? "New" : "New answer"): \(job.name). \(headline ?? "")")
         .accessibilityAction(named: "Dismiss") { onDismiss?() }
         .overlay(alignment: .topTrailing) {
             if let onDismiss { DismissAnswerButton(name: job.name, action: onDismiss).padding(4 * s) }
         }
         .contextMenu {
             if let onDismiss {
-                Button("Read", action: action)
+                Button(look ? "Look" : "Read", action: action)
                 Button("Dismiss", action: onDismiss)
             }
         }

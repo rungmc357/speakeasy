@@ -361,7 +361,11 @@ public final class VoicePanelModel: ObservableObject {
                       reviewing: Set(pinnedReviews.map(\.taskID)), setAside: setAsideTasks, now: state.now)
     }
     public var boardSections: JobBoard.Sections {
-        JobBoard.sections(jobs, seen: Set(seenAnswers).union(dismissedViewTasks), now: state.now)
+        var s = JobBoard.sections(jobs, seen: Set(seenAnswers).union(dismissedViewTasks), now: state.now)
+        if !hiddenRunning.isEmpty {
+            s.running.removeAll { job in job.activeTask.map { hiddenRunning[job.id] == $0.id } ?? false }
+        }
+        return s
     }
     /// Answers the user opened (run ids, oldest first). Kept across launches, like closed cards:
     /// finished tasks come back with every call, and a read answer must stay read.
@@ -371,12 +375,61 @@ public final class VoicePanelModel: ObservableObject {
     static let seenAnswersKey = "speakeasy.seenAnswers"
     /// Opening a job reads its answer: it moves from New answers to Done today.
     public func markAnswerSeen(_ job: Job) {
-        guard let t = job.answerTask else { return }
+        guard let t = job.newTask else { return }
         let key = JobBoard.seenKey(t)
         if !seenAnswers.contains(key) { seenAnswers.append(key) }
     }
-    /// Dismiss: the answer leaves New answers without being opened (it stays in Done today).
-    public func dismissAnswer(_ job: Job) { markAnswerSeen(job) }
+    /// Dismiss: the answer leaves New answers without being opened (it stays in Done today). Pictures
+    /// to look at are dismissed with it, so they don't come back on the next call.
+    public func dismissAnswer(_ job: Job) {
+        markAnswerSeen(job)
+        if let run = job.lookTask?.info.runID { onDismissReview(run) }
+    }
+
+    /// Running jobs the user dismissed from the board (job id → the task that was running): hidden
+    /// while that task runs, not stopped. When it settles the job comes back with its answer.
+    @Published public var hiddenRunning: [String: String] = [:]
+
+    /// The board's Dismiss on any card: Needs you is set aside ("Not needed"), a new answer is
+    /// marked read, a running job is hidden without stopping it, and a finished or failed job is
+    /// cleared from the board. False when there is nothing to dismiss.
+    @discardableResult
+    public func dismissFromBoard(_ job: Job) -> Bool {
+        switch job.stage {
+        case .needsYou:
+            if setAside(job) { return true }
+            // An email draft to check: it leaves the board only through Send / Deny.
+            return false
+        case .running:
+            guard let task = job.activeTask else { return false }
+            hiddenRunning[job.id] = task.id
+            return true
+        case .done where job.newTask != nil && boardSections.newAnswers.contains { $0.id == job.id }:
+            dismissAnswer(job)
+            return true
+        case .done, .failed:
+            let runs = job.tasks.filter(\.isSettled).compactMap(\.info.runID)
+            guard !runs.isEmpty else { return false }
+            if let run = job.lookTask?.info.runID { onDismissReview(run) }
+            onDismissTasks(runs)
+            return true
+        }
+    }
+
+    /// Whether the board can dismiss this job's card (an email draft waits for Send / Deny).
+    public func canDismissFromBoard(_ job: Job) -> Bool {
+        switch job.stage {
+        case .needsYou: return setAsideTarget(job) != nil
+        case .running: return job.activeTask != nil
+        case .done, .failed: return job.newTask != nil || job.tasks.contains { $0.isSettled && $0.info.runID != nil }
+        }
+    }
+
+    /// The run a board card's Stop would stop (the job's running task), nil when it can't be stopped here.
+    public func stoppableRun(_ job: Job) -> String? {
+        guard job.stage == .running, let task = job.activeTask, task.canStop else { return nil }
+        return task.info.runID
+    }
     /// Answers finished today that the user hasn't opened.
     public var unreadAnswers: Int { boardSections.newAnswers.count }
     /// The orb's calm blue dot: answers to read and nothing more pressing.

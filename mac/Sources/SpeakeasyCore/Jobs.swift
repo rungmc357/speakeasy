@@ -124,6 +124,10 @@ public struct Job: Equatable, Sendable, Identifiable {
     /// Its question (or approval) was set aside ("Not needed") and nothing else waits on the user:
     /// it sits in Done today labeled "Set aside".
     public var setAside = false
+    /// A finished task whose pictures wait to be looked at (a design review, not an answer with
+    /// pictures along). Nothing waits on the user for it, so it is never Needs you: the board
+    /// shows it with the new answers (Look) until it is opened or dismissed.
+    public var lookTaskID: String?
 
     public var newest: TaskItem { tasks[tasks.count - 1] }
     public var updated: Date? { tasks.compactMap { $0.info.updatedAt ?? $0.info.updated }.max() }
@@ -142,10 +146,25 @@ public struct Job: Equatable, Sendable, Identifiable {
               t.info.pendingDrafts.isEmpty, t.info.reviewImages.isEmpty || t.info.reviewIsIncidental else { return nil }
         return t
     }
+
+    /// The finished task with pictures to look at, while the job is done (see `lookTaskID`).
+    public var lookTask: TaskItem? {
+        guard stage == .done, !setAside, let id = lookTaskID else { return nil }
+        return tasks.first { $0.id == id }
+    }
+
+    /// What makes this job new on the board: its answer, else its pictures to look at.
+    public var newTask: TaskItem? { answerTask ?? lookTask }
 }
 
 /// How an answer reads on the board: a one-line headline and the card worth a glance.
 public enum JobAnswer {
+    /// The line for pictures to look at: how many, and what the job said about them if it did.
+    public static func lookLine(_ info: WorkInfo) -> String {
+        let n = info.reviewImages.count
+        return n > 1 ? "\(n) pictures to look at" : "Pictures to look at"
+    }
+
     /// The report's headline, else the result's label, else the first sentence of what was said.
     public static func headline(_ info: WorkInfo) -> String? {
         if let h = info.result?.shape?.headline.trimmingCharacters(in: .whitespacesAndNewlines), !h.isEmpty { return h }
@@ -208,12 +227,19 @@ public enum JobBoard {
             var decisionID: String?
             var need: Job.Need?
             var asideAny = false
+            var lookID: String?
             for t in items.reversed() {
                 // Set aside: whatever it was waiting on is closed, never failed.
                 if t.info.setAside || setAside.contains(t.id) { asideAny = true; continue }
                 if t.info.status == "waiting_for_approval" { need = need ?? .approve; continue }
-                // Pictures that came with a finished report don't need the user: the job is an answer.
-                if !t.info.pendingDrafts.isEmpty || (reviewing.contains(t.id) && !t.info.reviewIsIncidental) { if need != .decide && need != .approve { need = .review }; continue }
+                // Needs you only for something to act on: an email draft (Send / Deny / Revise).
+                if !t.info.pendingDrafts.isEmpty { if need != .decide && need != .approve { need = .review }; continue }
+                // Pictures to look at wait on nobody: the job is new, not Needs you (a question that
+                // came with them still is, below). Pictures along with a report fold under the answer.
+                if reviewing.contains(t.id) && !t.info.reviewIsIncidental && t.info.decision == nil {
+                    if lookID == nil { lookID = t.id }
+                    continue
+                }
                 if decisionID == nil, isDecisionPending(t, answered: answered, dismissed: dismissed, now: now) {
                     decisionID = t.id
                     if need == nil || need == .review { need = .decide }
@@ -229,7 +255,7 @@ public enum JobBoard {
             else if newest.info.status == "failed" { stage = .failed }
             else { stage = .done }
             jobs.append((Job(id: key, name: names[key] ?? newest.name, tasks: items, stage: stage, decisionTaskID: decisionID,
-                             setAside: asideAny && stage == .done && newestAside), last))
+                             setAside: asideAny && stage == .done && newestAside, lookTaskID: lookID), last))
         }
         return jobs.sorted { $0.last > $1.last }.map(\.job)
     }
@@ -271,12 +297,15 @@ public enum JobBoard {
         let needs = jobs.filter { $0.stage.needsYou || $0.stage == .failed }
             .enumerated().sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }.map(\.element)
         let running = jobs.filter { $0.stage == .running }
+        func unseen(_ j: Job, _ t: TaskItem) -> Bool { !t.info.seen && !seen.contains(seenKey(t)) && !seen.contains(t.id) }
+        // Pictures still to look at stay new past the day they came (until opened or dismissed).
         let done = jobs.filter { j in
-            j.stage == .done && (j.updated.map { calendar.isDate($0, inSameDayAs: now) } ?? true)
+            j.stage == .done && ((j.updated.map { calendar.isDate($0, inSameDayAs: now) } ?? true)
+                                 || j.lookTask.map { unseen(j, $0) } == true)
         }
         let unread = done.filter { j in
-            guard let t = j.answerTask else { return false }
-            return !t.info.seen && !seen.contains(seenKey(t)) && !seen.contains(t.id)
+            guard let t = j.newTask else { return false }
+            return unseen(j, t)
         }
         let unreadIDs = Set(unread.map(\.id))
         return Sections(needsYou: needs, newAnswers: unread, running: running, doneToday: done.filter { !unreadIDs.contains($0.id) })
