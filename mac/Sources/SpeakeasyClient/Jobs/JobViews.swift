@@ -21,6 +21,7 @@ public struct JobRenderers {
 
 private struct JobRenderersKey: EnvironmentKey { static let defaultValue = JobRenderers() }
 private struct JobTextScaleKey: EnvironmentKey { static let defaultValue: CGFloat = 1 }
+private struct JobHostDrawsStepsKey: EnvironmentKey { static let defaultValue = false }
 
 public extension EnvironmentValues {
     var jobRenderers: JobRenderers {
@@ -31,6 +32,12 @@ public extension EnvironmentValues {
     var jobTextScale: CGFloat {
         get { self[JobTextScaleKey.self] }
         set { self[JobTextScaleKey.self] = newValue }
+    }
+    /// The host page draws the job's steps itself (the phone's step path / live activity), so the
+    /// job body leaves its own steps card out. Off by default: the Mac panel is unchanged.
+    var jobHostDrawsSteps: Bool {
+        get { self[JobHostDrawsStepsKey.self] }
+        set { self[JobHostDrawsStepsKey.self] = newValue }
     }
 }
 
@@ -702,6 +709,7 @@ public struct JobDetailBody: View {
     var revision: UUID?
     @Environment(\.jobRenderers) private var renderers
     @Environment(\.jobTextScale) private var s
+    @Environment(\.jobHostDrawsSteps) private var hostDrawsSteps
 
     public init(job: Job, model: VoicePanelModel, decisionPart: DecisionBrief.Part? = .all, allowUndo: Bool = false,
                 revision: UUID? = nil) {
@@ -881,7 +889,7 @@ public struct JobDetailBody: View {
         // one-line rows. Nothing else in the panel draws them.
         let cards = JobCards.items(job, model: model)
         if !cards.isEmpty { JobCardStack(job: job, items: cards, model: model) }
-        LiveSteps(job: job, model: model, allowUndo: allowUndo)
+        if !hostDrawsSteps { LiveSteps(job: job, model: model, allowUndo: allowUndo) }
         // A finished task that never read what the user added: say so on the card, not only aloud.
         if let task = job.tasks.last, task.info.isTerminal {
             let unread = task.info.followUps.filter { $0.state == .notRead }

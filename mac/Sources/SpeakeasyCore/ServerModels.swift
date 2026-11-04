@@ -218,6 +218,15 @@ public struct WorkInfo: Equatable, Sendable {
     public var etaSeconds: Int?
     /// One plain sentence; nil unless failed.
     public var failureReason: String?
+    // Live activity (servers with `job_activity`; see JobActivity.swift). All optional.
+    /// What it did, newest last.
+    public var activity: [JobActivityItem] = []
+    /// What it learned so far, newest last.
+    public var findings: [JobFinding] = []
+    /// Files, sites and commands it touched.
+    public var touched: [JobTouched] = []
+    /// The picture for its kind of work.
+    public var hero: JobHero?
 
     /// The receipt for one "You added: …" step, if the api sent one.
     public func followUp(forStep text: String) -> FollowUp? { followUps.last { $0.milestone == text } }
@@ -293,6 +302,7 @@ public struct WorkInfo: Equatable, Sendable {
         failureReason = status == "failed" ? nonEmpty(object["failure_reason"]).map { String($0.prefix(240)) } : nil
         plan = (object["plan"] as? [Any] ?? []).compactMap { $0 as? String }.filter { !$0.isEmpty }
         liveImage = LiveImage(json: object["live_image"])
+        decodeActivity(object)
         failure = status == "failed" ? WorkFailure(json: object["failure"]) : nil
         shared = SharedItem.list(json: object["shared"])
         if let review = object["review"] as? [String: Any] {
