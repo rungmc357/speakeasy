@@ -528,84 +528,6 @@ struct StepPathPicture: View {
     }
 }
 
-/// No hero and no plan: the work itself, as a strip of what it did, coloured by kind.
-struct ActivityStripPicture: View {
-    var items: [JobActivityItem]
-    var touched: Int
-    var findings: Int
-    var running: Bool
-
-    static func color(_ kind: JobActivityItem.Kind) -> Color {
-        switch kind {
-        case .read, .browse: return Color(red: 0.55, green: 0.70, blue: 0.95)
-        case .search: return Color(red: 0.62, green: 0.58, blue: 0.95)
-        case .edit: return Live.green
-        case .run: return Live.brass
-        case .think, .message: return Color.white.opacity(0.55)
-        case .tool: return Color.white.opacity(0.4)
-        }
-    }
-    static func word(_ kind: JobActivityItem.Kind) -> String {
-        switch kind {
-        case .read, .browse: return "Reading"
-        case .search: return "Searching"
-        case .edit: return "Editing"
-        case .run: return "Running"
-        case .think, .message: return "Thinking"
-        case .tool: return "Tools"
-        }
-    }
-
-    var body: some View {
-        let done = items.filter { $0.status != .running }.count
-        VStack(alignment: .leading, spacing: 13) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text("\(done)").font(.system(size: 46, weight: .bold, design: .rounded)).foregroundStyle(.white)
-                    .contentTransition(.numericText(value: Double(done)))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(done == 1 ? "step done" : "steps done").font(.system(size: 15, weight: .semibold)).foregroundStyle(Live.brassText)
-                    Text([touched > 0 ? "\(touched) things touched" : nil, findings > 0 ? "\(findings) found" : nil]
-                        .compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            HStack(alignment: .bottom, spacing: 3) {
-                ForEach(items) { item in
-                    let live = item.status == .running && running
-                    Capsule().fill(item.status == .failed ? Live.red : Self.color(item.kind))
-                        .frame(maxWidth: 14)
-                        .frame(height: live ? 36 : item.kind == .run || item.kind == .edit ? 27 : 18)
-                        .opacity(live ? 1 : 0.85)
-                        .help(item.text)
-                }
-            }
-            .frame(height: 38, alignment: .bottom)
-            WrapLayout(spacing: 10) {
-                ForEach(Self.legend(items), id: \.0) { word, count, color in
-                    HStack(spacing: 4) {
-                        Circle().fill(color).frame(width: 6, height: 6)
-                        Text("\(word) \(count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).fixedSize()
-                    }
-                }
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(done) steps done, \(touched) things touched, \(findings) found")
-    }
-
-    static func legend(_ items: [JobActivityItem]) -> [(String, Int, Color)] {
-        var order: [String] = []
-        var counts: [String: (Int, Color)] = [:]
-        for i in items {
-            let w = word(i.kind)
-            if counts[w] == nil { order.append(w); counts[w] = (0, color(i.kind)) }
-            counts[w]!.0 += 1
-        }
-        return order.prefix(4).map { ($0, counts[$0]!.0, counts[$0]!.1) }
-    }
-}
-
 // MARK: - Found so far
 
 struct FindingsList: View {
@@ -893,12 +815,11 @@ struct LiveJobBlock: View {
         }
     }
 
+    /// The server's picture, or none: without a hero and a plan the page leads with the status
+    /// line, then what it found and the tool calls (no step-count graphic).
     @ViewBuilder private func picture(_ info: WorkInfo, _ running: Bool) -> some View {
         if let hero = Self.hero(job) {
             LiveHero(hero: hero, info: info)
-        } else if JobHero.select(info) == nil, info.activity.count >= 3 {
-            HeroCard { ActivityStripPicture(items: info.activity, touched: info.touched.count, findings: info.findings.count, running: running) }
-                .accessibilityIdentifier("job-hero-activity")
         }
     }
     @ViewBuilder private func findings(_ info: WorkInfo, _ running: Bool) -> some View {

@@ -152,7 +152,7 @@ extension FilmFrames {
             ],
         ])
 
-        // No hero, no plan: the activity strip.
+        // No hero, no plan: no picture; the page leads with the status line, findings and tool calls.
         var tickets = task("k", "working", "Summarize this week's support tickets", title: "This week's support tickets",
                            short: "Reading tickets", age: 2, now: now)
         tickets.info.startedAt = now - 3 * 60

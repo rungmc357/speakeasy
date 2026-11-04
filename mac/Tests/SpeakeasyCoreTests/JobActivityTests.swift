@@ -107,6 +107,11 @@ final class JobActivityTests: XCTestCase {
         // "steps" asked for but no plan to draw: nothing.
         XCTAssertNil(JobHero.select(info(["hero": ["type": "steps"]])))
         XCTAssertNil(JobHero.select(info(["plan": ["Only one"]])))
+        // No hero and no plan, however much activity: no picture at all (no step-count graphic).
+        let busy = info(["activity": (1...8).map { ["id": "a\($0)", "kind": "read", "text": "Read file \($0)"] }])
+        XCTAssertEqual(busy.activity.count, 8)
+        XCTAssertNil(JobHero.select(busy))
+        if case .steps? = JobGlance.of(busy) { XCTFail("no plan, no step count on the tile") }
     }
 
     func testCapabilityFlag() throws {
