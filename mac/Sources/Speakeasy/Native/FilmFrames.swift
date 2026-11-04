@@ -10,6 +10,8 @@ enum FilmFrames {
     private static var retained: NativeVoiceClient?
     /// Website screenshots (`SPEAKEASY_FILM_SET=site`): no keyboard hints under the board.
     static var cleanShots = false
+    /// Redesign frames: animations hold still so every frame draws the same.
+    nonisolated(unsafe) static var stillMotion = false
 
     static func run(config: AppConfig, dir: String) {
         let client = NativeVoiceClient(config: config)
@@ -21,18 +23,20 @@ enum FilmFrames {
             FileHandle.standardError.write("film: task\n".data(using: .utf8)!)
             let set = ProcessInfo.processInfo.environment["SPEAKEASY_FILM_SET"]
             let site = set == "site"
-            cleanShots = site || set == "ux" || set == "typing"
-            let shots: [Shot] = set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
+            cleanShots = site || set == "ux" || set == "typing" || set == "redesign"
+            stillMotion = set == "redesign"
+            let shots: [Shot] = set == "redesign" ? redesignBeats() : set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
             for shot in shots {
                 let (name, state, open) = (shot.name, shot.state, shot.open)
                 let m = client.model
                 ChartPreview.selection = nil
                 m.orbLevel = 0; m.previewProblem = nil; m.pendingPicks = [:]; m.toast = nil; m.openSections = []
-                if set == "ux" || set == "typing" { for id in ["c", "a", "p", "f", "h", "m", "b", "d", "q"] { m.answers[id] = nil } }
+                if set == "ux" || set == "typing" || set == "redesign" { for id in ["c", "a", "p", "f", "h", "m", "b", "d", "q"] { m.answers[id] = nil } }
                 m.outbox = TaskOutbox(); m.replyDrafts = [:]; m.heldJobID = nil; SomethingElsePreview.open = nil; m.captionExpanded = false
                 ReplyDictation.shared.previewOnly = true; ReplyDictation.shared.stop()
                 m.capabilities = set == "ux" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true)
                     : set == "typing" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true, taskMessages: true)
+                    : set == "redesign" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true, taskMessages: true, jobActivity: true)
                     : set == "typing-old" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true) : nil
                 client.showPreview(state, workExpanded: false)
                 client.model.onOpenJob(open)

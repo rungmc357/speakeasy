@@ -794,7 +794,8 @@ enum PanelSmoke {
               "declutter: no cards render under the board (review, weather, drafts all inside their jobs)")
         let boardHeight = win.frame.height
         record("declutter board: panel \(Int(win.frame.width))x\(Int(boardHeight))pt")
-        check(boardHeight < 420, "declutter: the board is short, not a long scroll of cards (\(Int(boardHeight))pt)")
+        // 420pt of tiles plus the greeting line on top (Mac redesign).
+        check(boardHeight < 470, "declutter: the board is short, not a long scroll of cards (\(Int(boardHeight))pt)")
         check(win.frame.width <= Tokens.width + 1, "declutter: the panel keeps its narrow width")
         snap("declutter-board")
 

@@ -600,6 +600,10 @@ struct VoicePanelView: View {
                     JobBoardView(model: model)
                         .padding(.leading, 12).padding(.trailing, 6).padding(.bottom, 10)
                         .transition(.opacity)
+                } else if Self.showsEmptyBoard(model) {
+                    EmptyBoardView(now: model.state.now, inCall: model.state.connection.isInCall)
+                        .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 14)
+                        .transition(.opacity)
                 } else if model.showsTaskList {
                     // Something below needs you (a question, an approval, a draft, a review):
                     // finished tasks shrink to one row so it stays in view.
@@ -704,6 +708,12 @@ struct VoicePanelView: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.holdText)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: model.dropTargeted)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: model.room?.isOn)
+    }
+
+    /// A call with nothing on the board yet and nothing said: a greeting and what to try.
+    static func showsEmptyBoard(_ model: VoicePanelModel) -> Bool {
+        model.state.tasks.isEmpty && model.state.exchange.isEmpty && model.holdText == nil && !model.state.workOnly
+            && model.state.connection.isInCall && model.callProblem == nil && !model.tourActive
     }
 
     /// Cards drawn loose in the panel, outside any job view. With a board (on whenever a card,

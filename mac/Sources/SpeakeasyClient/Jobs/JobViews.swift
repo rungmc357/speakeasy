@@ -82,10 +82,11 @@ extension View {
 
 public enum JobStyle {
     #if os(macOS)
-    public static let blue = Color(red: 0.25, green: 0.39, blue: 0.79)        // #3f63c9 Approve
-    public static let blueInk = Color(red: 0.62, green: 0.71, blue: 1.0)      // #9fb6ff
+    // Mac redesign: the same one accent as touch, a touch lighter for text on the dark panel.
+    public static let blue = JobLook.brass
+    public static let blueInk = Color(red: 0.90, green: 0.73, blue: 0.42)     // #e6ba6b
     /// Text on `blue`.
-    public static let onBlue = Color.white
+    public static let onBlue = JobLook.brassInk
     #else
     // Touch: one accent. What the Mac draws blue (primary buttons, links, the current step) is brass.
     public static let blue = JobLook.brass
@@ -115,7 +116,7 @@ public enum JobStyle {
     public static let amberInk = Color(red: 0.23, green: 0.15, blue: 0.02)
     public static let stopRed = Color(red: 0.93, green: 0.36, blue: 0.36)
     #if os(macOS)
-    public static let nowBlue = Color(red: 0.37, green: 0.61, blue: 0.94)
+    public static let nowBlue = JobLook.brass
     #else
     public static let nowBlue = JobLook.brass
     #endif
@@ -546,7 +547,7 @@ public struct JobTile: View {
         switch job.stage {
         // A status, never a button look-alike: the actions are the buttons under it.
         // Touch: the board's "Needs you" section header already says it.
-        case .needsYou: if !JobLook.touch { JobPill(text: "Needs you", style: .amber) }
+        case .needsYou: EmptyView()   // the board's "Needs you" label already says it
         case .failed: JobPill(text: "Failed", style: .red)
         case .running:
             if job.activeTask?.info.status == "waiting_on_task" {
