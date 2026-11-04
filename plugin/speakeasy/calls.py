@@ -55,7 +55,7 @@ SETTLE_MAX_S = 6.0     # and never longer than this in total
 ABSORB_WINDOW_S = 15.0 # a handoff of words already folded into an earlier task is dropped
 ECHO_WINDOW_S = 8.0    # a second handoff this soon that only repeats the last request's words is dropped
 DUPLICATE_WINDOW_S = 15.0  # the very same words handed off again this soon start nothing new
-CORRECTION_WINDOW_S = 30.0  # "dining room, sorry" this soon after a request replaces it
+CORRECTION_WINDOW_S = 30.0  # "guest room, sorry" this soon after a request replaces it
 ACK_GRACE_S = 5.0      # the voice said "on it": a task must exist (or start) within this long
 # The card's step for an approval answered from the call (the panel's buttons record the same words).
 APPROVED_MILESTONE = {"once": "Approved", "session": "Approved for the rest of this task", "deny": "Approval denied"}
@@ -1132,7 +1132,7 @@ class SidebandWorker:
         return bool(words) and any(w == words and now - at < DUPLICATE_WINDOW_S for w, at, *_ in getattr(self, "started", []))
 
     async def _apply_correction(self, last_request: str, context: str) -> str:
-        """\"Our dining room, sorry\" / \"no, turn them on\": the corrected request, in place of the one it
+        """\"Our guest room, sorry\" / \"no, turn them on\": the corrected request, in place of the one it
         corrects. Joined onto words not yet started, it fixes them; said after a request already went,
         the corrected request goes instead, and the old one is stopped if it is still running."""
         line = next((l[6:].strip() for l in reversed(context.splitlines()) if l.startswith("User: ")), last_request)
@@ -1569,7 +1569,7 @@ class SidebandWorker:
             return request  # "yeah, what work do we have" again: the same words count once
         fixed = router.correction(more)
         if fixed:
-            # "...in the living room" + "dining room, sorry": the fix replaces, it isn't run on.
+            # "...in the living room" + "guest room, sorry": the fix replaces, it isn't run on.
             logger.info("speakeasy: kept listening; a correction replaced part of the request")
             return fixed[1] if fixed[0] == "replace" else router.apply_correction(request, fixed[1])
         logger.info("speakeasy: kept listening, added %d more words to the request", len(more.split()))
@@ -1946,7 +1946,7 @@ class SidebandWorker:
             await self._drop(delegation_id, revision, "Added to the previous request", None)
             return
         if not marked:
-            # "Our dining room, sorry" / "no, turn them on": replaces what it corrects, never runs on.
+            # "Our guest room, sorry" / "no, turn them on": replaces what it corrects, never runs on.
             corrected = await self._apply_correction(last_request, context)
             if corrected != last_request:
                 last_request, context = corrected, _with_request(context, corrected)

@@ -40,13 +40,13 @@ def test_work_acknowledgements_are_recognised():
 
 
 def test_corrections_and_fragments():
-    assert router.correction("Our dining room, sorry") == ("phrase", "dining room")
-    assert router.correction("living room... dining room, sorry") == ("phrase", "dining room")
+    assert router.correction("Our guest room, sorry") == ("phrase", "guest room")
+    assert router.correction("living room... guest room, sorry") == ("phrase", "guest room")
     assert router.correction("no, turn them on") == ("replace", "turn them on")
     for text in ("No", "no thanks", "Uh, sure", "actually make the thermostat 21", "be- er, sorry,"):
         assert router.correction(text) is None, text
-    assert router.apply_correction("Turn on the lights in the living room", "dining room") == \
-        "Turn on the lights in the dining room"
+    assert router.apply_correction("Turn on the lights in the living room", "guest room") == \
+        "Turn on the lights in the guest room"
     assert router.is_fragment("that") and router.is_fragment("there it is") and not router.is_fragment("lamps off")
 
 
@@ -121,10 +121,10 @@ def test_a_correction_after_the_request_went_replaces_it(server, service, hermes
     worker.delegate("call_c1", "Book a table for two at the noodle place in the living room district")
     wait_for(lambda: hermes.calls, timeout=10)
     said(worker, "On it.", at=3)
-    worker.delegate("call_c2", "Our dining room district, sorry")
+    worker.delegate("call_c2", "Our guest room district, sorry")
     wait_for(lambda: len(hermes.calls) >= 2, timeout=10)
     second = hermes.calls[1]["input"]
-    assert second.rstrip().endswith("User: Book a table for two at the noodle place in the dining room district")
+    assert second.rstrip().endswith("User: Book a table for two at the noodle place in the guest room district")
 
 
 def test_a_correction_said_while_settling_replaces_the_words_it_fixes(monkeypatch):
@@ -140,7 +140,7 @@ def test_a_correction_said_while_settling_replaces_the_words_it_fixes(monkeypatc
         await asyncio.sleep(0.1)
         s.fragments.append({"speaker": "user", "text": extra, "at": time.monotonic()})
         return await task
-    assert asyncio.run(run("Our dining room, sorry")) == "Turn on the lights in the dining room"
+    assert asyncio.run(run("Our guest room, sorry")) == "Turn on the lights in the guest room"
     s.fragments.clear()
     assert asyncio.run(run("no, turn them off")) == "turn them off"
     s.fragments.clear()

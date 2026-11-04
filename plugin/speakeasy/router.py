@@ -1343,7 +1343,7 @@ def is_fragment(request: str) -> bool:
     return 0 < len(words) <= 4 and all(w in _FRAGMENT_WORDS for w in words)
 
 
-# -- corrections: "living room... dining room, sorry", "no, turn them on" -------------------------
+# -- corrections: "living room... guest room, sorry", "no, turn them on" -------------------------
 _CORRECTION_LEAD = re.compile(
     r"(?i)^\W*(?:(?:um+|uh+|er+|oh|wait)\W+)*(?:no|nope|nah|not\s+that|i\s+mean(?:t)?|or\s+rather|rather"
     r"|scratch\s+that|actually|correction)\b[\s,.;:!-]+(?P<rest>\S.*)$")
@@ -1355,7 +1355,7 @@ _LEADING_JUNK = re.compile(r"(?i)^(?:(?:or|our|and|but|so|um+|uh+|er+|oh|the)\s+
 
 
 def correction(request: str) -> tuple[str, str] | None:
-    """("phrase", "dining room") for "Our dining room, sorry"; ("replace", "turn them on") for "no, turn
+    """("phrase", "guest room") for "Our guest room, sorry"; ("replace", "turn them on") for "no, turn
     them on"; None when it isn't a correction. A bare "no" is an answer, never a correction."""
     text = " ".join((request or "").split())
     if not text or len(text.split()) > 12:
@@ -1375,7 +1375,7 @@ def correction(request: str) -> tuple[str, str] | None:
     if _CORRECTION_VERB.match(rest):
         # "No, turn them on": a whole new command (only after "no"/"I mean", never a polite "sorry").
         return ("replace", rest) if by_lead and re.match(r"(?i)^\W*(?:no|nope|nah|i\s+mean)", text) else None
-    # "living room... dining room": what came before the break is the slip, the rest is the fix.
+    # "living room... guest room": what came before the break is the slip, the rest is the fix.
     rest = re.split(r"\s*(?:\.{2,}|…|—|--)\s*", rest)[-1]
     phrase = _LEADING_JUNK.sub("", rest).strip(" ,.;:!-")
     if not phrase or len(phrase.split()) > 5 or is_fragment(phrase) or not re.search(r"[a-z]{3,}", phrase.lower()):
@@ -1387,7 +1387,7 @@ def correction(request: str) -> tuple[str, str] | None:
 
 def apply_correction(original: str, phrase: str) -> str:
     """Put the corrected words in place of the ones they correct: the same number of words ending in
-    the phrase's last word ("in the living room" + "dining room" -> "in the dining room"). With no such
+    the phrase's last word ("in the living room" + "guest room" -> "in the guest room"). With no such
     word to anchor on, the correction is stated plainly instead of being run on as more words."""
     original = " ".join((original or "").split())
     words, fix = original.split(), phrase.split()
