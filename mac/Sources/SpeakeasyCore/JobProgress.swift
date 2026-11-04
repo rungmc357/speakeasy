@@ -157,6 +157,27 @@ public enum TextEcho {
         return !a.isEmpty && b.contains(a)
     }
 
+    /// Two short lines that say nearly the same thing ("Run it 50 times" / "Running it 50 times to
+    /// be sure"): one contains the other, or most of the shorter one's words (ignoring little words,
+    /// matching "run"/"running") are in the longer one.
+    public static func nearDuplicate(_ a: String?, _ b: String?) -> Bool {
+        guard let a, let b else { return false }
+        if repeats(a, in: b) || repeats(b, in: a) { return true }
+        let little: Set<String> = ["a", "an", "the", "it", "its", "to", "be", "of", "and", "or", "for", "in", "on",
+                                   "at", "is", "are", "so", "that", "this", "your", "you", "my", "i", "we", "with", "now", "up"]
+        func words(_ s: String) -> [String] {
+            s.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { !little.contains($0) }
+        }
+        let wa = words(a), wb = words(b)
+        let (short, long) = wa.count <= wb.count ? (wa, wb) : (wb, wa)
+        guard !short.isEmpty else { return false }
+        func same(_ x: String, _ y: String) -> Bool {
+            x == y || (min(x.count, y.count) >= 3 && (x.hasPrefix(y) || y.hasPrefix(x)))
+        }
+        let hits = short.filter { w in long.contains { same(w, $0) } }.count
+        return hits >= min(2, short.count) && Double(hits) / Double(short.count) >= 0.75
+    }
+
     /// `text` with a leading `headline` taken off, so a page that leads with the headline doesn't
     /// say it again underneath. nil when nothing is left.
     public static func remainder(_ text: String, after headline: String?) -> String? {

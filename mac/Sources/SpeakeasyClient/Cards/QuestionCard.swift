@@ -11,10 +11,13 @@ public struct QuestionActions {
     /// The pick is held until then so it can be undone; nil once sent.
     public var undoUntil: Date?
     public var onUndo: (() -> Void)?
+    /// "Something else…": an answer in the user's own words, to this decision only (servers with
+    /// typed messages). Returns whether it went. nil: no field.
+    public var onSomethingElse: ((String) -> Bool)?
     public init(onAnswer: ((String) -> Void)? = nil, answered: String? = nil, image: ((Int) async -> Data?)? = nil,
-                undoUntil: Date? = nil, onUndo: (() -> Void)? = nil) {
+                undoUntil: Date? = nil, onUndo: (() -> Void)? = nil, onSomethingElse: ((String) -> Bool)? = nil) {
         self.onAnswer = onAnswer; self.answered = answered; self.image = image
-        self.undoUntil = undoUntil; self.onUndo = onUndo
+        self.undoUntil = undoUntil; self.onUndo = onUndo; self.onSomethingElse = onSomethingElse
     }
 }
 
@@ -33,8 +36,100 @@ struct QuestionCard: View {
     @Environment(\.questionActions) private var actions
     @State private var picked: String?
     @State private var comparing = false
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
+        if JobLook.touch { touchBody } else { macBody }
+    }
+
+    /// Touch (iPhone call screen, iPad, Vision): the job page's decision language on glass — the
+    /// question, the same option rows with a brass star on the recommended one, and "Something
+    /// else…" where the host can send it. No Compare here: tapping the card opens the job, which has it.
+    @ViewBuilder private var touchBody: some View {
+        let decision = Decision(card: card)
+        let options = decision?.options ?? []
+        let answer = actions.undoUntil != nil ? actions.answered : (picked ?? actions.answered)
+        let s = 1.2 * Self.typeFactor(typeSize)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Circle().fill(answer == nil ? Color.orange : JobStyle.green).frame(width: 7, height: 7)
+                Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 11.5 * s, weight: .semibold))
+                    .foregroundStyle(answer == nil ? Color.orange : Color.secondary)
+                Spacer(minLength: 0)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(card["question"].string ?? "").font(.system(size: 14 * s, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                if let context = decision?.context {
+                    Text(context).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            let pictures = card["images"].doubles.isEmpty ? options.map { $0.image ?? 0 } : card["images"].doubles.map { Int($0) }
+            if pictures.contains(where: { $0 > 0 }), let load = actions.image {
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(Array(options.prefix(4).enumerated()), id: \.offset) { i, option in
+                        PictureOption(number: i + 1, text: option.text, picture: i < pictures.count ? pictures[i] : 0,
+                                      load: load, recommended: i == decision?.recommended, chosen: answer == option.text,
+                                      dimmed: answer != nil && answer != option.text,
+                                      enabled: answer == nil && actions.onAnswer != nil) {
+                            picked = option.text
+                            actions.onAnswer?(option.text)
+                        }
+                    }
+                }
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(Array(options.prefix(4).enumerated()), id: \.offset) { i, option in
+                        DecisionOptionRow(number: i + 1, option: DecisionOption(text: option.text), recommended: i == decision?.recommended,
+                                          why: nil, chosen: answer == option.text, dimmed: answer != nil && answer != option.text,
+                                          enabled: answer == nil && actions.onAnswer != nil, compact: true) {
+                            picked = option.text
+                            actions.onAnswer?(option.text)
+                        }
+                    }
+                }
+            }
+            if let answer, let until = actions.undoUntil, let undo = actions.onUndo {
+                PickUndoBar(picked: answer, until: until) { picked = nil; undo() }
+            } else if answer == nil, actions.onAnswer != nil, let other = actions.onSomethingElse {
+                SomethingElseInput { text in
+                    guard other(text) else { return false }
+                    picked = TaskMessageRequest.clean(text)
+                    return true
+                }
+            } else if answer == nil {
+                Text(actions.onAnswer != nil ? Self.hint(min(options.count, 4)) : "Say your answer.")
+                    .font(.system(size: 11 * s)).foregroundStyle(.secondary)
+            } else if !options.contains(where: { $0.text == answer }) {
+                Text("\u{201C}\(answer ?? "")\u{201D} · sent to the task.").font(.system(size: 11 * s)).foregroundStyle(.secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Sent to the task.").font(.system(size: 11 * s)).foregroundStyle(.secondary)
+            }
+        }
+        .environment(\.jobTextScale, s)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(TouchGlass(RoundedRectangle(cornerRadius: 22, style: .continuous), interactive: false))
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: answer)
+    }
+
+    /// Follows the reader's text size the way the job views do (Large is 1×).
+    static func typeFactor(_ size: DynamicTypeSize) -> CGFloat {
+        switch size {
+        case .xSmall: return 0.85
+        case .small: return 0.9
+        case .medium: return 0.95
+        case .large: return 1
+        case .xLarge: return 1.1
+        case .xxLarge: return 1.2
+        case .xxxLarge: return 1.3
+        default: return 1.4
+        }
+    }
+
+    @ViewBuilder private var macBody: some View {
         // Options are strings (older plugins) or objects with a detail line, tags and a picture.
         let decision = Decision(card: card)
         let options = decision?.options.map(\.text) ?? []

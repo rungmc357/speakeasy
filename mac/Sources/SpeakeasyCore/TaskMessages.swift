@@ -165,6 +165,9 @@ public struct TaskOutbox: Equatable, Sendable {
 
 /// Words the reply bar and toasts use.
 public enum TaskMessageCopy {
+    /// The reply bar's placeholder while a decision waits: what's typed answers it.
+    public static let somethingElse = "Something else? Type it here"
+
     /// A job name short enough for a toast or a one-line label: cut at a word, about 28 characters.
     public static func shortName(_ name: String, limit: Int = 28) -> String {
         let t = name.trimmingCharacters(in: .whitespacesAndNewlines)

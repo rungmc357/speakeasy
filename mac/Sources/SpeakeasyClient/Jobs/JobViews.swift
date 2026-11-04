@@ -946,6 +946,7 @@ public struct DecisionBrief: View {
     @ObservedObject var model: VoicePanelModel
     var part: Part = .all
     @Environment(\.jobTextScale) private var s
+    @Environment(\.jobReplyBarAnswers) private var replyBarAnswers
     private var comparing: Binding<Bool> {
         let key = "\(task.id)|compare"
         return Binding(get: { model.openSections.contains(key) }, set: { on in
@@ -1008,7 +1009,13 @@ public struct DecisionBrief: View {
                     }
                 }
                 if model.taskMessagesEnabled && part != .context && (answer == nil || !decision.options.contains { $0.text == answer }) {
-                    SomethingElseField(model: model, job: job, task: task)
+                    if JobLook.touch && replyBarAnswers {
+                        // The page's reply bar is the one field ("Something else? Type it here");
+                        // what was sent that way still shows here, under the options it answers.
+                        SentMessages(model: model, jobID: job.id, choiceTaskID: task.id, limit: 1)
+                    } else {
+                        SomethingElseField(model: model, job: job, task: task)
+                    }
                 }
                 if let answer, let until = model.pendingPicks[task.id] {
                     PickUndoBar(picked: answer, until: until) { model.undoPick(task.id) }
@@ -1064,6 +1071,8 @@ struct DecisionOptionRow: View {
     var chosen: Bool
     var dimmed: Bool
     var enabled: Bool
+    /// Touch, pinned over a call: the title only, the recommended star at its end.
+    var compact = false
     var action: () -> Void
     @State private var hover = false
     /// Under the title, past the number badge.
@@ -1088,10 +1097,13 @@ struct DecisionOptionRow: View {
                     NumberBadge(number: number, chosen: chosen)
                     Text(option.text).font(.system(size: 12.5 * s, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
+                    if compact && recommended && !dimmed && !chosen {
+                        Image(systemName: "star.fill").font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(JobLook.brass)
+                    }
                     if chosen { Image(systemName: "checkmark").font(.system(size: 11 * s, weight: .bold)).foregroundStyle(JobStyle.blueInk) }
                 }
                 // Its own line: beside the title it squeezed the option onto three hyphenated lines on a phone.
-                if recommended && !dimmed {
+                if recommended && !dimmed && !compact {
                     if JobLook.touch {
                         Label("Recommended", systemImage: "star.fill").font(.system(size: 11 * s, weight: .semibold))
                             .foregroundStyle(JobLook.brass).padding(.leading, 32)
@@ -1177,7 +1189,13 @@ public struct LiveSteps: View {
             let open = model.openSections.contains(key)
             // Collapsed: just where it is now (the current step, else the last one).
             let focus = all.lastIndex { $0.state == .current } ?? (all.isEmpty ? nil : all.count - 1)
-            let shown: [Row] = open || all.count <= 2 ? all : focus.map { [all[$0]] } ?? []
+            // Touch: the status line above may already say the current step in other words
+            // ("Running it 50 times to be sure" / "Run it 50 times"). Then the collapsed card
+            // doesn't say it again: just the way into all the steps.
+            let dupCurrent = JobLook.touch && focus.map { all[$0].state == .current && TextEcho.nearDuplicate(all[$0].text, statusLine(task)) } == true
+            let echoed = dupCurrent && !open
+            let shown: [Row] = echoed ? (all.count > 2 ? [] : all.filter { $0.state != .current })
+                : open || all.count <= 2 ? all : focus.map { [all[$0]] } ?? []
             VStack(alignment: .leading, spacing: JobLook.touch ? 10 : 6) {
                 // Touch: the page's status block above already says the step, time and ETA.
                 if !JobLook.touch {
@@ -1196,10 +1214,10 @@ public struct LiveSteps: View {
                                 receipt: row.receipt)
                     }
                 }
-                if all.count > 2 {
+                if all.count > 2 || dupCurrent {
                     if JobLook.touch {
                         // A disclosure row, like a grouped list's: the count, a chevron that turns.
-                        Divider().opacity(0.6)
+                        if !shown.isEmpty { Divider().opacity(0.6) }
                         Button { withAnimation(.easeOut(duration: 0.2)) { model.toggleSection(key) } } label: {
                             HStack {
                                 Text(open ? "Hide steps" : "All \(all.count) steps").font(.system(size: 12 * s))
@@ -1254,6 +1272,12 @@ public struct LiveSteps: View {
         guard let t = job.tasks.last(where: { $0.info.decision != nil }), let d = t.info.decision,
               let picked = model.answers[t.id] else { return false }
         return d.options.first { $0.text == picked }?.reversible == true
+    }
+
+    /// The line the page's status block leads with (same order as the phone's JobStatusBlock).
+    private func statusLine(_ task: TaskItem) -> String? {
+        JobDetailBody.pickedLine(job, model: model) ?? task.info.shortStatus
+            ?? taskStatusLine(task.info, now: model.state.now, assistantName: model.state.assistantName).0
     }
 
     /// A finished task that had a plan still shows its steps, ticked.

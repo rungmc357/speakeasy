@@ -162,10 +162,12 @@ public final class VoicePanelModel: ObservableObject {
     public func questionActions(for taskID: String) -> QuestionActions {
         let runID = state.tasks.first(where: { $0.id == taskID })?.info.runID
         let load = loadCardImage
+        let jobID = taskMessagesEnabled ? jobs.first(where: { $0.tasks.contains { $0.id == taskID } })?.id : nil
         return QuestionActions(onAnswer: { [weak self] text in
             self?.commitPick(taskID, text)
         }, answered: answers[taskID], image: runID.map { run in { number in await load(run, number) } },
-           undoUntil: pendingPicks[taskID], onUndo: { [weak self] in self?.undoPick(taskID) })
+           undoUntil: pendingPicks[taskID], onUndo: { [weak self] in self?.undoPick(taskID) },
+           onSomethingElse: jobID.map { id in { [weak self] text in self?.sendReply(jobID: id, text: text, choiceTaskID: taskID) ?? false } })
     }
     /// "Not needed": set aside a task's question, decision or approval without answering it (run id).
     public var onSetAside: (String) -> Void = { _ in }

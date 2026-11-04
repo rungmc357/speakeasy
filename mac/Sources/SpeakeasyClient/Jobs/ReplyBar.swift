@@ -8,6 +8,16 @@ import UIKit
 // `task_messages` only). What's typed goes to this job by run id, never through the voice's router,
 // and shows as the user's own turn here (never as something the assistant said).
 
+private struct ReplyBarAnswersKey: EnvironmentKey { static let defaultValue = false }
+public extension EnvironmentValues {
+    /// Touch pages with a reply bar: the bar is the one place to type, so a waiting decision's
+    /// "Something else…" moves into it (the card drops its own field).
+    var jobReplyBarAnswers: Bool {
+        get { self[ReplyBarAnswersKey.self] }
+        set { self[ReplyBarAnswersKey.self] = newValue }
+    }
+}
+
 /// What the user sent to this job: their own bubbles on the right, with how each one is doing.
 public struct SentMessages: View {
     @ObservedObject var model: VoicePanelModel
@@ -101,6 +111,7 @@ public struct TaskReplyBar: View {
     var showsSent = true
     @FocusState private var focused: Bool
     @Environment(\.jobTextScale) private var s
+    @Environment(\.jobReplyBarAnswers) private var answersDecision
     /// Text in the field before dictation started (heard words are added after it).
     @State private var dictationBase = ""
     @State private var pressing = false
@@ -115,6 +126,17 @@ public struct TaskReplyBar: View {
     private var holding: Bool { model.heldJobID == job.id }
     private var dictating: Bool { dictation.isListening(to: job.id) }
     private var canSend: Bool { TaskMessageRequest.clean(draft.wrappedValue) != nil }
+    /// Touch, a decision waiting and no in-card field: what's typed here is "Something else…"
+    /// (sent with `choice_task_id`, so it answers that decision and nothing else).
+    private var openChoice: TaskItem? {
+        guard JobLook.touch, answersDecision, let t = job.decisionTask, t.info.decision != nil,
+              model.answers[t.id] == nil else { return nil }
+        return t
+    }
+    private var placeholder: String {
+        guard JobLook.touch else { return TaskMessageCopy.placeholder(job.name) }
+        return openChoice != nil ? TaskMessageCopy.somethingElse : "Message this job"
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8 * s) {
@@ -155,7 +177,7 @@ public struct TaskReplyBar: View {
                     .padding(.horizontal, 12 * s)
             } else {
                 // Touch: the page's title already names the job, so the field just says what it's for.
-                TextField(JobLook.touch ? "Message this job" : TaskMessageCopy.placeholder(job.name), text: draft, axis: .vertical)
+                TextField(placeholder, text: draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13 * s))
                     .lineLimit(1...5)
@@ -164,6 +186,7 @@ public struct TaskReplyBar: View {
                     .onSubmit(submit)
                     .padding(.horizontal, 12 * s).padding(.vertical, 8 * s)
                     .accessibilityIdentifier("reply-field")
+                    .accessibilityHint(openChoice != nil ? "Answers the decision in your own words" : "")
             }
         }
         .frame(minHeight: 34 * s)
@@ -241,7 +264,7 @@ public struct TaskReplyBar: View {
     private func submit() {
         guard canSend else { return }
         if dictating { dictation.stop() }
-        model.sendReply(jobID: job.id)
+        model.sendReply(jobID: job.id, choiceTaskID: openChoice?.id)
     }
 
     private enum Haptic { case begin, end }
@@ -326,89 +349,107 @@ public struct SomethingElseField: View {
     @ObservedObject var model: VoicePanelModel
     var job: Job
     var task: TaskItem
-    @State private var open = false
-    @State private var text = ""
-    @FocusState private var focused: Bool
+    var startOpen: Bool
+    var text: String
     @Environment(\.jobTextScale) private var s
 
     public init(model: VoicePanelModel, job: Job, task: TaskItem, startOpen: Bool = false, text: String = "") {
-        self.model = model; self.job = job; self.task = task
-        _open = State(initialValue: startOpen); _text = State(initialValue: text)
+        self.model = model; self.job = job; self.task = task; self.startOpen = startOpen; self.text = text
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 6 * s) {
             SentMessages(model: model, jobID: job.id, choiceTaskID: task.id, limit: 1)
             if model.answers[task.id] == nil {
-                if open && JobLook.touch {
-                    // One glass field with the send button inside it, like the page's reply bar.
-                    let ready = TaskMessageRequest.clean(text) != nil
-                    HStack(alignment: .bottom, spacing: 4 * s) {
-                        TextField("Something else…", text: $text, axis: .vertical)
-                            .textFieldStyle(.plain).font(.system(size: 12.5 * s)).lineLimit(1...4)
-                            .focused($focused).submitLabel(.send).onSubmit(submit)
-                            .padding(.leading, 14 * s).padding(.vertical, 9 * s)
-                            .frame(minHeight: 34 * s)
-                            .accessibilityIdentifier("something-else-field")
-                        Button(action: submit) {
-                            Image(systemName: "arrow.up").font(.system(size: 12 * s, weight: .bold))
-                                .frame(width: 28 * s, height: 28 * s)
-                                .foregroundStyle(ready ? JobStyle.onBlue : Color.secondary)
-                                .background(Circle().fill(ready ? JobStyle.blue : Color.primary.opacity(0.08)))
-                        }
-                        .buttonStyle(.plain).disabled(!ready)
-                        .padding(3 * s)
-                        .accessibilityLabel("Send")
-                        .accessibilityIdentifier("something-else-send")
+                SomethingElseInput(startOpen: startOpen, text: text) { model.sendReply(jobID: job.id, text: $0, choiceTaskID: task.id) }
+            }
+        }
+    }
+}
+
+/// The "Something else…" row and the field it opens. `send` says whether it went.
+public struct SomethingElseInput: View {
+    var send: (String) -> Bool
+    @State private var open = false
+    @State private var text = ""
+    @FocusState private var focused: Bool
+    @Environment(\.jobTextScale) private var s
+
+    public init(startOpen: Bool = false, text: String = "", send: @escaping (String) -> Bool) {
+        self.send = send
+        _open = State(initialValue: startOpen); _text = State(initialValue: text)
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 6 * s) {
+            if open && JobLook.touch {
+                // One glass field with the send button inside it, like the page's reply bar.
+                let ready = TaskMessageRequest.clean(text) != nil
+                HStack(alignment: .bottom, spacing: 4 * s) {
+                    TextField("Something else…", text: $text, axis: .vertical)
+                        .textFieldStyle(.plain).font(.system(size: 12.5 * s)).lineLimit(1...4)
+                        .focused($focused).submitLabel(.send).onSubmit(submit)
+                        .padding(.leading, 14 * s).padding(.vertical, 9 * s)
+                        .frame(minHeight: 34 * s)
+                        .accessibilityIdentifier("something-else-field")
+                    Button(action: submit) {
+                        Image(systemName: "arrow.up").font(.system(size: 12 * s, weight: .bold))
+                            .frame(width: 28 * s, height: 28 * s)
+                            .foregroundStyle(ready ? JobStyle.onBlue : Color.secondary)
+                            .background(Circle().fill(ready ? JobStyle.blue : Color.primary.opacity(0.08)))
                     }
-                    .modifier(TouchGlass(RoundedRectangle(cornerRadius: 19 * s, style: .continuous)))
-                    Text("Goes only to this decision.")
-                        .font(.system(size: 10.5 * s)).foregroundStyle(.secondary).padding(.leading, 4)
-                } else if open {
-                    HStack(alignment: .bottom, spacing: 7 * s) {
-                        TextField("Something else…", text: $text, axis: .vertical)
-                            .textFieldStyle(.plain).font(.system(size: 12.5 * s)).lineLimit(1...4)
-                            .focused($focused).submitLabel(.send).onSubmit(submit)
-                            .padding(.horizontal, 10 * s).padding(.vertical, 7 * s)
-                            .background(RoundedRectangle(cornerRadius: 10 * s, style: .continuous).fill(Color.primary.opacity(0.08)))
-                            .overlay(RoundedRectangle(cornerRadius: 10 * s, style: .continuous)
-                                .strokeBorder(JobStyle.blueInk.opacity(focused ? 0.55 : 0.2), lineWidth: 1))
-                            .accessibilityIdentifier("something-else-field")
-                        let ready = TaskMessageRequest.clean(text) != nil
-                        Button(action: submit) {
-                            Text("Send").font(.system(size: 12 * s, weight: .semibold))
-                                .padding(.horizontal, 12 * s).frame(height: 30 * s)
-                                .foregroundStyle(ready ? JobStyle.onBlue : Color.secondary)
-                                .background(Capsule().fill(ready ? JobStyle.blue : Color.primary.opacity(0.08)))
-                        }
-                        .buttonStyle(.plain).disabled(!ready)
-                        .accessibilityIdentifier("something-else-send")
-                    }
-                    Text("Tell it what you want instead. It goes only to this decision.")
-                        .font(.system(size: 10.5 * s)).foregroundStyle(.secondary)
-                } else {
-                    Button { open = true; DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { focused = true } } label: {
-                        HStack(spacing: 6 * s) {
-                            Image(systemName: "text.cursor").font(.system(size: 11 * s, weight: .semibold))
-                            Text("Something else…").font(.system(size: 12 * s, weight: .semibold))
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, (JobLook.touch ? 12 : 10) * s).frame(minHeight: (JobLook.touch ? 36 : 32) * s)
-                        .foregroundStyle(JobLook.touch ? Color.secondary : JobStyle.blueInk)
-                        .background { SomethingElseFrame(s: s) }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Answer in your own words")
-                    .accessibilityIdentifier("something-else")
+                    .buttonStyle(.plain).disabled(!ready)
+                    .padding(3 * s)
+                    .accessibilityLabel("Send")
+                    .accessibilityIdentifier("something-else-send")
                 }
+                .modifier(TouchGlass(RoundedRectangle(cornerRadius: 19 * s, style: .continuous)))
+                Text("Goes only to this decision.")
+                    .font(.system(size: 10.5 * s)).foregroundStyle(.secondary).padding(.leading, 4)
+            } else if open {
+                HStack(alignment: .bottom, spacing: 7 * s) {
+                    TextField("Something else…", text: $text, axis: .vertical)
+                        .textFieldStyle(.plain).font(.system(size: 12.5 * s)).lineLimit(1...4)
+                        .focused($focused).submitLabel(.send).onSubmit(submit)
+                        .padding(.horizontal, 10 * s).padding(.vertical, 7 * s)
+                        .background(RoundedRectangle(cornerRadius: 10 * s, style: .continuous).fill(Color.primary.opacity(0.08)))
+                        .overlay(RoundedRectangle(cornerRadius: 10 * s, style: .continuous)
+                            .strokeBorder(JobStyle.blueInk.opacity(focused ? 0.55 : 0.2), lineWidth: 1))
+                        .accessibilityIdentifier("something-else-field")
+                    let ready = TaskMessageRequest.clean(text) != nil
+                    Button(action: submit) {
+                        Text("Send").font(.system(size: 12 * s, weight: .semibold))
+                            .padding(.horizontal, 12 * s).frame(height: 30 * s)
+                            .foregroundStyle(ready ? JobStyle.onBlue : Color.secondary)
+                            .background(Capsule().fill(ready ? JobStyle.blue : Color.primary.opacity(0.08)))
+                    }
+                    .buttonStyle(.plain).disabled(!ready)
+                    .accessibilityIdentifier("something-else-send")
+                }
+                Text("Tell it what you want instead. It goes only to this decision.")
+                    .font(.system(size: 10.5 * s)).foregroundStyle(.secondary)
+            } else {
+                Button { open = true; DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { focused = true } } label: {
+                    HStack(spacing: 6 * s) {
+                        Image(systemName: "text.cursor").font(.system(size: 11 * s, weight: .semibold))
+                        Text("Something else…").font(.system(size: 12 * s, weight: .semibold))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, (JobLook.touch ? 12 : 10) * s).frame(minHeight: (JobLook.touch ? 36 : 32) * s)
+                    .foregroundStyle(JobLook.touch ? Color.secondary : JobStyle.blueInk)
+                    .background { SomethingElseFrame(s: s) }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Answer in your own words")
+                .accessibilityIdentifier("something-else")
             }
         }
         .onReceive(SomethingElsePreview.shared.$text) { t in if let t { open = true; text = t } }
     }
 
     private func submit() {
-        guard model.sendReply(jobID: job.id, text: text, choiceTaskID: task.id) else { return }
+        guard send(text) else { return }
         text = ""; open = false
     }
 }
