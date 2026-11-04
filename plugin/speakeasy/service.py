@@ -55,6 +55,8 @@ ROUTING_HINT = ("Also: `hermes voice routing` on the machine that runs Hermes. "
                 "Stored in your Hermes config under auxiliary → speakeasy_router.")
 
 MAX_SDP = 96 * 1024
+# UX contract flags in GET /voice/status ("capabilities"); clients hide what a server lacks.
+CAPABILITIES = {"card_actions": True, "job_progress": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
 IDLE_CHECK_S = 15
 IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model setup rarely changes)
@@ -893,6 +895,56 @@ class VoiceService:
         return {"work": self.store.work(assistant_name=name), "away": self.store.away(),
                 "tasks": self.store.latest_tasks(MAX_TASKS)}
 
+    # -- card actions (docs/API.md "Card actions") -------------------------------------------------
+    def card_action(self, run_id: str | None, body: dict[str, Any], interaction_id: str | None = None) -> dict[str, Any]:
+        """A button on a task's card: ``{"view": i, "action": id, "value": optional}`` (plus ``run_id``
+        on the call route). The server decides what an action id does; unknown ones are refused."""
+        if not isinstance(body, dict):
+            raise ServiceError(400, "body must be an object")
+        allowed = {"view", "action", "value"} | ({"run_id"} if interaction_id is not None else set())
+        if not set(body) <= allowed or "view" not in body or "action" not in body:
+            raise ServiceError(400, "body must contain view and action" + (" and run_id" if interaction_id else ""))
+        if interaction_id is not None:
+            self.interaction(interaction_id)  # 404 for an unknown call
+            run_id = body.get("run_id")
+        index, action, value = body["view"], body["action"], body.get("value")
+        if not isinstance(run_id, str) or not ID_RE.fullmatch(run_id):
+            raise ServiceError(400, "run_id must be a run id")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise ServiceError(400, "view must be a card index")
+        if not isinstance(action, str) or not action:
+            raise ServiceError(400, "action must be an action id")
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float, str))):
+            raise ServiceError(400, "value must be a number or a short string")
+        found = self.store.run_result(run_id)
+        if found is None:
+            raise ServiceError(404, "not found")
+        key, result = found
+        views = result.get("views") if isinstance(result.get("views"), list) else []
+        if index >= len(views) or not isinstance(views[index], dict):
+            raise ServiceError(404, "that card isn't on this task")
+        view = views[index]
+        if action not in {a.get("id") for a in view.get("actions") or [] if isinstance(a, dict)}:
+            raise ServiceError(400, "that card has no such button")
+        if view.get("kind") == "home" and action == "toggle":
+            devices = view.get("devices") or []
+            entity_id = devices[0].get("entity_id") if devices and isinstance(devices[0], dict) else None
+            if not isinstance(entity_id, str):
+                raise ServiceError(400, "that card has no device")
+            if value is not None and not isinstance(value, (int, float)):
+                raise ServiceError(400, "value must be a brightness from 0 to 100")
+            reply, card = self.home_control.toggle(entity_id, value)
+            if not reply.ok:
+                raise ServiceError(409, reply.spoken)
+            if card is not None:
+                views[index] = card
+                result["views"] = views
+                self.store.set_result(key, result)
+                self.store.progress(key, "milestone", reply.spoken)
+            self.publish_all(key)
+            return {"ok": True, "message": reply.spoken}
+        raise ServiceError(400, "this server doesn't do that action yet")
+
     def work(self, run_id: str) -> dict[str, Any]:
         if not ID_RE.fullmatch(run_id):
             raise ServiceError(404, "not found")
@@ -1422,6 +1474,8 @@ class VoiceService:
             "room_on_resume": True,
             "focus": True,
             "version": __version__,
+            # What this server supports from the UX contract; a missing flag means an older server.
+            "capabilities": dict(CAPABILITIES),
         }
 
     def attachment_status(self) -> dict[str, Any]:

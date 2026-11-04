@@ -800,6 +800,18 @@ class StateStore:
             self._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?",
                              (json.dumps(result) if result else None, key))
 
+    def run_result(self, run_id: str) -> tuple[str, dict[str, Any]] | None:
+        """(idem key, stored result) for one run, server-side fields included; None if unknown."""
+        with self._lock:
+            row = self._db.execute("SELECT idem_key,result_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            result = json.loads(row[1]) if row[1] else {}
+        except ValueError:
+            result = {}
+        return row[0], result if isinstance(result, dict) else {}
+
     def result_cards(self, run_id: str) -> list[Any]:
         """Stored cards for one exact finished run, including server-side image paths."""
         with self._lock:

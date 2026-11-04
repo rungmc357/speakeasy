@@ -200,6 +200,31 @@ def _object(shape: dict[str, Any], raw: Any) -> dict[str, Any]:
     return out
 
 
+ACTION_STYLES = {"primary", "secondary", "destructive"}
+MAX_ACTIONS = 4
+
+
+def clean_actions(raw: Any) -> list[dict[str, Any]]:
+    """A card's buttons (docs/API.md "Card actions"): ``id`` and ``label`` required; the server
+    decides what an id does when it is pressed."""
+    out: list[dict[str, Any]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        action_id, label = item.get("id"), _str(item.get("label"), 24)
+        if not isinstance(action_id, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,23}", action_id) or not label:
+            continue
+        style = str(item.get("style") or "secondary").lower()
+        action = {"id": action_id, "label": label, "style": style if style in ACTION_STYLES else "secondary",
+                  "confirm": item.get("confirm") is True}
+        if item.get("value") == "brightness":
+            action["value"] = "brightness"
+        out.append(action)
+        if len(out) == MAX_ACTIONS:
+            break
+    return out
+
+
 def clean(raw: Any) -> dict[str, Any] | None:
     """One validated view, or None for an unknown kind or an empty view."""
     if not isinstance(raw, dict):
@@ -209,6 +234,8 @@ def clean(raw: Any) -> dict[str, Any] | None:
     if shape is None:
         return None
     body = _tidy(kind, _object(shape, raw))
+    if body and (actions := clean_actions(raw.get("actions"))):
+        body["actions"] = actions
     return {"kind": kind, **body} if body else None
 
 

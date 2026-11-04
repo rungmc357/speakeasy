@@ -348,6 +348,14 @@ class Handler(BaseHTTPRequestHandler):
                                                             device_id, local=same_machine(self.client_address[0],
                                                                                           self.headers)))
                 return
+            card = re.fullmatch(rf"/voice/interactions/{_ID}/card-action", path)
+            if card:
+                self._reply(200, self.service.card_action(None, self._body(), interaction_id=card.group(1)))
+                return
+            card = re.fullmatch(rf"/voice/work/{_ID}/card-action", path)
+            if card:
+                self._reply(200, self.service.card_action(card.group(1), self._body()))
+                return
             if path == "/voice/tasks/dismiss":
                 self._reply(200, self.service.dismiss_tasks(self._body()))
                 return

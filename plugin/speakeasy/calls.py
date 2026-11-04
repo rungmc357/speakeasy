@@ -2086,6 +2086,12 @@ class SidebandWorker:
         backend = BackendRun(delegation_id, revision, idem, status="completed" if reply.ok else "failed")
         if not reply.ok:
             backend.error = reply.spoken
+        cards: list[dict[str, Any]] = []
+        if reply.ok and getattr(reply, "touched", ()) and hasattr(home, "device_views"):
+            try:  # the devices it moved, with on/off buttons (POST .../card-action "toggle")
+                cards = await asyncio.to_thread(home.device_views, reply.touched)
+            except Exception as exc:
+                logger.info("speakeasy: home cards unavailable (%s)", type(exc).__name__)
         with self.interaction.lock:
             self.interaction.runs[delegation_id] = backend
             self.interaction.latest_delegation_id = delegation_id
@@ -2095,7 +2101,10 @@ class SidebandWorker:
             self.store.set_title(idem, (home_title(reply.spoken) if reply.ok else None) or short_title(request) or "Home")
             self.store.progress(idem, "request", request)
             self.store.update_run(idem, None, backend.status)
-            self.store.set_result(idem, split_result(reply.spoken, ()))
+            result = split_result(reply.spoken, ()) or {}
+            if cards:
+                result["views"] = cards
+            self.store.set_result(idem, result or None)
             self.store.progress(idem, "result", reply.spoken)
             if reply.ok:
                 # "Lights off" -> "Done": heard on the call, nothing to read, so no new-answer badge.

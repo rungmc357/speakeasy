@@ -260,6 +260,27 @@ class Reply:
     ok: bool
     spoken: str
     ask: bool = False  # spoken is a question for the user; no device moved
+    touched: tuple[str, ...] = dataclasses.field(default=(), compare=False)  # entity ids it moved (the card's device buttons)
+
+
+TOGGLEABLE = {"light", "switch", "fan"}  # what a card's on/off button may flip
+MAX_CARD_DEVICES = 4
+
+
+def device_view(device: Device) -> dict[str, Any]:
+    """A home card for one device, with an on/off button (docs/API.md "Card actions")."""
+    on = device.state == "on"
+    row: dict[str, Any] = {"name": device.name[:60], "kind": device.domain, "on": on, "state": device.state,
+                           "entity_id": device.entity_id}
+    action: dict[str, Any] = {"id": "toggle", "label": "Turn off" if on else "Turn on", "style": "primary",
+                              "confirm": False}
+    if device.domain == "light":
+        if on and device.attrs.get("brightness") is not None:
+            row["level"] = round(int(device.attrs["brightness"]) / 2.55)
+        modes = device.attrs.get("supported_color_modes") or []
+        if any(m != "onoff" for m in modes) or device.attrs.get("brightness") is not None:
+            action["value"] = "brightness"  # the button takes a 0-100 value too
+    return {"kind": "home", "title": device.name[:60], "devices": [row], "actions": [action]}
 
 
 def planner_messages(request: str, devices: list[Device], unit: str, notes: list[str] | None = None,
@@ -604,6 +625,7 @@ class HomeControl:
             return Reply(True, plan.say)
         client = self.client()
         done = 0
+        touched = tuple(dict.fromkeys(i for call in plan.calls for i in call.entity_ids))
         for call in plan.calls:
             try:
                 client.call_service(call.domain, call.service, {"entity_id": list(call.entity_ids), **call.data})
@@ -616,7 +638,50 @@ class HomeControl:
             done += 1
         with self._lock:
             self._snap = None  # states changed: re-read next time
-        return Reply(True, plan.say)
+        return Reply(True, plan.say, touched=touched)
+
+    # cards
+    def device_views(self, entity_ids: tuple[str, ...] | list[str]) -> list[dict[str, Any]]:
+        """Cards with on/off buttons for the devices a command moved (lights, switches, fans), as
+        they are now. Empty when there are none or Home Assistant can't be read."""
+        try:
+            snap = self.snapshot(fresh=True)
+        except HomeAssistantError:
+            return []
+        by_id = {d.entity_id: d for d in self.chosen(snap)}
+        devices = [by_id[i] for i in entity_ids if i in by_id and by_id[i].domain in TOGGLEABLE]
+        return [device_view(d) for d in devices[:MAX_CARD_DEVICES]]
+
+    def toggle(self, entity_id: str, value: Any = None) -> tuple[Reply, dict[str, Any] | None]:
+        """A card's on/off button: flip the device, or with ``value`` (0-100) set a light's brightness.
+        Only a device home control may touch. Returns the reply and the device's card as it is now."""
+        if not self.enabled:
+            return Reply(False, "Home control is off in Speakeasy settings."), None
+        try:
+            snap = self.snapshot(fresh=True)
+        except HomeAssistantError as exc:
+            return Reply(False, _problem(exc)), None
+        device = next((d for d in self.chosen(snap) if d.entity_id == entity_id), None)
+        if device is None or device.domain not in TOGGLEABLE:
+            return Reply(False, "That device isn't one Speakeasy can switch."), None
+        name = device.name
+        verb = "are" if re.search(r"(?i)[^s]s$", name) else "is"  # "Kitchen Lights are on"
+        if value is not None and device.domain == "light":
+            if not _num(value, 0, 100):
+                return Reply(False, "Brightness must be 0 to 100."), None
+            plan = Plan((Call("light", "turn_on" if value > 0 else "turn_off", (entity_id,),
+                              {"brightness_pct": int(value)} if value > 0 else {}),),
+                        f"{name} {verb} at {int(value)}%." if value > 0 else f"{name} {verb} off.")
+        else:
+            on = device.state == "on"
+            plan = Plan((Call(device.domain, "turn_off" if on else "turn_on", (entity_id,), {}),),
+                        f"{name} {verb} {'off' if on else 'on'}.")
+        reply = self.run(plan)
+        card = None
+        if reply.ok:
+            views = self.device_views((entity_id,))
+            card = views[0] if views else None
+        return reply, card
 
 
 def _problem(exc: HomeAssistantError) -> str:
