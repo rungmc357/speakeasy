@@ -18,6 +18,8 @@ def no_real_routing_model(monkeypatch):
     from speakeasy import router
     monkeypatch.setattr(router, "aux_call", lambda messages, timeout=router.ROUTE_TIMEOUT_S: None)
     monkeypatch.setattr(router, "routing_model", lambda config=None: "Hermes auxiliary default (auto)")
+    monkeypatch.setattr(router, "_title_llm", lambda messages, timeout: None)
+    monkeypatch.setattr(router, "_hermes_title", lambda text, timeout: None)
 
 
 @pytest.fixture(autouse=True)

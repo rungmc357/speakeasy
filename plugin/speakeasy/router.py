@@ -800,22 +800,120 @@ def home_plan_call(messages: list[dict[str, str]]) -> str | None:
     return future.result(timeout=PLAN_TIMEOUT_S + 0.5)
 
 
+_TITLE_PROMPT = (
+    "You name tasks a user handed to their AI assistant by voice, so the task list reads like a clear to-do "
+    "list. You get the spoken request (a transcript: filler, false starts, misheard words) and sometimes the "
+    "earlier task it continues or answers and the last turns of the call. Use that context to work out what "
+    "a short request (\"Fix and ship\", \"Do both\", \"Yes, that one\") actually refers to.\n\n"
+    "Rules:\n"
+    "- 4 to 8 words, sentence case, no quotes, no trailing punctuation.\n"
+    "- Name the specific subject and what is being done about it: the product, place, person, file or "
+    "topic, plus the action or question. Someone reading only the title must know what the task is.\n"
+    "- Never a meta title about the conversation: no \"Continue previous discussion\", \"Follow up on "
+    "remaining items\", \"Confusion about ...\", \"Clarify request\", \"Voice task\", \"Quick question\".\n"
+    "- Never just repeat a short request word for word; never a raw question cut short; never end on a "
+    "dangling word (to, the, of, for, in, and).\n"
+    "- Drop filler and the assistant's name. Fix obvious speech-to-text slips from context.\n"
+    "- Spell product names exactly: Speakeasy, Hermes, TestFlight, ChatGPT, Codex, Claude Code, GitHub.\n"
+    "- Never answer the request. Name it.\n\n"
+    "Good: {\"title\": \"Ship the ChatGPT login onboarding fix\"} (for \"Fix and ship\" after a task about "
+    "ChatGPT login during Speakeasy onboarding)\n"
+    "Good: {\"title\": \"Check tomorrow's New York weather\"}\n"
+    "Good: {\"title\": \"Find a premium speaker for the office\"}\n"
+    "Good: {\"title\": \"Check fantasy football matchup this week\"}\n"
+    "Bad: {\"title\": \"Fix and ship\"} (says nothing about what)\n"
+    "Bad: {\"title\": \"Continue previous discussion\"} (meta)\n"
+    "Bad: {\"title\": \"Check the weather for tomorrow in\"} (cut off)\n\n"
+    "Reply with JSON only: {\"title\": \"...\"}"
+)
+_TITLE_META = re.compile(
+    r"(?i)^(?:continu(?:e|ing)|resum(?:e|ing)|follow(?:ing)?[\s-]?up|discuss(?:ion|ing)?|clarif|confusion|handle|"
+    r"respond|reply|answer(?:ing)? (?:the|a) |voice (?:task|request)|quick (?:question|choice)|geo's (?:request|question))"
+    r"|\b(?:previous|earlier|prior|other) (?:discussion|conversation|topic|stuff|items)\b|\bremaining items\b"
+    r"|\b(?:voice|speakeasy) (?:task|request)\b|\bthis conversation\b")
+_TITLE_TRANSCRIPT_TAIL = {"to", "the", "a", "an", "of", "for", "in", "at", "with", "from", "and", "or", "but", "my",
+                          "our", "your", "is", "are", "be", "going", "gonna", "about", "by", "into", "on", "that"}
+
+
+def clean_task_title(raw: str | None, request: str = "") -> tuple[str | None, str]:
+    """The titler's reply as a task title, or (None, why) when it isn't a usable one."""
+    from .text import fix_product_names, is_fragment, _title_content
+    text = str(raw or "").strip()
+    match = re.search(r"\{.*\}", text, re.S)
+    if match:
+        try:
+            text = str(json.loads(match.group(0)).get("title") or "")
+        except (ValueError, AttributeError):
+            text = ""
+    text = " ".join(text.split()).strip(" .\"'`“”")
+    text = re.sub(r"^(?:title|task)\s*:\s*", "", text, flags=re.I)
+    if not text:
+        return None, "empty"
+    if "…" in text or text.endswith("..."):
+        return None, "cut off"
+    words = text.split()
+    if not 3 <= len(words) <= 9 or len(text) > 70:
+        return None, f"{len(words)} words; it must be 4 to 8"
+    if words[-1].lower().strip(",:;") in _TITLE_TRANSCRIPT_TAIL:
+        return None, "it ends mid-phrase"
+    if _TITLE_META.search(text):
+        return None, "it describes the conversation, not the task"
+    said = re.sub(r"\(.*$", "", request.split("\n", 1)[0].removeprefix("Request:")).strip()
+    if said and is_fragment(said) and set(_title_content(text)) <= set(_title_content(said)):
+        return None, "it only repeats the short request; name what it refers to"
+    text = fix_product_names(text)
+    return text[0].upper() + text[1:], ""
+
+
 def smart_title(request: str, timeout: float = TITLE_TIMEOUT_S) -> str | None:
-    """A to-do style name for a voice task from Hermes' own session titler (task
-    ``title_generation``), in this plugin's profile scope. None when unavailable; callers keep the
-    instant word-based label."""
+    """A specific 4-8 word to-do name for a voice task (task ``title_generation``, this plugin's
+    profile scope). *request* is the titler input (``text.title_input``: the request plus the task
+    it continues and recent turns). One retry with the reason when the first reply is unusable;
+    None when unavailable, and callers keep the stand-in label."""
+    text = str(request or "").strip()
+    if not text:
+        return None
+    messages = [{"role": "system", "content": _TITLE_PROMPT}, {"role": "user", "content": text[:2500]}]
+    for attempt in range(2):
+        try:
+            raw = _title_llm(messages, timeout)
+        except Exception as exc:
+            logger.info("speakeasy: task title unavailable (%s, attempt %d)", type(exc).__name__, attempt + 1)
+            continue
+        if raw is None:
+            return _hermes_title(text, timeout) if attempt == 0 else None
+        title, why = clean_task_title(raw, text)
+        if title:
+            return title
+        logger.info("speakeasy: task title rejected (%s, attempt %d)", why, attempt + 1)
+        messages = messages + [{"role": "assistant", "content": raw[:300]},
+                               {"role": "user", "content": f"Not usable: {why}. Reply with a better title, JSON only."}]
+    return None
+
+
+def _title_llm(messages: list[dict[str, str]], timeout: float) -> str | None:
+    """One titler request (task ``title_generation``); None when the aux client can't be imported."""
     try:
-        from agent.title_generator import generate_title  # type: ignore
+        from agent.auxiliary_client import call_llm  # type: ignore
     except Exception:
         return None
+    with _profile_scope():
+        response = call_llm(task="title_generation", messages=messages, max_tokens=200, temperature=None,
+                            timeout=timeout, reasoning_config={"enabled": False})
+    return (response.choices[0].message.content or "").strip()
+
+
+def _hermes_title(text: str, timeout: float) -> str | None:
+    """Fallback: Hermes' own session titler, when the aux client can't be called directly."""
     try:
+        from agent.title_generator import generate_title  # type: ignore
         with _profile_scope():
-            title = generate_title(request, timeout=timeout)
+            title = generate_title(text, timeout=timeout)
     except Exception as exc:
         logger.info("speakeasy: task title unavailable (%s)", type(exc).__name__)
         return None
-    title = " ".join(str(title or "").split()).strip(" .")
-    return title[:60] or None
+    cleaned, _ = clean_task_title(title, text)
+    return cleaned
 
 
 _POLISH_PROMPT = (

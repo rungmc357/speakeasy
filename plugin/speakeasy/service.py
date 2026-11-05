@@ -61,6 +61,8 @@ CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": Tr
                 "task_messages": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
 IDLE_CHECK_S = 15
+TITLE_SWEEP_TICKS = 40  # idle ticks between stand-in title sweeps (about ten minutes)
+TITLE_SWEEP_BATCH = 5   # tasks a sweep may name (one model call each)
 IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model setup rarely changes)
 EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the call's event channel
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
@@ -619,10 +621,50 @@ class VoiceService:
             ticks += 1
             if ticks % 4 == 0:  # about once a minute
                 self.settle_stuck_tasks()
+            if ticks % TITLE_SWEEP_TICKS == 1:  # shortly after start, then about every ten minutes
+                self._sweep_titles_soon()
             if time.monotonic() >= next_image_check:  # about once an hour
                 self._check_image_support_soon()
                 self.prune_shared()
                 next_image_check = time.monotonic() + IMAGE_SUPPORT_EVERY_S
+
+    def _sweep_titles_soon(self) -> None:
+        """Rename finished tasks still under a stand-in label (the titler failed or never ran) on
+        their own thread: each name is a model call. One sweep at a time."""
+        running = getattr(self, "_title_sweep", None)
+        if running is not None and running.is_alive():
+            return
+        self._title_sweep = threading.Thread(target=self.sweep_titles, name="speakeasy-title-sweep", daemon=True)
+        self._title_sweep.start()
+
+    def sweep_titles(self, limit: int = TITLE_SWEEP_BATCH) -> int:
+        """Give stand-in-named finished tasks a real name, with the task before them on the call as
+        context (a "Fix and ship" is named for what it ships). A task the titler can't name is not
+        retried this run. Returns how many were renamed."""
+        from . import router
+        from .text import title_input
+        tried = self.__dict__.setdefault("_title_tried", set())
+        titler = getattr(self.rt, "title_call", None) or router.smart_title
+        renamed = attempts = 0
+        for task in self.store.stand_in_titles(limit=200):
+            if attempts >= limit or self._stop.is_set():
+                break  # a bounded batch per sweep; the rest wait for the next one
+            key = self.store.key_for_task(task["task_id"])
+            if not key or key in tried:
+                continue
+            tried.add(key)
+            attempts += 1
+            parent, parent_request = self.store.title_context(key)
+            try:
+                title = titler(title_input(task["request"], parent=parent, parent_request=parent_request))
+            except Exception as exc:
+                logger.info("speakeasy: title sweep skipped a task (%s)", type(exc).__name__)
+                title = None
+            if title and self.store.rename_stand_in(key, title):
+                renamed += 1
+        if renamed:
+            logger.info("speakeasy: renamed %d stand-in task titles", renamed)
+        return renamed
 
     def _check_image_support_soon(self) -> None:
         """Run the image support check on its own thread: it can wait tens of seconds on the network
