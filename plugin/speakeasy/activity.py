@@ -792,6 +792,36 @@ def observe(store: Any, key: str, event: dict[str, Any], on_flush: Any = None, n
         return _flush_locked(store, key, job, force=terminal, on_flush=on_flush, now=now)
 
 
+SPEECH_STEPS = 10  # items the call pulse's wording model sees
+FINDING_BASE = 1_000_000  # findings' numbers, apart from the steps'
+_SPEECH_KEYS = ("text", "detail", "tool", "args", "result", "status", "at", "started_at", "ended_at")
+
+
+def item_number(item: dict[str, Any]) -> int:
+    try:
+        return int(str(item.get("id") or "a0")[1:])
+    except ValueError:
+        return 0
+
+
+def speech_steps(store: Any, key: str, limit: int = SPEECH_STEPS) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """For the call pulse: the task's newest ``limit`` items (copies, already redacted, each with its
+    ``n``) and the tool call running right now (the newest one still running), from the same feed
+    the app shows. ([], None) when the task has no activity."""
+    with _LOCK:
+        state = tracker(store, key).state
+        items = list(state.get("items") or [])
+        findings = list(state.get("findings") or [])
+    out = [{"n": item_number(i), **{k: i[k] for k in _SPEECH_KEYS if k in i}} for i in items[-limit:]]
+    running = next((i for i in reversed(out) if i.get("status") == "running"), None)
+    # What it found (counts, results), in order with the steps; numbered after them so a later
+    # update knows it was told.
+    for f in findings[-3:]:
+        out.append({"n": FINDING_BASE + item_number(f), "text": f"Found: {f['text']}", "at": f.get("at", 0)})
+    out.sort(key=lambda i: (i is running, i.get("at") or 0))
+    return out, running
+
+
 def _flush_locked(store: Any, key: str, job: JobActivity, *, force: bool, on_flush: Any, now: float | None) -> bool:
     if not job.dirty:
         return False

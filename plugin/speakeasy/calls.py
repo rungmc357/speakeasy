@@ -146,6 +146,16 @@ ACTIVITY_KEEP = 10
 # Every note used to go straight in, and the voice answered each one out loud ("Still on it")
 # every few seconds on a long task.
 STATUS_NOTE_EVERY_S = 60.0
+# The call pulse: while a task runs and the call has been quiet this long since the assistant last
+# spoke, it says one short line about what the task is doing (its real tool calls and findings),
+# so a call never goes minutes without a word. After PULSE_IDLE_AFTER updates in a row with nothing
+# new on a task, that task waits PULSE_IDLE_EVERY_S instead. Never while the user is muted, while
+# anyone is talking (no transcript for PULSE_QUIET_S), or while a question or approval waits.
+PULSE_EVERY_S = PROGRESS_EVERY_S
+PULSE_IDLE_EVERY_S = 90.0
+PULSE_IDLE_AFTER = 3
+PULSE_TICK_S = 5.0
+PULSE_QUIET_S = 6.0
 
 
 class ServiceError(Exception):
@@ -300,6 +310,8 @@ class BackendRun:
     activity_count: int = 0         # steps seen so far
     told_count: int = 0             # steps already covered by a spoken update
     told: list[str] = dataclasses.field(default_factory=list)      # updates already spoken
+    pulse_told: set[int] = dataclasses.field(default_factory=set)  # activity.py items an update covered
+    pulse_idle: int = 0             # pulse updates in a row with nothing new to say
     # Same-project fence (fence.py): the projects this task names or touched, whether it is known to
     # edit them, and, for a task held behind another, the blocker and whether the user said go anyway.
     projects: set[str] = dataclasses.field(default_factory=set)
@@ -331,6 +343,7 @@ class Interaction:
     call_closed: bool = False
     progress_spoken_at: float = 0.0  # last spoken progress update on this call, any task (monotonic)
     paused: bool = False
+    mic_muted: bool = False  # the app's mic is off (POST .../mic); only the call pulse cares
     pause_bookkept: bool = False
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)
     resumed_from: str | None = None
@@ -821,6 +834,7 @@ class SidebandWorker:
         head = self.interaction.head()
         if head is not self.interaction:
             publish_state(self.store, head, name)
+        self.ensure_pulse()
 
     async def _publish_async(self) -> None:
         self.publish()
@@ -1249,6 +1263,8 @@ class SidebandWorker:
                 content = held + content
             else:
                 await self.append(kind, None, held.strip())
+        if kind == "session.commentary.append":
+            target.said_at = time.monotonic()  # the call pulse counts from here
         if target is not self:
             content = "(Update on a task from before the pause.) " + content
             await target.send_on_own_loop(kind, None, content)
@@ -1507,6 +1523,8 @@ class SidebandWorker:
         # A problem or heads-up ("the helper is broken, fixing it") is worth hearing now: it skips the
         # spacing between updates, which otherwise let "starting music" crowd it out.
         urgent = bool(milestone and text_mod.HEADS_UP_RE.search(milestone))
+        if self.muted_now() and not urgent:
+            return False  # muted: no "still working" lines (results, questions and approvals still speak)
         with self.interaction.lock:
             last_any = self.interaction.progress_spoken_at
             if (now - backend.started < PROGRESS_AFTER_S or backend.status not in {"running", "working"}
@@ -1530,9 +1548,140 @@ class SidebandWorker:
             with self.interaction.lock:
                 self.interaction.progress_spoken_at = last_any
             return False
+        items, _ = activity_mod.speech_steps(self.store, backend.idem_key)
         with self.interaction.lock:
             backend.told_count = covered
             backend.told = (backend.told + [line])[-5:]
+            backend.pulse_told.update(i["n"] for i in items)
+            backend.pulse_idle = 0
+        await self.append("session.commentary.append", backend.say_id, line)
+        return True
+
+    # -- the call pulse: never minutes of silence while work runs ------------------------------
+    def muted_now(self) -> bool:
+        """The user's mic is off: the app said so (``POST .../mic``), or the relay's own mute."""
+        head = self.interaction.head()
+        return bool(getattr(self, "muted", False) or self.interaction.mic_muted or head.mic_muted)
+
+    def someone_speaking(self, now: float) -> bool:
+        """Either side is mid-turn: a transcript arrived in the last PULSE_QUIET_S, or the provider
+        says a reply is playing / the user's words are still being transcribed."""
+        if getattr(self, "response_active", False) or getattr(self, "user_pending", False):
+            return True
+        fragments = list(self.fragments)
+        return bool(fragments) and now - fragments[-1].get("at", 0) < PULSE_QUIET_S
+
+    def last_spoke_at(self) -> float:
+        """When the assistant last said anything on this call (monotonic): its own speech, a spoken
+        update, a handoff's acknowledgement, or the call coming up."""
+        said = [f.get("at", 0.0) for f in list(self.fragments) if f["speaker"] == "assistant"]
+        return max([self.connected_at, self.interaction.progress_spoken_at, getattr(self, "said_at", 0.0),
+                    getattr(self, "last_handoff_at", float("-inf")), *said[-1:]])
+
+    def ensure_pulse(self) -> None:
+        """Start the pulse loop on this worker's own loop if work is running and it isn't already."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if loop is not self.loop or loop.is_closed():
+            return
+        task = getattr(self, "_pulse_task", None)
+        if task is not None and not task.done():
+            return
+        with self.interaction.lock:
+            active = any(r.status in ACTIVE_RUN_STATES for r in self.interaction.runs.values())
+        if active and self.call_connected():
+            self._pulse_task = loop.create_task(self._pulse_loop())
+
+    async def _pulse_loop(self) -> None:
+        while True:
+            await asyncio.sleep(PULSE_TICK_S)
+            if not self.call_connected():
+                return
+            with self.interaction.lock:
+                if not any(r.status in ACTIVE_RUN_STATES for r in self.interaction.runs.values()):
+                    return
+            try:
+                await self.pulse_tick()
+            except Exception:
+                logger.debug("speakeasy: call pulse failed", exc_info=True)
+
+    def _pulse_candidates(self, now: float) -> list[BackendRun]:
+        with self.interaction.lock:
+            runs = list(self.interaction.runs.values())
+        silent = getattr(self, "silent_ids", set())
+        return [r for r in runs if r.status in {"running", "working"} and now - r.started >= PROGRESS_AFTER_S
+                and not r.delegation_id.startswith("choice_") and r.delegation_id not in self.home_tasks
+                and r.delegation_id not in silent]
+
+    async def pulse_tick(self) -> bool:
+        """One look: if the call has been quiet PULSE_EVERY_S since the assistant last spoke and work
+        is running, say one short line about it. True when it spoke."""
+        if not self.rt.settings()["speech"]["progress"] or not self.call_connected():
+            return False
+        if self.muted_now() or self.interaction.paused or self.interaction.talking_only:
+            return False
+        now = time.monotonic()
+        with self.interaction.lock:
+            asking = any(r.status in {"waiting_for_approval", "resolving_approval"} or r.approval
+                         for r in self.interaction.runs.values())
+        if asking or self.held is not None or self.someone_speaking(now):
+            return False
+        last = self.last_spoke_at()
+        if now - last < PULSE_EVERY_S:
+            return False
+        running = self._pulse_candidates(now)
+        if not running:
+            return False
+        if await asyncio.to_thread(self.waiting_on_user):
+            return False  # a question or decision is up: that is what the call is waiting on
+        picks = []
+        for r in running:
+            items, current = await asyncio.to_thread(activity_mod.speech_steps, self.store, r.idem_key)
+            fresh = [i for i in items if i["n"] not in r.pulse_told and i is not current]
+            notes = r.activity[-min(ACTIVITY_KEEP, r.activity_count - r.told_count):] \
+                if r.activity_count > r.told_count else []
+            new = bool(fresh or notes or (current is not None and current["n"] not in r.pulse_told))
+            wait = PULSE_IDLE_EVERY_S if not new and r.pulse_idle >= PULSE_IDLE_AFTER else PULSE_EVERY_S
+            if now - max(r.spoken_at, last) < wait:
+                continue
+            picks.append((not new, r.spoken_at, r, items, current, fresh, notes))
+        if not picks:
+            return False
+        picks.sort(key=lambda p: (p[0], p[1]))  # something new first, then whoever was told least recently
+        stale, _, backend, items, current, fresh, notes = picks[0]
+        with self.interaction.lock:
+            claimed = self.interaction.progress_spoken_at
+            self.interaction.progress_spoken_at = now  # also holds back commentary-driven updates
+            backend.spoken_at = now
+            covered = backend.activity_count
+            told = list(backend.told[-3:])
+            idle = backend.pulse_idle
+        running_s = time.time() - float(current.get("started_at") or current.get("at") or time.time()) if current else 0.0
+        steps = P.pulse_steps(items, backend.pulse_told, notes, current, running_s)
+        request = self.store.request_text(backend.idem_key) or ""
+        writer = self.rt.progress_call or router.progress_update
+        try:
+            line = await asyncio.to_thread(writer, request, steps, told)
+        except Exception as exc:
+            logger.info("speakeasy: pulse wording unavailable (%s)", type(exc).__name__)
+            line = None
+        line = line or P.pulse_fallback([i["text"] for i in fresh] + notes, current.get("text") if current else None,
+                                        running_s, self.store.title(backend.idem_key), idle)
+        late = time.monotonic()
+        if (not line or not self.call_connected() or self.muted_now() or self.someone_speaking(late)
+                or self.last_spoke_at() > now or backend.status not in {"running", "working"}):
+            with self.interaction.lock:
+                if self.interaction.progress_spoken_at == now:
+                    self.interaction.progress_spoken_at = claimed
+            return False
+        with self.interaction.lock:
+            backend.told_count = covered
+            backend.told = (backend.told + [line])[-5:]
+            backend.pulse_told.update(i["n"] for i in items)
+            backend.pulse_idle = idle + 1 if stale else 0
+        logger.info("speakeasy: call pulse (%s)", "nothing new" if stale else "new activity")
         await self.append("session.commentary.append", backend.say_id, line)
         return True
 

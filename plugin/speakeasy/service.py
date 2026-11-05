@@ -745,6 +745,17 @@ class VoiceService:
             asyncio.run_coroutine_threadsafe(worker.focus_changed(), worker.loop)
         return {"interaction_id": interaction_id, "task_id": task_id}
 
+    def set_mic(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The app's mic went on or off: exactly ``{muted}``. Only the call pulse reads it (no
+        "still working" lines while muted); results, questions and approvals are spoken either way."""
+        muted = body.get("muted") if isinstance(body, dict) else None
+        if set(body or {}) != {"muted"} or not isinstance(muted, bool):
+            raise ServiceError(400, "body must be exactly {\"muted\": true|false}")
+        interaction = self.interaction(interaction_id)
+        with interaction.lock:
+            interaction.mic_muted = muted
+        return {"interaction_id": interaction_id, "muted": muted}
+
     def mic_check(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """The app found the call's mic wasn't getting through and reopened the connection.
         Logged (no audio, no words) so dead-mic calls show up in the logs with a reason."""

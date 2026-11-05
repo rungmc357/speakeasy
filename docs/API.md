@@ -38,6 +38,7 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/interactions/{id}/answer` | device | Answer a task's question card (or a spoken-choice card) |
 | POST | `/voice/interactions/{id}/card-action` | device | Press a button on a task's card during a call |
 | POST | `/voice/interactions/{id}/mic-check` | device | Log a mic repair (numbers only, no audio or words) |
+| POST | `/voice/interactions/{id}/mic` | device | The call's mic went on or off (pauses the progress pulse) |
 | POST | `/voice/interactions/{id}/screen` | device | Turn screen sharing on or off for this call |
 | POST | `/voice/interactions/{id}/captures/{capture_id}` | device | Report on a capture request |
 | POST | `/voice/interactions/{id}/attachments` | device | Upload a capture, picture or file (raw bytes) |
@@ -220,6 +221,14 @@ A tap on a question card's option (or a typed answer). Body `{"task_id": "...", 
 
 The app found the call's mic wasn't getting through and reopened the connection. Body
 `{"note": "..."}` (at most 400 characters of numbers and state, no audio or words). Logged only.
+
+## POST /voice/interactions/{id}/mic
+
+The user muted or unmuted the call's mic. Body exactly `{"muted": true|false}`; `200`
+`{"interaction_id": "...", "muted": true}`. The app sends it on every change (and when a call
+opens muted). While muted, the call skips its periodic "what the task is doing" updates (the
+pulse, about every 45 s while work runs); answers, questions and approvals are still spoken.
+Older plugins answer `404`, which the app ignores.
 
 ## GET /voice/interactions/{id}
 
