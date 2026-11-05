@@ -59,6 +59,7 @@ used in the tests (timestamps and IDs will differ).
 | GET | `/voice/history` | device | Every Hermes session and Speakeasy task, newest first (search, source filter, paging) |
 | GET | `/voice/history/{session_id}` | device | One session: messages, collapsed tool calls, its Speakeasy jobs, messages on their way |
 | POST | `/voice/history/{session_id}/message` | device | Send typed or voice-message text to that session, by id (never routed) |
+| POST | `/voice/history/{session_id}/approval` | device | Answer the approval one of the session's Speakeasy tasks waits on (no call needed) |
 | POST | `/voice/history/{session_id}/sends/{send_id}/answer` | device | Answer the approval/question a message sent through Hermes waits on |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
 | GET | `/voice/titles` | device | Past tasks still under their stand-in title: what the app's Apple Intelligence sweep may rename |
@@ -960,6 +961,9 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
   `work`, with its approval and question cards (`result.question`, `status:
   "waiting_for_approval"`), helpers and tool log. Answer them with the existing routes
   (`POST /voice/work/{run_id}/message`, `/card-action`, `/voice/interactions/{id}/approval`).
+- `approvals`: approvals the session's Speakeasy tasks wait on right now
+  (`[{run_id, task_id, description, choices}]`, `choices` from `once`, `session`, `deny`; never
+  `always`). Answer with `POST /voice/history/{session_id}/approval`.
 - `sends`: messages sent from the app through Hermes (see below) in the last 6 hours: `status`
   `sending` | `running` | `needs_you` (with `prompt {kind: approval|question, prompt_id, text,
   choices}`) | `completed` (`reply`) | `failed` (`error`, a plain sentence).
@@ -993,6 +997,13 @@ named gets it, by id:
 
 A **new chat** (the panel's New chat button) is `POST /voice/work`: the first message starts a new
 job in its own session, which then appears in the history like any other.
+
+### POST /voice/history/{session_id}/approval
+
+Body `{"run_id": "run_0002", "choice": "once" | "session" | "deny"}`: answers the approval that task (of
+this session) waits on, through the worker holding it (the open call's, or the voiceless one), the same
+way the voice does. `200 {"ok": true, "choice": "once"}`; `400` bad choice or not offered, `404` not a
+task of this session, `409` nothing waiting, `502` Hermes refused.
 
 ### POST /voice/history/{session_id}/sends/{send_id}/answer
 

@@ -1473,7 +1473,8 @@ class VoiceService:
             "state": "needs_you" if link and link.needs_you else ("running" if running else "idle"),
             "send_via": "task" if own and link else ("session_job" if meta["source"] == "api_server" else "hermes"),
             "entries": page["entries"], "has_more": page["has_more"], "before": page["before"],
-            "jobs": jobs, "sends": sends}}
+            "jobs": jobs, "sends": sends,
+            "approvals": self._session_approvals(link.keys) if link else []}}
 
     @staticmethod
     def _speakeasy_owned(meta: dict[str, Any], link: H.Linked | None) -> bool:
@@ -1526,6 +1527,51 @@ class VoiceService:
         logger.info("speakeasy: a message went to a %s session through Hermes", meta["source"])
         return {"ok": True, "session_id": sid, "via": "hermes", "run_id": None, "delivered_as": "message",
                 "task": None, "send_id": send.send_id, "send": send.public()}
+
+    def _session_approvals(self, keys: list[str]) -> list[dict[str, Any]]:
+        """Approvals the session's Speakeasy tasks wait on, from whichever worker holds them (an open
+        call's, or the voiceless one): {run_id, task_id, description, choices}."""
+        with self.lock:
+            workers = [i.worker for i in self.interactions.values() if i.worker is not None]
+        if self._text_worker is not None:
+            workers.append(self._text_worker)
+        wanted, out = set(keys), []
+        for worker in workers:
+            for task_id, run in worker.pending_approvals():
+                if run.idem_key in wanted:
+                    approval = run.approval or {}
+                    out.append({"run_id": run.run_id, "task_id": task_id,
+                                "description": H.A.clip(H.A.redact(approval.get("description") or ""), 400),
+                                "choices": [c for c in (approval.get("choices") or ["once", "deny"])
+                                            if c in {"once", "session", "deny"}]})
+        return out
+
+    def history_approval(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/history/{session_id}/approval {run_id, choice}``: answer the approval one of the
+        session's Speakeasy tasks waits on, with or without a call. Never "always"."""
+        run_id = body.get("run_id") if isinstance(body, dict) else None
+        choice = body.get("choice") if isinstance(body, dict) else None
+        if not isinstance(run_id, str) or not ID_RE.fullmatch(run_id) or choice not in {"once", "session", "deny"}:
+            raise ServiceError(400, "run_id and a choice of once, session or deny are required")
+        key = self.store.key_for_run(run_id)
+        if key is None or key not in {k for k, _, _ in self.store.keys_for_session(session_id)}:
+            raise ServiceError(404, "I couldn't find that approval.")
+        with self.lock:
+            workers = [i.worker for i in self.interactions.values() if i.worker is not None and i.worker.loop]
+        if self._text_worker is not None:
+            workers.append(self._text_worker)
+        for worker in workers:
+            for task_id, run in worker.pending_approvals():
+                if run.idem_key == key:
+                    if choice not in ((run.approval or {}).get("choices") or ["once", "deny"]):
+                        raise ServiceError(400, "That choice wasn't offered.")
+                    done = asyncio.run_coroutine_threadsafe(worker.resolve_approval(task_id, choice),
+                                                            worker.loop).result(30)
+                    if done is None:
+                        raise ServiceError(502, "Hermes didn't take that answer. Try again.")
+                    self.publish_all(key)
+                    return {"ok": True, "choice": done}
+        raise ServiceError(409, "That approval has closed.")
 
     def history_answer(self, session_id: str, send_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /voice/history/{session_id}/sends/{send_id}/answer {choice}``: answer the approval or

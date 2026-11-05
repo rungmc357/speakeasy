@@ -476,6 +476,10 @@ class Handler(BaseHTTPRequestHandler):
                 # By session id only: never the call router (docs/API.md "History").
                 self._reply(200, self.service.history_message(unquote(history_message.group(1)), self._body()))
                 return
+            history_approval = re.fullmatch(rf"/voice/history/{_SESSION}/approval", path)
+            if history_approval:
+                self._reply(200, self.service.history_approval(unquote(history_approval.group(1)), self._body()))
+                return
             history_answer = re.fullmatch(rf"/voice/history/{_SESSION}/sends/{_ID}/answer", path)
             if history_answer:
                 self._reply(200, self.service.history_answer(unquote(history_answer.group(1)),

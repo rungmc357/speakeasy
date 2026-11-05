@@ -343,3 +343,22 @@ def test_bad_message_bodies(server, state):
     assert post(server, "/voice/history/d1/message", {"text": "x", "extra": 1})[0] == 400
     assert post(server, "/voice/history/d1/message", {"text": "x" * 5000})[0] == 400
     assert post(server, "/voice/history/d1/message", {"text": "x", "source": "routed"})[0] == 400
+
+
+def test_a_speakeasy_job_waiting_on_approval_is_answerable_from_its_session(server, service, hermes, state):
+    hermes.approval_first = True
+    status, started = post(server, "/voice/work", {"text": "Tidy the old garden photos"})
+    assert status == 202, started
+    run_id = started["run_id"]
+    sid = wait_for(lambda: service.store.session_for(service.store.key_for_run(run_id)))
+    add_session(state, sid, "api_server", at=NOW - 5)
+    add_msg(state, sid, "user", "User: Tidy the old garden photos", at=NOW - 6)
+    page = wait_for(lambda: (lambda b: b if b["session"]["approvals"] else None)(get(server, f"/voice/history/{sid}")[1]))
+    approval = page["session"]["approvals"][0]
+    assert approval["run_id"] == run_id and approval["description"] == "Delete an old file"
+    assert "always" not in approval["choices"]
+    assert post(server, f"/voice/history/{sid}/approval", {"run_id": run_id, "choice": "always"})[0] == 400
+    assert post(server, "/voice/history/d1/approval", {"run_id": run_id, "choice": "once"})[0] == 404
+    status, body = post(server, f"/voice/history/{sid}/approval", {"run_id": run_id, "choice": "once"})
+    assert status == 200 and body["choice"] == "once", body
+    assert hermes.approvals[-1]["choice"] == "once"
