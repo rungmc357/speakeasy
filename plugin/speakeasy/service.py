@@ -44,6 +44,7 @@ from .router import home_plan_call as router_home_plan_call, routing_model
 from .threads import THREAD_PLATFORMS
 from .settings import (GROK_BETA_OFF, max_call_seconds, OPENAI_KEY_NAME, Settings, SettingsError, default_voice, find_codex, hermes_api_base,
                        grok_beta_on, hermes_secret, openai_api_key, valid_delivery_target)
+from .secure_service import SecureInputMixin
 from .store import StateStore
 from .suggest import SuggestError, suggest
 from .threads import ThreadRunner, capability, sync_routes
@@ -87,6 +88,9 @@ CAPABILITIES["history"] = True
 # POST /voice/attachments (+ DELETE /voice/attachments/{id}): pictures and files staged on a device,
 # then sent with a typed message or new job by id (``attachments`` on /voice/work[/{id}/message]).
 CAPABILITIES["attachments"] = True
+# GET /voice/secrets + POST /voice/secrets/{id}: a key a skill needs, or the Mac password for one sudo
+# command, typed into a secure card and handed to Hermes, never to the model (secure_input.py).
+CAPABILITIES["secret_input"] = True
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 # voice.max_call_minutes 0 = no limit (older plugins refuse 0: clients offer "No limit" only with this).
 CAPABILITIES["call_no_limit"] = True
@@ -139,7 +143,7 @@ def _merge_rooms(kept: str, heard: str) -> str:
         lines.pop(0)
     return "\n".join(lines)
 
-class VoiceService:
+class VoiceService(SecureInputMixin):
     def __init__(self, hermes_home: Path, *, hermes: Any = None, notifier: Any = None,
                  codex_factory: Callable[..., Any] | None = None, openai_negotiate: Callable[..., Any] | None = None,
                  openai_worker: Callable[..., Any] | None = None, codex_login: Callable[..., Any] | None = None,
@@ -228,6 +232,9 @@ class VoiceService:
         self._grok_connect = grok_connect
         self._grok_signin = grok_signin
         self._stop = threading.Event()
+        # Secure input (secure_input.py): only the gateway's long-lived service answers Hermes' secret
+        # and sudo prompts for Speakeasy's runs; a CLI or test service never takes them over.
+        self._init_secure(wire=start_threads)
         if start_threads:
             threading.Thread(target=self._idle_loop, daemon=True, name="speakeasy-idle").start()
             self._warm_catalog()
@@ -278,6 +285,7 @@ class VoiceService:
 
     def close(self) -> None:
         self._stop.set()
+        self._close_secure()
         self.brief.stop()
         with self.lock:
             live = list(self.interactions.values())

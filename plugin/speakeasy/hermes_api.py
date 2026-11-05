@@ -11,6 +11,7 @@ import urllib.request
 from typing import Any, Callable, Sequence
 
 from . import attachments as A
+from .secure_input import scrub_bytes
 from .text import ID_RE, TERMINAL
 
 logger = logging.getLogger(__name__)
@@ -147,7 +148,7 @@ class HermesAPI:
                 raw = response.read(MAX_BODY + 1)
                 if len(raw) > MAX_BODY:
                     raise HermesError(502, "Hermes response too large")
-                data = json.loads(raw or b"{}")
+                data = json.loads(scrub_bytes(raw) or b"{}")
                 return data if isinstance(data, dict) else {}
         except urllib.error.HTTPError as exc:
             raise HermesError(502 if exc.code >= 500 else exc.code, f"Hermes HTTP {exc.code}") from None
@@ -218,7 +219,7 @@ class HermesAPI:
                         raise HermesError(502, "Hermes event stream too large")
                     if raw.startswith(b"data: "):
                         try:
-                            event = json.loads(raw[6:])
+                            event = json.loads(scrub_bytes(raw[6:]))
                         except ValueError:
                             continue
                         if isinstance(event, dict):
