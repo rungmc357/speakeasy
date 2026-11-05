@@ -62,7 +62,7 @@ final class SessionHistoryTests: XCTestCase {
     func testConversationDecodesEntriesToolsJobsAndSends() {
         let c = HistoryConversation(json: json(#"""
         {"session": {"id": "d1", "title": "Shelf brackets", "source": "discord", "source_label": "Discord · #build",
-         "state": "running", "send_via": "hermes", "has_more": true, "before": 120,
+         "state": "running", "send_via": "linked", "has_more": true, "before": 120,
          "entries": [
            {"kind": "user", "id": "m1", "at": 1793891100, "text": "Size the brackets"},
            {"kind": "tools", "id": "t2", "items": [{"n": 1, "text": "Ran a command", "tool": "terminal", "status": "done",
@@ -72,22 +72,18 @@ final class SessionHistoryTests: XCTestCase {
            {"kind": "assistant", "id": "m5", "text": "Three brackets."},
            {"kind": "weird", "id": "m6", "text": "?"}],
          "jobs": [{"run_id": "run_1", "status": "waiting_for_approval", "title": "Order brackets", "session_id": "d1"}],
-         "approvals": [{"run_id": "run_1", "description": "Order 3?", "choices": ["once", "always", "deny"]}],
-         "sends": [{"send_id": "hs_1", "status": "needs_you", "text": "Order them",
-                    "prompt": {"kind": "approval", "prompt_id": "p1", "text": "Order 3?", "choices": ["once", "deny"]}},
-                   {"send_id": "hs_0", "status": "completed", "text": "hi", "reply": "Hello"}]}}
+         "approvals": [{"run_id": "run_1", "description": "Order 3?", "choices": ["once", "always", "deny"]}]}}
         """#))!
         XCTAssertEqual(c.entries.map(\.kind), [.user, .tools, .note, .assistant])
         XCTAssertEqual(c.entries[1].tools.first?.tool, "terminal")
         XCTAssertEqual(c.entries[1].tools.first?.args, "ls")
-        XCTAssertEqual(c.sendVia, .hermes)
+        XCTAssertEqual(c.sendVia, .linked)
         XCTAssertTrue(c.hasMore)
         XCTAssertEqual(c.before, 120)
         XCTAssertEqual(c.jobs.first?.runID, "run_1")
         XCTAssertEqual(c.jobs.first?.sessionID, "d1")
         XCTAssertEqual(c.approvals.first?.choices, ["once", "deny"], "never always")
         XCTAssertEqual(HistoryApproval.label("once"), "Approve")
-        XCTAssertEqual(c.sends.first?.prompt?.choices, ["once", "deny"])
         XCTAssertTrue(c.isWorking)
         XCTAssertNil(HistoryConversation(json: json(#"{"error": "x"}"#)))
     }
@@ -98,10 +94,10 @@ final class SessionHistoryTests: XCTestCase {
         XCTAssertEqual(r.path, "/voice/history/2026%20a%2Fb/message")
         XCTAssertEqual(r.body["text"] as? String, "Order them")
         XCTAssertEqual(r.body["source"] as? String, "voice_message")
-        let task = HistoryMessageReply(json: json(#"{"ok": true, "via": "task", "run_id": "run_9", "send_id": null}"#))
-        XCTAssertEqual(task, HistoryMessageReply(via: .task, runID: "run_9", sendID: nil))
-        let hermes = HistoryMessageReply(json: json(#"{"ok": true, "via": "hermes", "run_id": null, "send_id": "hs_1"}"#))
-        XCTAssertEqual(hermes?.sendID, "hs_1")
+        let task = HistoryMessageReply(json: json(#"{"ok": true, "via": "task", "run_id": "run_9"}"#))
+        XCTAssertEqual(task, HistoryMessageReply(via: .task, runID: "run_9"))
+        let linked = HistoryMessageReply(json: json(#"{"ok": true, "via": "linked", "run_id": "run_3"}"#))
+        XCTAssertEqual(linked?.via, .linked)
         XCTAssertNil(HistoryMessageReply(json: json(#"{"ok": false}"#)))
     }
 }

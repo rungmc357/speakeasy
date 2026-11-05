@@ -1,7 +1,5 @@
 """History (docs/API.md "History"): every Hermes session listed, read and written to by id from the
 app, with no call. Invented sessions in an invented Hermes state DB; nothing is ever routed."""
-import asyncio
-import contextlib
 import json
 import sqlite3
 import time
@@ -66,7 +64,7 @@ def state(service):
     add_session(path, "d1", "discord", title="Shelf brackets", display="Workshop / #build / Shelf brackets",
                 chat_type="thread", at=NOW - 100)
     add_msg(path, "d1", "user", "Can you size the walnut shelf brackets?", at=NOW - 200)
-    add_msg(path, "d1", "assistant", "Three brackets at 30 cm spacing will hold it.", at=NOW - 100)
+    add_msg(path, "d1", "assistant", "Three brackets at 12 in spacing will hold it.", at=NOW - 100)
     add_session(path, "t1", "telegram", title=None, display="Sam", chat_type="dm", at=NOW - 7200)
     add_msg(path, "t1", "user", "Remind me which seeds to start in March", at=NOW - 7300)
     add_session(path, "c1", "cli", title="Fix the lantern build", at=NOW - 90000)
@@ -181,7 +179,7 @@ def test_session_page_collapses_tool_calls_and_redacts_them(server, state):
     status, body = get(server, "/voice/history/d2")
     assert status == 200, body
     page = body["session"]
-    assert page["source_label"] == "Discord · #home" and page["send_via"] == "hermes"
+    assert page["source_label"] == "Discord · #home" and page["send_via"] == "linked"
     kinds = [e["kind"] for e in page["entries"]]
     assert kinds == ["user", "tools", "note", "assistant"]
     tools = page["entries"][1]["items"]
@@ -228,7 +226,7 @@ def test_send_to_a_speakeasy_task_session_uses_the_task_by_id(server, service, h
     calls_before = len(hermes.calls)
     status, body = post(server, f"/voice/history/{sid}/message", {"text": "Add the date too", "client_id": "c_h1"})
     assert status == 200, body
-    assert body["via"] == "task" and body["run_id"] and body["send_id"] is None
+    assert body["via"] == "task" and body["run_id"]
     wait_for(lambda: len(hermes.calls) > calls_before)
     assert hermes.calls[-1]["session_id"] == sid and "Add the date too" in json.dumps(hermes.calls[-1]["input"])
     # The same client_id is the same send.
@@ -249,93 +247,43 @@ def test_send_to_another_api_session_starts_a_job_in_that_session(server, hermes
     assert hermes.calls[-1]["session_id"] == "api_other"
 
 
-class FakeGateway:
-    """Hermes' canonical gateway client, as history.GatewaySends uses it."""
-
-    def __init__(self, reply="Brackets ordered.", ask=False):
-        self.rpcs, self.reply, self.ask = [], reply, ask
-        self.answered: dict = {}
-
-    def connect(self):
-        gw = self
-
-        class Client:
-            def __init__(self):
-                self.events = asyncio.Queue()
-
-            async def rpc(self, method, **params):
-                gw.rpcs.append((method, params))
-                if method == "session.resume":
-                    return {"stored_session_id": params["session_id"], "execution_generation": 1}
-                if method == "prompt.submit":
-                    sid = params["session_id"]
-                    if gw.ask:
-                        await self.events.put({"method": "event", "params": {
-                            "session_id": sid, "type": "approval.request", "admission_id": "adm_1",
-                            "execution_generation": 1,
-                            "payload": {"prompt_id": "p_1", "description": "Order 3 brackets?",
-                                        "choices": ["once", "deny"]}}})
-                    else:
-                        await self.events.put(self._done(sid))
-                    return {"admission_id": "adm_1"}
-                if method == "approval.respond":
-                    gw.answered = params
-                    await self.events.put({"method": "event", "params": {
-                        "session_id": params["session_id"], "type": "approval.settled",
-                        "payload": {"prompt_id": "p_1"}}})
-                    await self.events.put(self._done(params["session_id"]))
-                    return {"resolved": 1}
-                return {}
-
-            def _done(self, sid):
-                return {"method": "event", "params": {"session_id": sid, "type": "message.complete",
-                                                      "admission_id": "adm_1", "payload": {"text": gw.reply}}}
-
-        @contextlib.asynccontextmanager
-        async def cm():
-            yield Client()
-        return cm()
-
-
-def test_send_to_a_discord_thread_goes_through_hermes_by_id_and_never_posts_back(server, service, hermes, state):
-    gw = FakeGateway()
-    service.history_sends.connect = gw.connect
+def test_send_to_a_discord_thread_starts_a_linked_task_and_never_posts_back(server, service, hermes, state):
     status, body = post(server, "/voice/history/d1/message", {"text": "Order them please", "source": "voice_message"})
     assert status == 200, body
-    assert body["via"] == "hermes" and body["send_id"] and body["run_id"] is None
-    wait_for(lambda: service.history_sends.for_session("d1")[-1].status == "completed")
-    assert [m for m, _ in gw.rpcs] == ["session.resume", "prompt.submit"]
-    assert gw.rpcs[0][1]["session_id"] == "d1" and gw.rpcs[1][1]["text"] == "Order them please"
-    assert hermes.calls == []                          # no /v1/runs, no chat/stream fan-out
+    assert body["via"] == "linked" and body["run_id"]
+    call = wait_for(lambda: hermes.calls)[-1]
+    assert call["session_id"] != "d1"                      # never into the chat's own session
+    sent = json.dumps(call["input"])
+    assert "Order them please" in sent and "walnut shelf brackets" in sent   # seeded with the chat
+    assert "never posted to that chat" in sent
+    key = service.store.key_for_run(body["run_id"])
+    assert service.store.history_links("d1") == [key]
+    linked_sid = wait_for(lambda: service.store.session_for(key))
+    add_session(state, linked_sid, "api_server", at=NOW - 1)
+    add_msg(state, linked_sid, "assistant", "Ordered three brackets.", at=NOW - 1)
     _, page = get(server, "/voice/history/d1")
-    assert page["session"]["sends"][-1]["reply"] == "Brackets ordered."
+    s = page["session"]
+    assert s["send_via"] == "linked" and s["source"] == "discord"
+    texts = [e.get("text") for e in s["entries"]]
+    assert "Continued in Speakeasy · not posted to Discord" in texts and "Ordered three brackets." in texts
+    assert s["jobs"] and s["jobs"][0]["run_id"] == body["run_id"]
+    # The next message goes to the same linked task, not a new one.
+    wait_for(lambda: service.store.work(body["run_id"])["status"] == "completed")
+    before = len(hermes.calls)
+    status, again = post(server, "/voice/history/d1/message", {"text": "And the screws"})
+    assert status == 200 and again["via"] == "linked", again
+    assert service.store.history_links("d1") == [key]
+    wait_for(lambda: len(hermes.calls) > before)
+    assert hermes.calls[-1]["session_id"] == linked_sid
 
 
-def test_a_hermes_send_waiting_on_approval_is_answerable(server, service, state):
-    gw = FakeGateway(ask=True)
-    service.history_sends.connect = gw.connect
-    _, body = post(server, "/voice/history/d1/message", {"text": "Order them"})
-    send_id = body["send_id"]
-    wait_for(lambda: service.history_sends.for_session("d1")[-1].status == "needs_you")
-    _, page = get(server, "/voice/history/d1")
-    sent = page["session"]["sends"][-1]
-    assert sent["prompt"]["text"] == "Order 3 brackets?" and sent["prompt"]["choices"] == ["once", "deny"]
-    assert page["session"]["state"] == "running"
-    assert post(server, f"/voice/history/d1/sends/{send_id}/answer", {"choice": "maybe"})[0] == 400
-    status, answered = post(server, f"/voice/history/d1/sends/{send_id}/answer", {"choice": "once"})
-    assert status == 200, answered
-    wait_for(lambda: service.history_sends.for_session("d1")[-1].status == "completed")
-    assert gw.answered["choice"] == "once" and gw.answered["prompt_id"] == "p_1"
-    assert gw.answered["execution_generation"] == 1
-
-
-def test_a_hermes_send_without_a_gateway_fails_plainly(server, service, state):
-    def no_gateway():
-        raise H.HistoryError(503, "Hermes isn't ready to take that message. Try again in a moment.")
-    service.history_sends.connect = no_gateway
-    _, body = post(server, "/voice/history/t1/message", {"text": "Hello"})
-    send = wait_for(lambda: [s for s in service.history_sends.for_session("t1") if s.status == "failed"])[0]
-    assert "isn't ready" in send.error and body["via"] == "hermes"
+def test_the_chat_row_shows_its_linked_task_running(server, service, hermes, state):
+    hermes.hold = True
+    post(server, "/voice/history/t1/message", {"text": "Which of those can go outside now?"})
+    wait_for(lambda: hermes.calls)
+    _, listing = get(server, "/voice/history")
+    row = next(r for r in listing["sessions"] if r["id"] == "t1")
+    assert row["state"] == "running" and row["source"] == "telegram"
 
 
 def test_bad_message_bodies(server, state):

@@ -57,10 +57,9 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/work/{run_id}/message` | device | Send typed text to one task (reply bar, decision card's "Something else…") |
 | POST | `/voice/work` | device | Start a new job from typed text, no call needed (the plugin-update notice's Update) |
 | GET | `/voice/history` | device | Every Hermes session and Speakeasy task, newest first (search, source filter, paging) |
-| GET | `/voice/history/{session_id}` | device | One session: messages, collapsed tool calls, its Speakeasy jobs, messages on their way |
+| GET | `/voice/history/{session_id}` | device | One session: messages, collapsed tool calls, its Speakeasy jobs and approvals |
 | POST | `/voice/history/{session_id}/message` | device | Send typed or voice-message text to that session, by id (never routed) |
 | POST | `/voice/history/{session_id}/approval` | device | Answer the approval one of the session's Speakeasy tasks waits on (no call needed) |
-| POST | `/voice/history/{session_id}/sends/{send_id}/answer` | device | Answer the approval/question a message sent through Hermes waits on |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
 | GET | `/voice/titles` | device | Past tasks still under their stand-in title: what the app's Apple Intelligence sweep may rename |
 | POST | `/voice/titles` | device | Set one task's title (from the app's on-device titler); the job's name follows |
@@ -913,7 +912,7 @@ titles and chat names; `search` says which ran (`fts`, or `like` when the index 
 {"sessions": [
   {"id": "20261104_093012_ab12cd", "title": "Shelf brackets", "source": "discord",
    "source_label": "Discord · #build", "last_activity": 1793891284.09,
-   "preview": "Three brackets at 30 cm spacing will hold it.", "state": "idle",
+   "preview": "Three brackets at 12 in spacing will hold it.", "state": "idle",
    "match": "size the walnut shelf brackets"},
   {"id": "speakeasy_task_2a85e2b31d574f068443206e", "title": "Bake sale flyer", "source": "speakeasy",
    "source_label": "Speakeasy", "last_activity": 1793890001.2, "preview": "Flyer drafted.",
@@ -926,8 +925,8 @@ titles and chat names; `search` says which ran (`fts`, or `like` when the index 
 - `source`: `speakeasy` for a Hermes API session one of Speakeasy's tasks ran in, else Hermes'
   source (`discord`, `telegram`, `cli`, `gui`, `cron`, …). `source_label` is ready to show
   (`Discord · #channel` when the chat name has one).
-- `state`: `running` (a task or a message sent from the app is under way, or another surface's turn is
-  in progress), `needs_you` (a Speakeasy task waits on an approval or its question), else `idle`.
+- `state`: `running` (a Speakeasy task of it, or one linked to it, is under way, or another surface's
+  turn is in progress), `needs_you` (a Speakeasy task waits on an approval or its question), else `idle`.
 - `run_ids`: the session's Speakeasy tasks, newest first (open with `GET /voice/work/{run_id}`).
 - `match`: a short snippet of the matching message (searches only).
 - `400` for an unknown `source`, a bad `cursor` or `limit`.
@@ -938,17 +937,15 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
 
 ```json
 {"session": {"id": "...", "title": "Shelf brackets", "source": "discord", "source_label": "Discord · #build",
-  "state": "idle", "send_via": "hermes",
+  "state": "idle", "send_via": "linked",
   "entries": [
     {"kind": "user", "id": "m101", "at": 1793891100.0, "text": "Can you size the walnut shelf brackets?"},
     {"kind": "tools", "id": "t102", "items": [{"n": 1, "text": "Ran a command", "tool": "terminal",
        "status": "done", "args": "…", "result": "…", "started_at": 1793891101.0, "ended_at": 1793891103.2}]},
     {"kind": "note", "id": "m104", "at": 1793891150.0, "text": "A helper reported back"},
-    {"kind": "assistant", "id": "m105", "at": 1793891284.1, "text": "Three brackets at 30 cm spacing will hold it."}],
+    {"kind": "assistant", "id": "m105", "at": 1793891284.1, "text": "Three brackets at 12 in spacing will hold it."}],
   "has_more": false, "before": null,
-  "jobs": [],
-  "sends": [{"send_id": "hs_…", "status": "completed", "text": "Order them please", "reply": "Ordered.",
-             "started": 1793891300.0, "ended": 1793891340.5}]}}
+  "jobs": [], "approvals": []}}
 ```
 
 - `entries[].kind`: `user` (the person's words; for a Speakeasy task, its request, not the task
@@ -964,10 +961,10 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
 - `approvals`: approvals the session's Speakeasy tasks wait on right now
   (`[{run_id, task_id, description, choices}]`, `choices` from `once`, `session`, `deny`; never
   `always`). Answer with `POST /voice/history/{session_id}/approval`.
-- `sends`: messages sent from the app through Hermes (see below) in the last 6 hours: `status`
-  `sending` | `running` | `needs_you` (with `prompt {kind: approval|question, prompt_id, text,
-  choices}`) | `completed` (`reply`) | `failed` (`error`, a plain sentence).
-- `send_via`: which door `POST …/message` will use: `task`, `session_job` or `hermes`.
+- A chat continued from Speakeasy (see below) shows, after its own messages, a note
+  `"Continued in Speakeasy · not posted to Discord"` and the linked tasks' messages; their jobs lead
+  `jobs`.
+- `send_via`: which door `POST …/message` will use: `task`, `session_job` or `linked`.
 - `404 "I couldn't find that conversation."`
 
 ### POST /voice/history/{session_id}/message
@@ -982,17 +979,18 @@ named gets it, by id:
   session. `run_id` opens it like any job.
 - **Another Hermes API session** (`via: "session_job"`): a new Speakeasy job that runs in that same
   session (`/v1/runs` with its `session_id`). `run_id` opens it.
-- **Any other session** — a Discord or Telegram thread, the terminal, Desktop (`via: "hermes"`):
-  Hermes refuses `/v1/runs` into a session another surface owns, and its chat-stream door posts the
-  reply back to the platform, so neither is used. The message goes through Hermes' canonical gateway
-  socket, the path Hermes' own Desktop and mobile apps use: `session.resume` then `prompt.submit` on
-  that session id. The turn runs on Speakeasy's connection and is written into the same session
-  (visible on the session page and to Hermes' other clients); it is **not** posted into the chat.
-  `send_id` tracks it in `sends`. Needs a running Hermes gateway; otherwise the send fails with
-  "Hermes isn't ready to take that message. Try again in a moment."
+- **Any other session** — a Discord or Telegram thread, the terminal, Desktop (`via: "linked"`):
+  Hermes has no door that writes a turn into such a session without delivering the reply to its
+  chat: `/v1/runs` refuses a session another surface owns, `/api/sessions/{id}/chat/stream` fans
+  the reply out to the platform, and the gateway socket's viewer submit (`session.resume` +
+  `prompt.submit`, what Hermes Desktop uses) runs the turn on the chat's own route, which delivers
+  it there too (`gateway/session_ingress.py`). Speakeasy never posts into a chat, so the first
+  message starts a Speakeasy task **linked** to the conversation, seeded with its recent messages
+  and the session id (the task can look up more). Later messages from that page go to the same
+  linked task (steer, answer or follow-up in its own session). `run_id` opens it like any job.
 
-`200 {"ok": true, "session_id": "...", "via": "task" | "session_job" | "hermes", "run_id": "run_0002" | null,
-"delivered_as": "steer" | "answer" | "follow_up" | "message", "task": {...} | null, "send_id": "hs_…" | null}`.
+`200 {"ok": true, "session_id": "...", "via": "task" | "session_job" | "linked", "run_id": "run_0002",
+"delivered_as": "steer" | "answer" | "follow_up" | "linked", "task": {...} | null}`.
 `400` empty, too long or malformed; `404` unknown session; `409`/`502` as for task messages.
 
 A **new chat** (the panel's New chat button) is `POST /voice/work`: the first message starts a new
@@ -1004,12 +1002,6 @@ Body `{"run_id": "run_0002", "choice": "once" | "session" | "deny"}`: answers th
 this session) waits on, through the worker holding it (the open call's, or the voiceless one), the same
 way the voice does. `200 {"ok": true, "choice": "once"}`; `400` bad choice or not offered, `404` not a
 task of this session, `409` nothing waiting, `502` Hermes refused.
-
-### POST /voice/history/{session_id}/sends/{send_id}/answer
-
-Body `{"choice": "once"}`: one of the waiting prompt's `choices` (for a question with no choices,
-the answer text). `200 {"ok": true, "send": {...}}`; `400` not a choice, `404` unknown send, `409`
-nothing is waiting.
 
 ## POST /voice/tasks/dismiss
 

@@ -138,47 +138,6 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
     }
 }
 
-/// A message the app sent through Hermes into a session another surface owns (`sends`).
-public struct HistorySend: Equatable, Sendable, Identifiable {
-    public enum Status: String, Equatable, Sendable { case sending, running, needsYou = "needs_you", completed, failed }
-    public struct Prompt: Equatable, Sendable {
-        public var kind: String   // approval | question
-        public var promptID: String?
-        public var text: String
-        public var choices: [String]
-        public init(kind: String, promptID: String?, text: String, choices: [String]) {
-            self.kind = kind; self.promptID = promptID; self.text = text; self.choices = choices
-        }
-    }
-    public var id: String
-    public var status: Status
-    public var text: String
-    public var reply: String?
-    public var error: String?
-    public var started: Date?
-    public var prompt: Prompt?
-
-    public init(id: String, status: Status, text: String, reply: String? = nil, error: String? = nil,
-                started: Date? = nil, prompt: Prompt? = nil) {
-        self.id = id; self.status = status; self.text = text; self.reply = reply; self.error = error
-        self.started = started; self.prompt = prompt
-    }
-
-    public init?(json: Any?) {
-        guard let o = json as? [String: Any], let id = nonEmpty(o["send_id"]),
-              let status = (o["status"] as? String).flatMap(Status.init(rawValue:)) else { return nil }
-        var prompt: Prompt?
-        if let p = o["prompt"] as? [String: Any], let text = nonEmpty(p["text"]) {
-            prompt = Prompt(kind: nonEmpty(p["kind"]) ?? "approval", promptID: nonEmpty(p["prompt_id"]), text: text,
-                            choices: (p["choices"] as? [Any] ?? []).compactMap { nonEmpty($0) })
-        }
-        self.init(id: id, status: status, text: nonEmpty(o["text"]) ?? "", reply: nonEmpty(o["reply"]),
-                  error: nonEmpty(o["error"]), started: decodeDate(o["started"]), prompt: prompt)
-    }
-
-    public var isLive: Bool { status == .sending || status == .running || status == .needsYou }
-}
-
 /// An approval one of the session's Speakeasy tasks waits on (`approvals`).
 public struct HistoryApproval: Equatable, Sendable, Identifiable {
     public var runID: String
@@ -202,7 +161,9 @@ public struct HistoryApproval: Equatable, Sendable, Identifiable {
 
 /// `GET /voice/history/{session_id}`.
 public struct HistoryConversation: Equatable, Sendable {
-    public enum SendVia: String, Equatable, Sendable { case task, sessionJob = "session_job", hermes }
+    /// `task`: a Speakeasy task's session. `sessionJob`: another Hermes API session (a job runs in it).
+    /// `linked`: a chat (Discord, Telegram, terminal, Desktop): a Speakeasy task linked to it, never posted there.
+    public enum SendVia: String, Equatable, Sendable { case task, sessionJob = "session_job", linked }
     public var id: String
     public var title: String
     public var source: String
@@ -214,15 +175,14 @@ public struct HistoryConversation: Equatable, Sendable {
     public var before: Int?
     /// Its Speakeasy tasks, newest first, with their cards (approvals, questions) and helpers.
     public var jobs: [WorkInfo]
-    public var sends: [HistorySend]
     public var approvals: [HistoryApproval]
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
-                sendVia: SendVia = .hermes, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
-                jobs: [WorkInfo] = [], sends: [HistorySend] = [], approvals: [HistoryApproval] = []) {
+                sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
+                jobs: [WorkInfo] = [], approvals: [HistoryApproval] = []) {
         self.id = id; self.title = title; self.source = source; self.sourceLabel = sourceLabel; self.state = state
         self.sendVia = sendVia; self.entries = entries; self.hasMore = hasMore; self.before = before
-        self.jobs = jobs; self.sends = sends; self.approvals = approvals
+        self.jobs = jobs; self.approvals = approvals
     }
 
     public init?(json: Any?) {
@@ -231,11 +191,10 @@ public struct HistoryConversation: Equatable, Sendable {
         self.init(id: id, title: nonEmpty(o["title"]) ?? "Untitled conversation", source: nonEmpty(o["source"]) ?? "hermes",
                   sourceLabel: nonEmpty(o["source_label"]) ?? "Hermes",
                   state: (o["state"] as? String).flatMap(HistorySession.State.init(rawValue:)) ?? .idle,
-                  sendVia: (o["send_via"] as? String).flatMap(SendVia.init(rawValue:)) ?? .hermes,
+                  sendVia: (o["send_via"] as? String).flatMap(SendVia.init(rawValue:)) ?? .linked,
                   entries: (o["entries"] as? [Any] ?? []).compactMap(HistoryEntry.init(json:)),
                   hasMore: o["has_more"] as? Bool ?? false, before: (o["before"] as? NSNumber)?.intValue,
                   jobs: (o["jobs"] as? [Any] ?? []).compactMap(WorkInfo.init(json:)),
-                  sends: (o["sends"] as? [Any] ?? []).compactMap(HistorySend.init(json:)),
                   approvals: (o["approvals"] as? [Any] ?? []).compactMap(HistoryApproval.init(json:)))
     }
 
@@ -243,7 +202,7 @@ public struct HistoryConversation: Equatable, Sendable {
     public var waitingQuestions: [WorkInfo] {
         jobs.filter { $0.status == "completed" && $0.decision != nil && !$0.setAside }
     }
-    public var isWorking: Bool { state == .running || sends.contains(where: \.isLive) }
+    public var isWorking: Bool { state == .running }
 
     public static func path(_ sessionID: String, before: Int? = nil) -> String {
         let id = sessionID.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_."))) ?? sessionID
@@ -270,18 +229,16 @@ public struct HistoryMessageRequest: Equatable, Sendable {
 
 public struct HistoryMessageReply: Equatable, Sendable {
     public var via: HistoryConversation.SendVia
-    /// The task to follow like a job (task and session_job doors).
+    /// The task to follow like a job.
     public var runID: String?
-    /// The send to follow in the session's `sends` (hermes door).
-    public var sendID: String?
 
-    public init(via: HistoryConversation.SendVia, runID: String?, sendID: String?) {
-        self.via = via; self.runID = runID; self.sendID = sendID
+    public init(via: HistoryConversation.SendVia, runID: String?) {
+        self.via = via; self.runID = runID
     }
 
     public init?(json: Any?) {
         guard let o = json as? [String: Any], o["ok"] as? Bool == true,
               let via = (o["via"] as? String).flatMap(HistoryConversation.SendVia.init(rawValue:)) else { return nil }
-        self.init(via: via, runID: nonEmpty(o["run_id"]), sendID: nonEmpty(o["send_id"]))
+        self.init(via: via, runID: nonEmpty(o["run_id"]))
     }
 }

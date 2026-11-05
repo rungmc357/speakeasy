@@ -32,7 +32,7 @@ public struct VoiceMessageFlow: Equatable, Sendable {
 
     public static let maxSeconds: TimeInterval = 120
     public static let deniedText = "Speakeasy needs the microphone and speech recognition for voice messages. Turn them on in Settings."
-    public static let noOnDeviceText = "This iPhone can't turn speech into text on the device for your language, so voice messages are off. You can still type."
+    public static let noOnDeviceText = "This device can't turn speech into text on its own for your language, so voice messages are off. You can still type."
     public static let nothingHeardText = "I didn't catch anything. Try again, or type it."
 
     public private(set) var phase: Phase = .idle

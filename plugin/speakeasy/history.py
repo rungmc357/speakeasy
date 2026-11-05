@@ -12,23 +12,21 @@ goes through the call router. Which door it uses depends on who owns the session
 
 * a Speakeasy task's session: the task_messages machinery (steer, answer, or follow-up run);
 * another API-server session: a new Speakeasy job in that same session (``/v1/runs`` + session_id);
-* anything else (a Discord or Telegram thread, the terminal, Desktop): Hermes' canonical gateway
-  socket, the path Hermes' own Desktop/mobile apps use (``session.resume`` then ``prompt.submit``).
-  The turn runs on this client's surface and is written to the same session; it is never posted
-  back to the chat platform. Its progress lands in state.db, which the session page reads.
+* anything else (a Discord or Telegram thread, the terminal, Desktop): a Speakeasy task *linked*
+  to that conversation, seeded with its recent messages. Hermes has no door that writes into such a
+  session without the reply going back to the chat (``/v1/runs`` refuses a foreign session; the
+  chat-stream door and the gateway socket's viewer submit both deliver the reply to the platform),
+  and Speakeasy never posts into a chat. Later messages from that page go to the same linked task.
+  The chat's page shows the linked task's messages after its own.
 """
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import json
 import logging
 import re
-import secrets
 import sqlite3
-import threading
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -43,8 +41,6 @@ PREVIEW_CHARS = 140
 TEXT_CHARS = 20000         # one message's text, as shown
 SEARCH_HITS = 600          # most recent matching messages a search looks at
 BUSY_WINDOW_S = 900        # a non-Speakeasy session whose last row is a pending turn this recent "runs"
-SEND_KEEP_S = 6 * 3600     # finished gateway sends are remembered this long
-SEND_TIMEOUT_S = 45 * 60   # a gateway send gives up waiting for its reply after this
 MAX_TEXT = 4000
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_:@.+=-]{1,128}$")
 SPEAKEASY_PREFIX = "speakeasy_task_"
@@ -375,7 +371,8 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
         for row in rows[:limit]:
             sid = row["id"]
             link = linked(sid)
-            speakeasy = link is not None or sid.startswith(SPEAKEASY_PREFIX)
+            # A chat continued from Speakeasy (linked tasks, no keys of its own) stays the chat's row.
+            speakeasy = bool(link and link.keys) or sid.startswith(SPEAKEASY_PREFIX)
             preview, first = _preview(db, sid)
             running = bool(link and link.running) or live(sid) or (link is None and _pending_turn(db, sid, now))
             entry: dict[str, Any] = {
@@ -524,179 +521,16 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
     return entries
 
 
-# -- sending into a session Speakeasy doesn't own: Hermes' canonical gateway socket --------------
+# -- continuing a chat Speakeasy can't write into ------------------------------------------------
 
-@dataclasses.dataclass
-class Send:
-    send_id: str
-    session_id: str
-    text: str
-    status: str = "sending"     # sending -> running -> completed | failed | needs_you
-    reply: str | None = None
-    error: str | None = None
-    started: float = dataclasses.field(default_factory=time.time)
-    ended: float | None = None
-    prompt: dict[str, Any] | None = None   # an approval/question the turn is waiting on
-    answers: list[tuple[str, str]] = dataclasses.field(default_factory=list)
-
-    def public(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"send_id": self.send_id, "status": self.status, "text": self.text,
-                               "started": round(self.started, 3)}
-        if self.reply:
-            out["reply"] = redact_text(self.reply)
-        if self.error:
-            out["error"] = self.error
-        if self.ended:
-            out["ended"] = round(self.ended, 3)
-        if self.prompt and self.status == "needs_you":
-            out["prompt"] = {k: v for k, v in self.prompt.items() if not k.startswith("_")}
-        return out
-
-
-def default_connect(hermes_home: Path) -> Callable[[], Any]:
-    """The real door: an async context manager giving Hermes' GatewayClient for this home's running
-    owner (never starts a gateway). Raises HistoryError(503) when there is none."""
-    def connect() -> Any:
-        try:
-            from hermes_cli.gateway_client import connect_gateway
-            from hermes_cli.gateway_runtime import discover_gateway_endpoint
-        except ImportError:
-            raise HistoryError(503, "This Hermes can't take messages into other chats yet. Update Hermes.") from None
-        found = discover_gateway_endpoint(Path(hermes_home).resolve())
-        if getattr(found, "state", None) != "ready":
-            raise HistoryError(503, "Hermes isn't ready to take that message. Try again in a moment.")
-        return connect_gateway(found.endpoint)
-    return connect
-
-
-class GatewaySends:
-    """Messages to sessions owned by another surface, each on its own thread with its own socket
-    (resume, submit, wait for the reply). The reply is shown in Speakeasy; Hermes writes the turn into
-    the same session. Nothing here posts to a chat platform."""
-
-    def __init__(self, connect: Callable[[], Any], on_change: Callable[[str], None] = lambda sid: None):
-        self.connect = connect
-        self.on_change = on_change
-        self.lock = threading.Lock()
-        self.sends: dict[str, Send] = {}
-
-    def _sweep(self) -> None:
-        now = time.time()
-        for sid, send in list(self.sends.items()):
-            if send.ended and now - send.ended > SEND_KEEP_S:
-                del self.sends[sid]
-
-    def start(self, session_id: str, text: str) -> Send:
-        send = Send("hs_" + secrets.token_hex(12), session_id, text)
-        with self.lock:
-            self._sweep()
-            self.sends[send.send_id] = send
-        threading.Thread(target=self._thread, args=(send,), daemon=True, name="speakeasy-history-send").start()
-        return send
-
-    def for_session(self, session_id: str) -> list[Send]:
-        with self.lock:
-            return sorted((s for s in self.sends.values() if s.session_id == session_id), key=lambda s: s.started)
-
-    def live(self, session_id: str) -> bool:
-        return any(s.status in {"sending", "running", "needs_you"} for s in self.for_session(session_id))
-
-    def answer(self, session_id: str, send_id: str, choice: str) -> Send:
-        with self.lock:
-            send = self.sends.get(send_id)
-        if send is None or send.session_id != session_id:
-            raise HistoryError(404, "I couldn't find that message.")
-        if send.status != "needs_you" or not send.prompt:
-            raise HistoryError(409, "That question has closed.")
-        if choice not in (send.prompt.get("choices") or [choice]):
-            raise HistoryError(400, "That isn't one of the choices.")
-        send.answers.append((send.prompt.get("prompt_id") or "", choice))
-        return send
-
-    def _set(self, send: Send, **changes: Any) -> None:
-        with self.lock:
-            for k, v in changes.items():
-                setattr(send, k, v)
-            if changes.get("status") in {"completed", "failed"}:
-                send.ended = time.time()
-        try:
-            self.on_change(send.session_id)
-        except Exception:
-            pass
-
-    def _thread(self, send: Send) -> None:
-        try:
-            asyncio.run(asyncio.wait_for(self._run(send), SEND_TIMEOUT_S))
-        except HistoryError as exc:
-            self._set(send, status="failed", error=exc.message)
-        except asyncio.TimeoutError:
-            self._set(send, status="failed", error="No reply came back in time. It may still finish in Hermes.")
-        except Exception as exc:
-            logger.warning("speakeasy: a history message failed (%s)", type(exc).__name__)
-            reason = str(exc) if type(exc).__name__ in {"GatewayRPCError", "GatewayClientError"} else ""
-            self._set(send, status="failed", error=_plain_failure(reason))
-
-    async def _run(self, send: Send) -> None:
-        async with self.connect() as client:
-            snap = await client.rpc("session.resume", session_id=send.session_id, omit_messages=True,
-                                    close_on_disconnect=True)
-            sid = (snap or {}).get("stored_session_id") or send.session_id
-            receipt = await client.rpc("prompt.submit", session_id=sid, input_id=uuid.uuid4().hex, text=send.text)
-            admission = (receipt or {}).get("admission_id")
-            self._set(send, status="running")
-            while True:
-                try:
-                    event = await asyncio.wait_for(client.events.get(), 0.5)
-                except asyncio.TimeoutError:
-                    await self._answers(client, send, sid)
-                    continue
-                if isinstance(event, Exception):
-                    raise event
-                params = event.get("params", {}) if isinstance(event, dict) else {}
-                if params.get("session_id") not in {sid, send.session_id}:
-                    continue
-                kind, payload = params.get("type"), params.get("payload") or {}
-                own = params.get("admission_id") or payload.get("admission_id")
-                if admission and own and own != admission:
-                    continue
-                if kind in {"approval.request", "clarify.request"}:
-                    self._set(send, status="needs_you", prompt={
-                        "kind": "approval" if kind == "approval.request" else "question",
-                        "prompt_id": payload.get("prompt_id"),
-                        "text": A.clip(A.redact(payload.get("description") or payload.get("question") or ""), 400),
-                        "choices": [c for c in (payload.get("choices") or []) if isinstance(c, str)][:6],
-                        "_generation": payload.get("execution_generation", params.get("execution_generation"))})
-                elif kind in {"approval.settled", "clarify.settled"}:
-                    self._set(send, status="running", prompt=None)
-                elif kind == "message.complete":
-                    outcome = payload.get("outcome")
-                    text = payload.get("text") or payload.get("content") or ""
-                    if outcome in {"failed", "cancelled", "interrupted"}:
-                        self._set(send, status="failed", reply=text or None,
-                                  error="Hermes stopped before it finished." if outcome != "failed" else "That turn failed in Hermes.")
-                    else:
-                        self._set(send, status="completed", reply=text)
-                    return
-                await self._answers(client, send, sid)
-
-    async def _answers(self, client: Any, send: Send, sid: str) -> None:
-        while send.answers:
-            prompt_id, choice = send.answers.pop(0)
-            prompt = send.prompt or {}
-            # Exactly the gateway chat view's /approve and /answer (hermes_cli/gateway_chat_view.py).
-            expected = "approval" if prompt.get("kind") == "approval" else "clarify"
-            await client.rpc(expected + ".respond", session_id=sid, execution_generation=prompt.get("_generation"),
-                             prompt_id=prompt_id, **({"choice": choice} if expected == "approval" else {"answer": choice}))
-
-
-def _plain_failure(reason: str) -> str:
-    if "kanban" in reason.lower():
-        return "Hermes keeps board worker sessions to the board, so it can't take messages here."
-    if "too large" in reason.lower() or "max_resume" in reason.lower():
-        return "That conversation is too long for Hermes to reopen."
-    if "not found" in reason.lower():
-        return "Hermes couldn't find that conversation."
-    return "I couldn't get that to Hermes. Try again."
+def linked_context(state_db: Path, session_id: str, title: str, label: str, text: str) -> str:
+    """What a linked task sees: where the conversation lives, its recent messages, then the request."""
+    from .continuity import recent_exchange
+    recent = recent_exchange(state_db, session_id)
+    head = (f"The user is continuing the conversation \"{title}\" ({label}, Hermes session {session_id}) from the "
+            "Speakeasy app. Work here; your answer is shown in Speakeasy only, never posted to that chat. "
+            "Look up more of that session's history if you need it.")
+    return head + ("\n\nIts recent messages:\n" + recent if recent else "") + f"\n\nUser: {text}"
 
 
 def valid_session_id(session_id: str) -> bool:

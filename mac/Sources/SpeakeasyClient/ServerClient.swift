@@ -408,7 +408,7 @@ public final class ServerClient: @unchecked Sendable {
         HistoryPage(json: try await json(HistoryPage.path(query: query, source: source, cursor: cursor)))
     }
 
-    /// One session's conversation, its Speakeasy jobs and the messages still on their way.
+    /// One session's conversation, its Speakeasy jobs and the approvals waiting on the user.
     public func historySession(_ sessionID: String, before: Int? = nil) async throws -> HistoryConversation {
         guard let parsed = HistoryConversation(json: try await json(HistoryConversation.path(sessionID, before: before))) else {
             throw HTTPError(status: 502, message: "Your Hermes sent a conversation this app can't read.")
@@ -428,11 +428,6 @@ public final class ServerClient: @unchecked Sendable {
     /// Answer the approval one of the session's Speakeasy tasks waits on (`once`, `session`, `deny`).
     public func answerSessionApproval(sessionID: String, runID: String, choice: String) async throws {
         _ = try await post(HistoryConversation.path(sessionID) + "/approval", ["run_id": runID, "choice": choice])
-    }
-
-    /// Answer the approval or question a message sent through Hermes is waiting on.
-    public func answerSend(sessionID: String, sendID: String, choice: String) async throws {
-        _ = try await post(HistoryConversation.path(sessionID) + "/sends/\(sendID)/answer", ["choice": choice])
     }
 
     /// Text to one task by run id (servers with `task_messages`): a steer while it runs, the answer

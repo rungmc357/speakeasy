@@ -480,11 +480,6 @@ class Handler(BaseHTTPRequestHandler):
             if history_approval:
                 self._reply(200, self.service.history_approval(unquote(history_approval.group(1)), self._body()))
                 return
-            history_answer = re.fullmatch(rf"/voice/history/{_SESSION}/sends/{_ID}/answer", path)
-            if history_answer:
-                self._reply(200, self.service.history_answer(unquote(history_answer.group(1)),
-                                                             history_answer.group(2), self._body()))
-                return
             message = re.fullmatch(rf"/voice/work/{_ID}/message", path)
             if message:
                 self._reply(200, self.service.task_message(message.group(1), self._body()))
