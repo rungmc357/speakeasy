@@ -2,8 +2,9 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Plugin (unreleased) — Update Speakeasy from the app, in one tap
+## Plugin 0.3.23 — Calls that keep you posted, and one-tap plugin updates
 
+- **Calls don't go quiet while work runs.** About every 45 seconds of silence while a task runs, the call says one short line about what it's doing, written from its actual tool calls ("I've gone through the checkout logs and I'm rerunning the test now"), even when the agent writes no progress notes. With nothing new it says what's running and for how long, and after three of those it waits 90 seconds. Never while you're muted, talking, or have a question or approval waiting; answers are always spoken, muted or not. Off with the same "spoken progress" setting. *(Plugin; mute needs Mac with this change)*
 - **One-tap plugin update.** When a newer plugin is out, the apps show it with an **Update** button; it starts an update job on your Hermes like any other job, no call needed (`POST /voice/work`, capability `start_jobs`). *(Plugin; needs the app update)*
 - **"Update my Speakeasy plugin" on a call.** The voice hands it off and says it switches over when you hang up; the job runs `hermes plugins update speakeasy` and never forces a reload, so the call isn't cut off. *(Plugin)*
 - **A plain `hermes plugins update speakeasy` passes Hermes' install scan,** with no `--force`. *(Plugin)*

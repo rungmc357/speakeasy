@@ -1058,12 +1058,16 @@ def result_shape(request: str, report: str, timeout: float = 12.0) -> dict[str, 
 _PROGRESS_PROMPT = (
     "You write one short spoken progress update for a voice assistant whose background agent is working on "
     "a task for the user. You get the user's request, the agent's recent steps (newest last) and updates "
-    "already spoken. Say what the agent is doing and what it has found so far, concretely: names, numbers, "
-    "sources, what is next. One or two short sentences, under 30 words, natural speech, first person "
-    "(\"I found...\", \"I'm now...\"). Never say \"still on it\", \"still working\" or \"still checking\" "
-    "on their own, never repeat an earlier update, never invent results the steps don't show, and never "
-    "give the final answer. Reply with JSON only: {\"say\": \"...\"}, or {\"say\": \"\"} when the steps "
-    "add nothing worth saying."
+    "already spoken. Steps may be the agent's own notes or its tool calls, written as a plain sentence with "
+    "the tool, its argument and a snippet of its result; steps marked \"Earlier:\" were already covered, and "
+    "\"Right now (...)\" is the tool running at this moment. Say what the agent has done since the last "
+    "update and what it has found, concretely: names, numbers, sources, what is next; summarize several "
+    "tool calls as one plain action (\"I've gone through the checkout logs and I'm rerunning the test now\"). "
+    "When there is nothing new, say briefly what it is doing right now and how long it has been at it. "
+    "One short sentence, at most 15 words, natural speech, first person. Never say \"still on it\", \"still "
+    "working\" or \"still checking\" on their own, never repeat an earlier update's wording, never invent "
+    "results the steps don't show, never read out commands, paths or code, and never give the final answer. "
+    "Reply with JSON only: {\"say\": \"...\"}, or {\"say\": \"\"} when the steps add nothing worth saying."
 )
 
 
@@ -1075,7 +1079,7 @@ def progress_update(request: str, steps: list[str], told: list[str], timeout: fl
         from agent.auxiliary_client import call_llm  # type: ignore
     except Exception:
         return None
-    body = json.dumps({"request": " ".join(str(request).split())[:600], "recent_steps": steps[-8:],
+    body = json.dumps({"request": " ".join(str(request).split())[:600], "recent_steps": steps[-14:],
                        "already_said": told[-3:]})
     try:
         with _profile_scope():

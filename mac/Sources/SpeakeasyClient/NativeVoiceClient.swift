@@ -262,6 +262,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         let after = reduce(before, event, now: Date())
         model.state = after
         if after.interactionID != nil, after.interactionID != before.interactionID { postFocus() }
+        postMicIfChanged()
         if after.connection != .connecting, connectWatchdog != nil { connectWatchdog?.cancel(); connectWatchdog = nil }
         applySideEffects(from: before, to: after)
         watchMic(event, from: before, to: after)
@@ -431,6 +432,19 @@ public final class NativeVoiceClient: VoiceCallClient {
         focusPosted = (id, focus.task, focus.detail)
         let body: [String: Any] = ["task_id": focus.task ?? NSNull(), "detail": focus.detail]
         Task { _ = try? await api.post("/voice/interactions/\(id)/focus", body) }
+    }
+
+    /// The mic state the plugin was last told, per call: muted calls get no "still working" pulse
+    /// (results, questions and approvals are spoken either way).
+    private var micPosted: (interaction: String, muted: Bool)?
+
+    private func postMicIfChanged() {
+        guard !previewMode, let api, let id = model.state.interactionID else { return }
+        let muted = model.state.mic == .muted
+        if let p = micPosted, p.interaction == id, p.muted == muted { return }
+        if micPosted?.interaction != id && !muted { micPosted = (id, muted); return }  // calls start unmuted
+        micPosted = (id, muted)
+        Task { _ = try? await api.post("/voice/interactions/\(id)/mic", ["muted": muted]) }
     }
 
     private func reportMic(_ note: String) {
