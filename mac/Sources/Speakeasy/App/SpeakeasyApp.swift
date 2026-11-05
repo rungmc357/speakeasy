@@ -55,6 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastListeningBeta: Bool?
     private var badgeOn = false
     private var active = false
+    /// Session / task history window (servers with `capabilities.history`).
+    private lazy var history = HistoryWindowController()
     private var quitPending = false
     private var idle: IdleContinuity?
     private var onboarding: OnboardingWindowController?
@@ -73,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyDockPolicy()
         let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "--history-shots"), i + 1 < args.count { HistoryShots.run(dir: args[i + 1]); return }
         if args.contains("--native-offer-smoke") { NativeSmoke.offer(); return }
         if args.contains("--native-mic-smoke") { NativeSmoke.mic(); return }
         if args.contains("--live-call-smoke") { LiveCallSmoke.run(); return }
@@ -129,7 +132,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         app.$status
             .map { $0?.capabilities }
             .removeDuplicates()
-            .sink { [weak self] caps in self?.native.model.capabilities = caps }
+            .sink { [weak self] caps in
+                self?.native.model.capabilities = caps
+                if let self, caps != nil { self.history.store.supported = caps?.history ?? false }
+            }
+            .store(in: &bag)
+        // A live call takes the mic: the history composer's voice-message button hides meanwhile.
+        native.model.$state
+            .map { $0.connection.isInCall }
+            .removeDuplicates()
+            .sink { [weak self] live in self?.history.store.setCallLive(live) }
             .store(in: &bag)
         Timer.publish(every: 24 * 3600, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in
@@ -397,6 +409,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let work = NSMenuItem(title: "Recent work", action: #selector(showRecentWork), keyEquivalent: "")
         work.target = self
         menu.addItem(work)
+        let historyItem = NSMenuItem(title: "History…", action: #selector(showHistory), keyEquivalent: "y")
+        historyItem.target = self
+        menu.addItem(historyItem)
         let reset = NSMenuItem(title: "Reset panel position and size", action: #selector(resetPanelPosition), keyEquivalent: "")
         reset.target = self
         menu.addItem(reset)
@@ -523,6 +538,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func quit() {
         if active { quitPending = true; endConversation() } else { NSApp.terminate(nil) }
+    }
+
+    /// Every session and task: open one, see the work, type or speak to it (by id, never the router).
+    @objc func showHistory() {
+        let store = history.store
+        if store.backend == nil, let api = native.api { store.backend = LiveHistoryBackend(api: api) }
+        store.supported = app.status?.capabilities?.history ?? false
+        store.setCallLive(native.model.state.connection.isInCall)
+        history.show()
     }
 
     @objc private func showRecentWork() {

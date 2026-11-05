@@ -42,9 +42,9 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT License</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Speakeasy uses the microphone during a voice call you start, including listening mode during a call (it transcribes the room on this Mac without answering).</string>
+	<string>Speakeasy uses the microphone during a voice call you start, including listening mode during a call (it transcribes the room on this Mac without answering), and while you record a voice message to a session.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Speakeasy turns your speech into text on this Mac while a call you start is still connecting (so a request said right away isn't lost) and in listening mode. Nothing is sent to Apple.</string>
+	<string>Speakeasy turns your speech into text on this Mac while a call you start is still connecting (so a request said right away isn't lost), in listening mode, and when you record a voice message to a session (only the text you review is sent). Nothing is sent to Apple.</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
