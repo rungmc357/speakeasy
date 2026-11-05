@@ -323,10 +323,34 @@ class Settings:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raw = {}
+        if isinstance(raw, dict):
+            raw = self._migrate_idle_pause(raw)
         try:
             return validate(raw if isinstance(raw, dict) else {})
         except SettingsError:
             return copy.deepcopy(DEFAULTS)
+
+    def _migrate_idle_pause(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """One time only: the quiet-call pause default went from 5 to 15 minutes. A stored 5 can't be
+        told apart from the old default, so it moves to 15 once; a 5 chosen afterwards is kept (the
+        marker file records that the move happened)."""
+        marker = self.path.parent / ".idle-pause-15"
+        if marker.exists():
+            return raw
+        if raw.get("idle_pause_minutes") == 5:
+            raw = {**raw, "idle_pause_minutes": 15}
+            try:
+                with self._lock:
+                    _write_private(self.path, json.dumps(raw, indent=2) + "\n")
+            except OSError:
+                return raw
+        try:
+            if self.path.exists():
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.touch()
+        except OSError:
+            pass
+        return raw
 
     def save(self, settings: dict[str, Any]) -> dict[str, Any]:
         clean = validate(settings)
