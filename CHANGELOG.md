@@ -9,6 +9,7 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Discord and Telegram chats continue as a linked Speakeasy task.** Your message and the chat's recent context go to a Speakeasy task; the reply shows in Speakeasy and is never posted back to the chat.
 - **Attach photos, screenshots, camera shots and files** (PDF, text) from iPhone and iPad with the **+** next to the field: on a session page, a new chat, a job, or the call. Hermes looks at them the same way it does when you share on the Mac. Big photos are resized and sent as JPEG; location and camera details are removed on the phone and again on your Hermes. Up to 3 per message; pictures up to 2.5 MB after resizing, files up to 10 MB. Anything you attach and don't send is deleted after 30 minutes.
 - **History window on the Mac** (⌘Y).
+- **Faster spoken updates on calls**, thanks to [@pinkhoodie](https://github.com/pinkhoodie): with your mic open, a long task's first "here's where it's at" comes 12-20 seconds in, and it keeps checking in instead of going quiet. **How often is up to you:** Settings › Spoken updates, every 30 s, 45 s (the default), 1 min, 1.5 min or 2 min (`hermes voice config set speech.interval_seconds 60`). Finished work, questions and approvals are always spoken, even when you're muted.
 
 ## Plugin 0.3.32 · iPhone build 63 — Works from anywhere, right after setup
 
