@@ -28,8 +28,11 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.isMovableByWindowBackground = true
-        w.appearance = NSAppearance(named: .darkAqua)
-        w.backgroundColor = NSColor(calibratedRed: 0.118, green: 0.110, blue: 0.102, alpha: 1)
+        // Follows the app's appearance (Settings › General › Appearance).
+        w.backgroundColor = NSColor(name: nil) { a in
+            a.bestMatch(from: [.darkAqua, .aqua]) == .aqua ? NSColor(calibratedRed: 0.984, green: 0.973, blue: 0.949, alpha: 1)
+                : NSColor(calibratedRed: 0.118, green: 0.110, blue: 0.102, alpha: 1)
+        }
         w.minSize = NSSize(width: 720, height: 480)
         w.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: HistoryRootView(store: store))

@@ -74,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyDockPolicy()
+        MacAppearance.apply()
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "--history-shots"), i + 1 < args.count { HistoryShots.run(dir: args[i + 1]); return }
         if args.contains("--native-offer-smoke") { NativeSmoke.offer(); return }

@@ -10,10 +10,10 @@ import SpeakeasyClient
 // soft cards, a mood glow behind the title.
 
 enum HistoryLook {
-    static let window = Color(red: 0.118, green: 0.110, blue: 0.102)     // #1e1c1a
-    static let sidebar = Color(red: 0.090, green: 0.084, blue: 0.078)    // #171514
-    static let field = Color.white.opacity(0.06)
-    static let hover = Color.white.opacity(0.045)
+    static let window = Color.adaptive(dark: Color(red: 0.118, green: 0.110, blue: 0.102), light: Color(hex: 0xfbf8f2)) // #1e1c1a / warm paper
+    static let sidebar = Color.adaptive(dark: Color(red: 0.090, green: 0.084, blue: 0.078), light: Color(hex: 0xf3ede2)) // #171514
+    static let field = Color.primary.opacity(0.06)
+    static let hover = Color.primary.opacity(0.045)
     static let selected = JobLook.brass.opacity(0.16)
     static let readable: CGFloat = 700
     static let sidebarWidth: CGFloat = 288
@@ -65,13 +65,12 @@ struct HistoryRootView: View {
             HistorySidebar(store: store)
                 .frame(width: HistoryLook.sidebarWidth)
                 .background(HistoryLook.sidebar)
-            Rectangle().fill(Color.black.opacity(0.45)).frame(width: 1)
+            Rectangle().fill(Color.adaptive(dark: Color.black.opacity(0.45), light: Color.black.opacity(0.08))).frame(width: 1)
             HistoryDetailPane(store: store)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(HistoryLook.window)
         }
         .ignoresSafeArea(.container, edges: .top)   // under the transparent title bar
-        .environment(\.colorScheme, .dark)
         .foregroundStyle(.primary)
         .background(HistoryLook.window)
         .background(shortcuts)
@@ -153,7 +152,7 @@ struct HistorySidebar: View {
                 }
                 .foregroundStyle(store.list.source == nil ? Color.secondary : Live.brassText)
                 .padding(.horizontal, 9).frame(height: 22)
-                .background(Capsule().fill(store.list.source == nil ? Color.white.opacity(0.05) : Live.brass.opacity(0.16)))
+                .background(Capsule().fill(store.list.source == nil ? Color.primary.opacity(0.05) : Live.brass.opacity(0.16)))
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .help("Show sessions from one place")
@@ -246,10 +245,10 @@ struct HistoryRow: View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 10) {
                 ZStack(alignment: .bottomTrailing) {
-                    Circle().fill(selected ? Live.brass.opacity(0.22) : Color.white.opacity(0.06)).frame(width: 26, height: 26)
+                    Circle().fill(selected ? Live.brass.opacity(0.22) : Color.primary.opacity(0.06)).frame(width: 26, height: 26)
                         .overlay(Image(systemName: HistoryList.symbol(for: session.source))
                             .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(selected ? Live.brass : Color.white.opacity(0.6)))
+                            .foregroundStyle(selected ? Live.brass : Color.primary.opacity(0.6)))
                     statusDot.offset(x: 2, y: 2)
                 }
                 .padding(.top, 1)
@@ -257,7 +256,7 @@ struct HistoryRow: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(session.title).font(.system(size: 12.5, weight: .semibold)).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
-                            .foregroundStyle(Color.white.opacity(selected ? 1 : 0.92))
+                            .foregroundStyle(Color.primary.opacity(selected ? 1 : 0.92))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
                         Text(HistoryLook.short(session.lastActivity, now: now)).font(.system(size: 10.5).monospacedDigit())
@@ -333,7 +332,7 @@ struct HistoryIconButton: View {
             Image(systemName: symbol).font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(prominent ? Live.brass : hover ? Color.primary : Color.secondary)
                 .frame(width: 28, height: 28)
-                .background(Circle().fill(prominent ? Live.brass.opacity(0.18) : Color.white.opacity(hover ? 0.08 : 0.04)))
+                .background(Circle().fill(prominent ? Live.brass.opacity(0.18) : Color.primary.opacity(hover ? 0.08 : 0.04)))
         }
         .buttonStyle(.plain).onHover { hover = $0 }.help(help).accessibilityLabel(help)
     }
@@ -443,10 +442,10 @@ struct HistorySessionView: View {
                 LiveDot(color: Live.tint(mood), size: 6, active: mood.isLive)
                 Text(HistoryLook.word(c.state).uppercased()).tracking(1.0)
                 Text("·").foregroundStyle(.secondary)
-                Text(c.sourceLabel.uppercased()).tracking(0.6).lineLimit(1).foregroundStyle(Color.white.opacity(0.55))
+                Text(c.sourceLabel.uppercased()).tracking(0.6).lineLimit(1).foregroundStyle(Color.primary.opacity(0.55))
                 if let started = HistoryLook.long(c.entries.first?.at, now: store.now) {
                     Text("·").foregroundStyle(.secondary)
-                    Text(started.uppercased()).tracking(0.6).foregroundStyle(Color.white.opacity(0.55))
+                    Text(started.uppercased()).tracking(0.6).foregroundStyle(Color.primary.opacity(0.55))
                 }
             }
             .font(.system(size: 10.5, weight: .bold))
@@ -457,7 +456,7 @@ struct HistorySessionView: View {
                   thread.helpers.isEmpty ? nil : "\(thread.helpers.count) helper\(thread.helpers.count == 1 ? "" : "s")",
                   c.isSpeakeasy ? nil : "replies show here, not in \(c.sourceLabel.components(separatedBy: " · ").first ?? c.sourceLabel)"]
                 .compactMap { $0 }.joined(separator: " · "))
-                .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.white.opacity(0.6))
+                .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.primary.opacity(0.6))
         }
         .padding(.bottom, 4)
     }
@@ -484,7 +483,7 @@ struct HistoryMessageView: View {
 
     private var user: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            Text(message.text).font(.system(size: 13.5)).foregroundStyle(Color.white.opacity(0.96))
+            Text(message.text).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.96))
                 .lineSpacing(2).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 13).padding(.vertical, 9)
                 .background(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 5,
@@ -529,7 +528,7 @@ struct HistoryMessageView: View {
                     Circle().fill(Live.brass.opacity(0.18)).frame(width: 22, height: 22)
                         .overlay(Image(systemName: "sparkle").font(.system(size: 9.5, weight: .bold)).foregroundStyle(Live.brass))
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(markdown(message.text)).font(.system(size: 13.5)).foregroundStyle(Color.white.opacity(0.9))
+                        Text(markdown(message.text)).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.9))
                             .lineSpacing(3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                         if let t = HistoryLook.long(message.at, now: store.now) {
                             Text(t).font(.system(size: 10.5)).foregroundStyle(.tertiary)
@@ -637,7 +636,7 @@ struct HistoryHelpersCard: View {
                     case .running: LiveDot(color: Live.brass, size: 7)
                     case .done: Circle().fill(Live.green).frame(width: 7, height: 7)
                     case .failed: Circle().fill(Live.red).frame(width: 7, height: 7)
-                    case .stopped: Circle().strokeBorder(Color.white.opacity(0.45), lineWidth: 1.3).frame(width: 8, height: 8)
+                    case .stopped: Circle().strokeBorder(Color.primary.opacity(0.45), lineWidth: 1.3).frame(width: 8, height: 8)
                     }
                 }
                 .frame(width: 14)
@@ -662,7 +661,7 @@ struct HistoryHelpersCard: View {
             }
             if open {
                 VStack(alignment: .leading, spacing: 6) {
-                    if let goal = h.goal { label("Asked to"); Text(goal).font(.system(size: 11.5)).foregroundStyle(Color.white.opacity(0.75)).textSelection(.enabled) }
+                    if let goal = h.goal { label("Asked to"); Text(goal).font(.system(size: 11.5)).foregroundStyle(Color.primary.opacity(0.75)).textSelection(.enabled) }
                     if let summary = h.summary {
                         label(h.status == .failed ? "What went wrong" : "What it found")
                         Text(summary).font(.system(size: 12)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -703,10 +702,10 @@ struct HistoryWaitingCard: View {
             Text(waiting.text).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             if let command = waiting.command {
-                Text(command).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.white.opacity(0.82))
+                Text(command).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.primary.opacity(0.82))
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 8).padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.black.opacity(0.32)))
+                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Live.well))
             }
             if !waiting.choices.isEmpty {
                 WrapLayout(spacing: 6) {
@@ -765,7 +764,7 @@ struct HistoryPillButton: View {
         Button(action: action) {
             Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 .padding(.horizontal, 12).frame(height: 26)
-                .background(Capsule().fill(primary ? Live.brass.opacity(hover ? 1 : 0.92) : Color.white.opacity(hover ? 0.12 : 0.07)))
+                .background(Capsule().fill(primary ? Live.brass.opacity(hover ? 1 : 0.92) : Color.primary.opacity(hover ? 0.12 : 0.07)))
                 .foregroundStyle(primary ? JobLook.brassInk : Color.primary)
         }
         .buttonStyle(.plain).onHover { hover = $0 }
@@ -789,7 +788,7 @@ struct HistoryNewChat: View {
                 Text(store.voice.micVisible
                      ? "Type it, or tap the mic and say it. It starts as its own session, and the reply shows up here."
                      : "Type it. It starts as its own session, and the reply shows up here.")
-                    .font(.system(size: 13)).foregroundStyle(Color.white.opacity(0.62)).fixedSize(horizontal: false, vertical: true)
+                    .font(.system(size: 13)).foregroundStyle(Color.primary.opacity(0.62)).fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: HistoryLook.readable, alignment: .leading)
             .padding(.horizontal, 28)
@@ -872,14 +871,14 @@ struct HistoryComposer: View {
                 if store.voice.micVisible && (empty || reviewing) {
                     circle(reviewing ? "arrow.counterclockwise" : "mic.fill",
                            help: reviewing ? "Record again" : "Record a voice message",
-                           fill: Color.white.opacity(0.08), ink: .primary) {
+                           fill: Color.primary.opacity(0.08), ink: .primary) {
                         if reviewing { store.cancelVoice(); store.draft = store.voice.flow.draftBefore }
                         store.tapMic()
                     }
                     .disabled(!enabled)
                     .accessibilityIdentifier("history-mic")
                 }
-                circle("arrow.up", help: "Send (↩)", fill: empty ? Color.white.opacity(0.06) : Live.brass,
+                circle("arrow.up", help: "Send (↩)", fill: empty ? Color.primary.opacity(0.06) : Live.brass,
                        ink: empty ? Color.secondary : JobLook.brassInk) { store.send() }
                     .disabled(empty || !enabled)
                     .accessibilityIdentifier("history-send")
@@ -895,7 +894,7 @@ struct HistoryComposer: View {
         let asking = phase == .asking
         return VStack(alignment: .leading, spacing: 8) {
             Text(heard.isEmpty ? (asking ? "Asking for the microphone…" : "Listening… say your message.") : heard)
-                .font(.system(size: 13.5)).foregroundStyle(heard.isEmpty ? Color.secondary : Color.white.opacity(0.92))
+                .font(.system(size: 13.5)).foregroundStyle(heard.isEmpty ? Color.secondary : Color.primary.opacity(0.92))
                 .italic(heard.isEmpty).lineLimit(5).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 10) {
@@ -907,7 +906,7 @@ struct HistoryComposer: View {
                 }
                 LevelBars(level: store.level, active: flow.isRecording, now: store.now).frame(height: 18)
                 Spacer(minLength: 6)
-                circle("xmark", help: "Discard (esc)", fill: Color.white.opacity(0.08), ink: .secondary) { store.cancelVoice() }
+                circle("xmark", help: "Discard (esc)", fill: Color.primary.opacity(0.08), ink: .secondary) { store.cancelVoice() }
                     .keyboardShortcut(.cancelAction)
                 circle("stop.fill", help: "Stop (↩)", fill: Live.brass, ink: JobLook.brassInk) { store.tapMic() }
                     .keyboardShortcut(.defaultAction)

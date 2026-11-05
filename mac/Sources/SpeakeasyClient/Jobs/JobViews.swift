@@ -67,10 +67,15 @@ public enum JobLook {
     #else
     public static let touch = true
     #endif
-    public static let brass = Color(red: 0.831, green: 0.635, blue: 0.298)     // #d4a24c
-    public static let brassInk = Color(red: 0.09, green: 0.067, blue: 0.039)   // text on brass
+    public static let brass = BrandPalette.brass         // #d4a24c (deeper on light)
+    public static let brassInk = BrandPalette.onBrass    // text on brass
     /// A grouped section's fill and its corner radius.
+    /// Touch on light: a clean near-white sheet instead of a grey wash.
+    #if os(macOS)
     public static let card = Color.primary.opacity(0.075)
+    #else
+    public static let card = Color.adaptive(dark: Color.primary.opacity(0.075), light: Color(hex: 0xfffdf9))
+    #endif
     public static let radius: CGFloat = 16
 }
 
@@ -91,7 +96,7 @@ public enum JobStyle {
     #if os(macOS)
     // Mac redesign: the same one accent as touch, a touch lighter for text on the dark panel.
     public static let blue = JobLook.brass
-    public static let blueInk = Color(red: 0.90, green: 0.73, blue: 0.42)     // #e6ba6b
+    public static let blueInk = Color.adaptive(dark: Color(red: 0.90, green: 0.73, blue: 0.42), light: Color(hex: 0x8c5a12)) // #e6ba6b
     /// Text on `blue`.
     public static let onBlue = JobLook.brassInk
     #else
@@ -100,9 +105,9 @@ public enum JobStyle {
     public static let blueInk = JobLook.brass
     public static let onBlue = JobLook.brassInk
     #endif
-    public static let amber = Color(red: 0.94, green: 0.74, blue: 0.36)       // #f0bd5c
-    public static let green = Color(red: 0.50, green: 0.85, blue: 0.60)       // #7fd99a
-    public static let red = Color(red: 0.94, green: 0.54, blue: 0.48)         // #f08a7a
+    public static let amber = Color.adaptive(dark: Color(red: 0.94, green: 0.74, blue: 0.36), light: Color(hex: 0x8f5300)) // #f0bd5c
+    public static let green = Color.adaptive(dark: Color(red: 0.50, green: 0.85, blue: 0.60), light: Color(hex: 0x2a7340)) // #7fd99a
+    public static let red = Color.adaptive(dark: Color(red: 0.94, green: 0.54, blue: 0.48), light: Color(hex: 0xb3261e))   // #f08a7a
 
     public enum Pill { case amber, blue, green, red, grey }
     public static func pillColors(_ p: Pill) -> (Color, Color) {
@@ -119,9 +124,9 @@ public enum JobStyle {
     }
 
     /// The panel's amber (needs-you tiles and briefs), its stop red, and the ink on amber.
-    public static let tileAmber = Color(red: 0.97, green: 0.745, blue: 0.44)
-    public static let amberInk = Color(red: 0.23, green: 0.15, blue: 0.02)
-    public static let stopRed = Color(red: 0.93, green: 0.36, blue: 0.36)
+    public static let tileAmber = BrandPalette.amber
+    public static let amberInk = Color.adaptive(dark: Color(red: 0.23, green: 0.15, blue: 0.02), light: Color(hex: 0xfff8ec))
+    public static let stopRed = BrandPalette.red
     #if os(macOS)
     public static let nowBlue = JobLook.brass
     #else
@@ -303,6 +308,8 @@ public struct JobOrb: View {
         }
     }
     public static let answerBlue = Color(red: 0.37, green: 0.61, blue: 0.94)
+    /// `answerBlue` for text: deeper on a light background (AA).
+    public static let answerBlueText = Color.adaptive(dark: answerBlue, light: Color(hex: 0x2f62b8))
 
     private var dim: Bool { mark == .muted || mark == .idle }
     private var answerDot: Bool { state.showsAnswerDot(unread: unreadAnswers) }
