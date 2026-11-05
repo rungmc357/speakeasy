@@ -67,7 +67,8 @@ public struct TranscriptTurn: Equatable, Sendable, Identifiable {
     public enum Speaker: Equatable, Sendable { case you, assistant }
     /// `speech` is what was said on the call; `text` is a task's full written answer, shown only in the
     /// expanded transcript (the voice still speaks its short spoken version as usual). `typed` is a
-    /// message the user typed (or held the mic) to one task: always the user's turn, never spoken.
+    /// message the user typed: to the call (no task, `session.input_text`, counts exactly like saying it)
+    /// or to one task (the reply bar, "Something else…"; carries the task). Always the user's turn.
     public enum Kind: Equatable, Sendable { case speech, text, typed }
     public var id: Int
     public var speaker: Speaker
@@ -76,11 +77,10 @@ public struct TranscriptTurn: Equatable, Sendable, Identifiable {
     /// The task a text reply answers, and its name for the bubble's label.
     public var taskID: String?
     public var taskName: String?
-    /// Typed on a call screen (`session.input_text`), not said: shown exactly as the server took it.
-    public var typed = false
     public init(id: Int, speaker: Speaker, text: String) { self.id = id; self.speaker = speaker; self.text = text }
+    /// What the user typed to the call itself (`session.input_text`): the user's turn, no task.
     public init(typed text: String, id: Int) {
-        self.id = id; self.speaker = .you; self.text = text; self.typed = true
+        self.id = id; self.speaker = .you; self.text = text; self.kind = .typed
     }
     public init(textReply text: String, id: Int, taskID: String, taskName: String?) {
         self.id = id; self.speaker = .assistant; self.text = text; self.kind = .text
@@ -93,7 +93,6 @@ public struct TranscriptTurn: Equatable, Sendable, Identifiable {
     }
     /// Written replies stay as written: the speech cleaner would eat bracketed markdown link names.
     public var cleanedText: String {
-        if typed { return text }
         kind != .speech ? text.trimmingCharacters(in: .whitespacesAndNewlines) : cleanTranscript(text)
     }
 }

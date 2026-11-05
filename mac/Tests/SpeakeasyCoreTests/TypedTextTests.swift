@@ -128,7 +128,8 @@ final class TypedTextTests: XCTestCase {
             let stream = VoiceEvent.typedTurn("Also milk", origin: .stream(id: "4"))
             for event in streamFirst ? [stream, local] : [local, stream] { s = reduce(s, event, now: t0) }
             XCTAssertEqual(s.transcript.map(\.text), ["Hi", "Also milk"], "streamFirst=\(streamFirst)")
-            XCTAssertTrue(s.transcript[1].typed)
+            XCTAssertEqual(s.transcript[1].kind, .typed)
+            XCTAssertNil(s.transcript[1].taskID, "typed to the call, not to a job")
             XCTAssertTrue(s.typedEchoes.isEmpty, "both copies matched")
         }
     }

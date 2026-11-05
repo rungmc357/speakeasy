@@ -85,4 +85,30 @@ final class TaskMessagesTests: XCTestCase {
         XCTAssertEqual(s.transcript.last?.kind, .speech)
         XCTAssertEqual(s.transcript.filter { $0.kind == .typed }.first?.text, "Skip the admin pages")
     }
+
+    // MARK: Typing to a job vs typing to the call (pinkhoodie's input_text)
+
+    /// A message typed to one job also goes out on the call's stream as `transcript` (role user, source
+    /// typed) with a `task_id`. That copy is not a turn to the call: the sender already showed it
+    /// (`typedToTask`, with the job's name), so it must not show a second time.
+    func testJobMessageStreamCopyIsNotACallTurn() {
+        let job = SSEEvent(name: "transcript", data: #"{"kind":"text","role":"user","source":"typed","text":"Skip the admin pages","task_id":"t1","run_id":"run_1","at":1}"#, id: "5")
+        XCTAssertEqual(parseServerStreamEvent(job), [])
+        let call = SSEEvent(name: "transcript", data: #"{"role":"user","source":"typed","text":"Also milk"}"#, id: "6")
+        XCTAssertEqual(parseServerStreamEvent(call), [.typedTurn("Also milk", origin: .stream(id: "6"))])
+    }
+
+    func testJobMessageShowsOnceAndCallTurnIsTypedWithNoTask() {
+        var s = VoiceState()
+        s.connection = .live
+        s.interactionID = "vi_1"
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        s = reduce(s, .typedToTask(text: "Skip the admin pages", taskID: "t1", taskName: "Sales dashboard"), now: t0)
+        let copy = SSEEvent(name: "transcript", data: #"{"role":"user","source":"typed","text":"Skip the admin pages","task_id":"t1"}"#, id: "5")
+        for event in parseServerStreamEvent(copy) { s = reduce(s, event, now: t0) }
+        s = reduce(s, .typedTurn("Also milk", origin: .local), now: t0)
+        XCTAssertEqual(s.transcript.map(\.text), ["Skip the admin pages", "Also milk"])
+        XCTAssertEqual(s.transcript.map(\.kind), [.typed, .typed], "one typed marker for both")
+        XCTAssertEqual(s.transcript.map(\.taskID), ["t1", nil], "only the job message names a job")
+    }
 }

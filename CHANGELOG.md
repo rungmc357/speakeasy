@@ -2,6 +2,27 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Unreleased — Type to your assistant on a call
+
+- **Type instead of talking, right on the call.** On iPhone the call screen has a **Message <assistant name>** box (when your plugin supports it); the Mac panel shows typed turns from any device on the call. What you type counts exactly like saying it: the voice answers it, it goes into the call's transcript as your turn, and anything it asks for is handed off the same way speech is. It never goes to a job just because that job is on screen. Thanks to @pinkhoodie ([#12](https://github.com/rungmc357/speakeasy/pull/12), [#13](https://github.com/rungmc357/speakeasy/pull/13), [apple #5](https://github.com/rungmc357/speakeasy-apple/pull/5)). *(Plugin, iPhone; Mac shows them)*
+- **One box per screen, labelled with who gets it.** On the call screen it's **Message <assistant name>**; on a job page it's **Message this job**, which goes straight to that job; on a decision, **Something else…** answers that decision. On iPhone the call's box steps aside while a job page is open. *(Apps)*
+- **Your typed turns show once.** A typed turn, or a message to a job, appears once in the transcript on every device on the call, marked as typed (with the job's name when it went to a job). *(Apps)*
+
+### Thanks to @pinkhoodie
+
+[@pinkhoodie](https://github.com/pinkhoodie) built much of Speakeasy. Features of his already shipped:
+
+- Thanks to @pinkhoodie for **saying why a task failed** (out of credits, rejected key, rate limit, missing model) ([#1](https://github.com/rungmc357/speakeasy/pull/1), Mac 0.2.16 / plugin 0.2.39).
+- Thanks to @pinkhoodie for **Look at this**: share your screen, a picture or a file with a spoken request ([#3](https://github.com/rungmc357/speakeasy/pull/3), Mac 0.3.5 / plugin 0.3.13).
+- Thanks to @pinkhoodie for **listening mode during a call**: pause the call, hear the room, pick up knowing what was said ([#4](https://github.com/rungmc357/speakeasy/pull/4), Mac 0.2.18 / plugin 0.2.51).
+- Thanks to @pinkhoodie for **voice status updates that narrate thinking and background work** ([#5](https://github.com/rungmc357/speakeasy/pull/5), plugin 0.3.12).
+- Thanks to @pinkhoodie for **renaming past threads' stand-in titles with Apple Intelligence** ([#6](https://github.com/rungmc357/speakeasy/pull/6), Mac 0.3.6).
+- Thanks to @pinkhoodie for **ducking the Mac's volume while the voice speaks** ([#7](https://github.com/rungmc357/speakeasy/pull/7), Mac 0.3.6).
+- Thanks to @pinkhoodie for **text replies**: full written answers in the expanded chat view, voice unchanged ([#8](https://github.com/rungmc357/speakeasy/pull/8), plugin 0.3.14 / Mac 0.3.6).
+- Thanks to @pinkhoodie for **the Vision Pro spatial command center**: tasks, cards and live data in 3D (speakeasy-apple #2).
+- Thanks to @pinkhoodie for **pairing that explains failures, and the Test connection button** (speakeasy-apple #1).
+- Thanks to @pinkhoodie for **⌘↩ approve / ⌘⌫ deny on the approval row** (speakeasy-apple #3).
+
 ## Plugin 0.3.27 — Names that fit, and a board that stays cleared
 
 - **Follow-ups are named after the task they answer**, never an unrelated earlier task or the chat thread's name. Names never include your name or the assistant's, and obvious mishearings are fixed ("a good sleeper… a premium speaker" becomes "Find a premium speaker for the office").

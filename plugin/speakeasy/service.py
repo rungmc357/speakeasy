@@ -73,6 +73,9 @@ IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model 
 EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the call's event channel
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
 CAPABILITIES["start_jobs"] = True  # POST /voice/work: a new job from typed text, no call needed (the app's Update button)
+# POST /voice/interactions/{id}/input-text: a turn typed to the call itself (same as the top-level
+# "input_text"; listed here too so both typing features sit together). task_messages types to one job.
+CAPABILITIES["input_text"] = True
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 
 

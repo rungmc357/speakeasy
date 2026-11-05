@@ -333,7 +333,7 @@ The stream ends after `closed`.
 | `capture` | `{"capture_id"}`: capture the user's window for one request (see Look at this) |
 | `screen.hint` | `{"reason": "screen_off" \| "no_permission" \| "share_request"}`: draw the user's eye to the screen button |
 | `screen.state` | `{"on", "seq"}`: sharing changed on the server side ("stop looking at my screen") |
-| `transcript` | `{"role": "user", "text", "source": "typed"[, "client_id"]}`: a turn typed on a call screen (`input-text`) joined the call's transcript. Spoken turns don't come here (they arrive on the voice connection) |
+| `transcript` | `{"role": "user", "text", "source": "typed"[, "client_id"]}`: a turn typed on a call screen (`input-text`) joined the call's transcript. Spoken turns don't come here (they arrive on the voice connection). The same event with a `task_id` is a message typed to one task (see Messages to a task), not a turn to the call: apps show it with that task's name and never as a call turn |
 
 ```
 id: 1
@@ -747,7 +747,10 @@ a link, copy, chart scrubbing) need no server call.
 
 Capability `task_messages` (plugin 0.3.19+). The app sends typed words to **one task, by its id**:
 from the task's reply bar or a decision card's "Something else…" field. These never go through task
-routing, and live speech routing is unchanged.
+routing, and live speech routing is unchanged. (Typing to the call itself, `input-text` below the
+`input_text` flag, is different: it counts exactly like saying it and goes through the same routing as
+speech. One box per screen, labelled with who gets it: "Message <assistant>" on the call screen,
+"Message this job" on a job page, "Something else…" on a decision.)
 
 ### POST /voice/work/{run_id}/message
 
@@ -1130,7 +1133,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `job_activity`, `tool_log` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`
@@ -1165,7 +1168,7 @@ hide the matching controls and keep the old behaviour.
   "input_text": true,
   "version": "0.2.0",
   "capabilities": {"card_actions": true, "job_progress": true, "spoken_choices": true, "summary_points": true,
-                   "task_messages": true, "job_activity": true, "tool_log": true}
+                   "task_messages": true, "input_text": true, "job_activity": true, "tool_log": true}
 }
 ```
 

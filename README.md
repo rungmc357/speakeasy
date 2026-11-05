@@ -150,6 +150,10 @@ says why. Updating from 0.2.16 or earlier needs one last `hermes gateway restart
 
 Building from source, running the tests and releasing: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+### Contributors
+
+- [@pinkhoodie](https://github.com/pinkhoodie): typing to the assistant on a call, listening mode, Look at this, failure reasons, text replies, narrated status updates, volume ducking, thread titles, and the Vision Pro command center.
+
 ## License
 
 MIT
