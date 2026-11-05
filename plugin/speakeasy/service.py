@@ -91,6 +91,9 @@ CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at
 CAPABILITIES["call_no_limit"] = True
 # POST /voice/push + GET /voice/push/events/{id}: notifications while the app is closed (push.py).
 CAPABILITIES["push"] = True
+# GET /voice/schedules (+ /{id}, preview, create, pause/resume/run, PATCH, DELETE): the Hermes scheduled
+# (cron) jobs of this profile, seen and managed from the apps through Hermes' own cron API (schedules.py).
+CAPABILITIES["schedules"] = True
 
 
 
@@ -169,6 +172,8 @@ class VoiceService:
                                         plan_call=home_plan_call or router_home_plan_call,
                                         client_factory=home_client or HomeAssistantClient)
         self.rt.home = self.home_control
+        from .schedules import Schedules
+        self.schedules = Schedules(self.home, self.rt.state_db)
         from .push import PushNotifier
         # Phone notifications while the app is closed. Only the gateway's long-lived service sends them
         # from a background thread; a short-lived one (the CLI, tests) sends inline when asked.
@@ -1585,6 +1590,27 @@ class VoiceService:
         return H.Linked(keys=[], name=None, running=any(st in ACTIVE_RUN_STATES for st in statuses),
                         needs_you=any(st in {"waiting_for_approval", "resolving_approval"} for st in statuses),
                         run_ids=[])
+
+    # -- schedules: Hermes cron jobs (docs/API.md "Schedules") --------------------------------------
+    def schedule_call(self, action: str, job_id: str | None = None, body: Any = None) -> dict[str, Any]:
+        """One schedules action; Hermes' refusals come back as plain sentences with their status."""
+        from .schedules import ScheduleError
+        S = self.schedules
+        calls = {
+            "list": lambda: S.list(),
+            "detail": lambda: S.detail(job_id or ""),
+            "preview": lambda: S.preview(body or {}),
+            "create": lambda: S.create(body or {}),
+            "pause": lambda: S.pause(job_id or ""),
+            "resume": lambda: S.resume(job_id or ""),
+            "run": lambda: S.run_now(job_id or ""),
+            "update": lambda: S.update(job_id or "", body or {}),
+            "delete": lambda: S.delete(job_id or ""),
+        }
+        try:
+            return calls[action]()
+        except ScheduleError as exc:
+            raise ServiceError(exc.status, exc.message) from None
 
     def history(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/history?cursor=&q=&source=&limit=``."""

@@ -62,6 +62,13 @@ used in the tests (timestamps and IDs will differ).
 | GET | `/voice/history/{session_id}` | device | One session: messages, collapsed tool calls, its Speakeasy jobs and approvals |
 | POST | `/voice/history/{session_id}/message` | device | Send typed or voice-message text to that session, by id (never routed) |
 | POST | `/voice/history/{session_id}/approval` | device | Answer the approval one of the session's Speakeasy tasks waits on (no call needed) |
+| GET | `/voice/schedules` | device | Hermes scheduled (cron) jobs: plain-English schedule, next and last run, result |
+| GET | `/voice/schedules/{id}` | device | One schedule: prompt and recent runs (each with its session) |
+| POST | `/voice/schedules/preview` | device | Read a sentence or a schedule into a preview to confirm (saves nothing) |
+| POST | `/voice/schedules` | device | Save a confirmed preview as a new scheduled job |
+| POST | `/voice/schedules/{id}/pause`, `/resume`, `/run` | device | Pause, resume, or run once now |
+| PATCH | `/voice/schedules/{id}` | device | Change the schedule, prompt or name |
+| DELETE | `/voice/schedules/{id}` | device | Delete a scheduled job |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
 | GET | `/voice/titles` | device | Past tasks still under their stand-in title: what the app's Apple Intelligence sweep may rename |
 | POST | `/voice/titles` | device | Set one task's title (from the app's on-device titler); the job's name follows |
@@ -1053,6 +1060,93 @@ this session) waits on, through the worker holding it (the open call's, or the v
 way the voice does. `200 {"ok": true, "choice": "once"}`; `400` bad choice or not offered, `404` not a
 task of this session, `409` nothing waiting, `502` Hermes refused.
 
+## Schedules
+
+Capability `schedules` (added after plugin 0.3.33). The Hermes scheduled jobs (cron) of this profile,
+seen and managed from the apps. Everything goes through Hermes' own cron API in the profile's
+`HERMES_HOME`: the job store (`cron.jobs`), the run ledger (`cron.executions`), each run's session
+(`state.db`) and its output document; writes go through the same `cronjob` entry point as
+`hermes cron` and the agent's cron tool (prompt safety scan, schedule parsing). On a call, "every
+morning at 8 remind me…" still goes to Hermes as a request; call routing is unchanged.
+
+### GET /voice/schedules
+
+Running and active first (soonest next run), then paused, then finished one-time jobs.
+
+```json
+{"schedules": [
+  {"id": "a1b2c3d4e5f6", "name": "Morning garden check", "schedule_label": "Weekdays at 8:00 AM",
+   "kind": "cron", "next_run_at": "2026-11-06T08:00:00-05:00", "last_run_at": "2026-11-05T08:00:41-05:00",
+   "last_status": "ok", "last_result": "Light frost tonight. Cover the basil.", "delivery_problem": null,
+   "enabled": true, "state": "scheduled", "running": false, "delivery_label": "Telegram"}],
+ "timezone": "America/New_York"}
+```
+
+- `schedule_label`: plain English ("Every day at 7:30 AM", "Every 2 hours", "Mondays and Thursdays at
+  9:00 AM", "Monthly on the 1st at 9:00 AM", "Once, tomorrow at 9:00 AM"); an expression too unusual
+  to say simply is `Custom schedule (<expr>)`.
+- `last_status`: `ok`, `failed`, `cancelled`, `running`, or null (never ran). `last_result` is a short
+  plain-text line (the run's answer; "Nothing to report." for a silent run; the error for a failure).
+- `state`: `scheduled`, `paused`, `running`, `completed` (a one-time job that ran) or `error`.
+  `next_run_at` is null while paused or completed. `enabled` false: show it dimmed.
+- `delivery_label`: where results go ("Telegram", "Discord · #garden", "Saved only").
+
+### GET /voice/schedules/{id}
+
+The row above plus `prompt`, `skills`, `schedule_text` (the schedule as Hermes stores it, for the
+edit field), `script_only`, `created_at` and `runs` (newest first, up to 15):
+
+```json
+{"runs": [{"id": "9f8e…", "started_at": "2026-11-05T08:00:02-05:00", "finished_at": "2026-11-05T08:00:41-05:00",
+           "status": "ok", "result": "Light frost tonight. Cover the basil.", "error": null,
+           "session_id": "cron_a1b2c3d4e5f6_20261105_080002"}]}
+```
+
+`session_id` opens the run in the session page (`GET /voice/history/{session_id}`); null for script
+jobs, which have no session. `404` for an unknown id.
+
+### POST /voice/schedules/preview
+
+Saves nothing. Either `{"text": "every weekday at 8 summarize my inbox"}` (one sentence: when and
+what) or `{"schedule": "weekdays at 9", "prompt": "…"}`. `schedule` takes words ("weekdays at 9",
+"every 2 hours", "tomorrow at 9") or Hermes' own forms (`0 9 * * 1-5`, `every 45m`, an ISO time).
+
+```json
+{"schedule": "0 8 * * 1-5", "schedule_label": "Weekdays at 8:00 AM", "kind": "cron",
+ "prompt": "Summarize my inbox", "name": "Summarize my inbox",
+ "next_run_at": "2026-11-06T08:00:00-05:00", "next_runs": ["…", "…", "…"], "assumed": null,
+ "timezone": "America/New_York", "deliver": "local", "delivery_label": "Saved only",
+ "delivery_targets": [{"id": "local", "label": "Saved only"}, {"id": "telegram", "label": "Telegram"}]}
+```
+
+`assumed` names a part that was filled in (`"9:00 AM"` for "every weekday summarize my inbox"), so
+the preview can say so. A bare hour reads the way people say it (7–11 morning, 12 noon, 1–6
+afternoon, "evening at 7" 7 PM); the preview shows the result before anything is saved. `400` with
+a plain sentence when the when or the what is missing, or a one-time is in the past.
+
+### POST /voice/schedules
+
+`{"schedule", "prompt", "name"?, "deliver"?, "confirmed": true}`, from a confirmed preview →
+`201` with the new schedule's detail. `confirmed` is required (`400` without it). `deliver` must be
+one of the preview's `delivery_targets` (default `local`). Hermes' prompt scan refuses prompts that
+try to change its instructions or reach secrets (`400`).
+
+### POST /voice/schedules/{id}/pause, /resume, /run
+
+`200` with the detail. **Run now** queues one run: the gateway's scheduler fires it on its next tick
+(within a minute) with its normal delivery; the reply carries `queued: true`, and `resumed: true` when
+the job was paused (Hermes' rule: Run now resumes a paused job). `409` while it's running or for a
+one-time job that already ran.
+
+### PATCH /voice/schedules/{id}
+
+Any of `{"schedule", "prompt", "name"}` → `200` with the detail. `schedule` takes the same words or
+forms as the preview. `400` for an unreadable schedule or nothing to change.
+
+### DELETE /voice/schedules/{id}
+
+`200 {"ok": true, "id"}`. Apps confirm first.
+
 ## POST /voice/tasks/dismiss
 
 Hides finished tasks from the list. Only terminal runs are dismissed; the rest are ignored.
@@ -1446,7 +1540,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `schedules` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`

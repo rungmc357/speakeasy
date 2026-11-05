@@ -434,6 +434,7 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(rf"/voice/interactions/{_ID}", path)
             work = re.fullmatch(rf"/voice/work/{_ID}", path)
             history_one = re.fullmatch(rf"/voice/history/{_SESSION}", path)
+            schedule_one = re.fullmatch(rf"/voice/schedules/{_ID}", path)
             routes = {
                 "/voice/work/latest": self.service.work_latest,
                 "/voice/titles": self.service.pending_thread_titles,
@@ -455,6 +456,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.routing_models(provider))
             elif work:
                 self._reply(200, self.service.work(work.group(1)))
+            elif path == "/voice/schedules":
+                self._reply(200, self.service.schedule_call("list"))
+            elif schedule_one:
+                self._reply(200, self.service.schedule_call("detail", schedule_one.group(1)))
             elif path == "/voice/history":
                 self._reply(200, self.service.history(self._query()))
             elif history_one:
@@ -510,6 +515,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/work":
                 self._reply(202, self.service.start_job(self._body(), device_id))
+                return
+            if path == "/voice/schedules/preview":  # saves nothing: what the app shows to confirm
+                self._reply(200, self.service.schedule_call("preview", body=self._body()))
+                return
+            if path == "/voice/schedules":
+                self._reply(201, self.service.schedule_call("create", body=self._body()))
+                return
+            schedule_action = re.fullmatch(rf"/voice/schedules/{_ID}/(pause|resume|run)", path)
+            if schedule_action:
+                self._reply(200, self.service.schedule_call(schedule_action.group(2), schedule_action.group(1)))
                 return
             history_message = re.fullmatch(rf"/voice/history/{_SESSION}/message", path)
             if history_message:
@@ -610,6 +625,10 @@ class Handler(BaseHTTPRequestHandler):
         path = self.route
         try:
             device_id = self._auth()
+            schedule = re.fullmatch(rf"/voice/schedules/{_ID}", path)
+            if schedule:
+                self._reply(200, self.service.schedule_call("delete", schedule.group(1)))
+                return
             staged = re.fullmatch(rf"/voice/attachments/{_ID}", path)
             if staged:
                 self._reply(200, self.service.remove_staged(device_id, staged.group(1)))
@@ -627,6 +646,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:
         try:
             self._auth()
+            schedule = re.fullmatch(rf"/voice/schedules/{_ID}", self.route)
+            if schedule:
+                self._reply(200, self.service.schedule_call("update", schedule.group(1), self._body()))
+                return
             if self.route != "/voice/settings":
                 raise ServiceError(404, "not found")
             self._reply(200, self.service.patch_settings(self._body()))
