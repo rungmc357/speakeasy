@@ -3,7 +3,7 @@ import Foundation
 // The Mac history window's pure state, built on the shared history models (SessionHistory.swift,
 // VoiceMessage.swift): the sidebar list (paging, search, source filter, groups), who the composer
 // sends to, messages on their way, and a session's thread as drawn (tool calls folded under the
-// answer they led to; approvals, questions and helpers pulled out of its jobs and sends).
+// answer they led to; approvals, questions and helpers pulled out of its jobs).
 
 // MARK: - The list
 
@@ -146,14 +146,18 @@ public enum HistoryTarget: Equatable, Sendable {
         case newChat(text: String, clientID: String)
     }
 
-    /// What Send does with these words; nil when there's nothing to send.
+    /// What Send does with these words; nil when there's nothing to send. `attachments` (staged ids)
+    /// ride on a session message; a New chat's caller passes the same ids to `startJob` (with any,
+    /// the words may be empty).
     public func outgoing(_ text: String, source: HistoryMessageRequest.Source,
-                         clientID: String = UUID().uuidString) -> Outgoing? {
+                         clientID: String = UUID().uuidString, attachments: [String] = []) -> Outgoing? {
         switch self {
         case .session(let id):
-            return HistoryMessageRequest(sessionID: id, text: text, source: source, clientID: clientID).map(Outgoing.message)
+            return HistoryMessageRequest(sessionID: id, text: text, source: source, clientID: clientID,
+                                         attachments: attachments).map(Outgoing.message)
         case .newChat:
-            return TaskMessageRequest.clean(text).map { .newChat(text: $0, clientID: clientID) }
+            if let clean = TaskMessageRequest.clean(text) { return .newChat(text: clean, clientID: clientID) }
+            return attachments.isEmpty ? nil : .newChat(text: "", clientID: clientID)
         }
     }
 
@@ -184,26 +188,24 @@ public struct HistoryThreadMessage: Equatable, Sendable, Identifiable {
     }
 }
 
-/// Something the session waits on: a task's approval or question, or one a send through Hermes hit.
+/// Something the session waits on: one of its Speakeasy tasks' approvals or questions.
 public struct HistoryWaiting: Equatable, Sendable, Identifiable {
     public enum Kind: Equatable, Sendable { case approval, question }
     public var id: String
     public var kind: Kind
     public var text: String
     public var command: String?
-    /// Buttons. A send's own choices (never "always"); a task's are "yes"/"no" or its options.
+    /// Buttons (never "always"): an approval's choices; a question's "yes"/"no" or its options.
     public var choices: [String]
-    /// Set: answered with `POST …/sends/{send_id}/answer` (`choice`).
-    public var sendID: String?
     /// Set: a task's approval, answered with `POST …/approval` (`run_id`, `choice`).
     /// Neither: a task's question, answered by a message to the session (the server hands it to the
     /// waiting task as the answer).
     public var runID: String?
 
     public init(id: String, kind: Kind, text: String, command: String? = nil, choices: [String],
-                sendID: String? = nil, runID: String? = nil) {
+                runID: String? = nil) {
         self.id = id; self.kind = kind; self.text = text; self.command = command; self.choices = choices
-        self.sendID = sendID; self.runID = runID
+        self.runID = runID
     }
 }
 
@@ -239,30 +241,6 @@ public struct HistoryThread: Equatable, Sendable {
         if !pending.isEmpty { out.append(HistoryThreadMessage(id: "tools-end", role: .assistant, text: "", at: pendingAt, tools: pending)) }
 
         var waiting: [HistoryWaiting] = []
-        // Sends through Hermes not yet in the transcript: a bubble with how it's going.
-        let userTexts = Set(out.filter { $0.role == .user }.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) })
-        for send in c.sends {
-            let echoed = userTexts.contains(send.text.trimmingCharacters(in: .whitespacesAndNewlines))
-            if let p = send.prompt, send.status == .needsYou {
-                let choices = p.choices.filter { $0 != "always" }
-                waiting.append(HistoryWaiting(id: "send-\(send.id)", kind: p.kind == "question" ? .question : .approval, text: p.text,
-                                              choices: choices.isEmpty && p.kind != "question" ? ["once", "deny"] : choices,
-                                              sendID: send.id))
-            }
-            guard !echoed, !send.text.isEmpty else { continue }
-            switch send.status {
-            case .failed:
-                out.append(HistoryThreadMessage(id: "send-\(send.id)", role: .user, text: send.text, at: send.started,
-                                                delivery: .failed(send.error ?? "That didn't go through.")))
-            case .completed:
-                out.append(HistoryThreadMessage(id: "send-\(send.id)", role: .user, text: send.text, at: send.started))
-                if let reply = send.reply {
-                    out.append(HistoryThreadMessage(id: "send-\(send.id)-reply", role: .assistant, text: reply))
-                }
-            default:
-                out.append(HistoryThreadMessage(id: "send-\(send.id)", role: .user, text: send.text, at: send.started, delivery: .sent))
-            }
-        }
         // Its Speakeasy tasks waiting on the user: approvals (their own route), then questions.
         for a in c.approvals {
             waiting.append(HistoryWaiting(id: "approval-\(a.runID)", kind: .approval, text: a.description,

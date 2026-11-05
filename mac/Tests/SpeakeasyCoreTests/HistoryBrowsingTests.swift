@@ -110,6 +110,22 @@ final class HistoryBrowsingTests: XCTestCase {
         XCTAssertNil(HistoryTarget.newChat.sessionID)
     }
 
+    func testAttachmentsRideOnASessionMessageAndMayStandAlone() {
+        guard case .message(let r)? = HistoryTarget.session("s").outgoing("  ", source: .typed, clientID: "c1",
+                                                                         attachments: ["att_1", "att_2"]) else {
+            return XCTFail("attachments alone are something to send")
+        }
+        XCTAssertEqual(r.body["attachments"] as? [String], ["att_1", "att_2"])
+        XCTAssertEqual(r.body["text"] as? String, "")
+        guard case .message(let plain)? = HistoryTarget.session("s").outgoing("hi", source: .voiceMessage) else { return XCTFail() }
+        XCTAssertNil(plain.body["attachments"], "no key without attachments (older servers refuse it)")
+        guard case .newChat(let text, _)? = HistoryTarget.newChat.outgoing("", source: .typed, attachments: ["att_1"]) else {
+            return XCTFail("a New chat can start from a photo alone")
+        }
+        XCTAssertEqual(text, "")
+        XCTAssertNil(HistoryTarget.newChat.outgoing(" ", source: .typed))
+    }
+
     func testOutboxShowsPendingUntilEchoed() throws {
         var box = HistoryOutbox()
         let t0 = Date(timeIntervalSince1970: 1_000_000)
@@ -152,34 +168,22 @@ final class HistoryBrowsingTests: XCTestCase {
              "subagents": [{"id": "h1", "title": "Check the stock", "status": "running"}]},
             {"run_id": "run_8", "status": "completed",
              "result": {"views": [{"kind": "question", "question": "Oak or walnut?", "options": [{"text": "Oak"}, {"text": "Walnut"}]}]},
-             "subagents": [{"id": "h1", "title": "Check the stock", "status": "running"}]}],
-          "sends": [
-            {"send_id": "hs_1", "status": "completed", "text": "Order them please", "reply": "Ordered."},
-            {"send_id": "hs_2", "status": "needs_you", "text": "And the screws",
-             "prompt": {"kind": "approval", "prompt_id": "p1", "text": "Buy screws for $4?", "choices": ["once", "session", "always", "deny"]}},
-            {"send_id": "hs_3", "status": "failed", "text": "Ship it", "error": "Hermes isn't ready to take that message."}]}}
+             "subagents": [{"id": "h1", "title": "Check the stock", "status": "running"}]}]}}
         """.utf8))
         let c = try XCTUnwrap(HistoryConversation(json: json))
         let t = HistoryThread(c)
-        XCTAssertEqual(t.messages.map(\.id), ["m1", "m3", "m4", "m5", "tools-end", "send-hs_2", "send-hs_3"])
+        XCTAssertEqual(t.messages.map(\.id), ["m1", "m3", "m4", "m5", "tools-end"])
         XCTAssertEqual(t.messages[2].tools.map(\.text), ["Ran a command", "Read plan.md"], "tools fold into the answer, past the note")
         XCTAssertEqual(t.messages[4].tools.map(\.status), [.running], "trailing tools: work in progress")
         XCTAssertEqual(t.toolCallCount, 3)
-        XCTAssertEqual(t.messages[5].delivery, .sent)
-        XCTAssertEqual(t.messages[6].delivery, .failed("Hermes isn't ready to take that message."))
         XCTAssertEqual(t.helpers.map(\.id), ["h1"], "a helper in two jobs shows once")
-        let send = try XCTUnwrap(t.waiting.first { $0.sendID == "hs_2" })
-        XCTAssertEqual(send.kind, .approval)
-        XCTAssertEqual(send.choices, ["once", "session", "deny"], "never always")
         let job = try XCTUnwrap(t.waiting.first { $0.runID == "run_7" })
-        XCTAssertNil(job.sendID)
         XCTAssertEqual(job.kind, .approval, "a task's approval: answered on POST …/approval by run id")
         XCTAssertEqual(job.text, "Run rm -rf build/")
         XCTAssertEqual(job.choices, ["once", "session", "deny"])
         let question = try XCTUnwrap(t.waiting.first { $0.kind == .question })
         XCTAssertEqual(question.choices, ["Oak", "Walnut"])
         XCTAssertNil(question.runID, "a task's question is answered by a message to the session")
-        XCTAssertNil(question.sendID)
     }
 
     // MARK: Voice messages on the Mac

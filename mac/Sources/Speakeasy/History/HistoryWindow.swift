@@ -91,7 +91,7 @@ final class DemoHistoryBackend: HistoryBackend {
 
     func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply {
         sent.append(request)
-        return HistoryMessageReply(via: .task, runID: "run_demo", sendID: nil)
+        return HistoryMessageReply(via: .task, runID: "run_demo")
     }
 
     func startChat(text: String, clientID: String) async throws -> String? {
@@ -104,7 +104,6 @@ final class DemoHistoryBackend: HistoryBackend {
         return run
     }
 
-    func answer(sessionID: String, sendID: String, choice: String) async throws { answers.append((sessionID, sendID, choice)) }
     func answerApproval(sessionID: String, runID: String, choice: String) async throws { answers.append((sessionID, runID, choice)) }
 }
 
@@ -139,13 +138,13 @@ enum DemoHistory {
         var sessions: [HistorySession] = []
         var convs: [String: HistoryConversation] = [:]
         func add(_ id: String, _ title: String, _ source: String, _ label: String, _ last: Double, _ preview: String,
-                 state: String = "idle", entries: [[String: Any]] = [], jobs: [[String: Any]] = [], sends: [[String: Any]] = []) {
+                 state: String = "idle", entries: [[String: Any]] = [], jobs: [[String: Any]] = [], approvals: [[String: Any]] = []) {
             let row: [String: Any] = ["id": id, "title": title, "source": source, "source_label": label, "last_activity": last,
                                       "preview": preview, "state": state]
             sessions.append(HistorySession(json: row)!)
             var full = row
-            full["entries"] = entries; full["jobs"] = jobs; full["sends"] = sends
-            full["send_via"] = source == "speakeasy" ? "task" : "hermes"
+            full["entries"] = entries; full["jobs"] = jobs; full["approvals"] = approvals
+            full["send_via"] = source == "speakeasy" ? "task" : "linked"
             convs[id] = HistoryConversation(json: ["session": full])
         }
 
@@ -180,9 +179,12 @@ enum DemoHistory {
                 user("m1", ago(48), "Ship the new pricing page to staging when the build is green."),
                 tools("t1", [call(1, "run", "Built the site", "terminal", ago(40), 64, args: "npm run build")]),
                 bot("m2", ago(31), "The build passed. Uploading needs your OK because it overwrites the staging site."),
-            ], sends: [["send_id": "hs_1", "status": "needs_you", "text": "Go ahead and upload it.", "started": ago(30),
-                        "prompt": ["kind": "approval", "prompt_id": "p1", "text": "Run rsync -az --delete dist/ staging:/srv/site",
-                                   "choices": ["once", "session", "always", "deny"]]]])
+                ["kind": "note", "id": "m3", "text": "Continued in Speakeasy · not posted to Discord"],
+                user("m4", ago(30), "Go ahead and upload it."),
+            ], jobs: [["run_id": "run_0011", "status": "waiting_for_approval", "title": "Upload the pricing page",
+                       "detail": "Run rsync -az --delete dist/ staging:/srv/site"]],
+            approvals: [["run_id": "run_0011", "description": "Run rsync -az --delete dist/ staging:/srv/site",
+                         "choices": ["once", "session", "deny"]]])
 
         add("s_pricing", "Pricing vs. three competitors", "telegram", "Telegram", ago(95), "Which plan should the comparison put us against?",
             state: "needs_you", entries: [

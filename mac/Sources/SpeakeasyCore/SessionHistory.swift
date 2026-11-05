@@ -217,14 +217,24 @@ public struct HistoryMessageRequest: Equatable, Sendable {
     public var text: String
     public var source: Source
     public var clientID: String
+    /// Ids staged with `ServerClient.stageAttachment` (servers with `attachments`); with any, `text`
+    /// may be empty (the server says "Take a look at what I attached.").
+    public var attachments: [String]
 
-    public init?(sessionID: String, text: String, source: Source = .typed, clientID: String = UUID().uuidString) {
-        guard let clean = TaskMessageRequest.clean(text) else { return nil }
-        self.sessionID = sessionID; self.text = clean; self.source = source; self.clientID = clientID
+    public init?(sessionID: String, text: String, source: Source = .typed, clientID: String = UUID().uuidString,
+                 attachments: [String] = []) {
+        let clean = TaskMessageRequest.clean(text)
+        guard clean != nil || !attachments.isEmpty else { return nil }
+        self.sessionID = sessionID; self.text = clean ?? ""; self.source = source; self.clientID = clientID
+        self.attachments = attachments
     }
 
     public var path: String { HistoryConversation.path(sessionID) + "/message" }
-    public var body: [String: Any] { ["text": text, "source": source.rawValue, "client_id": clientID] }
+    public var body: [String: Any] {
+        var out: [String: Any] = ["text": text, "source": source.rawValue, "client_id": clientID]
+        if !attachments.isEmpty { out["attachments"] = attachments }
+        return out
+    }
 }
 
 public struct HistoryMessageReply: Equatable, Sendable {

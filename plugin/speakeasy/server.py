@@ -502,7 +502,8 @@ class Handler(BaseHTTPRequestHandler):
             history_message = re.fullmatch(rf"/voice/history/{_SESSION}/message", path)
             if history_message:
                 # By session id only: never the call router (docs/API.md "History").
-                self._reply(200, self.service.history_message(unquote(history_message.group(1)), self._body()))
+                self._reply(200, self.service.history_message(unquote(history_message.group(1)), self._body(),
+                                                                     device_id))
                 return
             history_approval = re.fullmatch(rf"/voice/history/{_SESSION}/approval", path)
             if history_approval:

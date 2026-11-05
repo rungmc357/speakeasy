@@ -310,3 +310,83 @@ def test_a_speakeasy_job_waiting_on_approval_is_answerable_from_its_session(serv
     status, body = post(server, f"/voice/history/{sid}/approval", {"run_id": run_id, "choice": "once"})
     assert status == 200 and body["choice"] == "once", body
     assert hermes.approvals[-1]["choice"] == "once"
+
+
+# -- attachments on a history-page message (same claim/give-back as /voice/work[/{id}/message]) ----
+
+@pytest.fixture
+def reads_images(service):
+    service.hermes.image_support = {"images": True, "vision": "native"}
+
+
+def test_a_linked_chat_message_carries_a_picture_and_never_posts_back(server, service, hermes, state, reads_images):
+    from test_staged_attachments import images_in, jpeg, stage, text_of
+    picture = jpeg(b"invented-bracket-sketch ")
+    a = stage(server, picture, name="bracket.jpg")[1]["id"]
+    status, body = post(server, "/voice/history/d1/message",
+                        {"text": "Use this sketch", "attachments": [a], "client_id": "c_hatt1"})
+    assert status == 200 and body["via"] == "linked", body
+    assert body["attachments"] == [{"id": a, "kind": "picture", "name": "bracket.jpg"}]
+    call = wait_for(lambda: hermes.calls)[-1]
+    assert call["session_id"] != "d1" and images_in(call["input"]) == [picture]
+    assert "Use this sketch" in text_of(call["input"])
+    # Claimed: the same id can't go twice, but the same client_id replays the first reply.
+    assert post(server, "/voice/history/d1/message", {"text": "Again", "attachments": [a]})[0] == 404
+    again = post(server, "/voice/history/d1/message", {"text": "Use this sketch", "attachments": [a],
+                                                     "client_id": "c_hatt1"})[1]
+    assert again["run_id"] == body["run_id"]
+
+
+def test_an_api_session_message_carries_a_file_by_its_saved_copy(server, hermes, state, home, reads_images):
+    from test_staged_attachments import stage, text_of
+    add_session(state, "api_other", "api_server", title="Recipe scaling", at=NOW - 5)
+    b = stage(server, b"%PDF-1.7 invented menu", "file", "application/pdf", "menu.pdf")[1]["id"]
+    status, body = post(server, "/voice/history/api_other/message", {"text": "", "attachments": [b],
+                                                                    "source": "voice_message"})
+    assert status == 200 and body["via"] == "session_job", body
+    call = hermes.calls[-1]
+    prompt = text_of(call["input"])
+    assert call["session_id"] == "api_other" and "menu.pdf" in prompt
+    assert "Take a look at what I attached." in prompt
+    assert str(home / "cache" / "speakeasy" / "shared") in prompt
+
+
+def test_a_speakeasy_task_session_follow_up_carries_the_picture(server, service, hermes, state, reads_images):
+    from test_staged_attachments import images_in, jpeg, stage
+    status, started = post(server, "/voice/work", {"text": "Plan the herb garden"})
+    run_id = started["run_id"]
+    sid = wait_for(lambda: service.store.session_for(service.store.key_for_run(run_id)))
+    add_session(state, sid, "api_server", at=NOW - 5)
+    wait_for(lambda: service.store.work(run_id)["status"] == "completed")
+    picture = jpeg(b"invented-herb-layout ")
+    a = stage(server, picture)[1]["id"]
+    status, body = post(server, f"/voice/history/{sid}/message", {"text": "Use this layout", "attachments": [a]})
+    assert status == 200 and body["via"] == "task", body
+    follow = wait_for(lambda: [c for c in hermes.calls if images_in(c["input"])])[0]
+    assert follow["session_id"] == sid and images_in(follow["input"]) == [picture]
+
+
+def test_history_attachments_are_all_or_nothing_and_per_device(server, service, hermes, state):
+    from test_staged_attachments import jpeg, second_device, stage
+    a = stage(server, jpeg())[1]["id"]
+    status, body = post(server, "/voice/history/d1/message", {"text": "x", "attachments": [a, "att_gone"]})
+    assert status == 404 and body["reason"] == "unknown"
+    other = second_device(server, service)
+    status, body = http(server.base_url, "POST", "/voice/history/d1/message", {"text": "x", "attachments": [a]}, other)
+    assert status == 404 and body["reason"] == "unknown"
+    assert post(server, "/voice/history/d1/message", {"text": "x", "attachments": "att_x"})[0] == 400
+    assert not hermes.calls
+    assert a in service.staged._items[next(iter(service.staged._items))]   # still waiting to be sent
+
+
+def test_a_failed_history_send_gives_the_attachments_back(server, service, state, monkeypatch):
+    from test_staged_attachments import jpeg, stage
+    a = stage(server, jpeg())[1]["id"]
+
+    def boom(*_a, **_k):
+        raise RuntimeError("hermes down")
+    monkeypatch.setattr(service, "_start_job", boom)
+    device = next(iter(service.staged._items))
+    with pytest.raises(Exception):
+        service.history_message("d1", {"text": "x", "attachments": [a]}, device)
+    assert a in service.staged._items[device]

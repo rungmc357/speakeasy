@@ -1009,7 +1009,7 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
 
 ### POST /voice/history/{session_id}/message
 
-Body `{"text": "...", "source": "typed" | "voice_message", "client_id": "<uuid>"}` (`text` trimmed,
+Body `{"text": "...", "source": "typed" | "voice_message", "client_id": "<uuid>", "attachments"?: [...]}` (`text` trimmed,
 1–4,000 characters; `voice_message` is text the app transcribed on the device from a recorded voice
 message, no audio is sent). Idempotent on `client_id` (10 minutes), like task messages. The session
 named gets it, by id:
@@ -1032,6 +1032,12 @@ named gets it, by id:
 `200 {"ok": true, "session_id": "...", "via": "task" | "session_job" | "linked", "run_id": "run_0002",
 "delivered_as": "steer" | "answer" | "follow_up" | "linked", "task": {...} | null}`.
 `400` empty, too long or malformed; `404` unknown session; `409`/`502` as for task messages.
+
+With capability `attachments`, the body also takes `"attachments": ["att_…", …]` exactly as task
+messages and new jobs do ("Attachments on typed messages and new jobs"): up to 3 ids this device
+staged, claimed all or nothing, given back if the send fails, `text` may then be empty, and the reply
+adds `"attachments": [{"id", "kind", "name"}]`. They go with whichever path the session takes (the
+task, the job in that API session, or the linked task); nothing is ever posted to a chat.
 
 A **new chat** (the panel's New chat button) is `POST /voice/work`: the first message starts a new
 job in its own session, which then appears in the history like any other.

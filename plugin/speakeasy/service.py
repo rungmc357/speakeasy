@@ -1575,16 +1575,22 @@ class VoiceService:
         continued stays the platform's (a message to it must never be posted back there)."""
         return meta["source"] == "api_server" and (link is not None or meta["id"].startswith(H.SPEAKEASY_PREFIX))
 
-    def history_message(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /voice/history/{session_id}/message {text, client_id?}``: to that session by id, never
-        routed. A Speakeasy task's session: task_messages (steer, answer or follow-up run). Another
-        API-server session: a new job in it. Anything else (a chat): a Speakeasy task linked to it, seeded
-        with its recent messages; the reply shows in Speakeasy and nothing is posted to the chat."""
-        if not isinstance(body, dict) or "text" not in body or not set(body) <= {"text", "client_id", "source"}:
+    def history_message(self, session_id: str, body: dict[str, Any], device_id: str | None = None) -> dict[str, Any]:
+        """``POST /voice/history/{session_id}/message {text, client_id?, attachments?}``: to that session by
+        id, never routed. A Speakeasy task's session: task_messages (steer, answer or follow-up run).
+        Another API-server session: a new job in it. Anything else (a chat): a Speakeasy task linked to it,
+        seeded with its recent messages; the reply shows in Speakeasy and nothing is posted to the chat.
+        ``attachments``: ids this device staged, claimed all or nothing and given back if the send fails
+        (exactly as on /voice/work[/{id}/message])."""
+        if not isinstance(body, dict) or "text" not in body or not set(body) <= {
+                "text", "client_id", "source", "attachments"}:
             raise ServiceError(400, "Send the message as text.")
         text, client_id = body.get("text"), body.get("client_id")
         if (body.get("source") or "typed") not in {"typed", "voice_message"}:
             raise ServiceError(400, "source must be typed or voice_message.")
+        ids = self._attachment_ids(body)
+        if isinstance(text, str) and not text.strip() and ids:
+            text = LOOK_TEXT
         if not isinstance(text, str) or not text.strip():
             raise ServiceError(400, "The message is empty.")
         text = text.strip()
@@ -1597,28 +1603,31 @@ class VoiceService:
         meta = H.session_meta(self.rt.state_db, session_id)
         if meta is None:
             raise ServiceError(404, "I couldn't find that conversation.")
-        return self._once(client_id, lambda: self._history_message(meta, text))
+        return self._once(client_id, lambda: self._with_staged(
+            device_id, ids, lambda staged: self._history_message(meta, text, staged)))
 
-    def _history_message(self, meta: dict[str, Any], text: str) -> dict[str, Any]:
+    def _history_message(self, meta: dict[str, Any], text: str,
+                         staged: list[A.Attachment] | None = None) -> dict[str, Any]:
         sid = meta["id"]
         link = self._linked(sid)
         if self._speakeasy_owned(meta, link) and link is not None:
             for run_id in link.run_ids:
                 try:
-                    got = self._task_message(run_id, text, None, None)
+                    got = self._task_message(run_id, text, None, None, staged)
                 except ServiceError as exc:
-                    if exc.status in {404, 409}:
+                    if exc.status in {404, 409} and exc.reason != "not_now":
                         continue  # a deleted/cancelled task: the next one in this session takes it
                     raise
                 return {"ok": True, "session_id": sid, "via": "task", "run_id": got.get("run_id"),
                         "delivered_as": got.get("delivered_as"), "task": got.get("task")}
         if meta["source"] == "api_server":
-            got = self._start_job(text, session_id=sid)
+            got = self._start_job(text, staged, session_id=sid)
             return {"ok": True, "session_id": sid, "via": "session_job", "run_id": got.get("run_id"),
                     "delivered_as": "follow_up", "task": got.get("task")}
-        return self._continue_linked(meta, text)
+        return self._continue_linked(meta, text, staged)
 
-    def _continue_linked(self, meta: dict[str, Any], text: str) -> dict[str, Any]:
+    def _continue_linked(self, meta: dict[str, Any], text: str,
+                         staged: list[A.Attachment] | None = None) -> dict[str, Any]:
         """A chat Speakeasy can't write into (its reply would go back to the chat): the newest linked
         task for it takes the message (steer, answer or follow-up in its own session); the first
         message starts one, seeded with the chat's recent messages."""
@@ -1628,9 +1637,9 @@ class VoiceService:
             if not run_id:
                 continue
             try:
-                got = self._task_message(run_id, text, None, None)
+                got = self._task_message(run_id, text, None, None, staged)
             except ServiceError as exc:
-                if exc.status in {404, 409}:
+                if exc.status in {404, 409} and exc.reason != "not_now":
                     continue
                 raise
             return {"ok": True, "session_id": sid, "via": "linked", "run_id": got.get("run_id"),
@@ -1638,7 +1647,7 @@ class VoiceService:
         label = H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), False)
         title = (meta.get("title") or "").strip() or "this conversation"
         context = H.linked_context(self.rt.state_db, sid, title, label, text)
-        got = self._start_job(text, context=context, link_to=sid)
+        got = self._start_job(text, staged, context=context, link_to=sid)
         logger.info("speakeasy: a message to a %s session started a linked task", meta["source"])
         return {"ok": True, "session_id": sid, "via": "linked", "run_id": got.get("run_id"),
                 "delivered_as": "linked", "task": got.get("task")}

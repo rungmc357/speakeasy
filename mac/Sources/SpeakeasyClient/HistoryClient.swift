@@ -2,7 +2,7 @@ import Foundation
 import SpeakeasyCore
 
 // The Mac history window's calls beyond the shared ones in ServerClient (history, historySession,
-// sendToSession, answerSend).
+// sendToSession, answerSessionApproval).
 
 extension ServerClient {
     /// One page for the sidebar list (with its page size).
