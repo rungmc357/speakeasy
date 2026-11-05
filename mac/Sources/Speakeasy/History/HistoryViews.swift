@@ -513,6 +513,7 @@ struct HistorySessionView: View {
                         ForEach(thread.messages) { m in
                             HistoryMessageView(message: m, sessionID: c.id, store: store).id(m.id)
                         }
+                        ForEach(Array(c.jobs.suffix(4).enumerated()), id: \.offset) { _, job in HistoryTaskCard(job: job) }
                         if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
                         ForEach(thread.waiting) { HistoryWaitingCard(waiting: $0, store: store) }
                         if let error = store.answerError {
@@ -710,6 +711,69 @@ struct HistoryToolCalls: View {
 
     private func toggle(_ k: String) {
         if store.openSections.contains(k) { store.openSections.remove(k) } else { store.openSections.insert(k) }
+    }
+}
+
+/// One of the session's tasks, updated in place by the live feed: what it's doing now, a real
+/// progress bar (only with a step count), the outcome. The phone's session page draws the same card.
+struct HistoryTaskCard: View {
+    let job: WorkInfo
+    private var running: Bool { !["completed", "failed", "cancelled"].contains(job.status) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundStyle(tint).accessibilityHidden(true)
+                Text(job.title ?? job.summary ?? "Task").font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                Spacer(minLength: 6)
+                Text(word).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint)
+            }
+            if running, let now = job.shortStatus ?? job.activity.last?.text, !now.isEmpty {
+                HStack(spacing: 6) {
+                    LiveDot(color: Live.brass, size: 6)
+                    Text(now).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            if running, let i = job.stepIndex, let n = job.stepCount, n > 0 {
+                ProgressView(value: Double(min(i, n)), total: Double(n)).tint(Live.brass)
+                Text("Step \(min(i, n)) of \(n)").font(.system(size: 10.5).monospacedDigit()).foregroundStyle(.tertiary)
+            }
+            if job.status == "failed", let why = job.failureReason ?? job.failure?.text {
+                Text(why).font(.system(size: 12)).foregroundStyle(Live.red).lineLimit(3)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Live.card))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(tint.opacity(running ? 0.4 : 0.15), lineWidth: 0.75))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("history-task-card")
+    }
+
+    private var word: String {
+        switch job.status {
+        case "completed": return "Done"
+        case "failed": return "Didn't finish"
+        case "cancelled": return "Stopped"
+        case "waiting_for_approval": return "Needs your OK"
+        default: return "Working"
+        }
+    }
+    private var icon: String {
+        switch job.status {
+        case "completed": return "checkmark.circle.fill"
+        case "failed": return "exclamationmark.triangle.fill"
+        case "cancelled": return "stop.circle.fill"
+        case "waiting_for_approval": return "hand.raised.fill"
+        default: return "sparkles"
+        }
+    }
+    private var tint: Color {
+        switch job.status {
+        case "completed": return Live.green
+        case "failed", "waiting_for_approval": return Live.red
+        case "cancelled": return .secondary
+        default: return Live.brass
+        }
     }
 }
 
