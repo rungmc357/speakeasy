@@ -262,13 +262,13 @@ extension PreviewFixtures {
                                                                             "Saturday: the report job hit a lock, rerun passed"]]]]])
         let compare: [String: Any] = ["kind": "comparison", "title": "Laptop A vs Laptop B", "columns": ["Laptop A", "Laptop B"],
                                       "rows": [["label": "Price", "values": ["$1,299", "$1,099"]],
-                                               ["label": "Weight", "values": ["1.2 kg", "1.6 kg"]],
+                                               ["label": "Weight", "values": ["2.6 lb", "3.5 lb"]],
                                                ["label": "Battery", "values": ["18 h", "12 h"]],
                                                ["label": "Screen", "values": ["13.6 in", "14.2 in"]]],
                                       "winner": "Laptop A"]
         let answerLaptops = task("ans_laptops", job: ("laptops", "Two laptops compared"), title: "Compare the two laptops", age: 200, result: [
             "spoken": "Laptop A is the better fit: lighter, with six more hours of battery, for 200 dollars more.",
-            "full": "Laptop A is the better fit for carrying around: 1.2 kg against 1.6 kg and about 18 hours of battery against 12. Laptop B costs $200 less and has a slightly bigger screen.\n\nSpecs from [Laptop A's spec page](https://laptops.example.com/a) and [Laptop B's spec page](https://laptops.example.com/b).",
+            "full": "Laptop A is the better fit for carrying around: 2.6 lb against 3.5 lb and about 18 hours of battery against 12. Laptop B costs $200 less and has a slightly bigger screen.\n\nSpecs from [Laptop A's spec page](https://laptops.example.com/a) and [Laptop B's spec page](https://laptops.example.com/b).",
             "label": "Laptop A fits you better", "views": [compare]])
 
         // Declutter: the user's crowded call, generic data. A review with one large picture, and a
