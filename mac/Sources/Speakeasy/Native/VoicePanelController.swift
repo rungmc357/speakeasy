@@ -245,7 +245,7 @@ final class ResizeHandleView: NSView {
 
 /// The panel's content: SwiftUI, with resize handles laid over the right edge,
 /// bottom edge and bottom-right corner. Also the drop destination for pictures and files dragged
-/// onto the panel during a call (the SwiftUI content registers no drag types, so drags reach here).
+/// onto the panel, in a call or not (the SwiftUI content registers no drag types, so drags reach here).
 final class PanelContainerView: NSView {
     let right = ResizeHandleView(kind: .right)
     let bottom = ResizeHandleView(kind: .bottom)
@@ -267,8 +267,8 @@ final class PanelContainerView: NSView {
 
     // MARK: Drops ("Look at this")
 
-    /// `.copy` while a call takes attachments and the drag carries something attachable; nothing
-    /// otherwise (outside a call a drop never starts one).
+    /// `.copy` while the panel takes attachments and the drag carries something attachable; nothing
+    /// otherwise. With no call open a drop never starts one: it waits for the next call.
     private func dropOperation(_ info: NSDraggingInfo) -> NSDragOperation {
         guard let model = dropModel, PanelAttachments.accepting(model),
               PanelAttachments.hasAttachable(info.draggingPasteboard) else {
@@ -392,7 +392,7 @@ final class VoicePanelController {
         }
         panel.onMoved = { [weak self] in self?.panelDidMove() }
         panel.onArrow = { [weak model] delta in model?.stepOpenReview(by: delta) ?? false }
-        // Arrow keys for a review card's images and the board, and ⌘V during a call that takes pictures and files.
+        // Arrow keys for a review card's images and the board, and ⌘V whenever the panel takes pictures and files.
         panel.wantsKeysOnClick = { [weak model] in
             guard let model else { return false }
             return model.steppableReview != nil || model.showsBoard || model.selectedJobID != nil

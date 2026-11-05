@@ -556,10 +556,11 @@ struct VoicePanelView: View {
                     .padding(.horizontal, 12).padding(.bottom, 10)
                     .transition(.opacity)
             }
-            // Pictures and files waiting for the next request: under the header in every layout.
-            if !model.state.workOnly && !pending.isEmpty {
+            // Pictures and files waiting for the next request: under the header in every layout (at
+            // the top of the board, which has none).
+            if !pending.isEmpty {
                 PendingAttachmentsRow(items: pending, onRemove: model.onRemoveAttachment)
-                    .padding(.horizontal, 14).padding(.bottom, 8)
+                    .padding(.horizontal, 14).padding(.top, model.state.workOnly ? 10 : 0).padding(.bottom, 8)
                     .transition(.opacity)
             }
             if model.tourActive && model.state.connection.isOpen && !model.state.workOnly {
@@ -698,7 +699,7 @@ struct VoicePanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: Tokens.radius, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Tokens.radius, style: .continuous)
             .strokeBorder(Color.primary.opacity(scheme == .dark ? 0.16 : 0.12), lineWidth: 0.5))
-        // A picture or file dragged over the panel during a call: a thin accent ring says it's taken.
+        // A picture or file dragged over the panel it would take: a thin accent ring says so.
         .overlay(RoundedRectangle(cornerRadius: Tokens.radius, style: .continuous)
             .strokeBorder(Tokens.brass, lineWidth: 1.5)
             .opacity(model.dropTargeted ? 1 : 0)
