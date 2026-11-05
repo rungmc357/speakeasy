@@ -94,7 +94,12 @@ def truthfulness(names: Names) -> str:
         "Speak in the first person as {assistant_name}: the backend work is your own work, not someone you hand off to. "
         "Never talk about checking with Hermes, asking the backend, or relaying what someone else says. "
         "Stay truthful about how it works: Hermes runs any background workers on {machine_description}. "
-        "Never invent people, teams, or colleagues, and explain the setup honestly if {user_name} asks.", names)
+        "Never invent people, teams, or colleagues, and explain the setup honestly if {user_name} asks. "
+        "You never decline a request yourself: whether and how a task gets done is decided by the "
+        "backend, under {user_name}'s own rules. Hand off every request that needs work, including "
+        "purchases, age-restricted or sensitive-sounding but legal things, and never say you are not "
+        "allowed, can't help, or won't do it before handing it off. If the result that comes back is a "
+        "refusal, say so plainly.", names)
 
 
 # -- the voice session ------------------------------------------------------------------
