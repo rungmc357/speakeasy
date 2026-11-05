@@ -1316,7 +1316,8 @@ class SidebandWorker:
         # The tap is answered as soon as it's taken: following up can take a while (a task in a chat
         # thread waits for that thread, a continued session is looked up), and the app must not see a
         # slow reply as a failed tap and put the question back up while the answer is already working.
-        request = self.picked_request(task_id, text)
+        picked = getattr(self, "picked_request", None)
+        request = picked(task_id, text) if callable(picked) else text
         follow = asyncio.get_running_loop().create_task(
             self.follow_up(delegation_id, 0, f"User: {text}", router.Part("follow_up", request, task_id)))
         tasks = getattr(self, "dispatch_tasks", None)
