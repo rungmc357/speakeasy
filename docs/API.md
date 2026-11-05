@@ -1438,6 +1438,45 @@ The relay refuses any body field beyond the six above, replays (nonce), timestam
 Settings: `push: {enabled: true, relay_url: "https://speakeasy-push.todd-562.workers.dev", presence_s: 45}`
 (`relay_url` must be https, or http on 127.0.0.1/localhost for local testing).
 
+## Secure input (keys, admin passwords, website logins)
+
+Servers with `capabilities.secret_input`. When a Speakeasy job (call job, typed job, history
+message, linked task) needs something only the user should type, the agent's turn waits on a
+**secure box** instead of asking in the conversation:
+
+| kind | Hermes asks through | the answer goes to |
+| --- | --- | --- |
+| `secret` | a skill's missing `required_environment_variables` (secret capture) | `save_env_value_secure` → the profile `.env` as `env_var` |
+| `sudo` | a terminal command that needs `sudo` (sudo password prompt) | that one command's stdin; Speakeasy drops Hermes' cached copy after the tool call (allow once) |
+| `login` | `browser_vault action=save_login` | Hermes' encrypted vault, bound to `origin`; filled model-blind |
+| `code` | `browser_vault action=enter_code` | typed into the page once (a code entered on the login card answers the next ask for that site) |
+
+Requests expire with Hermes' own deadlines (120 s key/sudo, 180 s login/code). Skip, expiry, or the
+job stopping return Hermes' "skipped / declined" result. The job shows a "Waiting for you" milestone,
+a `needs_you` push names the need (never a value), and a live call says one line ("I need a key to
+continue — I've put a secure box on your screen") and is told never to ask for the value aloud.
+
+### GET /voice/secrets
+
+`{"requests": [...], "wired": {"secret": true, "sudo": true, "login": true}}`. Only requests this
+device may answer (a call's job: the device that placed the call; a job with no call: any paired
+device). Each request: `id` (`sec_…`), `kind`, `job`, `run_id`, `session_id`, `expires_at`,
+`seconds_left`, `label`, `stored_where`, and per kind `env_var`/`prompt`/`help`/`skill` (secret),
+`command` (sudo, credentials masked as Hermes' approval prompts mask them), `origin`/`site` (login),
+`site`/`help` (code). A call's event feed also carries them as a `secure_inputs` event.
+Never contains a value.
+
+### POST /voice/secrets/{id}
+
+Body: `{"value": "…"}`, or for `login` `{"identifier": "…", "password": "…", "code": "…"?}`, or
+`{"action": "skip"}`. Reply: `{"ok": true, "outcome": "sent" | "skipped", "stored_as"?, "site"?}`.
+Device-token auth; single use (a second answer is 404); 403 `wrong_device`; 404 `closed` once
+answered, skipped or expired; 429 after 12 answers a minute from one device; 413 over 16 KB.
+The body is read into a buffer that is zeroed after the handoff and is never parsed into a log
+line, stored in `state.sqlite3`, published or echoed. Values entered are fingerprinted (keyed
+hash, in memory) so any later Hermes output that echoes one is replaced with `[redacted]` before
+Speakeasy stores, speaks, pushes or returns it.
+
 ## GET /voice/status
 
 Readiness. `voice_ready` is true when the chosen provider can start a call. When Codex is missing or signed out, `codex_message` says what to do. Grok voice (beta): `grok_beta` (the setting), `grok_signed_in` (Hermes holds an xAI sign-in), `grok_api_key_set` (`XAI_API_KEY` fallback), `grok_ready` and `grok_message` (what to do, e.g. run `hermes auth add xai-oauth`); with provider `grok`, onboarding's `codex_message` carries the Grok message. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only). `room_listening` (plugin 0.2.51+) is true when the server takes listening mode's `room` with `POST /voice/sessions`; missing on older plugins, which reject unknown session fields. `room_on_resume` is true when it also takes `room` with `resume_from`, which listening mode during a call needs (the app checks it before pausing the call for listening). `input_text` is true when the server takes a typed turn on a live call (`POST /voice/interactions/{id}/input-text`); missing on older plugins, which answer that route with 404, so apps show their composer only when it's true.

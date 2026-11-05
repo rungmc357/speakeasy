@@ -60,6 +60,7 @@ def register(ctx) -> None:
         emoji="\U0001f399", allow_update_command=False, platform_hint=_PLATFORM_HINT,
     )
     _register_routing_task(ctx)
+    _register_secure_input_hook(ctx)
     ctx.register_cli_command(
         "voice", help="Speakeasy voice: setup, pairing and devices",
         setup_fn=setup_parser, handler_fn=handle,
@@ -78,3 +79,16 @@ def _register_routing_task(ctx) -> None:
         register(AUX_TASK, display_name=AUX_DISPLAY_NAME, description=AUX_DESCRIPTION, defaults={"timeout": 3})
     except Exception as exc:
         logger.warning("speakeasy: could not register the routing task: %s", exc)
+
+
+def _register_secure_input_hook(ctx) -> None:
+    """Sudo from a Speakeasy secure card is allowed once: after that tool call, Hermes' cached
+    password for the run is dropped (secure_input.after_tool_call)."""
+    register = getattr(ctx, "register_hook", None)
+    if not callable(register):
+        return
+    try:
+        from .secure_input import after_tool_call
+        register("post_tool_call", after_tool_call)
+    except Exception as exc:
+        logger.warning("speakeasy: could not register the secure input hook: %s", type(exc).__name__)

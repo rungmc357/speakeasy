@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var bag = Set<AnyCancellable>()
     /// A pairing link that arrived before launch finished.
     private var pendingLink: URL?
+    private var secureInput: SecureInputWindowController?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // speakeasy://pair links (Info.plist CFBundleURLTypes). An Apple Event handler works
@@ -77,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MacAppearance.apply()
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "--history-shots"), i + 1 < args.count { HistoryShots.run(dir: args[i + 1]); return }
+        if let i = args.firstIndex(of: "--secure-input-shots"), i + 1 < args.count { SecureInputShots.run(dir: args[i + 1]); return }
         if args.contains("--native-offer-smoke") { NativeSmoke.offer(); return }
         if args.contains("--native-mic-smoke") { NativeSmoke.mic(); return }
         if args.contains("--live-call-smoke") { LiveCallSmoke.run(); return }
@@ -130,6 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let link = pendingLink { pendingLink = nil; handlePairURL(link) }
         else if !app.isPaired || !UserDefaults.standard.bool(forKey: Prefs.onboardingDone) { showOnboarding() }
         Task { await app.refresh() }
+        // The secure box for keys and sudo passwords a job asks for (SecureInputWindow.swift).
+        secureInput = SecureInputWindowController(client: { [weak self] in self?.app.api })
+        secureInput?.start()
         AppUpdater.shared.start()
         app.checkForUpdatesIfDue()
         // Card buttons, job progress and spoken choices show only on servers that have them.

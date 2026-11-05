@@ -20,6 +20,7 @@ from . import __version__
 from . import attachments as A
 from .service import VoiceService
 from .calls import ServiceError, Interaction, publish_state
+from .secure_input import scrub_bytes
 from .text import MAX_ROOM_CHARS
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- plumbing ---------------------------------------------------------------------------
     def _reply(self, status: int, body: dict[str, Any]) -> None:
-        raw = json.dumps(body, separators=(",", ":")).encode()
+        raw = scrub_bytes(json.dumps(body, separators=(",", ":")).encode())
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
@@ -173,6 +174,34 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             raise ServiceError(400, "JSON object required")
         return body
+
+    def _secret_answer(self, request_id: str, device_id: str) -> None:
+        """``POST /voice/secrets/{id}``: the body is read into a bytearray that secure_input zeroes;
+        it is never parsed here, logged, or echoed back."""
+        from .secure_input import MAX_BODY_BYTES
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if length <= 0 or length > MAX_BODY_BYTES:
+            self._reply(413, {"error": "request body size rejected"})
+            return
+        raw = bytearray(length)
+        view = memoryview(raw)
+        got = 0
+        while got < length:
+            n = self.rfile.readinto(view[got:])
+            if not n:
+                break
+            got += n
+        view.release()
+        if got < length:
+            for i in range(len(raw)):
+                raw[i] = 0
+            self._reply(400, {"error": "incomplete body"})
+            return
+        status, body = self.service.secure_answer(request_id, device_id, raw)
+        self._reply(status, body)
 
     @staticmethod
     def _error(exc: ServiceError) -> dict[str, Any]:
@@ -329,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _sse(self, seq: int, kind: str, payload: Any) -> None:
         data = json.dumps(payload, separators=(",", ":"))
-        self.wfile.write(f"id: {seq}\nevent: {kind}\ndata: {data}\n\n".encode())
+        self.wfile.write(scrub_bytes(f"id: {seq}\nevent: {kind}\ndata: {data}\n\n".encode()))
         self.wfile.flush()
 
     def _events(self, interaction: Interaction) -> None:
@@ -446,6 +475,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/voice/home": self.service.get_home,
                 "/voice/brief/tune": self.service.get_tune,
                 "/voice/endpoints": self.service.endpoints,
+                "/voice/secrets": lambda: self.service.secure_list(device_id),
             }
             if path in routes:
                 self._reply(200, routes[path]())
@@ -495,6 +525,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._stage()
                 return
             device_id = self._auth()
+            secret = re.fullmatch(r"/voice/secrets/(sec_[A-Za-z0-9_-]{16,40})", path)
+            if secret:
+                self._secret_answer(secret.group(1), device_id)
+                return
             if path == "/voice/push":
                 self._reply(200, self.service.register_push(device_id, self._body()))
                 return
