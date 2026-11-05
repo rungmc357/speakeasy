@@ -92,6 +92,11 @@ def _with_request(context: str, request: str) -> str:
     return "\n".join(lines + [f"User: {request}"])
 
 
+def typed_text(text: str) -> str:
+    """A typed turn as one clean line: control characters and runs of whitespace become one space."""
+    return " ".join(_CONTROL_CHARS_RE.sub(" ", text).split())
+
+
 def is_greeting(request: str) -> bool:
     return bool(GREETING_RE.match(request or ""))
 
@@ -127,6 +132,18 @@ TASK_SESSION_PREFIX = "speakeasy_task_"
 LOCAL_RUN_PREFIX = "lr_"   # ids for tasks Hermes ran without a run id (thread tasks)
 EARLY_PREFIX = "early_"    # handoffs for words said while the call was still connecting
 EARLY_MAX_CHARS = 1000
+# A turn typed on the call screen instead of spoken (POST /voice/interactions/{id}/input-text).
+INPUT_TEXT_TYPE = "session.input_text"
+MAX_INPUT_TEXT = 1000
+# Codex echo guard: only a provider transcript arriving this soon after the voice took a typed turn
+# can be that turn's echo. Short on purpose: a stale guard would swallow the user saying the same
+# words out loud later, which loses a real turn; a missed echo only shows the turn twice.
+TYPED_ECHO_S = 6.0
+# What one typed turn's delivery came to (SidebandWorker.input_text / forward_typed).
+TYPED_SENT = "sent"                   # the voice took it; it is in the transcript
+TYPED_NOT_CONNECTED = "not_connected"  # the call (or its voice connection) is gone
+TYPED_NOT_DELIVERED = "not_delivered"  # the call is up but this one send failed; nothing recorded
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 MAX_TASKS = 8
 ACTIVE_RUN_STATES = {"admitting", "running", "working", "waiting_for_approval", "resolving_approval",
                      "cancel_requested", "waiting_on_task"}
@@ -1506,6 +1523,75 @@ class SidebandWorker:
                 return
             self.interaction.room_nudged = True
         logger.info("speakeasy: room call opened in silence; waiting for a request")
+
+    # -- typed turns (session.input_text) ---------------------------------------------------
+    # The user can type on the call screen instead of speaking. The turn goes to the voice model as
+    # theirs, joins this call's transcript as a user turn (so the next handoff carries it), and goes out
+    # on the live event stream as `transcript` so every client of the call can show it.
+
+    async def input_text(self, text: Any, client_id: str | None = None) -> str:
+        """One typed turn: TYPED_SENT once the voice took it and it is in the transcript, else
+        TYPED_NOT_CONNECTED / TYPED_NOT_DELIVERED, and then nothing is recorded. A failed send is this
+        send's outcome only: it never marks the call (interaction.error, the connection) as broken,
+        so the next send on a healthy call goes through. ``client_id`` (the app's id for this turn)
+        rides on the SSE copy so the sending app can tell it from its own local echo."""
+        if not isinstance(text, str):
+            return TYPED_NOT_DELIVERED
+        text = typed_text(text)
+        if not text or len(text) > MAX_INPUT_TEXT:
+            return TYPED_NOT_DELIVERED
+        if not self.call_connected():
+            return TYPED_NOT_CONNECTED
+        outcome = await self.forward_typed(text)
+        if outcome != TYPED_SENT:
+            return outcome
+        self.touch()
+        at = self.typed_offset()
+        spaced = " " + text if self.fragments and self.fragments[-1]["speaker"] == "user" else text
+        await self.handle_event({"type": "session.input_transcript.delta", "delta": spaced,
+                                 "start_ms": at, "end_ms": at})
+        event: dict[str, Any] = {"role": "user", "text": text, "source": "typed"}
+        if client_id:
+            event["client_id"] = client_id
+        self.interaction.feed.publish("transcript", event)
+        logger.info("speakeasy: typed turn on the call (%d chars)", len(text))
+        await self.typed_recorded()
+        return TYPED_SENT
+
+    # GPT-Live's sideband takes no user text, only `session.thinking.append` and
+    # `session.commentary.append`. A typed turn goes in as commentary, not thinking. From the code:
+    # thinking is the background channel (`quiet()` exists precisely because it must never be answered
+    # out loud; early_request's room branch above says "a thinking note isn't spoken"), while every "say this now /
+    # answer this yourself" instruction rides commentary (DIDNT_CATCH, quick_note, and room_answer_note,
+    # the one other turn the voice never heard and must answer aloud with no handoff waiting). A typed
+    # turn is exactly that case: a thinking note would let the voice hold it silently while the route
+    # reports sent. The note says "don't read this note out", as room_answer_note does. Not confirmed
+    # on a live GPT-Live call; if the voice ever reads it verbatim, change this one constant.
+    TYPED_TURN_KIND = "session.commentary.append"
+
+    async def forward_typed(self, text: str) -> str:
+        """Hand a typed turn to the voice model (GPT-Live: a session-wide note quoting the words, see
+        TYPED_TURN_KIND). Providers that take real user text override this."""
+        if not self.call_connected():
+            return TYPED_NOT_CONNECTED
+        if await self.send_typed_note(self.TYPED_TURN_KIND, P.typed_turn_note(self.names, text)[:2000]):
+            return TYPED_SENT
+        return TYPED_NOT_DELIVERED if self.call_connected() else TYPED_NOT_CONNECTED
+
+    async def send_typed_note(self, kind: str, content: str) -> bool:
+        """One typed-turn note to the voice; True when the transport took it. Default: the shared
+        `_send` (which reports nothing), judged by whether the call is still up afterwards. A
+        transport that can tell a failed send apart overrides this without touching call state."""
+        await self._send(kind, None, content)
+        return self.call_connected()
+
+    def typed_offset(self) -> int:
+        """Where a typed turn sits in this call's transcript clock: at the end of what was said, so a
+        handoff made after it (context()) carries it."""
+        return max(((f["end_ms"] or f["start_ms"]) for f in self.fragments), default=0)
+
+    async def typed_recorded(self) -> None:
+        """After a typed turn is in the transcript: providers that must be asked to reply do it here."""
 
     async def send_on_own_loop(self, kind: str, delegation_id: str | None, content: str) -> None:
         loop, current = self.loop, asyncio.get_running_loop()
