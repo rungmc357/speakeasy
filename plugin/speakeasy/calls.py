@@ -41,7 +41,7 @@ from . import subagents as subagents_mod
 from . import attachments as A
 from .attachments import Attachment, CallAttachments
 from .hermes_api import HermesError, user_content
-from .settings import valid_delivery_target
+from .settings import DEFAULT_UPDATE_INTERVAL_S, valid_delivery_target
 from .prompt import builder as P
 from . import text as text_mod
 from .text import (ID_RE, MAX_TRANSCRIPT, TERMINAL, clean_transcript, delivery_text, derive_tool_status,
@@ -266,12 +266,42 @@ def _said_key(line: str) -> str:
 
 
 _I_WORD = re.compile(r"^I(?:\b|['\u2019])")
+_FIRST_WORD = re.compile(r"[A-Za-z][\w.-]*")
+# Names that keep their capital mid-sentence ("still on Stripe webhook", never "still on stripe
+# webhook"), lowercased. Words the task's own request or title capitalizes mid-sentence are added
+# per line (proper_nouns), so this only has to cover the common ones that may open a request.
+_PROPER_NOUNS = frozenset("""
+    airtable amazon android apple asana aws azure bluesky chatgpt chrome claude cloudflare codex discord
+    docker dropbox facebook figma firebase firefox gemini github gitlab gmail google grok hermes
+    heroku icloud instagram ios ipad iphone jira kubernetes linkedin linux mac macos microsoft
+    netlify nginx notion openai outlook postgres python reddit safari salesforce shopify slack
+    speakeasy spotify sqlite stripe supabase tailscale telegram tesla twitter vercel whatsapp
+    windows xcode youtube monday tuesday wednesday thursday friday saturday sunday january february
+    april june july august september october november december
+""".split())
 
 
-def _lead_lower(text: str) -> str:
+def proper_nouns(*texts: str | None) -> frozenset[str]:
+    """Words these texts capitalize where a sentence doesn't start ("ask Dana about the Q3 deck"
+    gives Dana, Q3): they are names, and keep their capital when a line opens with them."""
+    out: set[str] = set()
+    for text in texts:
+        for sentence in re.split(r"(?<=[.!?:;\n])\s+", str(text or "")):
+            for word in re.findall(r"[A-Za-z][\w-]*", sentence)[1:]:
+                if word[:1].isupper():
+                    out.add(word.lower())
+    return frozenset(out)
+
+
+def _lead_lower(text: str, keep: frozenset[str] = frozenset()) -> str:
     """`text` with its first letter lowercased for use mid-sentence, unless that first word is "I"
-    ("I'm", "I've") or an acronym, which keep their capital."""
+    ("I'm", "I've"), an acronym or a mixed-case name ("API", "GitHub"), or a known name (_PROPER_NOUNS,
+    or `keep`, see proper_nouns), which keep their capital."""
     if not text or _I_WORD.match(text) or not text[:2].istitle():
+        return text
+    first = _FIRST_WORD.match(text)
+    word = first.group(0).rstrip(".-") if first else ""
+    if any(c.isupper() for c in word[1:]) or word.lower() in _PROPER_NOUNS or word.lower() in keep:
         return text
     return text[:1].lower() + text[1:]
 
@@ -281,15 +311,17 @@ def _age_phrase(age: float) -> str:
         return "under a minute"
     if age < 90:
         return "about a minute"
-    return f"about {round(age / 60)} minutes"
+    return f"about {int(age / 60 + 0.5)} minutes"  # half up: 150 s is about 3, never banker's 2
 
 
-def anchored_lines(step: str, age: float, reserve: int = 0) -> list[str]:
+def anchored_lines(step: str, age: float, reserve: int = 0, keep: frozenset[str] = frozenset(),
+                   every: float | None = None) -> list[str]:
     """The running step tied to how long the task has run ("Still on reading the logs, about 3
     minutes in"), in every shape, starting from the one this pulse slot rotates to. `reserve` words
     are kept free for what goes in front of the line later (the job's name when several are running),
     so the step is shortened to fit and the age, the part that moves on between lines, is never the
-    part the word cap cuts off."""
+    part the word cap cuts off. `keep`: names that keep their capital (see _lead_lower); `every`:
+    the call's spoken-update interval, which sets how often the shape turns (PULSE_EVERY_S)."""
     step = re.sub(r"(?i)^quick update:\s*", "", " ".join(str(step or "").split())).rstrip(" .\u2026!?,;:")
     words = step.split() or ["it"]
     phrase = _age_phrase(age)
@@ -298,30 +330,34 @@ def anchored_lines(step: str, age: float, reserve: int = 0) -> list[str]:
         fixed = len(shape.format(step="", Step="", age=phrase, Age=phrase).split())
         room = max(3, min(_ANCHORED_STEP_WORDS, PULSE_MAX_WORDS - reserve - fixed))
         short = " ".join(words[:room])
-        lines.append(cap_words(shape.format(step=_lead_lower(short), Step=short[:1].upper() + short[1:],
+        lines.append(cap_words(shape.format(step=_lead_lower(short, keep), Step=short[:1].upper() + short[1:],
                                             age=phrase, Age=phrase[:1].upper() + phrase[1:])))
-    turn = int(max(age, 0.0) // PULSE_EVERY_S) % len(lines)
+    turn = int(max(age, 0.0) // (every or PULSE_EVERY_S)) % len(lines)
     return lines[turn:] + lines[:turn]
 
 
-def unrepeated(line: str | None, told: list[str], step: str, age: float,
-               dress: Callable[[str], str] = cap_words, reserve: int = 0) -> str:
-    """An open-mic pulse line that is not word for word one already spoken on this task (`told`):
+def unrepeated(line: str | None, told: list[str] | list[tuple[float, str]], step: str, age: float,
+               dress: Callable[[str], str] = cap_words, reserve: int = 0,
+               keep: frozenset[str] = frozenset(), every: float | None = None) -> str:
+    """An open-mic pulse line that is not word for word one already spoken on this task (`told`,
+    oldest first, or ``(when, line)`` pairs in any order, which are put in time order):
     `line`, else `line` re-worded behind an opener, else the anchored lines on `step` (see
     anchored_lines). Every candidate goes through `dress` (naming the job, the word cap) before it is
     compared, since that is what was said; `reserve` is how many words `dress` may put in front (see
     anchored_lines). Never None: should all of them have been said, the one said
     longest ago comes back, because an old line beats silence."""
+    if told and not isinstance(told[0], str):
+        told = [t for _, t in sorted(told, key=lambda pair: pair[0])]
     said = [_said_key(t) for t in told]
     candidates: list[str] = []
     if line:
         candidates.append(line)
         body = _OPENER_LEAD.sub("", line.strip()) or line.strip()  # never "Meanwhile, meanwhile, …"
-        body = _lead_lower(body)
+        body = _lead_lower(body, keep)
         if not body.endswith((".", "!", "?", "\u2026")):
             body += "."
         candidates += [f"{opener}, {body}" for opener in _PULSE_OPENERS]
-    candidates = [dress(c) for c in candidates + anchored_lines(step, age, reserve)]
+    candidates = [dress(c) for c in candidates + anchored_lines(step, age, reserve, keep, every)]
     for candidate in candidates:
         if _said_key(candidate) not in said:
             return candidate
@@ -483,7 +519,9 @@ class BackendRun:
     told: list[str] = dataclasses.field(default_factory=list)      # updates already spoken
     pulse_told: set[int] = dataclasses.field(default_factory=set)  # activity.py items an update covered
     pulse_idle: int = 0             # pulse updates in a row with nothing new to say
-    pulse_said: list[str] = dataclasses.field(default_factory=list)  # open-mic pulse lines, the no-repeat memory
+    # Every update spoken on this task (pulse or progress) as (monotonic time, line), the open mic's
+    # no-repeat memory: in time order, so "the one said longest ago" really is.
+    pulse_said: list[tuple[float, str]] = dataclasses.field(default_factory=list)
     # Same-project fence (fence.py): the projects this task names or touched, whether it is known to
     # edit them, and, for a task held behind another, the blocker and whether the user said go anyway.
     projects: set[str] = dataclasses.field(default_factory=set)
@@ -1825,7 +1863,8 @@ class SidebandWorker:
 
     async def maybe_speak_progress(self, backend: BackendRun, milestone: str) -> bool:
         """A long task that has done something new gets one brief spoken update naming what it is
-        actually doing, at most once per PROGRESS_EVERY_S across the call."""
+        actually doing, at most once per PROGRESS_EVERY_S (the user's interval, see update_every)
+        across the call."""
         if not self.rt.settings()["speech"]["progress"]:
             return False
         now = time.monotonic()
@@ -1837,7 +1876,7 @@ class SidebandWorker:
         with self.interaction.lock:
             last_any = self.interaction.progress_spoken_at
             if (now - backend.started < PROGRESS_AFTER_S or backend.status not in {"running", "working"}
-                    or (last_any and now - last_any < PROGRESS_EVERY_S and not urgent)
+                    or (last_any and now - last_any < self.update_every(PROGRESS_EVERY_S) and not urgent)
                     or backend.activity_count <= backend.told_count):
                 return False
             self.interaction.progress_spoken_at = now  # claim the slot before the (slow) wording call
@@ -1861,12 +1900,22 @@ class SidebandWorker:
         with self.interaction.lock:
             backend.told_count = covered
             backend.told = (backend.told + [line])[-5:]
+            backend.pulse_said = (backend.pulse_said + [(now, line)])[-PULSE_SAID_KEEP:]
             backend.pulse_told.update(i["n"] for i in items)
             backend.pulse_idle = 0
         await self.append("session.commentary.append", backend.say_id, line)
         return True
 
     # -- the call pulse: never minutes of silence while work runs ------------------------------
+    def update_every(self, default: float | None = None) -> float:
+        """Seconds between spoken updates on this call: the user's ``speech.interval_seconds``
+        (30, 45, 60, 90 or 120). The default setting (45 s) means `default` (PULSE_EVERY_S), so
+        the timing constants stay the one place the default rhythm is defined."""
+        every = (self.rt.settings().get("speech") or {}).get("interval_seconds")
+        if isinstance(every, bool) or not isinstance(every, (int, float)) or every == DEFAULT_UPDATE_INTERVAL_S:
+            return PULSE_EVERY_S if default is None else default
+        return float(every)
+
     def muted_now(self) -> bool:
         """The user's mic is off: the app said so (``POST .../mic``), or the relay's own mute."""
         head = self.interaction.head()
@@ -1887,7 +1936,7 @@ class SidebandWorker:
             if now:
                 return now
         name = self.spoken_task_name(backend.idem_key)
-        return _lead_lower(name) if name else "it"
+        return _lead_lower(name, proper_nouns(self.store.request_text(backend.idem_key), name)) if name else "it"
 
     def someone_speaking(self, now: float) -> bool:
         """Either side is mid-turn: a transcript arrived in the last PULSE_QUIET_S, or the provider
@@ -1987,7 +2036,8 @@ class SidebandWorker:
                 and r.delegation_id not in silent]
 
     async def pulse_tick(self) -> bool:
-        """One look: if the call has been quiet PULSE_EVERY_S since the assistant last spoke and work
+        """One look: if the call has been quiet PULSE_EVERY_S (the user's interval, see update_every)
+        since the assistant last spoke and work
         is running, say one short line about it. True when it spoke. With the mic open a task's first
         line comes after PULSE_FIRST_OPEN_S and there is no back-off (see PULSE_FIRST_OPEN_S)."""
         if not self.rt.settings()["speech"]["progress"] or not self.call_connected():
@@ -2002,7 +2052,8 @@ class SidebandWorker:
             return False
         last = self.last_spoke_at()
         open_mic = self.mic_open()  # the app said the mic is on: an early first line and no back-off
-        if now - last < (PULSE_FIRST_OPEN_S if open_mic else PULSE_EVERY_S):
+        every = self.update_every()
+        if now - last < (PULSE_FIRST_OPEN_S if open_mic else every):
             return False
         running = self._pulse_candidates(now, PULSE_FIRST_OPEN_S if open_mic else PROGRESS_AFTER_S)
         if not running:
@@ -2016,10 +2067,10 @@ class SidebandWorker:
             notes = r.activity[-min(ACTIVITY_KEEP, r.activity_count - r.told_count):] \
                 if r.activity_count > r.told_count else []
             new = bool(fresh or notes or (current is not None and current["n"] not in r.pulse_told))
-            if open_mic:  # a task's first line early, then every PULSE_EVERY_S, news or not
-                wait = PULSE_EVERY_S if r.spoken_at else PULSE_FIRST_OPEN_S
+            if open_mic:  # a task's first line early, then every `every` (the user's setting), news or not
+                wait = every if r.spoken_at else PULSE_FIRST_OPEN_S
             else:
-                wait = PULSE_IDLE_EVERY_S if not new and r.pulse_idle >= PULSE_IDLE_AFTER else PULSE_EVERY_S
+                wait = max(PULSE_IDLE_EVERY_S, every) if not new and r.pulse_idle >= PULSE_IDLE_AFTER else every
             if now - max(r.spoken_at, last) < wait:
                 continue
             picks.append((not new, r.spoken_at, r, items, current, fresh, notes))
@@ -2034,7 +2085,8 @@ class SidebandWorker:
             backend.spoken_at = now
             covered = backend.activity_count
             told = list(backend.told[-3:])
-            told_all = backend.pulse_said + list(backend.told)
+            told_all = list(backend.pulse_said) + [(float("-inf"), t) for t in backend.told
+                                                   if t not in {said for _, said in backend.pulse_said}]
             idle = backend.pulse_idle
         running_s = time.time() - float(current.get("started_at") or current.get("at") or time.time()) if current else 0.0
         steps = P.pulse_steps(items, backend.pulse_told, notes, current, running_s)
@@ -2056,7 +2108,8 @@ class SidebandWorker:
             # Never word for word a recent line, never over the cap, and never nothing.
             line = unrepeated(line, told_all, self.pulse_step(backend, items, current), now - backend.started,
                               lambda c: cap_words(P.named_pulse(c, name, needs) or c),
-                              reserve=len(name.split()) if needs and name else 0)
+                              reserve=len(name.split()) if needs and name else 0,
+                              keep=proper_nouns(request, name, self.store.title(backend.idem_key)), every=every)
         else:
             line = P.named_pulse(line, name, needs)
         late = time.monotonic()
@@ -2076,8 +2129,7 @@ class SidebandWorker:
             backend.told = (backend.told + [line])[-5:]
             backend.pulse_told.update(i["n"] for i in items)
             backend.pulse_idle = idle + 1 if stale else 0
-            if open_mic:
-                backend.pulse_said = (backend.pulse_said + [line])[-PULSE_SAID_KEEP:]
+            backend.pulse_said = (backend.pulse_said + [(now, line)])[-PULSE_SAID_KEEP:]
         logger.info("speakeasy: call pulse (%s)", "nothing new" if stale else "new activity")
         await self.append("session.commentary.append", backend.say_id, line)
         return True

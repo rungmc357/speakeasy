@@ -326,9 +326,11 @@ The app found the call's mic wasn't getting through and reopened the connection.
 ## POST /voice/interactions/{id}/mic
 
 The user muted or unmuted the call's mic. Body exactly `{"muted": true|false}`; `200`
-`{"interaction_id": "...", "muted": true}`. The app sends it on every change (and when a call
-opens muted). While muted, the call skips its periodic "what the task is doing" updates (the
-pulse, about every 45 s while work runs); answers, questions and approvals are still spoken.
+`{"interaction_id": "...", "muted": true}`. The app sends it once when each call (and each resumed
+call) starts, muted or not, and on every change. While muted, the call skips its periodic "what the
+task is doing" updates (the pulse, every `speech.interval_seconds` while work runs); answers,
+questions and approvals are still spoken. With the mic open, a task's first update comes 12-20 s in
+and the updates don't back off on a quiet task. A call that never reported keeps the older timing.
 Older plugins answer `404`, which the app ignores.
 
 ## GET /voice/interactions/{id}
@@ -1112,7 +1114,8 @@ partial object (nested objects merge); unknown keys or invalid values are 400.
 | `voice.voice` | `""` | voice name; empty = provider default |
 | `voice.codex_path` | `""` | path to `codex`; empty = find on PATH |
 | `voice.max_call_minutes` | `30` | hard cap per call |
-| `speech.progress` | `true` | one short spoken update on tasks running over 20 s, at most every 30 s |
+| `speech.progress` | `true` | short spoken "still working" updates on long tasks while the call is quiet (finished work, questions and approvals are always spoken, even while muted) |
+| `speech.interval_seconds` | `45` | how often those updates come: `30`, `45`, `60`, `90` or `120`. With the mic open (the app posted `/mic` `{"muted": false}`) a task's first line comes 12-20 s in, then one every interval; never-reported calls start at the interval and back off on a quiet task; muted calls get none |
 | `idle_pause_minutes` | `5` | pause a silent call after this long |
 | `instructions_extra` | `""` | extra voice instructions (up to 1,000 characters) |
 | `hermes_profile` | `""` | Hermes profile for runs; empty = this gateway's |

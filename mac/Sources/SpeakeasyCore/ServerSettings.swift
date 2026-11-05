@@ -102,10 +102,27 @@ public struct ServerSettings: Codable, Equatable, Sendable {
         public init(enabled: Bool? = nil) { self.enabled = enabled }
     }
 
-    /// A brief spoken update on long tasks.
+    /// A brief spoken update on long tasks, at most every `intervalSeconds` while the call is quiet
+    /// (nil = a plugin that predates the setting: about every 45 s). Finished work, questions and
+    /// approvals are always spoken, even while muted.
     public struct Speech: Codable, Equatable, Sendable {
         public var progress: Bool?
-        public init(progress: Bool? = nil) { self.progress = progress }
+        public var intervalSeconds: Int?
+        public init(progress: Bool? = nil, intervalSeconds: Int? = nil) {
+            self.progress = progress; self.intervalSeconds = intervalSeconds
+        }
+        enum CodingKeys: String, CodingKey { case progress, intervalSeconds = "interval_seconds" }
+
+        /// `speech.interval_seconds` choices, the same list the plugin accepts.
+        public static let intervalChoices = [30, 45, 60, 90, 120]
+        public static let defaultInterval = 45
+
+        /// "30 s", "45 s", "1 min", "1.5 min", "2 min".
+        public static func intervalLabel(_ seconds: Int) -> String {
+            if seconds < 60 { return "\(seconds) s" }
+            if seconds % 60 == 0 { return "\(seconds / 60) min" }
+            return String(format: "%g min", Double(seconds) / 60)
+        }
     }
 
     /// Lower the Mac's volume while the assistant speaks on a call from the Mac running Hermes
@@ -201,6 +218,7 @@ public struct ServerSettings: Codable, Equatable, Sendable {
         if let speech {
             var x: [String: Any] = [:]
             if let v = speech.progress { x["progress"] = v }
+            if let v = speech.intervalSeconds { x["interval_seconds"] = v }
             object["speech"] = x
         }
         if let instructionsExtra { object["instructions_extra"] = instructionsExtra }

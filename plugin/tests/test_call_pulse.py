@@ -253,7 +253,7 @@ def test_the_pulse_runs_on_its_own_during_a_live_call(server, service, hermes, m
     from fakes import wait_for
     for name, value in (("PULSE_TICK_S", 0.05), ("PULSE_EVERY_S", 0.4), ("PROGRESS_AFTER_S", 0.1),
                         ("PULSE_QUIET_S", 0.05)):
-        monkeypatch.setattr(calls, name, value)
+        monkeypatch.setattr(calls, name, value)  # the default interval setting (45 s) means PULSE_EVERY_S
     seen = []
     service.rt.progress_call = lambda request, steps, told: seen.append(steps) or "I'm looking up the forecast."
     hermes.hold = True
@@ -454,3 +454,136 @@ def test_anchored_lines_leave_room_for_a_name():
             assert "about 7 minutes" in line.lower()  # the age is never what gets cut
             if reserve <= 8:
                 assert len(line.split()) + reserve <= calls.PULSE_MAX_WORDS
+
+
+# -- follow-up: the interval setting, the review nits, and the cases the first round didn't cover ----
+
+def test_age_phrase_rounds_half_up():
+    assert calls._age_phrase(150) == "about 3 minutes"  # round() would say 2 (banker's rounding)
+    assert calls._age_phrase(149) == "about 2 minutes"
+    assert calls._age_phrase(210) == "about 4 minutes"
+
+
+@pytest.mark.parametrize("text,keep,out", [
+    ("Reading the logs", (), "reading the logs"),
+    ("Stripe webhook", (), "Stripe webhook"),
+    ("GitHub actions", (), "GitHub actions"),
+    ("API keys", (), "API keys"),
+    ("I'm reading", (), "I'm reading"),
+    ("Dana's deck", ("dana",), "Dana's deck"),
+    ("Monday plan", (), "Monday plan"),
+])
+def test_lead_lower_keeps_names(text, keep, out):
+    assert calls._lead_lower(text, frozenset(keep)) == out
+
+
+def test_proper_nouns_come_from_mid_sentence_capitals():
+    names = calls.proper_nouns("Can you ask Dana about the Q3 deck. Then email Priya")
+    assert {"dana", "q3", "priya"} <= names and "can" not in names and "then" not in names
+    lines = calls.anchored_lines("Acme invoices", 200, keep=calls.proper_nouns("check the Acme invoices"))
+    assert any("Still on Acme invoices" in line or "still Acme invoices" in line for line in lines)
+    assert not any("acme" in line for line in lines)
+
+
+def test_unrepeated_all_said_picks_the_oldest_by_time():
+    """Every candidate already said: the one said longest ago comes back, by when it was said, not
+    by where it sits in the lists it came from."""
+    step, age = "reading the logs", 185
+    candidates = ["Same line."] + [f"{o}, same line." for o in calls._PULSE_OPENERS] + calls.anchored_lines(step, age)
+    # Said in this order in time, newest first in the list: the oldest is the last one.
+    said = [(1000.0 - i, line) for i, line in enumerate(candidates)]
+    assert calls.unrepeated("Same line.", said, step, age) == candidates[-1]
+    # Plain list: oldest first.
+    assert calls.unrepeated("Same line.", list(reversed(candidates)), step, age) == candidates[-1]
+
+
+def test_interval_setting_validates_and_defaults(service):
+    from speakeasy.settings import SettingsError
+    assert service.settings.get()["speech"]["interval_seconds"] == 45
+    for value in (30, 60, 90, 120):
+        assert service.settings.patch({"speech": {"interval_seconds": value}})["speech"]["interval_seconds"] == value
+    for bad in (10, 50, "60", True, None, 600):
+        with pytest.raises(SettingsError):
+            service.settings.patch({"speech": {"interval_seconds": bad}})
+
+
+def test_settings_api_takes_the_interval(server, service):
+    status, body = http(server.base_url, "PATCH", "/voice/settings", {"speech": {"interval_seconds": 90}}, server.token)
+    assert status == 200 and service.settings.get()["speech"]["interval_seconds"] == 90
+    status, _ = http(server.base_url, "PATCH", "/voice/settings", {"speech": {"interval_seconds": 75}}, server.token)
+    assert status == 400
+
+
+@pytest.mark.parametrize("every", [30, 90, 120])
+def test_open_mic_cadence_follows_the_interval_setting(service, clock, every):
+    service.settings.patch({"speech": {"interval_seconds": every}})
+    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the build log.")
+    worker.interaction.mic_muted = False
+    tool(service, backend, clock, "terminal", "make build", "c1", done=False)
+    times = [t for t, _ in run_quiet(worker, clock, 600)]
+    assert times[0] <= 20  # the early first line is not part of the setting
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    assert gaps and all(every <= g <= every + calls.PULSE_TICK_S for g in gaps)
+
+
+def test_never_reported_call_follows_the_interval_too(service, clock):
+    service.settings.patch({"speech": {"interval_seconds": 120}})
+    worker, backend = setup(service, clock)
+    tool(service, backend, clock, "terminal", "make build", "c1", done=False)
+    times = [t for t, _ in run_quiet(worker, clock, 400)]
+    assert times[0] == 120 and all(b - a >= 120 for a, b in zip(times, times[1:]))
+
+
+def test_toggling_mute_mid_call(service, clock):
+    """Open, then muted (silent), then open again: lines resume at the interval, never in a burst."""
+    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the build log.")
+    worker.interaction.mic_muted = False
+    tool(service, backend, clock, "terminal", "make build", "c1", done=False)
+    assert run_quiet(worker, clock, 60)
+    worker.interaction.mic_muted = True
+    assert run_quiet(worker, clock, 300) == []
+    worker.interaction.mic_muted = False
+    again = run_quiet(worker, clock, 100)
+    assert again and again[0][0] <= calls.PULSE_TICK_S and len(again) <= 3
+    assert all(b - a >= calls.PULSE_EVERY_S for (a, _), (b, _) in zip(again, again[1:]))
+
+
+def test_set_mic_endpoint_and_resumed_head_reports(server, service):
+    """POST .../mic {"muted": false} is what turns the open mic on; on a resumed call only the head
+    interaction may have been told, and that is enough (and its mute wins too)."""
+    from speakeasy.calls import Interaction
+    old = Interaction("int_old", "sess_old")
+    head = Interaction("int_head", "sess_head")
+    old.successor = head
+    service.interactions["int_head"] = head
+    service.set_mic("int_head", {"muted": False})
+    assert head.mic_muted is False and old.mic_muted is None
+    from test_routing import _progress_worker
+    worker = _progress_worker(service)
+    worker.interaction = old
+    assert worker.mic_open()
+    service.set_mic("int_head", {"muted": True})
+    assert not worker.mic_open() and worker.muted_now()
+    with pytest.raises(Exception):
+        service.set_mic("int_head", {"muted": None})
+
+
+def test_two_tasks_at_once_on_an_open_mic(service, clock):
+    """Two tasks running: each gets its early first line, the call never stacks two lines inside
+    the interval, and neither task repeats itself."""
+    worker, a = setup(service, clock, lambda r, s, t: t[-1] if t else "I'm working on it.", key="idem_ta")
+    b = BackendRun("t_p2", 1, "idem_tb", status="running")
+    b.started = a.started
+    worker.interaction.runs[b.delegation_id] = b
+    worker.interaction.mic_muted = False
+    tool(service, a, clock, "terminal", "make build", "c1", done=False)
+    tool(service, b, clock, "web_search", "flights to lisbon", "c2", done=False)
+    said = run_quiet(worker, clock, 400)
+    by_task: dict[str, list[str]] = {}
+    for kind, say_id, line in worker.sent:
+        if kind == "session.commentary.append":
+            by_task.setdefault(say_id, []).append(line)
+    assert set(by_task) == {"t_p1", "t_p2"}
+    assert all(len(set(lines)) == len(lines) for lines in by_task.values())
+    times = [t for t, _ in said]
+    assert all(y - x >= calls.PULSE_FIRST_OPEN_S for x, y in zip(times, times[1:]))

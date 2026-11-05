@@ -40,8 +40,10 @@ DEFAULTS: dict[str, Any] = {
     # plus new work is sorted into the approved channel whose description fits.
     "delivery": {"target": "none", "new_thread": False, "channels": [], "mode": "home"},
     "continuity": {"enabled": True},
-    # A brief spoken update on long tasks. (Where a task went, e.g. a new thread, is always said.)
-    "speech": {"progress": True},
+    # A brief spoken update on long tasks, at most every interval_seconds (UPDATE_INTERVALS) while a
+    # call is quiet. (Where a task went, e.g. a new thread, is always said; so are finished work,
+    # questions and approvals, even while muted.)
+    "speech": {"progress": True, "interval_seconds": 45},
     "brief": {"auto_refresh": True, "include_recent_voice": True},
     # Instant home control through Home Assistant (offered when Hermes has it set up). entities:
     # the devices it may use (None = not chosen yet: lights, thermostats and fans).
@@ -70,6 +72,8 @@ DEFAULTS: dict[str, Any] = {
     # voice through the plugin's audio relay).
     "beta": {"grok_voice": False},
 }
+DEFAULT_UPDATE_INTERVAL_S = 45
+UPDATE_INTERVALS = (30, 45, 60, 90, 120)  # speech.interval_seconds choices (the apps' picker)
 DEFAULT_VOICES = {"codex": "cove", "openai": "marin", "grok": "Ara"}
 # Voices each provider accepts; they do not overlap (the ChatGPT-sign-in voice model rejects API
 # voice names). Keep in sync with mac/Sources/SpeakeasyCore/VoiceCatalog.swift.
@@ -163,6 +167,10 @@ def validate(settings: dict[str, Any]) -> dict[str, Any]:
         for key in keys:
             if not isinstance(s[group].get(key), bool):
                 raise SettingsError(f"{group}.{key} must be true or false")
+    every = s["speech"].get("interval_seconds")
+    if isinstance(every, bool) or every not in UPDATE_INTERVALS or every != int(every):
+        raise SettingsError("speech.interval_seconds must be one of: " + ", ".join(map(str, UPDATE_INTERVALS)))
+    s["speech"]["interval_seconds"] = int(every)
     roots = s["image_roots"]
     if not isinstance(roots, list) or len(roots) > 8 or not all(
             isinstance(r, str) and Path(r).expanduser().is_absolute() for r in roots):

@@ -441,16 +441,14 @@ public final class NativeVoiceClient: VoiceCallClient {
         Task { _ = try? await api.post("/voice/interactions/\(id)/focus", body) }
     }
 
-    /// The mic state the plugin was last told, per call: muted calls get no "still working" pulse
-    /// (results, questions and approvals are spoken either way).
-    private var micPosted: (interaction: String, muted: Bool)?
+    /// The mic state the plugin was last told, per call: reported once when each call (or resumed
+    /// call) starts, open or muted, then on every change. Muted calls get no "still working" pulse;
+    /// an open mic gets the early, steady one (results, questions and approvals are spoken either way).
+    private var micReport = MicReport()
 
     private func postMicIfChanged() {
         guard !previewMode, let api, let id = model.state.interactionID else { return }
-        let muted = model.state.mic == .muted
-        if let p = micPosted, p.interaction == id, p.muted == muted { return }
-        if micPosted?.interaction != id && !muted { micPosted = (id, muted); return }  // calls start unmuted
-        micPosted = (id, muted)
+        guard let muted = micReport.next(interaction: id, muted: model.state.mic == .muted) else { return }
         Task { _ = try? await api.post("/voice/interactions/\(id)/mic", ["muted": muted]) }
     }
 
