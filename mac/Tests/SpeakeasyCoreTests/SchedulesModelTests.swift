@@ -118,4 +118,11 @@ final class SchedulesModelTests: XCTestCase {
         await m.load("x")
         XCTAssertEqual(m.detailErrors["x"], "I couldn't find that schedule.")
     }
+
+    func testDemoPreviewReadsANamedDay() async throws {
+        let p = try await DemoScheduleBackend().preview(text: "every monday at 9 send me a reading list")
+        XCTAssertEqual(p.scheduleLabel, "Mondays at 9:00 AM")
+        XCTAssertEqual(p.prompt, "Send me a reading list")
+        XCTAssertTrue(p.nextRuns.allSatisfy { Calendar.current.component(.weekday, from: $0) == 2 })
+    }
 }

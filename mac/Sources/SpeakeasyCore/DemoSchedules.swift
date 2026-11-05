@@ -27,7 +27,11 @@ public final class DemoScheduleBackend: ScheduleBackend {
         let hour = Int(lower.range(of: #"\b(\d{1,2})\b"#, options: .regularExpression).map { String(lower[$0]) } ?? "") ?? 9
         let h = lower.contains("pm") && hour < 12 ? hour + 12 : hour
         let weekdays = lower.contains("weekday")
-        let label = "\(weekdays ? "Weekdays" : "Every day") at \(Self.clock(h, 0))"
+        // One named day ("every monday at 9"): weekly on it. Calendar weekday: Sunday = 1.
+        let names = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+        let one = weekdays ? nil : names.firstIndex { lower.contains($0) }
+        let label = one.map { "\(names[$0].prefix(1).uppercased() + names[$0].dropFirst())s at \(Self.clock(h, 0))" }
+            ?? "\(weekdays ? "Weekdays" : "Every day") at \(Self.clock(h, 0))"
         var what = text
         if let r = what.range(of: #"^.*?\b\d{1,2}(:\d{2})?\s*(am|pm)?\b[,]?\s*"#, options: [.regularExpression, .caseInsensitive]) {
             what.removeSubrange(r)
@@ -39,10 +43,11 @@ public final class DemoScheduleBackend: ScheduleBackend {
         var day = calendar.startOfDay(for: now)
         while runs.count < 3 {
             if let t = calendar.date(bySettingHour: h, minute: 0, second: 0, of: day), t > now,
-               !weekdays || !calendar.isDateInWeekend(t) { runs.append(t) }
+               !weekdays || !calendar.isDateInWeekend(t),
+               one.map({ calendar.component(.weekday, from: t) == $0 + 1 }) ?? true { runs.append(t) }
             day = calendar.date(byAdding: .day, value: 1, to: day)!
         }
-        return SchedulePreview(schedule: "0 \(h) * * \(weekdays ? "1-5" : "*")", scheduleLabel: label, prompt: what,
+        return SchedulePreview(schedule: "0 \(h) * * \(weekdays ? "1-5" : one.map(String.init) ?? "*")", scheduleLabel: label, prompt: what,
                                name: String(what.prefix(40)), nextRuns: runs,
                                targets: [.init(id: "local", label: "Saved only"), .init(id: "telegram", label: "Telegram"),
                                          .init(id: "discord", label: "Discord")])
