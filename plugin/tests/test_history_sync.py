@@ -288,3 +288,91 @@ def test_search_finds_archived_threads_marked_and_the_list_still_hides_them(serv
     assert "d1" not in [r["id"] for r in get(server, "/voice/history?q=walnut&include_archived=0")[1]["sessions"]]
     assert [r["id"] for r in get(server, "/voice/history?archived=1")[1]["sessions"]] == ["d1"]
     assert get(server, "/voice/history/d1")[1]["session"]["archived"] is True   # the page offers Unarchive
+
+
+def test_no_redundant_bubbles():
+    entries = [{"kind": "user", "id": "1", "text": "Fix it"},
+               {"kind": "assistant", "id": "2", "text": "Done."},
+               {"kind": "tools", "id": "t", "items": []},
+               {"kind": "assistant", "id": "3", "text": "Fixed the build; **214 tests** pass."},
+               {"kind": "assistant", "id": "4", "text": "Fixed the build; 214 tests pass."},
+               {"kind": "user", "id": "5", "text": "Again"},
+               {"kind": "assistant", "id": "6", "text": "Fixed the build; 214 tests pass."}]
+    out = H.dedupe_entries(entries)
+    assert [e["id"] for e in out] == ["1", "3", "t", "5", "6"] or [e["id"] for e in out] == ["1", "t", "3", "5", "6"]
+
+
+# -- (J) two clients on one plugin stay in step ------------------------------------------------------
+
+class Client:
+    """One paired device: its own token and its own live history stream."""
+
+    def __init__(self, server, service, name):
+        from fakes import http
+        code = service.devices.new_pairing_code()
+        status, paired = http(server.base_url, "POST", "/voice/pair", {"code": code, "device_name": name})
+        assert status == 201
+        self.server, self.token, self.events = server, paired["token"], []
+        self._ready = threading.Event()
+        threading.Thread(target=self._listen, daemon=True).start()
+        assert self._ready.wait(5)
+
+    def _listen(self):
+        req = urllib.request.Request(self.server.base_url + "/voice/history/events",
+                                     headers={"Authorization": f"Bearer {self.token}"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            for raw in resp:
+                line = raw.decode().strip()
+                if line.startswith("event:"):
+                    self.events.append((time.monotonic(), line.split(":", 1)[1].strip()))
+                    self._ready.set()
+
+    def get(self, path):
+        from fakes import http
+        return http(self.server.base_url, "GET", path, token=self.token)[1]
+
+    def post(self, path, body):
+        from fakes import http
+        return http(self.server.base_url, "POST", path, body, self.token)
+
+    def row(self, sid):
+        return next((r for r in self.get("/voice/history")["sessions"] if r["id"] == sid), None)
+
+
+def test_two_clients_see_every_change_within_two_seconds(server, service, hermes, pinned_col):
+    hermes.state_db = pinned_col
+    service.history_events.POLL_S = 0.2
+    phone, mac = Client(server, service, "iPhone"), Client(server, service, "Mac")
+    service.store.set_read("d1", NOW - 10000)
+
+    def change_seen_by_mac(action, check):
+        n, t0 = len(mac.events), time.monotonic()
+        action()
+        wait_for(lambda: len(mac.events) > n, timeout=2)
+        wait_for(check, timeout=2)
+        assert time.monotonic() - t0 < 2
+
+    change_seen_by_mac(lambda: phone.post("/voice/history/d1/rename", {"title": "Walnut shelf"}),
+                       lambda: (mac.row("d1") or {}).get("title") == "Walnut shelf")
+    change_seen_by_mac(lambda: phone.post("/voice/history/d1/pin", {"pinned": True}),
+                       lambda: mac.get("/voice/history")["sessions"][0]["id"] == "d1")
+    change_seen_by_mac(lambda: phone.post("/voice/history/d1/read", {}),
+                       lambda: not (mac.row("d1") or {}).get("unread"))
+    change_seen_by_mac(lambda: phone.post("/voice/history/c1/archive", {"archived": True}),
+                       lambda: mac.row("c1") is None)
+    # A reply landing in Hermes (no Speakeasy action at all): both hear history_changed.
+    change_seen_by_mac(lambda: add_msg(pinned_col, "t1", "assistant", "Peas can go out now.", at=time.time()),
+                       lambda: (mac.row("t1") or {}).get("preview") == "Peas can go out now.")
+    # Task progress and an answered question: the Mac's page agrees with the phone's.
+    hermes.responder = asks
+    _, started = phone.post("/voice/work", {"text": "Build the shelf page"})
+    sid = started["session_id"]
+    add_session(pinned_col, sid, "api_server", at=time.time())
+    add_msg(pinned_col, sid, "assistant", "Built and tested.", at=time.time())
+    wait_for(lambda: (mac.row(sid) or {}).get("state") == "needs_you", timeout=10)
+    hermes.responder = plain
+    phone.post(f"/voice/history/{sid}/message", {"text": "Ship it now"})
+    wait_for(lambda: (mac.row(sid) or {}).get("state") != "needs_you", timeout=3)
+    assert not any(j.get("question_open") for j in mac.get(f"/voice/history/{sid}")["session"]["jobs"])
+    kinds = {k for _, k in mac.events}
+    assert {"session_updated", "session_archived", "history_changed"} <= kinds

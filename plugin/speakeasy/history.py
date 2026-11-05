@@ -683,7 +683,39 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
             flush()
             entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(assistant_text(content))})
     flush()
-    return entries
+    return dedupe_entries(entries)
+
+
+def _norm(text: str) -> str:
+    return " ".join(_MD_MARKS.sub("", text or "").lower().split())
+
+
+def dedupe_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """No redundant bubbles: the same assistant text twice in a row (a progress note repeated as the
+    answer, a retried final), a bare "Done." right before or after the answer, and a note repeated, show
+    once. Tool groups between them don't count as a break (the answer is the same answer)."""
+    out: list[dict[str, Any]] = []
+    last_text: dict[str, str] = {}
+    for e in entries:
+        kind = e.get("kind")
+        if kind in {"assistant", "note", "user"}:
+            text = _norm(e.get("text") or "")
+            prev = last_text.get(kind)
+            if prev is not None and text and (text == prev or (kind == "assistant" and (
+                    text in {"done", "done.", "all done", "finished"} or prev in {"done", "done.", "all done", "finished"}))):
+                if kind == "assistant" and prev in {"done", "done.", "all done", "finished"}:
+                    # Keep the real answer, not the bare "Done" before it.
+                    for i in range(len(out) - 1, -1, -1):
+                        if out[i].get("kind") == "assistant":
+                            out[i] = e
+                            break
+                    last_text[kind] = text
+                continue
+            last_text[kind] = text
+            if kind == "user":
+                last_text.pop("assistant", None)   # a new turn: the same answer again is a real answer
+        out.append(e)
+    return out
 
 
 # -- continuing a chat Speakeasy can't write into ------------------------------------------------
