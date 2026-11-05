@@ -880,6 +880,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var callNoLimit: Bool
     /// Which model works a chat (`GET /voice/models`, ModelChoice.swift): the composer's model chip.
     public var modelChoice: Bool
+    /// Hermes scheduled (cron) jobs, listed and managed (`GET /voice/schedules`, Schedules.swift).
+    public var schedules: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -893,7 +895,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
-        case callNoLimit = "call_no_limit", modelChoice = "model_choice"
+        case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -908,5 +910,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         history = (try? c.decodeIfPresent(Bool.self, forKey: .history)) ?? false
         callNoLimit = (try? c.decodeIfPresent(Bool.self, forKey: .callNoLimit)) ?? false
         modelChoice = (try? c.decodeIfPresent(Bool.self, forKey: .modelChoice)) ?? false
+        schedules = (try? c.decodeIfPresent(Bool.self, forKey: .schedules)) ?? false
     }
 }

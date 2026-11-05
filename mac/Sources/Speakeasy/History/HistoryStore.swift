@@ -66,6 +66,11 @@ final class HistoryStore: ObservableObject {
     /// New chat's pick (its first job runs on it, and the chat keeps it).
     @Published var newChatModel: ModelChoice?
     @Published private(set) var modelError: String?
+    /// Scheduled (Hermes cron jobs; servers with `schedules`): the sidebar row and its pane.
+    let schedules = SchedulesModel()
+    let scheduleDictation = ScheduleDictation()
+    @Published var schedulesSupported = false
+    @Published private(set) var showingSchedules = false
     @Published var now = Date()
 
     var backend: HistoryBackend?
@@ -82,6 +87,7 @@ final class HistoryStore: ObservableObject {
         guard supported, backend != nil else { return }
         if list.sessions.isEmpty && !list.loading { run(list.reset()) }
         if modelsSupported { loadModels() }
+        if schedulesSupported, !schedules.loaded { Task { await schedules.reload() } }
         if clockTimer == nil {
             clockTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
@@ -132,6 +138,7 @@ final class HistoryStore: ObservableObject {
     // MARK: Opening
 
     func open(_ sessionID: String) {
+        showingSchedules = false
         guard target != .session(sessionID) else { return }
         cancelVoice()
         target = .session(sessionID)
@@ -141,11 +148,21 @@ final class HistoryStore: ObservableObject {
     }
 
     func newChat() {
+        showingSchedules = false
         cancelVoice()
         target = .newChat
         newChatError = nil
         newChatModel = nil
         focusComposer += 1
+    }
+
+    /// The Scheduled pane (the list, or one schedule by id).
+    func openSchedules(_ id: String? = nil) {
+        guard schedulesSupported else { return }
+        cancelVoice()
+        showingSchedules = true
+        schedules.selected = id
+        Task { await schedules.reload() }
     }
 
     func load(_ sessionID: String) {

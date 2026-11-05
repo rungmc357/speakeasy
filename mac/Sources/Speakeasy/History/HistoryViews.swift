@@ -94,6 +94,9 @@ struct HistorySidebar: View {
             header.padding(.top, 34).padding(.horizontal, 14)
             search.padding(.horizontal, 12).padding(.top, 12)
             filterRow.padding(.horizontal, 14).padding(.top, 9).padding(.bottom, 6)
+            if store.supported && store.schedulesSupported {
+                ScheduledSidebarRow(store: store, schedules: store.schedules).padding(.horizontal, 6).padding(.bottom, 6)
+            }
             Rectangle().fill(Live.hairline).frame(height: 1)
             if !store.supported { updateNote } else { listBody }
         }
@@ -182,7 +185,7 @@ struct HistorySidebar: View {
                 ForEach(store.list.grouped(now: store.now), id: \.0.id) { group, sessions in
                     Section {
                         ForEach(sessions) { s in
-                            HistoryRow(session: s, selected: store.target == .session(s.id), now: store.now,
+                            HistoryRow(session: s, selected: !store.showingSchedules && store.target == .session(s.id), now: store.now,
                                        query: store.list.activeQuery.isEmpty ? nil : store.list.activeQuery) { store.open(s.id) }
                                 .onAppear { if s.id == store.list.sessions.last?.id { store.loadMore() } }
                         }
@@ -350,6 +353,9 @@ struct HistoryDetailPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if store.showingSchedules {
+                SchedulesPane(store: store, schedules: store.schedules)
+            } else {
             switch store.target {
             case .none: placeholder
             case .newChat: HistoryNewChat(store: store)
@@ -357,6 +363,7 @@ struct HistoryDetailPane: View {
                 if let c = store.conversations[id] { HistorySessionView(store: store, conversation: c) }
                 else if let error = store.detailErrors[id] { problem(error, id) }
                 else { loading }
+            }
             }
         }
     }
