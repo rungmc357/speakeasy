@@ -1,0 +1,33 @@
+# Speakeasy notification relay. Deploy: see README.md (secrets first, then `npx wrangler deploy`).
+name = "speakeasy-push"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+# push.speakeasyvoice.ai needs the speakeasyvoice.ai zone on Cloudflare (it's on Porkbun today); see
+# README.md "DNS". Once it is, uncomment:
+# routes = [{ pattern = "push.speakeasyvoice.ai", custom_domain = true }]
+
+# No stored request logs (an APNs subrequest URL carries the device token). The Worker's own
+# one-line JSON (status + token hash prefix) is visible live with `npx wrangler tail` only.
+[observability]
+enabled = false
+
+[vars]
+APNS_TEAM_ID = "278P4D6M8C"
+APNS_TOPIC = "co.georgio.toddvoice"
+# Comma-separated install ids to refuse (abuse switch; redeploy to change).
+BLOCKED_INSTALLS = ""
+
+# Secrets (wrangler secret put …), never in this file:
+#   APNS_KEY_P8   the AuthKey_XXXXXXXXXX.p8 contents (PEM, from 1Password Todd "Speakeasy APNs key")
+#   APNS_KEY_ID   its 10-character key id
+#   INSTALL_KEY   32+ random bytes, base64; derives every install's secret (rotating it re-registers all)
+
+# One SQLite-backed Durable Object per install (nonces, rate limits); free plan supports these.
+[[durable_objects.bindings]]
+name = "GUARD"
+class_name = "InstallGuard"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InstallGuard"]

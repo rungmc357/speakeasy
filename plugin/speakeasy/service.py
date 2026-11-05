@@ -78,7 +78,9 @@ CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the 
 # POST /voice/interactions/{id}/input-text: a turn typed to the call itself (same as the top-level
 # "input_text"; listed here too so both typing features sit together). task_messages types to one job.
 CAPABILITIES["input_text"] = True
-CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
+CAPABILITIES["tool_log"] = True
+# POST /voice/push + GET /voice/push/events/{id}: notifications while the app is closed (push.py).
+CAPABILITIES["push"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 
 
 
@@ -157,6 +159,12 @@ class VoiceService:
                                         plan_call=home_plan_call or router_home_plan_call,
                                         client_factory=home_client or HomeAssistantClient)
         self.rt.home = self.home_control
+        from .push import PushNotifier
+        # Phone notifications while the app is closed. Only the gateway's long-lived service sends them
+        # from a background thread; a short-lived one (the CLI, tests) sends inline when asked.
+        self.push = PushNotifier(self.devices, self.settings.get, hermes_home=self.home,
+                                 claim=self.store.claim_notice, background=start_threads)
+        self.rt.push = self.push
         self.shared = A.SharedFolder(self.home)
         self.rt.shared = self.shared
         self.rt.discard_files = self.discard_shared_files
@@ -258,13 +266,24 @@ class VoiceService:
             self._text_worker.stop()
 
     # -- auth ---------------------------------------------------------------------------------
-    def authenticate(self, headers: Any) -> str:
+    def authenticate(self, headers: Any, presence: bool = True) -> str:
+        """The device behind a request's bearer token. ``presence``: the request means the app is open
+        on that device (push.py sends nothing then); the notification extension's own fetch doesn't."""
         supplied = headers.get("Authorization", "")
         token = supplied[7:].strip() if supplied.startswith("Bearer ") else None
         device_id = self.devices.authenticate(token, client=parse_client(headers.get(CLIENT_HEADER)))
         if device_id is None:
             raise ServiceError(401, "unauthorized")
+        if presence:
+            self.push.seen(device_id)
         return device_id
+
+    # -- push notifications (push.py) ----------------------------------------------------------
+    def register_push(self, device_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self.push.register(device_id, body)
+
+    def push_event(self, device_id: str, event_id: str) -> dict[str, Any]:
+        return self.push.event(device_id, event_id)
 
     def pair(self, body: dict[str, Any], headers: Any = None) -> dict[str, Any]:
         code, name = body.get("code"), body.get("device_name", "Mac")

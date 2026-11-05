@@ -1,0 +1,12 @@
+{
+  "name": "speakeasy-push-relay",
+  "private": true,
+  "type": "module",
+  "description": "Content-free APNs wake-up relay for Speakeasy (Cloudflare Worker).",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "e2e": "node test/e2e.mjs",
+    "dev": "wrangler dev --local --var APNS_BASE_URL:http://127.0.0.1:8790",
+    "deploy": "wrangler deploy"
+  }
+}

@@ -1,7 +1,8 @@
 """Paired devices and one-time pairing codes.
 
 Stored under ``<HERMES_HOME>/speakeasy/devices.json`` (0600). Only SHA-256 hashes of
-device tokens are kept, so the file never holds a usable credential.
+device tokens are kept, so the file never holds a usable credential. A device that turned on
+notifications also has its APNs token (push.py), which addresses the phone, not this Hermes.
 """
 
 from __future__ import annotations
@@ -176,6 +177,38 @@ class DeviceStore:
         return [Device(id=k, name=v["name"], created_at=v["created_at"], last_seen_at=v.get("last_seen_at"),
                        client=dict(v.get("client") or {}))
                 for k, v in data["devices"].items()]
+
+    # -- push (push.py) -----------------------------------------------------------------
+    # ``push``: {apns_token, environment, kinds, updated_at}. The APNs token only lets the relay
+    # address a notification to this app on this phone; it is no credential for this Hermes.
+    def set_push(self, device_id: str, apns_token: str, environment: str, kinds: list[str],
+                 now: float | None = None) -> bool:
+        with self._lock:
+            data = self._load()
+            device = data["devices"].get(device_id)
+            if device is None:
+                return False
+            device["push"] = {"apns_token": apns_token, "environment": environment, "kinds": list(kinds),
+                              "updated_at": time.time() if now is None else now}
+            self._save(data)
+        return True
+
+    def clear_push(self, device_id: str, only_token: str | None = None) -> bool:
+        """Turn notifications off for a device (``only_token``: only while it still has that token,
+        so a dead token reported late never removes the new one the phone just sent)."""
+        with self._lock:
+            data = self._load()
+            device = data["devices"].get(device_id) or {}
+            push = device.get("push")
+            if not push or (only_token and push.get("apns_token") != only_token):
+                return False
+            del device["push"]
+            self._save(data)
+        return True
+
+    def push_targets(self) -> dict[str, dict[str, Any]]:
+        """device id -> push record, for every device that turned notifications on."""
+        return {k: dict(v["push"]) for k, v in self._load()["devices"].items() if v.get("push")}
 
     def revoke(self, device_id: str) -> bool:
         with self._lock:

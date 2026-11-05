@@ -273,9 +273,9 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _auth(self) -> str:
+    def _auth(self, presence: bool = True) -> str:
         try:
-            return self.service.authenticate(self.headers)
+            return self.service.authenticate(self.headers, presence=presence)
         except ServiceError:
             if not self.local:
                 logger.warning("speakeasy: unauthorized %s %s from %s", self.command, self.route[:80], self.client_ip)
@@ -367,7 +367,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, {"ok": True, "platform": "voice", "version": __version__,
                                   "provider": self.service.settings.get()["voice"]["provider"]})
                 return
-            self._auth()
+            push_event = re.fullmatch(r"/voice/push/events/([A-Za-z0-9_-]{16,64})", path)
+            if push_event:  # the notification extension: not a sign the app is open
+                self._reply(200, self.service.push_event(self._auth(presence=False), push_event.group(1)))
+                return
+            device_id = self._auth()
             image = re.fullmatch(rf"/voice/card-image/{_ID}/([1-8])", path)
             live = re.fullmatch(rf"/voice/live-image/{_ID}", path)
             shared = re.fullmatch(rf"/voice/shared-image/{_ID}/([1-9][0-9]?)", path)
@@ -385,7 +389,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             events = re.fullmatch(rf"/voice/interactions/{_ID}/events", path)
             if events:
-                self._events(self.service.interaction(events.group(1)))
+                interaction = self.service.interaction(events.group(1))
+                self.service.push.stream_opened(device_id)  # the app is open while its stream is
+                try:
+                    self._events(interaction)
+                finally:
+                    self.service.push.stream_closed(device_id)
                 return
             audio = re.fullmatch(rf"/voice/interactions/{_ID}/audio", path)
             if audio:
@@ -447,6 +456,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._upload(upload.group(1))
                 return
             device_id = self._auth()
+            if path == "/voice/push":
+                self._reply(200, self.service.register_push(device_id, self._body()))
+                return
             if path == "/voice/sessions":
                 self._reply(201, self.service.create_session(self._body(MAX_SESSION_BODY),
                                                             self.headers.get("Idempotency-Key", ""),

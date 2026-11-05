@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Unreleased (plugin + iPhone) — Notifications when the app is closed
+
+- **Your phone tells you when a job is done, needs you, fails, or gets a reply**, even with Speakeasy closed. Speakeasy asks for permission the first time a job outlives your call, not at launch.
+- **The words never leave your Hermes on the way.** Your Hermes sends only a wake-up signal through Speakeasy's notification relay; your phone fetches the text straight from your Hermes and shows "Done: …" / "Needs you: …".
+- **Pick which ones** in Settings › Notifications: Finished, Needs you, Failed, New replies.
+
 ## Plugin 0.3.32 · iPhone build 63 — Works from anywhere, right after setup
 
 - **No Tailscale? Setup connects through Cloudflare by itself.** Your agent checks for Tailscale; if it isn't there, it turns on Cloudflare mode without asking, so your phone works from anywhere straight away. It then tells you what it did, and that Tailscale is the most private option.
