@@ -251,7 +251,7 @@ public struct TaskReplyBar: View {
         let choice = openChoice?.id
         // The tray empties as the message is queued; the sent bubble shows what it carried (and Retry
         // resends the same ids with the same client id).
-        let carried = choice == nil ? (extras?.take() ?? []) : []
+        let carried = choice == nil && model.replyTarget(job) != nil ? (extras?.take() ?? []) : []
         model.sendReply(jobID: job.id, choiceTaskID: choice, attachments: carried)
     }
 }
