@@ -43,19 +43,19 @@ node test/e2e.mjs            # relay on :8787 + fake APNs on :8790 (records to $
 - **APNs key**: Key ID `ZBP98Z8JTQ`, team `278P4D6M8C`, Sandbox & Production, team scoped. The `.p8` is
   the 1Password document **Speakeasy APNs key** (vault Todd). The install key is the 1Password item
   **Speakeasy push relay install key**.
-- **Apple**: Push Notifications is on the `co.georgio.toddvoice` App ID (profile `Todd Voice App Store`
-  regenerated with it); the extension's App ID `co.georgio.toddvoice.notifications` has the profile
+- **Apple**: Push Notifications is on the iPhone app's App ID (profile `Todd Voice App Store`
+  regenerated with it); the extension's App ID (`<app bundle id>.notifications`) has the profile
   `Speakeasy Notifications App Store` (no capabilities). Push needs no Apple review.
 
 Redeploy / rotate (from `relay/push`, never printing a secret):
 ```sh
-npx wrangler deploy
+npx wrangler deploy --var APNS_TOPIC:<app bundle id>   # first deploy; keep_vars keeps it after
 op document get "Speakeasy APNs key" --vault Todd | npx wrangler secret put APNS_KEY_P8
 printf %s ZBP98Z8JTQ                               | npx wrangler secret put APNS_KEY_ID
-op read "op://Todd/Speakeasy push relay install key/password" | npx wrangler secret put INSTALL_KEY
+op item get "Speakeasy push relay install key" --vault Todd --fields password --reveal | npx wrangler secret put INSTALL_KEY
 curl https://speakeasy-push.todd-562.workers.dev/health      # {"ok":true}
 ```
-(`APNS_TEAM_ID` and `APNS_TOPIC` are plain vars in `wrangler.toml`.) Rotating `INSTALL_KEY`
+(`APNS_TEAM_ID` is a plain var in `wrangler.toml`; `APNS_TOPIC`, the app's bundle id, is set once with `--var` and kept by `keep_vars`.) Rotating `INSTALL_KEY`
 invalidates every install; plugins re-register by themselves on the next notify.
 
 ### Later: `push.speakeasyvoice.ai`

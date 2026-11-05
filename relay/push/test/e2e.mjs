@@ -16,7 +16,7 @@ const objects = new Map();
 const storage = () => { const m = new Map(); return { get: async (k) => m.get(k), put: async (k, v) => { m.set(k, v); },
   list: async () => new Map(m), delete: async (ks) => { for (const k of [].concat(ks)) m.delete(k); } }; };
 const env = {
-  APNS_KEY_P8: pem, APNS_KEY_ID: "E2EKEY0001", APNS_TEAM_ID: "278P4D6M8C", APNS_TOPIC: "co.georgio.toddvoice",
+  APNS_KEY_P8: pem, APNS_KEY_ID: "E2EKEY0001", APNS_TEAM_ID: "278P4D6M8C", APNS_TOPIC: "com.example.speakeasy",
   INSTALL_KEY: "e2e-install-key", APNS_BASE_URL: "http://127.0.0.1:8790",
   GUARD: { idFromName: (n) => n, get: (id) => {
     if (!objects.has(id)) objects.set(id, new InstallGuard({ storage: storage() }));

@@ -140,7 +140,7 @@ async function sendToApns(env, body) {
     method: "POST",
     headers: {
       authorization: `bearer ${jwt}`,
-      "apns-topic": env.APNS_TOPIC || "co.georgio.toddvoice",
+      "apns-topic": env.APNS_TOPIC, // the app's bundle id (a deploy-time var, see README.md)
       "apns-push-type": "alert",
       "apns-priority": "10",
       "apns-expiration": String(Math.floor(Date.now() / 1000) + 3600),

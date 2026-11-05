@@ -3,6 +3,7 @@ name = "speakeasy-push"
 main = "src/index.js"
 compatibility_date = "2026-01-01"
 workers_dev = true
+keep_vars = true
 # push.speakeasyvoice.ai needs the speakeasyvoice.ai zone on Cloudflare (it's on Porkbun today); see
 # README.md "DNS". Once it is, uncomment:
 # routes = [{ pattern = "push.speakeasyvoice.ai", custom_domain = true }]
@@ -14,7 +15,8 @@ enabled = false
 
 [vars]
 APNS_TEAM_ID = "278P4D6M8C"
-APNS_TOPIC = "co.georgio.toddvoice"
+# APNS_TOPIC (the iPhone app's bundle id) is set at deploy time, not here: see README.md. keep_vars
+# keeps it (and anything else set on the deployed Worker) across `wrangler deploy`.
 # Comma-separated install ids to refuse (abuse switch; redeploy to change).
 BLOCKED_INSTALLS = ""
 

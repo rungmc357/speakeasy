@@ -37,7 +37,7 @@ const realFetch = globalThis.fetch;
 
 beforeEach(() => {
   resetProviderToken();
-  env = { APNS_KEY_P8: TEST_P8, APNS_KEY_ID: "ABC123DEFG", APNS_TEAM_ID: "278P4D6M8C", APNS_TOPIC: "co.georgio.toddvoice",
+  env = { APNS_KEY_P8: TEST_P8, APNS_KEY_ID: "ABC123DEFG", APNS_TEAM_ID: "278P4D6M8C", APNS_TOPIC: "com.example.speakeasy",
     INSTALL_KEY: "test-install-key-not-a-secret", GUARD: namespace() };
   apnsCalls = [];
   apnsReply = () => new Response(null, { status: 200 });
@@ -93,7 +93,7 @@ test("a signed notify reaches APNs with a generic, content-free payload", async 
   assert.equal(apnsCalls.length, 1);
   const { url, init } = apnsCalls[0];
   assert.equal(url, `https://api.push.apple.com/3/device/${TOKEN}`);
-  assert.equal(init.headers["apns-topic"], "co.georgio.toddvoice");
+  assert.equal(init.headers["apns-topic"], "com.example.speakeasy");
   assert.equal(init.headers["apns-push-type"], "alert");
   assert.equal(init.headers["apns-collapse-id"], "abc123");
   assert.match(init.headers.authorization, /^bearer [\w-]+\.[\w-]+\.[\w-]+$/);
