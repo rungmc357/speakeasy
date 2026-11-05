@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.30 · Mac 0.3.15 · iPhone build 61 — Settings on your phone, and tidier sessions
+
+- **Settings on iPhone and iPad.** Change your voice, model, names, spoken updates, call limits, where results go and more, right from the phone. Changes save to your Hermes, so every device sees them. Connection details, pair again and unpair live there too.
+- **Lots more "Try saying" ideas** on the start screen, rotating a few at a time.
+- **Hermes sessions behind voice jobs get real names** ("Check storage usage on Mac mini") instead of "Handle voice task from Speakeasy #3".
+- **Each device reports its app version**, so `hermes voice devices` shows which build every phone and Mac is on.
+- Fix: nothing a call is waiting on can hold up Hermes when it shuts down.
+
 ## Plugin 0.3.29 · Mac 0.3.14 · iPhone build 60 — Speakeasy away from home without Tailscale, and typing on a call
 
 ### Away from home, without Tailscale
