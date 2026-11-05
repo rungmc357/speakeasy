@@ -302,6 +302,17 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await post("/voice/interactions/\(escape(interactionID))/answer", ["task_id": taskID, "text": text])
     }
 
+    /// A new job from typed text, no call needed (servers with `start_jobs`); idempotent on `clientID`.
+    /// Returns the job's run id (openable on the board) when Hermes has one yet.
+    public func startJob(text: String, clientID: String = UUID().uuidString) async throws -> String? {
+        guard let clean = TaskMessageRequest.clean(text) else { throw HTTPError(status: 400, message: "The job is empty.") }
+        let reply = try await post("/voice/work", ["text": clean, "source": "typed", "client_id": clientID])
+        guard reply["ok"] as? Bool == true else {
+            throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't start that job.")
+        }
+        return reply["run_id"] as? String
+    }
+
     /// Text to one task by run id (servers with `task_messages`): a steer while it runs, the answer
     /// while it waits, a linked follow-up once it finished. Idempotent on `client_id`.
     public func sendMessage(_ message: TaskMessageRequest) async throws -> TaskMessageReply {

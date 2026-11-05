@@ -13,6 +13,17 @@ public enum PluginUpdateFetch {
         return UpdateCheck.parsePluginVersion(data)
     }
 
-    /// What to send a Hermes agent to update the plugin (the apps never update it themselves).
-    public static let updateRequest = "Update the Speakeasy plugin on my Hermes installation. Check that it is enabled afterward, and tell me when I need to restart Hermes. Do not restart it yourself."
+    /// One line of what's new in `version`, from the repo CHANGELOG's entry title; nil if unavailable.
+    public static func whatsNew(version: String, userAgent: String, session: URLSession = .shared) async -> String? {
+        var request = URLRequest(url: PluginUpdateFlow.changelogURL, timeoutInterval: 15)
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        return PluginUpdateFlow.changelogHeadline(text, version: version)
+    }
+
+    /// What to send a Hermes agent to update the plugin (copy button; the Update button sends the same
+    /// as a job). Hermes' own updater, no forced reload: it loads by itself after any call.
+    public static let updateRequest = PluginUpdateFlow.requestText(version: nil)
 }

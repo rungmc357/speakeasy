@@ -3173,6 +3173,9 @@ class SidebandWorker:
         show = self._take_show(voice_id or task_id, idem)
         if show:
             focus = (focus or request) + P.SHOW_IT_FOCUS
+        update_note = P.plugin_update_focus(request)
+        if update_note:
+            focus = (focus or request) + update_note
         # Read now, before any await: the call may end (and drop its room text) while what was shared is collected.
         room = self.room_handoff_text(voice_id or task_id)
         state, known_run = self.store.reserve_run(idem, self.interaction.interaction_id, task_id, revision)

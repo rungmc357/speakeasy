@@ -230,7 +230,16 @@ final class AppModel: ObservableObject {
 
     func copyPluginUpdateRequest() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("Update the Speakeasy plugin on my Hermes installation. Check that it is enabled afterward, and tell me when I need to restart Hermes. Do not restart it yourself.", forType: .string)
+        NSPasteboard.general.setString(PluginUpdateFlow.requestText(version: pluginUpdateAvailable), forType: .string)
+    }
+
+    /// The plugin half of the update check on its own (launch and daily, when automatic checks are
+    /// on): cheap, and it's what the board's update notice needs.
+    func checkPluginVersion() async {
+        guard isPaired, UserDefaults.standard.object(forKey: Prefs.checkForUpdates) as? Bool ?? true else { return }
+        if let version = await PluginUpdateFetch.latestPluginVersion(userAgent: "Speakeasy/\(appVersion)") {
+            latestPluginVersion = version
+        }
     }
 
     // MARK: Pairing

@@ -46,6 +46,7 @@ used in the tests (timestamps and IDs will differ).
 | GET | `/voice/work/{run_id}` | device | One task |
 | POST | `/voice/work/{run_id}/card-action` | device | Press a button on a task's card with no call open |
 | POST | `/voice/work/{run_id}/message` | device | Send typed text to one task (reply bar, decision card's "Something else…") |
+| POST | `/voice/work` | device | Start a new job from typed text, no call needed (the plugin-update notice's Update) |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
 | GET | `/voice/titles` | device | Past tasks still under their stand-in title: what the app's Apple Intelligence sweep may rename |
 | POST | `/voice/titles` | device | Set one task's title (from the app's on-device titler); the job's name follows |
@@ -715,6 +716,18 @@ Body `{"text": "...", "source": "typed", "client_id": "<uuid>", "interaction_id"
 `error`, fit to show: `400` empty or too long, `404 "I couldn't find that task."`, `409` the task
 was cancelled or deleted ("That task was cancelled, so it can't take messages. Start a new one
 instead."), `502` Hermes didn't take it ("I couldn't get that to the task. Try again.").
+
+### POST /voice/work
+
+Capability `start_jobs`. A new job from typed text with **no call**: the plugin-update notice's
+**Update** button sends the update request this way. Body `{"text": "...", "source": "typed",
+"client_id": "<uuid>"}` (`text` 1–4,000 characters). It runs like a job started on a call (its own
+Hermes session, on the board, openable by `run_id`), never through routing. Idempotent on
+`client_id` as above. `202 {"ok": true, "run_id": "run_0002", "task_id": "job_…", "task": {...}}`;
+`400` for an empty, too long or malformed body, `502` when Hermes didn't take it.
+
+While such a job runs, the server counts as busy: a newly installed plugin version loads only after
+it (and any call) has finished, exactly like a job started on a call.
 
 ### Where a spoken follow-up went
 

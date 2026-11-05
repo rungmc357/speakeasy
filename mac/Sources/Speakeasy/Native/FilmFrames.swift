@@ -10,10 +10,13 @@ enum FilmFrames {
     private static var retained: NativeVoiceClient?
     /// Website screenshots (`SPEAKEASY_FILM_SET=site`): no keyboard hints under the board.
     static var cleanShots = false
+    /// Filming: the panel resizes without animation, so a shot never catches it mid-resize.
+    static var filming = false
     /// Redesign frames: animations hold still so every frame draws the same.
     nonisolated(unsafe) static var stillMotion = false
 
     static func run(config: AppConfig, dir: String) {
+        filming = true
         let client = NativeVoiceClient(config: config)
         retained = client
         client.model.loadCardImage = { _, n in FileManager.default.contents(atPath: "\(dir)/picture-\(n).png") }
@@ -23,9 +26,9 @@ enum FilmFrames {
             FileHandle.standardError.write("film: task\n".data(using: .utf8)!)
             let set = ProcessInfo.processInfo.environment["SPEAKEASY_FILM_SET"]
             let site = set == "site"
-            cleanShots = site || set == "ux" || set == "typing" || set == "redesign"
+            cleanShots = site || set == "ux" || set == "typing" || set == "redesign" || set == "plugin-update"
             stillMotion = set == "redesign"
-            let shots: [Shot] = set == "redesign" ? redesignBeats() : set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
+            let shots: [Shot] = set == "plugin-update" ? pluginUpdateBeats() : set == "redesign" ? redesignBeats() : set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
             for shot in shots {
                 let (name, state, open) = (shot.name, shot.state, shot.open)
                 let m = client.model
@@ -37,10 +40,16 @@ enum FilmFrames {
                     : set == "typing" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true, taskMessages: true)
                     : set == "redesign" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true, taskMessages: true, jobActivity: true)
                     : set == "typing-old" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true) : nil
+                m.pluginUpdate.preview(.none)
                 client.showPreview(state, workExpanded: false)
                 client.model.onOpenJob(open)
                 client.model.boardFocusID = nil
                 shot.setup(m)
+                // The setup can change the height (a notice, a width): measure again once it has drawn.
+                for _ in 0..<2 {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    client.panel.setNeedsResize()
+                }
                 try? await Task.sleep(nanoseconds: 900_000_000)
                 do { try snapshot(client, to: "\(dir)/\(name).png"); print("film \(name)") }
                 catch { print("film FAILED \(name): \(error)") }
@@ -379,6 +388,38 @@ enum FilmFrames {
         return out
     }
 
+
+    /// The plugin-update notice (`SPEAKEASY_FILM_SET=plugin-update`) on the board between calls, as
+    /// a tile under the greeting: available, updating, updated, didn't take; then the same notice
+    /// over the work-only task list. Invented data.
+    static func pluginUpdateBeats() -> [Shot] {
+        let now = Date()
+        var s = VoiceState(); s.now = now
+        var trip = task("t", "completed", "Find a quiet hotel near the harbour for two nights", title: "Harbour hotels",
+                        short: "Done", age: 40 * 60, now: now,
+                        result: WorkResult(spoken: "The Quay House: quiet rooms on the water, €180 a night.", full: nil))
+        trip.info.finishedAt = now - 40 * 60
+        var deck = task("k", "working", "Tidy the slides for Thursday's review", title: "Tidy the review deck",
+                        short: "Fixing the chart labels", age: 90, now: now, milestones: ["Opened the deck", "Fixing the chart labels"])
+        deck.info.startedAt = now - 3 * 60
+        var notes = task("n", "completed", "Tidy up the release notes", title: "Release notes", short: "Done", age: 3000, now: now,
+                         result: WorkResult(spoken: "Release notes are tidied.", full: nil, label: "Release notes tidied"))
+        notes.info.finishedAt = now - 3000
+        s.tasks = [notes, trip, deck]
+        s.work = deriveWork(s, now: now)
+        var list = VoiceState(); list.now = now; list.workOnly = true
+        list.tasks = [deck, trip]; list.work = deriveWork(list, now: now)
+        // What's new in 0.9.1: its CHANGELOG entry title (invented here).
+        let note = "Calls pick up faster on a slow connection"
+        func board(_ m: VoicePanelModel) { m.panelWidth = 460; m.extraHeight = 120 }
+        return [
+            Shot("plugin-update-01-available", s, nil) { m in board(m); m.pluginUpdate.preview(.available(version: "0.9.1", note: note)) },
+            Shot("plugin-update-02-updating", s, nil) { m in board(m); m.pluginUpdate.preview(.updating(version: "0.9.1", runID: "run_upd")) },
+            Shot("plugin-update-03-updated", s, nil) { m in board(m); m.pluginUpdate.preview(.updated(version: "0.9.1")) },
+            Shot("plugin-update-04-didnt-take", s, nil) { m in board(m); m.pluginUpdate.preview(.didntTake(version: "0.9.1", runID: "run_upd")) },
+            Shot("plugin-update-05-available-no-note-task-list", list, nil) { m in m.extraHeight = 0; m.pluginUpdate.preview(.available(version: "0.9.1", note: nil)) },
+        ]
+    }
 
     /// Typing to one task (`SPEAKEASY_FILM_SET=typing`; `typing-old` = an older plugin
     /// without `task_messages`: no reply bar, no "Something else…"). Invented data.

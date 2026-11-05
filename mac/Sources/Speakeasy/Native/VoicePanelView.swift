@@ -573,6 +573,13 @@ struct VoicePanelView: View {
                     .padding(.horizontal, 12).padding(.bottom, 10)
                     .transition(.opacity)
             }
+            // A newer plugin: the notice and its one-click Update (shown with no call; progress and the
+            // result stay in view during one). On the board it's a tile under the greeting instead.
+            if job == nil && !(board && !model.workExpanded) {
+                PluginUpdateCard(notice: model.pluginUpdate, onUpdate: model.onPluginUpdate,
+                                 onOpenJob: model.onOpenPluginUpdateJob, onCopy: model.onCopyPluginUpdate)
+                    .padding(.horizontal, 12).padding(.top, model.state.workOnly ? 10 : 0).padding(.bottom, 10)
+            }
             if let job {
                 if !model.state.workOnly { Divider().opacity(0.5).padding(.horizontal, 14) }
                 JobDetailView(job: job, model: model)

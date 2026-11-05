@@ -1,10 +1,17 @@
+import Combine
 import SwiftUI
 import SpeakeasyCore
 
 /// Observable model the SwiftUI panel renders. The controller owns all mutation.
 @MainActor
 public final class VoicePanelModel: ObservableObject {
-    public init() {}
+    public init() {
+        // The update notice lives inside scrolling content hosted on its own (the board): pass its
+        // changes on so the panel redraws and re-measures, or the card's height arrives a draw late
+        // and the panel clips its top and bottom.
+        pluginUpdateRelay = pluginUpdate.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+    private var pluginUpdateRelay: AnyCancellable?
     public static let defaultWidth: CGFloat = 360
     @Published public var state = VoiceState()
     @Published public var workExpanded = false
@@ -41,6 +48,13 @@ public final class VoicePanelModel: ObservableObject {
     /// The first-call tour is running in this call (shows a Skip tour button).
     @Published public var tourActive = false
     public var onSkipTour: () -> Void = {}
+    /// The plugin-update notice (shown on the board / panel with no call) and its Update button.
+    public let pluginUpdate = PluginUpdateNotice()
+    public var onPluginUpdate: () -> Void = {}
+    /// "Open the job" on the update notice: the update job's run id.
+    public var onOpenPluginUpdateJob: (String) -> Void = { _ in }
+    /// Older plugins (no `start_jobs`): copy the request instead.
+    public var onCopyPluginUpdate: () -> Void = {}
 
     // Listening mode (Mac). It lives beside the call, not in it: the strip shows only while no
     // call is open, and turning listening off starts the call.

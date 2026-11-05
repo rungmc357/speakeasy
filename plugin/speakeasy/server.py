@@ -352,6 +352,9 @@ class Handler(BaseHTTPRequestHandler):
             if card:
                 self._reply(200, self.service.card_action(None, self._body(), interaction_id=card.group(1)))
                 return
+            if path == "/voice/work":
+                self._reply(202, self.service.start_job(self._body()))
+                return
             message = re.fullmatch(rf"/voice/work/{_ID}/message", path)
             if message:
                 self._reply(200, self.service.task_message(message.group(1), self._body()))
