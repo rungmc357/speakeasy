@@ -24,6 +24,7 @@ from . import __version__
 from . import attachments as A
 from . import delivery as D
 from . import duck as duck_mod
+from . import history as H
 from . import messages as M
 from .brief import BriefInvalid, BriefManager
 from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
@@ -78,6 +79,9 @@ CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the 
 # POST /voice/interactions/{id}/input-text: a turn typed to the call itself (same as the top-level
 # "input_text"; listed here too so both typing features sit together). task_messages types to one job.
 CAPABILITIES["input_text"] = True
+# GET /voice/history (+ /{session_id}, POST /{session_id}/message): every Hermes session and task,
+# readable and writable by id from the app, with or without a call (history.py).
+CAPABILITIES["history"] = True
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 
 
@@ -1270,9 +1274,12 @@ class VoiceService:
             raise ServiceError(400, "client_id must be an id.")
         return self._once(client_id, lambda: self._start_job(text))
 
-    def _start_job(self, text: str) -> dict[str, Any]:
+    def _start_job(self, text: str, session_id: str | None = None, context: str | None = None,
+                   link_to: str | None = None) -> dict[str, Any]:
+        """*link_to*: the chat session this job continues from a history page (store.history_links)."""
         worker = self.text_worker()
-        future = asyncio.run_coroutine_threadsafe(M.start_job(worker, text), worker.loop)
+        future = asyncio.run_coroutine_threadsafe(
+            M.start_job(worker, text, session_id=session_id, context=context), worker.loop)
         try:
             got = future.result(M.START_WAIT_S + 10)
         except Exception as exc:
@@ -1282,6 +1289,8 @@ class VoiceService:
             run = worker.interaction.runs.get(got["task_id"])
             key, run_id = (run.idem_key, run.run_id) if run else (None, None)
         run_id = (self.store.openable_run_id(key) if key else None) or run_id
+        if key and link_to:
+            self.store.link_history(key, link_to)
         task = self.store.work(idem_key=key, assistant_name=self.settings.get()["assistant_name"]) if key else None
         if task is not None:
             task["task_id"] = got["task_id"]
@@ -1400,6 +1409,230 @@ class VoiceService:
         self.publish_all(new_key)
         logger.info("speakeasy: a typed message went to a task as a %s", got["delivered_as"])
         return {"ok": True, "run_id": new_run, "delivered_as": got["delivered_as"], "task": task}
+
+    # -- history: every Hermes session, readable and writable by id (docs/API.md "History") ---------
+
+    def _linked(self, session_id: str) -> H.Linked | None:
+        keys = self.store.keys_for_session(session_id)
+        if not keys:
+            return None
+        statuses = [status for _, _, status in keys[:8]]
+        running = any(st in ACTIVE_RUN_STATES for st in statuses)
+        needs_you = any(st in {"waiting_for_approval", "resolving_approval"} for st in statuses)
+        work = self.store.work(idem_key=keys[0][0], assistant_name=self.settings.get()["assistant_name"]) or {}
+        title = (work.get("job") or {}).get("name") or work.get("title")
+        needs_you = needs_you or (work.get("status") == "completed" and M._waiting_question(work))
+        run_ids = [rid for rid in (r or self.store.openable_run_id(k) for k, r, _ in keys[:5]) if rid]
+        return H.Linked(keys=[k for k, _, _ in keys], name=title, running=running, needs_you=needs_you, run_ids=run_ids)
+
+    def _continuations(self, session_id: str) -> list[str]:
+        """Linked tasks that continued this chat from a history page (idem keys, oldest first)."""
+        return self.store.history_links(session_id)
+
+    def _linked_with_continuations(self, session_id: str) -> H.Linked | None:
+        """For the list: a chat continued from Speakeasy shows its linked tasks' state (running,
+        needs you) without becoming a Speakeasy row."""
+        own = self._linked(session_id)
+        if own is not None:
+            return own
+        keys = self._continuations(session_id)
+        if not keys:
+            return None
+        statuses = [(self.store.run_row(k) or {}).get("status") for k in keys[-4:]]
+        return H.Linked(keys=[], name=None, running=any(st in ACTIVE_RUN_STATES for st in statuses),
+                        needs_you=any(st in {"waiting_for_approval", "resolving_approval"} for st in statuses),
+                        run_ids=[])
+
+    def history(self, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/history?cursor=&q=&source=&limit=``."""
+        try:
+            limit = int(query.get("limit") or H.PAGE)
+        except ValueError:
+            raise ServiceError(400, "limit must be a number") from None
+        q = (query.get("q") or "").strip()[:200]
+        try:
+            return H.list_sessions(self.rt.state_db, cursor=query.get("cursor") or None, q=q, source=query.get("source") or "",
+                                   limit=limit, linked=self._linked_with_continuations,
+                                   speakeasy_ids=self.store.speakeasy_sessions)
+        except H.HistoryError as exc:
+            raise ServiceError(exc.status, exc.message) from None
+
+    def history_session(self, session_id: str, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/history/{session_id}?before=``: the conversation, its Speakeasy tasks (with their
+        approval/question cards and helpers) and messages sent from the app that are still on their way."""
+        if not H.valid_session_id(session_id):
+            raise ServiceError(404, "I couldn't find that conversation.")
+        meta = H.session_meta(self.rt.state_db, session_id)
+        if meta is None:
+            raise ServiceError(404, "I couldn't find that conversation.")
+        sid = meta["id"]
+        try:
+            before = int(query["before"]) if query.get("before") else None
+        except ValueError:
+            raise ServiceError(400, "before must be a number") from None
+        try:
+            page = H.session_messages(self.rt.state_db, sid, before=before)
+        except H.HistoryError as exc:
+            raise ServiceError(exc.status, exc.message) from None
+        link = self._linked(sid)
+        own = self._speakeasy_owned(meta, link)
+        name = self.settings.get()["assistant_name"]
+        keys = list(link.keys) if link else []
+        entries = page["entries"]
+        continued = [] if own else self._continuations(sid)
+        if continued and before is None:
+            # The chat's own messages, then what was said to it from Speakeasy (its linked tasks'
+            # sessions), so the page reads as one conversation. Never posted to the chat.
+            entries = entries + [{"kind": "note", "id": "linked", "at": None,
+                                  "text": "Continued in Speakeasy · not posted to " + H.source_label(
+                                      meta["source"], None, None, False)}]
+            seen: set[str] = set()
+            for key in continued:
+                linked_sid = self.store.session_for(key)
+                if linked_sid and linked_sid not in seen:
+                    seen.add(linked_sid)
+                    try:
+                        more = H.session_messages(self.rt.state_db, linked_sid)["entries"]
+                    except H.HistoryError:
+                        more = []
+                    entries += [{**e, "id": f"{linked_sid[-6:]}-{e['id']}"} for e in more]
+            keys = list(reversed(continued)) + keys
+        jobs = []
+        for key in keys[:8]:
+            work = self.store.work(idem_key=key, assistant_name=name, activity_detail=True)
+            if work is not None:
+                jobs.append(work)
+        running = any(j.get("status") in ACTIVE_RUN_STATES for j in jobs)
+        title = (meta.get("title") or "").strip() or (link.name if link else None)
+        first_user = next((e["text"] for e in page["entries"] if e["kind"] == "user"), None)
+        needs_you = any(j.get("status") in {"waiting_for_approval", "resolving_approval"} for j in jobs)
+        return {"session": {
+            "id": sid, "title": title or (H._one_line(first_user, 60) if first_user else "Untitled conversation"),
+            "source": "speakeasy" if own else meta["source"],
+            "source_label": H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), own),
+            "state": "needs_you" if needs_you else ("running" if running else "idle"),
+            "send_via": "task" if own and link else ("session_job" if meta["source"] == "api_server" else "linked"),
+            "entries": entries, "has_more": page["has_more"], "before": page["before"],
+            "jobs": jobs, "approvals": self._session_approvals(keys)}}
+
+    @staticmethod
+    def _speakeasy_owned(meta: dict[str, Any], link: H.Linked | None) -> bool:
+        """Speakeasy's own session: an API-server session one of its tasks ran in. A chat thread a task
+        continued stays the platform's (a message to it must never be posted back there)."""
+        return meta["source"] == "api_server" and (link is not None or meta["id"].startswith(H.SPEAKEASY_PREFIX))
+
+    def history_message(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/history/{session_id}/message {text, client_id?}``: to that session by id, never
+        routed. A Speakeasy task's session: task_messages (steer, answer or follow-up run). Another
+        API-server session: a new job in it. Anything else (a chat): a Speakeasy task linked to it, seeded
+        with its recent messages; the reply shows in Speakeasy and nothing is posted to the chat."""
+        if not isinstance(body, dict) or "text" not in body or not set(body) <= {"text", "client_id", "source"}:
+            raise ServiceError(400, "Send the message as text.")
+        text, client_id = body.get("text"), body.get("client_id")
+        if (body.get("source") or "typed") not in {"typed", "voice_message"}:
+            raise ServiceError(400, "source must be typed or voice_message.")
+        if not isinstance(text, str) or not text.strip():
+            raise ServiceError(400, "The message is empty.")
+        text = text.strip()
+        if len(text) > M.MAX_TEXT:
+            raise ServiceError(400, f"The message is too long (at most {M.MAX_TEXT} characters).")
+        if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
+            raise ServiceError(400, "client_id must be an id.")
+        if not H.valid_session_id(session_id):
+            raise ServiceError(404, "I couldn't find that conversation.")
+        meta = H.session_meta(self.rt.state_db, session_id)
+        if meta is None:
+            raise ServiceError(404, "I couldn't find that conversation.")
+        return self._once(client_id, lambda: self._history_message(meta, text))
+
+    def _history_message(self, meta: dict[str, Any], text: str) -> dict[str, Any]:
+        sid = meta["id"]
+        link = self._linked(sid)
+        if self._speakeasy_owned(meta, link) and link is not None:
+            for run_id in link.run_ids:
+                try:
+                    got = self._task_message(run_id, text, None, None)
+                except ServiceError as exc:
+                    if exc.status in {404, 409}:
+                        continue  # a deleted/cancelled task: the next one in this session takes it
+                    raise
+                return {"ok": True, "session_id": sid, "via": "task", "run_id": got.get("run_id"),
+                        "delivered_as": got.get("delivered_as"), "task": got.get("task")}
+        if meta["source"] == "api_server":
+            got = self._start_job(text, session_id=sid)
+            return {"ok": True, "session_id": sid, "via": "session_job", "run_id": got.get("run_id"),
+                    "delivered_as": "follow_up", "task": got.get("task")}
+        return self._continue_linked(meta, text)
+
+    def _continue_linked(self, meta: dict[str, Any], text: str) -> dict[str, Any]:
+        """A chat Speakeasy can't write into (its reply would go back to the chat): the newest linked
+        task for it takes the message (steer, answer or follow-up in its own session); the first
+        message starts one, seeded with the chat's recent messages."""
+        sid = meta["id"]
+        for key in reversed(self._continuations(sid)):
+            run_id = self.store.openable_run_id(key) or (self.store.run_row(key) or {}).get("run_id")
+            if not run_id:
+                continue
+            try:
+                got = self._task_message(run_id, text, None, None)
+            except ServiceError as exc:
+                if exc.status in {404, 409}:
+                    continue
+                raise
+            return {"ok": True, "session_id": sid, "via": "linked", "run_id": got.get("run_id"),
+                    "delivered_as": got.get("delivered_as"), "task": got.get("task")}
+        label = H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), False)
+        title = (meta.get("title") or "").strip() or "this conversation"
+        context = H.linked_context(self.rt.state_db, sid, title, label, text)
+        got = self._start_job(text, context=context, link_to=sid)
+        logger.info("speakeasy: a message to a %s session started a linked task", meta["source"])
+        return {"ok": True, "session_id": sid, "via": "linked", "run_id": got.get("run_id"),
+                "delivered_as": "linked", "task": got.get("task")}
+
+    def _session_approvals(self, keys: list[str]) -> list[dict[str, Any]]:
+        """Approvals the session's Speakeasy tasks wait on, from whichever worker holds them (an open
+        call's, or the voiceless one): {run_id, task_id, description, choices}."""
+        with self.lock:
+            workers = [i.worker for i in self.interactions.values() if i.worker is not None]
+        if self._text_worker is not None:
+            workers.append(self._text_worker)
+        wanted, out = set(keys), []
+        for worker in workers:
+            for task_id, run in worker.pending_approvals():
+                if run.idem_key in wanted:
+                    approval = run.approval or {}
+                    out.append({"run_id": run.run_id, "task_id": task_id,
+                                "description": H.A.clip(H.A.redact(approval.get("description") or ""), 400),
+                                "choices": [c for c in (approval.get("choices") or ["once", "deny"])
+                                            if c in {"once", "session", "deny"}]})
+        return out
+
+    def history_approval(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/history/{session_id}/approval {run_id, choice}``: answer the approval one of the
+        session's Speakeasy tasks waits on, with or without a call. Never "always"."""
+        run_id = body.get("run_id") if isinstance(body, dict) else None
+        choice = body.get("choice") if isinstance(body, dict) else None
+        if not isinstance(run_id, str) or not ID_RE.fullmatch(run_id) or choice not in {"once", "session", "deny"}:
+            raise ServiceError(400, "run_id and a choice of once, session or deny are required")
+        key = self.store.key_for_run(run_id)
+        if key is None or key not in {k for k, _, _ in self.store.keys_for_session(session_id)}:
+            raise ServiceError(404, "I couldn't find that approval.")
+        with self.lock:
+            workers = [i.worker for i in self.interactions.values() if i.worker is not None and i.worker.loop]
+        if self._text_worker is not None:
+            workers.append(self._text_worker)
+        for worker in workers:
+            for task_id, run in worker.pending_approvals():
+                if run.idem_key == key:
+                    if choice not in ((run.approval or {}).get("choices") or ["once", "deny"]):
+                        raise ServiceError(400, "That choice wasn't offered.")
+                    done = asyncio.run_coroutine_threadsafe(worker.resolve_approval(task_id, choice),
+                                                            worker.loop).result(30)
+                    if done is None:
+                        raise ServiceError(502, "Hermes didn't take that answer. Try again.")
+                    self.publish_all(key)
+                    return {"ok": True, "choice": done}
+        raise ServiceError(409, "That approval has closed.")
 
     @staticmethod
     async def _note_message(worker: Any, task_name: str, text: str) -> None:

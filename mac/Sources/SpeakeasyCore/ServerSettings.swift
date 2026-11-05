@@ -819,17 +819,20 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     /// Tasks carry `subagents`: the helpers (Hermes subagents) a task started; `GET /voice/work/{run_id}`
     /// adds each one's steps.
     public var jobSubagents: Bool
+    /// Every Hermes session, listed, read and written to by id (`GET /voice/history`, SessionHistory.swift).
+    public var history: Bool
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
-                jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false) {
+                jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
+                history: Bool = false) {
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
         self.taskMessages = taskMessages; self.jobActivity = jobActivity; self.toolLog = toolLog
-        self.startJobs = startJobs; self.jobSubagents = jobSubagents
+        self.startJobs = startJobs; self.jobSubagents = jobSubagents; self.history = history
     }
     enum CodingKeys: String, CodingKey {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
-        case startJobs = "start_jobs", jobSubagents = "job_subagents"
+        case startJobs = "start_jobs", jobSubagents = "job_subagents", history
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -841,5 +844,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         toolLog = (try? c.decodeIfPresent(Bool.self, forKey: .toolLog)) ?? false
         startJobs = (try? c.decodeIfPresent(Bool.self, forKey: .startJobs)) ?? false
         jobSubagents = (try? c.decodeIfPresent(Bool.self, forKey: .jobSubagents)) ?? false
+        history = (try? c.decodeIfPresent(Bool.self, forKey: .history)) ?? false
     }
 }

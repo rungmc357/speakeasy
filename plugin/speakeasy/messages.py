@@ -335,15 +335,19 @@ def make_text_worker(rt: Any) -> "SidebandWorker":
 JOB_PREFIX = "job_"
 
 
-async def start_job(worker: "SidebandWorker", text: str) -> dict[str, Any]:
+async def start_job(worker: "SidebandWorker", text: str, session_id: str | None = None,
+                    context: str | None = None) -> dict[str, Any]:
     """A new job from text typed in the app, no call needed (``POST /voice/work``): the same
     ``start_task`` a spoken request reaches, on this worker. Runs on the worker's loop and returns
     ``{task_id}`` once Hermes has the run (or it ended), at most START_WAIT_S later; the job keeps
-    running after that like any other."""
+    running after that like any other. *session_id*: run it in that existing Hermes session (a history
+    page's message to an API-server session Speakeasy didn't start), by id, never via routing.
+    *context*: the transcript the task sees instead of just the request (a linked continuation)."""
     from .calls import TERMINAL
     task_id = JOB_PREFIX + secrets.token_hex(8)
     worker.touch()
-    job = asyncio.get_running_loop().create_task(worker.start_task(task_id, 0, f"User: {text}", text))
+    job = asyncio.get_running_loop().create_task(worker.start_task(task_id, 0, context or f"User: {text}", text,
+                                                                       session_id=session_id))
     worker.dispatch_tasks.add(job)
     job.add_done_callback(worker.dispatch_tasks.discard)
     deadline = time.monotonic() + START_WAIT_S

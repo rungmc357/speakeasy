@@ -202,6 +202,12 @@ class StateStore:
             if "own_title" not in columns:  # the task's name from its words or the titler, never a thread title
                 self._db.execute("ALTER TABLE runs ADD COLUMN own_title TEXT")
             self._db.execute("CREATE INDEX IF NOT EXISTS runs_session ON runs(session_id)")
+            # A message from a history page to a chat Speakeasy can't write into without the reply
+            # going back to that chat (Discord, Telegram, ...): it runs as a Speakeasy task linked
+            # to that conversation (history.py). source_session = the chat's Hermes session.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS history_links (
+                idem_key TEXT PRIMARY KEY, source_session TEXT NOT NULL, created REAL NOT NULL)""")
+            self._db.execute("CREATE INDEX IF NOT EXISTS history_links_source ON history_links(source_session)")
             if "timings" not in columns:  # added after the first release
                 self._db.execute("ALTER TABLE runs ADD COLUMN timings TEXT")
             if "failure" not in columns:  # why a run failed: a failures.py kind, never provider text
@@ -344,6 +350,37 @@ class StateStore:
         local = local_run_id(key)
         self.add_run_alias(local, key)
         return local
+
+    def keys_for_session(self, session_id: str) -> list[tuple[str, str | None, str]]:
+        """Every task that ran in a Hermes session, newest first: (idem key, run id, status). Kept after
+        a task is dismissed from the board, so the history still knows the session is Speakeasy's."""
+        with self._lock:
+            rows = self._db.execute("SELECT idem_key, run_id, status FROM runs WHERE session_id=? ORDER BY rowid DESC",
+                                    (session_id,)).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def link_history(self, key: str, source_session: str) -> None:
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO history_links (idem_key, source_session, created) VALUES (?,?,?)",
+                             (key, source_session, time.time()))
+
+    def history_links(self, source_session: str) -> list[str]:
+        """The Speakeasy tasks that continued a chat from a history page, oldest first."""
+        with self._lock:
+            rows = self._db.execute("SELECT idem_key FROM history_links WHERE source_session=? ORDER BY created",
+                                    (source_session,)).fetchall()
+        return [r[0] for r in rows]
+
+    def linked_source(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT source_session FROM history_links WHERE idem_key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def speakeasy_sessions(self) -> set[str]:
+        """The Hermes sessions Speakeasy's tasks ran in."""
+        with self._lock:
+            rows = self._db.execute("SELECT DISTINCT session_id FROM runs WHERE session_id IS NOT NULL").fetchall()
+        return {r[0] for r in rows if r[0]}
 
     def run_row(self, key: str) -> dict[str, Any] | None:
         """One task's bookkeeping row: what a message sent to it by id needs (messages.py)."""
@@ -1306,6 +1343,9 @@ class StateStore:
                                   title),
             "job": self.job(key, session_id, continued),
         }
+        if session_id or _placed_session(continued):
+            # The Hermes session its conversation lives in: "Show full session" opens it (history).
+            work["session_id"] = session_id or _placed_session(continued)
         behind = self.queued_behind(key, session_id, status)
         if behind:
             # Queued in its chat thread behind another task's turn: shown as waiting for that task

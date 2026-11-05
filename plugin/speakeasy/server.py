@@ -14,7 +14,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from . import __version__
 from . import attachments as A
@@ -128,6 +128,8 @@ def same_machine(peer: str, headers: Any) -> bool:
     forwarded = (headers.get("X-Forwarded-For") or headers.get("X-Real-IP") or "").split(",")[0]
     return bool(forwarded.strip()) and _is_own_address(forwarded)
 _ID = r"([A-Za-z0-9_-]+)"
+# A Hermes session id (percent-encoded in the path; history.SAFE_ID_RE checks it once decoded).
+_SESSION = r"([A-Za-z0-9_:@.+=%-]{1,200})"
 
 
 def upload_read_s(length: int) -> float:
@@ -240,6 +242,10 @@ class Handler(BaseHTTPRequestHandler):
                 left -= len(chunk)
         except (socket.timeout, OSError):
             return
+
+    def _query(self) -> dict[str, str]:
+        from urllib.parse import parse_qs
+        return {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items() if v}
 
     @property
     def route(self) -> str:
@@ -393,6 +399,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             match = re.fullmatch(rf"/voice/interactions/{_ID}", path)
             work = re.fullmatch(rf"/voice/work/{_ID}", path)
+            history_one = re.fullmatch(rf"/voice/history/{_SESSION}", path)
             routes = {
                 "/voice/work/latest": self.service.work_latest,
                 "/voice/titles": self.service.pending_thread_titles,
@@ -414,6 +421,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.routing_models(provider))
             elif work:
                 self._reply(200, self.service.work(work.group(1)))
+            elif path == "/voice/history":
+                self._reply(200, self.service.history(self._query()))
+            elif history_one:
+                self._reply(200, self.service.history_session(unquote(history_one.group(1)), self._query()))
             elif match:
                 self._reply(200, self.service.interaction(match.group(1)).snapshot())
             else:
@@ -459,6 +470,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/work":
                 self._reply(202, self.service.start_job(self._body()))
+                return
+            history_message = re.fullmatch(rf"/voice/history/{_SESSION}/message", path)
+            if history_message:
+                # By session id only: never the call router (docs/API.md "History").
+                self._reply(200, self.service.history_message(unquote(history_message.group(1)), self._body()))
+                return
+            history_approval = re.fullmatch(rf"/voice/history/{_SESSION}/approval", path)
+            if history_approval:
+                self._reply(200, self.service.history_approval(unquote(history_approval.group(1)), self._body()))
                 return
             message = re.fullmatch(rf"/voice/work/{_ID}/message", path)
             if message:

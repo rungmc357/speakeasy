@@ -401,6 +401,35 @@ public final class ServerClient: @unchecked Sendable {
         return reply["run_id"] as? String
     }
 
+    // MARK: History (servers with `history`; docs/API.md "History")
+
+    /// One page of every Hermes session, newest first.
+    public func history(query: String = "", source: String? = nil, cursor: String? = nil) async throws -> HistoryPage {
+        HistoryPage(json: try await json(HistoryPage.path(query: query, source: source, cursor: cursor)))
+    }
+
+    /// One session's conversation, its Speakeasy jobs and the approvals waiting on the user.
+    public func historySession(_ sessionID: String, before: Int? = nil) async throws -> HistoryConversation {
+        guard let parsed = HistoryConversation(json: try await json(HistoryConversation.path(sessionID, before: before))) else {
+            throw HTTPError(status: 502, message: "Your Hermes sent a conversation this app can't read.")
+        }
+        return parsed
+    }
+
+    /// Text (typed, or a voice message transcribed on this device) to one session, by id.
+    public func sendToSession(_ message: HistoryMessageRequest) async throws -> HistoryMessageReply {
+        let reply = try await post(message.path, message.body)
+        guard let parsed = HistoryMessageReply(json: reply) else {
+            throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't take that message.")
+        }
+        return parsed
+    }
+
+    /// Answer the approval one of the session's Speakeasy tasks waits on (`once`, `session`, `deny`).
+    public func answerSessionApproval(sessionID: String, runID: String, choice: String) async throws {
+        _ = try await post(HistoryConversation.path(sessionID) + "/approval", ["run_id": runID, "choice": choice])
+    }
+
     /// Text to one task by run id (servers with `task_messages`): a steer while it runs, the answer
     /// while it waits, a linked follow-up once it finished. Idempotent on `client_id`.
     public func sendMessage(_ message: TaskMessageRequest) async throws -> TaskMessageReply {
