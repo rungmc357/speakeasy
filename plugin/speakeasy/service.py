@@ -432,7 +432,7 @@ class VoiceService:
             from .codex_transport import CodexTransport
             binary = find_codex(s["voice"]["codex_path"])
             if binary is None:
-                raise ServiceError(409, "Codex CLI not found: install it and run `codex login`, or set voice.codex_path")
+                raise ServiceError(409, "Codex not found: install the ChatGPT desktop app (it includes Codex) or the Codex CLI, then run `hermes voice setup`")
             transport = CodexTransport(binary, self.dir / "codex", s["voice"]["max_call_minutes"] * 60)
         transport._answer = transport.start(sdp, instructions, seed, voice)
         return transport

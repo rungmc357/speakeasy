@@ -521,9 +521,12 @@ def codex_candidates(home: Path | None = None) -> list[Path]:
         if directory:
             seen.append(Path(directory) / "codex")
     # The ChatGPT app ships Codex inside it (newer builds under codex-cli/bin, older at Resources/).
+    # The older standalone Codex app (now folded into ChatGPT) ships the same CLI, and a migration
+    # can leave it installed on its own; find_codex still picks the newest copy.
     for apps in (Path("/Applications"), home / "Applications"):
         seen += [apps / "ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
-                 apps / "ChatGPT.app/Contents/Resources/codex"]
+                 apps / "ChatGPT.app/Contents/Resources/codex",
+                 apps / "Codex.app/Contents/Resources/codex"]
     seen += [
              home / ".hermes/speakeasy/codex/node_modules/.bin/codex",
              Path("/opt/homebrew/bin/codex"), Path("/usr/local/bin/codex")]

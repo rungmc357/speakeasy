@@ -381,3 +381,29 @@ def test_update_without_a_change_does_not_write(tmp_path):
     mtime = path.stat().st_mtime_ns
     assert hermes_config.update(path, lambda cfg: False) is False
     assert path.stat().st_mtime_ns == mtime
+
+
+def _fake_app(home, rel):
+    path = home / "Applications" / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_codex_is_found_inside_a_chatgpt_only_install(tmp_path, monkeypatch):
+    from speakeasy.settings import codex_candidates
+    monkeypatch.setenv("PATH", "")
+    bundled = _fake_app(tmp_path, "ChatGPT.app/Contents/Resources/codex")
+    assert bundled in codex_candidates(tmp_path)
+
+
+def test_codex_is_found_inside_a_leftover_codex_app(tmp_path, monkeypatch):
+    from speakeasy.settings import codex_candidates, find_codex
+    monkeypatch.setenv("PATH", "")
+    old = _fake_app(tmp_path, "Codex.app/Contents/Resources/codex")
+    new = _fake_app(tmp_path, "ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+    found = codex_candidates(tmp_path)
+    assert old in found and new in found
+    versions = {old: (0, 150, 0), new: (0, 160, 0)}
+    assert find_codex(version_fn=lambda p: versions.get(p), candidates=found) == new

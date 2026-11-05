@@ -93,7 +93,7 @@ def login_status(binary: Path | None, runner: Callable[..., Any] = subprocess.ru
                  ttl_s: float = 60.0) -> tuple[bool, str]:
     """(signed_in, message) from `codex login status`, cached briefly."""
     if binary is None:
-        return False, "Codex CLI not found. Install it and run `codex login`, or set voice.codex_path."
+        return False, "Codex not found. Install the ChatGPT desktop app (it includes Codex) or the Codex CLI, then run `hermes voice setup`."
     rejected = _REJECTED.get(str(binary))
     if rejected is not None:
         if time.monotonic() - rejected[0] < REJECTED_HOLD_S:

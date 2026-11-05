@@ -69,7 +69,7 @@ def fake_codex(tmp_path, monkeypatch):
 def test_login_status_and_missing_binary(fake_codex):
     assert C.login_status(fake_codex) == (True, "Signed in to Codex with ChatGPT.")
     ok, message = C.login_status(None)
-    assert ok is False and "codex login" in message
+    assert ok is False and "ChatGPT desktop app" in message and "hermes voice setup" in message
 
 
 def test_child_env_never_carries_hermes_or_api_keys(fake_codex):

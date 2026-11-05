@@ -125,13 +125,15 @@ def voice_sign_in(env: Env, home: Path, settings: Settings, *, api_key: bool, as
 
     binary = find_codex(settings.get()["voice"]["codex_path"])
     if binary is None:
-        env.out("• Voice is GPT-Live-1 through Codex OAuth (your ChatGPT account), and Codex isn't installed.")
+        env.out("• Voice is GPT-Live-1 through Codex OAuth (your ChatGPT account), and no copy of Codex was found "
+                "(the ChatGPT desktop app includes one).")
         if env.confirm("  Install Codex now?", True, assume) and install_codex(env):
             binary = find_codex(settings.get()["voice"]["codex_path"])
         if binary is None:
             if env.interactive and assume is None and env.confirm("  Use an OpenAI API key instead?", False):
                 return voice_sign_in(env, home, settings, api_key=True, assume=assume)
-            env.out("✗ Voice isn't set up yet. Install Codex and run `codex login`, or run "
+            env.out("✗ Voice isn't set up yet. Install the ChatGPT desktop app (it includes Codex) or the Codex CLI, "
+                    "then run `hermes voice setup` again, or run "
                     "`hermes voice setup --api-key`.")
             return False
 

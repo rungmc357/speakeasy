@@ -86,8 +86,11 @@ If you can also operate the user's other Mac, you may install or open the app th
 link in chat is enough on its own.
 
 - Voice uses **GPT-Live-1 through Codex OAuth**: the user's ChatGPT sign-in, no API key. It needs
-  the **Codex CLI, version 0.150.0 or newer**, on this machine. With `--yes`, setup installs or
-  updates it for you (npm, else Homebrew). To install it yourself:
+  **Codex, version 0.150.0 or newer**, on this machine. **The ChatGPT desktop app for Mac already
+  includes Codex** (so does the older standalone Codex app), and setup finds it there on its own:
+  if the user has the ChatGPT app, don't install anything and don't send them to download a
+  "Codex app". Setup never opens an app or asks for a code; it signs in through a browser window.
+  With no copy found, `--yes` installs or updates the CLI for you (npm, else Homebrew). To install it yourself:
   `npm install -g @openai/codex@latest` (or `brew install codex`). The user then signs in once
   with `codex login`, which opens a browser. If Codex is already signed in, nothing else is needed.
 - If the user prefers the **OpenAI API** (their own key, billed per minute), add `--api-key`.

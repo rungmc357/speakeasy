@@ -2,6 +2,10 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.24 — Setup finds Codex inside the ChatGPT app
+
+- **No second Codex install for ChatGPT users.** Voice runs on the copy of Codex that comes with the ChatGPT desktop app. Setup already looked there; it now also checks the older standalone Codex app, which can be left behind after OpenAI folded it into ChatGPT. The setup guide your Hermes agent reads now says the ChatGPT app is enough, so the agent won't install Codex again or send you off to download a "Codex app". If no copy is found, the message tells you to install the ChatGPT app or the Codex CLI. *(Plugin)*
+
 ## Plugin 0.3.23 — Calls that keep you posted, and one-tap plugin updates
 
 - **Calls don't go quiet while work runs.** About every 45 seconds of silence while a task runs, the call says one short line about what it's doing, written from its actual tool calls ("I've gone through the checkout logs and I'm rerunning the test now"), even when the agent writes no progress notes. With nothing new it says what's running and for how long, and after three of those it waits 90 seconds. Never while you're muted, talking, or have a question or approval waiting; answers are always spoken, muted or not. Off with the same "spoken progress" setting. *(Plugin; mute needs Mac with this change)*
