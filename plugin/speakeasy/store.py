@@ -1320,6 +1320,9 @@ class StateStore:
                                   title),
             "job": self.job(key, session_id, continued),
         }
+        if session_id or _placed_session(continued):
+            # The Hermes session its conversation lives in: "Show full session" opens it (history).
+            work["session_id"] = session_id or _placed_session(continued)
         behind = self.queued_behind(key, session_id, status)
         if behind:
             # Queued in its chat thread behind another task's turn: shown as waiting for that task

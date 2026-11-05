@@ -71,7 +71,8 @@ final class SessionHistoryTests: XCTestCase {
            {"kind": "note", "id": "m4", "text": "A helper reported back"},
            {"kind": "assistant", "id": "m5", "text": "Three brackets."},
            {"kind": "weird", "id": "m6", "text": "?"}],
-         "jobs": [{"run_id": "run_1", "status": "waiting_for_approval", "title": "Order brackets"}],
+         "jobs": [{"run_id": "run_1", "status": "waiting_for_approval", "title": "Order brackets", "session_id": "d1"}],
+         "approvals": [{"run_id": "run_1", "description": "Order 3?", "choices": ["once", "always", "deny"]}],
          "sends": [{"send_id": "hs_1", "status": "needs_you", "text": "Order them",
                     "prompt": {"kind": "approval", "prompt_id": "p1", "text": "Order 3?", "choices": ["once", "deny"]}},
                    {"send_id": "hs_0", "status": "completed", "text": "hi", "reply": "Hello"}]}}
@@ -83,7 +84,9 @@ final class SessionHistoryTests: XCTestCase {
         XCTAssertTrue(c.hasMore)
         XCTAssertEqual(c.before, 120)
         XCTAssertEqual(c.jobs.first?.runID, "run_1")
-        XCTAssertEqual(c.waitingJobs.map(\.runID), ["run_1"])
+        XCTAssertEqual(c.jobs.first?.sessionID, "d1")
+        XCTAssertEqual(c.approvals.first?.choices, ["once", "deny"], "never always")
+        XCTAssertEqual(HistoryApproval.label("once"), "Approve")
         XCTAssertEqual(c.sends.first?.prompt?.choices, ["once", "deny"])
         XCTAssertTrue(c.isWorking)
         XCTAssertNil(HistoryConversation(json: json(#"{"error": "x"}"#)))
