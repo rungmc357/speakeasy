@@ -99,7 +99,7 @@ final class ServerSettingsTests: XCTestCase {
     func testDefaultsAndTolerance() throws {
         let s = try ServerSettings.decode(Data(#"{"settings":{"assistant_name":"  ","idle_pause_minutes":"five","voice":{"provider":"weird"}}}"#.utf8))
         XCTAssertEqual(s.resolvedAssistantName, "Hermes")
-        XCTAssertEqual(s.idleTimeout, 300)
+        XCTAssertEqual(s.idleTimeout, 900)
         XCTAssertEqual(s.resolvedProvider, .codex)
         XCTAssertNil(s.deliveryTarget)
         XCTAssertEqual(try ServerSettings.decode(Data("{}".utf8)), ServerSettings())

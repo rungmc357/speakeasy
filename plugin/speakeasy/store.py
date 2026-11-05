@@ -233,6 +233,10 @@ class StateStore:
                     f"SELECT idem_key FROM runs WHERE run_id IS NULL AND status IN ({','.join('?' * len(settled))})",
                     settled).fetchall():
                 self._db.execute("UPDATE runs SET run_id=? WHERE idem_key=?", (local_run_id(key), key))
+            # Tasks stay on the board across calls until cleared (board_carry). Finished ones from
+            # before that existed stay off a new call's board: an upgrade doesn't bring back history.
+            self._db.execute("INSERT OR IGNORE INTO meta (key,value) VALUES ('board_carry_since',?)",
+                             (repr(time.time()),))
 
     # -- session admission -------------------------------------------------------------
     def reserve_session(self, request_id: str, fingerprint: str, interaction_id: str) -> tuple[str, dict[str, Any] | None]:
@@ -1033,7 +1037,43 @@ class StateStore:
             if work is not None and not work.get("dismissed"):
                 work["task_id"] = delegation_id or key
                 tasks.append(work)
-        return tasks + self.carried_draft_tasks({t["task_id"] for t in tasks} | {k for k, _ in rows})
+        # Earlier calls' open and not-cleared tasks stay too (the workspace outlives a call).
+        exclude = {t["task_id"] for t in tasks} | {k for k, _ in rows}
+        earlier = self.board_carry(exclude)
+        exclude |= {t["task_id"] for t in earlier}
+        return earlier + tasks + self.carried_draft_tasks(exclude)
+
+    def board_carry_keys(self, exclude: set[str], limit: int = 12) -> list[tuple[str, str]]:
+        """Earlier calls' tasks that stay on the board until the user clears them, oldest first, as
+        (idem_key, task_id): every one still running or waiting on the user, and every finished one
+        not cleared (those that settled before carrying existed excepted). Never a rejected one."""
+        try:
+            since = float(self.get_meta("board_carry_since") or 0)
+        except ValueError:
+            since = 0.0
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT idem_key, delegation_id, status, settled_at FROM runs WHERE status!='rejected' "
+                "AND COALESCE(dismissed,0)=0 ORDER BY rowid").fetchall()
+        out = []
+        for key, delegation_id, status, settled_at in rows:
+            if key in exclude or (delegation_id and delegation_id in exclude):
+                continue
+            if status in TERMINAL and float(settled_at or 0) < since:
+                continue
+            out.append((key, delegation_id or key))
+        return out[-limit:]
+
+    def board_carry(self, exclude: set[str], limit: int = 12) -> list[dict[str, Any]]:
+        """board_carry_keys as work rows marked ``carried`` (not answers of the current call)."""
+        out = []
+        for key, task_id in self.board_carry_keys(exclude, limit):
+            work = self.work(idem_key=key)
+            if work is not None and not work.get("dismissed"):
+                work["task_id"] = task_id
+                work["carried"] = True
+                out.append(work)
+        return out
 
     def carried_draft_tasks(self, exclude: set[str]) -> list[dict[str, Any]]:
         """Earlier calls' tasks that still hold something waiting for the user: an email draft

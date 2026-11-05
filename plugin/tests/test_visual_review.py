@@ -60,6 +60,9 @@ def test_review_waits_until_dismissed_and_survives_new_calls(service):
     assert store.work(idem_key="se_design")["review"]["images"] == [2]
     store.dismiss_review("run_design")
     assert "review" not in store.work(idem_key="se_design")
+    # the finished task stays on the board (the workspace outlives a call) until it's cleared
+    assert [t for t in store.latest_tasks() if t["task_id"] == "item_se_design"]
+    store.dismiss(["run_design"])
     assert not [t for t in store.latest_tasks() if t["task_id"] == "item_se_design"]
     # the images stay in the task
     assert len(store.work(idem_key="se_design")["result"]["cards"]) == 2

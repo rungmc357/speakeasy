@@ -519,12 +519,12 @@ public final class NativeVoiceClient: VoiceCallClient {
                 guard let self else { return }
                 if previewMode { return }
                 dispatch(.tick)
-                // Five quiet minutes: close the paid voice session. Pause, not End, so the
+                // Quiet for idle_pause_minutes: close the paid voice session. Pause, not End, so the
                 // conversation and running tasks survive and Resume picks up where it left off.
                 if model.state.idleExpired(at: Date()) {
                     let minutes = Int((model.state.idleTimeout / 60).rounded())
                     onStatus?("No audio for \(minutes) minute\(minutes == 1 ? "" : "s"): voice paused")
-                    pause()
+                    pause(quietFor: minutes)
                 }
                 if dwell.tick(now: Date()) {
                     model.shownStatus = dwell.shown ?? ""
@@ -836,9 +836,9 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// Ask the api to hold the conversation, then close the voice session.
     /// If the api cannot hold it the call stays live (nothing is lost).
-    private func pause() {
+    private func pause(quietFor minutes: Int? = nil) {
         guard model.state.canPause, let api, let id = model.state.interactionID else { return }
-        dispatch(.pauseRequested)
+        dispatch(minutes.map { .quietPauseRequested(minutes: $0) } ?? .pauseRequested)
         Task { [weak self] in
             do {
                 try await api.pause(interactionID: id)

@@ -13,7 +13,9 @@ final class VoiceStateTests: XCTestCase {
     }
 
     func live() -> VoiceState {
-        run([.startRequested, .sessionAdmitted(interactionID: "vi_1"), .sessionStarted])
+        var s = VoiceState()
+        s.idleTimeout = 5 * 60   // these tests use a 5-minute auto-pause (the default is 15)
+        return run([.startRequested, .sessionAdmitted(interactionID: "vi_1"), .sessionStarted], from: s)
     }
 
     func work(_ status: String = "working", short: String? = "Checking UA 123 status", at: Date? = nil,
@@ -331,5 +333,39 @@ final class VoiceStateTests: XCTestCase {
         XCTAssertEqual(formatElapsed(5), "5s")
         XCTAssertEqual(formatElapsed(92), "1m 32s")
         XCTAssertEqual(formatElapsed(3720), "1h 02m")
+    }
+
+    func testQuietPauseSaysWhyAndClearsOnResume() {
+        XCTAssertEqual(VoiceState.defaultIdleTimeout, 15 * 60)
+        var s = live()
+        s = reduce(s, .quietPauseRequested(minutes: 15), now: t0 + 1)
+        XCTAssertTrue(s.pausing)
+        s = reduce(s, .sessionClosed, now: t0 + 2)
+        XCTAssertEqual(s.connection, .paused)
+        XCTAssertEqual(s.quietPausedMinutes, 15)
+        XCTAssertEqual(present(s).secondary, "Paused after 15 min of quiet · your jobs keep running")
+        XCTAssertEqual(present(s).pauseLabel, "Resume")
+        s = reduce(s, .resumeRequested, now: t0 + 3)
+        XCTAssertNil(s.quietPausedMinutes)
+        // The user's own Pause keeps the usual line.
+        var p = live()
+        p = reduce(p, .pauseRequested, now: t0 + 1)
+        p = reduce(p, .sessionClosed, now: t0 + 2)
+        XCTAssertNil(p.quietPausedMinutes)
+        XCTAssertEqual(present(p).secondary, "Voice off · not billed · Resume to continue")
+    }
+
+    func testCallLimitChoices() {
+        XCTAssertEqual(ServerSettings.choices(ServerSettings.idlePauseChoices, including: 15), [0, 5, 10, 15, 30, 60])
+        XCTAssertEqual(ServerSettings.choices(ServerSettings.maxCallChoices, including: 30), [15, 30, 60, 120, 240, 0])
+        XCTAssertEqual(ServerSettings.choices(ServerSettings.maxCallChoices, including: 45, noLimit: false), [15, 30, 45, 60, 120, 240])
+        XCTAssertEqual(ServerSettings.idlePauseLabel(0), "Never")
+        XCTAssertEqual(ServerSettings.idlePauseLabel(10), "After 10 min")
+        XCTAssertEqual(ServerSettings.maxCallLabel(0), "No limit")
+        XCTAssertEqual(ServerSettings.maxCallLabel(120), "2 hours")
+        XCTAssertTrue(ServerSettings.callLimitsFooter(idlePauseMinutes: 15, maxCallMinutes: 0).contains("voice provider's minutes"))
+        XCTAssertTrue(ServerSettings.callLimitsFooter(idlePauseMinutes: 15, maxCallMinutes: 30).contains("jobs keep running"))
+        let caps = try? JSONDecoder().decode(ServerCapabilities.self, from: Data(#"{"call_no_limit":true}"#.utf8))
+        XCTAssertEqual(caps?.callNoLimit, true)
     }
 }

@@ -342,6 +342,9 @@ enum FilmFrames {
         s = base(); s.tasks = [running, failed]
         out.append(Shot("ux-12-failed", done(s), nil))
         out.append(Shot("ux-12b-failed-detail", done(s), "task:f"))
+        // 12c: the call paused itself after 15 quiet minutes; the jobs stay on the board.
+        s = base(); s.tasks = [running, failed]; s.connection = .paused; s.quietPausedMinutes = 15
+        out.append(Shot("ux-12c-quiet-paused", done(s), nil))
 
         // 13–14: card actions: a device toggle (server action) with its toast; a chart and a place.
         let lamp = card(["kind": "home", "title": "Office", "devices": [

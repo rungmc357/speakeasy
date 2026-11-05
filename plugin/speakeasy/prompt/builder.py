@@ -139,6 +139,40 @@ def away_block(away: list[dict[str, Any]], names: Names) -> str:
     return "\n".join(parts)
 
 
+def open_work_block(tasks: list[dict[str, Any]], names: Names) -> str:
+    """A new call's open jobs from earlier calls: still on the board (running, waiting on them, or
+    finished and not cleared). They are this call's tasks too, so the voice can talk about them and
+    a follow-up about one goes to it; it doesn't open the call with them."""
+    lines, waiting = [], False
+    for task in tasks[-10:]:
+        request_event = next((e for e in task.get("events") or [] if e.get("kind") == "request"), None)
+        request = notice_text(task.get("title") or (request_event or {}).get("text"), 140) or "an earlier request"
+        status = task.get("status")
+        if task.get("set_aside"):
+            lines.append(f"- {request}: set aside by {names.user} (closed; don't ask its question again)")
+        elif status == "waiting_for_approval":
+            waiting = True
+            lines.append(f"- {request}: waiting for {names.possessive} approval")
+        elif status == "completed":
+            spoken = notice_text((task.get("result") or {}).get("spoken"), 200)
+            lines.append(f"- {request}: finished" + (f": {spoken}" if spoken else ""))
+        elif status in {"failed", "cancelled", "interrupted", "ambiguous"}:
+            why = failed_note(task)
+            lines.append(f"- {request}: " + (f"failed: {why}" if why else f"stopped ({status})"))
+        else:
+            short = notice_text(task.get("short_status"), 80)
+            lines.append(f"- {request}: still working" + (f" ({short})" if short else ""))
+    if not lines:
+        return ""
+    text = ("# Open jobs from earlier calls (still on the board)\n"
+            f"{names.user_cap}'s earlier calls left these jobs open; they are on screen and belong to this call too. "
+            f"If {names.user} asks about one or adds to it, it is that job. Don't open the call with them or "
+            "read the list out.\n" + "\n".join(lines))
+    if waiting:
+        text += ("\nIf it fits after their opening line, mention once that something is waiting for their approval.")
+    return text
+
+
 def resume_block(tasks: list[dict[str, Any]], names: Names) -> str:
     """Instructions for a call resumed after Pause: continue, don't restart."""
     lines = [
@@ -299,7 +333,8 @@ def task_room_block(names: Names, room: str) -> str:
 def build_live_instructions(names: Names, *, brief: str = "", away: list[dict[str, Any]] | None = None,
                             recent_voice: str = "", resume: str = "", extra: str = "", now: str = "",
                             delivery_label: str = "", channels: list[dict[str, Any]] | None = None,
-                            tour: str = "", room: str = "", max_chars: int = MAX_INSTRUCTION_CHARS) -> str:
+                            tour: str = "", room: str = "", open_work: str = "",
+                            max_chars: int = MAX_INSTRUCTION_CHARS) -> str:
     """Product rules + optional voice brief + per-call context, under the budget.
 
     Rules are never trimmed. The brief is capped. Optional per-call blocks are dropped
@@ -320,6 +355,8 @@ def build_live_instructions(names: Names, *, brief: str = "", away: list[dict[st
     head += "\n\n" + identity_reminder(names)  # the voice model's own persona must not win
     tail = [resume.strip()] if resume.strip() else []
     optional = []  # lowest priority last so it is trimmed first
+    if open_work.strip():
+        optional.append(open_work.strip())
     block = away_block(away or [], names)
     if block:
         optional.append(block)

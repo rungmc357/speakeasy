@@ -246,7 +246,40 @@ public struct ServerSettings: Codable, Equatable, Sendable {
         return name.isEmpty ? VoiceState.defaultAssistantName : name
     }
     public var resolvedProvider: VoiceProvider { voice?.provider.flatMap(VoiceProvider.init(rawValue:)) ?? .codex }
-    /// Idle auto-pause in seconds; 0 disables. Default 5 minutes.
+    /// "Pause a quiet call" choices in minutes (0 = Never), the same on the Mac and the iPhone.
+    public static let idlePauseChoices = [0, 5, 10, 15, 30, 60]
+    public static let defaultIdlePauseMinutes = 15
+    /// "End a call after" choices in minutes; 0 = No limit (servers with `call_no_limit`).
+    public static let maxCallChoices = [15, 30, 60, 120, 240, 0]
+    public static let defaultMaxCallMinutes = 30
+    /// The choices to show: the list (without No limit when the server can't store it), plus the
+    /// stored value if it's off the list (a hand-edited 45), in order. 0 (Never / No limit) keeps
+    /// its place: first when the list starts with it, else last.
+    public static func choices(_ list: [Int], including value: Int, noLimit: Bool = true) -> [Int] {
+        let all = Set(list.filter { noLimit || $0 != 0 } + [value])
+        let minutes = all.filter { $0 != 0 }.sorted()
+        guard all.contains(0) else { return minutes }
+        return list.first == 0 ? [0] + minutes : minutes + [0]
+    }
+    public static func idlePauseLabel(_ minutes: Int) -> String { minutes == 0 ? "Never" : "After \(durationLabel(minutes))" }
+    public static func maxCallLabel(_ minutes: Int) -> String { minutes == 0 ? "No limit" : durationLabel(minutes) }
+    public static func durationLabel(_ minutes: Int) -> String {
+        if minutes < 60 || minutes % 60 != 0 && minutes < 120 { return "\(minutes) min" }
+        if minutes % 60 == 0 { return minutes == 60 ? "1 hour" : "\(minutes / 60) hours" }
+        return "\(minutes / 60) h \(minutes % 60) min"
+    }
+    /// The footer under the two call controls: what a pause keeps, and what No limit costs.
+    public static func callLimitsFooter(idlePauseMinutes: Int, maxCallMinutes: Int) -> String {
+        let pause = idlePauseMinutes == 0
+            ? "A quiet call stays open until you end it."
+            : "A quiet call pauses after \(durationLabel(idlePauseMinutes)): your jobs keep running and stay on the board, and Resume picks up where you left off."
+        let limit = maxCallMinutes == 0
+            ? "With no limit, a call you forget keeps using your voice provider's minutes until you end it."
+            : "The limit keeps a forgotten call from running up your voice provider's minutes."
+        return "\(pause) \(limit)"
+    }
+
+    /// Idle auto-pause in seconds; 0 disables. Default 15 minutes.
     public var idleTimeout: TimeInterval {
         guard let minutes = idlePauseMinutes, minutes.isFinite, minutes >= 0 else { return VoiceState.defaultIdleTimeout }
         return min(minutes, 24 * 60) * 60
@@ -839,18 +872,22 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var jobSubagents: Bool
     /// Every Hermes session, listed, read and written to by id (`GET /voice/history`, SessionHistory.swift).
     public var history: Bool
+    /// `voice.max_call_minutes` 0 means no limit ("End a call after: No limit").
+    public var callNoLimit: Bool
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
-                history: Bool = false) {
+                history: Bool = false, callNoLimit: Bool = false) {
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
         self.taskMessages = taskMessages; self.jobActivity = jobActivity; self.toolLog = toolLog
         self.startJobs = startJobs; self.jobSubagents = jobSubagents; self.history = history
+        self.callNoLimit = callNoLimit
     }
     enum CodingKeys: String, CodingKey {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
+        case callNoLimit = "call_no_limit"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -863,5 +900,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         startJobs = (try? c.decodeIfPresent(Bool.self, forKey: .startJobs)) ?? false
         jobSubagents = (try? c.decodeIfPresent(Bool.self, forKey: .jobSubagents)) ?? false
         history = (try? c.decodeIfPresent(Bool.self, forKey: .history)) ?? false
+        callNoLimit = (try? c.decodeIfPresent(Bool.self, forKey: .callNoLimit)) ?? false
     }
 }

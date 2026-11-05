@@ -231,7 +231,9 @@ public func present(_ s: VoiceState) -> PillPresentation {
         case .ending where s.micHealth == .repairing:
             secondary = "Mic wasn't picking you up · reconnecting, conversation kept"
         case .ending: secondary = s.pausing ? "Holding your place" : "Confirming final usage"
-        case .paused: secondary = "Voice off · not billed · Resume to continue"
+        case .paused:
+            if let minutes = s.quietPausedMinutes { secondary = quietPauseLine(minutes) }
+            else { secondary = "Voice off · not billed · Resume to continue" }
         case .ended(.complete): secondary = "Closed and confirmed"
         case .ended(.incomplete): secondary = "Final usage confirmation unavailable"; tone = .warning
         case .failed(let message): secondary = message; tone = .error
@@ -239,6 +241,10 @@ public func present(_ s: VoiceState) -> PillPresentation {
         }
     }
     if case .failed = s.connection, let error = s.lastError { secondary = error; tone = .error }
+    // Paused for quiet: say so plainly, unless something needs the user.
+    if s.connection == .paused, let minutes = s.quietPausedMinutes, tone != .attention {
+        secondary = quietPauseLine(minutes); tone = .plain
+    }
     // A refused drop or the Screen Recording hint shows for a few seconds; an approval still wins.
     if s.connection.isInCall, let notice = s.sharing.notice, notice.isFresh(at: now), tone != .attention {
         secondary = notice.text
@@ -289,4 +295,9 @@ public struct StatusDwell: Equatable, Sendable {
         shown = pending; self.shownAt = now; self.pending = nil
         return true
     }
+}
+
+/// What a call that paused itself for quiet says: why it stopped, and that the work didn't.
+public func quietPauseLine(_ minutes: Int) -> String {
+    "Paused after \(max(1, minutes)) min of quiet · your jobs keep running"
 }

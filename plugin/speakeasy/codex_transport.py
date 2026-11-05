@@ -138,7 +138,7 @@ def login_status(binary: Path | None, runner: Callable[..., Any] = subprocess.ru
 class CodexTransport:
     """One `codex app-server` process speaking JSON-RPC lines on stdio."""
 
-    def __init__(self, binary: Path | None, workdir: Path, max_call_s: int = 1800,
+    def __init__(self, binary: Path | None, workdir: Path, max_call_s: float = 1800,
                  popen: Callable[..., Any] = subprocess.Popen):
         if binary is None or not Path(binary).is_file() or not os.access(binary, os.X_OK):
             raise RuntimeError("Codex app-server executable unavailable")

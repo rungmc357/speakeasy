@@ -191,6 +191,8 @@ TYPED_NOT_CONNECTED = "not_connected"  # the call (or its voice connection) is g
 TYPED_NOT_DELIVERED = "not_delivered"  # the call is up but this one send failed; nothing recorded
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 MAX_TASKS = 8
+# Earlier calls' tasks kept on a call's board until cleared (running, waiting on the user, finished).
+MAX_BOARD = 12
 ACTIVE_RUN_STATES = {"admitting", "running", "working", "waiting_for_approval", "resolving_approval",
                      "cancel_requested", "waiting_on_task"}
 CONTINUITY_WAIT_S = 600
@@ -553,6 +555,7 @@ class Interaction:
     call_closed: bool = False
     progress_spoken_at: float = 0.0  # last spoken progress update on this call, any task (monotonic)
     paused: bool = False
+    idle_paused_minutes: int | None = None  # paused for quiet after this many minutes (not by the user)
     mic_muted: bool | None = None  # the app's mic is off (POST .../mic), None = never said; only the pulse cares
     pause_bookkept: bool = False
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)
@@ -572,6 +575,10 @@ class Interaction:
     room_nudged: bool = False
     last_activity: float = dataclasses.field(default_factory=time.monotonic)
     successor: "Interaction | None" = dataclasses.field(default=None, repr=False)
+    # A later call (not a resume) that took on this ended or paused call's open tasks: their results,
+    # approvals and follow-ups go there (head()), and carried_keys on it names the tasks it took on.
+    carried_by: "Interaction | None" = dataclasses.field(default=None, repr=False)
+    carried_keys: set[str] = dataclasses.field(default_factory=set, repr=False)
     worker: Any = dataclasses.field(default=None, repr=False)
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock, repr=False)
     feed: EventFeed = dataclasses.field(default_factory=EventFeed, repr=False)
@@ -604,25 +611,35 @@ class Interaction:
                 "finalization": self.finalization,
                 "error": (latest.error if latest else None) or self.error,
                 "paused": self.paused,
+                # Paused for quiet (idle_pause_minutes), not by the user: "Paused after N min of quiet".
+                **({"idle_paused_minutes": self.idle_paused_minutes}
+                   if self.paused and self.idle_paused_minutes else {}),
                 "resumed_from": self.resumed_from,
                 **self.attachments.snapshot(),  # screen, captures, attachments
                 "hold": self.hold,
             }
 
     def head(self) -> "Interaction":
-        """The newest call in this Pause/Resume chain (results are routed there)."""
-        current = self
-        while current.successor is not None:
-            current = current.successor
+        """The newest call in this Pause/Resume chain, or the later call that took on its tasks
+        (results are routed there)."""
+        current, seen = self, {id(self)}
+        while (nxt := current.successor or current.carried_by) is not None and id(nxt) not in seen:
+            seen.add(id(nxt))
+            current = nxt
         return current
 
 
 def interaction_tasks(store: Any, interaction: Interaction, assistant_name: str = "Hermes") -> list[dict[str, Any]]:
-    """Every voice task of this call (parallel runs, oldest first), as work objects + task_id."""
+    """Every voice task of this call (parallel runs, oldest first), as work objects + task_id, then
+    earlier calls' tasks that stay on the board until cleared (the workspace outlives a call)."""
     with interaction.lock:
         runs = [(r.delegation_id, r.idem_key, r.run_id, r.status) for r in interaction.runs.values()]
+        carried = set(interaction.carried_keys)
+    # Its own tasks are capped at MAX_TASKS; tasks taken on from an earlier call count separately.
+    own = [r for r in runs if r[1] not in carried][-MAX_TASKS:]
+    runs = [r for r in runs if r[1] in carried][-MAX_BOARD:] + own
     tasks = []
-    for delegation_id, key, run_id, status in runs[-MAX_TASKS:]:
+    for delegation_id, key, run_id, status in runs:
         if status == "rejected":
             continue
         work = store.work(idem_key=key, assistant_name=assistant_name)
@@ -633,9 +650,15 @@ def interaction_tasks(store: Any, interaction: Interaction, assistant_name: str 
                     "updated": None, "events": [], "short_status": None, "detail": None,
                     "updated_at": None, "status_source": None, "result": None, "email_drafts": []}
         work["task_id"] = delegation_id
+        if key in carried:
+            work["carried"] = True  # an earlier call's task: not an answer of this conversation
         tasks.append(work)
+    exclude = {t["task_id"] for t in tasks} | {r[1] for r in runs} | {r[0] for r in runs}
+    # Earlier calls' tasks this call doesn't hold (e.g. after a restart) stay on the board too.
+    earlier = store.board_carry(exclude, MAX_BOARD) if hasattr(store, "board_carry") else []
+    exclude |= {t["task_id"] for t in earlier}
     # A draft from an earlier call still waiting for Send / Deny / Revise stays on screen.
-    return tasks + store.carried_draft_tasks({t["task_id"] for t in tasks} | {r[1] for r in runs})
+    return earlier + tasks + store.carried_draft_tasks(exclude)
 
 
 def publish_state(store: Any, interaction: Interaction, assistant_name: str = "Hermes") -> None:
@@ -1171,7 +1194,8 @@ class SidebandWorker:
     def call_tasks(self) -> list[dict[str, Any]]:
         """This call's tasks for the call log: what was asked, how it ended, the spoken answer."""
         with self.interaction.lock:
-            keys = [(r.idem_key, r.status) for r in self.interaction.runs.values()]
+            keys = [(r.idem_key, r.status) for r in self.interaction.runs.values()
+                    if r.idem_key not in self.interaction.carried_keys]
         out = []
         for key, status in keys:
             request = self.store.request_text(key)

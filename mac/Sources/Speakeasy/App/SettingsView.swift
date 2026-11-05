@@ -688,16 +688,7 @@ private struct BehaviorSettings: View {
                 Text("Only on calls from the Mac that runs Hermes; the volume comes back a few seconds after it stops talking or when the call ends.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Stepper(value: Binding(get: { Int(draft.idlePauseMinutes ?? 5) }, set: { draft.idlePauseMinutes = Double($0) }),
-                    in: 0...60) {
-                let minutes = Int(draft.idlePauseMinutes ?? 5)
-                Text(minutes == 0 ? "Auto-pause a quiet call: off" : "Auto-pause a quiet call after \(minutes) min")
-            }
-            Stepper(value: Binding(get: { draft.maxCallMinutes ?? 30 }, set: { draft.maxCallMinutes = $0 }),
-                    in: 5...240, step: 5) {
-                Text("End a call after \(draft.maxCallMinutes ?? 30) min")
-            }
-            .help("A hard cap per call so a forgotten call can't run up your plan or bill")
+            CallLimitsSection(draft: $draft, noLimit: app.status?.capabilities?.callNoLimit == true)
             Section("Task routing") {
                 Text(app.status?.routingExplainer ?? routingExplainerFallback)
                     .font(.callout).foregroundStyle(.secondary)
@@ -1143,6 +1134,68 @@ struct RoutingModelPicker: View {
     }
 }
 
+
+// MARK: On calls
+
+/// "Pause a quiet call" and "End a call after" (the same choices as the iPhone's Settings › On calls).
+struct CallLimitsSection: View {
+    @Binding var draft: ServerSettings
+    /// The server stores 0 as no limit (`capabilities.call_no_limit`).
+    let noLimit: Bool
+
+    var body: some View {
+        Section("On calls") {
+            let pause = Int(draft.idlePauseMinutes ?? Double(ServerSettings.defaultIdlePauseMinutes))
+            let limit = draft.maxCallMinutes ?? ServerSettings.defaultMaxCallMinutes
+            Picker("Pause a quiet call", selection: Binding(get: { pause }, set: { draft.idlePauseMinutes = Double($0) })) {
+                ForEach(ServerSettings.choices(ServerSettings.idlePauseChoices, including: pause), id: \.self) { m in
+                    Text(ServerSettings.idlePauseLabel(m)).tag(m)
+                }
+            }
+            Picker("End a call after", selection: Binding(get: { limit }, set: { draft.maxCallMinutes = $0 })) {
+                ForEach(ServerSettings.choices(ServerSettings.maxCallChoices, including: limit, noLimit: noLimit), id: \.self) { m in
+                    Text(ServerSettings.maxCallLabel(m)).tag(m)
+                }
+            }
+            Text(ServerSettings.callLimitsFooter(idlePauseMinutes: pause, maxCallMinutes: limit))
+                .font(.caption).foregroundStyle(limit == 0 ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// `--settings-calls-snapshot <dir>`: the On calls section with invented values (default, and No
+/// limit), as PNGs. Development only; no server.
+@MainActor
+enum CallLimitsSnapshot {
+    static func run(dir: String) {
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let shots: [(String, ServerSettings)] = [
+            ("mac-settings-on-calls", { var s = ServerSettings(idlePauseMinutes: 15); s.maxCallMinutes = 30; return s }()),
+            ("mac-settings-on-calls-no-limit", { var s = ServerSettings(idlePauseMinutes: 0); s.maxCallMinutes = 0; return s }()),
+        ]
+        var windows: [NSWindow] = []
+        for (name, settings) in shots {
+            let host = NSHostingController(rootView: Form { CallLimitsSection(draft: .constant(settings), noLimit: true) }
+                .formStyle(.grouped).frame(width: 560, height: 230))
+            let window = NSWindow(contentViewController: host)
+            window.title = name
+            window.setContentSize(NSSize(width: 560, height: 230))
+            window.makeKeyAndOrderFront(nil)
+            windows.append(window)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            for (window, shot) in zip(windows, shots) {
+                guard let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+                view.cacheDisplay(in: view.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/\(shot.0).png"))
+                print("snapshot \(dir)/\(shot.0).png")
+            }
+            exit(0)
+        }
+    }
+}
 
 // MARK: Settings smoke (development only)
 

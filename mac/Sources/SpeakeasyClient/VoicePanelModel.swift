@@ -478,14 +478,20 @@ public final class VoicePanelModel: ObservableObject {
     /// A fresh screen-sharing notice ("Screen Recording is off · Set up", "Up to 3 at a time") is on
     /// the status line now: it wins over the orb's summary, which would otherwise hide it (and its tap).
     private var showingShareNotice: Bool { shareNotice.map { $0.text == shownStatus } ?? false }
+    /// The call paused itself for quiet: the header says so (the board below shows what needs you).
+    private var quietPauseStatus: String? {
+        guard state.connection == .paused, let minutes = state.quietPausedMinutes else { return nil }
+        return quietPauseLine(minutes)
+    }
     public var headerStatus: String {
+        if let quiet = quietPauseStatus { return quiet }
         // A problem with a fix button under the header: the status line points at it, not repeats it.
         if callProblem != nil && !showingShareNotice && orbReason == nil { return "One click to fix it, below" }
         // While the user is talking, the line under "Hearing you" must not say a reply is coming.
         if voicePhase == .hearing && !showingShareNotice && orbReason == nil { return "Keep going" }
         return showingShareNotice ? shownStatus : (orbReason?.text ?? shownStatus)
     }
-    public var headerTone: StatusTone { showingShareNotice ? shownTone : (orbReason?.tone ?? shownTone) }
+    public var headerTone: StatusTone { quietPauseStatus != nil ? .plain : showingShareNotice ? shownTone : (orbReason?.tone ?? shownTone) }
     public var selectedJob: Job? { selectedJobID.flatMap { id in jobs.first { $0.id == id } } }
     /// The board replaces the task list once there's more than one task, anything needs you, or a
     /// task brought back a card. Cards never pile up under the board: each lives in its job's view.

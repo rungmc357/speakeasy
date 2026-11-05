@@ -1277,10 +1277,10 @@ partial object (nested objects merge); unknown keys or invalid values are 400.
 | `voice.provider` | `"codex"` | `codex` (ChatGPT sign-in) or `openai` (API key) |
 | `voice.voice` | `""` | voice name; empty = provider default |
 | `voice.codex_path` | `""` | path to `codex`; empty = find on PATH |
-| `voice.max_call_minutes` | `30` | hard cap per call |
+| `voice.max_call_minutes` | `30` | hard cap per call; `0` = no limit (a forgotten call keeps using the voice provider's minutes) |
 | `speech.progress` | `true` | short spoken "still working" updates on long tasks while the call is quiet (finished work, questions and approvals are always spoken, even while muted) |
 | `speech.interval_seconds` | `45` | how often those updates come: `30`, `45`, `60`, `90` or `120`. With the mic open (the app posted `/mic` `{"muted": false}`) a task's first line comes 12-20 s in, then one every interval; never-reported calls start at the interval and back off on a quiet task; muted calls get none |
-| `idle_pause_minutes` | `5` | pause a silent call after this long |
+| `idle_pause_minutes` | `15` | pause a silent call after this long; `0` = never. Tasks keep running and stay on the board; a new call starts with them |
 | `instructions_extra` | `""` | extra voice instructions (up to 1,000 characters) |
 | `hermes_profile` | `""` | Hermes profile for runs; empty = this gateway's |
 | `delivery.target` | `"none"` | post finished results to a Hermes chat: `none`, `telegram`, `discord`, `discord:<chat_id>`, `telegram:<chat_id>[:<thread_id>]`, ... |
@@ -1309,7 +1309,7 @@ partial object (nested objects merge); unknown keys or invalid values are 400.
       "codex_path": "",
       "max_call_minutes": 30
     },
-    "idle_pause_minutes": 5,
+    "idle_pause_minutes": 15,
     "instructions_extra": "",
     "hermes_profile": "",
     "delivery": {

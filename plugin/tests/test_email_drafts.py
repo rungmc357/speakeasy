@@ -190,6 +190,10 @@ def test_a_waiting_draft_survives_ending_the_call(service):
     assert carried and carried[0]["email_drafts"][0]["subject"] == "Portugal trip details"
     draft_id = carried[0]["email_drafts"][0]["draft_id"]
     store.transition_draft(draft_id, {"pending"}, "denied")
+    # the finished task stays on the board (the workspace outlives a call) until it's cleared
+    left = [t for t in store.latest_tasks() if t["task_id"] == "item_old"]
+    assert left and not [d for d in left[0].get("email_drafts") or [] if d.get("state") == "pending"]
+    store.dismiss(["run_old"])
     assert not [t for t in store.latest_tasks() if t["task_id"] == "item_old"]
 
 

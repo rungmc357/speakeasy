@@ -762,7 +762,7 @@ struct VoicePanelView: View {
                     else if p.statusClickable || model.showsSlim { model.onToggleWork() }
                 }) {
                     Group {
-                        if model.orbAnswerDot && model.orbState != .working, model.orbReason != nil {
+                        if model.orbAnswerDot && model.orbState != .working, model.orbReason != nil, model.state.quietPausedMinutes == nil || model.state.connection != .paused {
                             // New answers read in the orb dot's calm blue.
                             HStack(alignment: .firstTextBaseline, spacing: 3) {
                                 Text(model.headerStatus).font(.system(size: 11.5, weight: .medium)).foregroundStyle(JobOrb.answerBlue).lineLimit(1)

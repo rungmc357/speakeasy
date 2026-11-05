@@ -144,6 +144,9 @@ public struct VoiceState: Equatable, Sendable {
     public var now: Date = Date(timeIntervalSince1970: 0)
     /// Display name of the assistant (from the server's `assistant_name`); never a persona baked in.
     public var assistantName: String = VoiceState.defaultAssistantName
+    /// The call paused itself after this many quiet minutes (not the user's Pause): the paused call
+    /// says "Paused after N min of quiet · your jobs keep running". Nil otherwise; cleared on Resume.
+    public var quietPausedMinutes: Int?
     /// Quiet time before a live call auto-pauses (server `idle_pause_minutes`; 0 disables).
     public var idleTimeout: TimeInterval = VoiceState.defaultIdleTimeout
     /// Hint shown on the idle panel (the user's call shortcut, e.g. "⌃⌥Space").
@@ -177,7 +180,7 @@ public struct VoiceState: Equatable, Sendable {
 
     /// A live call with no speech from either side for this long closes its paid voice
     /// session (pause, so Resume keeps the conversation and tasks keep running).
-    public static let defaultIdleTimeout: TimeInterval = 5 * 60
+    public static let defaultIdleTimeout: TimeInterval = 15 * 60
     public static let speechQuietGap: TimeInterval = 6
     /// the user's words arriving this soon after his previous words are the tail
     /// of the same sentence, even if the assistant has already started replying.
@@ -197,7 +200,7 @@ public struct VoiceState: Equatable, Sendable {
     public var localAudioEnabled: Bool { mic == .live }
     public var activeTasks: [TaskItem] { tasks.filter(\.isActive) }
     public var canPause: Bool { connection == .live && interactionID != nil && !pausing }
-    /// Five quiet minutes on a live call. Not while the assistant is talking or an approval waits on the user.
+    /// Quiet for `idleTimeout` on a live call. Not while the assistant is talking or an approval waits on the user.
     public func idleExpired(at now: Date) -> Bool {
         guard connection == .live, !pausing, approval == nil, let last = lastActivityAt else { return false }
         if case .speaking = speech { return false }
@@ -236,6 +239,8 @@ public enum VoiceEvent: Equatable, Sendable {
     /// the user dismissed a review card (run id, card numbers); hidden right away, api confirms.
     case reviewDismissed(String, [Int])
     case pauseRequested
+    /// The call went quiet for `minutes`: pause it the same way, and say why once it's paused.
+    case quietPauseRequested(minutes: Int)
     /// The api refused to hold the call: stay live.
     case pauseFailed(String)
     case resumeRequested
@@ -290,16 +295,21 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         if s.earlyListening { s.earlyHeard = text; s.lastActivityAt = now }
 
     case .pauseRequested:
-        if s.canPause { s.pausing = true; s.connection = .ending; s.speech = .idle }
+        if s.canPause { s.pausing = true; s.connection = .ending; s.speech = .idle; s.quietPausedMinutes = nil }
+
+    case .quietPauseRequested(let minutes):
+        if s.canPause { s.pausing = true; s.connection = .ending; s.speech = .idle; s.quietPausedMinutes = max(1, minutes) }
 
     case .pauseFailed(let message):
         if s.pausing && s.connection == .ending { s.connection = .live }
         s.pausing = false
+        s.quietPausedMinutes = nil
         s.lastError = message
 
     case .resumeRequested:
         guard s.connection == .paused else { break }
         // Keep the conversation, tasks and mic choice; open a new session.
+        s.quietPausedMinutes = nil
         s.resumeFrom = s.interactionID
         s.interactionID = nil
         s.connection = .connecting

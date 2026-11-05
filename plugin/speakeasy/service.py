@@ -27,8 +27,8 @@ from . import duck as duck_mod
 from . import history as H
 from . import messages as M
 from .brief import BriefInvalid, BriefManager
-from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
-                    TYPED_SENT, ServiceError,
+from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_BOARD, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
+                    TYPED_SENT, BackendRun, ServiceError,
                     Interaction, Notices, Runtime, SidebandWorker, end_shared, interaction_tasks, publish_state,
                     typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
@@ -41,7 +41,7 @@ RESTART_NEEDED = ("Speakeasy was updated while Hermes was running. Restart the H
 from .prompt import builder as P
 from .router import home_plan_call as router_home_plan_call, routing_model
 from .threads import THREAD_PLATFORMS
-from .settings import (GROK_BETA_OFF, OPENAI_KEY_NAME, Settings, SettingsError, default_voice, find_codex, hermes_api_base,
+from .settings import (GROK_BETA_OFF, max_call_seconds, OPENAI_KEY_NAME, Settings, SettingsError, default_voice, find_codex, hermes_api_base,
                        grok_beta_on, hermes_secret, openai_api_key, valid_delivery_target)
 from .store import StateStore
 from .suggest import SuggestError, suggest
@@ -87,6 +87,8 @@ CAPABILITIES["history"] = True
 # then sent with a typed message or new job by id (``attachments`` on /voice/work[/{id}/message]).
 CAPABILITIES["attachments"] = True
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
+# voice.max_call_minutes 0 = no limit (older plugins refuse 0: clients offer "No limit" only with this).
+CAPABILITIES["call_no_limit"] = True
 
 
 
@@ -312,7 +314,7 @@ class VoiceService:
 
     # -- voice sessions -------------------------------------------------------------------------
     def instructions(self, *, away: list[dict[str, Any]], resume: str,
-                     tour: dict[str, str] | None = None, room: str = "") -> str:
+                     tour: dict[str, str] | None = None, room: str = "", open_work: str = "") -> str:
         """The voice's instructions for a new or resumed call. ``room`` is listening mode's room
         text (the builder fences it and leaves recent voice out when it is there)."""
         s = self.settings.get()
@@ -331,7 +333,7 @@ class VoiceService:
                                          resume=resume, extra=s["instructions_extra"], now=now,
                                          delivery_label=label, channels=s["delivery"]["channels"],
                                          tour=P.tour_block(names, tour, label, s["delivery"]["channels"])
-                                         if tour is not None else "", room=room)
+                                         if tour is not None else "", room=room, open_work=open_work)
 
     def create_session(self, body: dict[str, Any], request_id: str, device_id: str = "",
                        local: bool = False) -> dict[str, Any]:
@@ -395,9 +397,19 @@ class VoiceService:
                 room = _merge_rooms(source.room, heard) if heard else source.room
         else:
             away, resume = self.store.away(), ""
+        # A new call (not a resume) picks up the workspace: earlier calls' tasks that are running,
+        # waiting on the user or finished but not cleared stay on its board, and its voice knows them.
+        donors = self.carry_donors() if source is None else []
+        carried = self.carry_runs(donors)
+        open_work = ""
+        if source is None:
+            earlier = self.open_work_tasks(carried, names.assistant_name)
+            open_work = P.open_work_block(earlier, names)
+            shown = {t.get("run_id") for t in earlier}
+            away = [a for a in away if a.get("run_id") not in shown]
         if room:
             logger.info("speakeasy: call has the room transcript from listening mode (%d words)", len(room.split()))
-        instructions = self.instructions(away=away, resume=resume, tour=tour, room=room)
+        instructions = self.instructions(away=away, resume=resume, tour=tour, room=room, open_work=open_work)
         seed = P.resume_input(history)
         provider = s["voice"]["provider"]
         voice = default_voice(s)
@@ -416,7 +428,7 @@ class VoiceService:
                 from .grok_live import realtime_url
                 # The voice socket opens in the worker; the app connects its relay to this call.
                 transport = {"token": token, "url": realtime_url(base), "instructions": instructions,
-                             "seed": seed, "voice": voice, "max_call_s": s["voice"]["max_call_minutes"] * 60}
+                             "seed": seed, "voice": voice, "max_call_s": max_call_seconds(s)}
                 live_id, answer = "grok_" + interaction_id[3:], "relay"
             else:
                 key = self.openai_key()
@@ -458,6 +470,7 @@ class VoiceService:
                                   device_id=device_id, client=self.devices.client(device_id) if device_id else {},
                                   attachments=A.CallAttachments(screen),
                                   room=room if source is None else "", local=local)
+        self.take_on(donors, carried, interaction)
         if source is not None:  # a resume: adopt moves the room text over from the paused call
             self.adopt(source, interaction, history)
             client_result["resumed_from"] = source.interaction_id
@@ -486,7 +499,7 @@ class VoiceService:
             binary = find_codex(s["voice"]["codex_path"])
             if binary is None:
                 raise ServiceError(409, "Codex not found: install the ChatGPT desktop app (it includes Codex) or the Codex CLI, then run `hermes voice setup`")
-            transport = CodexTransport(binary, self.dir / "codex", s["voice"]["max_call_minutes"] * 60)
+            transport = CodexTransport(binary, self.dir / "codex", max_call_seconds(s))
         transport._answer = transport.start(sdp, instructions, seed, voice)
         return transport
 
@@ -558,14 +571,17 @@ class VoiceService:
         return {"finalization": "pending"}
 
     # -- pause / resume / idle ---------------------------------------------------------------
-    def pause(self, interaction_id: str, *, stop_transport: bool = False) -> dict[str, Any]:
-        """Pause closes the paid voice session but keeps the call's transcript and tasks."""
+    def pause(self, interaction_id: str, *, stop_transport: bool = False,
+              idle_minutes: int | None = None) -> dict[str, Any]:
+        """Pause closes the paid voice session but keeps the call's transcript and tasks.
+        ``idle_minutes``: paused for that long a quiet spell (the idle check), not by the user."""
         interaction = self.interaction(interaction_id)
         with interaction.lock:
             if interaction.successor is not None:
                 raise ServiceError(409, "call was already resumed")
             already_closed = interaction.call_closed
             interaction.paused = True
+            interaction.idle_paused_minutes = idle_minutes
         worker = interaction.worker
         if already_closed and worker is not None:
             with interaction.lock:
@@ -583,7 +599,8 @@ class VoiceService:
         timer.daemon = True
         timer.start()
         publish_state(self.store, interaction, self.settings.get()["assistant_name"])
-        return {"interaction_id": interaction_id, "paused": True}
+        return {"interaction_id": interaction_id, "paused": True,
+                **({"idle_paused_minutes": idle_minutes} if idle_minutes else {})}
 
     def pause_expired(self, interaction: Interaction) -> None:
         with interaction.lock:
@@ -628,12 +645,65 @@ class VoiceService:
             room, source.room = source.room, ""
             room_nudged = source.room_nudged
         interaction.runs.update(runs)
+        with source.lock:
+            interaction.carried_keys |= source.carried_keys
         interaction.room = room
         interaction.room_nudged = room_nudged   # an empty request after listening is handled once per call (the voice waits)
         interaction.history = history
         interaction.resumed_from = source.interaction_id
         interaction.revision = source.revision
         interaction.latest_delegation_id = source.latest_delegation_id
+
+    # -- the workspace across calls --------------------------------------------------------------
+    def carry_donors(self) -> list[Interaction]:
+        """Ended or paused calls whose tasks no later call holds yet (oldest first)."""
+        with self.lock:
+            live = list(self.interactions.values())
+        out = []
+        for interaction in live:
+            with interaction.lock:
+                closed = interaction.call_closed or interaction.paused
+                free = interaction.successor is None and interaction.carried_by is None
+            if closed and free:
+                out.append(interaction)
+        return out
+
+    def carry_runs(self, donors: list[Interaction]) -> dict[str, BackendRun]:
+        """The donors' tasks that stay on the board: running, waiting on the user, or finished but
+        not cleared (never a rejected one, nor one that settled before carrying existed)."""
+        runs: dict[str, BackendRun] = {}
+        for donor in donors:
+            with donor.lock:
+                runs.update((t, r) for t, r in donor.runs.items() if r.status != "rejected")
+        keep = {key for key, _ in self.store.board_carry_keys(set(), limit=MAX_BOARD * 4)}
+        picked = {t: r for t, r in runs.items() if r.idem_key in keep or r.status in ACTIVE_RUN_STATES}
+        return dict(list(picked.items())[-MAX_BOARD:])
+
+    def open_work_tasks(self, carried: dict[str, BackendRun], assistant_name: str) -> list[dict[str, Any]]:
+        """Work rows (with task_id) of the earlier calls' tasks a new call starts with."""
+        keys = {r.idem_key for r in carried.values()}
+        rows = []
+        for task_id, run in carried.items():
+            work = self.store.work(idem_key=run.idem_key, assistant_name=assistant_name)
+            if work is not None and not work.get("dismissed"):
+                rows.append(dict(work, task_id=task_id))
+        # Ones no call in memory holds (after a restart) are on the board too.
+        rows += self.store.board_carry(keys | set(carried), MAX_BOARD)
+        return rows[-MAX_BOARD:]
+
+    def take_on(self, donors: list[Interaction], carried: dict[str, BackendRun], interaction: Interaction) -> None:
+        """The new call holds the donors' open tasks: their results, approvals and follow-ups go to
+        it (Interaction.head), and the router sees them as this call's open tasks."""
+        if not carried:
+            return
+        for donor in donors:
+            with donor.lock:
+                if donor.successor is None and donor.carried_by is None:
+                    donor.carried_by = interaction
+        with interaction.lock:
+            interaction.runs.update(carried)
+            interaction.carried_keys |= {r.idem_key for r in carried.values()}
+        logger.info("speakeasy: new call took on %d task(s) from earlier calls", len(carried))
 
     def idle_check(self, now: float | None = None) -> list[str]:
         """Auto-pause connected calls idle longer than idle_pause_minutes (0 = off)."""
@@ -652,7 +722,7 @@ class VoiceService:
             if not eligible or not worker.call_connected():
                 continue
             try:
-                self.pause(interaction.interaction_id, stop_transport=True)
+                self.pause(interaction.interaction_id, stop_transport=True, idle_minutes=minutes)
                 paused.append(interaction.interaction_id)
             except ServiceError:
                 continue

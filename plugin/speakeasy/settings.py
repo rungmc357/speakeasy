@@ -30,7 +30,8 @@ DEFAULTS: dict[str, Any] = {
     "user_name": "",
     "machine_description": "this Mac",
     "voice": {"provider": "codex", "voice": "", "codex_path": "", "max_call_minutes": 30},
-    "idle_pause_minutes": 5,
+    # A quiet call pauses after this long (0 = never); a paused call keeps its transcript for Resume.
+    "idle_pause_minutes": 15,
     "instructions_extra": "",
     "hermes_profile": "",
     # target: the default destination; new_thread: open a thread there per task (where supported);
@@ -112,6 +113,12 @@ def _merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def max_call_seconds(settings: dict[str, Any]) -> float:
+    """A call's hard cap in seconds; ``voice.max_call_minutes`` 0 means no limit."""
+    minutes = settings["voice"]["max_call_minutes"]
+    return float("inf") if minutes == 0 else minutes * 60
+
+
 def valid_delivery_target(value: Any) -> bool:
     return isinstance(value, str) and (value == "none" or bool(DELIVERY_TARGET_RE.fullmatch(value)))
 
@@ -137,10 +144,12 @@ def validate(settings: dict[str, Any]) -> dict[str, Any]:
         raise SettingsError("voice.voice must be a voice name")
     if not isinstance(voice.get("codex_path"), str) or len(voice["codex_path"]) > 512:
         raise SettingsError("voice.codex_path must be a path")
-    if not isinstance(voice.get("max_call_minutes"), int) or not 1 <= voice["max_call_minutes"] <= 240:
-        raise SettingsError("voice.max_call_minutes must be 1-240")
-    if not isinstance(s["idle_pause_minutes"], int) or not 0 <= s["idle_pause_minutes"] <= 120:
-        raise SettingsError("idle_pause_minutes must be 0-120")
+    if (isinstance(voice.get("max_call_minutes"), bool) or not isinstance(voice.get("max_call_minutes"), int)
+            or not 0 <= voice["max_call_minutes"] <= 240):
+        raise SettingsError("voice.max_call_minutes must be 0-240 (0 = no limit)")
+    if (isinstance(s["idle_pause_minutes"], bool) or not isinstance(s["idle_pause_minutes"], int)
+            or not 0 <= s["idle_pause_minutes"] <= 120):
+        raise SettingsError("idle_pause_minutes must be 0-120 (0 = never)")
     if not isinstance(s["instructions_extra"], str) or len(s["instructions_extra"]) > 1000:
         raise SettingsError("instructions_extra must be at most 1000 characters")
     if not isinstance(s["hermes_profile"], str) or not PROFILE_RE.fullmatch(s["hermes_profile"]):
