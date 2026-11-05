@@ -1,43 +1,31 @@
 import SwiftUI
 import SpeakeasyCore
 
-/// What the open disclosures in a card show, keyed per disclosure: `ViewCardView` appends it to
-/// the card's accessibility label so VoiceOver hears what the user opened.
-struct ExpandedCardText: PreferenceKey {
-    static var defaultValue: [String: String] = [:]
-    static func reduce(value: inout [String: String], nextValue: () -> [String: String]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-
-/// In-place exploration of one row: a real https `url` opens with Link; otherwise a click shows
-/// the row in full (the label gets `expanded` to drop its line limits) plus any `detail` the row
-/// doesn't draw collapsed. Local only: never selects, answers or sends anything to the server.
-/// The chevron sits in the card's leading padding so the collapsed row keeps its geometry.
+/// In-place exploration of one row: a vetted `url` (`CardDetail.destination`) opens with Link;
+/// otherwise a click shows the row in full (the label gets `expanded` to drop its line limits) plus
+/// any `detail` the row doesn't draw collapsed. Local only: never selects, answers or sends anything
+/// to the server. The chevron sits in the card's leading padding so the collapsed row keeps its
+/// geometry. The card is an accessibility container, so VoiceOver reads opened text from the rows.
 struct CardDisclosure<Label: View, Detail: View>: View {
     var url: URL? = nil
     var expandable: Bool
-    var spoken: String
-    /// Told the new state after each toggle (inside the same animation), for a card whose other
-    /// cells follow this row, like a comparison's values.
-    var onToggle: ((_ expanded: Bool) -> Void)? = nil
+    /// Supplied when other cells follow this row (a comparison's values); otherwise the row owns it.
+    var isExpanded: Binding<Bool>? = nil
     @ViewBuilder var label: (_ expanded: Bool) -> Label
     @ViewBuilder var detail: Detail
-    @State private var expansion = CardExpansion()
-    @State private var identity = UUID().uuidString
+    @State private var ownExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var expanded: Bool { expansion.isExpanded("row") }
+    private var expanded: Bool { isExpanded?.wrappedValue ?? ownExpanded }
     var body: some View {
         VStack(alignment: .leading, spacing: expanded ? 6 : 0) {
-            if let destination = webURL(url) {
-                Link(destination: destination) { label(false).contentShape(Rectangle()) }
-                    .buttonStyle(.plain).help(destination.absoluteString)
+            if let url {
+                Link(destination: url) { label(false).contentShape(Rectangle()) }
+                    .buttonStyle(.plain).help(url.absoluteString)
             } else if expandable {
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-                        expansion.toggle("row")
-                        onToggle?(expanded)
+                        if let isExpanded { isExpanded.wrappedValue.toggle() } else { ownExpanded.toggle() }
                     }
                 } label: {
                     label(expanded).contentShape(Rectangle())
@@ -59,16 +47,14 @@ struct CardDisclosure<Label: View, Detail: View>: View {
                     .transition(.opacity)
             }
         }
-        // Adds to (not replaces) what disclosures nested inside report.
-        .transformPreference(ExpandedCardText.self) { if expanded, !spoken.isEmpty { $0[identity] = spoken } }
     }
 }
 
 extension CardDisclosure where Detail == EmptyView {
     /// Expanding only lifts the label's line limits.
-    init(url: URL? = nil, expandable: Bool, spoken: String, onToggle: ((_ expanded: Bool) -> Void)? = nil,
+    init(url: URL? = nil, expandable: Bool, isExpanded: Binding<Bool>? = nil,
          @ViewBuilder label: @escaping (_ expanded: Bool) -> Label) {
-        self.init(url: url, expandable: expandable, spoken: spoken, onToggle: onToggle, label: label, detail: { EmptyView() })
+        self.init(url: url, expandable: expandable, isExpanded: isExpanded, label: label, detail: { EmptyView() })
     }
 }
 
@@ -85,11 +71,9 @@ struct CardDetailRow<Label: View>: View {
     @ViewBuilder var label: (_ expanded: Bool) -> Label
 
     var body: some View {
-        let shown = CardDetail.fields(value, keys: shows)
         let revealed = CardDetail.fields(value, keys: reveals)
         let url = linksRow ? CardDetail.destination(value) : nil
-        CardDisclosure(url: url, expandable: !(shown + revealed).isEmpty,
-                       spoken: (shown + revealed).filter { $0.id != "body" }.map(\.text).joined(separator: ", ")) { expanded in
+        CardDisclosure(url: url, expandable: !revealed.isEmpty || !CardDetail.fields(value, keys: shows).isEmpty) { expanded in
             if showsLinkArrow, url != nil {
                 HStack(alignment: .top, spacing: 6) {
                     label(false)
@@ -104,7 +88,7 @@ struct CardDetailRow<Label: View>: View {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(revealed) { field in
                         if field.id == "body" {
-                            CardDisclosure(expandable: true, spoken: field.text) { _ in
+                            CardDisclosure(expandable: true) { _ in
                                 Text("Message").font(.system(size: 11.5, weight: .medium)).foregroundStyle(.secondary)
                             } detail: {
                                 Text(field.text).font(.system(size: 12)).textSelection(.enabled)

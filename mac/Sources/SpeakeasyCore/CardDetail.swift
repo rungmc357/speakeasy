@@ -1,20 +1,5 @@
 import Foundation
 
-/// Which parts of a card the user has opened. Local exploration only: never selects an answer or
-/// sends an action to the server. Closing a path also closes everything under it.
-public struct CardExpansion: Equatable, Sendable {
-    private var paths: Set<String> = []
-    public init() {}
-    public func isExpanded(_ path: String) -> Bool { paths.contains(path) }
-    public mutating func toggle(_ path: String) {
-        if paths.contains(path) {
-            paths = paths.filter { $0 != path && !$0.hasPrefix(path + "/") }
-        } else {
-            paths.insert(path)
-        }
-    }
-}
-
 public struct CardChartPoint: Equatable, Sendable, Identifiable {
     public let id: String
     public let seriesIndex: Int
@@ -51,11 +36,6 @@ public struct CardDetail: Equatable, Sendable, Identifiable {
     public static func destination(_ value: JSONValue) -> URL? {
         guard let url = value["url"].url, url.host?.contains(".") == true else { return nil }
         return url
-    }
-
-    /// Rows with at least one nonblank field among `keys`.
-    public static func rows(_ values: [JSONValue], keys: [String]) -> [JSONValue] {
-        values.filter { !fields($0, keys: keys).isEmpty }
     }
 
     public static func fields(_ value: JSONValue, keys: [String]) -> [CardDetail] {

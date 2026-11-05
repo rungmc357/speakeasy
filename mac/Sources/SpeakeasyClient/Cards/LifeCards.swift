@@ -318,10 +318,8 @@ struct PackageCard: View {
                 if let eta = card["eta"].string { Text(eta).font(.system(size: 11)).foregroundStyle(.secondary) }
             }
             // Past six steps (the catalog allows 8) the timeline opens in place to all of them, each in full.
-            let steps = CardDetail.rows(card["steps"].array, keys: ["text", "when"])
-            CardDisclosure(expandable: steps.count > 6,
-                           spoken: steps.map { CardDetail.fields($0, keys: ["text", "when"]).map(\.text).joined(separator: ", ") }
-                               .joined(separator: "; ")) { expanded in
+            let steps = card["steps"].array
+            CardDisclosure(expandable: steps.count > 6) { expanded in
                 let shown = expanded ? steps : Array(steps.prefix(6))
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(shown.enumerated()), id: \.offset) { i, s in

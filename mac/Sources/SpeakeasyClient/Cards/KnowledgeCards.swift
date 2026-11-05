@@ -39,7 +39,7 @@ struct MediaCard: View {
                 .font(.system(size: 9.5).monospacedDigit()).foregroundStyle(.tertiary)
             }
             if let overview = card["overview"].string {
-                CardDisclosure(expandable: true, spoken: overview) { expanded in
+                CardDisclosure(expandable: true) { expanded in
                     Text(overview).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(expanded ? nil : 4)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -100,7 +100,7 @@ struct EntityCard: View {
                     Text(card["title"].string ?? "").font(.system(size: 14, weight: .semibold))
                     if let s = card["subtitle"].string { Text(s).font(.system(size: 11)).foregroundStyle(.secondary) }
                     if let s = card["summary"].string {
-                        CardDisclosure(expandable: true, spoken: s) { expanded in
+                        CardDisclosure(expandable: true) { expanded in
                             Text(s).font(.system(size: 11)).lineLimit(expanded ? nil : 4)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -245,8 +245,8 @@ struct StatsCard: View {
 
 struct ComparisonCard: View {
     let card: ViewCard
-    /// Rows opened in place (`rows/<n>`): their values show in full, without the 3-line limit.
-    @State private var expansion = CardExpansion()
+    /// Rows opened in place (by index): their values show in full, without the 3-line limit.
+    @State private var openRows: Set<Int> = []
     var body: some View {
         let columns = card["columns"].strings
         let winner = card["winner"].string
@@ -267,17 +267,15 @@ struct ComparisonCard: View {
                 }
                 Divider().gridCellUnsizedAxes(.horizontal)
                 ForEach(Array(card["rows"].array.prefix(10).enumerated()), id: \.offset) { n, row in
-                    let open = expansion.isExpanded("rows/\(n)")
+                    let open = Binding(get: { openRows.contains(n) },
+                                       set: { if $0 { openRows.insert(n) } else { openRows.remove(n) } })
                     let values = Array(row["values"].strings.prefix(columns.count))
                     GridRow {
-                        CardDisclosure(expandable: !values.isEmpty,
-                                       spoken: ([row["label"].string] + zip(columns, values).map { "\($0): \($1)" }).compactMap { $0 }
-                                           .joined(separator: ", "),
-                                       onToggle: { _ in expansion.toggle("rows/\(n)") }) { _ in
+                        CardDisclosure(expandable: !values.isEmpty, isExpanded: open) { _ in
                             Text(row["label"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                         ForEach(Array(values.enumerated()), id: \.offset) { _, v in
-                            Text(v).font(.system(size: 11.5)).lineLimit(open ? nil : 3).textSelection(.enabled)
+                            Text(v).font(.system(size: 11.5)).lineLimit(open.wrappedValue ? nil : 3).textSelection(.enabled)
                         }
                     }
                 }
@@ -334,6 +332,8 @@ struct ChartCard: View {
         let series = card["series"].array
         // A null value leaves a gap at its own label instead of shifting later values left.
         let points = card.chartPoints
+        // One rule per selected label, drawn from its first point (series 0 may be null there).
+        let ruleID = selected.flatMap { label in points.first { $0.label == label }?.id }
         let style = card["style"].string ?? "bar"
         CardBox {
             HStack {
@@ -350,7 +350,6 @@ struct ChartCard: View {
                 .font(.system(size: 11.5, weight: selected == nil ? .regular : .semibold).monospacedDigit())
                 .foregroundStyle(selected == nil ? Color.secondary : Color.primary)
                 .lineLimit(1)
-                .preference(key: ExpandedCardText.self, value: readout.map { ["chart": $0] } ?? [:])
             Chart(points) { p in
                 if style == "line" {
                     LineMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
@@ -363,7 +362,7 @@ struct ChartCard: View {
                 if let selected, selected == p.label, style == "line" {
                     PointMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
                 }
-                if let selected, p.seriesIndex == 0, selected == p.label {
+                if let selected, p.id == ruleID {
                     RuleMark(x: .value("x", selected)).foregroundStyle(Color.primary.opacity(0.25))
                 }
             }

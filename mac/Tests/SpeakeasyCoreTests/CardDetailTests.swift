@@ -1,33 +1,9 @@
 import XCTest
 @testable import SpeakeasyCore
 
-/// In-place exploration inside informative cards: what a disclosure opens, what it may show,
-/// and where a chart read-out lands.
-final class CardExpansionTests: XCTestCase {
-    func testDisclosureIsIndependentReversibleAndPrunesDescendants() {
-        var state = CardExpansion()
-        XCTAssertFalse(state.isExpanded("rows/0"))
-        state.toggle("rows/0")
-        state.toggle("rows/0/body")
-        state.toggle("rows/1")
-        XCTAssertTrue(state.isExpanded("rows/0/body"))
-        state.toggle("rows/0")
-        XCTAssertFalse(state.isExpanded("rows/0"))
-        XCTAssertFalse(state.isExpanded("rows/0/body"), "closing a row closes what was open inside it")
-        XCTAssertTrue(state.isExpanded("rows/1"), "other rows stay open")
-        state.toggle("rows/0")
-        XCTAssertTrue(state.isExpanded("rows/0"))
-        XCTAssertFalse(state.isExpanded("rows/0/body"), "reopening starts collapsed inside")
-    }
-
-    func testClosingAPathLeavesSiblingsThatShareItsPrefix() {
-        var state = CardExpansion()
-        state.toggle("rows/1")
-        state.toggle("rows/10")
-        state.toggle("rows/1")
-        XCTAssertTrue(state.isExpanded("rows/10"))
-    }
-
+/// In-place exploration inside informative cards: what a disclosure may show, and where a chart
+/// read-out lands.
+final class CardDetailTests: XCTestCase {
     func testDetailsOmitNullBlankAndUnsafeLinks() {
         let value = JSONValue(any: ["body": NSNull(), "preview": "  \n", "from": "Ada", "url": "javascript:alert(1)"])
         XCTAssertEqual(CardDetail.fields(value, keys: ["body", "preview", "from", "url"]).map(\.text), ["Ada"])
@@ -43,7 +19,6 @@ final class CardExpansionTests: XCTestCase {
         XCTAssertEqual(CardDetail.fields(row, keys: ["from", "when", "preview", "body"]).map(\.text), ["Ada", "Today", "Hello", "Full message"])
         XCTAssertEqual(CardDetail.fields(row, keys: ["body", "address"]).map(\.id), ["body"], "a missing field is never invented")
         XCTAssertTrue(CardDetail.fields(.null, keys: ["body"]).isEmpty)
-        XCTAssertEqual(CardDetail.rows([.null, .object([:]), JSONValue(any: ["photo_url": "https://a.example/p.jpg"]), row], keys: ["from"]), [row])
     }
 
     func testFieldLabelsAndNumbersReadNaturally() {
@@ -77,5 +52,15 @@ final class CardExpansionTests: XCTestCase {
         XCTAssertEqual(points.map(\.series), ["2025", "2025", "Series 2", "Series 2"])
         XCTAssertEqual(points.map(\.label), ["Q1", "Q2", "Q2", "3"], "a value past the labels is labelled by its position")
         XCTAssertEqual(points.filter { $0.label == "Q2" }.map(\.value), [12, 14], "the read-out for Q2 pairs both series' Q2 values")
+    }
+
+    func testALabelWhereTheFirstSeriesIsNullStillHasAPoint() {
+        // The chart draws its hover rule from the first point at a label, which may not be series 0.
+        let chart = ViewCard(kind: "chart", data: ["labels": ["Mon", "Tue"], "series": [
+            ["name": "A", "values": [NSNull(), 2]],
+            ["name": "B", "values": [5, 6]],
+        ]])
+        XCTAssertEqual(chart.chartPoints.first { $0.label == "Mon" }?.series, "B")
+        XCTAssertEqual(chart.chartPoints.filter { $0.label == "Mon" }.map(\.value), [5])
     }
 }

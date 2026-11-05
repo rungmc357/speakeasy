@@ -25,8 +25,9 @@ Cards with nothing hidden (list, steps, stats, nutrition, contact, place) have n
 expanding them would only repeat text the card already shows.
 
 Accessibility: a card is an accessibility container (`.contain`), so its row buttons and links
-stay usable. Rows that open have the "Shows details" hint and an Expanded/Collapsed value. The
-card's label is its summary plus whatever is open, including the chart read-out.
+stay usable. Rows that open have the "Shows details" hint and an Expanded/Collapsed value, and
+what they open is read from the row itself; the card's own label stays its summary. A changed
+card starts with every row closed.
 
 ## Contract
 
@@ -36,8 +37,7 @@ show up if a later contract change adds the fields.
 
 ## Code
 
-- `mac/Sources/SpeakeasyCore/CardExpansion.swift`: `CardExpansion` (open paths; closing a path
-  also closes everything under it), `CardDetail` (supplied fields, https-only destination),
-  `ViewCard.chartPoints`.
+- `mac/Sources/SpeakeasyCore/CardDetail.swift`: `CardDetail` (supplied fields, https-only
+  destination) and `ViewCard.chartPoints`.
 - `mac/Sources/SpeakeasyClient/Cards/CardDisclosure.swift`: `CardDisclosure` and `CardDetailRow`.
-- Tests: `mac/Tests/SpeakeasyCoreTests/CardExpansionTests.swift`.
+- Tests: `mac/Tests/SpeakeasyCoreTests/CardDetailTests.swift`.

@@ -7,7 +7,7 @@ import SpeakeasyCore
 /// list. Remote images (logos, art, photos) load through `CardImage`, https only.
 public struct ViewCardView: View {
     let card: ViewCard
-    @State private var expandedText: [String: String] = [:]
+    @State private var generation = 0
     public init(_ card: ViewCard) { self.card = card }
 
     public var body: some View {
@@ -54,11 +54,14 @@ public struct ViewCardView: View {
             default: EmptyView()
             }
         }
+        // A different card (or new data in this one) starts with every row closed.
+        .id(generation)
+        .onChange(of: card) { _, _ in generation += 1 }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onPreferenceChange(ExpandedCardText.self) { expandedText = $0 }
+        // A container, not a combined element, so row disclosures and links stay usable with
+        // VoiceOver and what a row opens is read from the row itself.
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(([card.summary] + expandedText.keys.sorted().compactMap { expandedText[$0] }).joined(separator: ", "))
-        .onChange(of: card) { _, _ in expandedText = [:] }
+        .accessibilityLabel(card.summary)
     }
 }
 
