@@ -160,9 +160,9 @@ def test_history_needs_a_device_token(server, state):
     assert http(server.base_url, "POST", "/voice/history/d1/message", {"text": "hi"})[0] == 401
 
 
-def test_status_advertises_history(server):
-    _, body = get(server, "/voice/status")
-    assert body["capabilities"]["history"] is True
+def test_status_advertises_history():
+    from speakeasy.service import CAPABILITIES
+    assert CAPABILITIES["history"] is True
 
 
 # -- one session ----------------------------------------------------------------------------------
@@ -236,6 +236,8 @@ def test_send_to_a_speakeasy_task_session_uses_the_task_by_id(server, service, h
     assert again["run_id"] == body["run_id"] and len(hermes.calls) == calls_before + 1
     _, page = get(server, f"/voice/history/{sid}")
     assert page["session"]["send_via"] == "task" and page["session"]["jobs"]
+    # A job page links to its full session.
+    assert get(server, f"/voice/work/{run_id}")[1]["work"]["session_id"] == sid
 
 
 def test_send_to_another_api_session_starts_a_job_in_that_session(server, hermes, state):

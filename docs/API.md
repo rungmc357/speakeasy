@@ -954,6 +954,8 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
   brief), `assistant`, `note` (a system row shown as a short label), `tools` (the calls made between
   two messages; `items` are exactly the job tool log's items, `GET /voice/work/{run_id}` with
   `activity_detail`, redacted the same way).
+- A task (`GET /voice/work/{run_id}`, the event stream's tasks) carries `session_id`, the Hermes
+  session its conversation is in, so a job page can open "Show full session".
 - `jobs`: the session's Speakeasy tasks (up to 8, newest first), each as `GET /voice/work/{run_id}`'s
   `work`, with its approval and question cards (`result.question`, `status:
   "waiting_for_approval"`), helpers and tool log. Answer them with the existing routes
