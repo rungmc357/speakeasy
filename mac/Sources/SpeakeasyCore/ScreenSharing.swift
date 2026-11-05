@@ -259,6 +259,9 @@ public struct PendingAttachment: Equatable, Sendable, Identifiable {
     public var seen = false
     /// The ✕ was pressed; hidden while the plugin lets go of it.
     public var removing = false
+    /// Dropped or pasted with no call open: kept past the ended call or the closed board, and sent
+    /// with the next call.
+    public var forNextCall = false
 
     public init(id: String, kind: Kind, name: String, byteCount: Int) {
         self.id = id; self.kind = kind; self.name = name; self.byteCount = byteCount
@@ -328,6 +331,8 @@ public struct CallSharing: Equatable, Sendable {
     public init() {}
 
     static let capturesKept = 32
+    /// The status line after a drop with no call open.
+    public static let nextCallLine = "Goes with your next call"
     /// A plugin listing that doesn't name an upload this long after it landed means it was sent
     /// (covers polling, where the "pending" moment can fall between two polls).
     public static let unseenGrace: TimeInterval = 3
@@ -422,6 +427,8 @@ public struct CallSharing: Equatable, Sendable {
             item.interactionID = nil
             item.deferredFor = nil
             attachments.append(item)
+            // With no call open, say where it went (a refusal from the same drop keeps the line).
+            if item.forNextCall, notice?.isFresh(at: now) != true { notice = ShareNotice(text: Self.nextCallLine, at: now) }
 
         case .uploading(let id, let interactionID):
             update(id) { item in
@@ -430,6 +437,7 @@ public struct CallSharing: Equatable, Sendable {
                 item.serverID = nil
                 item.seen = false
                 item.uploadedAt = nil
+                item.forNextCall = false   // this call's now: it goes with it, or not at all
             }
 
         case .uploaded(let id, let serverID, let interactionID):
@@ -516,10 +524,11 @@ public struct CallSharing: Equatable, Sendable {
         for index in attachments.indices { attachments[index].deferredFor = nil }
     }
 
-    /// The call paused (`paused`) or ended. Paused keeps the pictures and files not sent yet (the
-    /// plugin dropped its copies; they go again after Resume); ones already claimed by a request
-    /// went with it. Ended keeps nothing.
-    public mutating func callClosed(paused: Bool) {
+    /// The call paused (`paused`) or ended, or no call is open. Paused keeps the pictures and files
+    /// not sent yet (the plugin dropped its copies; they go again after Resume); ones already claimed
+    /// by a request went with it. Ended keeps nothing of the call's, only what was dropped with no
+    /// call open (`forNextCall`). `closing`: the call closed just now, so its line goes too.
+    public mutating func callClosed(paused: Bool, closing: Bool = true) {
         resetScreen()
         if paused {
             attachments.removeAll { $0.phase == .sending || ($0.removing && $0.phase != .uploading) }
@@ -529,10 +538,17 @@ public struct CallSharing: Equatable, Sendable {
                 attachments[index].seen = false
             }
         } else {
-            attachments = []
-            notice = nil
+            attachments.removeAll { !$0.forNextCall || $0.removing }
+            if closing { notice = nil }
             declared = nil
         }
+    }
+
+    /// A new call (or the board): nothing of the last one, except what was dropped for the next call.
+    public func carriedToNextCall() -> CallSharing {
+        var next = CallSharing()
+        next.attachments = attachments.filter { $0.forNextCall && !$0.removing }
+        return next
     }
 
     /// Old notices fade.
