@@ -115,6 +115,24 @@ def test_list_newest_first_with_labels_and_no_internal_sessions(server, state):
     assert {f["id"] for f in body["filters"]} >= {"speakeasy", "discord", "scheduled"}
 
 
+def test_sources_lists_only_what_the_person_has_with_counts(server, state):
+    """The filter chips: only sources with sessions, counted over everything visible (every page,
+    any search or filter), so Slack never shows for someone with no Slack sessions."""
+    add_session(state, "speakeasy_task_x1", "api_server", title="Bake sale flyer", at=NOW - 20)
+    add_msg(state, "speakeasy_task_x1", "user", "Draft the flyer", at=NOW - 20)
+    add_session(state, "empty1", "slack", title="Never used", at=NOW - 10)   # no messages: not listed
+    db = sqlite3.connect(state)
+    db.execute("UPDATE sessions SET message_count=0 WHERE id='empty1'")
+    db.commit(); db.close()
+    want = [{"source": "speakeasy", "count": 1}, {"source": "discord", "count": 1},
+            {"source": "telegram", "count": 1}, {"source": "terminal", "count": 2},
+            {"source": "scheduled", "count": 1}]
+    for path in ("/voice/history", "/voice/history?limit=1", "/voice/history?source=discord",
+                 "/voice/history?q=marigold", "/voice/history?q=zzznothing"):
+        status, body = get(server, path)
+        assert status == 200 and body["sources"] == want, (path, body.get("sources"))
+
+
 def test_list_pages_with_a_cursor(server, state):
     _, first = get(server, "/voice/history?limit=2")
     assert [s["id"] for s in first["sessions"]] == ["d1", "c2tip"] and first["next_cursor"]

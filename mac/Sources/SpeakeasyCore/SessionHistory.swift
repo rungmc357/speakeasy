@@ -51,14 +51,66 @@ public struct HistoryFilter: Equatable, Sendable, Identifiable, Hashable {
     public init(id: String, label: String) { self.id = id; self.label = label }
 }
 
+/// One entry of `GET /voice/history`'s `sources`: a filter id the person has sessions under, and how many.
+public struct HistorySourceCount: Equatable, Sendable, Hashable {
+    public var source: String
+    public var count: Int
+    public init(source: String, count: Int) { self.source = source; self.count = count }
+}
+
+/// Which source filters to offer: only ones the person has sessions from (Slack never shows for
+/// someone who doesn't use it), and none at all when everything comes from one place.
+public enum HistorySources {
+    /// The filter id (`?source=`) a listed session falls under (the plugin's `FILTERS`).
+    public static func filterID(for source: String) -> String? {
+        switch source.lowercased() {
+        case "speakeasy": return "speakeasy"
+        case "discord", "telegram", "slack": return source.lowercased()
+        case "cli", "tui", "terminal": return "terminal"
+        case "gui", "local", "desktop": return "desktop"
+        case "cron", "scheduled": return "scheduled"
+        case "api_server", "api": return "api"
+        default: return nil
+        }
+    }
+
+    /// The filters to show, in the server's order. `sources` is the server's facet (counted over
+    /// every visible session); nil from older plugins, which falls back to the sources of the rows
+    /// loaded so far (`seen`, as filter ids). The chosen filter always stays, so it can be cleared.
+    public static func shown(choices: [HistoryFilter], sources: [HistorySourceCount]?, seen: Set<String>,
+                             selected: String?) -> [HistoryFilter] {
+        let have = sources.map { Set($0.filter { $0.count > 0 }.map(\.source)) } ?? seen
+        var out = choices.filter { have.contains($0.id) || $0.id == selected }
+        // A source the server counts but didn't list as a filter (older lists): still offered.
+        for id in (sources?.filter { $0.count > 0 }.map(\.source) ?? []) where !out.contains(where: { $0.id == id }) {
+            if let c = choices.first(where: { $0.id == id }) { out.append(c) }
+        }
+        return out
+    }
+
+    /// The chip row (or the Mac's source menu) shows only with two or more sources to pick from,
+    /// or while a filter is on (so it can be turned off).
+    public static func showsPicker(_ shown: [HistoryFilter], selected: String?) -> Bool {
+        shown.count > 1 || selected != nil
+    }
+
+    /// The filter ids of loaded rows (the fallback for plugins without `sources`).
+    public static func seen(in sessions: [HistorySession]) -> Set<String> {
+        Set(sessions.compactMap { filterID(for: $0.source) })
+    }
+}
+
 /// `GET /voice/history`'s page.
 public struct HistoryPage: Equatable, Sendable {
     public var sessions: [HistorySession]
     public var nextCursor: String?
     public var filters: [HistoryFilter]
+    /// The `sources` facet; nil from plugins that don't send it.
+    public var sources: [HistorySourceCount]?
 
-    public init(sessions: [HistorySession], nextCursor: String? = nil, filters: [HistoryFilter] = []) {
-        self.sessions = sessions; self.nextCursor = nextCursor; self.filters = filters
+    public init(sessions: [HistorySession], nextCursor: String? = nil, filters: [HistoryFilter] = [],
+                sources: [HistorySourceCount]? = nil) {
+        self.sessions = sessions; self.nextCursor = nextCursor; self.filters = filters; self.sources = sources
     }
 
     public init(json: Any?) {
@@ -68,6 +120,12 @@ public struct HistoryPage: Equatable, Sendable {
         filters = (o["filters"] as? [Any] ?? []).compactMap { raw in
             guard let f = raw as? [String: Any], let id = nonEmpty(f["id"]), let label = nonEmpty(f["label"]) else { return nil }
             return HistoryFilter(id: id, label: label)
+        }
+        sources = (o["sources"] as? [Any]).map { list in
+            list.compactMap { raw in
+                guard let f = raw as? [String: Any], let id = nonEmpty(f["source"]) else { return nil }
+                return HistorySourceCount(source: id, count: (f["count"] as? NSNumber)?.intValue ?? 0)
+            }
         }
     }
 

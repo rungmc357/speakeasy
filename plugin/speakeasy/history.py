@@ -314,7 +314,8 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
         raise HistoryError(400, f"source must be one of: {', '.join(FILTERS)}")
     db = _open(state_db)
     if db is None:
-        return {"sessions": [], "next_cursor": None, "filters": _filters(), "search": "none" if q else None}
+        return {"sessions": [], "next_cursor": None, "filters": _filters(), "sources": [],
+                "search": "none" if q else None}
     try:
         cols = _columns(db, "sessions")
         last = _last_expr(cols)
@@ -326,7 +327,10 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             where.append("NOT EXISTS (SELECT 1 FROM sessions c WHERE c.parent_session_id = s.id AND c.source = s.source)")
             where.append("(s.parent_session_id IS NULL OR EXISTS (SELECT 1 FROM sessions p "
                          "WHERE p.id = s.parent_session_id AND p.source = s.source))")
+        if "message_count" in cols:
+            where.append("(coalesce(s.message_count,0) > 0 OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id))")
         mine = speakeasy_ids()
+        sources = _source_counts(db, where, params, mine)
         if source == "speakeasy":
             ids = sorted(mine | set())
             where.append(f"(s.id LIKE '{SPEAKEASY_PREFIX}%'" + (f" OR s.id IN ({','.join('?' * len(ids))}))" if ids else ")"))
@@ -339,8 +343,6 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                 where.append(f"s.id NOT LIKE '{SPEAKEASY_PREFIX}%'")
         else:
             where.append("s.source != 'cron'")
-        if "message_count" in cols:
-            where.append("(coalesce(s.message_count,0) > 0 OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id))")
         snippets: dict[str, str] = {}
         search_kind = None
         if q.strip():
@@ -353,7 +355,8 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                     snippets[tip] = hits[sid]
                 snippets.setdefault(tip, hits.get(sid, ""))
             if not snippets:
-                return {"sessions": [], "next_cursor": None, "filters": _filters(), "search": search_kind}
+                return {"sessions": [], "next_cursor": None, "filters": _filters(), "sources": sources,
+                        "search": search_kind}
             where.append(f"s.id IN ({','.join('?' * len(snippets))})")
             params += list(snippets)
         if after is not None:
@@ -389,12 +392,30 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                 entry["match"] = snippets[sid]
             out.append(entry)
         next_cursor = f"{float(tail['last'] or 0)!r}|{tail['id']}" if tail is not None else None
-        return {"sessions": out, "next_cursor": next_cursor, "filters": _filters(), "search": search_kind}
+        return {"sessions": out, "next_cursor": next_cursor, "filters": _filters(), "sources": sources,
+                "search": search_kind}
     except sqlite3.Error as exc:
         logger.warning("speakeasy: history list failed (%s)", type(exc).__name__)
         raise HistoryError(502, "I couldn't read the Hermes history.") from None
     finally:
         db.close()
+
+
+def _source_counts(db: sqlite3.Connection, where: list[str], params: list[Any], mine: set[str]) -> list[dict[str, Any]]:
+    """``sources``: each filter id the person has listable sessions under, with how many, over every
+    visible session (not just this page, and ignoring the search and the chosen filter), so the apps
+    only offer filters that would show something. Counted the same way ``?source=`` filters."""
+    counts: dict[str, int] = {}
+    by_source = {s: k for k, covered in FILTERS.items() for s in (covered or ())}
+    for sid, src in db.execute(f"SELECT s.id, s.source FROM sessions s WHERE {' AND '.join(where)}", params):
+        speakeasy = sid.startswith(SPEAKEASY_PREFIX) or sid in mine
+        if speakeasy:
+            counts["speakeasy"] = counts.get("speakeasy", 0) + 1
+        key = by_source.get(src)
+        # ``api`` leaves out Speakeasy's own task sessions; the rest count wherever ?source= lists them.
+        if key and not (key == "api" and sid.startswith(SPEAKEASY_PREFIX)):
+            counts[key] = counts.get(key, 0) + 1
+    return [{"source": k, "count": counts[k]} for k in FILTERS if counts.get(k)]
 
 
 def _filters() -> list[dict[str, str]]:

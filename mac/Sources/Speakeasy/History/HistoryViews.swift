@@ -135,10 +135,22 @@ struct HistorySidebar: View {
 
     private var filterRow: some View {
         HStack(spacing: 8) {
+            // Only sources the person has sessions from; no menu at all when everything is from one place.
+            if store.list.showsSourcePicker { sourceMenu }
+            Spacer()
+            if !store.list.activeQuery.isEmpty, !store.list.loading {
+                let q = store.list.activeQuery
+                Text(store.list.sessions.isEmpty ? "No matches" : "\(store.list.sessions.count)\(store.list.reachedEnd ? "" : "+") for “\(q)”")
+                    .font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+            }
+        }
+    }
+
+    private var sourceMenu: some View {
             Menu {
                 Button { store.setSource(nil) } label: { Label("All sources", systemImage: store.list.source == nil ? "checkmark" : "") }
                 Divider()
-                ForEach(store.list.filterChoices) { s in
+                ForEach(store.list.shownFilters) { s in
                     Button { store.setSource(s.id) } label: {
                         Label(s.label, systemImage: store.list.source == s.id ? "checkmark" : "")
                     }
@@ -157,13 +169,6 @@ struct HistorySidebar: View {
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .help("Show sessions from one place")
             .accessibilityIdentifier("history-source-filter")
-            Spacer()
-            if !store.list.activeQuery.isEmpty, !store.list.loading {
-                let q = store.list.activeQuery
-                Text(store.list.sessions.isEmpty ? "No matches" : "\(store.list.sessions.count)\(store.list.reachedEnd ? "" : "+") for “\(q)”")
-                    .font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
-            }
-        }
     }
 
     private var sourceName: String {

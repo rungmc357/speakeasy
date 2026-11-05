@@ -31,6 +31,29 @@ final class SessionHistoryTests: XCTestCase {
         XCTAssertEqual(page.sessions[1].runIDs, ["run_2"])
         XCTAssertEqual(page.nextCursor, "1793890001.0|speakeasy_task_1")
         XCTAssertEqual(page.filters.map(\.id), ["speakeasy", "discord"])
+        XCTAssertNil(page.sources, "older plugins send no sources facet")
+        let faceted = HistoryPage(json: json(#"{"sessions": [], "sources": [{"source": "discord", "count": 3}, {"count": 1}]}"#))
+        XCTAssertEqual(faceted.sources, [HistorySourceCount(source: "discord", count: 3)])
+    }
+
+    func testSourceFiltersOnlyShowSourcesThePersonHas() {
+        let all = HistoryList.defaultFilters
+        // The facet: Slack has nothing, so it isn't offered.
+        let facet = [HistorySourceCount(source: "speakeasy", count: 4), HistorySourceCount(source: "discord", count: 2),
+                     HistorySourceCount(source: "slack", count: 0)]
+        XCTAssertEqual(HistorySources.shown(choices: all, sources: facet, seen: [], selected: nil).map(\.id), ["speakeasy", "discord"])
+        // Older plugin: derived from the loaded rows (cli → terminal).
+        let rows = [HistorySession(id: "a", title: "A", source: "cli", sourceLabel: "Terminal", lastActivity: Date(), preview: ""),
+                    HistorySession(id: "b", title: "B", source: "telegram", sourceLabel: "Telegram", lastActivity: Date(), preview: "")]
+        XCTAssertEqual(HistorySources.shown(choices: all, sources: nil, seen: HistorySources.seen(in: rows), selected: nil).map(\.id),
+                       ["telegram", "terminal"])
+        // One source: no picker; a chosen filter always stays (so it can be cleared).
+        let one = HistorySources.shown(choices: all, sources: [HistorySourceCount(source: "speakeasy", count: 9)], seen: [], selected: nil)
+        XCTAssertFalse(HistorySources.showsPicker(one, selected: nil))
+        XCTAssertTrue(HistorySources.showsPicker(all, selected: nil))
+        let kept = HistorySources.shown(choices: all, sources: [HistorySourceCount(source: "speakeasy", count: 9)], seen: [], selected: "discord")
+        XCTAssertEqual(kept.map(\.id), ["speakeasy", "discord"])
+        XCTAssertTrue(HistorySources.showsPicker(kept, selected: "discord"))
     }
 
     func testPagePathEncodesQueryCursorAndFilter() {

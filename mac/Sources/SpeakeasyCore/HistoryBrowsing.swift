@@ -35,6 +35,10 @@ public struct HistoryList: Equatable, Sendable {
     public private(set) var query = ""
     public private(set) var source: String?
     public private(set) var filters: [HistoryFilter] = []
+    /// The server's `sources` facet (nil from older plugins).
+    public private(set) var sources: [HistorySourceCount]?
+    /// Older plugins: the filter ids of every row loaded so far (any search or filter).
+    public private(set) var seenSources: Set<String> = []
     public private(set) var generation = 0
 
     public init() {}
@@ -91,6 +95,8 @@ public struct HistoryList: Equatable, Sendable {
         nextCursor = page.nextCursor
         reachedEnd = page.nextCursor == nil || page.sessions.isEmpty
         if !page.filters.isEmpty { filters = page.filters }
+        if let facet = page.sources { sources = facet }
+        seenSources.formUnion(HistorySources.seen(in: page.sessions))
         return true
     }
 
@@ -113,9 +119,16 @@ public struct HistoryList: Equatable, Sendable {
 
     /// The filter's choices: what the server listed, else the usual ones.
     public var filterChoices: [HistoryFilter] { filters.isEmpty ? Self.defaultFilters : filters }
+    /// The filters to offer: only sources the person has sessions from (`HistorySources.shown`).
+    public var shownFilters: [HistoryFilter] {
+        HistorySources.shown(choices: filterChoices, sources: sources, seen: seenSources, selected: source)
+    }
+    /// Show the source picker at all (two or more sources, or a filter on).
+    public var showsSourcePicker: Bool { HistorySources.showsPicker(shownFilters, selected: source) }
     public static let defaultFilters: [HistoryFilter] = [
         HistoryFilter(id: "speakeasy", label: "Speakeasy"), HistoryFilter(id: "discord", label: "Discord"),
-        HistoryFilter(id: "telegram", label: "Telegram"), HistoryFilter(id: "cli", label: "Terminal"),
+        HistoryFilter(id: "telegram", label: "Telegram"), HistoryFilter(id: "slack", label: "Slack"),
+        HistoryFilter(id: "terminal", label: "Terminal"), HistoryFilter(id: "desktop", label: "Desktop"),
         HistoryFilter(id: "scheduled", label: "Scheduled"),
     ]
 
