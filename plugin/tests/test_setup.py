@@ -220,7 +220,9 @@ def test_running_tailnet_is_imported_without_a_flag_and_remembered_for_pair(home
     assert "✓ Tailscale detected" in text and "https://box.tail123.ts.net:8795" in text and "┏" in text
     assert not any("funnel" in " ".join(c) for c in fake.cmds)
     stored = S.Settings(home).get()["server"]
-    assert stored == {"advertised_url": "https://box.tail123.ts.net:8795", "tailscale_name": "box.tail123.ts.net"}
+    assert {k: stored[k] for k in ("advertised_url", "tailscale_name")} == {
+        "advertised_url": "https://box.tail123.ts.net:8795", "tailscale_name": "box.tail123.ts.net"}
+    assert stored["tunnel"] == ""  # a tailnet never starts a Cloudflare tunnel
     assert "speakeasyvoice.ai/pair#server=https%3A%2F%2Fbox.tail123.ts.net%3A8795" in text
     assert cli.cmd_pair(Namespace(server="", send=""), home) == 0
     assert "speakeasyvoice.ai/pair#server=https%3A%2F%2Fbox.tail123.ts.net%3A8795" in capsys.readouterr().out

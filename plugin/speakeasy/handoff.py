@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 PAIR_PAGE = "https://speakeasyvoice.ai/pair"
 DOWNLOAD_PAGE = "https://speakeasyvoice.ai/#download"
 LINK_TTL_S = 30 * 60          # long enough to download and install the app first
+PUBLIC_LINK_TTL_S = 10 * 60   # with a Cloudflare tunnel the server is on the public internet: shorter
+
+
+def link_ttl(home: Path) -> int:
+    """How long a new pairing code lasts: 10 minutes once a Cloudflare tunnel is on, else 30."""
+    from .settings import Settings
+    return PUBLIC_LINK_TTL_S if Settings(home).get()["server"]["tunnel"] else LINK_TTL_S
 PENDING_MAX_AGE_S = 24 * 3600  # a record older than a day is stale; drop it
 DELIVERY_DELAY_S = 15.0        # let the chat platforms reconnect after a restart
 DELIVERY_ATTEMPTS = 3
@@ -41,7 +48,7 @@ def web_link(server: str, code: str) -> str:
 
 
 def chat_message(link: str, minutes: int = LINK_TTL_S // 60) -> str:
-    return ("Speakeasy is ready. On the Mac you'll talk from, open this link. It connects the app, "
+    return ("Speakeasy is ready. On the Mac or iPhone you'll talk from, open this link. It connects the app, "
             "and offers the download first if you don't have it yet.\n"
             f"{link}\n"
             f"(Works once, for {minutes} minutes. Ask me for a new one any time.)")
@@ -85,7 +92,7 @@ def deliver_pending(home: Path, server: str, *, send: Callable[[str, str], bool]
         return False
     for attempt in range(attempts):
         sleep(delay * (attempt + 1))
-        if send(target, chat_message(web_link(server, new_code()))):
+        if send(target, chat_message(web_link(server, new_code()), link_ttl(home) // 60)):
             clear_pending(home)
             logger.info("speakeasy: sent the pairing link to %s", target.split(":", 1)[0])
             return True
@@ -104,5 +111,5 @@ def start_pending_delivery(home: Path, server: str) -> None:
     thread = threading.Thread(
         target=deliver_pending, name="speakeasy-pairing-link", daemon=True,
         kwargs=dict(home=home, server=server, send=notifier.send,
-                    new_code=lambda: store.new_pairing_code(ttl=LINK_TTL_S)))
+                    new_code=lambda: store.new_pairing_code(ttl=link_ttl(home))))
     thread.start()

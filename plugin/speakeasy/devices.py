@@ -111,6 +111,16 @@ class DeviceStore:
                     return device_id
         return None
 
+    def proof(self, device_id: str, nonce: str, host: str) -> str:
+        """``POST /voice/prove``: HMAC-SHA256(key = the device token's SHA-256 hex, message =
+        "speakeasy-prove-v1|<nonce>|<host>"), hex. The app (which knows its token) checks it before
+        sending the token to a new address, so a look-alike server learns nothing. An unknown
+        device gets a random answer (no way to tell which ids exist)."""
+        import hmac
+        device = self._load()["devices"].get(device_id)
+        key = device["token_sha256"].encode() if device else secrets.token_bytes(32)
+        return hmac.new(key, f"speakeasy-prove-v1|{nonce}|{host}".encode(), hashlib.sha256).hexdigest()
+
     def devices(self) -> list[Device]:
         data = self._load()
         return [Device(id=k, name=v["name"], created_at=v["created_at"], last_seen_at=v.get("last_seen_at"))

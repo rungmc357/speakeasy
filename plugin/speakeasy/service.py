@@ -67,6 +67,7 @@ IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model 
 EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the call's event channel
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
 CAPABILITIES["start_jobs"] = True  # POST /voice/work: a new job from typed text, no call needed (the app's Update button)
+CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the pair response): every address of this Hermes
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 
 
@@ -258,7 +259,30 @@ class VoiceService:
         if result is None:
             raise ServiceError(403, "pairing code is wrong or expired")
         device_id, token = result
-        return {"device_id": device_id, "token": token, "assistant_name": self.settings.get()["assistant_name"]}
+        out: dict[str, Any] = {"device_id": device_id, "token": token, "assistant_name": self.settings.get()["assistant_name"]}
+        out.update(self.endpoints())  # endpoints + the address-drop key: only a paired device sees them
+        return out
+
+    def prove(self, body: dict[str, Any], host: str) -> dict[str, Any]:
+        device_id, nonce = body.get("device_id"), body.get("nonce")
+        if not isinstance(device_id, str) or not re.fullmatch(r"[0-9a-f]{1,32}", device_id) \
+                or not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]{22,128}", nonce):
+            raise ServiceError(400, "device_id and nonce are required")
+        return {"proof": self.devices.proof(device_id, nonce, host)}
+
+    def endpoints(self) -> dict[str, Any]:
+        """``GET /voice/endpoints``: every address of this Hermes the app may keep and try, and how
+        to read the encrypted address note (address_drop.py) when they all stop answering."""
+        from . import address_drop
+        s = self.settings.get()["server"]
+        tailnet = s["advertised_url"] if ".ts.net" in s["advertised_url"] else ""
+        if not tailnet and s["tailscale_name"]:
+            tailnet = f"https://{s['tailscale_name']}"
+        cloudflare = (f"https://{s['tunnel_hostname']}" if s["tunnel_hostname"] else s["tunnel_url"]) if s["tunnel"] else ""
+        return {"endpoints": {"tailnet": tailnet or None, "cloudflare": cloudflare or None,
+                              "cloudflare_permanent": bool(s["tunnel"] and s["tunnel_hostname"])},
+                "address_drop": address_drop.client_info(self.home, self.settings.get())
+                if s["tunnel"] and not s["tunnel_hostname"] else None}
 
     # -- voice sessions -------------------------------------------------------------------------
     def instructions(self, *, away: list[dict[str, Any]], resume: str,
@@ -1647,6 +1671,10 @@ class VoiceService:
             raise ServiceError(409, f"Hermes config left unchanged: {exc}") from None
 
     def patch_settings(self, body: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(body, dict) and ("server" in body or "address_drop" in body):
+            # Where the server is published is decided on the computer, never from a paired device.
+            raise ServiceError(403, "server addresses are set on the computer that runs Hermes "
+                                    "(hermes voice setup / hermes voice config)")
         try:
             saved = self.settings.patch(body)
         except SettingsError as exc:
@@ -1751,6 +1779,7 @@ class VoiceService:
             "routing_model": routing_model(), "routing_hint": ROUTING_HINT, "routing_explainer": ROUTING_EXPLAINER,
             "routing_choice": self.routing_choices(),
             "advertised_url": s["server"]["advertised_url"], "tailscale_name": s["server"]["tailscale_name"],
+            "tunnel": s["server"]["tunnel"] or None,
             "attachments": self.attachment_status(),
             # Grok voice (beta): calls relay audio through the plugin (transport type "relay").
             "grok_beta": grok_beta_on(s), "grok_signed_in": grok_signed_in, "grok_api_key_set": grok_key_set,

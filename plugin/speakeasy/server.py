@@ -41,7 +41,63 @@ DRAIN_MAX_S = 10.0
 # of the usual body (whose 128 KiB already fits the largest SDP offer, MAX_SDP, with its escaping).
 MAX_SESSION_BODY = MAX_BODY + MAX_ROOM_CHARS * 12
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
-PROXY_HEADERS = ("X-Forwarded-For", "X-Real-IP", "Forwarded", "Tailscale-User-Login")
+PROXY_HEADERS = ("X-Forwarded-For", "X-Real-IP", "Forwarded", "Tailscale-User-Login", "Cf-Connecting-Ip")
+# Pairing attempts from off this machine (a tunnel or the tailnet): per client address and in all.
+PAIR_PER_IP = 5
+PAIR_TOTAL = 20
+PAIR_WINDOW_S = 60.0
+PAIR_LOCKOUT_S = 15 * 60   # an address over its limit waits this long
+
+
+class PairLimiter:
+    """Sliding-window limit on POST /voice/pair, per client address and overall, with a lockout for
+    an address that goes over (the pending code itself also burns after MAX_WRONG_CODES misses)."""
+
+    def __init__(self, per_ip: int = PAIR_PER_IP, total: int = PAIR_TOTAL, window_s: float = PAIR_WINDOW_S,
+                 lockout_s: float = PAIR_LOCKOUT_S, clock: Any = time.monotonic):
+        self.per_ip, self.total, self.window_s, self.lockout_s, self.clock = per_ip, total, window_s, lockout_s, clock
+        self._hits: dict[str, list[float]] = {}
+        self._locked: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, ip: str) -> bool:
+        now = self.clock()
+        with self._lock:
+            if self._locked.get(ip, 0) > now:
+                return False
+            self._locked.pop(ip, None)
+            for key in list(self._hits):
+                self._hits[key] = [t for t in self._hits[key] if now - t < self.window_s]
+                if not self._hits[key]:
+                    del self._hits[key]
+            if len(self._hits.get(ip, [])) >= self.per_ip:
+                self._locked[ip] = now + self.lockout_s
+                return False
+            if sum(map(len, self._hits.values())) >= self.total:
+                return False
+            self._hits.setdefault(ip, []).append(now)
+            return True
+
+
+def allowed_hosts(settings: dict[str, Any]) -> set[str]:
+    """Host names this server answers to: loopback, plus every address it publishes."""
+    server = settings["server"]
+    hosts = {"127.0.0.1", "localhost", "::1", "[::1]"}
+    for url in (server.get("advertised_url", ""), server.get("tunnel_url", "")):
+        host = urlsplit(url).hostname if url else ""
+        if host:
+            hosts.add(host.lower())
+    for name in (server.get("tailscale_name", ""), server.get("tunnel_hostname", "")):
+        if name:
+            hosts.add(name.lower().rstrip("."))
+    return hosts
+
+
+def host_name(header: str) -> str:
+    header = (header or "").strip().lower()
+    if header.startswith("["):
+        return header.split("]")[0] + "]"
+    return header.rsplit(":", 1)[0] if header.count(":") == 1 else header
 
 
 def _is_own_address(ip: str) -> bool:
@@ -189,8 +245,41 @@ class Handler(BaseHTTPRequestHandler):
     def route(self) -> str:
         return urlsplit(self.path).path
 
+    @property
+    def client_ip(self) -> str:
+        """The caller: the address a local proxy forwarded (a Cloudflare tunnel, Tailscale serve), else the peer."""
+        peer = str(self.client_address[0])
+        if _is_own_address(peer):
+            forwarded = (self.headers.get("Cf-Connecting-Ip") or self.headers.get("X-Forwarded-For") or "").split(",")[0]
+            if forwarded.strip():
+                return forwarded.strip()
+        return peer
+
+    @property
+    def local(self) -> bool:
+        return same_machine(str(self.client_address[0]), self.headers)
+
+    def parse_request(self) -> bool:  # type: ignore[override]
+        """Refuse a request for a host name this server doesn't publish (DNS rebinding, a stray
+        tunnel): enforced whenever a tunnel is on, since then the server is on the public internet."""
+        if not super().parse_request():
+            return False
+        settings = self.service.settings.get()
+        if settings["server"].get("tunnel") and host_name(self.headers.get("Host", "")) not in allowed_hosts(settings):
+            logger.warning("speakeasy: refused a request for unexpected host %r from %s",
+                           (self.headers.get("Host") or "")[:80], self.client_ip)
+            self.close_connection = True
+            self._reply(421, {"error": "unexpected host"})
+            return False
+        return True
+
     def _auth(self) -> str:
-        return self.service.authenticate(self.headers)
+        try:
+            return self.service.authenticate(self.headers)
+        except ServiceError:
+            if not self.local:
+                logger.warning("speakeasy: unauthorized %s %s from %s", self.command, self.route[:80], self.client_ip)
+            raise
 
     def _audio_relay(self, interaction_id: str) -> None:
         """The app's audio relay for a call whose voice socket the plugin owns (Grok): a WebSocket
@@ -272,6 +361,9 @@ class Handler(BaseHTTPRequestHandler):
         path = self.route
         try:
             if path == "/health":
+                if not self.local:  # off this machine (tailnet, tunnel): nothing beyond "it's up"
+                    self._reply(200, {"ok": True, "platform": "voice"})
+                    return
                 self._reply(200, {"ok": True, "platform": "voice", "version": __version__,
                                   "provider": self.service.settings.get()["voice"]["provider"]})
                 return
@@ -312,6 +404,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/voice/routing": self.service.routing_choices,
                 "/voice/home": self.service.get_home,
                 "/voice/brief/tune": self.service.get_tune,
+                "/voice/endpoints": self.service.endpoints,
             }
             if path in routes:
                 self._reply(200, routes[path]())
@@ -335,7 +428,19 @@ class Handler(BaseHTTPRequestHandler):
         path = self.route
         try:
             if path == "/voice/pair":
-                self._reply(201, self.service.pair(self._body()))
+                local = self.local
+                if not local and not self.server.pair_limiter.allow(self.client_ip):  # type: ignore[attr-defined]
+                    logger.warning("speakeasy: pairing attempts from %s rate-limited", self.client_ip)
+                    raise ServiceError(429, "too many pairing attempts; wait and try again", reason="too_many")
+                try:
+                    self._reply(201, self.service.pair(self._body()))
+                except ServiceError as exc:
+                    if not local:
+                        logger.warning("speakeasy: pairing refused (%s) from %s", exc.status, self.client_ip)
+                    raise
+                return
+            if path == "/voice/prove":  # no token: proves this is the paired Hermes (devices.proof)
+                self._reply(200, self.service.prove(self._body(), host_name(self.headers.get("Host", ""))))
                 return
             upload = re.fullmatch(rf"/voice/interactions/{_ID}/attachments", path)
             if upload:  # raw body: authenticated and size-checked before any of it is read
@@ -490,7 +595,10 @@ class SpeakeasyServer:
         self.httpd = ThreadingHTTPServer((host, port), Handler)
         self.httpd.daemon_threads = True
         self.httpd.service = service  # type: ignore[attr-defined]
+        self.httpd.pair_limiter = PairLimiter()  # type: ignore[attr-defined]
         self.thread: threading.Thread | None = None
+        from .tunnel import TunnelWatcher
+        self.tunnel = TunnelWatcher(service)  # Cloudflare mode: follows the quick tunnel's address
 
     @property
     def port(self) -> int:
@@ -503,8 +611,10 @@ class SpeakeasyServer:
     def start(self) -> None:
         self.thread = threading.Thread(target=self.httpd.serve_forever, name="speakeasy-http", daemon=True)
         self.thread.start()
+        self.tunnel.start()
 
     def stop(self) -> None:
+        self.tunnel.stop()
         self.httpd.shutdown()
         self.httpd.server_close()
         self.service.close()

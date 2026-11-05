@@ -83,6 +83,12 @@ so loudly (run `tailscale up`) and stays local. If HTTPS certificates are off fo
 turn them on at https://login.tailscale.com/admin/dns (HTTPS Certificates) and run setup again.
 `--tailscale` insists on it, `--no-tailscale` skips it, `--server <url>` sets the address by hand.
 
+**No Tailscale?** Setup recommends it (most private), and your agent can give Speakeasy a
+Cloudflare address instead: nothing to install on your phone; the address is public but locked to
+your paired devices. A free quick tunnel's address changes when it restarts and the app follows it
+by itself; a permanent address needs a Cloudflare account and your own domain. See
+[docs/AGENT_SETUP.md › Cloudflare mode](docs/AGENT_SETUP.md#cloudflare-mode).
+
 Links sent to a chat go to `https://speakeasyvoice.ai/pair#…`; the server address and one-time code
 sit after the `#`, which browsers never send to the website. Each link works once and expires after
 30 minutes; `hermes voice pair --send <chat>` makes a new one.

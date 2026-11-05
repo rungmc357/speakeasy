@@ -65,8 +65,20 @@ public func normalizedPairingCode(_ raw: String) -> String? {
 public struct PairResponse: Codable, Equatable, Sendable {
     public var deviceID: String
     public var token: String
-    enum CodingKeys: String, CodingKey { case deviceID = "device_id", token }
-    public init(deviceID: String, token: String) { self.deviceID = deviceID; self.token = token }
+    /// Every address of this Hermes and the address-note details (servers with `endpoints`).
+    public var endpoints: ServerEndpoints?
+    public var addressDrop: AddressDrop?
+    enum CodingKeys: String, CodingKey { case deviceID = "device_id", token, endpoints, addressDrop = "address_drop" }
+    public init(deviceID: String, token: String, endpoints: ServerEndpoints? = nil, addressDrop: AddressDrop? = nil) {
+        self.deviceID = deviceID; self.token = token; self.endpoints = endpoints; self.addressDrop = addressDrop
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        deviceID = try c.decode(String.self, forKey: .deviceID)
+        token = try c.decode(String.self, forKey: .token)
+        endpoints = try? c.decodeIfPresent(ServerEndpoints.self, forKey: .endpoints)
+        addressDrop = try? c.decodeIfPresent(AddressDrop.self, forKey: .addressDrop)
+    }
 }
 
 public func pairRequestBody(code: String, deviceName: String) throws -> Data {

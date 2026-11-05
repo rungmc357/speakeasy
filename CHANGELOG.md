@@ -2,6 +2,13 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.28 — Speakeasy away from home, without Tailscale
+
+- **Cloudflare mode.** No Tailscale? Your agent can give Speakeasy a Cloudflare address: nothing to install on your phone. The address is public but locked to your paired devices. Tailscale stays the recommended, most private way, and setup says so. *(Plugin; the tunnel is set up by your agent, see docs/AGENT_SETUP.md › Cloudflare mode)*
+- **The app follows a changed address.** A free Cloudflare address changes when the tunnel restarts. The plugin leaves an encrypted note with the new one (only your phone can read it), and the iPhone app shows **Update Speakeasy's address**: one tap fixes it. Hermes also messages you a link. *(Plugin; needs the iPhone app update)*
+- **Hardened for the public internet:** every request needs a paired device; pairing codes come only from this computer, last 10 minutes and are rate-limited with a lockout; unknown host names are refused; `/health` says nothing beyond "up" off this machine. *(Plugin)*
+- **The phone keeps every address** of your Hermes (tailnet and Cloudflare) and uses whichever works, so adding Tailscale later needs no re-pair. When none works, a calm card offers Install Tailscale and a setup request to copy for your Hermes. *(iPhone app)*
+
 ## Plugin 0.3.27 — Names that fit, and a board that stays cleared
 
 - **Follow-ups are named after the task they answer**, never an unrelated earlier task or the chat thread's name. Names never include your name or the assistant's, and obvious mishearings are fixed ("a good sleeper… a premium speaker" becomes "Find a premium speaker for the office").

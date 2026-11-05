@@ -199,6 +199,7 @@ def cmd_setup(args, home: Path, env=None) -> int:
     voice_ok = F.voice_sign_in(env, home, settings, api_key=getattr(args, "api_key", False), assume=assume)
     up = F.voice_server_running(env, local)
     server = _advertise(args, env, settings, port) or local
+    server = _cloudflare(env, home, settings, tailnet=not is_local_url(server)) or server
 
     if up:
         out("✓ Voice server is running")
@@ -223,10 +224,10 @@ def cmd_setup(args, home: Path, env=None) -> int:
     H.clear_pending(home)
     delivered = _deliver_link(args, env, home, settings, server)
     if not delivered:
-        code = _store(home).new_pairing_code(ttl=H.LINK_TTL_S)
+        code = _store(home).new_pairing_code(ttl=H.link_ttl(home))
         out("Open this link on the Mac you'll talk from. It connects Speakeasy, or offers the download first:")
         out(f"  {H.web_link(server, code)}")
-        out(f"  Or type code {code} in Speakeasy › Connect (works once, for {H.LINK_TTL_S // 60} minutes).")
+        out(f"  Or type code {code} in Speakeasy › Connect (works once, for {H.link_ttl(home) // 60} minutes).")
     if not voice_ok:
         out("Voice isn't signed in yet; the app will show how to finish that.")
         return 1
@@ -256,6 +257,46 @@ def _advertise(args, env, settings: Settings, port: int) -> str:
     url, name = F.tailscale_url(env, port, forced=getattr(args, "tailscale", False))
     settings.patch({"server": {"advertised_url": url or "", "tailscale_name": name}})
     return url or ""
+
+
+AGENT_DOC_CLOUDFLARE = "https://github.com/rungmc357/speakeasy/blob/main/docs/AGENT_SETUP.md#cloudflare-mode"
+CLOUDFLARE_NOTE = ("Cloudflare mode: nothing to install on your phone. The address is on the public internet, "
+                   "but only your paired devices get in (a device token on every request; pairing needs a "
+                   "one-time code from this computer, valid 10 minutes, with attempts rate-limited). Tailscale "
+                   "is the most private option: your tailnet only, never the public internet.")
+TAILSCALE_RECOMMENDED = ("• Recommended: Tailscale (most private: your devices only). Install it on this computer "
+                         "and your iPhone (https://tailscale.com/download), sign both in with the same account, "
+                         "then run `hermes voice setup` again.")
+CLOUDFLARE_OFFER = ("• No Tailscale? Your agent can give Speakeasy a Cloudflare address instead: nothing to install "
+                    "on your phone; the address is public but locked to your paired devices. Steps: " + AGENT_DOC_CLOUDFLARE)
+
+
+def _cloudflare(env, home: Path, settings: Settings, *, tailnet: bool) -> str:
+    """Cloudflare mode (tunnel.py). The tunnel itself is set up outside the plugin (AGENT_SETUP.md ›
+    Cloudflare mode); here setup reads its current address, or recommends Tailscale and points at it."""
+    from . import tunnel as T
+    s = settings.get()["server"]
+    if not s["tunnel"]:
+        if not tailnet:
+            env.out(TAILSCALE_RECOMMENDED)
+            env.out(CLOUDFLARE_OFFER)
+        return ""
+    if s["tunnel_hostname"]:
+        url = f"https://{s['tunnel_hostname']}"
+        env.out(f"✓ Cloudflare permanent address: {url}")
+    else:
+        url = T.wait_for_url(home, s["tunnel_metrics_port"], timeout_s=10, sleep=env.sleep, clock=env.clock)
+        if not url:
+            env.out("✗ Cloudflare mode is on, but its tunnel isn't reporting an address (is the tunnel service "
+                    f"running?). See {AGENT_DOC_CLOUDFLARE}")
+            return ""
+        T.apply_new_url(settings, url)
+        env.out(f"✓ Cloudflare address: {url}")
+        env.out("  This free address changes when the tunnel restarts; the app finds the new one by itself "
+                "(an encrypted note via ntfy.sh) and Hermes messages you a link too. For one that never changes, "
+                "see the permanent address in " + AGENT_DOC_CLOUDFLARE)
+    env.out(f"  {CLOUDFLARE_NOTE}")
+    return "" if tailnet else url
 
 
 def _sync_thread_routes(home: Path, settings: Settings, out) -> None:
@@ -455,14 +496,14 @@ def _deliver_link(args, env, home: Path, settings: Settings, server: str) -> str
     """"opened" | "sent" | "": ``--send`` sends a link to that chat; ``--here`` opens it on this
     machine (the app, or the download page when it isn't installed). Without either, open here
     when the app is installed on this machine and the server is local; else offer a chat."""
-    from .handoff import LINK_TTL_S, app_link, chat_message, web_link
+    from .handoff import app_link, chat_message, link_ttl, web_link
     if getattr(args, "send", ""):
-        code = _store(home).new_pairing_code(ttl=LINK_TTL_S)
+        code = _store(home).new_pairing_code(ttl=link_ttl(home))
         return "sent" if _send_link(home, args.send, web_link(server, code), env.out) else ""
     here = getattr(args, "here", False)
     if here or (is_local_url(server) and not args.no_open and _app_installed()):
         local = f"http://127.0.0.1:{voice_port(home)}"
-        code = _store(home).new_pairing_code(ttl=LINK_TTL_S)
+        code = _store(home).new_pairing_code(ttl=link_ttl(home))
         installed = _app_installed()
         if _open(app_link(local, code) if installed else web_link(local, code)):
             env.out("✓ Opened Speakeasy to pair. Finish setup there (about a minute)." if installed else
@@ -470,7 +511,7 @@ def _deliver_link(args, env, home: Path, settings: Settings, server: str) -> str
             return "opened"
     target = _pick_chat(env, home, settings)
     if target:
-        code = _store(home).new_pairing_code(ttl=LINK_TTL_S)
+        code = _store(home).new_pairing_code(ttl=link_ttl(home))
         if _send_link(home, target, web_link(server, code), env.out):
             return "sent"
     return ""
@@ -511,20 +552,20 @@ def _send_link(home: Path, target: str, link: str, out) -> bool:
     if not valid_delivery_target(target) or target == "none":
         out("✗ --send needs a Hermes chat like telegram or discord:<chat_id>")
         return False
-    from .handoff import chat_message
-    ok = HermesSendNotifier(home).send(target, chat_message(link))
+    from .handoff import chat_message, link_ttl
+    ok = HermesSendNotifier(home).send(target, chat_message(link, link_ttl(home) // 60))
     out(f"✓ Sent the pairing link to {_chat_name(target)}. Open it on your Mac." if ok
         else "✗ Couldn't send the pairing link.")
     return ok
 
 
 def cmd_pair(args, home: Path) -> int:
-    from .handoff import LINK_TTL_S, web_link
-    code = _store(home).new_pairing_code(ttl=LINK_TTL_S)
+    from .handoff import link_ttl, web_link
+    code = _store(home).new_pairing_code(ttl=link_ttl(home))
     server = (args.server or Settings(home).get()["server"]["advertised_url"]
               or f"http://127.0.0.1:{voice_port(home)}")
     link = web_link(server, code)
-    print(f"Pairing code: {code}  (single use, expires in {LINK_TTL_S // 60} minutes)")
+    print(f"Pairing code: {code}  (single use, expires in {link_ttl(home) // 60} minutes)")
     print(f"Pairing link: {link}")
     if args.send:
         return 0 if _send_link(home, args.send, link, print) else 1

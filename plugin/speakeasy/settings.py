@@ -57,8 +57,13 @@ DEFAULTS: dict[str, Any] = {
     "audio_duck": {"enabled": False, "level": 30, "hold_s": 4.0},
     "image_roots": [],
     # Written by `hermes voice setup`: the URL other devices use to reach this server (a tailnet
-    # HTTPS name when Tailscale was imported), reused by `hermes voice pair`.
-    "server": {"advertised_url": "", "tailscale_name": ""},
+    # HTTPS name when Tailscale was imported), reused by `hermes voice pair`. tunnel: "cloudflare" when
+    # setup runs a Cloudflare tunnel (tunnel.py): tunnel_url is its current address (a quick tunnel's
+    # changes on restart), tunnel_hostname the permanent name of a named tunnel ("" = quick tunnel).
+    "server": {"advertised_url": "", "tailscale_name": "", "tunnel": "", "tunnel_url": "", "tunnel_hostname": "",
+               "tunnel_metrics_port": 8797},
+    # The encrypted address note for Cloudflare quick tunnels (address_drop.py): relay is an ntfy server.
+    "address_drop": {"enabled": True, "relay": "https://ntfy.sh"},
     # Set by POST /voice/onboarding (or `hermes voice config set`) when the user confirmed them.
     "onboarding": {"names_set": False, "delivery_set": False, "home_offered": False},
     # Beta features, all off unless turned on. grok_voice: voice.provider may be "grok" (xAI realtime
@@ -139,6 +144,12 @@ def validate(settings: dict[str, Any]) -> dict[str, Any]:
     s["delivery"] = validate_delivery(s["delivery"])
     s["home_control"] = validate_home_control(s["home_control"])
     s["server"] = validate_server(s["server"])
+    drop = s["address_drop"]
+    if not isinstance(drop, dict) or set(drop) - {"enabled", "relay"} or not isinstance(drop.get("enabled"), bool):
+        raise SettingsError("address_drop.enabled must be true or false")
+    if not isinstance(drop.get("relay"), str) or not re.fullmatch(r"https://[A-Za-z0-9.\-]{1,253}(?::\d{1,5})?(/[A-Za-z0-9._~/-]*)?", drop["relay"]):
+        raise SettingsError("address_drop.relay must be an https URL of an ntfy server, like https://ntfy.sh")
+    s["address_drop"] = {"enabled": drop["enabled"], "relay": drop["relay"].rstrip("/")}
     s["audio_duck"] = validate_audio_duck(s["audio_duck"])
     fast = s["fast_routing"]
     if not isinstance(fast.get("quick_answers"), bool):
@@ -205,15 +216,29 @@ def validate_channel(raw: Any) -> dict[str, Any]:
 ADVERTISED_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-\[\]:]{1,253}(?::\d{1,5})?/?$")
 
 
+SERVER_KEYS = {"advertised_url", "tailscale_name", "tunnel", "tunnel_url", "tunnel_hostname", "tunnel_metrics_port"}
+
+
 def validate_server(server: dict[str, Any]) -> dict[str, Any]:
-    if set(server) - {"advertised_url", "tailscale_name"}:
-        raise SettingsError(f"unknown setting: server.{sorted(set(server) - {'advertised_url', 'tailscale_name'})[0]}")
+    if set(server) - SERVER_KEYS:
+        raise SettingsError(f"unknown setting: server.{sorted(set(server) - SERVER_KEYS)[0]}")
     url, name = server.get("advertised_url", ""), server.get("tailscale_name", "")
     if not isinstance(url, str) or (url and not ADVERTISED_URL_RE.fullmatch(url)):
         raise SettingsError("server.advertised_url must be an http(s) URL like https://host:8795")
     if not isinstance(name, str) or len(name) > 253 or any(c in name for c in " /{}<>`"):
         raise SettingsError("server.tailscale_name must be a host name")
-    return {"advertised_url": url.rstrip("/"), "tailscale_name": name}
+    tunnel, tunnel_url = server.get("tunnel", ""), server.get("tunnel_url", "")
+    hostname, metrics = server.get("tunnel_hostname", ""), server.get("tunnel_metrics_port", 8797)
+    if tunnel not in {"", "cloudflare"}:
+        raise SettingsError("server.tunnel must be cloudflare or empty (off)")
+    if not isinstance(tunnel_url, str) or (tunnel_url and not re.fullmatch(r"https://[a-z0-9.-]{4,253}", tunnel_url)):
+        raise SettingsError("server.tunnel_url must be an https URL with no path")
+    if not isinstance(hostname, str) or (hostname and not re.fullmatch(r"[a-z0-9.-]{4,253}", hostname)):
+        raise SettingsError("server.tunnel_hostname must be a host name like speakeasy.example.com")
+    if isinstance(metrics, bool) or not isinstance(metrics, int) or not 1024 <= metrics <= 65535:
+        raise SettingsError("server.tunnel_metrics_port must be a port number from 1024 to 65535")
+    return {"advertised_url": url.rstrip("/"), "tailscale_name": name, "tunnel": tunnel, "tunnel_url": tunnel_url,
+            "tunnel_hostname": hostname, "tunnel_metrics_port": metrics}
 
 
 def validate_channels(raw: list[Any]) -> list[dict[str, Any]]:

@@ -172,10 +172,57 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await data("/voice/reviews/\(escape(runID))/dismiss", method: "POST", body: try reviewDismissBody(cards: cards))
     }
 
+    /// `GET /voice/endpoints`: every address of this Hermes (nil on servers without it).
+    public func endpoints() async -> EndpointsResponse? {
+        guard let data = try? await data("/voice/endpoints") else { return nil }
+        return EndpointsResponse.decode(data)
+    }
+
+    /// Is `base` the same Hermes this device paired with? First `POST /voice/prove` (no token sent:
+    /// the server answers an HMAC keyed by the token's hash over a fresh nonce and the host), then,
+    /// only if that matches, an authenticated `GET /voice/status` with the existing token.
+    public static func verifySameHermes(base: URL, deviceID: String, token: String,
+                                        session: URLSession = URLSession(configuration: .ephemeral)) async -> Bool {
+        guard let trusted = trustedServerBaseURL(base.absoluteString), let host = trusted.host else { return false }
+        let nonce = ServerProof.newNonce()
+        var prove = URLRequest(url: trusted.appendingPathComponent("voice/prove"), timeoutInterval: 10)
+        prove.httpMethod = "POST"
+        prove.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        prove.httpBody = try? JSONSerialization.data(withJSONObject: ["device_id": deviceID, "nonce": nonce])
+        guard let (data, response) = try? await session.data(for: prove),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let proof = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["proof"] as? String,
+              ServerProof.matches(proof, ServerProof.expected(token: token, nonce: nonce, host: host)) else { return false }
+        var status = URLRequest(url: trusted.appendingPathComponent("voice/status"), timeoutInterval: 10)
+        status.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let (_, statusResponse) = try? await session.data(for: status) else { return false }
+        return (statusResponse as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    /// Can this device use `base` right now (authenticated `GET /voice/status`, short timeout)?
+    /// Only for addresses this Hermes itself reported (or the paired one).
+    public static func reachable(base: URL, token: String, timeout: TimeInterval = 8,
+                                 session: URLSession = URLSession(configuration: .ephemeral)) async -> Bool {
+        guard let trusted = trustedServerBaseURL(base.absoluteString) else { return false }
+        var request = URLRequest(url: trusted.appendingPathComponent("voice/status"), timeoutInterval: timeout)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let (_, response) = try? await session.data(for: request) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    /// The newest address note on the relay that is newer than `after` (nil: none, or unreadable).
+    public static func latestAddressNote(_ drop: AddressDrop, after lastSeq: Int,
+                                         session: URLSession = URLSession(configuration: .ephemeral)) async -> AddressNote? {
+        guard let url = AddressNote.pollURL(drop) else { return nil }
+        guard let (data, response) = try? await session.data(for: URLRequest(url: url, timeoutInterval: 10)),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return AddressNote.newest(inPoll: data, drop: drop, after: lastSeq)
+    }
+
     /// `POST /voice/pair` (no auth): trade a one-time code for a device token.
     public static func pair(server: URL, code: String, deviceName: String) async throws -> PairResponse {
         guard let base = trustedServerBaseURL(server.absoluteString) else {
-            throw HTTPError(status: 0, message: "That server address isn't allowed. Use this Mac (127.0.0.1) or an https Tailscale address.")
+            throw HTTPError(status: 0, message: "That server address isn't allowed. Use this Mac (127.0.0.1), an https Tailscale address or Speakeasy's Cloudflare address.")
         }
         var request = URLRequest(url: base.appendingPathComponent("voice/pair"), timeoutInterval: 20)
         request.httpMethod = "POST"

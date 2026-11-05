@@ -65,10 +65,13 @@ used in the tests (timestamps and IDs will differ).
 | GET | `/voice/destinations` | device | Where finished results can be posted |
 | POST | `/voice/destinations/suggest` | device | Ask Hermes to propose delivery channels (never saved) |
 | GET, POST | `/voice/onboarding` | device | First-run checklist |
+| GET | `/voice/endpoints` | device | Every address of this Hermes (tailnet, Cloudflare) + the address note |
+| POST | `/voice/prove` | none | Proves this is the paired Hermes before the app sends its token to a new address |
 
 ## GET /health
 
-No auth. Used by the app to find the server.
+No auth. Used by the app to find the server. Off this machine (a tailnet or a Cloudflare tunnel)
+it says only `{"ok": true, "platform": "voice"}`; the fields below are for apps on this machine.
 
 `200`
 ```json
@@ -98,7 +101,46 @@ matched. The token is returned once; store it in the Keychain.
 }
 ```
 
-Wrong or expired code: `403 {"error": "pairing code is wrong or expired"}`.
+Wrong or expired code: `403 {"error": "pairing code is wrong or expired"}`. From off this machine,
+more than 5 attempts a minute from one address (or 20 overall) get `429` (`reason: too_many`), and
+that address is locked out for 15 minutes. Codes last 10 minutes while a Cloudflare tunnel is on.
+
+Plugin 0.3.28+ also returns the fields of `GET /voice/endpoints` (`endpoints`, `address_drop`), so
+a phone knows every address and can read the address note. Older apps ignore them.
+
+## GET /voice/endpoints
+
+Device token. Every address of this Hermes, for the app to keep and try (tailnet first), and the
+encrypted address note for a Cloudflare quick tunnel (`null` otherwise, or when opted out).
+Capability `endpoints`.
+
+```json
+{
+  "endpoints": {"tailnet": "https://mini.tail1.ts.net", "cloudflare": "https://calm-river-sound.trycloudflare.com",
+                "cloudflare_permanent": false},
+  "address_drop": {"relay": "https://ntfy.sh", "topic": "se-<32 hex>", "key": "<base64url, 32 bytes>"}
+}
+```
+
+**Address note.** Whenever the quick tunnel's address changes (and every 6 hours), the plugin
+POSTs `se1.<base64url(nonce(12) ‖ AES-256-GCM ciphertext ‖ tag)>` to `<relay>/<topic>`, with the
+topic as additional authenticated data and plaintext `{"url", "ts", "seq"}`. The app polls
+`<relay>/<topic>/json?poll=1&since=24h`, takes the newest note whose `seq` is higher than the last
+one it accepted, and switches only after `POST /voice/prove` and `GET /voice/status` succeed there.
+
+## POST /voice/prove
+
+No auth (the token isn't sent until this passes). `{"device_id": "50689888", "nonce": "<22-128
+base64url chars>"}` → `200 {"proof": "<hex>"}`, where proof = HMAC-SHA256(key = the lowercase hex
+SHA-256 of the device token, message = `speakeasy-prove-v1|<nonce>|<host>`) and host is the `Host`
+the app called (no port). An unknown device id gets a random proof.
+
+## Cloudflare mode: host check
+
+While `server.tunnel` is on, a request whose `Host` isn't one the server publishes (loopback,
+`advertised_url`, `tunnel_url`, `tailscale_name`, `tunnel_hostname`) gets `421 {"error": "unexpected
+host"}`. `PATCH /voice/settings` refuses `server` and `address_drop` (`403`): where the server is
+published is set on the computer, never from a paired device.
 
 ## POST /voice/sessions
 

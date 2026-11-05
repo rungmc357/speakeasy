@@ -15,10 +15,11 @@ The iPhone and iPad app is a beta: https://testflight.apple.com/join/2v7PfpRM. I
 to talk from an **iPhone or iPad** (they'll usually say so, or the request came from the Speakeasy
 iOS app), follow the same steps with these differences:
 
-- Treat it as **a different device**: always do step 2. The phone reaches Hermes only over
-  Tailscale (an https `*.ts.net` address), so this machine must be on Tailscale with HTTPS
-  certificates on, and the phone needs the Tailscale app signed in to the **same account**.
-  Tell the user that in the same message as the link.
+- Treat it as **a different device**: always do step 2. The phone reaches Hermes over Tailscale
+  (recommended: an https `*.ts.net` address; this machine on Tailscale with HTTPS certificates on,
+  the phone with the Tailscale app signed in to the **same account**), or, when Tailscale isn't an
+  option, over a Cloudflare address ([Cloudflare mode](#cloudflare-mode): nothing to install on the
+  phone). Tell the user which in the same message as the link.
 - In step 3, use `hermes voice setup --send <this chat> --yes` so the pairing link arrives in
   the chat they're reading on the phone. Never use `--here` for a phone.
 - They tap the link on the phone and the Speakeasy app pairs. If tapping doesn't open the app,
@@ -68,6 +69,9 @@ Say so in the same message, since you can't check their device from here (unless
 
 If setup reports that HTTPS certificates are off for the tailnet, the user turns them on once at
 https://login.tailscale.com/admin/dns (HTTPS Certificates), then you run setup again.
+
+**No Tailscale, and the user doesn't want it?** Offer [Cloudflare mode](#cloudflare-mode) instead.
+Recommend Tailscale first: it is the most private.
 
 ## 3. Run setup
 
@@ -134,3 +138,78 @@ for microphone access, lets them pick names and where finished work goes, and st
 call that shows them around.
 
 More: https://speakeasyvoice.ai · Source: https://github.com/rungmc357/speakeasy
+
+## Cloudflare mode
+
+The no-Tailscale option. A Cloudflare tunnel gives the voice server an https address the phone can
+reach from anywhere, with nothing to install on the phone. Tell the user the tradeoff plainly, in
+their words:
+
+> **Tailscale** is the most private: Speakeasy is reachable only from your own devices.
+> **Cloudflare** needs nothing on your phone. Its address is on the public internet, but it's
+> locked to your paired devices: every request needs a paired device's token, and pairing needs a
+> one-time code from this computer.
+
+What protects it (plugin 0.3.28+): every route except `GET /health`, `POST /voice/pair` and
+`POST /voice/prove` needs a paired device token; pairing codes exist only after `hermes voice setup`
+or `hermes voice pair` ran on this computer, last 10 minutes while a tunnel is on, work once, and
+burn after 10 wrong guesses; pairing attempts from off this machine are rate-limited per address
+(5 a minute, then a 15-minute lockout) and overall (20 a minute); requests for any host name the
+server doesn't publish get `421`; `/health` says only `{"ok": true, "platform": "voice"}` off this
+machine; refused pairings, bad tokens and unexpected hosts are logged with the caller's address.
+Never use Tailscale Funnel.
+
+The plugin never installs or starts a tunnel itself (Hermes' plugin install scan treats tunnel
+tooling inside a plugin as high risk, and opening a public address is the user's call). You set it
+up; the plugin follows its address.
+
+### Free quick tunnel (default, no account)
+
+The address (`https://<words>.trycloudflare.com`) changes whenever the tunnel restarts (a reboot,
+an update). Brief sleep or a network drop keeps it. The app finds a new address by itself (below).
+
+1. Install Cloudflare's tunnel daemon: `brew install cloudflared` on a Mac; on Linux, Cloudflare's
+   package from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/.
+2. Run it as a background service that outlives Hermes, pointed at the voice server, with its
+   metrics on loopback (the plugin reads the address there):
+   `cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:8797 --url http://127.0.0.1:8795`,
+   logging to `<HERMES_HOME>/speakeasy/tunnel.log`, kept alive by launchd (macOS, `KeepAlive`) or a
+   systemd user unit (Linux, `Restart=always`). The Speakeasy repo's
+   [`scripts/speakeasy-cloudflare.py`](../scripts/speakeasy-cloudflare.py) does steps 1-3:
+   `python3 speakeasy-cloudflare.py quick` (and `restart`, `remove`).
+3. `hermes voice config set server.tunnel cloudflare` (and `server.tunnel_metrics_port` if you
+   used another port).
+4. `hermes voice setup --send <this chat> --yes`: it prints `✓ Cloudflare address: …` and the
+   pairing link carries that address.
+
+**When the address changes**, the plugin notices within seconds and:
+- publishes an encrypted note with the new address to `https://ntfy.sh/<random topic>` (an open
+  source, no-account relay). Only an encrypted copy of your Cloudflare address goes through ntfy.sh;
+  it can't be read without your phone's key. The topic and key go only to paired devices (in the
+  pair response), never in links. The app reads the note when its address stops answering, checks
+  the new address proves it's the same Hermes, and shows **Update Speakeasy's address**: one tap
+  fixes it. Self-hosted ntfy: `hermes voice config set address_drop.relay https://ntfy.example.com`.
+  Opt out: `hermes voice config set address_drop.enabled false`.
+- messages the user on their usual chat with an **Update Speakeasy's address** link (backup). It
+  carries only the new address, no code.
+
+### Permanent address (optional upgrade)
+
+An address that never changes, e.g. `https://speakeasy.example.com`. Needs a free Cloudflare
+account and the user's own domain on Cloudflare (about $10/year). The user does one step: run
+`cloudflared tunnel login` on this computer (a browser opens; they sign in and pick the domain).
+Then: `cloudflared tunnel create speakeasy`, `cloudflared tunnel route dns speakeasy
+speakeasy.<their-domain>`, and the same background service running
+`cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:8797 run --url http://127.0.0.1:8795 speakeasy`
+(the script: `python3 speakeasy-cloudflare.py named speakeasy.<their-domain>`). Then
+`hermes voice config set server.tunnel cloudflare`, `hermes voice config set server.tunnel_hostname
+speakeasy.<their-domain>`, and `hermes voice setup`. No address note is needed.
+
+### The phone can't reach Hermes
+
+The app shows **Can't reach your Hermes right now** with *Install Tailscale (recommended)* and
+*Copy setup request for your Hermes*. That request asks you to: check Tailscale (running, HTTPS
+certificates on) or the Cloudflare tunnel service (restart it if it stopped), re-run
+`hermes voice setup`, send the new pairing or update link, and reply with step-by-step phone
+instructions. The app also tries every address it knows (tailnet first, then Cloudflare) and keeps
+the one that works, so adding Tailscale later needs no re-pair.
