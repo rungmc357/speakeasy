@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.32 · iPhone build 63 — Works from anywhere, right after setup
+
+- **No Tailscale? Setup connects through Cloudflare by itself.** Your agent checks for Tailscale; if it isn't there, it turns on Cloudflare mode without asking, so your phone works from anywhere straight away. It then tells you what it did, and that Tailscale is the most private option.
+- **The phone says so once:** a one-time "Connected through Cloudflare" note with a Set up Tailscale button.
+- **Adding Tailscale later switches over by itself.** As soon as your Hermes has a Tailscale address, the phone moves to it (never mid-call). No re-pairing.
+
 ## Plugin 0.3.31 · Mac 0.3.16 · iPhone build 62 — See the helpers a job brings in
 
 - **Helpers on the job page.** When a job hands parts of the work to helpers, the job page lists each one with what it's doing now, how long it's been going, and how it ended. Open a helper to see what it was asked, what it found and every step it took.
