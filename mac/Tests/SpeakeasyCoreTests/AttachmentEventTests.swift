@@ -467,6 +467,49 @@ final class AttachmentEventTests: XCTestCase {
         XCTAssertEqual(s.sharing.button, .unavailable)
     }
 
+    func testADropWithNoCallOpenWaitsForTheNextCall() {
+        // After a call ended: kept, with a line that says where it went.
+        let ended = run([.endRequested, .serverClosed(.complete, error: nil)], from: ready())
+        var s = run([.sharing(.added(picture("p1"))), .tick], from: ended, at: t0 + 5)
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1"], "not wiped by the closed call")
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, true)
+        XCTAssertEqual(s.sharing.notice?.text, CallSharing.nextCallLine)
+        XCTAssertEqual(present(s).secondary, CallSharing.nextCallLine, "on the status line with no call")
+        XCTAssertEqual(present(s).tone, .success)
+
+        // The next call carries it and is what that call uploads once admitted.
+        s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_2")], from: s, at: t0 + 6)
+        XCTAssertEqual(s.sharing.uploadable(to: "vi_2").map(\.id), ["p1"])
+        XCTAssertNil(s.sharing.notice, "a new call starts with a clean status line")
+        s = run([.sharing(.uploading("p1", interactionID: "vi_2")),
+                 .sharing(.uploaded("p1", serverID: "att_1", interactionID: "vi_2"))], from: s, at: t0 + 7)
+        XCTAssertEqual(s.sharing.attachments.first?.phase, .pending)
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, false, "that call's now")
+        s = run([.endRequested, .serverClosed(.complete, error: nil)], from: s, at: t0 + 8)
+        XCTAssertEqual(s.sharing.attachments, [], "uploaded to a call that ended: gone with it, as before")
+    }
+
+    func testADropOnTheBoardSurvivesClosingItAndKeepsTheCap() {
+        var s = run([.workOnlyOpened] + (1...4).map { .sharing(.added(picture("p\($0)"))) })
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1", "p2", "p3"])
+        XCTAssertEqual(s.sharing.notice?.text, "Up to 3 at a time", "the cap holds with no call")
+        s = run([.reset], from: s)
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1", "p2", "p3"], "closing the board keeps them")
+        s = run([.sharing(.removing("p2"))], from: s)
+        XCTAssertEqual(s.sharing.attachments.map(\.id), ["p1", "p3"], "the ✕ still takes one off")
+        s = run([.startRequested], from: s)
+        XCTAssertEqual(s.sharing.uploadable(to: "vi_1").map(\.id), ["p1", "p3"])
+    }
+
+    func testADropDuringACallIsStillTheCalls() {
+        let s = run([.sharing(.added(picture("p1")))], from: ready())
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, false)
+        XCTAssertNil(s.sharing.notice, "no next-call line during a call")
+        let paused = run([.pauseRequested, .sessionClosed, .sharing(.added(picture("p2")))], from: s)
+        XCTAssertEqual(paused.connection, .paused)
+        XCTAssertEqual(paused.sharing.attachments.map(\.forNextCall), [false, false], "a paused call is still open")
+    }
+
     // MARK: Requests
 
     func testScreenAndCaptureBodiesAreExactly() throws {
