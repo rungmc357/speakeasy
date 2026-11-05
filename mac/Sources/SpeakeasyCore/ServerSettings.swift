@@ -819,8 +819,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     /// Tasks carry `subagents`: the helpers (Hermes subagents) a task started; `GET /voice/work/{run_id}`
     /// adds each one's steps.
     public var jobSubagents: Bool
-    /// Session / task history: `GET /voice/history`, `GET /voice/history/{id}`, and messages to any
-    /// session by id (`POST /voice/history/{id}/message`).
+    /// Every Hermes session, listed, read and written to by id (`GET /voice/history`, SessionHistory.swift).
     public var history: Bool
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,

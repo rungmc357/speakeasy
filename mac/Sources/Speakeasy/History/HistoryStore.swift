@@ -3,28 +3,28 @@ import SwiftUI
 import SpeakeasyCore
 import SpeakeasyClient
 
-/// Where history comes from: the paired Hermes, or (screenshots, tests) a demo.
+/// Where history comes from: the paired Hermes, or (screenshots) a demo.
 @MainActor
 protocol HistoryBackend: AnyObject {
     func page(_ query: HistoryQuery) async throws -> HistoryPage
-    func detail(_ sessionID: String) async throws -> HistoryDetail
+    func conversation(_ sessionID: String) async throws -> HistoryConversation
     func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply
     /// New chat; returns the new task's run id (or a session id).
     func startChat(text: String, clientID: String) async throws -> String?
-    func answer(_ answer: HistorySendAnswer) async throws
+    func answer(sessionID: String, sendID: String, choice: String) async throws
 }
 
 @MainActor
 final class LiveHistoryBackend: HistoryBackend {
     let api: ServerClient
     init(api: ServerClient) { self.api = api }
-    func page(_ query: HistoryQuery) async throws -> HistoryPage { try await api.history(query) }
-    func detail(_ sessionID: String) async throws -> HistoryDetail { try await api.historyDetail(sessionID) }
-    func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply { try await api.sendHistoryMessage(request) }
-    func startChat(text: String, clientID: String) async throws -> String? {
-        try await api.startChat(text: text, clientID: clientID)
+    func page(_ query: HistoryQuery) async throws -> HistoryPage { try await api.historyPage(query) }
+    func conversation(_ sessionID: String) async throws -> HistoryConversation { try await api.historySession(sessionID) }
+    func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply { try await api.sendToSession(request) }
+    func startChat(text: String, clientID: String) async throws -> String? { try await api.startChat(text: text, clientID: clientID) }
+    func answer(sessionID: String, sendID: String, choice: String) async throws {
+        try await api.answerSend(sessionID: sessionID, sendID: sendID, choice: choice)
     }
-    func answer(_ answer: HistorySendAnswer) async throws { try await api.answerHistorySend(answer) }
 }
 
 /// The history window's state: the list, the open session, the composer.
@@ -33,21 +33,20 @@ final class HistoryStore: ObservableObject {
     @Published private(set) var list = HistoryList()
     /// nil: nothing open yet.
     @Published private(set) var target: HistoryTarget?
-    @Published private(set) var details: [String: HistoryDetail] = [:]
+    @Published private(set) var conversations: [String: HistoryConversation] = [:]
     @Published private(set) var detailErrors: [String: String] = [:]
-    @Published private(set) var loadingDetail: Set<String> = []
     @Published private(set) var outbox = HistoryOutbox()
     @Published var searchText = "" { didSet { scheduleSearch() } }
     /// What's typed, per target ("new" for New chat).
     @Published var drafts: [String: String] = [:]
-    @Published private(set) var voice = VoiceMessageFlow()
+    @Published private(set) var voice = MacVoiceMessage()
     @Published private(set) var level: Float = 0
     @Published var openSections: Set<String> = []
     @Published private(set) var newChatError: String?
     @Published private(set) var startingChat = false
     @Published private(set) var answering: Set<String> = []
-    @Published var answerError: String?
-    /// Bumped to move focus (⌘F, ⌘N).
+    @Published private(set) var answerError: String?
+    /// Bumped to move focus (⌘F, ⌘N, a transcript to review).
     @Published var focusSearch = 0
     @Published var focusComposer = 0
     /// The server has `capabilities.history`; false shows the update note.
@@ -83,7 +82,6 @@ final class HistoryStore: ObservableObject {
     func refresh() { run(list.reset()) }
     func loadMore() { if let q = list.loadMore() { run(q) } }
     func retryList() { if let q = list.retry() { run(q) } }
-
     func setSource(_ id: String?) { if let q = list.setSource(id) { run(q) } }
 
     private func scheduleSearch() {
@@ -96,9 +94,8 @@ final class HistoryStore: ObservableObject {
         }
     }
 
-    /// Run the search now (tests, screenshots).
+    /// Search now, no debounce (screenshots).
     func searchNow(_ text: String) {
-        searchTask?.cancel()
         searchText = text
         searchTask?.cancel()
         if let q = list.setQuery(text) { run(q) }
@@ -136,40 +133,33 @@ final class HistoryStore: ObservableObject {
 
     func load(_ sessionID: String) {
         guard let backend else { return }
-        loadingDetail.insert(sessionID)
         Task { [weak self] in
             do {
-                let detail = try await backend.detail(sessionID)
+                let c = try await backend.conversation(sessionID)
                 guard let self else { return }
-                self.details[sessionID] = detail
+                self.conversations[sessionID] = c
                 self.detailErrors[sessionID] = nil
-                self.outbox.prune(detail.messages, session: sessionID)
+                self.outbox.prune(HistoryThread(c).messages, session: sessionID)
             } catch {
                 self?.detailErrors[sessionID] = Self.message(error)
             }
-            self?.loadingDetail.remove(sessionID)
         }
     }
 
-    /// While the open session is working or waiting on you, keep it fresh.
+    /// While the open session works, waits on you, or has a message on its way: keep it fresh.
     private func poll() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard let self, !Task.isCancelled, let id = self.target?.sessionID else { return }
-                let status = self.details[id]?.session.status
-                let pending = self.outbox.items.contains { $0.request.sessionID == id }
-                if status == .running || status == .waiting || pending { self.load(id) }
+                let c = self.conversations[id]
+                if c?.isWorking == true || c?.state == .needsYou || self.outbox.pending(in: id) { self.load(id) }
             }
         }
     }
 
-    var openDetail: HistoryDetail? { target?.sessionID.flatMap { details[$0] } }
-
-    func thread(_ detail: HistoryDetail) -> [HistoryMessage] {
-        outbox.merged(into: detail.messages, session: detail.session.id)
-    }
+    func thread(_ c: HistoryConversation) -> HistoryThread { HistoryThread(c, outbox: outbox) }
 
     // MARK: Composer
 
@@ -179,58 +169,48 @@ final class HistoryStore: ObservableObject {
         set { drafts[draftKey] = newValue }
     }
 
-    /// ↩ / the send button: the typed words.
-    func sendTyped() {
-        let text = draft
-        guard deliver(text, source: .typed) else { return }
+    /// ↩ / Send: what's in the field. Words from a voice message under review go as `voice_message`.
+    func send() {
+        let source: HistoryMessageRequest.Source = voice.reviewing ? .voiceMessage : .typed
+        guard deliver(draft, source: source) else { return }
         drafts[draftKey] = nil
+        voice.handle(.sent)
     }
-
-    /// Send the reviewed voice message.
-    func sendVoice() {
-        guard let text = voice.send() else { return }
-        if deliver(text, source: .voice, onFail: { [weak self] in self?.voice.sendFailed() }) { voice.sent() }
-    }
-
-    func editVoice(_ text: String) { voice.edit(text) }
 
     /// Send by id (a session) or start one (New chat). False when there was nothing to send.
     @discardableResult
-    private func deliver(_ text: String, source: HistoryMessageSource, onFail: (() -> Void)? = nil) -> Bool {
+    private func deliver(_ text: String, source: HistoryMessageRequest.Source) -> Bool {
         guard let target, let outgoing = target.outgoing(text, source: source), let backend else { return false }
         switch outgoing {
         case .message(let request):
             outbox.add(request, at: Date())
             transmit(request, backend)
-        case .newChat(let text, _, let clientID):
+        case .newChat(let text, let clientID):
             startingChat = true; newChatError = nil
             Task { [weak self] in
                 do {
                     let ref = try await backend.startChat(text: text, clientID: clientID)
-                    guard let self else { return }
-                    await self.openStarted(ref, text: text)
+                    await self?.openStarted(ref)
                 } catch {
                     self?.startingChat = false
                     self?.newChatError = Self.message(error)
                     self?.drafts["new"] = text
-                    onFail?()
                 }
             }
         }
         return true
     }
 
-    /// A new chat started: find its session (the row whose `run_ids` has the new run, or the id
-    /// itself) and open it. The session can take a moment to appear in Hermes's history.
-    private func openStarted(_ ref: String?, text: String) async {
+    /// A new chat started: find its session (the row listing the new run, or the id itself) and
+    /// open it. Hermes can take a moment to record the session.
+    private func openStarted(_ ref: String?) async {
         defer { startingChat = false }
         guard let backend, let ref else { refresh(); return }
-        for attempt in 0..<8 {
+        for attempt in 0..<10 {
             if attempt > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
             guard target == .newChat else { refresh(); return }   // the user moved on
-            let first = HistoryQuery(cursor: nil, q: nil, source: nil, limit: 20, generation: -1)
-            if let page = try? await backend.page(first),
-               let s = page.sessions.first(where: { $0.id == ref || $0.runID == ref }) {
+            if let page = try? await backend.page(HistoryQuery(limit: 20, generation: -1)),
+               let s = page.sessions.first(where: { $0.id == ref || $0.runIDs.contains(ref) }) {
                 list.upsert(s)
                 open(s.id)
                 refresh()
@@ -238,7 +218,7 @@ final class HistoryStore: ObservableObject {
             }
         }
         refresh()
-        newChatError = "Started. It shows up in the list once Hermes has it."
+        newChatError = "Started. It shows up in the list as soon as Hermes records it."
     }
 
     func retry(clientID: String) {
@@ -260,24 +240,23 @@ final class HistoryStore: ObservableObject {
         }
     }
 
-    /// The session just got a message: it moves to the top of the list.
+    /// The session just got a message: it moves to the top of the list, working.
     private func bump(_ sessionID: String, text: String) {
-        guard var s = list.sessions.first(where: { $0.id == sessionID }) ?? details[sessionID]?.session else { return }
-        s.updatedAt = Date(); s.preview = text
-        if s.status == .done || s.status == .failed || s.status == .idle { s.status = .running }
+        guard var s = list.sessions.first(where: { $0.id == sessionID }) else { return }
+        s.lastActivity = Date(); s.preview = text
+        if s.state == .idle { s.state = .running }
         list.upsert(s)
     }
 
-    /// Approval / question buttons. A message sent through Hermes that waits on it is answered with
-    /// its send's answer route (`choice`); a task's is answered by a message to the same session
-    /// ("yes" / "no" / the option), which the server hands to that task as the answer.
-    func answer(_ text: String, sendID: String? = nil, choice: String? = nil) {
-        guard let sendID, let sessionID = target?.sessionID, let backend else { deliver(text, source: .typed); return }
-        answering.insert(sendID)
-        let request = HistorySendAnswer(sessionID: sessionID, sendID: sendID, choice: choice ?? text)
+    /// An approval / question button. A send's prompt is answered on its answer route; a task's by
+    /// a message to the session (the server hands it to the waiting task as the answer).
+    func answer(_ waiting: HistoryWaiting, choice: String) {
+        guard let sendID = waiting.sendID else { deliver(choice, source: .typed); return }
+        guard let sessionID = target?.sessionID, let backend else { return }
+        answering.insert(sendID); answerError = nil
         Task { [weak self] in
-            do { try await backend.answer(request) }
-            catch { self?.detailErrors[sessionID] = nil; self?.answerError = Self.message(error) }
+            do { try await backend.answer(sessionID: sessionID, sendID: sendID, choice: choice) }
+            catch { self?.answerError = Self.message(error) }
             self?.answering.remove(sendID)
             self?.load(sessionID)
         }
@@ -286,53 +265,56 @@ final class HistoryStore: ObservableObject {
     // MARK: Voice messages
 
     func setCallLive(_ live: Bool) {
-        let wasRecording = voice.isBusy && voice.reviewText == nil
-        voice.setCallLive(live)
-        if live && wasRecording { recorder.cancel(); level = 0 }
+        if voice.setCallLive(live) == .cancelRecording { recorder.cancel(); level = 0 }
     }
 
+    /// The mic button (and Stop: the same tap ends a recording).
     func tapMic() {
-        guard voice.tapMic() else { return }
-        recorder.authorize { [weak self] granted, problem in
-            guard let self else { return }
-            self.voice.permission(granted: granted, now: Date())
-            if !granted { if let problem { self.voice.failed(problem) }; return }
-            let started = self.recorder.start(
-                partial: { [weak self] text in self?.voice.heard(text) },
+        apply(voice.handle(.micTapped(now: Date()), draft: draft))
+    }
+
+    func cancelVoice() {
+        apply(voice.handle(.cancel))
+    }
+
+    private func apply(_ effect: VoiceMessageFlow.Effect) {
+        switch effect {
+        case .none: break
+        case .askPermissions:
+            recorder.authorize { [weak self] granted, onDevice in
+                guard let self else { return }
+                self.apply(self.voice.handle(.permissions(granted: granted, onDevice: onDevice)))
+            }
+        case .startRecording:
+            let started = recorder.start(
+                partial: { [weak self] text in self?.voice.handle(.partial(text)) },
                 level: { [weak self] l in self?.level = l },
                 finished: { [weak self] text, problem in
                     guard let self else { return }
                     self.level = 0
-                    if let problem { self.voice.failed(problem) } else { self.voice.finished(text) }
-                    if self.voice.reviewText != nil { self.focusComposer += 1 }
+                    if let problem { self.apply(self.voice.handle(.failed(problem))); return }
+                    self.apply(self.voice.handle(.final(text ?? "")))
+                    if self.voice.reviewing {
+                        self.drafts[self.draftKey] = self.voice.flow.fieldText
+                        self.focusComposer += 1
+                    }
                 })
-            if !started { self.voice.failed("Couldn't open the microphone.") }
+            if !started { apply(voice.handle(.failed("Couldn't open the microphone."))) }
+        case .stopRecording:
+            recorder.stop()
+        case .cancelRecording:
+            recorder.cancel(); level = 0
         }
-    }
-
-    func stopRecording() {
-        guard voice.isRecording else { return }
-        voice.stop()
-        recorder.stop()
-    }
-
-    func cancelVoice() {
-        if voice.isBusy { recorder.cancel() }
-        voice.cancel(); level = 0
     }
 
     private func tick() {
         now = Date()
-        if voice.overLimit(now: now) { stopRecording() }
+        if voice.flow.shouldAutoStop(now: now) { tapMic() }
     }
 
-    // MARK: Preview hooks (screenshots)
+    // MARK: Screenshots
 
-    func preview(voice flow: VoiceMessageFlow, level: Float) { self.voice = flow; self.level = level }
-    func preview(open id: String, detail: HistoryDetail) {
-        target = .session(id); details[id] = detail
-    }
-    func preview(newChat: Bool) { if newChat { target = .newChat } }
+    func preview(voice: MacVoiceMessage, level: Float) { self.voice = voice; self.level = level }
     func preview(outbox: HistoryOutbox) { self.outbox = outbox }
 
     static func message(_ error: Error) -> String {

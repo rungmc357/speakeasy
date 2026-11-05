@@ -49,181 +49,172 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-// MARK: - Demo (screenshots; invented, work-first data)
+// MARK: - Demo (screenshots; invented, work-first data, in the server's JSON shapes)
 
 @MainActor
 final class DemoHistoryBackend: HistoryBackend {
     var sessions: [HistorySession]
-    var details: [String: HistoryDetail]
+    var conversations: [String: HistoryConversation]
     var sent: [HistoryMessageRequest] = []
+    var answers: [(String, String, String)] = []
 
     init(now: Date = Date()) {
-        (sessions, details) = DemoHistory.make(now: now)
+        (sessions, conversations) = DemoHistory.make(now: now)
     }
 
     func page(_ query: HistoryQuery) async throws -> HistoryPage {
         var all = sessions
         if let source = query.source { all = all.filter { $0.source == source } }
-        if let q = query.q?.lowercased() {
+        let q = query.q.lowercased()
+        if !q.isEmpty {
             all = all.compactMap { s in
                 if s.title.lowercased().contains(q) { return s }
-                guard let hit = details[s.id]?.messages.first(where: { $0.text.lowercased().contains(q) }) else { return nil }
-                var m = s; m.snippet = DemoHistory.snippet(hit.text, around: q); return m
+                guard let hit = conversations[s.id]?.entries.first(where: { $0.text.lowercased().contains(q) }) else { return nil }
+                var m = s; m.match = DemoHistory.snippet(hit.text, around: q); return m
             }
         }
         let start = Int(query.cursor ?? "0") ?? 0
         let slice = Array(all.dropFirst(start).prefix(query.limit))
         let next = start + slice.count < all.count ? String(start + slice.count) : nil
-        let counts = Dictionary(grouping: sessions, by: { $0.source ?? "" }).mapValues(\.count)
-        let sources = ["speakeasy", "discord", "telegram", "cli", "cron"].map { HistorySource(id: $0, count: counts[$0]) }
-        return HistoryPage(sessions: slice, nextCursor: next, sources: sources)
+        return HistoryPage(sessions: slice, nextCursor: next, filters: HistoryList.defaultFilters)
     }
 
-    func detail(_ sessionID: String) async throws -> HistoryDetail {
-        guard let d = details[sessionID] else { throw ServerClient.HTTPError(status: 404, message: "I couldn't find that session.") }
-        return d
+    func conversation(_ sessionID: String) async throws -> HistoryConversation {
+        guard let c = conversations[sessionID] else { throw ServerClient.HTTPError(status: 404, message: "I couldn't find that conversation.") }
+        return c
     }
 
     func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply {
         sent.append(request)
-        return HistoryMessageReply(sessionID: request.sessionID, runID: nil, deliveredAs: .steer)
+        return HistoryMessageReply(via: .task, runID: "run_demo", sendID: nil)
     }
-
-    var answers: [HistorySendAnswer] = []
 
     func startChat(text: String, clientID: String) async throws -> String? {
         let id = "s_new_\(sessions.count)", run = "run_new_\(sessions.count)"
-        let s = HistorySession(id: id, title: text, source: "speakeasy", preview: text, startedAt: Date(), updatedAt: Date(),
-                               status: .running, runID: run)
+        let s = HistorySession(id: id, title: text, source: "speakeasy", sourceLabel: "Speakeasy", lastActivity: Date(),
+                               preview: text, state: .running, runIDs: [run])
         sessions.insert(s, at: 0)
-        details[id] = HistoryDetail(session: s, messages: [HistoryMessage(id: "m0", role: .user, text: text, at: Date(), source: "typed")])
+        conversations[id] = HistoryConversation(id: id, title: text, source: "speakeasy", sourceLabel: "Speakeasy", state: .running,
+                                                sendVia: .task, entries: [HistoryEntry(id: "m0", kind: .user, at: Date(), text: text)])
         return run
     }
 
-    func answer(_ answer: HistorySendAnswer) async throws { answers.append(answer) }
+    func answer(sessionID: String, sendID: String, choice: String) async throws { answers.append((sessionID, sendID, choice)) }
 }
 
 enum DemoHistory {
     static func snippet(_ text: String, around q: String) -> String {
-        let flat = HistorySession.oneLine(text)
+        let flat = HistoryLook.oneLine(text)
         guard let r = flat.range(of: q, options: .caseInsensitive) else { return String(flat.prefix(90)) }
         let start = flat.index(r.lowerBound, offsetBy: -30, limitedBy: flat.startIndex) ?? flat.startIndex
         return (start == flat.startIndex ? "" : "…") + String(flat[start...].prefix(100))
     }
 
-    static func call(_ id: String, _ kind: JobActivityItem.Kind, _ text: String, _ tool: String, at: Date, took: Double?,
-                     args: String? = nil, result: String? = nil, failed: Bool = false) -> JobActivityItem {
-        JobActivityItem(id: id, at: at, kind: kind, text: text, status: took == nil ? .running : failed ? .failed : .done,
-                        tool: tool, startedAt: at, endedAt: took.map { at + $0 }, args: args, result: result)
-    }
-
-    static func make(now: Date) -> ([HistorySession], [String: HistoryDetail]) {
+    static func make(now: Date) -> ([HistorySession], [String: HistoryConversation]) {
         let cal = Calendar.current
-        func today(_ minutesAgo: Double) -> Date { now - minutesAgo * 60 }
-        func daysAgo(_ d: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+        func ago(_ minutes: Double) -> Double { now.timeIntervalSince1970 - minutes * 60 }
+        func daysAgo(_ d: Int, _ hour: Int, _ minute: Int = 0) -> Double {
             let day = cal.date(byAdding: .day, value: -d, to: now)!
-            return cal.date(bySettingHour: hour, minute: minute, second: 0, of: day)!
+            return cal.date(bySettingHour: hour, minute: minute, second: 0, of: day)!.timeIntervalSince1970
         }
+        func user(_ id: String, _ at: Double, _ text: String) -> [String: Any] { ["kind": "user", "id": id, "at": at, "text": text] }
+        func bot(_ id: String, _ at: Double, _ text: String) -> [String: Any] { ["kind": "assistant", "id": id, "at": at, "text": text] }
+        func tools(_ id: String, _ items: [[String: Any]]) -> [String: Any] { ["kind": "tools", "id": id, "items": items] }
+        func call(_ n: Int, _ kind: String, _ text: String, _ tool: String, _ start: Double, _ took: Double?,
+                  args: String? = nil, result: String? = nil, failed: Bool = false) -> [String: Any] {
+            var o: [String: Any] = ["id": "c\(n)", "n": n, "kind": kind, "text": text, "tool": tool, "started_at": start,
+                                    "status": took == nil ? "running" : failed ? "failed" : "done"]
+            if let took { o["ended_at"] = start + took }
+            if let args { o["args"] = args }
+            if let result { o["result"] = result }
+            return o
+        }
+
         var sessions: [HistorySession] = []
-        var details: [String: HistoryDetail] = [:]
-        func add(_ s: HistorySession, _ messages: [HistoryMessage] = [], helpers: [JobSubagent] = [],
-                 approvals: [HistoryApproval] = [], questions: [HistoryQuestion] = []) {
-            sessions.append(s)
-            details[s.id] = HistoryDetail(session: s, messages: messages, helpers: helpers, approvals: approvals, questions: questions)
+        var convs: [String: HistoryConversation] = [:]
+        func add(_ id: String, _ title: String, _ source: String, _ label: String, _ last: Double, _ preview: String,
+                 state: String = "idle", entries: [[String: Any]] = [], jobs: [[String: Any]] = [], sends: [[String: Any]] = []) {
+            let row: [String: Any] = ["id": id, "title": title, "source": source, "source_label": label, "last_activity": last,
+                                      "preview": preview, "state": state]
+            sessions.append(HistorySession(json: row)!)
+            var full = row
+            full["entries"] = entries; full["jobs"] = jobs; full["sends"] = sends
+            full["send_via"] = source == "speakeasy" ? "task" : "hermes"
+            convs[id] = HistoryConversation(json: ["session": full])
         }
 
-        // 1. Running, with tool calls and helpers.
-        let t0 = today(9)
-        add(HistorySession(id: "s_flaky", title: "Fix the flaky checkout test", source: "speakeasy",
-                           preview: "Rerunning the checkout test 50 times", startedAt: t0, updatedAt: today(0.5), status: .running, messageCount: 4),
-            [HistoryMessage(id: "m1", role: .user, text: "The checkout test keeps failing on CI. Find out why and fix it.", at: t0, source: "voice"),
-             HistoryMessage(id: "m2", role: .assistant,
-                            text: "It's a race: the test clicks **Pay** before the payment mock is listening, so it fails about 1 run in 6. A fixed 500 ms wait was standing in for “mock ready”.",
-                            at: today(6), toolCalls: [
-                                call("a1", .search, "Searched the files for “checkout”", "search_files", at: t0 + 10, took: 1.8, args: "checkout",
-                                     result: "3 matches\ncheckout.spec.ts:12  test('checkout', …)\npayment-mock.ts:1  // payment mock"),
-                                call("a2", .read, "Read checkout.spec.ts", "read_file", at: t0 + 14, took: 0.6, args: "checkout.spec.ts",
-                                     result: "41  await page.waitForTimeout(500)\n42  await page.click('#pay')"),
-                                call("a3", .run, "Ran the test 12 times", "terminal", at: t0 + 20, took: 61,
-                                     args: "npx playwright test checkout.spec.ts --repeat-each=12",
-                                     result: "10 passed, 2 failed (1.2m)\n  checkout.spec.ts:43  Timed out waiting for “Order placed”", failed: true),
-                                call("a4", .read, "Read payment-mock.ts", "read_file", at: t0 + 90, took: 0.5),
-                            ]),
-             HistoryMessage(id: "m3", role: .user, text: "Wait on the mock's ready signal instead of the timeout, then run it 50 times.", at: today(5), source: "typed"),
-             HistoryMessage(id: "m4", role: .assistant, text: "Changed the test to wait for the mock. Running it 50 times now: 31 passes so far, no failures.",
-                            at: today(1), toolCalls: [
-                                call("b1", .edit, "Edited payment-mock.ts", "patch", at: today(4.8), took: 0.7, args: "payment-mock.ts",
-                                     result: "+  export const mockReady = new Promise(r => server.on('listening', r))"),
-                                call("b2", .edit, "Edited checkout.spec.ts", "patch", at: today(4.6), took: 0.6, args: "checkout.spec.ts",
-                                     result: "-  await page.waitForTimeout(500)\n+  await mockReady"),
-                                call("b3", .run, "Ran the test 50 times", "terminal", at: today(4), took: nil,
-                                     args: "npx playwright test checkout.spec.ts --repeat-each=50"),
-                            ])],
-            helpers: [JobSubagent(id: "h1", title: "Check the other payment tests", status: .done, goal: "Look for the same fixed wait in the other payment specs",
-                                  startedAt: today(5), endedAt: today(3.5), summary: "Two more specs wait 500 ms for the mock: refund.spec.ts and saved-card.spec.ts."),
-                      JobSubagent(id: "h2", title: "Find when the wait was added", status: .running, startedAt: today(4), now: "Reading git blame for checkout.spec.ts")])
+        let t0 = ago(9)
+        add("s_flaky", "Fix the flaky checkout test", "speakeasy", "Speakeasy", ago(0.5), "Rerunning the checkout test 50 times",
+            state: "running", entries: [
+                user("m1", t0, "The checkout test keeps failing on CI. Find out why and fix it."),
+                tools("t1", [call(1, "search", "Searched the files for “checkout”", "search_files", t0 + 10, 1.8, args: "checkout",
+                                  result: "3 matches\ncheckout.spec.ts:12  test('checkout', …)\npayment-mock.ts:1  // payment mock"),
+                             call(2, "read", "Read checkout.spec.ts", "read_file", t0 + 14, 0.6, args: "checkout.spec.ts",
+                                  result: "41  await page.waitForTimeout(500)\n42  await page.click('#pay')"),
+                             call(3, "run", "Ran the test 12 times", "terminal", t0 + 20, 61,
+                                  args: "npx playwright test checkout.spec.ts --repeat-each=12",
+                                  result: "10 passed, 2 failed (1.2m)\n  checkout.spec.ts:43  Timed out waiting for “Order placed”", failed: true),
+                             call(4, "read", "Read payment-mock.ts", "read_file", t0 + 90, 0.5)]),
+                bot("m2", ago(6), "It's a race: the test clicks **Pay** before the payment mock is listening, so it fails about 1 run in 6. A fixed 500 ms wait was standing in for “mock ready”."),
+                user("m3", ago(5), "Wait on the mock's ready signal instead of the timeout, then run it 50 times."),
+                tools("t2", [call(5, "edit", "Edited payment-mock.ts", "patch", ago(4.8), 0.7, args: "payment-mock.ts",
+                                  result: "+  export const mockReady = new Promise(r => server.on('listening', r))"),
+                             call(6, "edit", "Edited checkout.spec.ts", "patch", ago(4.6), 0.6, args: "checkout.spec.ts",
+                                  result: "-  await page.waitForTimeout(500)\n+  await mockReady"),
+                             call(7, "run", "Ran the test 50 times", "terminal", ago(4), nil,
+                                  args: "npx playwright test checkout.spec.ts --repeat-each=50")]),
+                bot("m4", ago(1), "Changed the test to wait for the mock. Running it 50 times now: 31 passes so far, no failures."),
+            ], jobs: [["run_id": "run_0012", "status": "working", "title": "Fix the flaky checkout test", "subagents": [
+                ["id": "h1", "title": "Check the other payment tests", "status": "done", "goal": "Look for the same fixed wait in the other payment specs",
+                 "started_at": ago(5), "ended_at": ago(3.5), "summary": "Two more specs wait 500 ms for the mock: refund.spec.ts and saved-card.spec.ts."],
+                ["id": "h2", "title": "Find when the wait was added", "status": "running", "started_at": ago(4), "now": "Reading git blame for checkout.spec.ts"]]]])
 
-        // 2. Waiting on an approval (Discord).
-        add(HistorySession(id: "s_deploy", title: "Deploy the pricing page to staging", source: "discord",
-                           preview: "Wants to run: rsync -az dist/ staging:/srv/site", startedAt: today(48), updatedAt: today(31), status: .waiting),
-            [HistoryMessage(id: "m1", role: .user, text: "Ship the new pricing page to staging when the build is green.", at: today(48), source: "discord"),
-             HistoryMessage(id: "m2", role: .assistant, text: "The build passed. Uploading needs your OK because it overwrites the staging site.",
-                            at: today(31), toolCalls: [call("d1", .run, "Built the site", "terminal", at: today(40), took: 64, args: "npm run build")])],
-            approvals: [HistoryApproval(id: "ap1", description: "Upload the built site to staging", command: "rsync -az --delete dist/ staging:/srv/site")])
+        add("s_deploy", "Deploy the pricing page to staging", "discord", "Discord · #launch", ago(31),
+            "Wants to run: rsync -az dist/ staging:/srv/site", state: "needs_you", entries: [
+                user("m1", ago(48), "Ship the new pricing page to staging when the build is green."),
+                tools("t1", [call(1, "run", "Built the site", "terminal", ago(40), 64, args: "npm run build")]),
+                bot("m2", ago(31), "The build passed. Uploading needs your OK because it overwrites the staging site."),
+            ], sends: [["send_id": "hs_1", "status": "needs_you", "text": "Go ahead and upload it.", "started": ago(30),
+                        "prompt": ["kind": "approval", "prompt_id": "p1", "text": "Run rsync -az --delete dist/ staging:/srv/site",
+                                   "choices": ["once", "session", "always", "deny"]]]])
 
-        // 3. A question (Telegram).
-        add(HistorySession(id: "s_pricing", title: "Pricing vs. three competitors", source: "telegram",
-                           preview: "Which plan should the comparison put us against?", startedAt: today(130), updatedAt: today(95), status: .waiting),
-            [HistoryMessage(id: "m1", role: .user, text: "Compare our pricing with Northwind, Contoso and Fabrikam.", at: today(130), source: "telegram"),
-             HistoryMessage(id: "m2", role: .assistant, text: "Northwind and Contoso charge per seat; Fabrikam is flat per workspace. We're the only one without an annual discount.",
-                            at: today(96), toolCalls: [
-                                call("p1", .browse, "Read northwind.example/pricing", "web_extract", at: today(120), took: 4.2),
-                                call("p2", .browse, "Read contoso.example/plans", "web_extract", at: today(115), took: 5),
-                                call("p3", .browse, "Read fabrikam.example/pricing", "web_extract", at: today(110), took: 3.1)])],
-            questions: [HistoryQuestion(id: "q1", question: "Which plan should the comparison put us against?",
-                                        options: ["Their Team plans", "Their Business plans"])])
+        add("s_pricing", "Pricing vs. three competitors", "telegram", "Telegram", ago(95), "Which plan should the comparison put us against?",
+            state: "needs_you", entries: [
+                user("m1", ago(130), "Compare our pricing with Northwind, Contoso and Fabrikam."),
+                tools("t1", [call(1, "browse", "Read northwind.example/pricing", "web_extract", ago(120), 4.2),
+                             call(2, "browse", "Read contoso.example/plans", "web_extract", ago(115), 5),
+                             call(3, "browse", "Read fabrikam.example/pricing", "web_extract", ago(110), 3.1)]),
+                bot("m2", ago(96), "Northwind and Contoso charge per seat; Fabrikam is flat per workspace. We're the only one without an annual discount."),
+            ], jobs: [["run_id": "run_0009", "status": "completed", "title": "Pricing vs. three competitors",
+                       "result": ["views": [["kind": "question", "question": "Which plan should the comparison put us against?",
+                                             "options": [["text": "Their Team plans"], ["text": "Their Business plans"]]]]]]])
 
-        add(HistorySession(id: "s_dash", title: "Speed up the sales dashboard", source: "speakeasy",
-                           preview: "Loads in 0.8 s now, down from 6. One query was scanning every order.", startedAt: today(260), updatedAt: today(232), status: .done),
-            [HistoryMessage(id: "m1", role: .user, text: "The sales dashboard is slow. Fix it.", at: today(260), source: "voice"),
-             HistoryMessage(id: "m2", role: .assistant, text: "The dashboard loads in 0.8 seconds now, down from 6. One query was scanning every order; it has an index on created_at now.",
-                            at: today(232), toolCalls: [
-                                call("c1", .run, "Timed every query on the page", "terminal", at: today(255), took: 42, args: "npm run profile -- /sales"),
-                                call("c2", .edit, "Added an index on orders.created_at", "patch", at: today(245), took: 0.8),
-                                call("c3", .run, "Checked the load time", "terminal", at: today(236), took: 38, result: "p50 0.8 s (was 6.1 s)")])])
-
-        // Yesterday.
-        add(HistorySession(id: "s_tickets", title: "This week's support tickets", source: "cli",
-                           preview: "Half the billing tickets are the same card-declined message.", startedAt: daysAgo(1, 17, 40), updatedAt: daysAgo(1, 17, 52), status: .done),
-            [HistoryMessage(id: "m1", role: .user, text: "Summarize this week's support tickets by cause.", at: daysAgo(1, 17, 40), source: "cli"),
-             HistoryMessage(id: "m2", role: .assistant, text: "77 tickets. Billing (40): half are the same card-declined message. Login (22): mostly the new SSO redirect. Exports (15): CSV timeouts on big accounts.",
-                            at: daysAgo(1, 17, 52))])
-        add(HistorySession(id: "s_brief", title: "Morning brief", source: "cron", preview: "3 meetings, 2 PRs waiting on you, rain after 4 PM.",
-                           startedAt: daysAgo(1, 8), updatedAt: daysAgo(1, 8, 1), status: .done),
-            [HistoryMessage(id: "m1", role: .assistant, text: "3 meetings, 2 PRs waiting on you, rain after 4 PM.", at: daysAgo(1, 8, 1))])
-        add(HistorySession(id: "s_onboard", title: "Onboarding email sequence", source: "speakeasy",
-                           preview: "Drafted all five; email 3 invites the team.", startedAt: daysAgo(1, 11, 5), updatedAt: daysAgo(1, 11, 40), status: .done),
-            [HistoryMessage(id: "m1", role: .user, text: "Write the onboarding email sequence.", at: daysAgo(1, 11, 5), source: "typed"),
-             HistoryMessage(id: "m2", role: .assistant, text: "Drafted all five; email 3 invites the team. They're in onboarding/.", at: daysAgo(1, 11, 40))])
-
-        // Earlier.
-        add(HistorySession(id: "s_offsite", title: "Saturday offsite weather", source: "telegram", preview: "Dry until 3 PM, then showers.",
-                           startedAt: daysAgo(3, 9), updatedAt: daysAgo(3, 9, 1), status: .done),
-            [HistoryMessage(id: "m1", role: .user, text: "Will it rain for Saturday's team offsite?", at: daysAgo(3, 9), source: "telegram"),
-             HistoryMessage(id: "m2", role: .assistant, text: "Dry until 3 PM, then showers. Plan the hike for the morning.", at: daysAgo(3, 9, 1))])
-        add(HistorySession(id: "s_invoice", title: "Chase the March invoices", source: "discord", preview: "Couldn't log in to the billing portal.",
-                           startedAt: daysAgo(4, 15), updatedAt: daysAgo(4, 15, 10), status: .failed),
-            [HistoryMessage(id: "m1", role: .user, text: "Find which March invoices are still unpaid.", at: daysAgo(4, 15), source: "discord"),
-             HistoryMessage(id: "m2", role: .assistant, text: "Couldn't log in to the billing portal: it wants a new 2FA code.", at: daysAgo(4, 15, 10))])
-        add(HistorySession(id: "s_gift", title: "Pick the shop for the gift", source: "speakeasy", preview: "Lark Home: 60-day returns, free label.",
-                           startedAt: daysAgo(6, 19), updatedAt: daysAgo(6, 19, 9), status: .done),
-            [HistoryMessage(id: "m1", role: .user, text: "Which shop has the best return policy for the lamp?", at: daysAgo(6, 19), source: "voice"),
-             HistoryMessage(id: "m2", role: .assistant, text: "Lark Home: 60-day returns with a free label.", at: daysAgo(6, 19, 9))])
-        add(HistorySession(id: "s_rename", title: "Rename the staging buckets", source: "cli", preview: "Renamed 4 buckets; updated the deploy config.",
-                           startedAt: daysAgo(9, 14), updatedAt: daysAgo(9, 14, 20), status: .done))
-        add(HistorySession(id: "s_reading", title: "Reading list for the team", source: "speakeasy", preview: "Six picks on pricing strategy.",
-                           startedAt: daysAgo(12, 10), updatedAt: daysAgo(12, 10, 4), status: .done))
-        return (sessions, details)
+        add("s_dash", "Speed up the sales dashboard", "speakeasy", "Speakeasy", ago(232),
+            "Loads in 0.8 s now, down from 6. One query was scanning every order.", entries: [
+                user("m1", ago(260), "The sales dashboard is slow. Fix it."),
+                tools("t1", [call(1, "run", "Timed every query on the page", "terminal", ago(255), 42),
+                             call(2, "edit", "Added an index on orders.created_at", "patch", ago(245), 0.8),
+                             call(3, "run", "Checked the load time", "terminal", ago(236), 38, result: "p50 0.8 s (was 6.1 s)")]),
+                bot("m2", ago(232), "The dashboard loads in 0.8 seconds now, down from 6. One query was scanning every order; it has an index on created_at now."),
+            ])
+        add("s_tickets", "This week's support tickets", "cli", "Terminal", daysAgo(1, 17, 52),
+            "Half the billing tickets are the same card-declined message.", entries: [
+                user("m1", daysAgo(1, 17, 40), "Summarize this week's support tickets by cause."),
+                bot("m2", daysAgo(1, 17, 52), "77 tickets. Billing (40): half are the same card-declined message. Login (22): mostly the new SSO redirect. Exports (15): CSV timeouts on big accounts."),
+            ])
+        add("s_onboard", "Onboarding email sequence", "speakeasy", "Speakeasy", daysAgo(1, 11, 40), "Drafted all five; email 3 invites the team.",
+            entries: [user("m1", daysAgo(1, 11, 5), "Write the onboarding email sequence."),
+                      bot("m2", daysAgo(1, 11, 40), "Drafted all five; email 3 invites the team. They're in onboarding/.")])
+        add("s_offsite", "Saturday offsite weather", "telegram", "Telegram", daysAgo(3, 9, 1), "Dry until 3 PM, then showers.",
+            entries: [user("m1", daysAgo(3, 9), "Will it rain for Saturday's team offsite?"),
+                      bot("m2", daysAgo(3, 9, 1), "Dry until 3 PM, then showers. Plan the hike for the morning.")])
+        add("s_invoice", "Chase the March invoices", "discord", "Discord · #finance", daysAgo(4, 15, 10), "Couldn't log in to the billing portal.",
+            entries: [user("m1", daysAgo(4, 15), "Find which March invoices are still unpaid."),
+                      bot("m2", daysAgo(4, 15, 10), "Couldn't log in to the billing portal: it wants a new 2FA code.")])
+        add("s_gift", "Pick the shop for the gift", "speakeasy", "Speakeasy", daysAgo(6, 19, 9), "Lark Home: 60-day returns, free label.")
+        add("s_rename", "Rename the staging buckets", "cli", "Terminal", daysAgo(9, 14, 20), "Renamed 4 buckets; updated the deploy config.")
+        add("s_reading", "Reading list for the team", "speakeasy", "Speakeasy", daysAgo(12, 10, 4), "Six picks on pricing strategy.")
+        return (sessions, convs)
     }
 }
 
@@ -269,19 +260,22 @@ enum HistoryShots {
                 store.searchNow("")
                 store.setSource(nil)
                 store.open("s_flaky")
-                var f = VoiceMessageFlow()
-                _ = f.tapMic(); f.permission(granted: true, now: Date() - 7)
-                f.heard("Also check the refund spec, it has the same five hundred millisecond wait")
-                store.preview(voice: f, level: 0.7)
+                var v = MacVoiceMessage()
+                v.handle(.micTapped(now: Date())); v.handle(.permissions(granted: true, onDevice: true)); v.handle(.cancel)
+                v.handle(.micTapped(now: Date() - 7))   // permission remembered: recording, 7 s in
+                v.handle(.partial("Also check the refund spec, it has the same five hundred millisecond wait"))
+                store.preview(voice: v, level: 0.7)
             }
             await shot("5-voice-review") {
-                var f = VoiceMessageFlow()
-                _ = f.tapMic(); f.permission(granted: true, now: Date() - 9)
-                f.heard("Also fix the refund spec, it has the same 500 ms wait."); f.stop(); f.finished(nil)
-                store.preview(voice: f, level: 0)
+                var v = MacVoiceMessage()
+                v.handle(.micTapped(now: Date())); v.handle(.permissions(granted: true, onDevice: true))
+                v.handle(.micTapped(now: Date())); v.handle(.final("Also fix the refund spec, it has the same 500 ms wait."))
+                store.preview(voice: v, level: 0)
+                store.draft = v.flow.fieldText
             }
             await shot("6-new-chat") {
-                store.cancelVoice()
+                store.preview(voice: MacVoiceMessage(), level: 0)
+                store.drafts = [:]
                 store.newChat()
                 store.draft = "Draft a reply to Dana about moving the launch to the 14th"
             }
@@ -290,8 +284,8 @@ enum HistoryShots {
                 store.setSource("discord")
                 store.open("s_deploy")
                 var box = HistoryOutbox()
-                box.add(HistoryMessageRequest(sessionID: "s_deploy", text: "Only upload the pricing folder, not the whole site.", clientID: "c1"), at: Date())
-                box.add(HistoryMessageRequest(sessionID: "s_deploy", text: "And post the staging link here when it's up.", source: .voice, clientID: "c2"), at: Date())
+                box.add(HistoryMessageRequest(sessionID: "s_deploy", text: "Only upload the pricing folder, not the whole site.", clientID: "c1")!, at: Date())
+                box.add(HistoryMessageRequest(sessionID: "s_deploy", text: "And post the staging link here when it's up.", source: .voiceMessage, clientID: "c2")!, at: Date())
                 box.mark("c1", .sent)
                 box.mark("c2", .failed("Couldn't reach your Hermes."))
                 store.preview(outbox: box)
@@ -321,7 +315,7 @@ enum HistoryShots {
 /// Screenshots: no mic.
 @MainActor
 final class SilentRecorder: VoiceMessageRecording {
-    func authorize(_ done: @escaping @MainActor (Bool, String?) -> Void) { done(false, "No microphone in screenshots.") }
+    func authorize(_ done: @escaping @MainActor (Bool, Bool) -> Void) { done(false, true) }
     func start(partial: @escaping @MainActor (String) -> Void, level: @escaping @MainActor (Float) -> Void,
                finished: @escaping @MainActor (String?, String?) -> Void) -> Bool { false }
     func stop() {}

@@ -24,6 +24,7 @@ from . import __version__
 from . import attachments as A
 from . import delivery as D
 from . import duck as duck_mod
+from . import history as H
 from . import messages as M
 from .brief import BriefInvalid, BriefManager
 from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
@@ -78,6 +79,9 @@ CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the 
 # POST /voice/interactions/{id}/input-text: a turn typed to the call itself (same as the top-level
 # "input_text"; listed here too so both typing features sit together). task_messages types to one job.
 CAPABILITIES["input_text"] = True
+# GET /voice/history (+ /{session_id}, POST /{session_id}/message): every Hermes session and task,
+# readable and writable by id from the app, with or without a call (history.py).
+CAPABILITIES["history"] = True
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 
 
@@ -135,7 +139,8 @@ class VoiceService:
                  volume_backend: duck_mod.VolumeBackend | None = None,
                  grok_credential: Callable[[], tuple[str, str]] | None = None,
                  grok_connect: Callable[..., Any] | None = None,
-                 grok_signin: Callable[[], tuple[bool, bool, str]] | None = None):
+                 grok_signin: Callable[[], tuple[bool, bool, str]] | None = None,
+                 gateway_connect: Callable[[], Any] | None = None):
         self.home = Path(hermes_home)
         self.dir = self.home / "speakeasy"
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -165,6 +170,8 @@ class VoiceService:
         self._message_replies: dict[str, tuple[float, threading.Event, dict[str, Any] | None]] = {}
         self._message_lock = threading.Lock()
         self._text_worker: Any = None
+        # Messages from a history page into sessions another surface owns (history.GatewaySends).
+        self.history_sends = H.GatewaySends(gateway_connect or H.default_connect(self.home))
         self._suggest_run = suggest_run or self._brief_run
         self.brief = BriefManager(self.home, brief_run or self._brief_run, self.settings.get,
                                   error_fn=lambda: getattr(self.hermes, "last_error", "") or "")
@@ -1270,9 +1277,9 @@ class VoiceService:
             raise ServiceError(400, "client_id must be an id.")
         return self._once(client_id, lambda: self._start_job(text))
 
-    def _start_job(self, text: str) -> dict[str, Any]:
+    def _start_job(self, text: str, session_id: str | None = None) -> dict[str, Any]:
         worker = self.text_worker()
-        future = asyncio.run_coroutine_threadsafe(M.start_job(worker, text), worker.loop)
+        future = asyncio.run_coroutine_threadsafe(M.start_job(worker, text, session_id=session_id), worker.loop)
         try:
             got = future.result(M.START_WAIT_S + 10)
         except Exception as exc:
@@ -1400,6 +1407,136 @@ class VoiceService:
         self.publish_all(new_key)
         logger.info("speakeasy: a typed message went to a task as a %s", got["delivered_as"])
         return {"ok": True, "run_id": new_run, "delivered_as": got["delivered_as"], "task": task}
+
+    # -- history: every Hermes session, readable and writable by id (docs/API.md "History") ---------
+
+    def _linked(self, session_id: str) -> H.Linked | None:
+        keys = self.store.keys_for_session(session_id)
+        if not keys:
+            return None
+        statuses = [status for _, _, status in keys[:8]]
+        running = any(st in ACTIVE_RUN_STATES for st in statuses)
+        needs_you = any(st in {"waiting_for_approval", "resolving_approval"} for st in statuses)
+        work = self.store.work(idem_key=keys[0][0], assistant_name=self.settings.get()["assistant_name"]) or {}
+        title = (work.get("job") or {}).get("name") or work.get("title")
+        needs_you = needs_you or (work.get("status") == "completed" and M._waiting_question(work))
+        run_ids = [rid for rid in (r or self.store.openable_run_id(k) for k, r, _ in keys[:5]) if rid]
+        return H.Linked(keys=[k for k, _, _ in keys], name=title, running=running, needs_you=needs_you, run_ids=run_ids)
+
+    def history(self, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/history?cursor=&q=&source=&limit=``."""
+        try:
+            limit = int(query.get("limit") or H.PAGE)
+        except ValueError:
+            raise ServiceError(400, "limit must be a number") from None
+        q = (query.get("q") or "").strip()[:200]
+        try:
+            return H.list_sessions(self.rt.state_db, cursor=query.get("cursor") or None, q=q, source=query.get("source") or "",
+                                   limit=limit, linked=self._linked, speakeasy_ids=self.store.speakeasy_sessions,
+                                   live=self.history_sends.live)
+        except H.HistoryError as exc:
+            raise ServiceError(exc.status, exc.message) from None
+
+    def history_session(self, session_id: str, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/history/{session_id}?before=``: the conversation, its Speakeasy tasks (with their
+        approval/question cards and helpers) and messages sent from the app that are still on their way."""
+        if not H.valid_session_id(session_id):
+            raise ServiceError(404, "I couldn't find that conversation.")
+        meta = H.session_meta(self.rt.state_db, session_id)
+        if meta is None:
+            raise ServiceError(404, "I couldn't find that conversation.")
+        sid = meta["id"]
+        try:
+            before = int(query["before"]) if query.get("before") else None
+        except ValueError:
+            raise ServiceError(400, "before must be a number") from None
+        try:
+            page = H.session_messages(self.rt.state_db, sid, before=before)
+        except H.HistoryError as exc:
+            raise ServiceError(exc.status, exc.message) from None
+        link = self._linked(sid)
+        own = self._speakeasy_owned(meta, link)
+        name = self.settings.get()["assistant_name"]
+        jobs = []
+        for key in (link.keys if link else [])[:8]:
+            work = self.store.work(idem_key=key, assistant_name=name, activity_detail=True)
+            if work is not None:
+                jobs.append(work)
+        sends = [s.public() for s in self.history_sends.for_session(sid)]
+        running = bool(link and link.running) or self.history_sends.live(sid)
+        title = (meta.get("title") or "").strip() or (link.name if link else None)
+        first_user = next((e["text"] for e in page["entries"] if e["kind"] == "user"), None)
+        return {"session": {
+            "id": sid, "title": title or (H._one_line(first_user, 60) if first_user else "Untitled conversation"),
+            "source": "speakeasy" if own else meta["source"],
+            "source_label": H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), own),
+            "state": "needs_you" if link and link.needs_you else ("running" if running else "idle"),
+            "send_via": "task" if own and link else ("session_job" if meta["source"] == "api_server" else "hermes"),
+            "entries": page["entries"], "has_more": page["has_more"], "before": page["before"],
+            "jobs": jobs, "sends": sends}}
+
+    @staticmethod
+    def _speakeasy_owned(meta: dict[str, Any], link: H.Linked | None) -> bool:
+        """Speakeasy's own session: an API-server session one of its tasks ran in. A chat thread a task
+        continued stays the platform's (a message to it must never be posted back there)."""
+        return meta["source"] == "api_server" and (link is not None or meta["id"].startswith(H.SPEAKEASY_PREFIX))
+
+    def history_message(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/history/{session_id}/message {text, client_id?}``: to that session by id, never
+        routed. A Speakeasy task's session: task_messages (steer, answer or follow-up run). Another
+        API-server session: a new job in it. Anything else: Hermes' gateway socket (history.GatewaySends);
+        the reply shows in Speakeasy and nothing is posted to a chat platform."""
+        if not isinstance(body, dict) or "text" not in body or not set(body) <= {"text", "client_id", "source"}:
+            raise ServiceError(400, "Send the message as text.")
+        text, client_id = body.get("text"), body.get("client_id")
+        if (body.get("source") or "typed") not in {"typed", "voice_message"}:
+            raise ServiceError(400, "source must be typed or voice_message.")
+        if not isinstance(text, str) or not text.strip():
+            raise ServiceError(400, "The message is empty.")
+        text = text.strip()
+        if len(text) > M.MAX_TEXT:
+            raise ServiceError(400, f"The message is too long (at most {M.MAX_TEXT} characters).")
+        if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
+            raise ServiceError(400, "client_id must be an id.")
+        if not H.valid_session_id(session_id):
+            raise ServiceError(404, "I couldn't find that conversation.")
+        meta = H.session_meta(self.rt.state_db, session_id)
+        if meta is None:
+            raise ServiceError(404, "I couldn't find that conversation.")
+        return self._once(client_id, lambda: self._history_message(meta, text))
+
+    def _history_message(self, meta: dict[str, Any], text: str) -> dict[str, Any]:
+        sid = meta["id"]
+        link = self._linked(sid)
+        if self._speakeasy_owned(meta, link) and link is not None:
+            for run_id in link.run_ids:
+                try:
+                    got = self._task_message(run_id, text, None, None)
+                except ServiceError as exc:
+                    if exc.status in {404, 409}:
+                        continue  # a deleted/cancelled task: the next one in this session takes it
+                    raise
+                return {"ok": True, "session_id": sid, "via": "task", "run_id": got.get("run_id"),
+                        "delivered_as": got.get("delivered_as"), "task": got.get("task"), "send_id": None}
+        if meta["source"] == "api_server":
+            got = self._start_job(text, session_id=sid)
+            return {"ok": True, "session_id": sid, "via": "session_job", "run_id": got.get("run_id"),
+                    "delivered_as": "follow_up", "task": got.get("task"), "send_id": None}
+        send = self.history_sends.start(sid, text)
+        logger.info("speakeasy: a message went to a %s session through Hermes", meta["source"])
+        return {"ok": True, "session_id": sid, "via": "hermes", "run_id": None, "delivered_as": "message",
+                "task": None, "send_id": send.send_id, "send": send.public()}
+
+    def history_answer(self, session_id: str, send_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/history/{session_id}/sends/{send_id}/answer {choice}``: answer the approval or
+        question a message sent through Hermes is waiting on."""
+        choice = body.get("choice") if isinstance(body, dict) else None
+        if not isinstance(choice, str) or not choice.strip() or len(choice) > 400:
+            raise ServiceError(400, "choice is required")
+        try:
+            return {"ok": True, "send": self.history_sends.answer(session_id, send_id, choice.strip()).public()}
+        except H.HistoryError as exc:
+            raise ServiceError(exc.status, exc.message) from None
 
     @staticmethod
     async def _note_message(worker: Any, task_name: str, text: str) -> None:

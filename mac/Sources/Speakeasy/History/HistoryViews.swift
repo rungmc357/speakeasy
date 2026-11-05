@@ -18,14 +18,16 @@ enum HistoryLook {
     static let readable: CGFloat = 700
     static let sidebarWidth: CGFloat = 288
 
-    static func mood(_ s: HistoryStatus) -> LiveMood {
+    static func mood(_ s: HistorySession.State) -> LiveMood {
         switch s {
         case .running: return .working
-        case .waiting: return .needsYou
-        case .done: return .done
-        case .failed: return .failed
+        case .needsYou: return .needsYou
         case .idle: return .quiet
         }
+    }
+
+    static func word(_ s: HistorySession.State) -> String {
+        switch s { case .running: return "Working"; case .needsYou: return "Needs you"; case .idle: return "Conversation" }
     }
 
     /// "3:12 PM" today, "Tue" this week, "Oct 3" this year, "Oct 3, 2025" before.
@@ -40,6 +42,10 @@ enum HistoryLook {
             f.setLocalizedDateFormatFromTemplate("MMM d")
         } else { f.setLocalizedDateFormatFromTemplate("MMM d, yyyy") }
         return f.string(from: date)
+    }
+
+    static func oneLine(_ s: String) -> String {
+        s.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
     }
 
     /// "Tue 3:12 PM".
@@ -133,16 +139,16 @@ struct HistorySidebar: View {
             Menu {
                 Button { store.setSource(nil) } label: { Label("All sources", systemImage: store.list.source == nil ? "checkmark" : "") }
                 Divider()
-                ForEach(store.list.sourceChoices) { s in
+                ForEach(store.list.filterChoices) { s in
                     Button { store.setSource(s.id) } label: {
-                        Label(s.count.map { "\(s.label)  \($0)" } ?? s.label, systemImage: store.list.source == s.id ? "checkmark" : "")
+                        Label(s.label, systemImage: store.list.source == s.id ? "checkmark" : "")
                     }
                 }
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: store.list.source == nil ? "line.3.horizontal.decrease" : HistorySource.symbol(for: store.list.source))
+                    Image(systemName: store.list.source == nil ? "line.3.horizontal.decrease" : HistoryList.symbol(for: store.list.source))
                         .font(.system(size: 10, weight: .semibold))
-                    Text(store.list.source.map { HistorySource.label(for: $0) } ?? "All sources").font(.system(size: 11.5, weight: .medium))
+                    Text(sourceName).font(.system(size: 11.5, weight: .medium))
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).opacity(0.7)
                 }
                 .foregroundStyle(store.list.source == nil ? Color.secondary : Live.brassText)
@@ -153,21 +159,27 @@ struct HistorySidebar: View {
             .help("Show sessions from one place")
             .accessibilityIdentifier("history-source-filter")
             Spacer()
-            if let q = store.list.activeQuery, !store.list.loading {
+            if !store.list.activeQuery.isEmpty, !store.list.loading {
+                let q = store.list.activeQuery
                 Text(store.list.sessions.isEmpty ? "No matches" : "\(store.list.sessions.count)\(store.list.reachedEnd ? "" : "+") for “\(q)”")
                     .font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
             }
         }
     }
 
+    private var sourceName: String {
+        guard let id = store.list.source else { return "All sources" }
+        return store.list.filterChoices.first { $0.id == id }?.label ?? id.capitalized
+    }
+
     @ViewBuilder private var listBody: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                ForEach(store.list.grouped(now: store.now), id: \.0) { group, sessions in
+                ForEach(store.list.grouped(now: store.now), id: \.0.id) { group, sessions in
                     Section {
                         ForEach(sessions) { s in
                             HistoryRow(session: s, selected: store.target == .session(s.id), now: store.now,
-                                       query: store.list.activeQuery) { store.open(s.id) }
+                                       query: store.list.activeQuery.isEmpty ? nil : store.list.activeQuery) { store.open(s.id) }
                                 .onAppear { if s.id == store.list.sessions.last?.id { store.loadMore() } }
                         }
                     } header: {
@@ -235,7 +247,7 @@ struct HistoryRow: View {
             HStack(alignment: .top, spacing: 10) {
                 ZStack(alignment: .bottomTrailing) {
                     Circle().fill(selected ? Live.brass.opacity(0.22) : Color.white.opacity(0.06)).frame(width: 26, height: 26)
-                        .overlay(Image(systemName: HistorySource.symbol(for: session.source))
+                        .overlay(Image(systemName: HistoryList.symbol(for: session.source))
                             .font(.system(size: 10.5, weight: .semibold))
                             .foregroundStyle(selected ? Live.brass : Color.white.opacity(0.6)))
                     statusDot.offset(x: 2, y: 2)
@@ -248,19 +260,20 @@ struct HistoryRow: View {
                             .foregroundStyle(Color.white.opacity(selected ? 1 : 0.92))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
-                        Text(HistoryLook.short(session.sortDate, now: now)).font(.system(size: 10.5).monospacedDigit())
+                        Text(HistoryLook.short(session.lastActivity, now: now)).font(.system(size: 10.5).monospacedDigit())
                             .foregroundStyle(.tertiary).fixedSize()
                     }
-                    if let line = session.snippet ?? session.preview {
-                        Text(highlighted(line)).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(session.snippet != nil ? 3 : 2)
+                    if let line = session.match ?? (session.preview.isEmpty ? nil : session.preview) {
+                        Text(highlighted(HistoryLook.oneLine(line))).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                            .lineLimit(session.match != nil ? 3 : 2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if session.status == .waiting || session.status == .running || session.source.map({ $0 != "speakeasy" }) == true {
+                    if session.state != .idle || !session.isSpeakeasy {
                         HStack(spacing: 6) {
-                            if session.status == .waiting { tag("Needs you", Live.amber) }
-                            else if session.status == .running { tag("Working", Live.brassText) }
-                            if let source = session.source, source != "speakeasy", let name = session.sourceName {
-                                Text(name).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary).lineLimit(1)
+                            if session.state == .needsYou { tag("Needs you", Live.amber) }
+                            else if session.state == .running { tag("Working", Live.brassText) }
+                            if !session.isSpeakeasy {
+                                Text(session.sourceLabel).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary).lineLimit(1)
                             }
                         }
                         .padding(.top, 1)
@@ -278,17 +291,16 @@ struct HistoryRow: View {
         .padding(.horizontal, 6)
         .onHover { hover = $0 }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(session.title), \(session.status.word)")
+        .accessibilityLabel("\(session.title), \(HistoryLook.word(session.state))")
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
         .accessibilityIdentifier("history-row-\(session.id)")
     }
 
     @ViewBuilder private var statusDot: some View {
-        switch session.status {
+        switch session.state {
         case .running: LiveDot(color: Live.brass, size: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
-        case .waiting: Circle().fill(Live.amber).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
-        case .failed: Circle().fill(Live.red).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
-        default: EmptyView()
+        case .needsYou: Circle().fill(Live.amber).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
+        case .idle: EmptyView()
         }
     }
 
@@ -338,7 +350,7 @@ struct HistoryDetailPane: View {
             case .none: placeholder
             case .newChat: HistoryNewChat(store: store)
             case .session(let id):
-                if let detail = store.details[id] { HistorySessionView(store: store, detail: detail) }
+                if let c = store.conversations[id] { HistorySessionView(store: store, conversation: c) }
                 else if let error = store.detailErrors[id] { problem(error, id) }
                 else { loading }
             }
@@ -379,26 +391,25 @@ struct HistoryDetailPane: View {
 
 struct HistorySessionView: View {
     @ObservedObject var store: HistoryStore
-    let detail: HistoryDetail
+    let conversation: HistoryConversation
 
     var body: some View {
-        let s = detail.session
-        let thread = store.thread(detail)
+        let c = conversation
+        let thread = store.thread(c)
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        header(s)
-                        if detail.hasMore {
-                            Text("Showing the newest messages. Older ones are in Hermes.")
+                        header(c, thread)
+                        if c.hasMore {
+                            Text("Showing the newest messages. Older ones stay in Hermes.")
                                 .font(.system(size: 11)).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
                         }
-                        ForEach(thread) { m in
-                            HistoryMessageView(message: m, sessionID: s.id, store: store).id(m.id)
+                        ForEach(thread.messages) { m in
+                            HistoryMessageView(message: m, sessionID: c.id, store: store).id(m.id)
                         }
-                        if !detail.helpers.isEmpty { HistoryHelpersCard(helpers: detail.helpers, sessionID: s.id, store: store) }
-                        ForEach(detail.approvals) { HistoryApprovalCard(approval: $0, store: store) }
-                        ForEach(detail.questions) { HistoryQuestionCard(question: $0, store: store) }
+                        if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
+                        ForEach(thread.waiting) { HistoryWaitingCard(waiting: $0, store: store) }
                         if let error = store.answerError {
                             Text(error).font(.system(size: 11.5)).foregroundStyle(Live.red)
                         }
@@ -408,45 +419,43 @@ struct HistorySessionView: View {
                     .padding(.horizontal, 28).padding(.top, 34).padding(.bottom, 18)
                     .frame(maxWidth: .infinity)
                 }
-                .background(alignment: .top) { MoodGlow(mood: HistoryLook.mood(s.status)).frame(height: 260).opacity(0.75) }
+                .background(alignment: .top) { MoodGlow(mood: HistoryLook.mood(c.state)).frame(height: 260).opacity(0.75) }
                 .onAppear {
                     proxy.scrollTo("end", anchor: .bottom)
                     // Again once the thread has laid out (long sessions land on the newest message).
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { proxy.scrollTo("end", anchor: .bottom) }
                 }
-                .onChange(of: thread.count) { _, _ in withAnimation(.snappy) { proxy.scrollTo("end", anchor: .bottom) } }
-                .onChange(of: s.id) { _, _ in
+                .onChange(of: thread.messages.count) { _, _ in withAnimation(.snappy) { proxy.scrollTo("end", anchor: .bottom) } }
+                .onChange(of: c.id) { _, _ in
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { proxy.scrollTo("end", anchor: .bottom) }
                 }
             }
-            HistoryComposer(store: store, placeholder: "Message “\(TaskMessageCopy.shortName(s.title, limit: 34))”",
-                            enabled: detail.canMessage)
+            HistoryComposer(store: store, placeholder: "Message “\(TaskMessageCopy.shortName(c.title, limit: 34))”", enabled: true)
         }
     }
 
-    private func header(_ s: HistorySession) -> some View {
-        let mood = HistoryLook.mood(s.status)
+    private func header(_ c: HistoryConversation, _ thread: HistoryThread) -> some View {
+        let mood = HistoryLook.mood(c.state)
+        let users = thread.messages.filter { $0.role != .note && !$0.text.isEmpty }.count
+        let calls = thread.toolCallCount
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 LiveDot(color: Live.tint(mood), size: 6, active: mood.isLive)
-                Text(s.status.word.uppercased()).tracking(1.0)
-                if let name = s.sourceName {
-                    Text("·").foregroundStyle(.secondary)
-                    Text(name.uppercased()).tracking(0.6).lineLimit(1).foregroundStyle(Color.white.opacity(0.55))
-                }
-                if let started = HistoryLook.long(s.startedAt, now: store.now) {
+                Text(HistoryLook.word(c.state).uppercased()).tracking(1.0)
+                Text("·").foregroundStyle(.secondary)
+                Text(c.sourceLabel.uppercased()).tracking(0.6).lineLimit(1).foregroundStyle(Color.white.opacity(0.55))
+                if let started = HistoryLook.long(c.entries.first?.at, now: store.now) {
                     Text("·").foregroundStyle(.secondary)
                     Text(started.uppercased()).tracking(0.6).foregroundStyle(Color.white.opacity(0.55))
                 }
             }
             .font(.system(size: 10.5, weight: .bold))
             .foregroundStyle(Live.tint(mood))
-            Text(s.title).font(.system(size: 24, weight: .bold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-            let calls = detail.toolCallCount
-            let count = detail.messages.count
-            Text([count > 0 ? "\(count) message\(count == 1 ? "" : "s")" : nil,
+            Text(c.title).font(.system(size: 24, weight: .bold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            Text([users > 0 ? "\(users) message\(users == 1 ? "" : "s")" : nil,
                   calls > 0 ? "\(calls) tool call\(calls == 1 ? "" : "s")" : nil,
-                  detail.helpers.isEmpty ? nil : "\(detail.helpers.count) helper\(detail.helpers.count == 1 ? "" : "s")"]
+                  thread.helpers.isEmpty ? nil : "\(thread.helpers.count) helper\(thread.helpers.count == 1 ? "" : "s")",
+                  c.isSpeakeasy ? nil : "replies show here, not in \(c.sourceLabel.components(separatedBy: " · ").first ?? c.sourceLabel)"]
                 .compactMap { $0 }.joined(separator: " · "))
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.white.opacity(0.6))
         }
@@ -454,8 +463,12 @@ struct HistorySessionView: View {
     }
 }
 
+private extension HistoryConversation {
+    var isSpeakeasy: Bool { source == "speakeasy" }
+}
+
 struct HistoryMessageView: View {
-    let message: HistoryMessage
+    let message: HistoryThreadMessage
     let sessionID: String
     @ObservedObject var store: HistoryStore
 
@@ -463,7 +476,7 @@ struct HistoryMessageView: View {
         switch message.role {
         case .user: user
         case .assistant: assistant
-        case .system:
+        case .note:
             Text(message.text).font(.system(size: 11.5)).foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .center).multilineTextAlignment(.center)
         }
@@ -478,6 +491,7 @@ struct HistoryMessageView: View {
                                                    topTrailingRadius: 14, style: .continuous).fill(Live.brass.opacity(0.2)))
                 .overlay(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 5,
                                                 topTrailingRadius: 14, style: .continuous).strokeBorder(Live.brass.opacity(0.28), lineWidth: 0.5))
+                .opacity(message.delivery == .sending ? 0.7 : 1)
             caption
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -492,16 +506,13 @@ struct HistoryMessageView: View {
             case .failed(let why)?:
                 Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Live.red)
                 Text(why).foregroundStyle(Live.red).lineLimit(1)
-                if message.id.hasPrefix("local-") {
-                    Button("Retry") { store.retry(clientID: String(message.id.dropFirst("local-".count))) }
+                if let id = message.clientID {
+                    Button("Retry") { store.retry(clientID: id) }
                         .buttonStyle(.plain).foregroundStyle(Live.brassText).fontWeight(.semibold)
                 }
             default:
-                if message.isVoice { Image(systemName: "mic.fill").font(.system(size: 8.5)); Text("Voice message") }
-                else if let s = message.source, !["typed", "speakeasy", "text"].contains(s.lowercased()) {
-                    Image(systemName: HistorySource.symbol(for: s)).font(.system(size: 8.5)); Text(HistorySource.label(for: s))
-                }
-                if message.delivery == .sent { Image(systemName: "checkmark").font(.system(size: 8.5, weight: .bold)) }
+                if message.voice { Image(systemName: "mic.fill").font(.system(size: 8.5)); Text("Voice message") }
+                if message.delivery == .sent { Image(systemName: "checkmark").font(.system(size: 8.5, weight: .bold)); Text("Sent") }
                 if let t = HistoryLook.long(message.at, now: store.now) { Text(t) }
             }
         }
@@ -510,8 +521,8 @@ struct HistoryMessageView: View {
 
     private var assistant: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !message.toolCalls.isEmpty {
-                HistoryToolCalls(items: message.toolCalls, key: "\(sessionID)|\(message.id)", store: store)
+            if !message.tools.isEmpty {
+                HistoryToolCalls(items: message.tools, key: "\(sessionID)|\(message.id)", store: store)
             }
             if !message.text.isEmpty {
                 HStack(alignment: .top, spacing: 10) {
@@ -679,67 +690,49 @@ struct HistoryHelpersCard: View {
     }
 }
 
-/// A tool approval this session is waiting on. The buttons answer by message, to this session.
-struct HistoryApprovalCard: View {
-    let approval: HistoryApproval
+/// Something the session waits on: an approval or a question (a task's, or one a message sent
+/// through Hermes hit). Buttons answer it; typing below answers in your own words.
+struct HistoryWaitingCard: View {
+    let waiting: HistoryWaiting
     @ObservedObject var store: HistoryStore
+
     var body: some View {
-        NeedsYouCard(symbol: "hand.raised.fill", title: "Wants your OK") {
-            Text(approval.description).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-            if let command = approval.command {
+        let busy = waiting.sendID.map { store.answering.contains($0) } ?? false
+        NeedsYouCard(symbol: waiting.kind == .approval ? "hand.raised.fill" : "questionmark.bubble.fill",
+                     title: waiting.kind == .approval ? "Wants your OK" : "Asked you") {
+            Text(waiting.text).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if let command = waiting.command {
                 Text(command).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.white.opacity(0.82))
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 8).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.black.opacity(0.32)))
             }
-            HStack(spacing: 8) {
-                if let sendID = approval.sendID {
-                    // A message sent through Hermes waits on it: its own choices, never "always".
-                    ForEach(approval.choices, id: \.self) { c in
-                        HistoryPillButton(title: Self.label(c), primary: c == approval.choices.first) {
-                            store.answer(c, sendID: sendID, choice: c)
+            if !waiting.choices.isEmpty {
+                WrapLayout(spacing: 6) {
+                    ForEach(Array(waiting.choices.enumerated()), id: \.offset) { i, c in
+                        HistoryPillButton(title: Self.label(c, kind: waiting.kind), primary: waiting.kind == .approval && i == 0) {
+                            store.answer(waiting, choice: c)
                         }
                     }
-                    .disabled(store.answering.contains(sendID))
-                } else {
-                    HistoryPillButton(title: "Approve", primary: true) { store.answer("yes") }
-                    HistoryPillButton(title: "Deny") { store.answer("no") }
                 }
-                Spacer()
-                if approval.sendID == nil {
-                    Text("or type what to do instead").font(.system(size: 10.5)).foregroundStyle(.tertiary)
-                }
+                .disabled(busy)
+                .opacity(busy ? 0.6 : 1)
             }
+            Text(waiting.kind == .approval ? "Or type what to do instead." : "Or answer in your own words below.")
+                .font(.system(size: 10.5)).foregroundStyle(.tertiary)
         }
-        .accessibilityIdentifier("history-approval")
+        .accessibilityIdentifier(waiting.kind == .approval ? "history-approval" : "history-question")
     }
 
-    static func label(_ choice: String) -> String {
+    static func label(_ choice: String, kind: HistoryWaiting.Kind) -> String {
+        guard kind == .approval else { return choice }
         switch choice {
-        case "once": return "Approve once"
+        case "yes", "once": return "Approve"
         case "session": return "Approve for this session"
-        case "deny": return "Deny"
+        case "no", "deny": return "Deny"
         default: return choice.prefix(1).uppercased() + choice.dropFirst()
         }
-    }
-}
-
-struct HistoryQuestionCard: View {
-    let question: HistoryQuestion
-    @ObservedObject var store: HistoryStore
-    var body: some View {
-        NeedsYouCard(symbol: "questionmark.bubble.fill", title: "Asked you") {
-            Text(question.question).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-            if !question.options.isEmpty {
-                WrapLayout(spacing: 6) {
-                    ForEach(Array(question.options.enumerated()), id: \.offset) { i, o in
-                        HistoryPillButton(title: o, primary: false) { store.answer(o, sendID: question.sendID, choice: o) }
-                    }
-                }
-            }
-            Text("Or answer in your own words below.").font(.system(size: 10.5)).foregroundStyle(.tertiary)
-        }
-        .accessibilityIdentifier("history-question")
     }
 }
 
@@ -821,8 +814,8 @@ struct HistoryNewChat: View {
 
 // MARK: - Composer
 
-/// Type (↩ sends, ⌥↩ new line) or, with no call live, record a voice message: speak, stop, read
-/// and fix what it heard, send. Goes to the open session by id.
+/// Type (↩ sends, ⌥↩ new line) or, with no call live, record a voice message: tap the mic, speak,
+/// tap Stop; the words land in the field to read and fix, then Send. Goes to the open session by id.
 struct HistoryComposer: View {
     @ObservedObject var store: HistoryStore
     var placeholder: String
@@ -833,10 +826,9 @@ struct HistoryComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            switch store.voice.phase {
-            case .asking, .recording, .finishing: recording
-            case .review(let text), .sending(let text): review(text)
-            case .idle, .problem: typing
+            switch store.voice.flow.phase {
+            case .asking, .recording, .transcribing: recording
+            default: typing
             }
             hint
         }
@@ -850,36 +842,57 @@ struct HistoryComposer: View {
 
     private var typing: some View {
         let empty = TaskMessageRequest.clean(store.draft) == nil
-        return HStack(alignment: .bottom, spacing: 8) {
-            TextField(placeholder, text: Binding(get: { store.draft }, set: { store.draft = $0 }), axis: .vertical)
-                .textFieldStyle(.plain).font(.system(size: 13.5)).lineLimit(1...8)
-                .focused($focused)
-                .disabled(!enabled)
-                .onSubmit { store.sendTyped() }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .frame(minHeight: 40)
-                .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(HistoryLook.field))
-                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .strokeBorder(focused ? Live.brass.opacity(0.5) : Live.hairline, lineWidth: focused ? 1 : 0.5))
-                .accessibilityIdentifier("history-composer")
-            if store.voice.micVisible && empty {
-                circle("mic.fill", help: "Record a voice message", fill: Color.white.opacity(0.08), ink: .primary) { store.tapMic() }
+        let reviewing = store.voice.reviewing
+        return VStack(alignment: .leading, spacing: 7) {
+            if reviewing {
+                HStack(spacing: 6) {
+                    Image(systemName: "mic.fill").font(.system(size: 9.5, weight: .bold))
+                    Text("VOICE MESSAGE · CHECK THE WORDS, THEN SEND").font(.system(size: 10, weight: .bold)).tracking(0.7)
+                    Spacer()
+                    Button("Discard") { store.cancelVoice(); store.draft = store.voice.flow.draftBefore }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                        .keyboardShortcut(.cancelAction)
+                }
+                .foregroundStyle(Live.brassText)
+                .padding(.horizontal, 6)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField(placeholder, text: Binding(get: { store.draft }, set: { store.draft = $0 }), axis: .vertical)
+                    .textFieldStyle(.plain).font(.system(size: 13.5)).lineLimit(1...8)
+                    .focused($focused)
+                    .disabled(!enabled)
+                    .onSubmit { store.send() }
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .frame(minHeight: 40)
+                    .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(reviewing ? Live.brass.opacity(0.08) : HistoryLook.field))
+                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(reviewing ? Live.brass.opacity(0.5) : focused ? Live.brass.opacity(0.5) : Live.hairline,
+                                      lineWidth: focused || reviewing ? 1 : 0.5))
+                    .accessibilityIdentifier("history-composer")
+                if store.voice.micVisible && (empty || reviewing) {
+                    circle(reviewing ? "arrow.counterclockwise" : "mic.fill",
+                           help: reviewing ? "Record again" : "Record a voice message",
+                           fill: Color.white.opacity(0.08), ink: .primary) {
+                        if reviewing { store.cancelVoice(); store.draft = store.voice.flow.draftBefore }
+                        store.tapMic()
+                    }
                     .disabled(!enabled)
                     .accessibilityIdentifier("history-mic")
+                }
+                circle("arrow.up", help: "Send (↩)", fill: empty ? Color.white.opacity(0.06) : Live.brass,
+                       ink: empty ? Color.secondary : JobLook.brassInk) { store.send() }
+                    .disabled(empty || !enabled)
+                    .accessibilityIdentifier("history-send")
             }
-            circle("arrow.up", help: "Send (↩)", fill: empty ? Color.white.opacity(0.06) : Live.brass,
-                   ink: empty ? Color.secondary : JobLook.brassInk) { store.sendTyped() }
-                .disabled(empty || !enabled)
-                .accessibilityIdentifier("history-send")
         }
     }
 
     private var recording: some View {
-        let heard: String = {
-            switch store.voice.phase { case .recording(let h, _), .finishing(let h): return h; default: return "" }
-        }()
-        let finishing: Bool = { if case .finishing = store.voice.phase { return true }; return false }()
-        let asking: Bool = { if case .asking = store.voice.phase { return true }; return false }()
+        let flow = store.voice.flow
+        let heard = flow.fieldText
+        let phase = flow.phase
+        let finishing = phase == .transcribing
+        let asking = phase == .asking
         return VStack(alignment: .leading, spacing: 8) {
             Text(heard.isEmpty ? (asking ? "Asking for the microphone…" : "Listening… say your message.") : heard)
                 .font(.system(size: 13.5)).foregroundStyle(heard.isEmpty ? Color.secondary : Color.white.opacity(0.92))
@@ -887,18 +900,18 @@ struct HistoryComposer: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
-                    if finishing { LiveSpinner(size: 10) } else { LiveDot(color: Live.red, size: 7, active: !asking) }
-                    Text(finishing ? "Finishing" : Live.clock(store.voice.elapsed(now: store.now)))
+                    if finishing || asking { LiveSpinner(size: 10) } else { LiveDot(color: Live.red, size: 7) }
+                    Text(finishing ? "Finishing" : asking ? "Waiting" : VoiceMessageFlow.clock(flow.elapsed(now: store.now) ?? 0))
                         .font(.system(size: 11.5, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(finishing ? Color.secondary : Live.red)
+                        .foregroundStyle(finishing || asking ? Color.secondary : Live.red)
                 }
-                LevelBars(level: store.level, active: store.voice.isRecording, now: store.now).frame(height: 18)
+                LevelBars(level: store.level, active: flow.isRecording, now: store.now).frame(height: 18)
                 Spacer(minLength: 6)
                 circle("xmark", help: "Discard (esc)", fill: Color.white.opacity(0.08), ink: .secondary) { store.cancelVoice() }
                     .keyboardShortcut(.cancelAction)
-                circle("stop.fill", help: "Stop (↩)", fill: Live.brass, ink: JobLook.brassInk) { store.stopRecording() }
+                circle("stop.fill", help: "Stop (↩)", fill: Live.brass, ink: JobLook.brassInk) { store.tapMic() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!store.voice.isRecording)
+                    .disabled(!flow.isRecording)
                     .accessibilityIdentifier("history-stop")
             }
         }
@@ -908,46 +921,21 @@ struct HistoryComposer: View {
         .accessibilityIdentifier("history-recording")
     }
 
-    private func review(_ text: String) -> some View {
-        let sending: Bool = { if case .sending = store.voice.phase { return true }; return false }()
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "mic.fill").font(.system(size: 9.5, weight: .bold))
-                Text("VOICE MESSAGE · CHECK THE WORDS").font(.system(size: 10, weight: .bold)).tracking(0.7)
-            }
-            .foregroundStyle(Live.brassText)
-            TextField("", text: Binding(get: { text }, set: { store.editVoice($0) }), axis: .vertical)
-                .textFieldStyle(.plain).font(.system(size: 13.5)).lineLimit(1...8)
-                .focused($focused)
-                .onSubmit { store.sendVoice() }
-                .disabled(sending)
-            HStack(spacing: 8) {
-                Spacer()
-                HistoryPillButton(title: "Discard") { store.cancelVoice() }.keyboardShortcut(.cancelAction)
-                HistoryPillButton(title: sending ? "Sending…" : "Send", primary: true) { store.sendVoice() }
-                    .disabled(sending || TaskMessageRequest.clean(text) == nil)
-                    .accessibilityIdentifier("history-send-voice")
-            }
-        }
-        .padding(.horizontal, 14).padding(.vertical, 11)
-        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Live.brass.opacity(0.08)))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Live.brass.opacity(0.45), lineWidth: 0.75))
-        .onAppear { focused = true }
-        .accessibilityIdentifier("history-voice-review")
-    }
-
     @ViewBuilder private var hint: some View {
         HStack(spacing: 6) {
-            if case .problem(let why) = store.voice.phase {
+            if let why = store.voice.problem {
                 Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Live.red)
                 Text(why).foregroundStyle(Live.red).lineLimit(2)
-                Button("Try again") { store.tapMic() }.buttonStyle(.plain).foregroundStyle(Live.brassText).fontWeight(.semibold)
-            } else if !enabled && store.target != .newChat {
-                Text("This session can't take messages.")
+                if why != VoiceMessageFlow.nothingHeardText {
+                    Button("Open Settings") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Live.brassText).fontWeight(.semibold)
+                }
             } else {
-                switch store.voice.phase {
-                case .recording, .asking: Text("Transcribed on this Mac. Nothing is sent until you press Send.")
-                case .review: Text("↩ send · esc discard · replies show here only")
+                switch store.voice.flow.phase {
+                case .recording, .asking, .transcribing: Text("Transcribed on this Mac. Nothing is sent until you press Send.")
+                case .reviewing: Text("↩ send as a voice message · esc discard · replies show here only")
                 default:
                     Text(store.voice.micVisible ? "↩ send · ⌥↩ new line · replies show here only"
                                                 : "↩ send · ⌥↩ new line · voice messages pause while you're on a call")

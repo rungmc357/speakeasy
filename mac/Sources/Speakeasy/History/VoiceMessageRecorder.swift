@@ -6,8 +6,9 @@ import Speech
 /// Apple's on-device speech recognition. No audio leaves the Mac: only the reviewed text is sent.
 @MainActor
 protocol VoiceMessageRecording: AnyObject {
-    /// Asks for the mic and speech recognition (prompts once). Completes on the main actor.
-    func authorize(_ done: @escaping @MainActor (Bool, String?) -> Void)
+    /// Asks for the mic and speech recognition (prompts once). Completes on the main actor with
+    /// (both granted, on-device transcription available).
+    func authorize(_ done: @escaping @MainActor (Bool, Bool) -> Void)
     func start(partial: @escaping @MainActor (String) -> Void, level: @escaping @MainActor (Float) -> Void,
                finished: @escaping @MainActor (String?, String?) -> Void) -> Bool
     /// Stop listening; `finished` follows with the final text.
@@ -31,22 +32,13 @@ final class VoiceMessageRecorder: VoiceMessageRecording {
             && Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil
     }
 
-    func authorize(_ done: @escaping @MainActor (Bool, String?) -> Void) {
-        guard Self.declared else { done(false, "Voice messages need the installed Speakeasy app."); return }
-        guard let recognizer = SFSpeechRecognizer(), recognizer.supportsOnDeviceRecognition else {
-            done(false, "This Mac can't transcribe speech on the device. Type your message instead."); return
-        }
-        _ = recognizer
+    func authorize(_ done: @escaping @MainActor (Bool, Bool) -> Void) {
+        guard Self.declared else { done(false, false); return }
+        let onDevice = SFSpeechRecognizer()?.supportsOnDeviceRecognition ?? false
         AVCaptureDevice.requestAccess(for: .audio) { mic in
-            guard mic else {
-                Task { @MainActor in done(false, "Speakeasy can't use the microphone. Allow it in System Settings › Privacy & Security › Microphone.") }
-                return
-            }
+            guard mic else { Task { @MainActor in done(false, onDevice) }; return }
             SFSpeechRecognizer.requestAuthorization { status in
-                Task { @MainActor in
-                    status == .authorized ? done(true, nil)
-                        : done(false, "Speech recognition is off for Speakeasy. Allow it in System Settings › Privacy & Security › Speech Recognition.")
-                }
+                Task { @MainActor in done(status == .authorized, onDevice) }
             }
         }
     }
