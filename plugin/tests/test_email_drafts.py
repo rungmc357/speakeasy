@@ -191,3 +191,17 @@ def test_a_waiting_draft_survives_ending_the_call(service):
     draft_id = carried[0]["email_drafts"][0]["draft_id"]
     store.transition_draft(draft_id, {"pending"}, "denied")
     assert not [t for t in store.latest_tasks() if t["task_id"] == "item_old"]
+
+
+def test_a_cleared_task_with_a_waiting_draft_stays_cleared(service):
+    """Clear is authoritative: a task the user cleared is never carried back by its waiting draft."""
+    store = service.store
+    store.reserve_run("se_old", "vi_old", "item_old", 1)
+    store.update_run("se_old", "run_old", "completed")
+    store.add_draft("se_old", "sess_old", {"from": "me@example.com", "to": ["me@example.com"], "cc": [], "bcc": [],
+                                          "subject": "Portugal trip details", "body": "Overview"})
+    store.reserve_run("se_new", "vi_new", "item_new", 1)
+    store.update_run("se_new", "run_new", "completed")
+    assert [t for t in store.latest_tasks() if t["task_id"] == "item_old"]
+    assert service.dismiss_tasks({"run_ids": ["run_old", "run_new"]})["dismissed"] == ["run_old", "run_new"]
+    assert store.latest_tasks() == []

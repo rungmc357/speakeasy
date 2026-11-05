@@ -1009,7 +1009,8 @@ class StateStore:
                 continue
             seen.add(key)
             work = self.work(idem_key=key)
-            if work is not None:
+            # A task the user cleared stays cleared, even with a draft still waiting on it.
+            if work is not None and not work.get("dismissed"):
                 work["task_id"] = task_id
                 work["carried"] = True
                 out.append(work)

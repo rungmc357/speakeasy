@@ -158,6 +158,10 @@ public struct VoiceState: Equatable, Sendable {
         s.assistantName = assistantName
         s.idleTimeout = idleTimeout
         s.callShortcutHint = callShortcutHint
+        // What the user cleared stays cleared: a new call or reopening the board must not let a
+        // list fetched before the server had the clear bring it back (the server keeps it too).
+        s.dismissedRunIDs = dismissedRunIDs
+        s.dismissedReviews = dismissedReviews
         return s
     }
 
@@ -247,7 +251,9 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s.connection = .connecting
 
     case .workOnlyOpened:
-        if !s.connection.isInCall {
+        // Already showing the board (back to the foreground, a second open): keep it as it is,
+        // never blank it while the next list loads.
+        if !s.connection.isInCall && !s.workOnly {
             s = s.fresh()
             s.now = now
             s.workOnly = true
@@ -289,7 +295,8 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
 
     case .tasks(let tasks):
         let before = s.tasks
-        s.tasks = tasks.filter { !s.dismissedRunIDs.contains($0.info.runID ?? "") }
+        // A cleared task stays gone; one that runs again (the server never clears a running task) shows.
+        s.tasks = tasks.filter { !($0.isSettled && s.dismissedRunIDs.contains($0.info.runID ?? "")) }
         appendTextReplies(&s, before: before)
         s.tasksBaselined = true
 
