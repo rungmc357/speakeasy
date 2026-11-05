@@ -878,6 +878,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var history: Bool
     /// `voice.max_call_minutes` 0 means no limit ("End a call after: No limit").
     public var callNoLimit: Bool
+    /// Hermes scheduled (cron) jobs, listed and managed (`GET /voice/schedules`, Schedules.swift).
+    public var schedules: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -891,7 +893,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
-        case callNoLimit = "call_no_limit"
+        case callNoLimit = "call_no_limit", schedules
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -905,5 +907,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         jobSubagents = (try? c.decodeIfPresent(Bool.self, forKey: .jobSubagents)) ?? false
         history = (try? c.decodeIfPresent(Bool.self, forKey: .history)) ?? false
         callNoLimit = (try? c.decodeIfPresent(Bool.self, forKey: .callNoLimit)) ?? false
+        schedules = (try? c.decodeIfPresent(Bool.self, forKey: .schedules)) ?? false
     }
 }

@@ -243,6 +243,12 @@ enum HistoryShots {
         let backend = DemoHistoryBackend()
         c.store.backend = backend
         c.store.recorder = SilentRecorder()
+        c.store.scheduleDictation.recorder = SilentRecorder()
+        c.store.schedules.backend = DemoScheduleBackend()
+        c.store.schedulesSupported = true
+        if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
+            NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
+        }
         c.show()
         c.window?.setContentSize(NSSize(width: 1040, height: 720))
         c.window?.center()
@@ -300,6 +306,32 @@ enum HistoryShots {
                 box.mark("c1", .sent)
                 box.mark("c2", .failed("Couldn't reach your Hermes."))
                 store.preview(outbox: box)
+            }
+            await shot("9-scheduled-list") {
+                store.setCallLive(false)
+                store.preview(outbox: HistoryOutbox())
+                store.openSchedules()
+                await store.schedules.reload()
+            }
+            await shot("10-scheduled-detail") {
+                store.openSchedules("garden")
+                await store.schedules.load("garden")
+                await store.schedules.runNow("garden")
+            }
+            await shot("11-scheduled-preview") {
+                store.openSchedules()
+                await store.schedules.reload()
+                store.schedules.startDraft("every weekday at 8 summarize my inbox and flag anything urgent")
+                await store.schedules.previewDraft()
+            }
+            await shot("13-scheduled-new") {
+                store.openSchedules()
+                store.schedules.startDraft("every morning at 7 ")
+            }
+            await shot("12-scheduled-paused") {
+                store.schedules.startDraft()
+                store.openSchedules("reading")
+                await store.schedules.load("reading")
             }
             await shot("8-on-call-narrow") {
                 store.preview(outbox: HistoryOutbox())

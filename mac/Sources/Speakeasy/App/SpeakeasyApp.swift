@@ -138,7 +138,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .removeDuplicates()
             .sink { [weak self] caps in
                 self?.native.model.capabilities = caps
-                if let self, caps != nil { self.history.store.supported = caps?.history ?? false }
+                if let self, caps != nil {
+                    self.history.store.supported = caps?.history ?? false
+                    self.history.store.schedulesSupported = caps?.schedules ?? false
+                }
             }
             .store(in: &bag)
         // A job page's "Full session" opens its conversation in History.
@@ -555,7 +558,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func openHistory(session: String?) {
         let store = history.store
         if store.backend == nil, let api = native.api { store.backend = LiveHistoryBackend(api: api) }
+        if store.schedules.backend == nil { store.schedules.backend = LiveScheduleBackend { [weak self] in self?.native.api } }
         store.supported = app.status?.capabilities?.history ?? false
+        store.schedulesSupported = app.status?.capabilities?.schedules ?? false
         store.setCallLive(native.model.state.connection.isInCall)
         history.show()
         if let session { store.open(session) }
