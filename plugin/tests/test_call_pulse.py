@@ -279,3 +279,113 @@ def test_fallback_folds_repeats_and_names_the_running_step():
     line = P.pulse_fallback(["Searched the code", "Searched the code"], "Ran the tests", 70, None, 0)
     assert line == "Quick update: searched the code; now running the tests."
     assert P.pulse_fallback([], "Built the project", 130, None, 0) == "Still building the project, about two minutes in."
+
+
+# -- with the mic open: an early first line, no silent back-off, at most PULSE_MAX_WORDS -------------
+
+def run_quiet(worker, clock, seconds, step=calls.PULSE_TICK_S):
+    """Tick the pulse for `seconds` of call time; (seconds into the run, line) for each line said."""
+    start, said = clock.t, []
+    while clock.t < start + seconds:
+        clock.t += step
+        if tick(worker):
+            said.append((clock.t - start, spoken(worker)[-1]))
+    return said
+
+
+def test_open_mic_first_line_lands_12_to_20s_in(service, clock):
+    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the checkout logs.")
+    worker.interaction.mic_muted = False  # the app said the mic is on
+    tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c1", done=False)
+    said = run_quiet(worker, clock, 30, step=1.0)  # every second: nothing slips in before 12 s
+    assert said and calls.PULSE_FIRST_OPEN_S <= said[0][0] <= 20
+    assert said[0][1] == "I'm reading the checkout logs."
+    # On the pulse loop's own tick it is the first tick past PULSE_FIRST_OPEN_S.
+    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the checkout logs.", key="idem_p2")
+    worker.interaction.mic_muted = False
+    tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c2", done=False)
+    first = run_quiet(worker, clock, 30)[0][0]
+    assert calls.PULSE_FIRST_OPEN_S <= first <= 20
+
+
+@pytest.mark.parametrize("mic", [None, True])
+def test_never_reported_or_muted_keeps_the_45s_first_line(service, clock, mic):
+    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the checkout logs.")
+    worker.interaction.mic_muted = mic
+    tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c1", done=False)
+    said = run_quiet(worker, clock, 60, step=1.0)
+    if mic is None:
+        assert [t for t, _ in said] == [calls.PULSE_EVERY_S]
+    else:
+        assert said == []
+
+
+@pytest.mark.parametrize("wording", ["raises", "echoes_told", "echoes_steps", "rambles"])
+def test_open_mic_quiet_task_hears_a_line_at_least_every_50s(service, clock, wording):
+    def writer(request, steps, told):
+        if wording == "raises":
+            raise TimeoutError
+        if wording == "echoes_told":
+            return told[-1] if told else "I'm reading the build log."
+        if wording == "echoes_steps":
+            return steps[-1]
+        return ("I'm still working through the build for the checkout service and it is taking a while because "
+                "the dependency cache was cold so every package is being fetched and compiled again from scratch.")
+    worker, backend = setup(service, clock, writer)
+    worker.interaction.mic_muted = False
+    tool(service, backend, clock, "terminal", "make build", "c1", done=False)  # one step, then nothing for 5 min
+    said = run_quiet(worker, clock, 300)
+    times, lines = [t for t, _ in said], [line for _, line in said]
+    assert times[0] <= 20 and 300 - times[-1] <= 50
+    assert all(b - a <= 50 for a, b in zip(times, times[1:]))
+    assert all(len(line.split()) <= calls.PULSE_MAX_WORDS for line in lines)
+    assert len(set(lines)) == len(lines)  # no two the same
+    # Where a muted call would back off, the open mic hears the running step and the task's age.
+    anchored = lines[calls.PULSE_IDLE_AFTER + 1:]
+    assert anchored and all("building the project" in line.lower() and " in" in line for line in anchored)
+    assert any("minutes" in line for line in anchored)
+
+
+def test_muted_and_never_reported_keep_mains_timing_and_back_off(service, clock):
+    """Never reported: exactly main's timing (45 s, three stale updates, then 90 s). Muted: silent."""
+    worker, backend = setup(service, clock)
+    tool(service, backend, clock, "terminal", "make build", "c1", done=False)
+    assert worker.interaction.mic_muted is None and not worker.mic_open()
+    times = [t for t, _ in run_quiet(worker, clock, 600)]
+    every, idle = calls.PULSE_EVERY_S, calls.PULSE_IDLE_EVERY_S
+    expected = [every * (i + 1) for i in range(calls.PULSE_IDLE_AFTER + 1)]
+    while expected[-1] + idle <= 600:
+        expected.append(expected[-1] + idle)
+    assert times == expected == [45, 90, 135, 180, 270, 360, 450, 540]
+    worker, backend = setup(service, clock, key="idem_p2")
+    worker.interaction.mic_muted = True
+    tool(service, backend, clock, "terminal", "make build", "c2", done=False)
+    assert run_quiet(worker, clock, 600) == []
+    worker.interaction.mic_muted = False
+    worker.muted = True  # type: ignore[attr-defined]  # the relay's own mute wins over the app's open mic
+    assert not worker.mic_open() and run_quiet(worker, clock, 120) == []
+
+
+def test_open_mic_line_is_capped_at_22_words():
+    long = ("I've read the checkout logs, found that the payment step times out after thirty seconds, "
+            "and I'm now rerunning the integration tests to confirm the fix. More after that.")
+    assert len(calls.cap_words(long).split()) <= calls.PULSE_MAX_WORDS
+    assert calls.cap_words("Reading the logs.") == "Reading the logs."
+    shapes = calls.anchored_lines("Reading the logs", 185)
+    assert len(set(shapes)) == len(calls._ANCHORED_SHAPES) and all("about 3 minutes" in s.lower() for s in shapes)
+    assert calls.unrepeated("Same line.", ["Same line."], "reading the logs", 185) == "Meanwhile, same line."
+
+
+def test_open_mic_model_that_repeats_itself_never_repeats_aloud(service, clock):
+    """A wording model stuck on one sentence, on a task that keeps doing things for ten minutes: the
+    open mic still never hears the same words twice, and never "Meanwhile, meanwhile"."""
+    worker, backend = setup(service, clock, lambda r, s, t: t[-1] if t else "I'm reading the build log.")
+    worker.interaction.mic_muted = False
+    tool(service, backend, clock, "terminal", "make build", "c0", done=False)
+    said = []
+    for minute in range(10):
+        tool(service, backend, clock, "read_file", f"src/part{minute}.py", f"c{minute + 1}")
+        said += run_quiet(worker, clock, 60)
+    lines = [line for _, line in said]
+    assert len(lines) >= 600 // 50 and len(set(lines)) == len(lines)
+    assert not any(line.lower().count("meanwhile") > 1 for line in lines)
