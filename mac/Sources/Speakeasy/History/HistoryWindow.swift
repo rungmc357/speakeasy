@@ -99,7 +99,18 @@ final class DemoHistoryBackend: HistoryBackend {
         return HistoryMessageReply(via: .task, runID: "run_demo")
     }
 
-    func startChat(text: String, clientID: String) async throws -> String? {
+    var models = ModelCatalog.sample
+    var sessionModels: [SessionModelRequest] = []
+    func models() async throws -> ModelCatalog { models }
+    func setSessionModel(_ request: SessionModelRequest) async throws {
+        sessionModels.append(request)
+        conversations[request.sessionID]?.modelChoice = request.choice.isEmpty ? nil : request.choice
+    }
+    func setDefaultModel(_ defaults: JobModelDefaults) async throws {
+        models.defaultChoice = ModelChoice(model: defaults.model, reasoning: defaults.reasoning)
+    }
+
+    func startChat(text: String, clientID: String, choice: ModelChoice?) async throws -> String? {
         let id = "s_new_\(sessions.count)", run = "run_new_\(sessions.count)"
         let s = HistorySession(id: id, title: text, source: "speakeasy", sourceLabel: "Speakeasy", lastActivity: Date(),
                                preview: text, state: .running, runIDs: [run])
@@ -249,6 +260,9 @@ enum HistoryShots {
         c.window?.setContentSize(NSSize(width: 1040, height: 720))
         c.window?.center()
         let only = ProcessInfo.processInfo.environment["HISTORY_SHOT"]
+        if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
+            NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
+        }
         Task { @MainActor in
             let store = c.store
             @MainActor func shot(_ name: String, _ setup: @MainActor () async -> Void) async {
@@ -310,8 +324,47 @@ enum HistoryShots {
                 c.window?.setContentSize(NSSize(width: 760, height: 620))
                 store.open("s_pricing")
             }
+            await shot("9-model-chip") {
+                store.setCallLive(false)
+                c.window?.setContentSize(NSSize(width: 1040, height: 720))
+                store.preview(catalog: ModelCatalog.sample)
+                backend.conversations["s_flaky"]?.modelChoice = ModelChoice(model: "anthropic/claude-opus-5-5", reasoning: .high)
+                backend.conversations["s_flaky"]?.model = ModelBadge(id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5",
+                                                                    providerName: "Anthropic", reasoning: .high, source: "chat", served: true)
+                store.open("s_flaky")
+                store.load("s_flaky")
+            }
+            await shot("10-model-new-chat") {
+                store.preview(catalog: ModelCatalog.sample)
+                store.newChat()
+                store.draft = "Compare the two vendor quotes and pick one"
+            }
+            if only == nil || only == "11-model-popover" {
+                var state = ModelPickerState(catalog: ModelCatalog.sample,
+                                             chatChoice: ModelChoice(model: "anthropic/claude-opus-5-5", reasoning: .high))
+                state.select(.high)
+                snapshotView(ModelPopover(store: store, state: state) {}, size: NSSize(width: 320, height: 430),
+                             appearance: c.window?.effectiveAppearance, to: "\(dir)/11-model-popover.png")
+                print("history shot 11-model-popover")
+            }
             exit(0)
         }
+    }
+
+    /// A popover's content on its own (popovers are separate windows the main snapshot can't see).
+    static func snapshotView<V: View>(_ view: V, size: NSSize, appearance: NSAppearance?, to path: String) {
+        let host = NSHostingView(rootView: view.background(.regularMaterial))
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.appearance = appearance
+        window.contentView = host
+        window.orderFrontRegardless()
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+        window.orderOut(nil)
     }
 
     static func snapshot(_ c: HistoryWindowController, to path: String) throws {

@@ -423,7 +423,7 @@ def _filters() -> list[dict[str, str]]:
 
 
 def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
-    """{id, source, title, display_name, chat_type} of a session (its newest segment), or None."""
+    """{id, source, title, display_name, chat_type, model} of a session (its newest segment), or None."""
     db = _open(state_db)
     if db is None:
         return None
@@ -432,7 +432,9 @@ def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
         tip = _tips(db, {session_id}).get(session_id, session_id) if "parent_session_id" in cols else session_id
         display = "display_name" if "display_name" in cols else "NULL AS display_name"
         chat = "chat_type" if "chat_type" in cols else "NULL AS chat_type"
-        row = db.execute(f"SELECT id, source, title, {display}, {chat} FROM sessions WHERE id=?", (tip,)).fetchone()
+        model = "model" if "model" in cols else "NULL AS model"  # the model Hermes ran the session on
+        row = db.execute(f"SELECT id, source, title, {display}, {chat}, {model} FROM sessions WHERE id=?",
+                         (tip,)).fetchone()
         return dict(row) if row else None
     except sqlite3.Error:
         return None

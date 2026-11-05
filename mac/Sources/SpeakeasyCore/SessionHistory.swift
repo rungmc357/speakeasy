@@ -234,13 +234,20 @@ public struct HistoryConversation: Equatable, Sendable {
     /// Its Speakeasy tasks, newest first, with their cards (approvals, questions) and helpers.
     public var jobs: [WorkInfo]
     public var approvals: [HistoryApproval]
+    /// Servers with `model_choice`: the model that did the chat's latest work, what its next message
+    /// runs on, and its own "Use for this chat" pick (nil = the default).
+    public var model: ModelBadge?
+    public var nextModel: ModelBadge?
+    public var modelChoice: ModelChoice?
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
-                jobs: [WorkInfo] = [], approvals: [HistoryApproval] = []) {
+                jobs: [WorkInfo] = [], approvals: [HistoryApproval] = [], model: ModelBadge? = nil,
+                nextModel: ModelBadge? = nil, modelChoice: ModelChoice? = nil) {
         self.id = id; self.title = title; self.source = source; self.sourceLabel = sourceLabel; self.state = state
         self.sendVia = sendVia; self.entries = entries; self.hasMore = hasMore; self.before = before
         self.jobs = jobs; self.approvals = approvals
+        self.model = model; self.nextModel = nextModel; self.modelChoice = modelChoice
     }
 
     public init?(json: Any?) {
@@ -253,7 +260,9 @@ public struct HistoryConversation: Equatable, Sendable {
                   entries: (o["entries"] as? [Any] ?? []).compactMap(HistoryEntry.init(json:)),
                   hasMore: o["has_more"] as? Bool ?? false, before: (o["before"] as? NSNumber)?.intValue,
                   jobs: (o["jobs"] as? [Any] ?? []).compactMap(WorkInfo.init(json:)),
-                  approvals: (o["approvals"] as? [Any] ?? []).compactMap(HistoryApproval.init(json:)))
+                  approvals: (o["approvals"] as? [Any] ?? []).compactMap(HistoryApproval.init(json:)),
+                  model: ModelBadge(json: o["model"]), nextModel: ModelBadge(json: o["next_model"]),
+                  modelChoice: ModelChoice(json: o["model_choice"]))
     }
 
     /// Jobs whose question (a decision card) waits on the user; approvals are in `approvals`.
@@ -278,19 +287,22 @@ public struct HistoryMessageRequest: Equatable, Sendable {
     /// Ids staged with `ServerClient.stageAttachment` (servers with `attachments`); with any, `text`
     /// may be empty (the server says "Take a look at what I attached.").
     public var attachments: [String]
+    /// Servers with `model_choice`: a model / level for this message, kept for the chat (nil = as is).
+    public var choice: ModelChoice?
 
     public init?(sessionID: String, text: String, source: Source = .typed, clientID: String = UUID().uuidString,
-                 attachments: [String] = []) {
+                 attachments: [String] = [], choice: ModelChoice? = nil) {
         let clean = TaskMessageRequest.clean(text)
         guard clean != nil || !attachments.isEmpty else { return nil }
         self.sessionID = sessionID; self.text = clean ?? ""; self.source = source; self.clientID = clientID
-        self.attachments = attachments
+        self.attachments = attachments; self.choice = choice
     }
 
     public var path: String { HistoryConversation.path(sessionID) + "/message" }
     public var body: [String: Any] {
         var out: [String: Any] = ["text": text, "source": source.rawValue, "client_id": clientID]
         if !attachments.isEmpty { out["attachments"] = attachments }
+        if let choice, !choice.isEmpty { out.merge(choice.body()) { _, new in new } }
         return out
     }
 }

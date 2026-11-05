@@ -10,8 +10,12 @@ protocol HistoryBackend: AnyObject {
     func conversation(_ sessionID: String) async throws -> HistoryConversation
     func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply
     /// New chat; returns the new task's run id (or a session id).
-    func startChat(text: String, clientID: String) async throws -> String?
+    func startChat(text: String, clientID: String, choice: ModelChoice?) async throws -> String?
     func answerApproval(sessionID: String, runID: String, choice: String) async throws
+    /// Servers with `model_choice`: the catalog, Use for this chat, Make default.
+    func models() async throws -> ModelCatalog
+    func setSessionModel(_ request: SessionModelRequest) async throws
+    func setDefaultModel(_ defaults: JobModelDefaults) async throws
 }
 
 @MainActor
@@ -21,10 +25,15 @@ final class LiveHistoryBackend: HistoryBackend {
     func page(_ query: HistoryQuery) async throws -> HistoryPage { try await api.historyPage(query) }
     func conversation(_ sessionID: String) async throws -> HistoryConversation { try await api.historySession(sessionID) }
     func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply { try await api.sendToSession(request) }
-    func startChat(text: String, clientID: String) async throws -> String? { try await api.startChat(text: text, clientID: clientID) }
+    func startChat(text: String, clientID: String, choice: ModelChoice?) async throws -> String? {
+        try await api.startChat(text: text, clientID: clientID, choice: choice)
+    }
     func answerApproval(sessionID: String, runID: String, choice: String) async throws {
         try await api.answerSessionApproval(sessionID: sessionID, runID: runID, choice: choice)
     }
+    func models() async throws -> ModelCatalog { try await api.models() }
+    func setSessionModel(_ request: SessionModelRequest) async throws { try await api.setSessionModel(request) }
+    func setDefaultModel(_ defaults: JobModelDefaults) async throws { try await api.setJobModelDefaults(defaults) }
 }
 
 /// The history window's state: the list, the open session, the composer.
@@ -51,6 +60,12 @@ final class HistoryStore: ObservableObject {
     @Published var focusComposer = 0
     /// The server has `capabilities.history`; false shows the update note.
     @Published var supported = true
+    /// The server has `capabilities.model_choice`: the composer's model chip.
+    @Published var modelsSupported = false { didSet { if modelsSupported && !oldValue { loadModels() } } }
+    @Published private(set) var catalog: ModelCatalog?
+    /// New chat's pick (its first job runs on it, and the chat keeps it).
+    @Published var newChatModel: ModelChoice?
+    @Published private(set) var modelError: String?
     @Published var now = Date()
 
     var backend: HistoryBackend?
@@ -66,6 +81,7 @@ final class HistoryStore: ObservableObject {
     func start() {
         guard supported, backend != nil else { return }
         if list.sessions.isEmpty && !list.loading { run(list.reset()) }
+        if modelsSupported { loadModels() }
         if clockTimer == nil {
             clockTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
@@ -128,6 +144,7 @@ final class HistoryStore: ObservableObject {
         cancelVoice()
         target = .newChat
         newChatError = nil
+        newChatModel = nil
         focusComposer += 1
     }
 
@@ -189,7 +206,7 @@ final class HistoryStore: ObservableObject {
             startingChat = true; newChatError = nil
             Task { [weak self] in
                 do {
-                    let ref = try await backend.startChat(text: text, clientID: clientID)
+                    let ref = try await backend.startChat(text: text, clientID: clientID, choice: self?.newChatModel)
                     await self?.openStarted(ref)
                 } catch {
                     self?.startingChat = false
@@ -264,6 +281,71 @@ final class HistoryStore: ObservableObject {
             self?.load(sessionID)
         }
     }
+
+    // MARK: Model (servers with `model_choice`)
+
+    func loadModels() {
+        guard let backend else { return }
+        Task { [weak self] in
+            if let c = try? await backend.models(), c.available { self?.catalog = c }
+        }
+    }
+
+    /// The open chat's own pick (New chat: its pending one).
+    var chatModel: ModelChoice? {
+        switch target {
+        case .session(let id): return conversations[id]?.modelChoice
+        default: return newChatModel
+        }
+    }
+
+    /// The chip's state for what's open now; nil hides the chip.
+    var picker: ModelPickerState? {
+        guard modelsSupported, let catalog, catalog.available else { return nil }
+        return ModelPickerState(catalog: catalog, chatChoice: chatModel)
+    }
+
+    /// The sheet's Apply: save it for this chat, or as Speakeasy's default.
+    func applyModel(_ state: ModelPickerState, scope: ModelPickerState.Scope) {
+        var next = state
+        next.apply(scope)
+        catalog = next.catalog
+        modelError = nil
+        guard let backend else { return }
+        let choice = scope == .chat ? next.selection : nil
+        let sessionID = target?.sessionID
+        if scope == .chat, sessionID == nil { newChatModel = choice; return }
+        if let sessionID, scope == .chat, var c = conversations[sessionID] {
+            c.modelChoice = choice; conversations[sessionID] = c  // at once; the server confirms below
+        }
+        Task { [weak self] in
+            do {
+                if scope == .makeDefault {
+                    try await backend.setDefaultModel(JobModelDefaults(model: next.selection.model, reasoning: next.selection.reasoning))
+                } else if let sessionID, let choice {
+                    try await backend.setSessionModel(SessionModelRequest(sessionID: sessionID, choice: choice))
+                }
+                self?.loadModels()
+                if let sessionID { self?.load(sessionID) }
+            } catch {
+                self?.modelError = Self.message(error)
+                if let sessionID { self?.load(sessionID) }
+            }
+        }
+    }
+
+    /// Back to the default for this chat.
+    func useDefaultModel() {
+        guard let backend else { return }
+        guard let sessionID = target?.sessionID else { newChatModel = nil; return }
+        if var c = conversations[sessionID] { c.modelChoice = nil; conversations[sessionID] = c }
+        Task { [weak self] in
+            try? await backend.setSessionModel(SessionModelRequest(sessionID: sessionID, choice: ModelChoice()))
+            self?.load(sessionID)
+        }
+    }
+
+    func preview(catalog: ModelCatalog?) { self.catalog = catalog; modelsSupported = catalog != nil }
 
     // MARK: Voice messages
 

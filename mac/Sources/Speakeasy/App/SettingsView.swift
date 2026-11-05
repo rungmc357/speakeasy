@@ -699,6 +699,10 @@ private struct BehaviorSettings: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             CallLimitsSection(draft: $draft, noLimit: app.status?.capabilities?.callNoLimit == true)
+            if app.status?.capabilities?.modelChoice == true, let api = app.api {
+                JobModelSection(load: { try await (api.models(), api.jobModelDefaults()) },
+                                save: { try await api.setJobModelDefaults($0) })
+            }
             Section("Task routing") {
                 Text(app.status?.routingExplainer ?? routingExplainerFallback)
                     .font(.callout).foregroundStyle(.secondary)
@@ -1145,6 +1149,62 @@ struct RoutingModelPicker: View {
 }
 
 
+// MARK: Jobs: default model and reasoning
+
+/// "Default model" / "Default reasoning" for Speakeasy's jobs (settings `jobs`; servers with
+/// `model_choice`). Saved as soon as it changes; a chat's own pick (the History chip) wins over it.
+struct JobModelSection: View {
+    var load: () async throws -> (ModelCatalog, JobModelDefaults)
+    var save: (JobModelDefaults) async throws -> Void
+    @State private var catalog: ModelCatalog?
+    @State private var defaults = JobModelDefaults()
+    @State private var error: String?
+
+    static let hermesTag = "__hermes__"
+
+    var body: some View {
+        Section("Jobs") {
+            if let catalog, catalog.available {
+                let hermes = catalog.option(catalog.hermesDefault.model)?.name
+                Picker("Default model", selection: Binding(get: { defaults.model ?? Self.hermesTag }, set: { picked in
+                    defaults.model = picked == Self.hermesTag ? nil : picked
+                    if let m = catalog.option(defaults.model) { defaults.reasoning = defaults.reasoning?.clamped(to: m.levels) }
+                    commit()
+                })) {
+                    Text(hermes.map { "Hermes default (\($0))" } ?? "Hermes default").tag(Self.hermesTag)
+                    ForEach(catalog.providers) { p in
+                        Section(p.name) { ForEach(p.models) { Text($0.name).tag($0.id) } }
+                    }
+                }
+                .accessibilityIdentifier("settings-default-model")
+                let levels = catalog.option(defaults.model ?? catalog.hermesDefault.model)?.levels ?? ReasoningLevel.allCases
+                if !levels.isEmpty {
+                    Picker("Default reasoning", selection: Binding(get: { defaults.reasoning?.rawValue ?? Self.hermesTag }, set: { picked in
+                        defaults.reasoning = ReasoningLevel(rawValue: picked); commit()
+                    })) {
+                        Text(catalog.hermesDefault.reasoning.map { "Hermes default (\($0.label))" } ?? "Hermes default").tag(Self.hermesTag)
+                        ForEach(levels) { Text($0.label).tag($0.rawValue) }
+                    }
+                }
+                Text(error ?? "What new chats and tasks run on. Pick a different one for a single chat from the model button under its message box. Saying \u{201C}use the smart model for this\u{201D} on a call works too.")
+                    .font(.caption).foregroundStyle(error == nil ? Color.secondary : BrandPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                LabeledContent("Default model", value: catalog == nil ? "Loading…" : "Hermes default")
+            }
+        }
+        .task {
+            if let (c, d) = try? await load() { catalog = c; defaults = d }
+        }
+    }
+
+    private func commit() {
+        let value = defaults
+        error = nil
+        Task { do { try await save(value) } catch { self.error = "Couldn't save: \(error.localizedDescription)" } }
+    }
+}
+
 // MARK: On calls
 
 /// "Pause a quiet call" and "End a call after" (the same choices as the iPhone's Settings › On calls).
@@ -1180,6 +1240,28 @@ struct CallLimitsSection: View {
 enum CallLimitsSnapshot {
     static func run(dir: String) {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["SETTINGS_SHOT"] == "jobs" {
+            if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
+                NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
+            }
+            let host = NSHostingController(rootView: Form {
+                JobModelSection(load: { (ModelCatalog.sample, JobModelDefaults(model: "anthropic/claude-opus-5-5", reasoning: .high)) },
+                                save: { _ in })
+            }.formStyle(.grouped).frame(width: 560, height: 230))
+            let window = NSWindow(contentViewController: host)
+            window.setContentSize(NSSize(width: 560, height: 230))
+            window.makeKeyAndOrderFront(nil)
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                if let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/mac-settings-jobs.png"))
+                    print("snapshot mac-settings-jobs")
+                }
+                exit(0)
+            }
+            return
+        }
         let shots: [(String, ServerSettings)] = [
             ("mac-settings-on-calls", { var s = ServerSettings(idlePauseMinutes: 15); s.maxCallMinutes = 30; return s }()),
             ("mac-settings-on-calls-no-limit", { var s = ServerSettings(idlePauseMinutes: 0); s.maxCallMinutes = 0; return s }()),

@@ -176,14 +176,25 @@ class HermesAPI:
         except HermesError:
             return False
 
+    def model_options(self, timeout: float = 20) -> dict[str, Any]:
+        """Hermes' model-picker inventory (``GET /api/model/options``): providers, their models and
+        capabilities, and the configured ``provider``/``model``. Can be slow: cached by models.Catalog."""
+        return self._json("GET", "/api/model/options", timeout=timeout)
+
     def start_run(self, prompt: str, idem_key: str, session_id: str | None = None,
-                  session_key: str | None = None, images: Sequence[str] | None = None) -> str:
+                  session_key: str | None = None, images: Sequence[str] | None = None,
+                  choice: dict[str, Any] | None = None) -> str:
+        """*choice*: Hermes' per-request overrides for this run (models.run_fields): ``provider`` +
+        ``model`` and/or ``model_options``. None = Hermes' own configuration."""
         # Text alone stays a plain string; with images, one user message of vision parts.
         body: dict[str, Any] = {"input": [{"role": "user", "content": user_content(prompt, images)}]
                                 if images else prompt}
         if session_id:
             # A task's own Hermes session: tasks in separate sessions run at the same time.
             body["session_id"] = session_id
+        for field in ("provider", "model", "model_options"):
+            if choice and choice.get(field):
+                body[field] = choice[field]
         headers = {"Idempotency-Key": idem_key}
         if session_key:
             headers["X-Hermes-Session-Key"] = session_key
