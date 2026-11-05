@@ -513,7 +513,12 @@ struct HistorySessionView: View {
                         ForEach(thread.messages) { m in
                             HistoryMessageView(message: m, sessionID: c.id, store: store).id(m.id)
                         }
-                        ForEach(Array(c.jobs.suffix(4).enumerated()), id: \.offset) { _, job in HistoryTaskCard(job: job) }
+                        // A task waiting on an approval or a question shows as that card only (no twin above it).
+                        let asking = Set(c.approvals.map(\.runID) + c.waitingQuestions.compactMap(\.runID))
+                        let cards = c.jobs.filter { !(asking.contains($0.runID ?? "") && $0.status != "running") }
+                        ForEach(Array(cards.suffix(4).enumerated()), id: \.offset) { _, job in
+                            HistoryTaskCard(job: job)
+                        }
                         if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
                         ForEach(thread.waiting) { HistoryWaitingCard(waiting: $0, store: store) }
                         if let error = store.answerError {
@@ -635,8 +640,15 @@ struct HistoryMessageView: View {
                     Circle().fill(Live.brass.opacity(0.18)).frame(width: 22, height: 22)
                         .overlay(Image(systemName: "sparkle").font(.system(size: 9.5, weight: .bold)).foregroundStyle(Live.brass))
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(markdown(message.text)).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.9))
-                            .lineSpacing(3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        ForEach(Array(MessageBlock.split(message.text).enumerated()), id: \.offset) { _, block in
+                            switch block {
+                            case .text(let prose):
+                                Text(markdown(prose)).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.9))
+                                    .lineSpacing(3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            case .code(let code, let language):
+                                HistoryCodeBlock(code: code, language: language)
+                            }
+                        }
                         if let t = HistoryLook.long(message.at, now: store.now) {
                             Text(t).font(.system(size: 10.5)).foregroundStyle(.tertiary)
                         }
@@ -650,6 +662,36 @@ struct HistoryMessageView: View {
 
     private func markdown(_ s: String) -> AttributedString {
         (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+    }
+}
+
+/// A fenced code block in an answer: monospaced, unwrapped (scrolls sideways), language + Copy.
+struct HistoryCodeBlock: View {
+    let code: String
+    let language: String?
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(language ?? "code").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Button(copied ? "Copied" : "Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                }
+                .buttonStyle(.plain).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Live.brassText)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            Divider().overlay(Live.hairline)
+            ScrollView(.horizontal, showsIndicators: true) {
+                Text(code).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).fixedSize().padding(10)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Live.card))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Live.hairline, lineWidth: 0.5))
     }
 }
 
