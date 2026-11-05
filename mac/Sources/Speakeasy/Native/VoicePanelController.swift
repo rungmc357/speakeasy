@@ -568,12 +568,19 @@ final class VoicePanelController {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             resizeScheduled = false
-            resize(animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+            resize(animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion && !FilmFrames.filming)
         }
     }
 
     private func resize(animated: Bool) {
         let width = model.displayWidth
+        // Lay the measurer out at the first answer, then ask again: content hosted inside the
+        // board's scroll view (its own SwiftUI host, e.g. the plugin-update card) only catches up
+        // in a layout pass. Measuring once returned its height from one change earlier, so the
+        // panel was sized for the previous card (a band of empty space, or the board clipped).
+        let first = measurer.sizeThatFits(in: NSSize(width: width, height: 2000))
+        measurer.view.frame = NSRect(x: 0, y: 0, width: width, height: ceil(first.height))
+        measurer.view.layoutSubtreeIfNeeded()
         let fitting = measurer.sizeThatFits(in: NSSize(width: width, height: 2000))
         let height = max(56, ceil(fitting.height))
         let frame = Self.placement(height: height, width: width, userTopLeft: userTopLeft,

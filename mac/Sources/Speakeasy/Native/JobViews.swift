@@ -89,6 +89,10 @@ struct JobBoardView: View {
             VStack(alignment: .leading, spacing: 8) {
                 BoardGreetingView(sections: sections, now: model.state.now)
                     .padding(.bottom, 4)
+                // A newer plugin: a tile of its own, in the board's content (never over it). The card
+                // watches the notice itself and draws nothing when there's nothing to say.
+                PluginUpdateCard(notice: model.pluginUpdate, onUpdate: model.onPluginUpdate,
+                                 onOpenJob: model.onOpenPluginUpdateJob, onCopy: model.onCopyPluginUpdate)
                 // One label per section; the tiles under it never repeat it.
                 if !sections.needsYou.isEmpty {
                     BoardSectionLabel(text: "Needs you", count: sections.needsYou.count, color: Live.amber)

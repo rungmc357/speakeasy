@@ -1,10 +1,17 @@
+import Combine
 import SwiftUI
 import SpeakeasyCore
 
 /// Observable model the SwiftUI panel renders. The controller owns all mutation.
 @MainActor
 public final class VoicePanelModel: ObservableObject {
-    public init() {}
+    public init() {
+        // The update notice lives inside scrolling content hosted on its own (the board): pass its
+        // changes on so the panel redraws and re-measures, or the card's height arrives a draw late
+        // and the panel clips its top and bottom.
+        pluginUpdateRelay = pluginUpdate.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+    private var pluginUpdateRelay: AnyCancellable?
     public static let defaultWidth: CGFloat = 360
     @Published public var state = VoiceState()
     @Published public var workExpanded = false

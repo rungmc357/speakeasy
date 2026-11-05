@@ -86,14 +86,19 @@ final class PluginUpdateFlowTests: XCTestCase {
         let md = """
         # What's new
         ## Mac 0.3.11 — Watch the work
-        ## Plugin 0.9.1 — Update from the app, in one tap
+        ## Plugin 0.9.1 — Calls pick up faster on a slow connection
         - stuff
         ## Plugin 0.9.0 - Older
+        ## Plugin 0.8.9
+        ## Plugin 0.8.8 —
         """
-        XCTAssertEqual(PluginUpdateFlow.changelogHeadline(md, version: "0.9.1"), "Update from the app, in one tap")
+        XCTAssertEqual(PluginUpdateFlow.changelogHeadline(md, version: "0.9.1"), "Calls pick up faster on a slow connection")
         XCTAssertEqual(PluginUpdateFlow.changelogHeadline(md, version: "0.9.0"), "Older")
         XCTAssertNil(PluginUpdateFlow.changelogHeadline(md, version: "0.3.11"))
         XCTAssertNil(PluginUpdateFlow.changelogHeadline(md, version: "0.9"))
+        // An entry with no title: no what's-new line at all (the card then omits line 2).
+        XCTAssertNil(PluginUpdateFlow.changelogHeadline(md, version: "0.8.9"))
+        XCTAssertNil(PluginUpdateFlow.changelogHeadline(md, version: "0.8.8"))
     }
 
     func testStartJobsCapabilityDecodes() throws {
