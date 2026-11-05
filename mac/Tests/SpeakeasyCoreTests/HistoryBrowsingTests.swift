@@ -146,6 +146,7 @@ final class HistoryBrowsingTests: XCTestCase {
             {"kind": "assistant", "id": "m4", "text": "Three brackets."},
             {"kind": "user", "id": "m5", "text": "Order them please"},
             {"kind": "tools", "id": "t6", "items": [{"n": 3, "text": "Opened the shop", "tool": "browser", "status": "running"}]}],
+          "approvals": [{"run_id": "run_7", "description": "Run rm -rf build/", "choices": ["once", "session", "always", "deny"]}],
           "jobs": [
             {"run_id": "run_7", "status": "waiting_for_approval", "detail": "Run rm -rf build/",
              "subagents": [{"id": "h1", "title": "Check the stock", "status": "running"}]},
@@ -170,10 +171,15 @@ final class HistoryBrowsingTests: XCTestCase {
         let send = try XCTUnwrap(t.waiting.first { $0.sendID == "hs_2" })
         XCTAssertEqual(send.kind, .approval)
         XCTAssertEqual(send.choices, ["once", "session", "deny"], "never always")
-        let job = try XCTUnwrap(t.waiting.first { $0.id == "job-run_7" })
-        XCTAssertNil(job.sendID, "a task's approval is answered by a message to the session")
+        let job = try XCTUnwrap(t.waiting.first { $0.runID == "run_7" })
+        XCTAssertNil(job.sendID)
+        XCTAssertEqual(job.kind, .approval, "a task's approval: answered on POST …/approval by run id")
         XCTAssertEqual(job.text, "Run rm -rf build/")
-        XCTAssertEqual(t.waiting.first { $0.kind == .question }?.choices, ["Oak", "Walnut"])
+        XCTAssertEqual(job.choices, ["once", "session", "deny"])
+        let question = try XCTUnwrap(t.waiting.first { $0.kind == .question })
+        XCTAssertEqual(question.choices, ["Oak", "Walnut"])
+        XCTAssertNil(question.runID, "a task's question is answered by a message to the session")
+        XCTAssertNil(question.sendID)
     }
 
     // MARK: Voice messages on the Mac

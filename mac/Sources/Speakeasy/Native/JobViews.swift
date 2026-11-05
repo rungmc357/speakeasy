@@ -194,6 +194,18 @@ struct JobDetailView: View {
                 AllJobsButton { model.onOpenJob(nil) }
                 if model.state.connection.isInCall { TalkingToChip(job: job) }
                 Spacer(minLength: 4)
+                // The whole Hermes conversation this job ran in, in the History window.
+                if model.capabilities?.history == true,
+                   let session = job.tasks.lazy.compactMap({ $0.info.sessionID }).first {
+                    Button {
+                        NotificationCenter.default.post(name: .speakeasyOpenHistory, object: session)
+                    } label: {
+                        Label("Full session", systemImage: "text.bubble").font(.system(size: 11, weight: .medium))
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("Open the whole conversation in History (⌘Y)")
+                }
                 // The redesigned page's one Stop: up here, never also under the steps.
                 if live, let task = job.activeTask, task.canStop, let run = task.info.runID {
                     HeaderStopButton { model.onStopTask(run) }

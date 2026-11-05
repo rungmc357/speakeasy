@@ -137,6 +137,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if let self, caps != nil { self.history.store.supported = caps?.history ?? false }
             }
             .store(in: &bag)
+        // A job page's "Full session" opens its conversation in History.
+        NotificationCenter.default.publisher(for: .speakeasyOpenHistory)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] note in self?.openHistory(session: note.object as? String) }
+            .store(in: &bag)
         // A live call takes the mic: the history composer's voice-message button hides meanwhile.
         native.model.$state
             .map { $0.connection.isInCall }
@@ -541,12 +546,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Every session and task: open one, see the work, type or speak to it (by id, never the router).
-    @objc func showHistory() {
+    @objc func showHistory() { openHistory(session: nil) }
+
+    func openHistory(session: String?) {
         let store = history.store
         if store.backend == nil, let api = native.api { store.backend = LiveHistoryBackend(api: api) }
         store.supported = app.status?.capabilities?.history ?? false
         store.setCallLive(native.model.state.connection.isInCall)
         history.show()
+        if let session { store.open(session) }
     }
 
     @objc private func showRecentWork() {

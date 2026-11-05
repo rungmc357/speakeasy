@@ -193,9 +193,18 @@ public struct HistoryWaiting: Equatable, Sendable, Identifiable {
     public var command: String?
     /// Buttons. A send's own choices (never "always"); a task's are "yes"/"no" or its options.
     public var choices: [String]
-    /// Set: answered with `POST …/sends/{send_id}/answer` (`choice`). Nil: answered by a message
-    /// to the session, which the server hands to the waiting task as the answer.
+    /// Set: answered with `POST …/sends/{send_id}/answer` (`choice`).
     public var sendID: String?
+    /// Set: a task's approval, answered with `POST …/approval` (`run_id`, `choice`).
+    /// Neither: a task's question, answered by a message to the session (the server hands it to the
+    /// waiting task as the answer).
+    public var runID: String?
+
+    public init(id: String, kind: Kind, text: String, command: String? = nil, choices: [String],
+                sendID: String? = nil, runID: String? = nil) {
+        self.id = id; self.kind = kind; self.text = text; self.command = command; self.choices = choices
+        self.sendID = sendID; self.runID = runID
+    }
 }
 
 /// `HistoryConversation` turned into what the session page draws.
@@ -254,16 +263,15 @@ public struct HistoryThread: Equatable, Sendable {
                 out.append(HistoryThreadMessage(id: "send-\(send.id)", role: .user, text: send.text, at: send.started, delivery: .sent))
             }
         }
-        // Its Speakeasy tasks waiting on the user.
-        for job in c.waitingJobs {
-            let run = job.runID ?? job.title ?? "job"
-            if job.status == "waiting_for_approval" {
-                waiting.append(HistoryWaiting(id: "job-\(run)", kind: .approval,
-                                              text: job.detail ?? job.shortStatus ?? "It's waiting for your OK.",
-                                              choices: ["yes", "no"]))
-            } else if let d = job.decision {
-                waiting.append(HistoryWaiting(id: "job-\(run)", kind: .question, text: d.question, choices: d.options.map(\.text)))
-            }
+        // Its Speakeasy tasks waiting on the user: approvals (their own route), then questions.
+        for a in c.approvals {
+            waiting.append(HistoryWaiting(id: "approval-\(a.runID)", kind: .approval, text: a.description,
+                                          choices: a.choices, runID: a.runID))
+        }
+        for job in c.waitingQuestions {
+            guard let d = job.decision else { continue }
+            waiting.append(HistoryWaiting(id: "job-\(job.runID ?? d.question)", kind: .question, text: d.question,
+                                          choices: d.options.map(\.text)))
         }
         var seen = Set<String>()
         self.helpers = c.jobs.flatMap(\.subagents).filter { seen.insert($0.id).inserted }

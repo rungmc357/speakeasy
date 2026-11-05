@@ -697,7 +697,7 @@ struct HistoryWaitingCard: View {
     @ObservedObject var store: HistoryStore
 
     var body: some View {
-        let busy = waiting.sendID.map { store.answering.contains($0) } ?? false
+        let busy = store.answering.contains(waiting.id)
         NeedsYouCard(symbol: waiting.kind == .approval ? "hand.raised.fill" : "questionmark.bubble.fill",
                      title: waiting.kind == .approval ? "Wants your OK" : "Asked you") {
             Text(waiting.text).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
@@ -711,7 +711,7 @@ struct HistoryWaitingCard: View {
             if !waiting.choices.isEmpty {
                 WrapLayout(spacing: 6) {
                     ForEach(Array(waiting.choices.enumerated()), id: \.offset) { i, c in
-                        HistoryPillButton(title: Self.label(c, kind: waiting.kind), primary: waiting.kind == .approval && i == 0) {
+                        HistoryPillButton(title: Self.label(c, kind: waiting.kind, task: waiting.runID != nil), primary: waiting.kind == .approval && i == 0) {
                             store.answer(waiting, choice: c)
                         }
                     }
@@ -725,11 +725,11 @@ struct HistoryWaitingCard: View {
         .accessibilityIdentifier(waiting.kind == .approval ? "history-approval" : "history-question")
     }
 
-    static func label(_ choice: String, kind: HistoryWaiting.Kind) -> String {
+    static func label(_ choice: String, kind: HistoryWaiting.Kind, task: Bool = false) -> String {
         guard kind == .approval else { return choice }
         switch choice {
         case "yes", "once": return "Approve"
-        case "session": return "Approve for this session"
+        case "session": return task ? "Approve for this task" : "Approve for this session"
         case "no", "deny": return "Deny"
         default: return choice.prefix(1).uppercased() + choice.dropFirst()
         }

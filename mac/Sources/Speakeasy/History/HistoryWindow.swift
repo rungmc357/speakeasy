@@ -49,6 +49,11 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
     }
 }
 
+extension Notification.Name {
+    /// Open the History window; `object` is a session id to open, or nil.
+    static let speakeasyOpenHistory = Notification.Name("speakeasy.openHistory")
+}
+
 // MARK: - Demo (screenshots; invented, work-first data, in the server's JSON shapes)
 
 @MainActor
@@ -100,6 +105,7 @@ final class DemoHistoryBackend: HistoryBackend {
     }
 
     func answer(sessionID: String, sendID: String, choice: String) async throws { answers.append((sessionID, sendID, choice)) }
+    func answerApproval(sessionID: String, runID: String, choice: String) async throws { answers.append((sessionID, runID, choice)) }
 }
 
 enum DemoHistory {

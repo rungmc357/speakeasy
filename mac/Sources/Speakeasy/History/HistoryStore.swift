@@ -12,6 +12,7 @@ protocol HistoryBackend: AnyObject {
     /// New chat; returns the new task's run id (or a session id).
     func startChat(text: String, clientID: String) async throws -> String?
     func answer(sessionID: String, sendID: String, choice: String) async throws
+    func answerApproval(sessionID: String, runID: String, choice: String) async throws
 }
 
 @MainActor
@@ -24,6 +25,9 @@ final class LiveHistoryBackend: HistoryBackend {
     func startChat(text: String, clientID: String) async throws -> String? { try await api.startChat(text: text, clientID: clientID) }
     func answer(sessionID: String, sendID: String, choice: String) async throws {
         try await api.answerSend(sessionID: sessionID, sendID: sendID, choice: choice)
+    }
+    func answerApproval(sessionID: String, runID: String, choice: String) async throws {
+        try await api.answerSessionApproval(sessionID: sessionID, runID: runID, choice: choice)
     }
 }
 
@@ -248,16 +252,22 @@ final class HistoryStore: ObservableObject {
         list.upsert(s)
     }
 
-    /// An approval / question button. A send's prompt is answered on its answer route; a task's by
-    /// a message to the session (the server hands it to the waiting task as the answer).
+    /// An approval / question button. A send's prompt and a task's approval each have their own
+    /// answer route; a task's question is answered by a message to the session (the server hands it
+    /// to the waiting task as the answer).
     func answer(_ waiting: HistoryWaiting, choice: String) {
-        guard let sendID = waiting.sendID else { deliver(choice, source: .typed); return }
+        guard waiting.sendID != nil || waiting.runID != nil else { deliver(choice, source: .typed); return }
         guard let sessionID = target?.sessionID, let backend else { return }
-        answering.insert(sendID); answerError = nil
+        answering.insert(waiting.id); answerError = nil
         Task { [weak self] in
-            do { try await backend.answer(sessionID: sessionID, sendID: sendID, choice: choice) }
-            catch { self?.answerError = Self.message(error) }
-            self?.answering.remove(sendID)
+            do {
+                if let sendID = waiting.sendID {
+                    try await backend.answer(sessionID: sessionID, sendID: sendID, choice: choice)
+                } else if let runID = waiting.runID {
+                    try await backend.answerApproval(sessionID: sessionID, runID: runID, choice: choice)
+                }
+            } catch { self?.answerError = Self.message(error) }
+            self?.answering.remove(waiting.id)
             self?.load(sessionID)
         }
     }
