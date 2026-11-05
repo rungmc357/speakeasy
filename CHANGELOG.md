@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.26 — Calls that let you finish, and real job names
+
+- **It lets you finish.** Results, questions and updates wait for a real pause; a thought that trails off isn't sent until you say so ("Want me to send that?").
+- **"Wait", "I wasn't done", "don't add that" are conversation, not jobs.** The voice stops and listens, or takes back what it just sent.
+- **"What's it doing?" gets a real answer** from the job: what you asked, its latest tool calls, what it found, or what it's queued behind.
+- **Specific task names**, with follow-ups named after the job they belong to.
+- **Job pages show their own work**: a queued job says so, bookkeeping never counts as progress, and generic plans are dropped.
+
 ## Plugin 0.3.24 — Setup finds Codex inside the ChatGPT app
 
 - **No second Codex install for ChatGPT users.** Voice runs on the copy of Codex that comes with the ChatGPT desktop app. Setup already looked there; it now also checks the older standalone Codex app, which can be left behind after OpenAI folded it into ChatGPT. The setup guide your Hermes agent reads now says the ChatGPT app is enough, so the agent won't install Codex again or send you off to download a "Codex app". If no copy is found, the message tells you to install the ChatGPT app or the Codex CLI. *(Plugin)*
