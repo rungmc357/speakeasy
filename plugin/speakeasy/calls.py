@@ -33,6 +33,7 @@ from . import instant as instant_mod
 from . import fence as fence_mod
 from . import jev as jev_mod
 from . import receipts
+from . import session_titles
 from . import quick as quick_mod
 from . import views as views_mod
 from . import activity as activity_mod
@@ -167,6 +168,12 @@ def whole_request(context: str, started: "set[str] | None" = None) -> str:
     return " ".join(reversed(picked)).strip()
 
 TASK_SESSION_PREFIX = "speakeasy_task_"
+
+
+def task_session_id(idem: str) -> str:
+    """The Hermes session minted for one task (its own, so tasks run side by side)."""
+    return TASK_SESSION_PREFIX + hashlib.sha256(idem.encode()).hexdigest()[:24]
+
 LOCAL_RUN_PREFIX = "lr_"   # ids for tasks Hermes ran without a run id (thread tasks)
 EARLY_PREFIX = "early_"    # handoffs for words said while the call was still connecting
 EARLY_MAX_CHARS = 1000
@@ -839,6 +846,7 @@ class SidebandWorker:
                     idem, status, f"Handed to {self.names.assistant_name}: {handed}") or changed
             if title and title != provisional and self.store.title(idem) == provisional:
                 self.store.set_title(idem, title)
+                self.title_session(idem)
                 changed = True
             if polished:
                 self.store.set_title(idem, None, summary=polished)
@@ -849,6 +857,23 @@ class SidebandWorker:
         task = asyncio.get_running_loop().create_task(upgrade())
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
+
+    def title_session(self, idem: str) -> None:
+        """Name the Hermes session behind this task after the task (Hermes would otherwise name it
+        from the prompt's preamble). Only the session minted for this task: never a chat it continues.
+        In the background; a session that keeps Hermes' own name costs nothing but looks."""
+        session_id = task_session_id(idem)
+        if self.store.session_for(idem) != session_id:
+            return
+
+        def name() -> str | None:
+            return self._no_names(self.store.title(idem))
+
+        # Not a dispatch task: the end of a call never waits on a session's name.
+        task = asyncio.get_running_loop().create_task(
+            asyncio.to_thread(session_titles.push, self.hermes, session_id, name))
+        session_titles.PENDING.add(task)
+        task.add_done_callback(session_titles.PENDING.discard)
 
     def shape_result(self, idem: str, report: str) -> None:
         """Sort a long finished report into its parts (checks, shipped, open, sections) in the background,
@@ -917,6 +942,7 @@ class SidebandWorker:
             title = await asyncio.to_thread(self._titled, titler, prompt)
             if title and title != current and self.store.title(idem) == current:
                 self.store.set_title(idem, title)
+                self.title_session(idem)
                 self.publish()
 
         task = asyncio.get_running_loop().create_task(upgrade())
@@ -3671,7 +3697,7 @@ class SidebandWorker:
         self.publish()
         continuing = bool(session_id)  # an existing session: it may hold an earlier screenshot
         if not session_id:
-            session_id = TASK_SESSION_PREFIX + hashlib.sha256(idem.encode()).hexdigest()[:24]
+            session_id = task_session_id(idem)
         label = self.rt.channel_label(deliver_to) if deliver_to else self.rt.delivery_label()
         show = self._take_show(voice_id or task_id, idem)
         if show:
@@ -3729,6 +3755,7 @@ class SidebandWorker:
             if voice_id is None:
                 shared.forget_bytes()  # the run has them; a split request's parts still share theirs
             self.store.update_run(idem, run_id, "running")
+            self.title_session(idem)
             with self.interaction.lock:
                 backend.run_id, backend.status = run_id, "running"
             self.publish()
@@ -4034,7 +4061,7 @@ class SidebandWorker:
         excerpt = await asyncio.to_thread(continuity.recent_exchange, self.rt.state_db, conv.session_id)
         focus = request + (f" (This picks up the conversation in {where}. Its most recent messages, for context:\n"
                            f"{excerpt}\n)" if excerpt else f" (This picks up the conversation in {where}.)")
-        session_id = TASK_SESSION_PREFIX + hashlib.sha256(idem.encode()).hexdigest()[:24]
+        session_id = task_session_id(idem)
         if valid_delivery_target(conv.target):
             backend.deliver_to = conv.target
         prompt = P.build_task_prompt(self.names, revision, context, focus, where)
@@ -4046,6 +4073,7 @@ class SidebandWorker:
         try:
             run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id)
             self.store.update_run(idem, run_id, "running")
+            self.title_session(idem)
             with self.interaction.lock:
                 backend.run_id = run_id
             self.publish()

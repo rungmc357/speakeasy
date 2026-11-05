@@ -253,6 +253,20 @@ class HermesAPI:
         messages = data.get("data") or []
         return [m for m in messages if isinstance(m, dict)] if isinstance(messages, list) else []
 
+    def session_title(self, session_id: str, timeout: float = 5) -> str | None:
+        """A session's current title (None when untitled); HermesError 404 until the row exists."""
+        data = self._json("GET", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}", timeout=timeout)
+        session = data.get("session")
+        title = session.get("title") if isinstance(session, dict) else None
+        return title if isinstance(title, str) and title.strip() else None
+
+    def set_session_title(self, session_id: str, title: str, timeout: float = 5) -> None:
+        """Rename a session (Hermes' public ``PATCH /api/sessions/{id}``). A title set this way has
+        the user's authority in Hermes, so its auto-titler leaves it alone. HermesError 400 when
+        another session already has the title."""
+        self._json("PATCH", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}", {"title": title},
+                   timeout=timeout)
+
     def run_to_completion(self, prompt: str, idem_key: str, session_id: str | None = None) -> tuple[str, str]:
         """Start a run and wait for its terminal event: (status, output). Used for background jobs."""
         run_id = self.start_run(prompt, idem_key, session_id)
