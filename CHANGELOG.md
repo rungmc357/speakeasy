@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.27 — Names that fit, and a board that stays cleared
+
+- **Follow-ups are named after the task they answer**, never an unrelated earlier task or the chat thread's name. Names never include your name or the assistant's, and obvious mishearings are fixed ("a good sleeper… a premium speaker" becomes "Find a premium speaker for the office").
+- **Cleared tasks stay cleared**, including ones with an email draft waiting.
+- Apps: no more "Work unavailable: cancelled" when the board refreshes, and old tasks no longer come back after you clear the list.
+
 ## Plugin 0.3.26 — Calls that let you finish, and real job names
 
 - **It lets you finish.** Results, questions and updates wait for a real pause; a thought that trails off isn't sent until you say so ("Want me to send that?").
