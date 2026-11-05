@@ -231,6 +231,8 @@ public struct WorkInfo: Equatable, Sendable {
     public var hero: JobHero?
     /// Helpers it started (servers with `job_subagents`; JobSubagents.swift), oldest first.
     public var subagents: [JobSubagent] = []
+    /// The Hermes session its conversation lives in (servers with `history`): "Show full session".
+    public var sessionID: String?
 
     /// The receipt for one "You added: …" step, if the api sent one.
     public func followUp(forStep text: String) -> FollowUp? { followUps.last { $0.milestone == text } }
@@ -290,6 +292,7 @@ public struct WorkInfo: Equatable, Sendable {
         summary = nonEmpty(object["summary"])
         emailDrafts = EmailDraft.list(json: object["email_drafts"])
         job = JobRef(json: object["job"])
+        sessionID = nonEmpty(object["session_id"])
         setAside = object["set_aside"] as? Bool ?? false
         seen = object["seen"] as? Bool ?? false
         carried = object["carried"] as? Bool ?? false

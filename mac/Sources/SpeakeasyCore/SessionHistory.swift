@@ -179,6 +179,27 @@ public struct HistorySend: Equatable, Sendable, Identifiable {
     public var isLive: Bool { status == .sending || status == .running || status == .needsYou }
 }
 
+/// An approval one of the session's Speakeasy tasks waits on (`approvals`).
+public struct HistoryApproval: Equatable, Sendable, Identifiable {
+    public var runID: String
+    public var description: String
+    public var choices: [String]
+    public var id: String { runID }
+    public init(runID: String, description: String, choices: [String]) {
+        self.runID = runID; self.description = description; self.choices = choices
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let run = nonEmpty(o["run_id"]) else { return nil }
+        let choices = (o["choices"] as? [Any] ?? []).compactMap { nonEmpty($0) }.filter { ["once", "session", "deny"].contains($0) }
+        self.init(runID: run, description: nonEmpty(o["description"]) ?? "Hermes needs your OK to continue.",
+                  choices: choices.isEmpty ? ["once", "deny"] : choices)
+    }
+    /// Button title for a choice.
+    public static func label(_ choice: String) -> String {
+        switch choice { case "once": return "Approve"; case "session": return "Approve for this task"; default: return "Deny" }
+    }
+}
+
 /// `GET /voice/history/{session_id}`.
 public struct HistoryConversation: Equatable, Sendable {
     public enum SendVia: String, Equatable, Sendable { case task, sessionJob = "session_job", hermes }
@@ -194,13 +215,14 @@ public struct HistoryConversation: Equatable, Sendable {
     /// Its Speakeasy tasks, newest first, with their cards (approvals, questions) and helpers.
     public var jobs: [WorkInfo]
     public var sends: [HistorySend]
+    public var approvals: [HistoryApproval]
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .hermes, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
-                jobs: [WorkInfo] = [], sends: [HistorySend] = []) {
+                jobs: [WorkInfo] = [], sends: [HistorySend] = [], approvals: [HistoryApproval] = []) {
         self.id = id; self.title = title; self.source = source; self.sourceLabel = sourceLabel; self.state = state
         self.sendVia = sendVia; self.entries = entries; self.hasMore = hasMore; self.before = before
-        self.jobs = jobs; self.sends = sends
+        self.jobs = jobs; self.sends = sends; self.approvals = approvals
     }
 
     public init?(json: Any?) {
@@ -213,13 +235,13 @@ public struct HistoryConversation: Equatable, Sendable {
                   entries: (o["entries"] as? [Any] ?? []).compactMap(HistoryEntry.init(json:)),
                   hasMore: o["has_more"] as? Bool ?? false, before: (o["before"] as? NSNumber)?.intValue,
                   jobs: (o["jobs"] as? [Any] ?? []).compactMap(WorkInfo.init(json:)),
-                  sends: (o["sends"] as? [Any] ?? []).compactMap(HistorySend.init(json:)))
+                  sends: (o["sends"] as? [Any] ?? []).compactMap(HistorySend.init(json:)),
+                  approvals: (o["approvals"] as? [Any] ?? []).compactMap(HistoryApproval.init(json:)))
     }
 
-    /// Jobs waiting on the user: an approval, or a question card not set aside.
-    public var waitingJobs: [WorkInfo] {
-        jobs.filter { ($0.status == "waiting_for_approval" || ($0.status == "completed" && $0.decision != nil))
-            && !$0.setAside && !$0.isTerminalFailure }
+    /// Jobs whose question (a decision card) waits on the user; approvals are in `approvals`.
+    public var waitingQuestions: [WorkInfo] {
+        jobs.filter { $0.status == "completed" && $0.decision != nil && !$0.setAside }
     }
     public var isWorking: Bool { state == .running || sends.contains(where: \.isLive) }
 
@@ -227,10 +249,6 @@ public struct HistoryConversation: Equatable, Sendable {
         let id = sessionID.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_."))) ?? sessionID
         return "/voice/history/\(id)" + (before.map { "?before=\($0)" } ?? "")
     }
-}
-
-private extension WorkInfo {
-    var isTerminalFailure: Bool { status == "failed" || status == "cancelled" }
 }
 
 /// `POST /voice/history/{session_id}/message`.

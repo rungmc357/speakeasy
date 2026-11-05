@@ -425,6 +425,11 @@ public final class ServerClient: @unchecked Sendable {
         return parsed
     }
 
+    /// Answer the approval one of the session's Speakeasy tasks waits on (`once`, `session`, `deny`).
+    public func answerSessionApproval(sessionID: String, runID: String, choice: String) async throws {
+        _ = try await post(HistoryConversation.path(sessionID) + "/approval", ["run_id": runID, "choice": choice])
+    }
+
     /// Answer the approval or question a message sent through Hermes is waiting on.
     public func answerSend(sessionID: String, sendID: String, choice: String) async throws {
         _ = try await post(HistoryConversation.path(sessionID) + "/sends/\(sendID)/answer", ["choice": choice])
