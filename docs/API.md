@@ -771,6 +771,42 @@ environment values, emails and query strings are removed and paths are shortened
 name. Updates are saved at most once a second per task (immediately when the run ends) and kept with
 the task, so reopening the app shows the same feed.
 
+## Helpers a task started
+
+Capability `job_subagents`. When a task's Hermes run hands part of its work to helpers (Hermes
+`delegate_task` subagents), its work object carries `subagents`, oldest first. The field is missing when
+the task started none; hide the section then. A helper never changes a task's status or where it ran.
+
+```json
+"subagents": [
+  {"id": "sa-0-1a2b3c4d", "title": "Compare the shops' return policies", "status": "done",
+   "goal": "Compare the return policies of the three shops…", "started_at": 1793890304.7,
+   "ended_at": 1793890391.2, "summary": "Shop B has the longest return window (60 days).",
+   "tool_count": 9, "steps_total": 9},
+  {"id": "sa-1-5e6f7a8b", "title": "Find the cheapest parcel shipping", "status": "running",
+   "started_at": 1793890304.8, "now": "Searched the web for “parcel rates”", "steps_total": 4},
+  {"id": "s3", "title": "Check island delivery", "status": "failed", "summary": "The page did not load.",
+   "note": "…", "depth": 2, "parent_id": "sa-0-1a2b3c4d"}
+]
+```
+
+- `id` is stable for the task's life. `title` is a 4–8 word name (a word-cut of the goal at once, then the
+  task titler's name, same rules as a task's). `status` is `running`, `done`, `failed` or `stopped`.
+- `now` (running only) is its latest step in plain words. `summary` is its answer (≤ 500 characters,
+  redacted) once it ends; `note` says why it stopped without one ("Stopped with the task",
+  "It ended without an answer", "No word back from this helper").
+- `depth`/`parent_id` mark a helper started by another helper. `goal`, `model`, `tool_count`,
+  `started_at`/`ended_at` (epoch seconds) are each present only when known.
+- `GET /voice/work/{run_id}` adds each helper's own `activity` (its steps, the same item shape as the
+  task's `activity`, with `tool`/`args`/`result` previews) and `touched`. The live stream (`work.list`,
+  `state` events) carries the rows without steps, so it stays small: open the task to get them.
+
+Where it comes from: the run's `subagent.start`/`subagent.complete` events, and each helper's own
+session transcript in Hermes (read-only, about once a second) for its steps, and for finding helpers of a
+task that has no event stream (a chat-thread task). A helper that never reports is settled from its
+transcript once its session closes, or marked `stopped` when the task ended and it has been quiet 15 minutes.
+A running helper stops with a task that was stopped or failed.
+
 ## Card actions
 
 Capability `card_actions`. Cards (entries of `result.views`) may carry buttons:
@@ -1184,7 +1220,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`
@@ -1219,7 +1255,8 @@ hide the matching controls and keep the old behaviour.
   "input_text": true,
   "version": "0.2.0",
   "capabilities": {"card_actions": true, "job_progress": true, "spoken_choices": true, "summary_points": true,
-                   "task_messages": true, "input_text": true, "job_activity": true, "tool_log": true}
+                   "task_messages": true, "input_text": true, "job_activity": true, "tool_log": true,
+                   "job_subagents": true}
 }
 ```
 

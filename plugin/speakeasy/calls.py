@@ -37,6 +37,7 @@ from . import session_titles
 from . import quick as quick_mod
 from . import views as views_mod
 from . import activity as activity_mod
+from . import subagents as subagents_mod
 from . import attachments as A
 from .attachments import Attachment, CallAttachments
 from .hermes_api import HermesError, user_content
@@ -4250,6 +4251,8 @@ class SidebandWorker:
         def on_event(event: dict[str, Any]) -> None:
             if backend.status in TERMINAL:
                 return
+            if subagents_mod.watches_helpers(event):
+                self.follow_helpers(backend, session_of, loop)
             try:
                 saved = activity_mod.observe(self.store, backend.idem_key, event, on_flush=self.publish)
             except Exception:
@@ -4265,6 +4268,33 @@ class SidebandWorker:
             activity_mod.observe(self.store, backend.idem_key, event, on_flush=self.publish)
         except Exception:
             logger.debug("speakeasy: activity update failed", exc_info=True)
+        if subagents_mod.watches_helpers(event):
+            key = backend.idem_key
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            self.follow_helpers(backend, lambda: self.store.session_for(key), loop)
+
+    def follow_helpers(self, backend: BackendRun, session_of: Callable[[], str | None],
+                       loop: asyncio.AbstractEventLoop | None) -> None:
+        """The task started helpers (delegate_task): follow each one's own transcript into its steps
+        and settle the ones that never report (subagents.py). Display only: never routing or status."""
+        def publish_soon() -> None:
+            if loop is not None and not loop.is_closed():
+                loop.call_soon_threadsafe(self.publish)
+
+        titler = self.rt.title_call or router.smart_title
+        names = self.names
+
+        def title(goal: str) -> str | None:  # the same titler (and rules) as a task's own name
+            return self._titled(titler, text_mod.title_input(goal, names=(names.user_name, names.assistant_name)))
+
+        try:
+            subagents_mod.ensure_watch(self.store, backend.idem_key, self.rt.state_db, session_of,
+                                       on_flush=publish_soon, titler=title)
+        except Exception:
+            logger.debug("speakeasy: helper watch failed to start", exc_info=True)
 
     def _see_images(self, backend: BackendRun, event: dict[str, Any]) -> None:
         """Live view: remember the latest image the task produced or is looking at. Sources are the

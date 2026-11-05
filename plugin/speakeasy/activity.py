@@ -653,22 +653,31 @@ class JobActivity:
                 self._add("think", "Thinking it over", now)
                 changed = True
         elif kind == "subagent.start":
+            from . import subagents as S
+            sub = S.on_start(self.state, event, now)
             goal = plain(event.get("goal") or event.get("preview"), DETAIL_CHARS)
-            self._add("tool", "Handed part of the work to a helper", now, detail=goal, status="running",
-                      tool="subagent", raw_tool="delegate_task",
-                      args=preview_block(event.get("goal") or event.get("preview"), ARGS_CHARS))
+            if not self._find_running(f"sub:{sub['id']}", None):
+                self._add("tool", "Handed part of the work to a helper", now, detail=sub.get("title") or goal,
+                          status="running", call_id=f"sub:{sub['id']}", tool="subagent", raw_tool="delegate_task",
+                          args=preview_block(event.get("goal") or event.get("preview"), ARGS_CHARS))
             changed = True
         elif kind == "subagent.complete":
-            item = self._find_running(None, "subagent")
+            from . import subagents as S
+            sub = S.on_complete(self.state, event, now)
+            item = self._find_running(f"sub:{sub['id']}", None) or self._find_running(None, "subagent")
             if item is not None:
-                item["status"] = "failed" if str(event.get("status") or "").lower() in {"failed", "error"} else "done"
+                item["status"] = "failed" if sub.get("status") == "failed" else "done"
                 item["ended_at"] = round(now, 3)
-                changed = True
+            changed = True
         elif kind == "approval.request":
             self._add("message", "Asked for your approval", now)
             changed = True
         elif isinstance(kind, str) and kind.startswith("run."):
             end = kind[4:]
+            if end in {"completed", "failed", "cancelled", "stopped", "interrupted"} and \
+                    ("subagents" in self.state or self.state.get("helpers_watched")):
+                from . import subagents as S
+                S.on_run_end(self.state, end, now)
             for item in self.state["items"]:
                 if item["status"] == "running":
                     item["status"] = _status_for(end)
@@ -724,6 +733,7 @@ def public(state: dict[str, Any] | None, *, detail: bool = False) -> dict[str, A
     ``activity_total``, how many items the task has kept."""
     if not isinstance(state, dict) or state.get("v") != 1:
         return {}
+    full = detail
     out: dict[str, Any] = {}
     kept = (state.get("items") or [])[-MAX_ACTIVITY:]
     shown = kept if detail else kept[-MAX_STREAM_ACTIVITY:]
@@ -751,6 +761,11 @@ def public(state: dict[str, Any] | None, *, detail: bool = False) -> dict[str, A
     shown = hero(state)
     if shown:
         out["hero"] = shown
+    if state.get("subagents"):
+        from . import subagents as S
+        helpers = S.public(state, detail=full)
+        if helpers:
+            out["subagents"] = helpers
     return out
 
 

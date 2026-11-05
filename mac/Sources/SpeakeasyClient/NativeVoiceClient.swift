@@ -242,6 +242,11 @@ public final class NativeVoiceClient: VoiceCallClient {
             guard let self, !self.previewMode, let api = self.api else { return nil }
             return try? await api.work(runID: runID)?.activity
         }
+        model.loadSubagents = { [weak self] runID in
+            // The task's helpers with each one's steps (`job_subagents`); nothing in preview mode.
+            guard let self, !self.previewMode, let api = self.api else { return nil }
+            return try? await api.work(runID: runID)?.subagents
+        }
         model.loadLiveImage = { [weak self] runID in
             guard let self, let api = self.api else { return nil }
             return try? await api.liveImage(runID: runID)

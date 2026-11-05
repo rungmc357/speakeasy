@@ -803,14 +803,14 @@ struct LiveJobBlock: View {
         let running = !info.isTerminal
         if wide {
             HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 14) { picture(info, running); findings(info, running); plan(info, running) }
+                VStack(alignment: .leading, spacing: 14) { picture(info, running); findings(info, running); helpers(info); plan(info, running) }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 VStack(alignment: .leading, spacing: 14) { calls(info, running); touched(info) }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         } else {
             VStack(alignment: .leading, spacing: 14) {
-                picture(info, running); findings(info, running); calls(info, running); touched(info); plan(info, running)
+                picture(info, running); findings(info, running); helpers(info); calls(info, running); touched(info); plan(info, running)
             }
         }
     }
@@ -827,6 +827,10 @@ struct LiveJobBlock: View {
     }
     @ViewBuilder private func calls(_ info: WorkInfo, _ running: Bool) -> some View {
         if !info.activity.isEmpty { ToolCallsCard(job: job, items: info.activity, running: running, model: model) }
+    }
+    /// The helpers it started (`job_subagents`): none, no section.
+    @ViewBuilder private func helpers(_ info: WorkInfo) -> some View {
+        if !info.subagents.isEmpty { HelpersCard(job: job, info: info, model: model) }
     }
     @ViewBuilder private func touched(_ info: WorkInfo) -> some View {
         if !info.touched.isEmpty { TouchedChipsView(items: info.touched, model: model) }
