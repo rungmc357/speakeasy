@@ -156,8 +156,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.end_headers()
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError):
+            # The app gave up waiting (its request timeout) before the reply was ready: say how long it
+            # took, once, instead of a traceback (these were the 16:25-16:33 history "failures").
+            took = time.monotonic() - getattr(self, "_started_at", time.monotonic())
+            logger.info("speakeasy: %s %s: the client hung up before the reply (%.1f s)", self.command,
+                        self.route, took)
+            self.close_connection = True
 
     def _body(self, limit: int = MAX_BODY) -> dict[str, Any]:
         try:
@@ -293,6 +301,7 @@ class Handler(BaseHTTPRequestHandler):
     def parse_request(self) -> bool:  # type: ignore[override]
         """Refuse a request for a host name this server doesn't publish (DNS rebinding, a stray
         tunnel): enforced whenever a tunnel is on, since then the server is on the public internet."""
+        self._started_at = time.monotonic()
         if not super().parse_request():
             return False
         settings = self.service.settings.get()
@@ -387,6 +396,53 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
             return
 
+    def _history_events(self) -> None:
+        """``GET /voice/history/events``: the device-wide live feed (session_updated, session_archived,
+        decision_resolved, history_changed), resumable with Last-Event-ID; a ``reset`` event tells the
+        client to reload everything (it missed some). Heartbeat as on the call stream."""
+        feed = self.service.history_events
+        try:
+            cursor = int(self.headers.get("Last-Event-ID", ""))
+        except ValueError:
+            cursor = -1
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        feed.opened()
+        try:
+            with feed.cond:
+                if cursor < 0 or feed.since(cursor) is None:
+                    first = [(feed.seq, "reset", {})]
+                    cursor = feed.seq
+                else:
+                    first = []
+            for seq, kind, payload in first:
+                self._sse(seq, kind, payload)
+            last_write = time.monotonic()
+            while True:
+                with feed.cond:
+                    remaining = self.heartbeat_s - (time.monotonic() - last_write)
+                    feed.cond.wait_for(lambda: feed.seq > cursor, timeout=max(0.0, remaining))
+                    batch = feed.since(cursor)
+                    if batch is None:
+                        batch = [(feed.seq, "reset", {})]
+                for seq, kind, payload in batch:
+                    self._sse(seq, kind, payload)
+                    cursor = max(cursor, seq)
+                    last_write = time.monotonic()
+                if time.monotonic() - last_write >= self.heartbeat_s:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+                    last_write = time.monotonic()
+        except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+            return
+        finally:
+            feed.closed()
+
     # -- routes -------------------------------------------------------------------------------
     def do_GET(self) -> None:
         path = self.route
@@ -455,6 +511,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.routing_models(provider))
             elif work:
                 self._reply(200, self.service.work(work.group(1)))
+            elif path == "/voice/history/events":
+                self._history_events()
             elif path == "/voice/history":
                 self._reply(200, self.service.history(self._query()))
             elif history_one:
@@ -516,6 +574,11 @@ class Handler(BaseHTTPRequestHandler):
                 # By session id only: never the call router (docs/API.md "History").
                 self._reply(200, self.service.history_message(unquote(history_message.group(1)), self._body(),
                                                                      device_id))
+                return
+            history_act = re.fullmatch(rf"/voice/history/{_SESSION}/(rename|pin|archive|read)", path)
+            if history_act:
+                self._reply(200, self.service.history_action(unquote(history_act.group(1)), history_act.group(2),
+                                                             self._body()))
                 return
             history_approval = re.fullmatch(rf"/voice/history/{_SESSION}/approval", path)
             if history_approval:

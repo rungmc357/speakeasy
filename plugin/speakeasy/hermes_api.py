@@ -267,6 +267,11 @@ class HermesAPI:
         self._json("PATCH", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}", {"title": title},
                    timeout=timeout)
 
+    def patch_session(self, session_id: str, fields: dict[str, Any], timeout: float = 5) -> None:
+        """Hermes' own ``PATCH /api/sessions/{id}`` (title, archived, pinned): the change every Hermes app
+        shows (the desktop sidebar, the CLI's session list). HermesError on refusal."""
+        self._json("PATCH", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}", dict(fields), timeout=timeout)
+
     def run_to_completion(self, prompt: str, idem_key: str, session_id: str | None = None) -> tuple[str, str]:
         """Start a run and wait for its terminal event: (status, output). Used for background jobs."""
         run_id = self.start_run(prompt, idem_key, session_id)

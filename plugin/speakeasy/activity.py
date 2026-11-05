@@ -166,15 +166,21 @@ def preview_block(value: Any, limit: int) -> str | None:
         except (TypeError, ValueError):
             return None
     lines: list[str] = []
-    for raw in value.replace("\r", "").split("\n")[: BLOCK_LINES * 4]:
+    shown = 0
+    for raw in value.replace("\r", "").split("\n", BLOCK_LINES * 4)[: BLOCK_LINES * 4]:
+        if shown > limit:
+            break  # already past what is shown: redacting more (a long tool result) only costs time
         indent = min(len(raw) - len(raw.lstrip(" \t")), 8)
-        line = redact(raw)
+        # Only what can be shown, with a wide margin so a secret straddling the cut is still matched
+        # whole by the redactor (it then never shows past the final cut either).
+        line = redact(raw[: limit + 512])
         if not line:
             continue
         probe = re.sub(r"\s*[=:]\s*…", " ", line)
         if SENSITIVE_TEXT_RE.search(probe) or URL_SECRET_RE.search(probe):
             line = "…"
         lines.append(" " * indent + line)
+        shown += len(lines[-1]) + 1
         if len(lines) >= BLOCK_LINES:
             break
     text = "\n".join(lines).strip("\n")

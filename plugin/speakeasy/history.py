@@ -74,6 +74,67 @@ _USER_LINE = re.compile(r"^(?:\[[^\]]{1,40}\]\s*)?(?:User|You)\s*:\s*(.+)$", re.
 _ADDED = re.compile(r"^\S+ just added to this task (?:by voice|by typing)?:?\s*(.+?)(?: Fold it into the work.*)?$", re.S)
 
 
+# -- what a message shows: never Speakeasy's own plumbing ----------------------------------------
+# A task's machine blocks (```speakeasy-question / -views ...): the app draws them as cards.
+_MACHINE_BLOCK = re.compile(r"(?s)\n?```speakeasy-[\w-]+[ \t]*\n.*?(?:\n```|\Z)")
+# A relayed voice request written into a chat: "[sender] [Voice request from Geo, relayed by Speakeasy] <words>".
+_RELAYED = re.compile(r"^\s*(?:\[[^\]\n]{1,60}\]\s*)?\[Voice request from [^\]\n]{1,60}\]\s*", re.I)
+_RELAY_TAIL = re.compile(r"\n\s*\n\s*(?:Begin your reply with exactly one line|Recent voice conversation for context)", re.I)
+# The note Speakeasy adds to a request: "(Geo is looking at: Find previous sessions)", "(following up: ...)".
+_LOOKING_AT = re.compile(r"\s*\((?:[^():\n]{0,40}\bis looking at|following up)\s*:[^\n]*\)\s*$", re.I | re.M)
+# The echo line a relayed request asks for: "Voice: <the request>" first.
+_VOICE_LINE = re.compile(r"^\s*Voice:[^\n]*(?:\n+|$)")
+_STATUS = re.compile(r"(?im)^[ \t]*STATUS:[ \t]*(.+?)[ \t]*$")
+_DETAIL = re.compile(r"(?im)^[ \t]*DETAIL:[ \t]*(.+?)[ \t]*$")
+_MD_MARKS = re.compile(r"(\*\*|__|~~|`+)")
+_MD_LEAD = re.compile(r"(?m)^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d{1,2}[.)]\s+)")
+_MD_LINK = re.compile(r"!?\[([^\]\n]{1,200})\]\([^)\s]{1,500}\)")
+
+
+def assistant_text(text: str) -> str:
+    """An assistant message as shown: no machine blocks (question/views JSON), no "Voice: …" echo line,
+    a progress note (STATUS:/DETAIL:) as its plain words."""
+    if not isinstance(text, str):
+        return ""
+    out = _MACHINE_BLOCK.sub("", text)
+    status, detail = _STATUS.search(out), _DETAIL.search(out)
+    if status or detail:
+        rest = _DETAIL.sub("", _STATUS.sub("", out)).strip()
+        said = " — ".join(m.group(1).strip().rstrip(".") for m in (status, detail) if m)
+        out = (said + ("\n\n" + rest if rest else "")) if said else rest
+    out = _VOICE_LINE.sub("", out, count=1)
+    return out.strip()
+
+
+def relayed_words(text: str) -> str | None:
+    """The person's own words in a request Speakeasy relayed into a chat, else None."""
+    m = _RELAYED.match(text or "")
+    if not m:
+        return None
+    body = text[m.end():]
+    tail = _RELAY_TAIL.search(body)
+    if tail:
+        body = body[:tail.start()]
+    return _LOOKING_AT.sub("", body).strip()
+
+
+def preview_text(text: str, limit: int = PREVIEW_CHARS) -> str:
+    """One plain line for a list row: no markdown marks, links as their words, no notes."""
+    line = _MD_LINK.sub(r"\1", text or "")
+    line = _MD_LEAD.sub("", line)
+    line = _MD_MARKS.sub("", line)
+    line = _LOOKING_AT.sub("", line)
+    return _one_line(line, limit)
+
+
+def tidy_title(title: str) -> str:
+    """A title as shown: an all-lowercase one ("telegram general") gets a capital first letter."""
+    t = " ".join((title or "").split())
+    if t and t == t.lower() and t[0].isalpha():
+        t = t[0].upper() + t[1:]
+    return t
+
+
 class HistoryError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
@@ -131,12 +192,15 @@ def user_words(content: str) -> tuple[str, str]:
     for pattern, label in _SYSTEM_RES:
         if pattern.search(content[:4000]):
             return "note", label
+    relayed = relayed_words(content[:TEXT_CHARS])
+    if relayed is not None:
+        return ("user", relayed) if relayed else ("note", "Request from Speakeasy")
     if _SPEAKEASY_BRIEF.search(content[:2000]) or (len(content) > 3000 and _USER_LINE.search(content)):
         said = _USER_LINE.findall(content)
         return ("user", said[-1].strip()) if said else ("note", "Task brief from Speakeasy")
     added = _ADDED.match(content.strip())
     if added:
-        return "user", added.group(1).strip()
+        return "user", _LOOKING_AT.sub("", added.group(1)).strip()
     return "user", content
 
 
@@ -155,12 +219,12 @@ def source_label(source: str, display_name: str | None, chat_type: str | None, s
 def _title_from(row: sqlite3.Row, first_user: str | None) -> str:
     title = (row["title"] or "").strip() if "title" in row.keys() else ""
     if title:
-        return _one_line(title, 90)
+        return tidy_title(_one_line(title, 90))
     name = (row["display_name"] or "").strip() if "display_name" in row.keys() else ""
     if name and " / " in name:
-        return _one_line(name.split(" / ")[-1], 90)
+        return tidy_title(_one_line(name.split(" / ")[-1], 90))
     if first_user:
-        return _one_line(first_user, 60)
+        return tidy_title(preview_text(first_user, 60))
     return "Untitled conversation"
 
 
@@ -264,9 +328,9 @@ def _preview(db: sqlite3.Connection, session_id: str) -> tuple[str, str | None]:
         rows = db.execute("SELECT role, content FROM messages WHERE session_id=? AND role IN ('user','assistant') "
                           "AND content IS NOT NULL AND content != '' ORDER BY id DESC LIMIT 6", (session_id,)).fetchall()
         for row in rows:
-            kind, text = user_words(row["content"]) if row["role"] == "user" else ("assistant", row["content"])
+            kind, text = user_words(row["content"]) if row["role"] == "user" else ("assistant", assistant_text(row["content"]))
             if kind != "note" and text.strip():
-                preview = _one_line(redact_text(text))
+                preview = preview_text(redact_text(text))
                 break
         head = db.execute("SELECT content FROM messages WHERE session_id=? AND role='user' AND content IS NOT NULL "
                           "ORDER BY id LIMIT 3", (session_id,)).fetchall()
@@ -304,9 +368,19 @@ def parse_cursor(cursor: str | None) -> tuple[float, str] | None:
 def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", source: str = "",
                   limit: int = PAGE, linked: Callable[[str], Linked | None] = lambda sid: None,
                   speakeasy_ids: Callable[[], set[str]] = set, live: Callable[[str], bool] = lambda sid: False,
+                  folded: Callable[[], dict[str, str]] = dict,
+                  marks: Callable[[], dict[str, dict[str, Any]]] = dict, archived: bool = False,
                   now: float | None = None) -> dict[str, Any]:
     """``GET /voice/history``: conversations newest first, ``limit`` per page; pass ``next_cursor`` back
-    as ``cursor`` for the next page."""
+    as ``cursor`` for the next page.
+
+    *folded*: {session of a linked task: the chat it continues}. A chat continued from Speakeasy stays ONE
+    row: its linked tasks' sessions are never listed on their own, and the chat sorts by its newest
+    activity in either (so a reply from its page moves it to the top instead of adding a row).
+
+    *marks*: {session: {pinned, read_at}} (the plugin's, shared by every device): rows carry ``pinned``
+    and ``unread``; the first page lists pinned rows first. *archived*: list only archived conversations
+    (Hermes' own ``archived`` flag, set by any Hermes app)."""
     after = parse_cursor(cursor)
     now = time.time() if now is None else now
     limit = max(1, min(int(limit or PAGE), MAX_PAGE))
@@ -318,9 +392,16 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                 "search": "none" if q else None}
     try:
         cols = _columns(db, "sessions")
+        fold = {k: v for k, v in (folded() or {}).items() if k != v and SAFE_ID_RE.fullmatch(k) and SAFE_ID_RE.fullmatch(v)}
         last = _last_expr(cols)
+        if fold:
+            # The chat's own activity, or its linked tasks' (sessions named inline: ids are SAFE_ID_RE-checked).
+            pairs = ",".join(f"('{src}','{dst}')" for dst, src in fold.items())
+            linked_last = _last_expr(cols).replace("s.", "l.")
+            last = (f"max({last}, coalesce((SELECT max({linked_last}) FROM (VALUES {pairs}) AS f "
+                    f"JOIN sessions l ON l.id = f.column2 WHERE f.column1 = s.id), 0))")
         where = [f"s.source NOT IN ({','.join('?' * len(HIDDEN_SOURCES))})", _flag(cols, "hidden"),
-                 _flag(cols, "archived")]
+                 ("coalesce(s.archived,0)!=0" if "archived" in cols else "1=0") if archived else _flag(cols, "archived")]
         params: list[Any] = list(HIDDEN_SOURCES)
         if "parent_session_id" in cols:
             # The newest segment of a conversation only; children of another source are helpers.
@@ -329,6 +410,9 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                          "WHERE p.id = s.parent_session_id AND p.source = s.source))")
         if "message_count" in cols:
             where.append("(coalesce(s.message_count,0) > 0 OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id))")
+        if fold:
+            where.append(f"s.id NOT IN ({','.join('?' * len(fold))})")
+            params += list(fold)
         mine = speakeasy_ids()
         sources = _source_counts(db, where, params, mine)
         if source == "speakeasy":
@@ -349,6 +433,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             hits, used_fts = _search_ids(db, q)
             search_kind = "fts" if used_fts else "like"
             tips = _tips(db, set(hits))
+            tips = {sid: fold.get(tip, tip) for sid, tip in tips.items()}  # a linked task's hit is its chat's
             snippets = {}
             for sid, tip in tips.items():
                 if hits.get(sid) and not snippets.get(tip):
@@ -362,15 +447,29 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
         if after is not None:
             where.append(f"({last} < ? OR ({last} = ? AND s.id < ?))")
             params += [after[0], after[0], after[1]]
+        marked = marks() or {}
+        pins = sorted((sid for sid, m in marked.items() if m.get("pinned") and SAFE_ID_RE.fullmatch(sid)),
+                      key=lambda sid: -float(marked[sid]["pinned"]))
+        pin_rank = "0"
+        if pins and not archived:
+            # Pinned first (newest pin on top), then everything else by last activity. The cursor
+            # pages only the unpinned rest: every pinned row comes on the first page.
+            pin_rank = "(CASE s.id " + " ".join(f"WHEN '{sid}' THEN {i + 1}" for i, sid in enumerate(pins[:50])) + " ELSE 0 END)"
+            if after is not None:
+                where.append(f"s.id NOT IN ({','.join('?' * len(pins[:50]))})")
+                params += pins[:50]
         display = "s.display_name" if "display_name" in cols else "NULL"
         chat_type = "s.chat_type" if "chat_type" in cols else "NULL"
         title = "s.title" if "title" in cols else "NULL"
         rows = db.execute(f"SELECT s.id, s.source, {title} AS title, {display} AS display_name, {chat_type} AS chat_type, "
-                          f"s.started_at, {last} AS last FROM sessions s WHERE {' AND '.join(where)} "
-                          f"ORDER BY last DESC, s.id DESC LIMIT ?", (*params, limit + 1)).fetchall()
+                          f"s.started_at, {last} AS last, {pin_rank} AS pin FROM sessions s WHERE {' AND '.join(where)} "
+                          f"ORDER BY (pin = 0), pin, last DESC, s.id DESC LIMIT ?", (*params, limit + 1)).fetchall()
         more = len(rows) > limit
         out = []
         tail = rows[limit - 1] if more else None
+        if tail is not None and tail["pin"]:
+            # The page ended inside the pinned rows: the next page starts at the newest unpinned row.
+            tail = {"last": 1e18, "id": "~"}
         for row in rows[:limit]:
             sid = row["id"]
             link = linked(sid)
@@ -386,6 +485,14 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                 "last_activity": round(float(row["last"] or 0), 3), "preview": preview,
                 "state": "needs_you" if link and link.needs_you else ("running" if running else "idle"),
             }
+            mark = marked.get(sid) or {}
+            if row["pin"]:
+                entry["pinned"] = True
+            if archived:
+                entry["archived"] = True
+            read_at = mark.get("read_at")
+            if read_at is not None and float(row["last"] or 0) > float(read_at) + 1 and entry["state"] != "running":
+                entry["unread"] = True
             if link and link.run_ids:
                 entry["run_ids"] = link.run_ids[:5]
             if snippets.get(sid):
@@ -420,6 +527,33 @@ def _source_counts(db: sqlite3.Connection, where: list[str], params: list[Any], 
 
 def _filters() -> list[dict[str, str]]:
     return [{"id": k, "label": FILTER_LABELS[k]} for k in FILTERS]
+
+
+def fingerprint(state_db: Path, session_ids: list[str] | None = None) -> tuple[Any, ...] | None:
+    """A cheap "has anything changed" stamp for cached history replies (indexed lookups only, a few ms
+    on a multi-GB state.db): the newest message row of these sessions (or of all, for the list), and
+    the sessions table's newest row and last activity. None when it can't be read (no caching)."""
+    db = _open(state_db)
+    if db is None:
+        return None
+    try:
+        if session_ids:
+            ids = list(dict.fromkeys(session_ids))[:40]
+            marks = ",".join("?" * len(ids))
+            msg = db.execute(f"SELECT max(id), count(*) FROM messages WHERE session_id IN ({marks})", ids).fetchone()
+            cols = _columns(db, "sessions")
+            extra = ", ".join(c for c in ("title", "archived", "hidden", "last_activity_at") if c in cols) or "id"
+            meta = db.execute(f"SELECT {extra} FROM sessions WHERE id IN ({marks})", ids).fetchall()
+            kids = db.execute(f"SELECT count(*) FROM sessions WHERE parent_session_id IN ({marks})", ids).fetchone() \
+                if "parent_session_id" in cols else (0,)
+            return (tuple(msg), tuple(tuple(r) for r in meta), tuple(kids))
+        msg = db.execute("SELECT max(id) FROM messages").fetchone()
+        sess = db.execute("SELECT max(rowid), count(*) FROM sessions").fetchone()
+        return (tuple(msg), tuple(sess))
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
 
 
 def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
@@ -491,9 +625,10 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
         at = float(row["timestamp"]) if isinstance(row["timestamp"], (int, float)) else None
         calls = row["tool_calls"]
         if role == "assistant" and calls not in (None, "", "[]", "null"):
-            if content.strip():
+            shown = assistant_text(content)
+            if shown:
                 flush()
-                entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(content)})
+                entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(shown)})
             try:
                 parsed = json.loads(calls)
             except ValueError:
@@ -535,9 +670,9 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
             if text.strip():
                 entries.append({"kind": kind, "id": f"m{row['id']}", "at": at,
                                 "text": redact_text(text) if kind == "user" else text})
-        elif role == "assistant" and content.strip():
+        elif role == "assistant" and assistant_text(content):
             flush()
-            entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(content)})
+            entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(assistant_text(content))})
     flush()
     return entries
 
