@@ -41,7 +41,7 @@ DEFAULTS: dict[str, Any] = {
     "delivery": {"target": "none", "new_thread": False, "channels": [], "mode": "home"},
     "continuity": {"enabled": True},
     # A brief spoken update on long tasks. (Where a task went, e.g. a new thread, is always said.)
-    "speech": {"progress": True},
+    "speech": {"progress": True, "narration": "adaptive"},
     "brief": {"auto_refresh": True, "include_recent_voice": True},
     # Instant home control through Home Assistant (offered when Hermes has it set up). entities:
     # the devices it may use (None = not chosen yet: lights, thermostats and fans).
@@ -152,6 +152,10 @@ def validate(settings: dict[str, Any]) -> dict[str, Any]:
         for key in keys:
             if not isinstance(s[group].get(key), bool):
                 raise SettingsError(f"{group}.{key} must be true or false")
+    # "classic" restores the 45/45 news-only narration gate for every call whatever the mic says (a
+    # per-user rollback without a rebuild); "adaptive" adds the guaranteed line while the mic is open.
+    if s["speech"].get("narration") not in {"adaptive", "classic"}:
+        raise SettingsError("speech.narration must be adaptive or classic")
     roots = s["image_roots"]
     if not isinstance(roots, list) or len(roots) > 8 or not all(
             isinstance(r, str) and Path(r).expanduser().is_absolute() for r in roots):

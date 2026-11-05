@@ -457,7 +457,24 @@ SCREENSHOT_STEER = ("The user wants to see what you are looking at. Take a scree
                     "in your next message, then carry on with the task.")
 
 
-def status_rule(names: Names) -> str:
+# Added to the status rule only while the user's mic is open (``Interaction.mic_muted is False``): they are
+# listening, so ask for a pair at a finer grain. Substance only, never timing: the daemon owns the pacing
+# (``maybe_speak_progress``) because a prompt can't see the clock or the call's other tasks.
+MIC_OPEN_NARRATION = (
+    "{user_name_cap} has the mic open and is listening right now, so narrate at a finer grain: write a STATUS/DETAIL "
+    "pair at each meaningful step, each new tool, each new finding, each change of direction, with one short "
+    "sentence of DETAIL each. ")
+
+
+def narration_hint(names: Names, mic_muted: bool | None) -> str:
+    """The mic-aware narration sentence for the status rule: only when the mic is known to be open.
+    Muted and never-reported (None, older clients) get nothing, so their rule stays exactly as before."""
+    return render(MIC_OPEN_NARRATION, names) if mic_muted is False else ""
+
+
+def status_rule(names: Names, mic_muted: bool | None = None) -> str:
+    """``mic_muted`` must be read from the live Interaction when the prompt is built, not cached
+    at task start."""
     return render(
         "{user_name_cap} watches a one-line live status while you work, so keep them company: narrate the thinking, "
         "research and background activity as it happens. Before your first tool call, write interim commentary "
@@ -466,7 +483,9 @@ def status_rule(names: Names) -> str:
         "with specifics: names, numbers, files, sites, e.g. Found three hotels under 200 euros near the port; checking reviews next>. "
         "Write a fresh pair as an interim message, before the tool call that starts each meaningful step, not just the first: "
         "when a subagent or delegate tool call you make in this session starts or returns, when a long operation (a build, "
-        "a big fetch, a search sweep) starts and when it lands, and when your plan changes or something breaks. STATUS always "
+        "a big fetch, a search sweep) starts and when it lands, and when your plan changes or something breaks. ", names) \
+        + narration_hint(names, mic_muted) + render(
+        "STATUS always "
         "starts with an -ing verb, even for something that just finished (Reviewing the build results, not Build finished). "
         "Each DETAIL carries concrete state: what you are reasoning about or looking into, and what any subagent or "
         "long-running tool you started is doing meanwhile, with names, numbers and files, e.g. Kicked off a subagent to "
@@ -484,13 +503,16 @@ def status_rule(names: Names) -> str:
 
 
 def build_task_prompt(names: Names, revision: int, context: str, focus: str | None = None,
-                      delivery_label: str = "", shared: str = "", room: str = "") -> str:
+                      delivery_label: str = "", shared: str = "", room: str = "",
+                      mic_muted: bool | None = None) -> str:
     """Prompt for a voice task running in its own Hermes session, beside other tasks.
 
     The session is private to this task (and its follow-ups), so it names the job and carries the
     call transcript for context. ``shared`` is the block naming what the user shared with this
     request (``shared_block``), never the bytes. A call started from listening mode also carries the
-    room transcript, labeled as background, just before the call transcript that holds the request."""
+    room transcript, labeled as background, just before the call transcript that holds the request.
+    ``mic_muted`` is the call's mic state read from the live Interaction as this prompt is built
+    (None = never reported, treated as muted); an open mic asks for finer-grained narration."""
     where = (f"your final answer is still shown in the Speakeasy app and posted to {delivery_label}"
              if delivery_label else "your final answer is still shown in the Speakeasy app")
     heard = task_room_block(names, room) if room.strip() else ""
@@ -513,7 +535,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
            "Your task is the most recent user request in the transcript below; earlier requests are context and "
            "have their own tasks, so do not redo or cancel their work. ")
         + (shared + " " if shared else "")
-        + status_rule(names) + "\n\n"
+        + status_rule(names, mic_muted) + "\n\n"
         + (heard + "\n\n" if heard else "")
         + f"Recent timestamped voice transcript (revision {revision}):\n{context}"
     )

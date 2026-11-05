@@ -55,7 +55,10 @@ def test_legacy_acknowledge_setting_is_dropped(service):
     raw = json.loads(service.settings.path.read_text())
     raw["speech"]["acknowledge"] = True
     service.settings.path.write_text(json.dumps(raw))
-    assert service.settings.get()["speech"] == {"progress": False}
+    speech = service.settings.get()["speech"]
+    assert "acknowledge" not in speech
+    assert speech["progress"] is False
+    assert speech["narration"] == "adaptive"  # the new default, untouched by the legacy key
 
 
 def test_spoken_lines_can_be_turned_off(server, service, hermes, monkeypatch):

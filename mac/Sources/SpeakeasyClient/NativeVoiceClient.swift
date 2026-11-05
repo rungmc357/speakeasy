@@ -261,12 +261,12 @@ public final class NativeVoiceClient: VoiceCallClient {
         let before = model.state
         let after = reduce(before, event, now: Date())
         model.state = after
-        if after.interactionID != nil, after.interactionID != before.interactionID {
-            postFocus()
-            // Declare the mic on connect too: a call that starts muted (or starts with the mic open
-            // during the connecting listener) must not wait for the first toggle to be understood.
-            reportMicState(after.localAudioEnabled && earlyCapture == nil)
-        }
+        let admitted = after.interactionID != nil && after.interactionID != before.interactionID
+        if admitted { postFocus() }
+        // Narration follows the mic: tell the daemon once when the call connects (a call that starts
+        // muted must not wait for the first toggle) and on every mute/unmute after that. One report
+        // per dispatch even when both happen at once.
+        if admitted || after.mic != before.mic { reportMicState() }
         if after.connection != .connecting, connectWatchdog != nil { connectWatchdog?.cancel(); connectWatchdog = nil }
         applySideEffects(from: before, to: after)
         watchMic(event, from: before, to: after)
@@ -438,12 +438,15 @@ public final class NativeVoiceClient: VoiceCallClient {
         Task { _ = try? await api.post("/voice/interactions/\(id)/focus", body) }
     }
 
-    /// Tell the daemon whether the call's mic is open. Narration cadence follows it — open means a
+    /// Tell the daemon whether the call's mic is muted. Narration cadence follows it — open means a
     /// spoken progress line at least every 45 seconds, muted means the quieter news-only gate. Sent on
-    /// every toggle and once on connect; a lost report only costs a quieter call, so no retries.
-    private func reportMicState(_ open: Bool) {
+    /// every toggle and once on connect; a lost report only costs a quieter call, so no retries and
+    /// nothing surfaced. The value is the user's mute choice (`micMuted`), never the engine's
+    /// momentary gating (the connecting listener holding the mic is not a mute).
+    private func reportMicState() {
         guard !previewMode, let api, let id = model.state.interactionID else { return }
-        Task { _ = try? await api.post("/voice/interactions/\(id)/mic", ["muted": !open]) }
+        let muted = model.state.mic == .muted
+        Task { _ = try? await api.post("/voice/interactions/\(id)/mic", ["muted": muted]) }
     }
 
     private func reportMic(_ note: String) {
@@ -457,9 +460,6 @@ public final class NativeVoiceClient: VoiceCallClient {
             // While the connecting listener still has the mic (you're finishing a sentence), the
             // call's mic stays off so it doesn't hear the end of that sentence a second time.
             engine?.setMicEnabled(new.localAudioEnabled && earlyCapture == nil)
-            // Narration follows the mic: with it open the daemon speaks a progress line at least
-            // every 45 seconds, muted it keeps the quieter gate. One report per toggle, best effort.
-            reportMicState(new.localAudioEnabled && earlyCapture == nil)
         }
         if appliedRemote != new.remoteAudioEnabled {
             appliedRemote = new.remoteAudioEnabled
