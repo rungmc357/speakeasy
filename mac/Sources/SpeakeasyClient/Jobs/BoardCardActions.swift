@@ -25,7 +25,7 @@ public struct BoardCardActions: ViewModifier {
             .onHover { hover = $0 }
             .overlay(alignment: .topTrailing) {
                 if hoverDismiss && hover && canDismiss {
-                    DismissAnswerButton(name: job.name) { model.dismissFromBoard(job) }
+                    DismissAnswerButton(name: job.name) { model.dismissFromBoardWithUndo(job) }
                         .padding(4)
                         .transition(.opacity)
                 }
@@ -33,14 +33,14 @@ public struct BoardCardActions: ViewModifier {
             .contextMenu {
                 Button("Open") { model.onOpenJob(job.id) }
                 if canDismiss {
-                    Button("Dismiss") { model.dismissFromBoard(job) }
+                    Button("Dismiss") { model.dismissFromBoardWithUndo(job) }
                 }
                 if stop != nil {
                     Divider()
                     Button("Stop…", role: .destructive) { confirmStop = true }
                 }
             }
-            .accessibilityAction(named: "Dismiss") { if canDismiss { model.dismissFromBoard(job) } }
+            .accessibilityAction(named: "Dismiss") { if canDismiss { model.dismissFromBoardWithUndo(job) } }
             .confirmationDialog("Stop \(job.name)?", isPresented: $confirmStop, titleVisibility: .visible) {
                 Button("Stop", role: .destructive) { if let run = model.stoppableRun(job) { model.onStopTask(run) } }
             } message: {

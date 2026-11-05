@@ -385,6 +385,12 @@ public final class VoicePanelModel: ObservableObject {
         if !hiddenRunning.isEmpty {
             s.running.removeAll { job in job.activeTask.map { hiddenRunning[job.id] == $0.id } ?? false }
         }
+        if !hiddenJobs.isEmpty {
+            s.needsYou.removeAll { hiddenJobs.contains($0.id) }
+            s.newAnswers.removeAll { hiddenJobs.contains($0.id) }
+            s.running.removeAll { hiddenJobs.contains($0.id) }
+            s.doneToday.removeAll { hiddenJobs.contains($0.id) }
+        }
         return s
     }
     /// Answers the user opened (run ids, oldest first). Kept across launches, like closed cards:
@@ -435,6 +441,81 @@ public final class VoicePanelModel: ObservableObject {
             return true
         }
     }
+
+    // MARK: Dismiss with Undo (touch)
+
+    /// Whether the board holds a dismissal for `undoWindow` before telling the server (the iPhone
+    /// app shows an Undo toast meanwhile). The Mac dismisses at once.
+    public var holdsDismissalsForUndo = false
+    /// A dismissal was held: show Undo (job, then the undo to run).
+    public var onBoardDismissHeld: (Job, @escaping () -> Void) -> Void = { _, _ in }
+    /// Finished or failed jobs dismissed but still inside the undo window: off the board meanwhile.
+    @Published public private(set) var hiddenJobs: Set<String> = []
+    /// Held dismissals (job id → what's sent when the window ends, and what Undo puts back).
+    private var heldDismissals: [String: (commit: () -> Void, undo: () -> Void)] = [:]
+
+    /// The board's Dismiss on touch: the card leaves at once (a new answer moves to Done today, a
+    /// running job is hidden, a decision is set aside, a finished job leaves the board) and the
+    /// server is told after `undoWindow` unless Undo is tapped. Without `holdsDismissalsForUndo`
+    /// it is `dismissFromBoard`. False when there is nothing to dismiss.
+    @discardableResult
+    public func dismissFromBoardWithUndo(_ job: Job) -> Bool {
+        guard canDismissFromBoard(job) else { return false }
+        guard holdsDismissalsForUndo else { return dismissFromBoard(job) }
+        let id = job.id
+        var commit: () -> Void = {}
+        var undo: () -> Void = {}
+        switch job.stage {
+        case .needsYou:
+            guard let task = setAsideTarget(job), let run = task.info.runID else { return false }
+            setAsideTasks.insert(task.id)
+            commit = { [weak self] in self?.onSetAside(run) }
+            undo = { [weak self] in self?.setAsideTasks.remove(task.id) }
+        case .running:
+            guard let task = job.activeTask else { return false }
+            hiddenRunning[id] = task.id
+            undo = { [weak self] in self?.hiddenRunning[id] = nil }
+        case .done where job.newTask != nil && boardSections.newAnswers.contains { $0.id == id }:
+            let key = job.newTask.map(JobBoard.seenKey)
+            markAnswerSeen(job)
+            let look = job.lookTask?.info.runID
+            commit = { [weak self] in if let look { self?.onDismissReview(look) } }
+            undo = { [weak self] in if let key { self?.seenAnswers.removeAll { $0 == key } } }
+        case .done, .failed:
+            let runs = job.tasks.filter(\.isSettled).compactMap(\.info.runID)
+            guard !runs.isEmpty else { return false }
+            let look = job.lookTask?.info.runID
+            hiddenJobs.insert(id)
+            commit = { [weak self] in
+                if let look { self?.onDismissReview(look) }
+                self?.onDismissTasks(runs)
+                self?.hiddenJobs.remove(id)
+            }
+            undo = { [weak self] in self?.hiddenJobs.remove(id) }
+        }
+        heldDismissals[id] = (commit, undo)
+        onBoardDismissHeld(job) { [weak self] in self?.undoDismissal(id) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.undoWindow) { [weak self] in self?.commitDismissal(id) }
+        return true
+    }
+
+    /// Undo a held dismissal: the card comes back where it was; nothing reaches the server.
+    public func undoDismissal(_ jobID: String) {
+        heldDismissals.removeValue(forKey: jobID)?.undo()
+    }
+
+    /// Send a held dismissal now (its window ended, or the app is leaving the foreground).
+    public func commitDismissal(_ jobID: String) {
+        heldDismissals.removeValue(forKey: jobID)?.commit()
+    }
+
+    /// Send every held dismissal now (the app is going to the background).
+    public func commitHeldDismissals() {
+        for id in Array(heldDismissals.keys) { commitDismissal(id) }
+    }
+
+    /// Whether a dismissal of this job is waiting out its undo window.
+    public func isDismissalHeld(_ jobID: String) -> Bool { heldDismissals[jobID] != nil }
 
     /// Whether the board can dismiss this job's card (an email draft waits for Send / Deny).
     public func canDismissFromBoard(_ job: Job) -> Bool {

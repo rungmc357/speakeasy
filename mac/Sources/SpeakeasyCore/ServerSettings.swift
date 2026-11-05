@@ -403,6 +403,8 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     /// Chat platforms where a task can open a new thread (e.g. discord, telegram).
     public var threadPlatforms: [String]?
     public var continuityEnabled: Bool?
+    /// Instant home control (Home Assistant) is on for this Hermes; nil from plugins that don't say.
+    public var homeControlEnabled: Bool?
     /// The model task routing uses (Hermes auxiliary task speakeasy_router), and how to change it.
     public var routingModel: String?
     public var routingHint: String?
@@ -443,6 +445,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         case apiKeySet = "api_key_set", briefState = "brief_state", hermesAPIOK = "hermes_api_ok", version
         case threadsSupported = "threads_supported", voiceReady = "voice_ready"
         case threadsReason = "threads_reason", threadPlatforms = "thread_platforms", continuityEnabled = "continuity_enabled"
+        case homeControlEnabled = "home_control_enabled"
         case routingModel = "routing_model", routingHint = "routing_hint", routingChoice = "routing_choice"
         case routingExplainer = "routing_explainer"
         case advertisedURL = "advertised_url", tailscaleName = "tailscale_name"
@@ -474,6 +477,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         threadsReason = try? c.decodeIfPresent(String.self, forKey: .threadsReason)
         threadPlatforms = try? c.decodeIfPresent([String].self, forKey: .threadPlatforms)
         continuityEnabled = try? c.decodeIfPresent(Bool.self, forKey: .continuityEnabled)
+        homeControlEnabled = try? c.decodeIfPresent(Bool.self, forKey: .homeControlEnabled)
         routingModel = try? c.decodeIfPresent(String.self, forKey: .routingModel)
         routingHint = try? c.decodeIfPresent(String.self, forKey: .routingHint)
         routingChoice = try? c.decodeIfPresent(RoutingChoices.self, forKey: .routingChoice)

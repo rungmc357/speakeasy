@@ -200,6 +200,16 @@ final class MultitaskTests: XCTestCase {
         XCTAssertNil(older.roomListening, "older plugins reject unknown session fields: never send room to them")
     }
 
+    /// The phone's "Try saying" home lines follow the plugin's `home_control_enabled`.
+    func testStatusSaysWhetherHomeControlIsOn() throws {
+        let on = try JSONDecoder().decode(ServerStatus.self, from: Data(#"{"home_control_enabled":true}"#.utf8))
+        XCTAssertEqual(on.homeControlEnabled, true)
+        let off = try JSONDecoder().decode(ServerStatus.self, from: Data(#"{"home_control_enabled":false}"#.utf8))
+        XCTAssertEqual(off.homeControlEnabled, false)
+        let older = try JSONDecoder().decode(ServerStatus.self, from: Data(#"{"version":"0.2.10"}"#.utf8))
+        XCTAssertNil(older.homeControlEnabled, "a plugin that doesn't say: no home lines")
+    }
+
     func testPauseShortcutDefaultIsValidAndDistinct() {
         XCTAssertEqual(KeyShortcut.defaultPause.display, "⌃⌥P")
         XCTAssertEqual(KeyShortcut.parse("ctrl+opt+p"), .success(.defaultPause))
