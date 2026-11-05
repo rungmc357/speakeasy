@@ -62,6 +62,8 @@ used in the tests (timestamps and IDs will differ).
 | GET | `/voice/history/{session_id}` | device | One session: messages, collapsed tool calls, its Speakeasy jobs and approvals |
 | POST | `/voice/history/{session_id}/message` | device | Send typed or voice-message text to that session, by id (never routed) |
 | POST | `/voice/history/{session_id}/approval` | device | Answer the approval one of the session's Speakeasy tasks waits on (no call needed) |
+| GET | `/voice/models` | device | Hermes' models, the default and the fast/smart presets (`model_choice`, "Models") |
+| PUT | `/voice/history/{session_id}/model` | device | Use a model / reasoning level for this chat ("Models") |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
 | GET | `/voice/titles` | device | Past tasks still under their stand-in title: what the app's Apple Intelligence sweep may rename |
 | POST | `/voice/titles` | device | Set one task's title (from the app's on-device titler); the job's name follows |
@@ -1053,6 +1055,76 @@ this session) waits on, through the worker holding it (the open call's, or the v
 way the voice does. `200 {"ok": true, "choice": "once"}`; `400` bad choice or not offered, `404` not a
 task of this session, `409` nothing waiting, `502` Hermes refused.
 
+## Models
+
+With capability `model_choice`, each chat can run on its own model and reasoning level. The list is
+Hermes' own (`GET /api/model/options`, the inventory its pickers show: signed-in providers only), and a
+run's choice goes to Hermes as its per-request overrides on `POST /v1/runs`: `provider` + `model`, and
+`model_options.reasoning` `{"enabled": true, "effort": "high"}` (`{"enabled": false}` for `none`).
+Nothing is chosen = nothing is sent: Hermes' configuration runs it. Speakeasy never edits Hermes'
+config and the model choice never changes how requests are routed.
+
+What a run uses, model and level resolved separately (first that applies):
+
+1. a spoken or typed "use the smart/fast model for this" in the request: that task (and its follow-ups);
+2. the job's own pick (`model`/`reasoning` on `POST /voice/work`);
+3. its chat's pick (`PUT /voice/history/{id}/model`, or a message that carries `model`/`reasoning`). A
+   linked task (a chat Speakeasy can't write into) and a follow-up use their chat's pick too;
+4. Speakeasy's default (settings `jobs.model` / `jobs.reasoning`);
+5. Hermes' own configuration.
+
+A level the model doesn't take is clamped to the nearest weaker one it does (never more cost).
+
+### GET /voice/models[?refresh=1]
+
+Cached for ten minutes (`refresh=1` re-reads Hermes). Shape:
+
+```json
+{"available": true,
+ "providers": [{"id": "openai-codex", "name": "OpenAI Codex", "current": true, "local": false, "more": 12,
+                "models": [{"id": "openai-codex/gpt-5.5", "model": "gpt-5.5", "provider": "openai-codex",
+                            "provider_name": "OpenAI Codex", "name": "GPT-5.5", "default": true,
+                            "hermes_default": true, "reasoning_levels": ["low", "medium", "high", "xhigh"]}]}],
+ "default": {"model": "openai-codex/gpt-5.5", "reasoning": "medium", "source": "hermes" | "speakeasy"},
+ "hermes_default": {"model": "openai-codex/gpt-5.5", "reasoning": "medium"},
+ "fast": {"model": "openai-codex/gpt-5.5-mini", "reasoning": "low"},
+ "smart": {"model": "openai-codex/gpt-5.5", "reasoning": "high"},
+ "levels": [{"id": "none", "label": "Off", "short": "Off"}, ...]}
+```
+
+`id` ("provider/model") is what a choice names. `reasoning_levels` are the levels that model takes
+(from Hermes' per-provider tables; `[]` = it doesn't reason: hide the control). Each provider lists its
+featured (else first) six models plus any in use; `more` counts the rest. `available: false` (Hermes'
+list couldn't be read): hide the chip.
+
+### PUT /voice/history/{session_id}/model
+
+Body `{"model"?: "<id>" | "default", "reasoning"?: "<level>" | "default"}`: Use for this chat. `default`
+(or null) clears that half; a half left out stays as it was; switching model keeps the chat's level
+only as far as the new model takes it. `200 {"ok": true, "session_id", "model", "next_model",
+"model_choice"}`; `400` unknown model, a level the model doesn't take, bad body; `404` unknown session.
+
+`POST /voice/work` and `POST /voice/history/{id}/message` take the same optional `model` / `reasoning`.
+On `/voice/work` (New chat) the pick runs the job and becomes the new chat's own; on a history message
+it is saved for the chat first, as with `PUT`.
+
+### What ran
+
+Tasks (`/voice/work/latest`, `/voice/work/{id}`, a session page's `jobs`) carry `"model": {"id", "name",
+"provider", "provider_name", "reasoning", "reasoning_label", "source": "voice" | "task" | "chat" |
+"default" | "hermes", "served": bool, "preset"?: "fast" | "smart"}`. `served` = Hermes reported the
+run's runtime (`runtime` on its `run.*` events): the model that actually answered, which differs from
+the request after a provider fallback. `GET /voice/history/{id}` adds `"model"` (what did the chat's
+latest work; for a chat Speakeasy never ran, the model Hermes recorded for it), `"next_model"` (what
+the next message runs on) and `"model_choice"` (the chat's own pick, or null).
+
+### Settings
+
+`jobs`: `{"model": "", "reasoning": "", "fast_model": "", "fast_reasoning": "", "smart_model": "",
+"smart_reasoning": ""}` ("" = default). `model`/`reasoning` are Speakeasy's default; `fast_*` / `smart_*`
+are what "use the fast/smart model" picks (by default: a quick sibling of the default model at Low, and
+the default model at High).
+
 ## POST /voice/tasks/dismiss
 
 Hides finished tasks from the list. Only terminal runs are dismissed; the rest are ignored.
@@ -1446,7 +1518,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `model_choice` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`

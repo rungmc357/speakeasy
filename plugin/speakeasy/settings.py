@@ -76,6 +76,11 @@ DEFAULTS: dict[str, Any] = {
     # relay (relay/push), which only ever sees an opaque wake-up; presence_s is how recently the app
     # must have been heard from to count as open (then nothing is sent).
     "push": {"enabled": True, "relay_url": "https://speakeasy-push.todd-562.workers.dev", "presence_s": 45},
+    # The model Speakeasy's jobs run on (models.py). "" = Hermes' own configuration. model / the presets
+    # are GET /voice/models ids ("provider/model"); reasoning a level (none..max). "Use the fast/smart
+    # model for this" on a call picks fast_* / smart_* for that task ("" = picked from Hermes' default).
+    "jobs": {"model": "", "reasoning": "", "fast_model": "", "fast_reasoning": "", "smart_model": "",
+             "smart_reasoning": ""},
 }
 DEFAULT_UPDATE_INTERVAL_S = 45
 UPDATE_INTERVALS = (30, 45, 60, 90, 120)  # speech.interval_seconds choices (the apps' picker)
@@ -169,6 +174,7 @@ def validate(settings: dict[str, Any]) -> dict[str, Any]:
     s["address_drop"] = {"enabled": drop["enabled"], "relay": drop["relay"].rstrip("/")}
     s["audio_duck"] = validate_audio_duck(s["audio_duck"])
     s["push"] = validate_push(s["push"])
+    s["jobs"] = validate_jobs(s["jobs"])
     fast = s["fast_routing"]
     if not isinstance(fast.get("quick_answers"), bool):
         raise SettingsError("fast_routing.quick_answers must be true or false")
@@ -193,6 +199,28 @@ def validate(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 ENTITY_ID_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
+
+
+JOB_LEVELS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max")  # models.LEVELS + "" (default)
+MODEL_ID_RE = re.compile(r"^[A-Za-z0-9_.:()\[\]-]{1,80}/[^\x00-\x1f]{1,219}$")
+
+
+def validate_jobs(raw: Any) -> dict[str, Any]:
+    """Shape only: whether a model is one Hermes offers is checked when it is chosen (PATCH /voice/settings
+    from the apps goes through VoiceService.patch_settings, which asks the catalog)."""
+    keys = set(DEFAULTS["jobs"])
+    if not isinstance(raw, dict) or set(raw) - keys:
+        raise SettingsError("jobs takes: " + ", ".join(sorted(keys)))
+    out = dict(DEFAULTS["jobs"], **raw)
+    for key in ("model", "fast_model", "smart_model"):
+        value = out[key]
+        if not isinstance(value, str) or (value and not MODEL_ID_RE.fullmatch(value)):
+            raise SettingsError(f"jobs.{key} must be a model id from GET /voice/models (or empty for the default)")
+    for key in ("reasoning", "fast_reasoning", "smart_reasoning"):
+        if out[key] not in JOB_LEVELS:
+            raise SettingsError(f"jobs.{key} must be one of: none, minimal, low, medium, high, xhigh, max "
+                                "(or empty for the default)")
+    return out
 
 
 def validate_push(raw: Any) -> dict[str, Any]:

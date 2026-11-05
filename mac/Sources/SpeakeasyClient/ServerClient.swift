@@ -393,16 +393,42 @@ public final class ServerClient: @unchecked Sendable {
     /// A new job from typed text, no call needed (servers with `start_jobs`); idempotent on `clientID`.
     /// Returns the job's run id (openable on the board) when Hermes has one yet.
     /// `attachments`: ids staged with `stageAttachment` (servers with `attachments`); with any, `text` may be empty.
-    public func startJob(text: String, attachments: [String] = [], clientID: String = UUID().uuidString) async throws -> String? {
+    /// `choice`: servers with `model_choice`: the model / level for the job (and the chat it becomes).
+    public func startJob(text: String, attachments: [String] = [], clientID: String = UUID().uuidString,
+                         choice: ModelChoice? = nil) async throws -> String? {
         let clean = TaskMessageRequest.clean(text)
         guard clean != nil || !attachments.isEmpty else { throw HTTPError(status: 400, message: "The job is empty.") }
         var body: [String: Any] = ["text": clean ?? "", "source": "typed", "client_id": clientID]
         if !attachments.isEmpty { body["attachments"] = attachments }
+        if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
         let reply = try await post("/voice/work", body)
         guard reply["ok"] as? Bool == true else {
             throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't start that job.")
         }
         return reply["run_id"] as? String
+    }
+
+    // MARK: Models (servers with `model_choice`; docs/API.md "Models")
+
+    /// The models Hermes offers, the default and the fast/smart presets.
+    public func models(refresh: Bool = false) async throws -> ModelCatalog {
+        ModelCatalog(json: try await json(ModelCatalog.path + (refresh ? "?refresh=1" : "")))
+    }
+
+    /// Use for this chat. Returns the chat's next model as the server now sees it.
+    @discardableResult
+    public func setSessionModel(_ request: SessionModelRequest) async throws -> ModelBadge? {
+        let reply = try await json(request.path, method: "PUT", body: try JSONSerialization.data(withJSONObject: request.body))
+        return ModelBadge(json: reply["next_model"])
+    }
+
+    /// Settings › Jobs: Speakeasy's default model and reasoning.
+    public func jobModelDefaults() async throws -> JobModelDefaults {
+        JobModelDefaults(settingsJSON: try await json("/voice/settings"))
+    }
+
+    public func setJobModelDefaults(_ defaults: JobModelDefaults) async throws {
+        _ = try await json("/voice/settings", method: "PATCH", body: try JSONSerialization.data(withJSONObject: defaults.patchBody))
     }
 
     // MARK: History (servers with `history`; docs/API.md "History")

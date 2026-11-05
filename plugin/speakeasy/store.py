@@ -226,6 +226,12 @@ class StateStore:
                 self._db.execute("ALTER TABLE runs ADD COLUMN seen INTEGER")
             if "parent" not in columns:  # the task this one answers or joins (its idem key): what names a follow-up
                 self._db.execute("ALTER TABLE runs ADD COLUMN parent TEXT")
+            if "model" not in columns:  # the model/reasoning it was started with and what Hermes served (models.py)
+                self._db.execute("ALTER TABLE runs ADD COLUMN model TEXT")
+            # A chosen model/reasoning (models.py): scope "session:<hermes session id>" (Use for this chat)
+            # or "task:<idem key>" (one task: a voice preset, a new chat's first job).
+            self._db.execute("""CREATE TABLE IF NOT EXISTS model_choices (
+                scope TEXT PRIMARY KEY, model TEXT, reasoning TEXT, updated REAL NOT NULL)""")
             # Finished tasks that never had a Hermes run id (quick answers, home control) could not be
             # cleared: "Clear done" and the x address tasks by run id. Give them their local id.
             settled = sorted(TERMINAL | {"rejected"})
@@ -275,6 +281,49 @@ class StateStore:
     def set_session(self, key: str, session_id: str) -> None:
         with self._lock, self._db:
             self._db.execute("UPDATE runs SET session_id=? WHERE idem_key=?", (session_id, key))
+
+    # -- model choices (models.py) ------------------------------------------------------------------
+
+    def set_model_choice(self, scope: str, model: str | None, reasoning: str | None) -> None:
+        """Save a choice; both halves None removes it (back to the default)."""
+        with self._lock, self._db:
+            if model is None and reasoning is None:
+                self._db.execute("DELETE FROM model_choices WHERE scope=?", (scope,))
+            else:
+                self._db.execute("INSERT OR REPLACE INTO model_choices (scope, model, reasoning, updated) "
+                                 "VALUES (?,?,?,?)", (scope, model, reasoning, time.time()))
+
+    def model_choice(self, scope: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute("SELECT model, reasoning, updated FROM model_choices WHERE scope=?",
+                                   (scope,)).fetchone()
+        return {"model": row[0], "reasoning": row[1], "updated": row[2]} if row else None
+
+    def set_run_model(self, key: str, record: dict[str, Any]) -> None:
+        with self._lock, self._db:
+            self._db.execute("UPDATE runs SET model=? WHERE idem_key=?", (json.dumps(record), key))
+
+    def run_model(self, key: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute("SELECT model FROM runs WHERE idem_key=?", (key,)).fetchone()
+        try:
+            value = json.loads(row[0]) if row and row[0] else None
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def served_model(self, key: str, runtime: dict[str, Any]) -> bool:
+        """Hermes said which provider/model served the run (its ``runtime``): kept beside what was asked."""
+        provider, model = runtime.get("provider"), runtime.get("model")
+        if not (isinstance(provider, str) and isinstance(model, str) and provider and model):
+            return False
+        record = self.run_model(key) or {}
+        served = {"provider": provider[:80], "model": model[:200]}
+        if record.get("served") == served:
+            return False
+        record["served"] = served
+        self.set_run_model(key, record)
+        return True
 
     def session_for(self, key: str) -> str | None:
         with self._lock:
@@ -1386,6 +1435,13 @@ class StateStore:
         if session_id or _placed_session(continued):
             # The Hermes session its conversation lives in: "Show full session" opens it (history).
             work["session_id"] = session_id or _placed_session(continued)
+        model_record = self.run_model(key)
+        describe = getattr(self, "describe_model", None)
+        if model_record and describe is not None:
+            # Which model did (or is doing) the work, and how hard it thinks (models.describe).
+            described = describe(model_record)
+            if described:
+                work["model"] = described
         behind = self.queued_behind(key, session_id, status)
         if behind:
             # Queued in its chat thread behind another task's turn: shown as waiting for that task

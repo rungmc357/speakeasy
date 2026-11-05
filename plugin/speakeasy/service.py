@@ -26,6 +26,7 @@ from . import delivery as D
 from . import duck as duck_mod
 from . import history as H
 from . import messages as M
+from . import models as MD
 from .brief import BriefInvalid, BriefManager
 from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_BOARD, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
                     TYPED_SENT, BackendRun, ServiceError,
@@ -91,6 +92,9 @@ CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at
 CAPABILITIES["call_no_limit"] = True
 # POST /voice/push + GET /voice/push/events/{id}: notifications while the app is closed (push.py).
 CAPABILITIES["push"] = True
+# GET /voice/models, model/reasoning on POST /voice/work + history messages, PUT /voice/history/{id}/model,
+# settings jobs.*, and "model" on tasks and session pages: which model works a chat (models.py).
+CAPABILITIES["model_choice"] = True
 
 
 
@@ -180,6 +184,11 @@ class VoiceService:
         # Pictures and files a device uploaded for a message it hasn't sent yet (POST /voice/attachments).
         self.staged = A.StagedPool()
         self.rt.discard_files = self.discard_shared_files
+        # Hermes' model catalog (GET /api/model/options), read lazily and cached; and the per-run choice.
+        self.catalog = MD.Catalog(self._fetch_model_options, self._hermes_reasoning)
+        self._catalog_warming = threading.Lock()
+        self.rt.choose_model = self.choose_model
+        self.store.describe_model = self.describe_model
         # Messages sent to a task by id (POST /voice/work/{id}/message): replies by client_id for
         # MESSAGE_REPLAY_S, and the voiceless worker for tasks whose call is gone.
         self._message_replies: dict[str, tuple[float, threading.Event, dict[str, Any] | None]] = {}
@@ -216,6 +225,7 @@ class VoiceService:
         self._stop = threading.Event()
         if start_threads:
             threading.Thread(target=self._idle_loop, daemon=True, name="speakeasy-idle").start()
+            self._warm_catalog()
             self.brief.start_scheduler(ready=self.hermes.health)
 
     # -- secrets (read per use, never stored or returned) ------------------------------------
@@ -1362,8 +1372,9 @@ class VoiceService:
         notice's Update button). It runs like a job started on a call, on the voiceless worker, never
         through routing, and shows on the board. Idempotent on client_id."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "source", "client_id", "attachments"}:
+                "text", "source", "client_id", "attachments", "model", "reasoning"}:
             raise ServiceError(400, "Send the job as text.")
+        choice = self._body_choice(body)
         text, source, client_id = body.get("text"), body.get("source") or "typed", body.get("client_id")
         ids = self._attachment_ids(body)
         if isinstance(text, str) and not text.strip() and ids:
@@ -1377,7 +1388,8 @@ class VoiceService:
             raise ServiceError(400, "source must be typed.")
         if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
             raise ServiceError(400, "client_id must be an id.")
-        return self._once(client_id, lambda: self._with_staged(device_id, ids, lambda staged: self._start_job(text, staged)))
+        return self._once(client_id, lambda: self._with_staged(
+            device_id, ids, lambda staged: self._start_job(text, staged, choice=choice, new_chat=True)))
 
     @staticmethod
     def _attachment_ids(body: dict[str, Any]) -> list[str]:
@@ -1411,12 +1423,17 @@ class VoiceService:
         return reply
 
     def _start_job(self, text: str, staged: list[A.Attachment] | None = None, session_id: str | None = None,
-                   context: str | None = None, link_to: str | None = None) -> dict[str, Any]:
+                   context: str | None = None, link_to: str | None = None, choice: dict[str, Any] | None = None,
+                   new_chat: bool = False) -> dict[str, Any]:
         """*link_to*: the chat session this job continues from a history page (store.history_links).
-        *staged*: attachments claimed for this job (carried with its handoff)."""
+        *staged*: attachments claimed for this job (carried with its handoff). *choice*: the model /
+        reasoning picked for it (models.parse_choice); a new chat (*new_chat*) keeps it as its own."""
+        if choice is None and link_to:
+            choice = self.store.model_choice("session:" + link_to)  # the chat's choice works its linked task
         worker = self.text_worker()
         future = asyncio.run_coroutine_threadsafe(
-            M.start_job(worker, text, session_id=session_id, context=context, staged=staged or None), worker.loop)
+            M.start_job(worker, text, session_id=session_id, context=context, staged=staged or None,
+                        choice=choice), worker.loop)
         try:
             got = future.result(M.START_WAIT_S + 10)
         except Exception as exc:
@@ -1428,6 +1445,10 @@ class VoiceService:
         run_id = (self.store.openable_run_id(key) if key else None) or run_id
         if key and link_to:
             self.store.link_history(key, link_to)
+        if key and new_chat and choice and (choice.get("model") or choice.get("reasoning")):
+            own = self.store.session_for(key)
+            if own:  # "Use for this chat" on New chat: the chat it became keeps it
+                self.store.set_model_choice("session:" + own, choice.get("model"), choice.get("reasoning"))
         task = self.store.work(idem_key=key, assistant_name=self.settings.get()["assistant_name"]) if key else None
         if task is not None:
             task["task_id"] = got["task_id"]
@@ -1553,6 +1574,172 @@ class VoiceService:
         logger.info("speakeasy: a typed message went to a task as a %s", got["delivered_as"])
         return {"ok": True, "run_id": new_run, "delivered_as": got["delivered_as"], "task": task}
 
+    # -- models: which model works a chat, how hard it thinks (models.py, docs/API.md "Models") ------
+
+    def _fetch_model_options(self) -> dict[str, Any]:
+        fetch = getattr(self.hermes, "model_options", None)
+        if fetch is None:
+            raise RuntimeError("this Hermes client can't list models")
+        return fetch()
+
+    def _hermes_reasoning(self) -> str | None:
+        """The effort Hermes' own config runs at (agent.reasoning_effort), for "Default" labels."""
+        try:
+            import yaml  # type: ignore
+            data = yaml.safe_load((self.home / "config.yaml").read_text(encoding="utf-8")) or {}
+        except Exception:
+            return None
+        value = (data.get("agent") or {}).get("reasoning_effort") if isinstance(data, dict) else None
+        if value is False:
+            return "none"
+        value = str(value).strip().lower() if value not in (None, "") else None
+        return value if value in MD.LEVELS else None
+
+    def _warm_catalog(self) -> None:
+        """Read the catalog in the background (never on a task's start path)."""
+        if not self._catalog_warming.acquire(blocking=False):
+            return
+
+        def warm() -> None:
+            try:
+                self.catalog.raw()
+            finally:
+                self._catalog_warming.release()
+        threading.Thread(target=warm, daemon=True, name="speakeasy-models").start()
+
+    def _entries(self) -> dict[str, dict[str, Any]] | None:
+        raw = self.catalog.peek()
+        return self.catalog.entries(raw) if raw is not None else None
+
+    def models(self, query: dict[str, str] | None = None) -> dict[str, Any]:
+        """``GET /voice/models[?refresh=1]``: what the model chip offers (models.public)."""
+        refresh = (query or {}).get("refresh") in {"1", "true"}
+        return MD.public(self.catalog, self.settings.get(), refresh=refresh)
+
+    def _body_choice(self, body: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            return MD.parse_choice(body, lambda: self.catalog.entries(self.catalog.raw()))
+        except MD.ChoiceError as exc:
+            raise ServiceError(400, str(exc), reason="model") from None
+
+    def _check_job_models(self, jobs: dict[str, Any]) -> None:
+        picked = [jobs.get(k) for k in ("model", "fast_model", "smart_model") if isinstance(jobs.get(k), str) and jobs.get(k)]
+        if not picked:
+            return
+        entries = self.catalog.entries(self.catalog.raw())
+        if entries and any(m not in entries for m in picked):
+            raise ServiceError(400, "That model isn't one Hermes offers. Pick one from the list.", reason="model")
+
+    def _save_chat_choice(self, session_id: str, choice: dict[str, Any]) -> None:
+        old = self.store.model_choice("session:" + session_id) or {}
+        model = choice["model"] if "model" in choice else old.get("model")
+        reasoning = choice["reasoning"] if "reasoning" in choice else old.get("reasoning")
+        if "model" in choice and "reasoning" not in choice and model and reasoning:
+            entries = self._entries()
+            if entries and model in entries:  # a new model keeps the chat's level only if it takes it
+                reasoning = MD.clamp(reasoning, entries[model]["reasoning_levels"])
+        self.store.set_model_choice("session:" + session_id, model, reasoning)
+
+    def set_session_model(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``PUT /voice/history/{session_id}/model {model?, reasoning?}``: Use for this chat ("default" or
+        null clears that half). The next message to the chat, its follow-ups and its linked tasks use it."""
+        if not isinstance(body, dict) or not body or not set(body) <= {"model", "reasoning"}:
+            raise ServiceError(400, "Send model and/or reasoning.")
+        if not H.valid_session_id(session_id):
+            raise ServiceError(404, "I couldn't find that conversation.")
+        meta = H.session_meta(self.rt.state_db, session_id)
+        if meta is None:
+            raise ServiceError(404, "I couldn't find that conversation.")
+        choice = self._body_choice(body) or {}
+        self._save_chat_choice(meta["id"], choice)
+        name = self.settings.get()["assistant_name"]
+        jobs = [w for w in (self.store.work(idem_key=k, assistant_name=name)
+                            for k, _, _ in self.store.keys_for_session(meta["id"])[:3]) if w]
+        logger.info("speakeasy: a chat's model choice changed")
+        return {"ok": True, "session_id": meta["id"], **self._session_models(meta["id"], meta, jobs)}
+
+    def _resolved(self, layers: list[tuple[str, dict[str, Any] | None]]) -> tuple[dict[str, Any] | None,
+                                                                                    dict[str, dict[str, Any]] | None]:
+        entries = self._entries()
+        if entries is None:
+            self._warm_catalog()
+        return MD.resolve(layers, entries), entries
+
+    def _default_layer(self) -> dict[str, Any]:
+        jobs = self.settings.get().get("jobs") or {}
+        return {"model": jobs.get("model") or None, "reasoning": jobs.get("reasoning") or None}
+
+    def choose_model(self, task_id: str, idem: str, session_id: str | None, request: str | None
+                     ) -> dict[str, Any] | None:
+        """The overrides a run starts with (Runtime.choose_model): the voice phrase, the task's own pick,
+        its chat's (or the chat a linked task continues), what its earlier turn ran on, the default.
+        Records what was asked on the task; never reads the catalog on this path (it may be cold)."""
+        settings = self.settings.get()
+        raw = self.catalog.peek()
+        entries = self.catalog.entries(raw) if raw is not None else None
+        layers: list[tuple[str, dict[str, Any] | None]] = []
+        kind, _ = MD.voice_preset(request)
+        if kind:
+            preset = MD.presets(settings, entries, self.catalog.hermes_default(raw) if raw else None)[kind]
+            layers.append(("voice", {**preset, "preset": kind}))
+        layers.append(("task", self.store.model_choice("task:" + task_id)))
+        chain, key = [], idem
+        for _ in range(6):
+            key = self.store.parent_of(key) if key else None
+            if not key or key in chain:
+                break
+            chain.append(key)
+        sessions = [session_id] if session_id else []
+        for k in [idem, *chain]:
+            src = self.store.linked_source(k)
+            if src and src not in sessions:
+                sessions.append(src)
+        for sid in sessions:
+            layers.append(("chat", self.store.model_choice("session:" + sid)))
+        for k in chain:  # a follow-up keeps what its task was asked to run on ("for this")
+            earlier = self.store.run_model(k)
+            if earlier and earlier.get("source") in {"voice", "task"}:
+                layers.append((earlier["source"], {kk: earlier.get(kk) for kk in ("model", "reasoning", "preset")}))
+        layers.append(("default", self._default_layer()))
+        choice, entries = self._resolved(layers)
+        record: dict[str, Any] = {"model": (choice or {}).get("model"), "reasoning": (choice or {}).get("reasoning"),
+                                  "source": (choice or {}).get("source") or "hermes"}
+        if choice and choice.get("preset"):
+            record["preset"] = choice["preset"]
+        try:
+            self.store.set_run_model(idem, record)
+        except Exception:
+            logger.debug("speakeasy: run model not recorded", exc_info=True)
+        if choice:
+            logger.info("speakeasy: a task runs on a chosen model (%s)", record["source"])
+        return MD.run_fields(choice) or None
+
+    def describe_model(self, record: dict[str, Any] | None) -> dict[str, Any] | None:
+        raw = self.catalog.peek()
+        entries = self.catalog.entries(raw) if raw is not None else {}
+        return MD.describe(record, entries, self.catalog.hermes_default(raw) if raw else None,
+                           self.catalog.hermes_reasoning)
+
+    def _session_models(self, sid: str, meta: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, Any]:
+        """``model`` (what did the chat's latest work), ``model_choice`` (its Use-for-this-chat pick, or
+        null) and ``next_model`` (what the next message runs on) for a session page."""
+        chat = self.store.model_choice("session:" + sid)
+        did = next((j["model"] for j in jobs if isinstance(j.get("model"), dict)), None)
+        if did is None and isinstance(meta.get("model"), str) and meta["model"]:
+            # No Speakeasy task ran here: the model Hermes recorded for the session (no provider, no level).
+            entries = self._entries() or {}
+            found = next((mid for mid, e in entries.items() if e["model"] == meta["model"]), None)
+            did = {"id": found or meta["model"], "name": entries[found]["name"] if found else MD.friendly_name(meta["model"]),
+                   "provider": entries[found]["provider"] if found else "",
+                   "provider_name": entries[found]["provider_name"] if found else "",
+                   "reasoning": None, "reasoning_label": None, "source": "hermes", "served": True}
+        choice, _ = self._resolved([("chat", chat), ("default", self._default_layer())])
+        upcoming = self.describe_model({"model": (choice or {}).get("model"),
+                                        "reasoning": (choice or {}).get("reasoning"),
+                                        "source": (choice or {}).get("source") or "hermes"})
+        return {"model": did, "next_model": upcoming,
+                "model_choice": {"model": chat.get("model"), "reasoning": chat.get("reasoning")} if chat else None}
+
     # -- history: every Hermes session, readable and writable by id (docs/API.md "History") ---------
 
     def _linked(self, session_id: str) -> H.Linked | None:
@@ -1656,7 +1843,7 @@ class VoiceService:
             "state": "needs_you" if needs_you else ("running" if running else "idle"),
             "send_via": "task" if own and link else ("session_job" if meta["source"] == "api_server" else "linked"),
             "entries": entries, "has_more": page["has_more"], "before": page["before"],
-            "jobs": jobs, "approvals": self._session_approvals(keys)}}
+            "jobs": jobs, "approvals": self._session_approvals(keys), **self._session_models(sid, meta, jobs)}}
 
     @staticmethod
     def _speakeasy_owned(meta: dict[str, Any], link: H.Linked | None) -> bool:
@@ -1672,8 +1859,9 @@ class VoiceService:
         ``attachments``: ids this device staged, claimed all or nothing and given back if the send fails
         (exactly as on /voice/work[/{id}/message])."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "client_id", "source", "attachments"}:
+                "text", "client_id", "source", "attachments", "model", "reasoning"}:
             raise ServiceError(400, "Send the message as text.")
+        choice = self._body_choice(body)
         text, client_id = body.get("text"), body.get("client_id")
         if (body.get("source") or "typed") not in {"typed", "voice_message"}:
             raise ServiceError(400, "source must be typed or voice_message.")
@@ -1692,6 +1880,8 @@ class VoiceService:
         meta = H.session_meta(self.rt.state_db, session_id)
         if meta is None:
             raise ServiceError(404, "I couldn't find that conversation.")
+        if choice is not None:
+            self._save_chat_choice(meta["id"], choice)  # a message carrying a choice: Use for this chat
         return self._once(client_id, lambda: self._with_staged(
             device_id, ids, lambda staged: self._history_message(meta, text, staged)))
 
@@ -2282,6 +2472,8 @@ class VoiceService:
             raise ServiceError(409, f"Hermes config left unchanged: {exc}") from None
 
     def patch_settings(self, body: dict[str, Any]) -> dict[str, Any]:
+        if isinstance(body, dict) and isinstance(body.get("jobs"), dict):
+            self._check_job_models(body["jobs"])
         if isinstance(body, dict) and ("server" in body or "address_drop" in body):
             # Where the server is published is decided on the computer, never from a paired device.
             raise ServiceError(403, "server addresses are set on the computer that runs Hermes "

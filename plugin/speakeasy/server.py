@@ -453,6 +453,8 @@ class Handler(BaseHTTPRequestHandler):
                 from urllib.parse import parse_qs
                 provider = (parse_qs(urlsplit(self.path).query).get("provider") or [""])[0]
                 self._reply(200, self.service.routing_models(provider))
+            elif path == "/voice/models":
+                self._reply(200, self.service.models(self._query()))
             elif work:
                 self._reply(200, self.service.work(work.group(1)))
             elif path == "/voice/history":
@@ -641,6 +643,10 @@ class Handler(BaseHTTPRequestHandler):
             self._auth()
             if self.route == "/voice/home":
                 self._reply(200, self.service.put_home(self._body()))
+                return
+            chat_model = re.fullmatch(rf"/voice/history/{_SESSION}/model", self.route)
+            if chat_model:  # Use for this chat (models.py)
+                self._reply(200, self.service.set_session_model(unquote(chat_model.group(1)), self._body()))
                 return
             if self.route != "/voice/brief":
                 raise ServiceError(404, "not found")

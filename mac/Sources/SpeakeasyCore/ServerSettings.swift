@@ -878,20 +878,22 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var history: Bool
     /// `voice.max_call_minutes` 0 means no limit ("End a call after: No limit").
     public var callNoLimit: Bool
+    /// Which model works a chat (`GET /voice/models`, ModelChoice.swift): the composer's model chip.
+    public var modelChoice: Bool
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
-                history: Bool = false, callNoLimit: Bool = false) {
+                history: Bool = false, callNoLimit: Bool = false, modelChoice: Bool = false) {
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
         self.taskMessages = taskMessages; self.jobActivity = jobActivity; self.toolLog = toolLog
         self.startJobs = startJobs; self.jobSubagents = jobSubagents; self.history = history
-        self.callNoLimit = callNoLimit
+        self.callNoLimit = callNoLimit; self.modelChoice = modelChoice
     }
     enum CodingKeys: String, CodingKey {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
-        case callNoLimit = "call_no_limit"
+        case callNoLimit = "call_no_limit", modelChoice = "model_choice"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -905,5 +907,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         jobSubagents = (try? c.decodeIfPresent(Bool.self, forKey: .jobSubagents)) ?? false
         history = (try? c.decodeIfPresent(Bool.self, forKey: .history)) ?? false
         callNoLimit = (try? c.decodeIfPresent(Bool.self, forKey: .callNoLimit)) ?? false
+        modelChoice = (try? c.decodeIfPresent(Bool.self, forKey: .modelChoice)) ?? false
     }
 }

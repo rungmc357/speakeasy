@@ -233,6 +233,8 @@ public struct WorkInfo: Equatable, Sendable {
     public var subagents: [JobSubagent] = []
     /// The Hermes session its conversation lives in (servers with `history`): "Show full session".
     public var sessionID: String?
+    /// The model doing (or that did) the work and how hard it thinks (servers with `model_choice`).
+    public var model: ModelBadge?
 
     /// The receipt for one "You added: …" step, if the api sent one.
     public func followUp(forStep text: String) -> FollowUp? { followUps.last { $0.milestone == text } }
@@ -293,6 +295,7 @@ public struct WorkInfo: Equatable, Sendable {
         emailDrafts = EmailDraft.list(json: object["email_drafts"])
         job = JobRef(json: object["job"])
         sessionID = nonEmpty(object["session_id"])
+        model = ModelBadge(json: object["model"])
         setAside = object["set_aside"] as? Bool ?? false
         seen = object["seen"] as? Bool ?? false
         carried = object["carried"] as? Bool ?? false

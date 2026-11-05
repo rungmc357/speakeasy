@@ -411,6 +411,9 @@ class Runtime:
     discard_files: Callable[[list[str]], int] | None = None
     # Phone notifications while the app is closed (push.PushNotifier); None = never.
     push: Any = None
+    # The model/reasoning a run starts with (task_id, idem key, session id, request) -> Hermes'
+    # per-request overrides (models.run_fields), or None for its own config. None = never chosen.
+    choose_model: Callable[[str, str, str | None, str | None], dict[str, Any] | None] | None = None
 
     @property
     def names(self) -> P.Names:
@@ -4001,8 +4004,10 @@ class SidebandWorker:
         prompt = P.build_task_prompt(self.names, revision, context, focus, label, shared=self.shared_prompt(
             items, bool(images), session_id if continuing else None, shared.capture is not None), room=room)
         try:
+            choice = await self.model_choice(task_id, idem, session_id, request)
             run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,
-                                             **({"images": images} if images else {}))
+                                             **({"images": images} if images else {}),
+                                             **({"choice": choice} if choice else {}))
             images = []
             if voice_id is None:
                 shared.forget_bytes()  # the run has them; a split request's parts still share theirs
@@ -4323,7 +4328,9 @@ class SidebandWorker:
             backend.run_id, backend.status = None, "running"
         self.publish()
         try:
-            run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id)
+            choice = await self.model_choice(backend.delegation_id, idem, session_id, request)
+            run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,
+                                             **({"choice": choice} if choice else {}))
             self.store.update_run(idem, run_id, "running")
             self.title_session(idem)
             with self.interaction.lock:
@@ -4485,8 +4492,28 @@ class SidebandWorker:
         self.notices.stopped(backend.run_id, "ambiguous", self.store.title(backend.idem_key) or self.store.request_text(backend.idem_key))
         await self.append("session.commentary.append", backend.say_id, P.lost_track_note(self.names))
 
+    async def model_choice(self, task_id: str, idem: str, session_id: str | None,
+                           request: str | None) -> dict[str, Any] | None:
+        """The model/reasoning overrides for a run about to start (models.py), or None for Hermes' own
+        configuration. Never fails a task: a choice that can't be worked out runs on the default."""
+        choose = self.rt.choose_model
+        if choose is None:
+            return None
+        try:
+            return await asyncio.to_thread(choose, task_id, idem, session_id, request)
+        except Exception:
+            logger.warning("speakeasy: the model for a task could not be worked out; Hermes' default runs it",
+                           exc_info=True)
+            return None
+
     async def handle_hermes_event(self, backend: BackendRun, event: dict[str, Any]) -> None:
         self.observe_activity(backend, event)
+        runtime = event.get("runtime")
+        if isinstance(runtime, dict) and str(event.get("event") or "").startswith("run."):
+            try:  # which model Hermes says served the run (it may have fallen back)
+                self.store.served_model(backend.idem_key, runtime)
+            except Exception:
+                logger.debug("speakeasy: served model not recorded", exc_info=True)
         try:
             await self._handle_hermes_event(backend, event)
         finally:

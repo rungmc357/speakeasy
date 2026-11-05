@@ -457,6 +457,7 @@ struct HistorySessionView: View {
                   c.isSpeakeasy ? nil : "replies show here, not in \(c.sourceLabel.components(separatedBy: " · ").first ?? c.sourceLabel)"]
                 .compactMap { $0 }.joined(separator: " · "))
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.primary.opacity(0.6))
+            if let badge = c.model, store.modelsSupported { ModelWorkedLine(badge: badge) }
         }
         .padding(.bottom, 4)
     }
@@ -922,7 +923,12 @@ struct HistoryComposer: View {
 
     @ViewBuilder private var hint: some View {
         HStack(spacing: 6) {
-            if let why = store.voice.problem {
+            if store.picker != nil && store.voice.problem == nil && !store.voice.flow.isRecording {
+                ModelChip(store: store).padding(.trailing, 4)
+            }
+            if let why = store.modelError, store.voice.problem == nil {
+                Text(why).foregroundStyle(Live.red).lineLimit(1)
+            } else if let why = store.voice.problem {
                 Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Live.red)
                 Text(why).foregroundStyle(Live.red).lineLimit(2)
                 if why != VoiceMessageFlow.nothingHeardText {

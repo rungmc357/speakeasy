@@ -96,6 +96,14 @@ class FakeHermes(BaseHTTPRequestHandler):
                 self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
             self.wfile.flush()
             return
+        if self.path == "/api/model/options":
+            with self.state.lock:
+                self.state.options_reads += 1
+            if self.state.model_options is None:
+                self._json(500, {"error": {"code": "model_options_failed"}})
+            else:
+                self._json(200, self.state.model_options)
+            return
         if len(parts) == 3 and parts[:2] == ["api", "sessions"]:
             with self.state.lock:
                 title = self.state.session_titles.get(parts[2], False)
@@ -161,7 +169,11 @@ class FakeHermes(BaseHTTPRequestHandler):
                 self.state.idem_bodies[idem] = fingerprint
             # ``input`` is recorded as sent: a string, or a list of messages with text and image parts.
             prompt, session_id = body.get("input", ""), body.get("session_id")
-            self.state.calls.append({"run_id": run_id, "input": prompt, "session_id": session_id, "idem": idem})
+            self.state.calls.append({"run_id": run_id, "input": prompt, "session_id": session_id, "idem": idem,
+                                     **{k: body[k] for k in ("provider", "model", "model_options") if k in body}})
+            # Hermes' served runtime (api_server_runs): the requested pair, else its configured default.
+            served = {"provider": body.get("provider") or "anthropic", "model": body.get("model") or "claude-opus-5-5",
+                      "route_source": "raw_request" if body.get("model") else "global"}
             if session_id and self.state.create_sessions:
                 with self.state.lock:
                     # Hermes' auto-titler names a new session from the prompt's preamble.
@@ -171,7 +183,7 @@ class FakeHermes(BaseHTTPRequestHandler):
                    "events": [{"event": "tool.started", "tool": "web_search", "preview": "weather"},
                               # Hermes' terminal fields (terminal_run_status) ride on every run.* event.
                               {"event": "run.completed", "output": output, "completed": True, "partial": False,
-                               "interrupted": False}]}
+                               "interrupted": False, "runtime": served}]}
             if self.state.fail_with is not None:
                 # Hermes' shape for a turn that failed (api_server_runs._execute_run): no output, the
                 # provider's redacted error line in ``error`` on the event and on GET /v1/runs/{id}.
@@ -244,6 +256,8 @@ class FakeHermesServer:
         self.fail_with: str | None = None  # every run fails with this Hermes error line
         self.fail_reply: str | None = None  # …or with this failure reply and no error (session chat shape)
         self.drop_terminal = False          # the event stream ends without its run.* event
+        self.model_options: dict[str, Any] | None = model_options_payload()  # GET /api/model/options (None = 500)
+        self.options_reads = 0
         self.responder = responder or (lambda prompt, sid: "Done.\nDONE: Finished\nSPOKEN: All done.")
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeHermes)
         self.httpd.daemon_threads = True
@@ -257,6 +271,26 @@ class FakeHermesServer:
     def close(self) -> None:
         self.httpd.shutdown()
         self.httpd.server_close()
+
+
+def model_options_payload() -> dict[str, Any]:
+    """An invented /api/model/options payload (hermes_cli.inventory.build_model_options_payload's shape)."""
+    return {
+        "provider": "anthropic", "model": "claude-opus-5-5", "base_url": "",
+        "providers": [
+            {"slug": "anthropic", "name": "Anthropic", "is_current": True, "is_user_defined": False,
+             "authenticated": True, "models": ["claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"],
+             "featured_models": [], "capabilities": {"claude-opus-5-5": {"reasoning": True},
+                                                     "claude-haiku-4-5": {"reasoning": True}}},
+            {"slug": "openai-codex", "name": "OpenAI Codex", "is_current": False, "is_user_defined": False,
+             "authenticated": True, "models": ["gpt-6.1-sol", "gpt-5.5", "gpt-5.4-mini"],
+             "capabilities": {}},
+            {"slug": "studio-qwen", "name": "Studio Qwen", "is_current": False, "is_user_defined": True,
+             "authenticated": True, "models": ["qwen3.8-coder"],
+             "capabilities": {"qwen3.8-coder": {"reasoning": False}}},
+            {"slug": "nous", "name": "Nous Portal", "is_current": False, "authenticated": False,
+             "models": ["hermes-5-405b"]},
+        ]}
 
 
 def read_profile_env(home: Path) -> dict[str, str]:
