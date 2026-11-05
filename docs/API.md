@@ -1651,7 +1651,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `model_choice`, `schedules` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`

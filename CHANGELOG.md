@@ -2,6 +2,15 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Unreleased
+
+- **Pick the model for each chat.** A chip above the message field on a session page or New chat shows which model and reasoning level the next message runs on; tap it to use another one for this chat, make it your default, or go back to the default. Set Speakeasy's default in Settings › Jobs. On a call, "use the smart model for this" (or "the fast model") picks for that job. The list is your Hermes' own (signed-in providers only), and nothing about where your words go changes.
+- **Scheduled.** Your Hermes scheduled jobs in the side panel on iPhone, iPad and Mac: what's coming up, paused or done, each in plain English ("Weekdays at 8:00 AM"), with its last result and recent runs (open a run to read its conversation). Run now, Pause/Resume, Edit or Delete, or make a new one by typing or saying it ("every weekday at 8 summarize my inbox"): you see a preview and nothing is saved until you tap Save.
+- **Type secrets into a secure box, not the chat.** When a job needs an API key, your Mac password for one `sudo` command, or a website login or code, the app shows a secure box for it. What you type goes straight to your Hermes for that one step and never reaches the model, the chat or the logs.
+- **Share to Speakeasy on iPhone and iPad.** Send links, text, photos and files from any app's share sheet as a new chat or into a recent session, with a note or a voice message.
+- **Side panel gestures on iPhone and iPad.** The panel opens from its button (the left edge is the system back swipe again), closing it never taps what's underneath, and sessions open over the board with Home to go back. The call stays a tap away on every page.
+- **Source filters only show sources you have.** The source menu lists Speakeasy, Discord, Telegram and the rest only when there are sessions from them, and hides itself when everything comes from one place.
+
 ## Plugin 0.3.33 · Mac 0.3.18 · iPhone build 64 — Speakeasy as your Hermes app
 
 - **Every session and task in a side panel** on iPhone, iPad and Mac, newest first, with search. Open any session (Speakeasy, Hermes API, Discord, Telegram, terminal) to read it, tool calls folded away.
