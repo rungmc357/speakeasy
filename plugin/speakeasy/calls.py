@@ -284,26 +284,33 @@ def _age_phrase(age: float) -> str:
     return f"about {round(age / 60)} minutes"
 
 
-def anchored_lines(step: str, age: float) -> list[str]:
+def anchored_lines(step: str, age: float, reserve: int = 0) -> list[str]:
     """The running step tied to how long the task has run ("Still on reading the logs, about 3
-    minutes in"), in every shape, starting from the one this pulse slot rotates to."""
+    minutes in"), in every shape, starting from the one this pulse slot rotates to. `reserve` words
+    are kept free for what goes in front of the line later (the job's name when several are running),
+    so the step is shortened to fit and the age, the part that moves on between lines, is never the
+    part the word cap cuts off."""
     step = re.sub(r"(?i)^quick update:\s*", "", " ".join(str(step or "").split())).rstrip(" .\u2026!?,;:")
-    words = step.split()
-    step = " ".join(words[:_ANCHORED_STEP_WORDS]) if words else "it"
-    low, phrase = _lead_lower(step), _age_phrase(age)
-    lines = [cap_words(shape.format(step=low, Step=step[:1].upper() + step[1:], age=phrase,
-                                    Age=phrase[:1].upper() + phrase[1:]))
-             for shape in _ANCHORED_SHAPES]
+    words = step.split() or ["it"]
+    phrase = _age_phrase(age)
+    lines = []
+    for shape in _ANCHORED_SHAPES:
+        fixed = len(shape.format(step="", Step="", age=phrase, Age=phrase).split())
+        room = max(3, min(_ANCHORED_STEP_WORDS, PULSE_MAX_WORDS - reserve - fixed))
+        short = " ".join(words[:room])
+        lines.append(cap_words(shape.format(step=_lead_lower(short), Step=short[:1].upper() + short[1:],
+                                            age=phrase, Age=phrase[:1].upper() + phrase[1:])))
     turn = int(max(age, 0.0) // PULSE_EVERY_S) % len(lines)
     return lines[turn:] + lines[:turn]
 
 
 def unrepeated(line: str | None, told: list[str], step: str, age: float,
-               dress: Callable[[str], str] = cap_words) -> str:
+               dress: Callable[[str], str] = cap_words, reserve: int = 0) -> str:
     """An open-mic pulse line that is not word for word one already spoken on this task (`told`):
     `line`, else `line` re-worded behind an opener, else the anchored lines on `step` (see
     anchored_lines). Every candidate goes through `dress` (naming the job, the word cap) before it is
-    compared, since that is what was said. Never None: should all of them have been said, the one said
+    compared, since that is what was said; `reserve` is how many words `dress` may put in front (see
+    anchored_lines). Never None: should all of them have been said, the one said
     longest ago comes back, because an old line beats silence."""
     said = [_said_key(t) for t in told]
     candidates: list[str] = []
@@ -314,7 +321,7 @@ def unrepeated(line: str | None, told: list[str], step: str, age: float,
         if not body.endswith((".", "!", "?", "\u2026")):
             body += "."
         candidates += [f"{opener}, {body}" for opener in _PULSE_OPENERS]
-    candidates = [dress(c) for c in candidates + anchored_lines(step, age)]
+    candidates = [dress(c) for c in candidates + anchored_lines(step, age, reserve)]
     for candidate in candidates:
         if _said_key(candidate) not in said:
             return candidate
@@ -2023,6 +2030,7 @@ class SidebandWorker:
         with self.interaction.lock:
             claimed = self.interaction.progress_spoken_at
             self.interaction.progress_spoken_at = now  # also holds back commentary-driven updates
+            claimed_task = backend.spoken_at
             backend.spoken_at = now
             covered = backend.activity_count
             told = list(backend.told[-3:])
@@ -2047,7 +2055,8 @@ class SidebandWorker:
         if open_mic:
             # Never word for word a recent line, never over the cap, and never nothing.
             line = unrepeated(line, told_all, self.pulse_step(backend, items, current), now - backend.started,
-                              lambda c: cap_words(P.named_pulse(c, name, needs) or c))
+                              lambda c: cap_words(P.named_pulse(c, name, needs) or c),
+                              reserve=len(name.split()) if needs and name else 0)
         else:
             line = P.named_pulse(line, name, needs)
         late = time.monotonic()
@@ -2056,6 +2065,11 @@ class SidebandWorker:
             with self.interaction.lock:
                 if self.interaction.progress_spoken_at == now:
                     self.interaction.progress_spoken_at = claimed
+                # Nothing was said, so on an open mic the task keeps its early first line (and its
+                # spacing) instead of waiting PULSE_EVERY_S from a line that never went out. Muted and
+                # never-reported calls keep main's behaviour here exactly.
+                if open_mic and backend.spoken_at == now:
+                    backend.spoken_at = claimed_task
             return False
         with self.interaction.lock:
             backend.told_count = covered

@@ -389,3 +389,68 @@ def test_open_mic_model_that_repeats_itself_never_repeats_aloud(service, clock):
     lines = [line for _, line in said]
     assert len(lines) >= 600 // 50 and len(set(lines)) == len(lines)
     assert not any(line.lower().count("meanwhile") > 1 for line in lines)
+
+
+def test_open_mic_first_line_that_was_held_back_still_lands_early(service, clock):
+    """The first open-mic line is worded, then dropped at the last check because someone started
+    talking. Nothing was said, so the task keeps its early first line: it is not pushed out to
+    PULSE_EVERY_S after a line that never went out."""
+    calls_made = []
+
+    def writer(request, steps, told):
+        calls_made.append(clock.t)
+        if len(calls_made) == 1:
+            worker.user_pending = True  # the user starts talking while the line is being worded
+        return "I'm reading the checkout logs."
+
+    worker, backend = setup(service, clock, writer)
+    worker.interaction.mic_muted = False
+    tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c1", done=False)
+    start, said = clock.t, []
+    while clock.t < start + 45 and not said:
+        clock.t += calls.PULSE_TICK_S
+        if tick(worker):
+            said.append(clock.t - start)
+        worker.user_pending = False  # ...and has stopped by the next tick
+    assert len(calls_made) >= 2, "the first attempt was dropped and retried"
+    assert said and said[0] <= 25
+
+
+def test_open_mic_named_lines_keep_the_age_and_never_repeat(service, clock):
+    """Two jobs running, so every line starts with the job's name. A long name plus a long step must
+    still leave room for the age (which moves on between lines), so a job's stale lines never come
+    out identical and never lose the age to the word cap."""
+    worker, a = setup(service, clock, lambda r, s, t: t[-1] if t else "I'm working on it.", key="idem_pa")
+    b = BackendRun("t_p2", 1, "idem_pb", status="running")
+    b.started = a.started
+    worker.interaction.runs[b.delegation_id] = b
+    for key, title in (("idem_pa", "Rebuild the checkout service for the spring catalogue launch"),
+                       ("idem_pb", "Compare the winter flight options for the family trip")):
+        service.store.reserve_run(key, "int_1", "call_" + key[-4:], 0)
+        service.store.set_title(key, title)
+    worker.interaction.mic_muted = False
+    tool(service, a, clock, "terminal", "make build of the checkout service and all of its payment plugins", "c1",
+         done=False)
+    tool(service, b, clock, "web_search", "winter flights for four people leaving from the nearest airport", "c2",
+         done=False)
+    said = run_quiet(worker, clock, 900)
+    by_task: dict[str, list[str]] = {}
+    for kind, say_id, line in worker.sent:
+        if kind == "session.commentary.append":
+            by_task.setdefault(say_id, []).append(line)
+    assert len(said) == sum(map(len, by_task.values()))
+    assert set(by_task) == {"t_p1", "t_p2"}
+    for lines in by_task.values():
+        assert all(len(line.split()) <= calls.PULSE_MAX_WORDS for line in lines)
+        anchored = [line for line in lines if line.rstrip(".\u2026").endswith(" in") or ", still" in line]
+        assert len(anchored) >= 3 and all("minute" in line.lower() for line in anchored)
+        assert len(set(lines)) == len(lines)
+
+
+def test_anchored_lines_leave_room_for_a_name():
+    step = "running the integration tests for the payment and checkout services against the staging database"
+    for reserve in (0, 8, 15):
+        for line in calls.anchored_lines(step, 400, reserve):
+            assert "about 7 minutes" in line.lower()  # the age is never what gets cut
+            if reserve <= 8:
+                assert len(line.split()) + reserve <= calls.PULSE_MAX_WORDS
