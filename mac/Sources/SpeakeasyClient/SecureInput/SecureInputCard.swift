@@ -366,6 +366,9 @@ struct SecureSecondaryButtonStyle: ButtonStyle {
 /// Shows the oldest open request as a sheet that can't be swiped away: Save or Skip.
 public struct SecureInputPresenter: ViewModifier {
     @ObservedObject var center: SecureInputCenter
+    /// The card's measured height: the sheet opens exactly that tall, so the buttons are never below the
+    /// fold (the login card is taller than a `.medium` sheet).
+    @State private var cardHeight: CGFloat = 0
 
     public func body(content: Content) -> some View {
         content.sheet(item: Binding(get: { center.current }, set: { _ in })) { request in
@@ -375,14 +378,24 @@ public struct SecureInputPresenter: ViewModifier {
                                 onSubmitLogin: { await center.submitLogin(request, identifier: $0, password: $1, code: $2) },
                                 onSkip: { await center.skip(request) })
                     .frame(maxWidth: .infinity)
+                    .background(GeometryReader { proxy in
+                        Color.clear.preference(key: SecureInputCardHeight.self, value: proxy.size.height)
+                    })
             }
+            .scrollBounceBehavior(.basedOnSize)
+            .onPreferenceChange(SecureInputCardHeight.self) { cardHeight = $0 }
             #if os(iOS)
-            .presentationDetents([.medium, .large])
+            .presentationDetents(cardHeight > 0 ? [.height(cardHeight), .large] : [.medium, .large])
             .presentationDragIndicator(.hidden)
             #endif
             .interactiveDismissDisabled(true)
         }
     }
+}
+
+private struct SecureInputCardHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 public extension View {

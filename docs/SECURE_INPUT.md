@@ -30,6 +30,18 @@ There is no plugin hook that can bind a prompt callback around a turn (`hermes_c
 route by which an outside client can attach as a viewer of a `/v1/runs` turn and answer these
 requests. So there is **no supported path** for an API-server client today.
 
+### Website logins
+
+Hermes already has a supported, model-blind credential store, so Speakeasy adds none: the local
+Fernet vault (`agent/vault_store.py`, optional 1Password/Bitwarden backends in `agent/vault_backends/`)
+and the `browser_vault` tool (`list` returns handles and identifiers only; `fill` injects over CDP,
+exact-origin bound, with the password registered at the browser-result redaction boundary;
+`save_login` asks the surface's masked prompt, stores bound to the page origin and fills at once;
+`enter_code` types a one-time code). Speakeasy's login card answers `save_login` (site and origin
+prefilled; username/password/one-time-code fields carry the AutoFill content types) and its code card
+answers `enter_code`; a code typed on the login card answers the next `enter_code` for that site once,
+within 180 s.
+
 ## What Speakeasy does
 
 `plugin/speakeasy/secure_input.py` uses the same public callback shapes Desktop/Mobile use, as a
