@@ -31,11 +31,14 @@ public struct TaskMessageRequest: Equatable, Sendable {
     public var interactionID: String?
     /// The decision/choice task this answers ("Something else…").
     public var choiceTaskID: String?
+    /// Ids of pictures and files this device staged (`POST /voice/attachments`, servers with
+    /// `attachments`), at most `AttachmentPolicy.maxAttachments`. With any, `text` may be empty.
+    public var attachments: [String]
 
     public init(runID: String, text: String, source: TaskMessageSource = .typed, clientID: String = UUID().uuidString,
-                interactionID: String? = nil, choiceTaskID: String? = nil) {
+                interactionID: String? = nil, choiceTaskID: String? = nil, attachments: [String] = []) {
         self.runID = runID; self.text = text; self.source = source; self.clientID = clientID
-        self.interactionID = interactionID; self.choiceTaskID = choiceTaskID
+        self.interactionID = interactionID; self.choiceTaskID = choiceTaskID; self.attachments = attachments
     }
 
     /// The text as it is sent: trimmed, at most 4000 characters; nil when there's nothing to send.
@@ -53,6 +56,7 @@ public struct TaskMessageRequest: Equatable, Sendable {
         var b: [String: Any] = ["text": Self.clean(text) ?? "", "source": source.rawValue, "client_id": clientID]
         if let interactionID { b["interaction_id"] = interactionID }
         if let choiceTaskID { b["choice_task_id"] = choiceTaskID }
+        if !attachments.isEmpty { b["attachments"] = attachments }
         return b
     }
 }
@@ -70,6 +74,16 @@ public struct TaskMessageReply: Equatable, Sendable {
 }
 
 /// One message on its way to a task, as the reply bar shows it.
+/// A picture or file staged for a message (`POST /voice/attachments`): its server id, and what the
+/// sent bubble shows (a thumbnail comes from the app's own cache by `id`; never bytes here).
+public struct OutgoingAttachment: Identifiable, Equatable, Sendable {
+    public enum Kind: String, Equatable, Sendable { case picture, file }
+    public var id: String
+    public var kind: Kind
+    public var name: String
+    public init(id: String, kind: Kind, name: String) { self.id = id; self.kind = kind; self.name = name }
+}
+
 public struct OutgoingMessage: Identifiable, Equatable, Sendable {
     public enum State: Equatable, Sendable {
         /// Waiting behind a message still being sent.
@@ -88,13 +102,16 @@ public struct OutgoingMessage: Identifiable, Equatable, Sendable {
     public var text: String
     public var source: TaskMessageSource
     public var choiceTaskID: String?
+    /// Staged pictures and files this message carries (servers with `attachments`).
+    public var attachments: [OutgoingAttachment] = []
     public var state: State = .queued
     public var at: Date
 
     public init(id: String = UUID().uuidString, jobID: String, runID: String, taskName: String, text: String,
-                source: TaskMessageSource = .typed, choiceTaskID: String? = nil, at: Date = Date()) {
+                source: TaskMessageSource = .typed, choiceTaskID: String? = nil,
+                attachments: [OutgoingAttachment] = [], at: Date = Date()) {
         self.id = id; self.jobID = jobID; self.runID = runID; self.taskName = taskName; self.text = text
-        self.source = source; self.choiceTaskID = choiceTaskID; self.at = at
+        self.source = source; self.choiceTaskID = choiceTaskID; self.attachments = attachments; self.at = at
     }
 
     public var isFailed: Bool { if case .failed = state { return true }; return false }
@@ -103,7 +120,7 @@ public struct OutgoingMessage: Identifiable, Equatable, Sendable {
 
     public func request(interactionID: String?) -> TaskMessageRequest {
         TaskMessageRequest(runID: runID, text: text, source: source, clientID: id, interactionID: interactionID,
-                           choiceTaskID: choiceTaskID)
+                           choiceTaskID: choiceTaskID, attachments: attachments.map(\.id))
     }
 }
 
@@ -113,14 +130,17 @@ public struct TaskOutbox: Equatable, Sendable {
     public private(set) var items: [OutgoingMessage] = []
     public init() {}
 
-    /// Adds a message; nil when the text is empty.
+    /// Adds a message; nil when there is neither text nor an attachment.
     @discardableResult
     public mutating func enqueue(jobID: String, runID: String, taskName: String, text: String,
                                  source: TaskMessageSource = .typed, choiceTaskID: String? = nil,
+                                 attachments: [OutgoingAttachment] = [],
                                  id: String = UUID().uuidString, at: Date = Date()) -> OutgoingMessage? {
-        guard let clean = TaskMessageRequest.clean(text) else { return nil }
-        let m = OutgoingMessage(id: id, jobID: jobID, runID: runID, taskName: taskName, text: clean,
-                                source: source, choiceTaskID: choiceTaskID, at: at)
+        // Words, or at least one attachment (the server words an attachment-only message itself).
+        let clean = TaskMessageRequest.clean(text)
+        guard clean != nil || !attachments.isEmpty else { return nil }
+        let m = OutgoingMessage(id: id, jobID: jobID, runID: runID, taskName: taskName, text: clean ?? "",
+                                source: source, choiceTaskID: choiceTaskID, attachments: attachments, at: at)
         items.append(m)
         trim()
         return m

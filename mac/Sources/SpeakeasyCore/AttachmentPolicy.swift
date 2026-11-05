@@ -69,6 +69,13 @@ public enum AttachmentPolicy {
     /// Longest image edge in pixels. Hermes keeps session images at this size, and every later
     /// model call in the session sends them again.
     public static let maxLongEdge = 1568
+    /// Longest edge for pictures from the iPhone/iPad composer (photos, camera, screenshots): a bit
+    /// more than the Mac's so a phone photo's small print stays legible.
+    public static let phoneLongEdge = 2048
+    /// Files the composer may send as files (the plugin's `POST /voice/attachments` takes these; pictures
+    /// are re-encoded to JPEG instead).
+    public static let stagedFileTypes: Set<String> = ["application/pdf", "text/plain", "text/markdown", "text/csv",
+                                                      "application/json"]
     /// Aim for about this many bytes per image.
     public static let targetImageBytes = 300_000
     /// Never send an image bigger than this.

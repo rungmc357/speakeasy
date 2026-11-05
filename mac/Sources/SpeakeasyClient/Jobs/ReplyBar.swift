@@ -39,6 +39,21 @@ public struct SentMessages: View {
 
     @ViewBuilder private func row(_ m: OutgoingMessage) -> some View {
         VStack(alignment: .trailing, spacing: 3 * s) {
+            if !m.attachments.isEmpty {
+                HStack(spacing: 6 * s) {
+                    ForEach(m.attachments) { a in SentAttachmentTile(attachment: a, image: model.outgoingThumbnail(a.id), s: s) }
+                }
+                .opacity(m.isPending ? 0.7 : 1)
+            }
+            if !m.text.isEmpty { bubble(m) }
+            status(m)
+        }
+        .padding(.leading, 40 * s)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private func bubble(_ m: OutgoingMessage) -> some View {
+        Group {
             Text(m.text).font(.system(size: 12.5 * s))
                 .foregroundStyle(m.isFailed ? Color.primary : JobStyle.onBlue)
                 .fixedSize(horizontal: false, vertical: true)
@@ -48,10 +63,7 @@ public struct SentMessages: View {
                     .fill(m.isFailed ? AnyShapeStyle(Color.primary.opacity(0.10)) : AnyShapeStyle(JobStyle.blue.opacity(m.isPending ? 0.6 : 0.92))))
                 .overlay(RoundedRectangle(cornerRadius: (JobLook.touch ? 15 : 12) * s, style: .continuous)
                     .strokeBorder(m.isFailed ? JobStyle.red.opacity(0.55) : .clear, lineWidth: 1))
-            status(m)
         }
-        .padding(.leading, 40 * s)
-        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder private func status(_ m: OutgoingMessage) -> some View {
@@ -98,6 +110,50 @@ public struct SentMessages: View {
     }
 }
 
+/// A picture or file a sent message carried, above its bubble: the thumbnail the composer kept, else a symbol.
+struct SentAttachmentTile: View {
+    let attachment: OutgoingAttachment
+    let image: CGImage?
+    let s: CGFloat
+
+    var body: some View {
+        let side = 56 * s
+        Group {
+            if let image {
+                Image(decorative: image, scale: 1).resizable().scaledToFill()
+            } else {
+                VStack(spacing: 3 * s) {
+                    Image(systemName: attachment.kind == .picture ? "photo" : "doc.text").font(.system(size: 16 * s))
+                    Text(attachment.name).font(.system(size: 9 * s)).lineLimit(1).truncationMode(.middle)
+                }
+                .padding(4 * s)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: side, height: side)
+        .background(Color.primary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 10 * s, style: .continuous))
+        .accessibilityLabel("Sent \(attachment.name)")
+    }
+}
+
+/// What a composer around `TaskReplyBar` adds (the phone's attachments, see its `Attachments`
+/// model): a leading view in the field's row (the + button), a view above the row (the tray), and
+/// the attachments to claim when the message goes. Lets a bar send with no words when one is ready.
+public struct ReplyBarExtras {
+    public var leading: AnyView
+    public var above: AnyView
+    /// At least one attachment is ready to go (the bar may send with an empty field).
+    public var ready: Bool
+    /// Something is still uploading: hold the send.
+    public var busy: Bool
+    /// Claims what is ready for the message being sent (and clears the tray).
+    public var take: () -> [OutgoingAttachment]
+    public init(leading: AnyView, above: AnyView, ready: Bool, busy: Bool, take: @escaping () -> [OutgoingAttachment]) {
+        self.leading = leading; self.above = above; self.ready = ready; self.busy = busy; self.take = take
+    }
+}
+
 /// The bottom of a job page: a text field and a send button. Typing only: in a call you just talk,
 /// and the keyboard's own dictation types into the field.
 public struct TaskReplyBar: View {
@@ -105,18 +161,24 @@ public struct TaskReplyBar: View {
     var job: Job
     /// Draw what was sent above the field. The iPhone shows it in the page instead (the bar stays small).
     var showsSent = true
+    /// Attachments around the field (the phone); nil keeps the plain bar.
+    var extras: ReplyBarExtras?
     @FocusState private var focused: Bool
     @Environment(\.jobTextScale) private var s
     @Environment(\.jobReplyBarAnswers) private var answersDecision
 
-    @MainActor public init(model: VoicePanelModel, job: Job, showsSent: Bool = true) {
-        self.model = model; self.job = job; self.showsSent = showsSent
+    @MainActor public init(model: VoicePanelModel, job: Job, showsSent: Bool = true, extras: ReplyBarExtras? = nil) {
+        self.model = model; self.job = job; self.showsSent = showsSent; self.extras = extras
     }
 
     private var draft: Binding<String> {
         Binding(get: { model.replyDrafts[job.id] ?? "" }, set: { model.replyDrafts[job.id] = $0.isEmpty ? nil : $0 })
     }
-    private var canSend: Bool { TaskMessageRequest.clean(draft.wrappedValue) != nil }
+    private var canSend: Bool {
+        if extras?.busy == true { return false }
+        // A spoken-choice answer takes words only (the server refuses attachments there).
+        return TaskMessageRequest.clean(draft.wrappedValue) != nil || (extras?.ready == true && openChoice == nil)
+    }
     /// Touch, a decision waiting and no in-card field: what's typed here is "Something else…"
     /// (sent with `choice_task_id`, so it answers that decision and nothing else).
     private var openChoice: TaskItem? {
@@ -132,7 +194,9 @@ public struct TaskReplyBar: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 8 * s) {
             if showsSent { SentMessages(model: model, jobID: job.id) }
+            if let extras { extras.above }
             HStack(alignment: .bottom, spacing: (JobLook.touch ? 4 : 8) * s) {
+                if let extras { extras.leading }
                 field
                 // Typing only. In a call you just talk (the voice says which task it went to); outside
                 // a call the keyboard's own dictation types into the field.
@@ -184,7 +248,11 @@ public struct TaskReplyBar: View {
 
     private func submit() {
         guard canSend else { return }
-        model.sendReply(jobID: job.id, choiceTaskID: openChoice?.id)
+        let choice = openChoice?.id
+        // The tray empties as the message is queued; the sent bubble shows what it carried (and Retry
+        // resends the same ids with the same client id).
+        let carried = choice == nil ? (extras?.take() ?? []) : []
+        model.sendReply(jobID: job.id, choiceTaskID: choice, attachments: carried)
     }
 }
 

@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Unreleased (plugin) — Photos and files from your iPhone and iPad
+
+- **Attach photos, screenshots, camera shots and files** (PDF, text) to a message to a job, a new job, or the call, with the **+** next to the field. Hermes looks at them the same way it does when you share on the Mac.
+- Big photos are resized and sent as JPEG; location and camera details are removed on the phone and again on your Hermes.
+- Up to 3 per message; pictures up to 2.5 MB after resizing, files up to 10 MB. Anything you attach and don't send is deleted after 30 minutes.
+
 ## Plugin 0.3.32 · iPhone build 63 — Works from anywhere, right after setup
 
 - **No Tailscale? Setup connects through Cloudflare by itself.** Your agent checks for Tailscale; if it isn't there, it turns on Cloudflare mode without asking, so your phone works from anywhere straight away. It then tells you what it did, and that Tailscale is the most private option.

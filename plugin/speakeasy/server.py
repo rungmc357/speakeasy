@@ -204,6 +204,31 @@ class Handler(BaseHTTPRequestHandler):
             if not read:
                 self._drain(length)
 
+    def _stage(self) -> None:
+        """``POST /voice/attachments``: a picture or file a paired device stages for a typed message
+        or new job. Same rules as the call upload: authenticated and size-checked before any of the
+        body is read (a 413 never reads it), never logged."""
+        read = False
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            length = -1
+        try:
+            device_id = self._auth()
+            if self.headers.get("Transfer-Encoding") or length < 0:
+                raise ServiceError(400, "Content-Length is required")
+            upload = self.service.check_stage(device_id, self.headers, length)
+            data = self._raw_body(length)
+            read = True
+            self._reply(200, self.service.accept_stage(upload, data))
+        except ServiceError as exc:
+            try:
+                self._reply(exc.status, self._error(exc))
+            except OSError:
+                return
+            if not read:
+                self._drain(length)
+
     def _raw_body(self, length: int) -> bytes:
         """Exactly ``length`` bytes, within ``upload_read_s(length)`` and never stalling longer than
         UPLOAD_RECV_S: a stalled or crawling upload can't hold a thread. A 408 says ``timeout``."""
@@ -446,6 +471,9 @@ class Handler(BaseHTTPRequestHandler):
             if upload:  # raw body: authenticated and size-checked before any of it is read
                 self._upload(upload.group(1))
                 return
+            if path == "/voice/attachments":  # the same, staged on a device for a typed message
+                self._stage()
+                return
             device_id = self._auth()
             if path == "/voice/sessions":
                 self._reply(201, self.service.create_session(self._body(MAX_SESSION_BODY),
@@ -458,11 +486,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.card_action(None, self._body(), interaction_id=card.group(1)))
                 return
             if path == "/voice/work":
-                self._reply(202, self.service.start_job(self._body()))
+                self._reply(202, self.service.start_job(self._body(), device_id))
                 return
             message = re.fullmatch(rf"/voice/work/{_ID}/message", path)
             if message:
-                self._reply(200, self.service.task_message(message.group(1), self._body()))
+                self._reply(200, self.service.task_message(message.group(1), self._body(), device_id))
                 return
             card = re.fullmatch(rf"/voice/work/{_ID}/card-action", path)
             if card:
@@ -548,7 +576,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         path = self.route
         try:
-            self._auth()
+            device_id = self._auth()
+            staged = re.fullmatch(rf"/voice/attachments/{_ID}", path)
+            if staged:
+                self._reply(200, self.service.remove_staged(device_id, staged.group(1)))
+                return
             match = re.fullmatch(rf"/voice/interactions/{_ID}/attachments/{_ID}", path)
             if not match:
                 raise ServiceError(404, "not found")

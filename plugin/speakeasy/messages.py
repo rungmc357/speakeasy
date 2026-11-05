@@ -38,6 +38,10 @@ def is_message_id(delegation_id: str | None) -> bool:
     return bool(delegation_id) and delegation_id.startswith(TYPED_PREFIX)  # type: ignore[union-attr]
 
 
+class AttachmentsNotTaken(Exception):
+    """This message can't carry pictures or files (an approval or spoken choice waiting): 409."""
+
+
 # -- delivery -------------------------------------------------------------------------------------
 
 def _waiting_question(work: dict[str, Any]) -> bool:
@@ -45,12 +49,25 @@ def _waiting_question(work: dict[str, Any]) -> bool:
     return bool(result.get("question")) and not work.get("set_aside")
 
 
+def carry(worker: "SidebandWorker", delegation_id: str, staged: list[Any] | None) -> None:
+    """Pictures and files staged on the device (``attachments.StagedPool``) go with this handoff the
+    way the Mac's panel attachments do: bound to it, so ``collect_shared`` takes them when its run
+    starts (images as image parts, files by saved path, all on the task's card). Never a capture."""
+    if not staged:
+        return
+    worker.interaction.attachments.attach_bound(delegation_id, list(staged))
+    worker.share_refs[delegation_id] = False
+    worker.no_capture.add(delegation_id)
+
+
 async def deliver(worker: "SidebandWorker", task_id: str, text: str,
-                  choice_task_id: str | None = None) -> dict[str, Any]:
+                  choice_task_id: str | None = None, staged: list[Any] | None = None) -> dict[str, Any]:
     """Give ``text`` to one task of this worker's call; runs on the worker's loop. Returns
     ``{delivered_as, task_id}`` (the task that got it: a follow-up job is a new task of the same
     job). Never says anything to the voice; the caller sends one silent note."""
     from .calls import TERMINAL
+    if staged and choice_task_id:
+        raise AttachmentsNotTaken("a spoken choice takes words only")
     if choice_task_id and choice_task_id in worker.choice_tasks:
         await worker.pick_choice(choice_task_id, text)
         return {"delivered_as": "answer", "task_id": choice_task_id}
@@ -61,6 +78,8 @@ async def deliver(worker: "SidebandWorker", task_id: str, text: str,
     if run is None or key is None:
         raise LookupError(task_id)
     worker.touch()
+    if status == "waiting_for_approval" and approval and run.run_id and staged:
+        raise AttachmentsNotTaken("answer the approval first")
     if status == "waiting_for_approval" and approval and run.run_id:
         # Free text instead of a button: a plain yes/no answers it; anything else declines the
         # request and the text becomes the instruction.
@@ -82,6 +101,7 @@ async def deliver(worker: "SidebandWorker", task_id: str, text: str,
     delegation_id = TYPED_PREFIX + secrets.token_hex(8)
     worker.delegations.add(delegation_id)
     worker.silent_ids.add(delegation_id)
+    carry(worker, delegation_id, staged)
     follow = asyncio.get_running_loop().create_task(
         worker.follow_up(delegation_id, 0, f"User: {text}", router.Part("follow_up", text, task_id)))
     worker.dispatch_tasks.add(follow)
@@ -335,7 +355,7 @@ def make_text_worker(rt: Any) -> "SidebandWorker":
 JOB_PREFIX = "job_"
 
 
-async def start_job(worker: "SidebandWorker", text: str) -> dict[str, Any]:
+async def start_job(worker: "SidebandWorker", text: str, staged: list[Any] | None = None) -> dict[str, Any]:
     """A new job from text typed in the app, no call needed (``POST /voice/work``): the same
     ``start_task`` a spoken request reaches, on this worker. Runs on the worker's loop and returns
     ``{task_id}`` once Hermes has the run (or it ended), at most START_WAIT_S later; the job keeps
@@ -343,6 +363,7 @@ async def start_job(worker: "SidebandWorker", text: str) -> dict[str, Any]:
     from .calls import TERMINAL
     task_id = JOB_PREFIX + secrets.token_hex(8)
     worker.touch()
+    carry(worker, task_id, staged)
     job = asyncio.get_running_loop().create_task(worker.start_task(task_id, 0, f"User: {text}", text))
     worker.dispatch_tasks.add(job)
     job.add_done_callback(worker.dispatch_tasks.discard)
