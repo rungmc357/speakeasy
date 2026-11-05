@@ -963,8 +963,15 @@ titles and chat names; `search` says which ran (`fts`, or `like` when the index 
    "state": "running", "run_ids": ["run_0002"]}],
  "next_cursor": "1793890001.2|speakeasy_task_2a85e2b31d574f068443206e",
  "filters": [{"id": "speakeasy", "label": "Speakeasy"}, {"id": "discord", "label": "Discord"}, "..."],
+ "sources": [{"source": "speakeasy", "count": 12}, {"source": "discord", "count": 3}],
  "search": null}
 ```
+
+- `sources`: the `filters` ids the person actually has listable sessions under, with how many, in
+  `filters` order; ids with none are left out. Counted over every visible session, not just this
+  page, and regardless of `q` and `source`, so it's the same on every page. The apps offer only
+  these as source filters and hide the filter row when there's one source (added after plugin 0.3.33;
+  older plugins don't send it and the apps fall back to the sources of the rows they've loaded).
 
 - `source`: `speakeasy` for a Hermes API session one of Speakeasy's tasks ran in, else Hermes'
   source (`discord`, `telegram`, `cli`, `gui`, `cron`, …). `source_label` is ready to show

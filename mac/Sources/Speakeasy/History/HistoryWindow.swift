@@ -84,7 +84,9 @@ final class DemoHistoryBackend: HistoryBackend {
         let start = Int(query.cursor ?? "0") ?? 0
         let slice = Array(all.dropFirst(start).prefix(query.limit))
         let next = start + slice.count < all.count ? String(start + slice.count) : nil
-        return HistoryPage(sessions: slice, nextCursor: next, filters: HistoryList.defaultFilters)
+        let counts = Dictionary(grouping: sessions.compactMap { HistorySources.filterID(for: $0.source) }, by: { $0 }).mapValues(\.count)
+        return HistoryPage(sessions: slice, nextCursor: next, filters: HistoryList.defaultFilters,
+                           sources: HistoryList.defaultFilters.compactMap { f in counts[f.id].map { HistorySourceCount(source: f.id, count: $0) } })
     }
 
     func conversation(_ sessionID: String) async throws -> HistoryConversation {

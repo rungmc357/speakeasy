@@ -87,6 +87,22 @@ final class HistoryBrowsingTests: XCTestCase {
         XCTAssertEqual(list.filterChoices.map(\.label), ["Desktop"])
     }
 
+    func testListOffersOnlySourcesWithSessions() throws {
+        var list = HistoryList()
+        let q = list.reset()
+        let row = HistorySession(id: "d1", title: "D", source: "discord", sourceLabel: "Discord", lastActivity: Date(), preview: "")
+        // Older plugin (no facet): the loaded rows' sources; one source → no picker.
+        list.apply(HistoryPage(sessions: [row], filters: HistoryList.defaultFilters), for: q)
+        XCTAssertEqual(list.shownFilters.map(\.id), ["discord"])
+        XCTAssertFalse(list.showsSourcePicker)
+        // The facet wins over the loaded rows (it counts every page).
+        let q2 = list.reset()
+        list.apply(HistoryPage(sessions: [row], filters: HistoryList.defaultFilters,
+                               sources: [HistorySourceCount(source: "speakeasy", count: 2), HistorySourceCount(source: "discord", count: 1)]), for: q2)
+        XCTAssertEqual(list.shownFilters.map(\.id), ["speakeasy", "discord"])
+        XCTAssertTrue(list.showsSourcePicker)
+    }
+
     // MARK: Send by id
 
     func testSessionPageSendsToThatSessionByID() {
