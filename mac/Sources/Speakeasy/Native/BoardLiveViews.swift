@@ -32,7 +32,7 @@ struct BoardSectionLabel: View {
     var body: some View {
         HStack(spacing: 6) {
             Circle().fill(color).frame(width: 5, height: 5)
-            Text(text.uppercased()).font(.system(size: 10.5, weight: .bold)).tracking(0.9).foregroundStyle(Color.white.opacity(0.62))
+            Text(text.uppercased()).font(.system(size: 10.5, weight: .bold)).tracking(0.9).foregroundStyle(Live.ink.opacity(0.62))
             Text("\(count)").font(.system(size: 10.5, weight: .semibold).monospacedDigit()).foregroundStyle(.tertiary)
         }
         .padding(.leading, 2)
@@ -53,7 +53,7 @@ struct RunningTile: View {
         let waiting = info.status == "waiting_on_task"
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 7) {
-                LiveDot(color: waiting ? Color.white.opacity(0.4) : Live.brass, size: 6, active: !waiting)
+                LiveDot(color: waiting ? Live.ink.opacity(0.4) : Live.brass, size: 6, active: !waiting)
                 Text(job.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 Spacer(minLength: 4)
                 if waiting {
@@ -71,13 +71,13 @@ struct RunningTile: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(hover ? 0.085 : 0.055)))
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Live.ink.opacity(hover ? 0.085 : 0.055)))
         .background(alignment: .topLeading) {
             RadialGradient(colors: [Live.brass.opacity(0.16), .clear], center: .topLeading, startRadius: 0, endRadius: 160)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(focused ? JobStyle.blueInk : Color.white.opacity(hover ? 0.14 : 0.07), lineWidth: focused ? 1.5 : 0.6))
+            .strokeBorder(focused ? JobStyle.blueInk : Live.ink.opacity(hover ? 0.14 : 0.07), lineWidth: focused ? 1.5 : 0.6))
         .contentShape(Rectangle())
         .onTapGesture { model.onOpenJob(job.id) }
         .onHover { hover = $0 }
@@ -98,7 +98,7 @@ struct MiniGlance: View {
                     let shown = min(total, 25)
                     ForEach(0..<shown, id: \.self) { i in
                         let at = Double(i) / Double(shown) * Double(total)
-                        Circle().fill(at < Double(passed) ? Live.green : at < Double(passed + failed) ? Live.red : Color.white.opacity(0.12))
+                        Circle().fill(at < Double(passed) ? Live.green : at < Double(passed + failed) ? Live.red : Live.ink.opacity(0.12))
                             .frame(width: 6, height: 6)
                     }
                 }
@@ -114,7 +114,7 @@ struct MiniGlance: View {
         case let .diff(files, added, removed):
             HStack(spacing: 8) {
                 Text("\(files) \(files == 1 ? "file" : "files")").foregroundStyle(.secondary)
-                Text("+\(added)").foregroundStyle(Live.green)
+                Text("+\(added)").foregroundStyle(Live.green.ink)
                 Text("−\(removed)").foregroundStyle(Live.red)
                 Spacer(minLength: 0)
             }
@@ -163,8 +163,8 @@ struct SuggestionRow: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 11).frame(minHeight: 34)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.05)))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5))
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Live.ink.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Live.ink.opacity(0.06), lineWidth: 0.5))
         .help("Say this in a call")
     }
 }

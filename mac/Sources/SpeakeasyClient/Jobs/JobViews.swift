@@ -74,6 +74,30 @@ public enum JobLook {
     public static let radius: CGFloat = 16
 }
 
+extension Color {
+    /// `dark` in a dark appearance, `light` in a light one, resolved as it draws. The Mac panel was
+    /// drawn on its dark material first; this keeps dark exactly as drawn and gives light its own.
+    /// Touch keeps its one look (`dark`).
+    public static func scheme(dark: Color, light: Color) -> Color {
+        #if os(macOS)
+        Color(nsColor: NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(dark) : NSColor(light) })
+        #else
+        dark
+        #endif
+    }
+
+    /// This accent as text: itself on the dark panel, half-way to black on the light one, where the
+    /// pale accents wash out (brass, amber, green, red and blue all land near 4.5:1 or better).
+    public var ink: Color {
+        #if os(macOS)
+        let base = NSColor(self)
+        return .scheme(dark: self, light: Color(nsColor: base.blended(withFraction: 0.5, of: .black) ?? base))
+        #else
+        self
+        #endif
+    }
+}
+
 extension View {
     /// On touch: a grouped section (16 pt in, continuous corners, no border). On the Mac: unchanged.
     @ViewBuilder public func touchCard(padding: CGFloat = 16) -> some View {
@@ -89,9 +113,10 @@ extension View {
 
 public enum JobStyle {
     #if os(macOS)
-    // Mac redesign: the same one accent as touch, a touch lighter for text on the dark panel.
+    // Mac redesign: the same one accent as touch, a touch lighter for text on the dark panel (and
+    // deeper on the light one).
     public static let blue = JobLook.brass
-    public static let blueInk = Color(red: 0.90, green: 0.73, blue: 0.42)     // #e6ba6b
+    public static let blueInk = Color(red: 0.90, green: 0.73, blue: 0.42).ink   // #e6ba6b
     /// Text on `blue`.
     public static let onBlue = JobLook.brassInk
     #else
@@ -100,9 +125,10 @@ public enum JobStyle {
     public static let blueInk = JobLook.brass
     public static let onBlue = JobLook.brassInk
     #endif
-    public static let amber = Color(red: 0.94, green: 0.74, blue: 0.36)       // #f0bd5c
-    public static let green = Color(red: 0.50, green: 0.85, blue: 0.60)       // #7fd99a
-    public static let red = Color(red: 0.94, green: 0.54, blue: 0.48)         // #f08a7a
+    // Status inks: as drawn on the dark panel, deepened on the light one (`ink`).
+    public static let amber = Color(red: 0.94, green: 0.74, blue: 0.36).ink   // #f0bd5c
+    public static let green = Color(red: 0.50, green: 0.85, blue: 0.60).ink   // #7fd99a
+    public static let red = Color(red: 0.94, green: 0.54, blue: 0.48).ink     // #f08a7a
 
     public enum Pill { case amber, blue, green, red, grey }
     public static func pillColors(_ p: Pill) -> (Color, Color) {
@@ -1275,7 +1301,7 @@ public struct LiveSteps: View {
                         if task.canStop, let run = info.runID, !JobLook.touch, !hostNow {
                             Button { model.onStopTask(run) } label: {
                                 Text("Stop").font(.system(size: 11.5 * s, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 26)
-                                    .foregroundStyle(Color(red: 1, green: 0.7, blue: 0.66))
+                                    .foregroundStyle(Color.scheme(dark: Color(red: 1, green: 0.7, blue: 0.66), light: Color(red: 0.62, green: 0.16, blue: 0.14)))
                                     .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(JobStyle.stopRed.opacity(0.28)))
                                     .contentShape(Rectangle())
                             }

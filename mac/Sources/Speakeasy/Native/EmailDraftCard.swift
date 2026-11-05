@@ -53,7 +53,7 @@ struct EmailDraftCard: View {
                 Spacer()
                 if let label = EmailDraft(draftID: draft.draftID, sha256: draft.sha256, status: status).stateLabel {
                     Text(label).font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(status == .failed ? Tokens.red : (status == .sent ? Tokens.green : .secondary))
+                        .foregroundStyle(status == .failed ? Tokens.red : (status == .sent ? Tokens.green.ink : .secondary))
                         .accessibilityLabel("Status: \(label)")
                 }
             }
@@ -84,7 +84,7 @@ struct EmailDraftCard: View {
             }
             if let notice {
                 Label(notice, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Tokens.amber)
+                    .font(.system(size: 10.5, weight: .medium)).foregroundStyle(Tokens.amber.ink)
             }
             if revising && actionable {
                 VStack(alignment: .leading, spacing: 6) {
