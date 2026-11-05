@@ -477,6 +477,20 @@ public final class ServerClient: @unchecked Sendable {
         TypedText.taken(try await post(TypedText.path(interactionID: interactionID), TypedText.body(text)))
     }
 
+    /// Stop one task by id, with or without a call (plugins with `task_stop`): a panel row's Stop.
+    public func stopTask(runID: String) async throws {
+        _ = try await post("/voice/work/\(escape(runID))/stop", [String: Any]())
+    }
+
+    /// Stop the newest of a session's tasks that is still running (409 = that one wasn't; try the next).
+    public func stopSession(runIDs: [String]) async throws {
+        var last: Error?
+        for run in runIDs.reversed() {
+            do { try await stopTask(runID: run); return } catch let e as HTTPError where e.status == 409 { last = e }
+        }
+        if let last { throw last }
+    }
+
     public func cancelBackend(interactionID: String, runID: String) async throws {
         _ = try await post("/voice/interactions/\(escape(interactionID))/cancel-backend", ["run_id": runID])
     }

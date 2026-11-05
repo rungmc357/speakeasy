@@ -396,6 +396,9 @@ struct HistoryRowMenu: View {
                 NSPasteboard.general.setString(url.absoluteString, forType: .string)
             }
         }
+        if session.state == .running, !session.runIDs.isEmpty {
+            Button("Stop", role: .destructive) { store.act(.stop(session.runIDs), on: session.id) }
+        }
         Divider()
         if session.archived {
             Button("Unarchive") { store.act(.archive(false), on: session.id) }

@@ -19,6 +19,8 @@ protocol HistoryBackend: AnyObject {
 /// What the row's context menu (and swipes) do to a conversation.
 enum HistorySessionAction: Equatable {
     case rename(String), pin(Bool), archive(Bool), read
+    /// Stop the session's running task (its run ids, newest last).
+    case stop([String])
 }
 
 extension HistoryBackend {
@@ -42,6 +44,7 @@ final class LiveHistoryBackend: HistoryBackend {
         case .pin(let on): try await api.pinSession(sessionID, pinned: on)
         case .archive(let on): try await api.archiveSession(sessionID, archived: on)
         case .read: try await api.markSessionRead(sessionID)
+        case .stop(let runs): try await api.stopSession(runIDs: runs)
         }
     }
 }
@@ -140,6 +143,8 @@ final class HistoryStore: ObservableObject {
             removed = list.remove(id)
             if on, let row = removed?.0 { showUndo(row.title, id) }
             if target == .session(id), on { target = nil }
+        case .stop:
+            list.update(id) { $0.state = .idle }   // the live feed brings the cancelled state
         }
         actionError = nil
         Task { [weak self] in

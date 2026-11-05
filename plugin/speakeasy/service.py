@@ -76,6 +76,7 @@ IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model 
 EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the call's event channel
 CAPABILITIES["job_subagents"] = True  # helpers a task started (delegate_task) on its work object (subagents.py)
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
+CAPABILITIES["task_stop"] = True  # POST /voice/work/{run_id}/stop: stop one task by id, with or without a call
 CAPABILITIES["start_jobs"] = True  # POST /voice/work: a new job from typed text, no call needed (the app's Update button)
 CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the pair response): every address of this Hermes
 # POST /voice/interactions/{id}/input-text: a turn typed to the call itself (same as the top-level
@@ -1188,6 +1189,29 @@ class VoiceService:
             raise ServiceError(400, "exact run_id is required")
         with interaction.lock:
             backend = self._run(interaction, run_id)
+        return self._cancel(interaction, backend, interaction_id)
+
+    def stop_task(self, run_id: str) -> dict[str, Any]:
+        """``POST /voice/work/{run_id}/stop``: stop one running task by id, with or without a call (a
+        panel row's Stop). Finds the call or voiceless worker holding it and stops it as a call's Stop does."""
+        if not ID_RE.fullmatch(run_id or ""):
+            raise ServiceError(404, "I couldn't find that task.")
+        key = self.store.key_for_run(run_id) or self.store.key_for_task(run_id)
+        with self.lock:
+            holders = list(self.interactions.values())
+        text = self._text_worker
+        if text is not None and getattr(text, "interaction", None) is not None:
+            holders.append(text.interaction)
+        for interaction in holders:
+            with interaction.lock:
+                found = next((r for r in interaction.runs.values()
+                              if r.run_id and (r.run_id == run_id or (key is not None and r.idem_key == key))), None)
+            if found is not None:
+                return self._cancel(interaction, found, interaction.interaction_id)
+        raise ServiceError(409, "That task isn't running here, so there's nothing to stop.")
+
+    def _cancel(self, interaction: Interaction, backend: Any, interaction_id: str | None) -> dict[str, Any]:
+        with interaction.lock:
             if backend.status in TERMINAL or backend.status in {"ambiguous", "cancel_requested"}:
                 raise ServiceError(409, "no active backend run")
             backend.status = "cancel_requested"

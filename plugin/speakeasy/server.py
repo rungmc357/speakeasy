@@ -588,6 +588,10 @@ class Handler(BaseHTTPRequestHandler):
             if message:
                 self._reply(200, self.service.task_message(message.group(1), self._body(), device_id))
                 return
+            stop = re.fullmatch(rf"/voice/work/{_ID}/stop", path)
+            if stop:
+                self._reply(202, self.service.stop_task(stop.group(1)))
+                return
             card = re.fullmatch(rf"/voice/work/{_ID}/card-action", path)
             if card:
                 self._reply(200, self.service.card_action(card.group(1), self._body()))
