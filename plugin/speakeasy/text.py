@@ -760,42 +760,156 @@ there is are was be do did like well just maybe i you we me my huh hmm right coo
 
 
 _TITLE_LEAD = re.compile(
-    r"(?i)^(?:(?:hey|ok|okay|so|also|and|then|plus|oh|um+|uh+|er+|please|todd|hermes|"
-    r"can you|could you|would you|will you|can we|could we|i need you to|i want you to|i'?d like you to|"
-    r"go ahead and|let'?s|now)[\s,]+)+")
+    r"(?i)^(?:(?:hey|ok|okay|so|also|and|then|plus|oh|um+|uh+|er+|please|todd|hermes|yo|alright|all right|"
+    r"actually|by the way|separately|can you|could you|would you|will you|can we|could we|i need you to|"
+    r"i want you to|i'?d like you to|go ahead and|let'?s|now)[\s,]+)+")
+# A clause that opens with these asks for something; a later one wins over an earlier aside.
+_TITLE_ASK = re.compile(r"(?i)^(?:(?:also|and|then|so|um+|uh+|todd|hermes|hey)[\s,]+)*(?:can you|could you|would you|"
+                        r"will you|please|i need you to|i want you to|go ahead and)\b")
 # A self-correction mid-request ("Turn on my be- er, sorry, turn off..."): the words after it count.
 _TITLE_CORRECTION = re.compile(r"(?i)(?:\b(?:sorry|i mean|i meant|no wait|scratch that|or rather)\b|\ber\b,|\w+-\s)[\s,.;:!-]*")
-_TITLE_CLAUSE = re.compile(r"(?i)\s*(?:[,;:]|\.\s|\s(?:and then|then|and also|but)\s)\s*")
+_TITLE_CLAUSE = re.compile(r"(?i)\s*(?:[,;:]|[.?!](?:\s|$)|\s(?:and then|then|and also|but)\s)\s*")
 _TITLE_DANGLING = set("""a an the my our your his her their its to of for in at with from into onto by and or but
 so than as about like then this these those some any please now""".split())
+# Words a cut must not end on either: a sentence stopped here is still going ("What's the weather going to").
+_TITLE_UNFINISHED = _TITLE_DANGLING | set("""is are was were be been being going gonna get still will would can could
+should have has had if when where which who whose that we i you they he she um uh just really also very look looking
+want need try trying make let""".split())
+# Trailing words a whole request may drop (a polite tail, not part of the task).
+_TITLE_SOFT_TAIL = {"please", "now", "right", "um", "uh", "like", "too", "actually", "todd", "thanks"}
+# A clause that opens like this is a topic aside or a condition, not the task itself.
+_TITLE_ASIDE = re.compile(r"(?i)^(?:for|on|about|regarding|with|in|during|if|when|because|since|while|although|"
+                          r"like|i guess|i think|i mean|i don'?t know)\b")
+# Notes the call adds to a request: what the user was looking at, what it follows up.
+_TITLE_NOTE = re.compile(r"\s*\((?:[^():]{0,40}\bis looking at|following up)\s*:", re.I)
+# Words that point at something said before ("do both", "fix that", "ship it").
+_TITLE_REFERENT = {"it", "that", "this", "them", "those", "these", "both", "others", "other", "one", "ones",
+                   "there", "same", "again", "what", "her", "him", "they"}
 TITLE_WORDS = 8
+TITLE_WORDS_WHOLE = 10  # a clause this short is kept whole rather than cut mid-phrase
+_PRODUCT_NAMES = (
+    (re.compile(r"(?i)\bspeak[\s-]?easy\b"), "Speakeasy"),
+    (re.compile(r"(?i)\bherm[eè]s\b"), "Hermes"),
+    (re.compile(r"(?i)\btest[\s-]?flight\b"), "TestFlight"),
+    (re.compile(r"(?i)\bchat[\s-]?gpt\b"), "ChatGPT"),
+    (re.compile(r"(?i)\bmac[\s-]?mini\b"), "Mac mini"),
+    (re.compile(r"(?i)\bclaude[\s-]?code\b"), "Claude Code"),
+    (re.compile(r"(?i)\bopen[\s-]?ai\b"), "OpenAI"),
+)
+
+
+def fix_product_names(title: str) -> str:
+    """Spell the products a voice transcript mangles the way they are written ("Speak Easy" ->
+    "Speakeasy", "Hermès" -> "Hermes", "Test flight" -> "TestFlight")."""
+    for pattern, name in _PRODUCT_NAMES:
+        title = pattern.sub(name, title)
+    return title
 
 
 def _title_content(text: str) -> list[str]:
     return [w for w in re.findall(r"[a-z0-9']+", text.lower()) if w not in _TITLE_FILLER]
 
 
+def request_notes(request: str | None) -> tuple[str, str]:
+    """A request split into what was said and the notes the call appended to it
+    ("(Geo is looking at: ...)", "(following up: ...)")."""
+    text = " ".join(str(request or "").split())
+    match = _TITLE_NOTE.search(text)
+    if not match:
+        return text, ""
+    return text[:match.start()].strip(), text[match.start():].strip()
+
+
+def is_fragment(request: str | None) -> bool:
+    """True for a request that names nothing on its own ("Fix and ship", "Do both", "Gonna win",
+    "Don't worry about that"): its name has to come from what it answers or continues."""
+    said, _ = request_notes(notice_text(request, 1200) or "")
+    said = _TITLE_LEAD.sub("", said.strip(" ,.;:!?-")).strip()
+    content = _title_content(said)
+    if len(content) < 3:
+        return True
+    words = set(re.findall(r"[a-z']+", said.lower()))
+    return len(content) <= 5 and bool(words & _TITLE_REFERENT)
+
+
+def _trim_tail(words: list[str], cut: bool) -> list[str]:
+    tail = _TITLE_UNFINISHED if cut else _TITLE_DANGLING
+    while len(words) > 2:
+        last = re.sub(r"[^a-z']", "", words[-1].lower())
+        if last in tail or last in _TITLE_SOFT_TAIL or words[-1].endswith("-"):
+            words.pop()
+            continue
+        break
+    return words
+
+
+def _best_clause(text: str) -> tuple[str, bool]:
+    """The clause that names the task, and whether the request went on past it."""
+    clauses = [c for c in _TITLE_CLAUSE.split(text) if c and c.strip(" ,.;:!?-")]
+    if len(clauses) <= 1:
+        return text, False
+    asks = [c for c in clauses[1:] if _TITLE_ASK.match(c) and len(_title_content(c)) >= 2]
+    if asks and not _TITLE_ASK.match(clauses[0]):
+        chosen = asks[0]  # "They turned off again. Can you turn the lamps back on": the ask is the task
+    else:
+        chosen = next((c for c in clauses if len(_title_content(c)) >= 3 and not _TITLE_ASIDE.match(c.strip())),
+                      None) or next((c for c in clauses if len(_title_content(c)) >= 2), clauses[0])
+    return chosen, chosen is not clauses[-1]
+
+
 def short_title(request: str | None) -> str | None:
-    """A to-do style label from the spoken request (no classifier). Self-corrections are dropped,
-    the first clause is used when it stands on its own, and a cut never ends on a dangling word
-    ("Turn off the office lamp", not "Turn off the office lamp, turn")."""
+    """A to-do style label from the spoken request (no classifier). The call's notes and
+    self-corrections are dropped, the clause that names the task is used, a short clause is kept
+    whole, and a cut never ends mid-phrase ("Turn off the office lamp", not "Turn off the office
+    lamp, turn"; "What's the weather tomorrow", not "What's the weather going to look")."""
+    text = notice_text(request, 400)
+    if not text:
+        return None
+    text, _ = request_notes(text)
+    parts = _TITLE_CORRECTION.split(text)
+    if len(parts) > 1:
+        after = parts[-1].strip(" ,.;:!?-")
+        if len(_title_content(after)) >= 2:
+            text = after
+    text = _TITLE_LEAD.sub("", text.strip(" ,.;:!?-")).strip()
+    text, cut = _best_clause(text)
+    text = _TITLE_LEAD.sub("", text.strip(" ,.;:!?-")).strip()
+    words = text.rstrip(".!?").split()
+    if not words or len(_title_content(text)) < 2:
+        return None  # "Uh, sure", "that": no name is better than a name made of filler
+    if len(words) > TITLE_WORDS_WHOLE:
+        words, cut = words[:TITLE_WORDS], True
+    while len(" ".join(words)) > 60 and len(words) > 2:
+        words, cut = words[:-1], True
+    words = _trim_tail(words, cut)
+    title = fix_product_names(" ".join(words).strip(" ,.;:!?-"))
+    return (title[0].upper() + title[1:])[:60] if title else None
+
+
+def v1_short_title(request: str | None) -> str | None:
+    """The label plugin 0.3.x saved (first clause, eight words), so a task named by it still
+    counts as a stand-in that a proper name may replace."""
     text = notice_text(request, 200)
     if not text:
         return None
+    lead = re.compile(r"(?i)^(?:(?:hey|ok|okay|so|also|and|then|plus|oh|um+|uh+|er+|please|todd|hermes|"
+                      r"can you|could you|would you|will you|can we|could we|i need you to|i want you to|"
+                      r"i'?d like you to|go ahead and|let'?s|now)[\s,]+)+")
+    clause = re.compile(r"(?i)\s*(?:[,;:]|\.\s|\s(?:and then|then|and also|but)\s)\s*")
     parts = _TITLE_CORRECTION.split(text)
     if len(parts) > 1:
         after = parts[-1].strip(" ,.;:!-")
         if len(_title_content(after)) >= 2:
             text = after
-    text = _TITLE_LEAD.sub("", text.strip(" ,.;:!-")).strip()
-    clauses = [c for c in _TITLE_CLAUSE.split(text) if c.strip()]
+    text = lead.sub("", text.strip(" ,.;:!-")).strip()
+    clauses = [c for c in clause.split(text) if c.strip()]
     if clauses and len(_title_content(clauses[0])) >= 2:
         text = clauses[0]
-    text = _TITLE_LEAD.sub("", text).strip()
+    text = lead.sub("", text).strip()
     words = text.rstrip(".!?").split()
     if not words or len(_title_content(text)) < 2:
-        return None  # "Uh, sure", "that": no name is better than a name made of filler
-    words = words[:TITLE_WORDS]
+        return None
+    words = words[:8]
     while len(words) > 2 and (re.sub(r"[^a-z']", "", words[-1].lower()) in _TITLE_DANGLING or words[-1].endswith("-")):
         words.pop()
     title = " ".join(words).strip(" ,.;:!-")
@@ -815,6 +929,29 @@ def legacy_short_title(request: str | None) -> str | None:
         return None
     title = " ".join(words[:6])
     return (title[0].upper() + title[1:])[:60]
+
+
+def stand_in_titles(request: str | None) -> set[str]:
+    """Every word-cut label this or an older version may have shown for *request*."""
+    asked = notice_text(request, 1200) or ""
+    return {t for t in (short_title(asked), v1_short_title(asked), legacy_short_title(asked)) if t}
+
+
+def title_input(request: str, *, parent: str | None = None, parent_request: str | None = None,
+                recent: list[dict[str, str]] | None = None) -> str:
+    """What the task titler reads: the request, the task it continues or answers, and the last
+    few turns of the call (so "that", "both" and "ship it" can be named)."""
+    lines = [f"Request: {' '.join(request.split())[:1000]}"]
+    if parent or parent_request:
+        about = " — ".join(x for x in ((parent or "").strip(), " ".join((parent_request or "").split())[:400]) if x)
+        lines.append(f"It continues or answers this earlier task: {about}")
+    turns = [t for t in (recent or []) if (t.get("text") or "").strip()][-6:]
+    if turns:
+        lines.append("Recent conversation on the call (oldest first):")
+        for turn in turns:
+            role = "User" if turn.get("role") == "user" else "Assistant"
+            lines.append(f"{role}: {' '.join(str(turn['text']).split())[:300]}")
+    return "\n".join(lines)
 
 
 _HOME_STATE = re.compile(

@@ -20,7 +20,8 @@ from . import activity as activity_mod
 from .emails import canonical_json, draft_sha256
 from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
-                   legacy_short_title, short_title, valid_short_status)
+                   short_title, valid_short_status)
+from .text import fix_product_names, stand_in_titles as _stand_ins
 
 STALE_AFTER_S = 90
 MAX_REVIEWS = 3  # finished-image review cards carried onto the call panel
@@ -62,8 +63,12 @@ def _is_stand_in(title: str | None, request: str | None, continued: str | None =
     in a chat thread shows the thread's name, which a rename here would split from the thread itself."""
     if '"thread_id"' in (continued or ""):
         return False
-    asked = notice_text(request, 1200) or ""
-    return not title or title in {short_title(asked), legacy_short_title(asked)}
+    if not title or title in PLACEHOLDER_TITLES or title.endswith("…"):
+        return True  # no name, a generic placeholder, or a sentence cut off with an ellipsis
+    return title in _stand_ins(request)
+
+
+PLACEHOLDER_TITLES = {"Voice task", "Quick answer", "A quick choice"}
 
 
 RECEIPTS = {"Request received", "Started working"}  # milestones that are receipts, not progress
@@ -368,6 +373,7 @@ class StateStore:
         never used to name its job. A task's own new title refines the job it first named."""
         with self._lock, self._db:
             if title:
+                title = fix_product_names(title)
                 self._db.execute("UPDATE runs SET title=? WHERE idem_key=?", (title, key))
                 name = None if thread else job_name(title)
                 if name:
@@ -1048,6 +1054,17 @@ class StateStore:
                 break
         return out
 
+    def title_context(self, key: str) -> tuple[str | None, str | None]:
+        """The task just before this one on the same call: (its title, its request). What a short
+        follow-up ("Fix and ship") is about, for the titler."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT p.title, (SELECT e.text FROM work_events e WHERE e.idem_key=p.idem_key AND e.kind='request' "
+                "ORDER BY e.seq LIMIT 1) FROM runs r JOIN runs p ON p.interaction_id=r.interaction_id "
+                "AND p.rowid<r.rowid AND p.title IS NOT NULL WHERE r.idem_key=? ORDER BY p.rowid DESC LIMIT 1",
+                (key,)).fetchone()
+        return (row[0], row[1]) if row else (None, None)
+
     def rename_stand_in(self, key: str, title: str) -> bool:
         """Set the app's on-device title only while the task still shows its stand-in label, checked
         and written under one lock: a name the cloud titler or a chat thread gave it always wins."""
@@ -1057,14 +1074,14 @@ class StateStore:
                 "AND e.kind='request' ORDER BY e.seq LIMIT 1) FROM runs r WHERE r.idem_key=?", (key,)).fetchone()
             if not row or not _is_stand_in(row[0], row[2], row[1]):
                 return False
+            title = fix_product_names(title)
             self._db.execute("UPDATE runs SET title=? WHERE idem_key=?", (title, key))
             name = job_name(title)
             if name:
                 self._db.execute("UPDATE runs SET own_title=? WHERE idem_key=?", (title, key))
                 # The job this task named takes the new name only while it still has the stand-in's
                 # name; a job named any other way keeps its name.
-                stand_ins = {n for n in (job_name(row[0]), job_name(short_title(notice_text(row[2], 1200) or "")),
-                                         job_name(legacy_short_title(notice_text(row[2], 1200) or "")),
+                stand_ins = {n for n in (job_name(row[0]), *(job_name(t) for t in _stand_ins(row[2])),
                                          "Voice task") if n}
                 marks = ",".join("?" * len(stand_ins))
                 self._db.execute(f"UPDATE jobs SET name=?, updated=? WHERE from_key=? AND name IN ({marks})",

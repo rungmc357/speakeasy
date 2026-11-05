@@ -740,24 +740,29 @@ class SidebandWorker:
         return self.rt.names
 
     def name_task(self, idem: str, request: str | None) -> None:
-        """Show the instant word-based label now, then swap in a proper name once Hermes' titler
-        answers, unless something better (a thread's name) has replaced the label meanwhile."""
+        """Show the instant word-based label now, then swap in a proper name once the titler answers,
+        unless something better (a thread's name) has replaced the label meanwhile. A request that
+        names nothing itself ("Fix and ship", "Do both") shows the task it answers until then, and
+        the titler sees that task and the call's last turns, so it can say what "that" was."""
         provisional = short_title(request)
-        own = provisional is not None
-        if not own:
+        parent_key = self._parent_key(idem)
+        parent = self._title_of(parent_key)
+        fragment = text_mod.is_fragment(request)
+        if (fragment or provisional is None) and parent:
             # "Leave it", "Yeah, ship it": a confirmation names nothing itself; it carries on the task
             # it answers, so it takes that task's name rather than none at all.
-            provisional = self._parent_title(idem)
+            provisional = parent
         self.store.set_title(idem, provisional)
         if not request or not provisional:
             return
+        context = self._title_context(request, parent_key, parent)
         titler = self.rt.title_call or router.smart_title
         polisher = self.rt.polish_call or router.polish_request
         statuser = self.rt.status_call or router.working_status
         planner = self.rt.plan_call or router.plan_steps
 
         async def upgrade() -> None:
-            title, polished, status, plan = await asyncio.gather(asyncio.to_thread(titler, request),
+            title, polished, status, plan = await asyncio.gather(asyncio.to_thread(titler, context),
                                                                  asyncio.to_thread(polisher, request),
                                                                  asyncio.to_thread(statuser, request),
                                                                  asyncio.to_thread(planner, request))
@@ -769,7 +774,7 @@ class SidebandWorker:
                 handed = polished or request
                 changed = self.store.handoff_status(
                     idem, status, f"Handed to {self.names.assistant_name}: {handed}") or changed
-            if own and title and title != provisional and self.store.title(idem) == provisional:
+            if title and title != provisional and self.store.title(idem) == provisional:
                 self.store.set_title(idem, title)
                 changed = True
             if polished:
@@ -805,18 +810,41 @@ class SidebandWorker:
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
 
-    def _parent_title(self, idem: str) -> str | None:
-        """The name of the newest other task on this call (what a bare confirmation goes on with)."""
+    def _parent_key(self, idem: str) -> str | None:
+        """The newest other named task on this call (what a bare confirmation goes on with)."""
         with self.interaction.lock:
             keys = [r.idem_key for r in self.interaction.runs.values() if r.idem_key and r.idem_key != idem]
         for key in reversed(keys):
-            try:
-                title = self.store.title(key)
-            except Exception:
-                title = None
-            if title:
-                return title
+            if self._title_of(key):
+                return key
         return None
+
+    def _title_of(self, key: str | None) -> str | None:
+        if not key:
+            return None
+        try:
+            return self.store.title(key)
+        except Exception:
+            return None
+
+    def _parent_title(self, idem: str) -> str | None:
+        """The name of the newest other task on this call."""
+        return self._title_of(self._parent_key(idem))
+
+    def _title_context(self, request: str, parent_key: str | None = None, parent: str | None = None,
+                       earlier: str | None = None) -> str:
+        """The titler's input: the request, the task it continues, and the call's last turns."""
+        parent_request = earlier
+        if parent_request is None and parent_key:
+            try:
+                parent_request = self.store.request_text(parent_key)
+            except Exception:
+                parent_request = None
+        try:
+            recent = [t for t in self.turns()[-7:] if t.get("text") and t["text"].strip() != request.strip()][-6:]
+        except Exception:
+            recent = []
+        return text_mod.title_input(request, parent=parent, parent_request=parent_request, recent=recent)
 
     def retitle(self, idem: str, request: str | None, earlier: str | None = None) -> None:
         """Rename a task for what it has become: the titler sees the first ask and the newest one,
@@ -825,7 +853,11 @@ class SidebandWorker:
         if not request:
             return
         titler = self.rt.title_call or router.smart_title
-        prompt = f"{earlier}\nThen: {request}" if earlier and earlier.strip() != request.strip() else request
+        if earlier and earlier.strip() != request.strip():
+            prompt = self._title_context(request, parent=current, earlier=earlier)
+        else:
+            parent_key = self._parent_key(idem) if text_mod.is_fragment(request) else None
+            prompt = self._title_context(request, parent_key, self._title_of(parent_key))
 
         async def upgrade() -> None:
             title = await asyncio.to_thread(titler, prompt)
@@ -1054,7 +1086,9 @@ class SidebandWorker:
         listed = "\n".join(f"{i + 1}. {o}" for i, o in enumerate(options))
         try:
             self.store.reserve_run(idem, self.interaction.interaction_id, delegation_id, 0)
-            self.store.set_title(idem, notice_text(question, 60) or "A quick choice")
+            # A short question names its card as asked; a long one gets a clean cut, never an ellipsis.
+            whole = notice_text(question, 200) or ""
+            self.store.set_title(idem, (whole if len(whole) <= 60 else short_title(question)) or "A quick choice")
             self.store.update_run(idem, None, "completed")
             self.store.set_result(idem, {"spoken": question, "full": f"**{question}**\n{listed}",
                                          "question": view, "views": [view]})
@@ -1063,6 +1097,8 @@ class SidebandWorker:
             return None
         logger.info("speakeasy: spoken choice shown as a card (%d options)", len(options))
         self.publish()
+        # Name the card for the decision, not the first words of the question.
+        self.retitle(idem, f"Question put to the user: {question} Options: {'; '.join(options)}")
         return delegation_id
 
     def close_choices(self) -> None:
