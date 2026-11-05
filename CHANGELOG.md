@@ -10,6 +10,7 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Share to Speakeasy on iPhone and iPad.** Send links, text, photos and files from any app's share sheet as a new chat or into a recent session, with a note or a voice message.
 - **Side panel gestures on iPhone and iPad.** The panel opens from its button (the left edge is the system back swipe again), closing it never taps what's underneath, and sessions open over the board with Home to go back. The call stays a tap away on every page.
 - **Source filters only show sources you have.** The source menu lists Speakeasy, Discord, Telegram and the rest only when there are sessions from them, and hides itself when everything comes from one place.
+- The voice no longer turns requests down itself: anything that needs work goes to your Hermes, which decides under your own rules.
 
 ## Plugin 0.3.33 · Mac 0.3.18 · iPhone build 64 — Speakeasy as your Hermes app
 
