@@ -76,6 +76,14 @@ class FakeHermes(BaseHTTPRequestHandler):
                 self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
             self.wfile.flush()
             return
+        if len(parts) == 3 and parts[:2] == ["api", "sessions"]:
+            with self.state.lock:
+                title = self.state.session_titles.get(parts[2], False)
+            if title is False:
+                self._json(404, {"error": {"code": "session_not_found"}})
+            else:
+                self._json(200, {"object": "hermes.session", "session": {"id": parts[2], "title": title}})
+            return
         if len(parts) == 3 and parts[:2] == ["v1", "runs"]:
             run = self.state.runs.get(parts[2])
             if not run:
@@ -87,6 +95,28 @@ class FakeHermes(BaseHTTPRequestHandler):
             self._json(200, status)
             return
         self._json(404, {"error": "not found"})
+
+    def do_PATCH(self) -> None:
+        """PATCH /api/sessions/{id} {"title"}: Hermes' rename; titles are unique (400 when taken)."""
+        if not self._authed():
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length) or b"{}")
+        parts = self.path.strip("/").split("/")
+        if len(parts) != 3 or parts[:2] != ["api", "sessions"]:
+            self._json(404, {"error": "not found"})
+            return
+        with self.state.lock:
+            if parts[2] not in self.state.session_titles:
+                self._json(404, {"error": {"code": "session_not_found"}})
+                return
+            title = body.get("title")
+            if title and any(t == title for sid, t in self.state.session_titles.items() if sid != parts[2]):
+                self._json(400, {"error": {"code": "invalid_title"}})
+                return
+            self.state.session_titles[parts[2]] = title
+            self.state.title_patches.append((parts[2], title))
+        self._json(200, {"object": "hermes.session", "session": {"id": parts[2], "title": title}})
 
     def do_POST(self) -> None:
         if not self._authed():
@@ -112,6 +142,10 @@ class FakeHermes(BaseHTTPRequestHandler):
             # ``input`` is recorded as sent: a string, or a list of messages with text and image parts.
             prompt, session_id = body.get("input", ""), body.get("session_id")
             self.state.calls.append({"run_id": run_id, "input": prompt, "session_id": session_id, "idem": idem})
+            if session_id and self.state.create_sessions:
+                with self.state.lock:
+                    # Hermes' auto-titler names a new session from the prompt's preamble.
+                    self.state.session_titles.setdefault(session_id, self.state.auto_title)
             output = self.state.responder(prompt, session_id)
             run = {"status": "completed", "output": output, "done": threading.Event(),
                    "events": [{"event": "tool.started", "tool": "web_search", "preview": "weather"},
@@ -178,6 +212,10 @@ class FakeHermesServer:
         self.calls: list[dict[str, Any]] = []
         self.approvals: list[dict[str, Any]] = []
         self.counter = 0
+        self.session_titles: dict[str, str | None] = {}  # session rows the runs created: id -> title
+        self.title_patches: list[tuple[str, str | None]] = []
+        self.create_sessions = True
+        self.auto_title: str | None = "Handle voice task from Speakeasy"
         self.hold = False
         self.approval_first = False
         self.approval_choices = ("once", "deny")  # the approval.request ``choices`` Hermes offers
