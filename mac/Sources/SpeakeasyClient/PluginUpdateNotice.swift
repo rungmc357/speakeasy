@@ -119,8 +119,7 @@ public final class PluginUpdateNotice: ObservableObject {
         }
     }
 
-    #if DEBUG
-    /// Screenshot / test states.
+    /// Screenshot / test states (film frames are built in release too).
     public func preview(_ phase: PluginUpdatePhase, latest: String = "0.9.1", running: String = "0.9.0") {
         self.latest = latest; self.running = running; canStartJob = true
         switch phase {
@@ -133,7 +132,6 @@ public final class PluginUpdateNotice: ObservableObject {
         }
         now = Date()
     }
-    #endif
 }
 
 /// What the plugin-update notice needs from the panel state, compared cheaply.
