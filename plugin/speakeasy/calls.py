@@ -730,14 +730,19 @@ class SidebandWorker:
     def names(self) -> P.Names:
         return self.rt.names
 
-    def name_task(self, idem: str, request: str | None) -> None:
+    def name_task(self, idem: str, request: str | None, parent_key: str | None = None) -> None:
         """Show the instant word-based label now, then swap in a proper name once the titler answers,
         unless something better (a thread's name) has replaced the label meanwhile. A request that
         names nothing itself ("Fix and ship", "Do both") shows the task it answers until then, and
-        the titler sees that task and the call's last turns, so it can say what "that" was."""
-        provisional = short_title(request)
-        parent_key = self._parent_key(idem)
-        parent = self._title_of(parent_key)
+        the titler sees that task and the call's last turns, so it can say what "that" was.
+
+        *parent_key* is only ever the task this one really answers or joins (a decision's own task,
+        the task a follow-up was routed to): never the chat thread it continues, nor whatever ran
+        before it on the call. A confidently wrong name is worse than a vague one."""
+        if parent_key:
+            self.store.set_parent(idem, parent_key)
+        provisional = self._no_names(short_title(request))
+        parent = self.store.parent_name(parent_key)
         fragment = text_mod.is_fragment(request)
         if (fragment or provisional is None) and parent:
             # "Leave it", "Yeah, ship it": a confirmation names nothing itself; it carries on the task
@@ -753,7 +758,7 @@ class SidebandWorker:
         planner = self.rt.plan_call or router.plan_steps
 
         async def upgrade() -> None:
-            title, polished, status, plan = await asyncio.gather(asyncio.to_thread(titler, context),
+            title, polished, status, plan = await asyncio.gather(asyncio.to_thread(self._titled, titler, context),
                                                                  asyncio.to_thread(polisher, request),
                                                                  asyncio.to_thread(statuser, request),
                                                                  asyncio.to_thread(planner, request))
@@ -801,30 +806,18 @@ class SidebandWorker:
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
 
-    def _parent_key(self, idem: str) -> str | None:
-        """The newest other named task on this call (what a bare confirmation goes on with)."""
-        with self.interaction.lock:
-            keys = [r.idem_key for r in self.interaction.runs.values() if r.idem_key and r.idem_key != idem]
-        for key in reversed(keys):
-            if self._title_of(key):
-                return key
-        return None
+    def _no_names(self, title: str | None) -> str | None:
+        """A title without the user's or the assistant's name (the list is the user's own)."""
+        names = self.names
+        return text_mod.drop_names(title, names.user_name, names.assistant_name) if title else None
 
-    def _title_of(self, key: str | None) -> str | None:
-        if not key:
-            return None
-        try:
-            return self.store.title(key)
-        except Exception:
-            return None
-
-    def _parent_title(self, idem: str) -> str | None:
-        """The name of the newest other task on this call."""
-        return self._title_of(self._parent_key(idem))
+    def _titled(self, titler: Callable[[str], str | None], context: str) -> str | None:
+        return self._no_names(titler(context))
 
     def _title_context(self, request: str, parent_key: str | None = None, parent: str | None = None,
                        earlier: str | None = None) -> str:
-        """The titler's input: the request, the task it continues, and the call's last turns."""
+        """The titler's input: the request, the task it really answers or joins (if any), the call's
+        last turns, and the names to leave out."""
         parent_request = earlier
         if parent_request is None and parent_key:
             try:
@@ -835,7 +828,9 @@ class SidebandWorker:
             recent = [t for t in self.turns()[-7:] if t.get("text") and t["text"].strip() != request.strip()][-6:]
         except Exception:
             recent = []
-        return text_mod.title_input(request, parent=parent, parent_request=parent_request, recent=recent)
+        names = self.names
+        return text_mod.title_input(request, parent=parent, parent_request=parent_request, recent=recent,
+                                    names=(names.user_name, names.assistant_name))
 
     def retitle(self, idem: str, request: str | None, earlier: str | None = None) -> None:
         """Rename a task for what it has become: the titler sees the first ask and the newest one,
@@ -844,14 +839,15 @@ class SidebandWorker:
         if not request:
             return
         titler = self.rt.title_call or router.smart_title
+        parent_key = self.store.parent_of(idem)
         if earlier and earlier.strip() != request.strip():
-            prompt = self._title_context(request, parent=current, earlier=earlier)
+            # A turn that joined a task: the task it joined (its own name, never its chat thread's).
+            prompt = self._title_context(request, parent=self.store.parent_name(parent_key), earlier=earlier)
         else:
-            parent_key = self._parent_key(idem) if text_mod.is_fragment(request) else None
-            prompt = self._title_context(request, parent_key, self._title_of(parent_key))
+            prompt = self._title_context(request, parent_key, self.store.parent_name(parent_key))
 
         async def upgrade() -> None:
-            title = await asyncio.to_thread(titler, prompt)
+            title = await asyncio.to_thread(self._titled, titler, prompt)
             if title and title != current and self.store.title(idem) == current:
                 self.store.set_title(idem, title)
                 self.publish()
@@ -3129,7 +3125,7 @@ class SidebandWorker:
             # A new task that references the running one carries what was shared, answered home.
             logger.info("speakeasy: %s; starting a task that references it", why)
             await self.start_task(delegation_id, revision, context, f"{part.request} (following up: {earlier})",
-                                  focus=P.follow_up_focus(part.request, earlier, None, status))
+                                  focus=P.follow_up_focus(part.request, earlier, None, status), parent=key)
 
         if status in ACTIVE_RUN_STATES and sharing and target.deliver_to:
             # A running task that posts its answer to a channel (one the user may never have named for
@@ -3161,7 +3157,7 @@ class SidebandWorker:
                 # Only the user's own DM takes what was shared (start_continuity_task decides).
                 joins = status in ACTIVE_RUN_STATES
                 await self.start_continuity_task(delegation_id, revision, context, part.request, conv,
-                                                 joins=target if joins else None)
+                                                 joins=target if joins else None, parent=key)
                 return
             if status in ACTIVE_RUN_STATES and sharing:
                 # It continued a chat that can't be looked up now, so nobody can tell it's the user's own:
@@ -3204,7 +3200,8 @@ class SidebandWorker:
             self.forgo_capture(delegation_id)
         await self.start_task(delegation_id, revision, context, f"{part.request} (following up: {earlier})",
                               focus=focus, session_id=None if carrying and placed else self.store.session_for(key),
-                              replaces=target.delegation_id, deliver_to=None if carrying else target.deliver_to)
+                              replaces=target.delegation_id, deliver_to=None if carrying else target.deliver_to,
+                              parent=key)
 
     # -- follow-up receipts (receipts.py) ----------------------------------------------------
     async def steer_follow_up(self, target: BackendRun, key: str, words: str, text: str) -> bool:
@@ -3343,7 +3340,8 @@ class SidebandWorker:
                          focus: str | None = None, voice_id: str | None = None,
                          session_id: str | None = None, replaces: str | None = None,
                          deliver_to: str | None = None, ack: str | None = None,
-                         ack_place: str | None = None, named: bool = False) -> None:
+                         ack_place: str | None = None, named: bool = False, parent: str | None = None) -> None:
+        """*parent*: the task this one answers or follows up (its idem key), which names it."""
         idem = self._idem(task_id, revision)
         backend = BackendRun(task_id, revision, idem, voice_id=voice_id, deliver_to=deliver_to)
         delegation_id = backend.say_id
@@ -3374,7 +3372,7 @@ class SidebandWorker:
         self.record_timing(task_id, idem)
         if request:
             self.store.progress(idem, "request", request)
-            self.name_task(idem, request)
+            self.name_task(idem, request, parent)
         # Same-project fence: a new edit to a project a running task is already editing waits for it.
         fenced = self.fence_blocker(task_id, request, exclude={replaces}) if request else None
         if fenced is not None:
@@ -3455,7 +3453,7 @@ class SidebandWorker:
 
     async def start_continuity_task(self, task_id: str, revision: int, context: str, request: str,
                                     conv: continuity.Conversation, joins: "BackendRun | None" = None,
-                                    voice_id: str | None = None) -> None:
+                                    voice_id: str | None = None, parent: str | None = None) -> None:
         """Run the request inside an existing Hermes conversation's own session: it sees that
         conversation's history, and the reply posts back to that chat.
 
@@ -3464,7 +3462,7 @@ class SidebandWorker:
         answered home instead. That covers follow-ups to finished thread tasks too."""
         if not conv.private and self.carries(task_id):
             logger.info("speakeasy: shared things never go into a group chat; starting a task answered home")
-            await self.start_task(task_id, revision, context, request, voice_id=voice_id,
+            await self.start_task(task_id, revision, context, request, voice_id=voice_id, parent=parent,
                                   focus=P.group_chat_focus(request, notice_text(conv.where, 100) or "that chat"))
             return
         if not conv.private:
@@ -3494,7 +3492,8 @@ class SidebandWorker:
         self.record_timing(task_id, idem)
         self.store.set_continued(idem, conv.session_id, conv.where)
         self.store.progress(idem, "request", request)
-        self.name_task(idem, request)
+        # The task it joins or follows up, never the conversation's own name (an unrelated older chat).
+        self.name_task(idem, request, parent or (joins.idem_key if joins else None))
         self.store.progress(idem, "milestone", f"Continuing in {where}")
         if joins is not None:
             self.store.hide_key(idem)
