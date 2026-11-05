@@ -24,7 +24,15 @@ public struct CardActionBar: View {
     /// Whether this card shows any buttons at all.
     @MainActor public static func hasActions(_ card: ViewCard, model: VoicePanelModel) -> Bool {
         (model.capabilities?.cardActions == true && !card.actions.isEmpty) || MapsLink.url(card) != nil && mapsKinds.contains(card.kind)
-            || copyKinds.contains(card.kind)
+            || copies(card)
+    }
+    /// Copy is offered under cards whose text is worth pasting (a chart copies its numbers).
+    /// DEBUG `-demoNoCardCopy`: none, for website films that frame a chart on its own.
+    static func copies(_ card: ViewCard) -> Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-demoNoCardCopy") { return false }
+        #endif
+        return copyKinds.contains(card.kind)
     }
     static let mapsKinds: Set<String> = ["place", "route", "transit"]
     static let copyKinds: Set<String> = ["chart", "stats", "list", "steps", "fact", "conversion", "math", "translation",
@@ -45,7 +53,7 @@ public struct CardActionBar: View {
                     openURL(url)
                 }
             }
-            if Self.copyKinds.contains(card.kind) {
+            if Self.copies(card) {
                 CardButton(title: copied ? "Copied" : "Copy", icon: copied ? "checkmark" : "doc.on.doc", style: .secondary) {
                     Self.copy(CardText.plain(card))
                     copied = true
