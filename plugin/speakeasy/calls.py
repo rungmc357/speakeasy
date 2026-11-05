@@ -26,6 +26,7 @@ from typing import Any, Callable
 
 from . import channels, continuity, failures, liveness, router, threads
 from . import messages as messages_mod
+from .devices import client_label
 from .duck import Ducker
 from . import home_control as home_control_mod
 from . import instant as instant_mod
@@ -411,6 +412,9 @@ class Interaction:
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)
     resumed_from: str | None = None
     device_id: str = ""
+    # The app build that started this call (devices.parse_client fields; {} = an older app that
+    # doesn't say), so a call in the log can be matched to the build that made it.
+    client: dict[str, str] = dataclasses.field(default_factory=dict)
     # The call's app runs on the Mac that runs Hermes (a direct loopback request): only then is the
     # Mac's volume the call's own to duck.
     local: bool = False
@@ -991,7 +995,7 @@ class SidebandWorker:
                 self.store.set_meta("recent_voice", json.dumps(history[-30:]))
             if not paused and self.rt.call_log is not None:
                 self.rt.call_log.record(self.interaction.interaction_id, history, self.call_tasks(),
-                                        self.interaction.device_id)
+                                        self.interaction.device_id, client=self.interaction.client)
             if not paused:
                 self.store.mark_call_ended()
                 self.still_working_notices()
@@ -2500,8 +2504,9 @@ class SidebandWorker:
                 await self.answer_status(delegation_id, target)
                 return
         with self.interaction.lock:
-            device = self.interaction.device_id
-        logger.info("speakeasy: request on device %s (%d words)", (device or "unknown")[:8], len(last_request.split()))
+            device, client = self.interaction.device_id, self.interaction.client
+        logger.info("speakeasy: request on device %s%s (%d words)", (device or "unknown")[:8],
+                    f" [{client_label(client)}]" if client else "", len(last_request.split()))
         home_follow = isinstance(marked, str) and marked in self.home_tasks
         if (not marked or home_follow) and await self.home_control(delegation_id, revision, last_request):
             return

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
-from .devices import PAIR_TTL_S, DeviceStore
+from .devices import PAIR_TTL_S, DeviceStore, client_label
 from .settings import valid_delivery_target, DEFAULT_PORT, Settings, SettingsError, get_path, hermes_config as read_hermes_config, hermes_secret, patch_for, profile_env_defines, save_hermes_secret
 
 
@@ -699,7 +699,9 @@ def handle(args) -> int:
             print("No paired devices.")
         for d in devices:
             seen = time.strftime("%Y-%m-%d %H:%M", time.localtime(d.last_seen_at)) if d.last_seen_at else "never"
-            print(f"{d.id}  {d.name}  last used {seen}")
+            # The app build it last reported (iOS 27.0 · app 1.4 (60) · iPhone); older apps don't say.
+            client = client_label(d.client) or "app version unknown"
+            print(f"{d.id}  {d.name}  {client}  last used {seen}")
         return 0
     if command == "revoke":
         if store.revoke(args.device_id):

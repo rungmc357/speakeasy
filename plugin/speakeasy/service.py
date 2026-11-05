@@ -31,7 +31,7 @@ from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_
                     Interaction, Notices, Runtime, SidebandWorker, end_shared, interaction_tasks, publish_state,
                     typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
-from .devices import DeviceStore
+from .devices import CLIENT_HEADER, DeviceStore, parse_client
 from .emails import canonical_json, extract_email_drafts
 from .hermes_api import HermesAPI, HermesError
 
@@ -260,16 +260,17 @@ class VoiceService:
     def authenticate(self, headers: Any) -> str:
         supplied = headers.get("Authorization", "")
         token = supplied[7:].strip() if supplied.startswith("Bearer ") else None
-        device_id = self.devices.authenticate(token)
+        device_id = self.devices.authenticate(token, client=parse_client(headers.get(CLIENT_HEADER)))
         if device_id is None:
             raise ServiceError(401, "unauthorized")
         return device_id
 
-    def pair(self, body: dict[str, Any]) -> dict[str, Any]:
+    def pair(self, body: dict[str, Any], headers: Any = None) -> dict[str, Any]:
         code, name = body.get("code"), body.get("device_name", "Mac")
         if not isinstance(code, str) or not re.fullmatch(r"\s*\d{6}\s*", code) or not isinstance(name, str):
             raise ServiceError(400, "code (6 digits) and device_name are required")
-        result = self.devices.redeem(code, name)
+        client = parse_client(headers.get(CLIENT_HEADER)) if headers is not None else None
+        result = self.devices.redeem(code, name, client=client)
         if result is None:
             raise ServiceError(403, "pairing code is wrong or expired")
         device_id, token = result
@@ -443,7 +444,8 @@ class VoiceService:
         if screen is None and source is not None:
             screen = source.attachments.declared  # a resume that doesn't say keeps the call's declaration
         interaction = Interaction(interaction_id=interaction_id, live_session_id=live_id, away=away,
-                                  device_id=device_id, attachments=A.CallAttachments(screen),
+                                  device_id=device_id, client=self.devices.client(device_id) if device_id else {},
+                                  attachments=A.CallAttachments(screen),
                                   room=room if source is None else "", local=local)
         if source is not None:  # a resume: adopt moves the room text over from the paused call
             self.adopt(source, interaction, history)

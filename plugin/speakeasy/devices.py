@@ -9,11 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 PAIR_TTL_S = 600
 # Wrong codes tried against one pending code before it is burned. Six digits over a 10-30 minute
@@ -23,6 +25,39 @@ MAX_WRONG_CODES = 10
 # rewrite racing the CLI's ``hermes voice pair`` (another process) could drop its fresh code.
 SEEN_WRITE_S = 60
 _CODE_ALPHABET = "0123456789"
+# ``X-Speakeasy-Client: iOS 27.0; app 1.4 (60); iPhone`` — sent by the apps on every request so the
+# build behind a call is known. Platform, OS version, app version + build and a device class only:
+# no hardware identifiers, nothing personal. Anything that doesn't fit the shape is ignored.
+CLIENT_HEADER = "X-Speakeasy-Client"
+PLATFORMS = ("iOS", "iPadOS", "macOS", "visionOS")
+_CLIENT_RE = re.compile(
+    r"^\s*(?P<platform>iOS|iPadOS|macOS|visionOS) (?P<os>\d{1,3}(?:\.\d{1,3}){0,2})\s*;"
+    r"\s*app (?P<version>[0-9A-Za-z][0-9A-Za-z.+-]{0,23}) \((?P<build>[0-9A-Za-z.]{1,16})\)\s*"
+    r"(?:;\s*(?P<model>[A-Za-z][A-Za-z ]{0,23}?))?\s*$")
+
+
+def parse_client(value: Any) -> dict[str, str] | None:
+    """The client fields from an ``X-Speakeasy-Client`` header, or None (missing or malformed)."""
+    if not isinstance(value, str) or len(value) > 120:
+        return None
+    m = _CLIENT_RE.match(value)
+    if not m:
+        return None
+    out = {"platform": m["platform"], "os_version": m["os"], "app_version": m["version"], "build": m["build"]}
+    if m["model"]:
+        out["model"] = m["model"].strip()
+    return out
+
+
+def client_label(client: dict[str, Any] | None) -> str:
+    """``iOS 27.0 · app 1.4 (60) · iPhone`` for listings; "" when the device never said."""
+    if not client:
+        return ""
+    parts = [f"{client.get('platform', '?')} {client.get('os_version', '')}".strip(),
+             f"app {client.get('app_version', '?')} ({client.get('build', '?')})"]
+    if client.get("model"):
+        parts.append(client["model"])
+    return " · ".join(parts)
 
 
 def _hash(value: str) -> str:
@@ -35,6 +70,7 @@ class Device:
     name: str
     created_at: float
     last_seen_at: float | None = None
+    client: dict[str, str] = field(default_factory=dict)  # parse_client fields; {} = never sent
 
 
 class DeviceStore:
@@ -69,7 +105,8 @@ class DeviceStore:
             self._save(data)
         return code
 
-    def redeem(self, code: str, device_name: str, now: float | None = None) -> tuple[str, str] | None:
+    def redeem(self, code: str, device_name: str, now: float | None = None,
+               client: dict[str, str] | None = None) -> tuple[str, str] | None:
         """Trade a valid code for (device_id, token). The code is consumed either way."""
         now = time.time() if now is None else now
         with self._lock:
@@ -91,11 +128,16 @@ class DeviceStore:
                 "created_at": now,
                 "last_seen_at": None,
             }
+            if client:
+                data["devices"][device_id]["client"] = dict(client)
             self._save(data)
         return device_id, token
 
     # -- auth --------------------------------------------------------------------------
-    def authenticate(self, token: str | None, now: float | None = None) -> str | None:
+    def authenticate(self, token: str | None, now: float | None = None,
+                     client: dict[str, str] | None = None) -> str | None:
+        """The device id for a token. ``client`` (parse_client) is stored when it changed, so an
+        app update shows up on its first request; no client (an older app) leaves it as it was."""
         if not token:
             return None
         digest = _hash(token)
@@ -105,11 +147,19 @@ class DeviceStore:
                 if secrets.compare_digest(device["token_sha256"], digest):
                     seen = time.time() if now is None else now
                     last = device.get("last_seen_at")
-                    if last is None or seen - last >= SEEN_WRITE_S:
+                    changed = bool(client) and device.get("client") != client
+                    if changed:
+                        device["client"] = dict(client or {})
+                    if last is None or seen - last >= SEEN_WRITE_S or changed:
                         device["last_seen_at"] = seen
                         self._save(data)
                     return device_id
         return None
+
+    def client(self, device_id: str) -> dict[str, str]:
+        """The last client this device reported ({} when unknown)."""
+        device = self._load()["devices"].get(device_id) or {}
+        return dict(device.get("client") or {})
 
     def proof(self, device_id: str, nonce: str, host: str) -> str:
         """``POST /voice/prove``: HMAC-SHA256(key = the device token's SHA-256 hex, message =
@@ -123,7 +173,8 @@ class DeviceStore:
 
     def devices(self) -> list[Device]:
         data = self._load()
-        return [Device(id=k, name=v["name"], created_at=v["created_at"], last_seen_at=v.get("last_seen_at"))
+        return [Device(id=k, name=v["name"], created_at=v["created_at"], last_seen_at=v.get("last_seen_at"),
+                       client=dict(v.get("client") or {}))
                 for k, v in data["devices"].items()]
 
     def revoke(self, device_id: str) -> bool:

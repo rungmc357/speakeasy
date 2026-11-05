@@ -1,6 +1,42 @@
 import Foundation
 import SpeakeasyCore
 
+extension ClientIdentity {
+    /// This app's `X-Speakeasy-Client` value: platform, OS version, app version + build, device class.
+    public static let current: String? = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "dev"
+        let build = info["CFBundleVersion"] as? String ?? "0"
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        #if os(visionOS)
+        return header(platform: "visionOS", osVersion: os, appVersion: version, build: build, deviceClass: "Apple Vision Pro")
+        #elseif os(iOS)
+        let model = deviceClass(fromMachine: ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? machine())
+        let kind = ["iPhone", "iPad", "iPod"].contains(model) ? model : "iOS device"
+        return header(platform: kind == "iPad" ? "iPadOS" : "iOS", osVersion: os, appVersion: version, build: build,
+                      deviceClass: kind)
+        #else
+        return header(platform: "macOS", osVersion: os, appVersion: version, build: build, deviceClass: "Mac")
+        #endif
+    }()
+
+    /// Sets the header on a request to the plugin (all of them: authenticated routes, pairing, probes).
+    public static func tag(_ request: inout URLRequest) {
+        if let value = current { request.setValue(value, forHTTPHeaderField: headerName) }
+    }
+
+    #if os(iOS)
+    private static func machine() -> String {
+        var size = 0
+        sysctlbyname("hw.machine", nil, &size, nil, 0)
+        guard size > 0 else { return "" }
+        var bytes = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.machine", &bytes, &size, nil, 0)
+        return String(cString: bytes)
+    }
+    #endif
+}
+
 /// Authenticated api HTTP client. The device bearer is attached only to URLs
 /// under the trusted api origin re-validated at request time.
 public final class ServerClient: @unchecked Sendable {
@@ -61,6 +97,7 @@ public final class ServerClient: @unchecked Sendable {
         var request = URLRequest(url: url(path), timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        ClientIdentity.tag(&request)
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         request.httpBody = body
@@ -73,6 +110,7 @@ public final class ServerClient: @unchecked Sendable {
         guard let url = relay.socketURL(base: base) else { return nil }
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        ClientIdentity.tag(&request)
         return request
     }
 
@@ -195,6 +233,7 @@ public final class ServerClient: @unchecked Sendable {
               ServerProof.matches(proof, ServerProof.expected(token: token, nonce: nonce, host: host)) else { return false }
         var status = URLRequest(url: trusted.appendingPathComponent("voice/status"), timeoutInterval: 10)
         status.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        ClientIdentity.tag(&status)
         guard let (_, statusResponse) = try? await session.data(for: status) else { return false }
         return (statusResponse as? HTTPURLResponse)?.statusCode == 200
     }
@@ -206,6 +245,7 @@ public final class ServerClient: @unchecked Sendable {
         guard let trusted = trustedServerBaseURL(base.absoluteString) else { return false }
         var request = URLRequest(url: trusted.appendingPathComponent("voice/status"), timeoutInterval: timeout)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        ClientIdentity.tag(&request)
         guard let (_, response) = try? await session.data(for: request) else { return false }
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
@@ -227,6 +267,7 @@ public final class ServerClient: @unchecked Sendable {
         var request = URLRequest(url: base.appendingPathComponent("voice/pair"), timeoutInterval: 20)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        ClientIdentity.tag(&request)
         request.httpBody = try pairRequestBody(code: code, deviceName: deviceName)
         let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0

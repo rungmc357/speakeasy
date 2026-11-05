@@ -61,13 +61,15 @@ class CallLog:
         self._lock = threading.Lock()
 
     def record(self, interaction_id: str, turns: list[dict[str, str]], tasks: list[dict[str, Any]],
-               device: str = "") -> None:
+               device: str = "", client: dict[str, str] | None = None) -> None:
         if not turns and not tasks:
             return
-        entry = {"id": interaction_id, "ended": self.clock(), "device": device[:40],
-                 "turns": [{"role": t.get("role", ""), "text": str(t.get("text", ""))[:MAX_TURN_CHARS]}
-                           for t in turns[-200:]],
-                 "tasks": tasks[-40:]}
+        entry: dict[str, Any] = {"id": interaction_id, "ended": self.clock(), "device": device[:40]}
+        if client:  # the app build that made the call (devices.parse_client); absent for older apps
+            entry["client"] = {k: str(v)[:24] for k, v in client.items()}
+        entry["turns"] = [{"role": t.get("role", ""), "text": str(t.get("text", ""))[:MAX_TURN_CHARS]}
+                          for t in turns[-200:]]
+        entry["tasks"] = tasks[-40:]
         with self._lock:
             _private_append(self.path, json.dumps(entry, ensure_ascii=False))
             self._prune()

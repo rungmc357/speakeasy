@@ -433,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
                     logger.warning("speakeasy: pairing attempts from %s rate-limited", self.client_ip)
                     raise ServiceError(429, "too many pairing attempts; wait and try again", reason="too_many")
                 try:
-                    self._reply(201, self.service.pair(self._body()))
+                    self._reply(201, self.service.pair(self._body(), self.headers))
                 except ServiceError as exc:
                     if not local:
                         logger.warning("speakeasy: pairing refused (%s) from %s", exc.status, self.client_ip)

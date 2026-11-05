@@ -9,6 +9,13 @@ from another machine, put a TLS proxy you trust in front of it.
 - **Auth:** every route except `GET /health` and `POST /voice/pair` needs
   `Authorization: Bearer <device token>`. Tokens come from pairing; only their SHA-256 is stored
   (`<HERMES_HOME>/speakeasy/devices.json`, 0600). A missing, wrong or revoked token gets `401 {"error": "unauthorized"}`.
+- **Client header (optional):** the apps send `X-Speakeasy-Client: <platform> <os>; app <version> (<build>); <device class>`
+  on every request, including `POST /voice/pair`, e.g. `iOS 27.0; app 1.4 (60); iPhone` or
+  `macOS 27.0; app 0.3.15 (52); Mac`. Platform is `iOS`, `iPadOS`, `macOS` or `visionOS`; the device class is a
+  generic word (`iPhone`, `iPad`, `Mac`, `Apple Vision Pro`), never a hardware identifier. The server keeps the last
+  one per device in `devices.json` (`client {platform, os_version, app_version, build, model}`, rewritten only when it
+  changes), shows it in `hermes voice devices`, and copies it into each call's `call-log.jsonl` entry (`client`), so a
+  call can be matched to the build that made it. A missing or malformed header is ignored (older apps keep working).
 - **Errors:** `{"error": "<short reason>"}` with 400 (bad body), 401, 403 (pairing), 404, 409
   (stale/conflicting state), 422 (brief rejected), 502 (Hermes or the voice provider failed).
   Some errors add a machine-readable `reason` (`{"error", "reason"}`); the attachment routes list theirs.
@@ -1165,7 +1172,9 @@ Each edit is `{"id", "kind": "add|change|remove", "section" (add), "old" (change
 "new" (add/change), "why", "evidence"}`; edits that don't match the brief or look like secrets are dropped
 server-side. `POST /voice/brief/tune/apply` with `{"accept": [ids]}` applies only those edits (the brief is
 then marked edited, so auto-refresh leaves it alone). Calls are kept locally in `call-log.jsonl` (owner-only,
-14 days / 60 calls); their text goes to the model Hermes uses only when a tune is requested.
+14 days / 60 calls); their text goes to the model Hermes uses only when a tune is requested. Each entry
+carries the paired device's id (`device`) and the app build it last reported (`client`, see
+the client header above; absent for older apps).
 
 ## GET /voice/status
 
