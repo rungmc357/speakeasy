@@ -67,6 +67,7 @@ MAX_SDP = 96 * 1024
 CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True,
                 "task_messages": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
+LOOK_TEXT = "Take a look at what I attached."  # a typed message or job that is only attachments
 IDLE_CHECK_S = 15
 TITLE_SWEEP_TICKS = 40  # idle ticks between stand-in title sweeps (about ten minutes)
 TITLE_SWEEP_BATCH = 5   # tasks a sweep may name (one model call each)
@@ -82,6 +83,9 @@ CAPABILITIES["input_text"] = True
 # GET /voice/history (+ /{session_id}, POST /{session_id}/message): every Hermes session and task,
 # readable and writable by id from the app, with or without a call (history.py).
 CAPABILITIES["history"] = True
+# POST /voice/attachments (+ DELETE /voice/attachments/{id}): pictures and files staged on a device,
+# then sent with a typed message or new job by id (``attachments`` on /voice/work[/{id}/message]).
+CAPABILITIES["attachments"] = True
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 
 
@@ -163,6 +167,8 @@ class VoiceService:
         self.rt.home = self.home_control
         self.shared = A.SharedFolder(self.home)
         self.rt.shared = self.shared
+        # Pictures and files a device uploaded for a message it hasn't sent yet (POST /voice/attachments).
+        self.staged = A.StagedPool()
         self.rt.discard_files = self.discard_shared_files
         # Messages sent to a task by id (POST /voice/work/{id}/message): replies by client_id for
         # MESSAGE_REPLAY_S, and the voiceless worker for tasks whose call is gone.
@@ -666,6 +672,7 @@ class VoiceService:
             ticks += 1
             if ticks % 4 == 0:  # about once a minute
                 self.settle_stuck_tasks()
+                self.expire_staged()
             if ticks % TITLE_SWEEP_TICKS == 1:  # shortly after start, then about every ten minutes
                 self._sweep_titles_soon()
             if time.monotonic() >= next_image_check:  # about once an hour
@@ -1207,16 +1214,20 @@ class VoiceService:
     # -- messages sent to one task on purpose (docs/API.md "Messages to a task") -------------------
     MESSAGE_REPLAY_S = 600
 
-    def task_message(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    def task_message(self, run_id: str, body: dict[str, Any], device_id: str | None = None) -> dict[str, Any]:
         """``POST /voice/work/{run_id}/message``: text typed to one task. Goes to that task by id, never
         through routing: a steer while it runs, the answer while it waits on the user, a follow-up job
-        once it has finished. Idempotent on client_id."""
+        once it has finished. Idempotent on client_id. ``attachments``: ids this device staged
+        (POST /voice/attachments), carried the way the Mac's panel attachments are."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "source", "client_id", "interaction_id", "choice_task_id"}:
+                "text", "source", "client_id", "interaction_id", "choice_task_id", "attachments"}:
             raise ServiceError(400, "Send the message as text.")
         text, source = body.get("text"), body.get("source") or "typed"
         client_id, interaction_id = body.get("client_id"), body.get("interaction_id")
         choice_task_id = body.get("choice_task_id")
+        ids = self._attachment_ids(body)
+        if isinstance(text, str) and not text.strip() and ids:
+            text = LOOK_TEXT
         if not isinstance(text, str) or not text.strip():
             raise ServiceError(400, "The message is empty.")
         text = text.strip()
@@ -1230,7 +1241,8 @@ class VoiceService:
                 raise ServiceError(400, f"{name} must be an id.")
         if not ID_RE.fullmatch(run_id or ""):
             raise ServiceError(404, "I couldn't find that task.")
-        return self._once(client_id, lambda: self._task_message(run_id, text, interaction_id, choice_task_id))
+        return self._once(client_id, lambda: self._with_staged(
+            device_id, ids, lambda staged: self._task_message(run_id, text, interaction_id, choice_task_id, staged)))
 
     def _once(self, client_id: str | None, send: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         """Run ``send`` once per client_id (MESSAGE_REPLAY_S); a retry gets the first reply."""
@@ -1256,13 +1268,17 @@ class VoiceService:
         event.set()
         return reply
 
-    def start_job(self, body: dict[str, Any]) -> dict[str, Any]:
+    def start_job(self, body: dict[str, Any], device_id: str | None = None) -> dict[str, Any]:
         """``POST /voice/work``: a new job from text typed in the app, with no call (the plugin-update
         notice's Update button). It runs like a job started on a call, on the voiceless worker, never
         through routing, and shows on the board. Idempotent on client_id."""
-        if not isinstance(body, dict) or "text" not in body or not set(body) <= {"text", "source", "client_id"}:
+        if not isinstance(body, dict) or "text" not in body or not set(body) <= {
+                "text", "source", "client_id", "attachments"}:
             raise ServiceError(400, "Send the job as text.")
         text, source, client_id = body.get("text"), body.get("source") or "typed", body.get("client_id")
+        ids = self._attachment_ids(body)
+        if isinstance(text, str) and not text.strip() and ids:
+            text = LOOK_TEXT
         if not isinstance(text, str) or not text.strip():
             raise ServiceError(400, "The job is empty.")
         text = " ".join(text.split())
@@ -1272,14 +1288,46 @@ class VoiceService:
             raise ServiceError(400, "source must be typed.")
         if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
             raise ServiceError(400, "client_id must be an id.")
-        return self._once(client_id, lambda: self._start_job(text))
+        return self._once(client_id, lambda: self._with_staged(device_id, ids, lambda staged: self._start_job(text, staged)))
 
-    def _start_job(self, text: str, session_id: str | None = None, context: str | None = None,
-                   link_to: str | None = None) -> dict[str, Any]:
-        """*link_to*: the chat session this job continues from a history page (store.history_links)."""
+    @staticmethod
+    def _attachment_ids(body: dict[str, Any]) -> list[str]:
+        ids = body.get("attachments")
+        if ids is None:
+            return []
+        if (not isinstance(ids, list) or not all(isinstance(i, str) and ID_RE.fullmatch(i) for i in ids)
+                or len(ids) > A.MAX_ATTACHMENTS):
+            raise ServiceError(400, f"attachments must be up to {A.MAX_ATTACHMENTS} attachment ids.")
+        return ids
+
+    def _with_staged(self, device_id: str | None, ids: list[str],
+                     send: Callable[[list[A.Attachment]], dict[str, Any]]) -> dict[str, Any]:
+        """Claim this device's staged attachments for one message, all or nothing, and give them
+        back if the message never went (a retry with the same ids may send them)."""
+        if not ids:
+            return send([])
+        if device_id is None:
+            raise ServiceError(404, "an attachment is gone; add it again", reason="unknown")
+        try:
+            staged = self.staged.claim(device_id, ids)
+        except A.Refused as exc:
+            raise self._refused(exc) from None
+        try:
+            reply = send(staged)
+        except Exception:
+            self.staged.restore(device_id, staged)
+            raise
+        reply["attachments"] = [{"id": a.id, "kind": a.kind, "name": a.name} for a in staged]
+        logger.info("speakeasy: a typed message carried %d attachment(s)", len(staged))
+        return reply
+
+    def _start_job(self, text: str, staged: list[A.Attachment] | None = None, session_id: str | None = None,
+                   context: str | None = None, link_to: str | None = None) -> dict[str, Any]:
+        """*link_to*: the chat session this job continues from a history page (store.history_links).
+        *staged*: attachments claimed for this job (carried with its handoff)."""
         worker = self.text_worker()
         future = asyncio.run_coroutine_threadsafe(
-            M.start_job(worker, text, session_id=session_id, context=context), worker.loop)
+            M.start_job(worker, text, session_id=session_id, context=context, staged=staged or None), worker.loop)
         try:
             got = future.result(M.START_WAIT_S + 10)
         except Exception as exc:
@@ -1362,9 +1410,12 @@ class VoiceService:
             return self._text_worker
 
     def _task_message(self, run_id: str, text: str, interaction_id: str | None,
-                      choice_task_id: str | None) -> dict[str, Any]:
+                      choice_task_id: str | None, staged: list[A.Attachment] | None = None) -> dict[str, Any]:
         if interaction_id:
             self.interaction(interaction_id)  # 404 for an unknown call
+        if staged and choice_task_id and choice_task_id.startswith("choice_"):
+            raise ServiceError(409, "Pictures and files can't go with a spoken choice. Pick, then send them.",
+                               reason="not_now")
         if choice_task_id and choice_task_id.startswith("choice_"):
             # A spoken choice's card ("Something else..."): only the voice that asked it can take it.
             worker = self._live_worker(interaction_id=interaction_id)
@@ -1381,11 +1432,14 @@ class VoiceService:
             task_id = next((t for t, r in worker.interaction.runs.items() if r.idem_key == key), None)
         if task_id is None or worker is self._text_worker:
             task_id = M.adopt_row(worker, row)
-        future = asyncio.run_coroutine_threadsafe(M.deliver(worker, task_id, text), worker.loop)
+        future = asyncio.run_coroutine_threadsafe(M.deliver(worker, task_id, text, staged=staged or None), worker.loop)
         try:
             got = future.result(M.START_WAIT_S + 10)
         except LookupError:
             raise ServiceError(404, "I couldn't find that task.") from None
+        except M.AttachmentsNotTaken:
+            raise ServiceError(409, "That task is waiting on an approval. Answer it first, then send the "
+                                    "pictures or files.", reason="not_now") from None
         except Exception as exc:
             logger.warning("speakeasy: a message to a task could not be delivered (%s)", type(exc).__name__)
             raise ServiceError(502, "I couldn't get that to the task. Try again.") from None
@@ -1715,6 +1769,8 @@ class VoiceService:
             raise ServiceError(400, "upload ended early")
         if kind in A.IMAGE_KINDS and _sniff(data[:16]) != mime:
             raise ServiceError(415, f"the bytes aren't {mime}", reason="unsupported")
+        if kind == "picture":
+            data = A.strip_metadata(data, mime)  # a picture from a phone may carry where it was taken
         shared = interaction.attachments
         try:
             if kind == "screen":
@@ -1756,6 +1812,86 @@ class VoiceService:
         publish_state(self.store, interaction, self.settings.get()["assistant_name"])
         self._sync_notes(interaction)
         return {"id": attachment_id, "removed": True}
+
+    # -- pictures and files staged on a device (iPhone/iPad composer) ------------------------------
+    def check_stage(self, device_id: str, headers: Any, length: int) -> dict[str, Any]:
+        """``POST /voice/attachments``, before its body is read: a picture (JPEG or PNG, the phone
+        re-encodes) or a file (PDF or text), within its cap and this device's room."""
+        self.expire_staged()
+        kind = (headers.get("X-Speakeasy-Kind") or "").strip().lower()
+        if kind not in {"picture", "file"}:
+            raise ServiceError(400, "X-Speakeasy-Kind must be picture or file")
+        mime = A.media_type(headers.get("Content-Type"))
+        if kind == "picture" and mime not in A.IMAGE_TYPES:
+            raise ServiceError(415, "pictures must be image/jpeg or image/png", reason="unsupported")
+        if kind == "file" and mime not in A.STAGED_FILE_TYPES:
+            raise ServiceError(415, "files must be PDF or plain text", reason="unsupported")
+        raw_name = headers.get("X-Speakeasy-Filename")
+        if kind == "file" and not (raw_name or "").strip():
+            raise ServiceError(400, "files need X-Speakeasy-Filename")
+        if length <= 0:
+            raise ServiceError(400, "empty upload")
+        if length > (A.MAX_FILE_BYTES if kind == "file" else A.MAX_IMAGE_BYTES):
+            raise ServiceError(413, "too large to send", reason="too_large")
+        try:
+            self.staged.check_room(device_id, kind, length)
+        except A.Refused as exc:
+            raise self._refused(exc) from None
+        return {"device_id": device_id, "kind": kind, "mime": mime, "size": length,
+                "name": A.safe_filename(raw_name) if (raw_name or "").strip() else None}
+
+    def accept_stage(self, upload: dict[str, Any], data: bytes) -> dict[str, Any]:
+        """Keep a checked staged upload: the bytes must be what they say (415). A picture loses its
+        metadata (location included) and waits in memory; a file is saved under the shared folder.
+        Never logs bytes or names."""
+        device_id, kind, mime = upload["device_id"], upload["kind"], upload["mime"]
+        if len(data) != upload["size"]:
+            raise ServiceError(400, "upload ended early")
+        if kind == "picture":
+            if _sniff(data[:16]) != mime:
+                raise ServiceError(415, f"the bytes aren't {mime}", reason="unsupported")
+            data = A.strip_metadata(data, mime)
+        elif not A.staged_file_ok(mime, data):
+            raise ServiceError(415, "that file isn't the PDF or text it says it is", reason="unsupported")
+        try:
+            if kind == "picture":
+                attachment = self.staged.add(device_id, "picture", mime=mime, size=len(data), data=data,
+                                             name=upload["name"])
+            else:
+                with self.shared.lock:  # saved and held in one step: never deleted in between
+                    path = self.shared.save(data, upload["name"] or "file")
+                    try:
+                        attachment = self.staged.add(device_id, "file", mime=mime, size=len(data),
+                                                     path=str(path), name=path.name)
+                    except A.Refused:
+                        self.discard_shared_files([str(path)])
+                        raise
+        except A.Refused as exc:
+            raise self._refused(exc) from None
+        except OSError as exc:
+            logger.warning("speakeasy: could not save a staged file (%s)", type(exc).__name__)
+            raise ServiceError(500, "could not save the file") from None
+        logger.info("speakeasy: %s staged from a device (%d KB)", kind, max(1, len(data) // 1024))
+        return {"id": attachment.id, "kind": attachment.kind, "name": attachment.name, "size": attachment.size,
+                "expires_in": A.STAGED_TTL_S}
+
+    def remove_staged(self, device_id: str, attachment_id: str) -> dict[str, Any]:
+        """The x on a composer chip: forget it (404 once sent, removed or expired)."""
+        try:
+            removed = self.staged.remove(device_id, attachment_id)
+        except A.Refused as exc:
+            raise self._refused(exc) from None
+        if removed.path:
+            self.discard_shared_files([removed.path])
+        return {"id": attachment_id, "removed": True}
+
+    def expire_staged(self, now: float | None = None) -> int:
+        """Drop what a device staged and never sent (STAGED_TTL_S), saved copies included."""
+        gone = self.staged.expire(now)
+        paths = [a.path for a in gone if a.path]
+        if paths:
+            self.discard_shared_files(paths)
+        return len(gone)
 
     def set_screen(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """The panel's screen button: exactly ``{on, seq}``. An older seq than the last one applied is
@@ -1832,7 +1968,7 @@ class VoiceService:
         paths: set[str] = set()
         for interaction in live:
             paths |= interaction.attachments.file_paths()
-        return paths
+        return paths | self.staged.file_paths()
 
     def discard_shared_files(self, paths: list[str]) -> int:
         """Delete Speakeasy's copies nothing uses any more: no task records them and no call holds them."""
@@ -2180,7 +2316,8 @@ class VoiceService:
         support = getattr(self.hermes, "image_support", None) or {}
         return {"images": bool(support.get("images")), "vision": support.get("vision") or "unknown",
                 "max_attachments": A.MAX_ATTACHMENTS, "max_image_bytes": A.MAX_IMAGE_BYTES,
-                "max_request_image_bytes": A.MAX_REQUEST_IMAGE_BYTES, "max_file_bytes": A.MAX_FILE_BYTES}
+                "max_request_image_bytes": A.MAX_REQUEST_IMAGE_BYTES, "max_file_bytes": A.MAX_FILE_BYTES,
+                "file_types": sorted(A.STAGED_FILE_TYPES)}
 
     # -- home control ---------------------------------------------------------------------------------
     def get_home(self) -> dict[str, Any]:

@@ -392,9 +392,13 @@ public final class ServerClient: @unchecked Sendable {
 
     /// A new job from typed text, no call needed (servers with `start_jobs`); idempotent on `clientID`.
     /// Returns the job's run id (openable on the board) when Hermes has one yet.
-    public func startJob(text: String, clientID: String = UUID().uuidString) async throws -> String? {
-        guard let clean = TaskMessageRequest.clean(text) else { throw HTTPError(status: 400, message: "The job is empty.") }
-        let reply = try await post("/voice/work", ["text": clean, "source": "typed", "client_id": clientID])
+    /// `attachments`: ids staged with `stageAttachment` (servers with `attachments`); with any, `text` may be empty.
+    public func startJob(text: String, attachments: [String] = [], clientID: String = UUID().uuidString) async throws -> String? {
+        let clean = TaskMessageRequest.clean(text)
+        guard clean != nil || !attachments.isEmpty else { throw HTTPError(status: 400, message: "The job is empty.") }
+        var body: [String: Any] = ["text": clean ?? "", "source": "typed", "client_id": clientID]
+        if !attachments.isEmpty { body["attachments"] = attachments }
+        let reply = try await post("/voice/work", body)
         guard reply["ok"] as? Bool == true else {
             throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't start that job.")
         }
@@ -441,9 +445,11 @@ public final class ServerClient: @unchecked Sendable {
     }
 
     public func sendMessage(runID: String, text: String, source: TaskMessageSource = .typed, clientID: String,
-                            interactionID: String? = nil, choiceTaskID: String? = nil) async throws -> TaskMessageReply {
+                            interactionID: String? = nil, choiceTaskID: String? = nil,
+                            attachments: [String] = []) async throws -> TaskMessageReply {
         try await sendMessage(TaskMessageRequest(runID: runID, text: text, source: source, clientID: clientID,
-                                                 interactionID: interactionID, choiceTaskID: choiceTaskID))
+                                                 interactionID: interactionID, choiceTaskID: choiceTaskID,
+                                                 attachments: attachments))
     }
 
     /// A turn typed on the call screen (plugins with `input_text: true`). `text` must already be
@@ -502,6 +508,32 @@ public final class ServerClient: @unchecked Sendable {
         return id
     }
 
+    /// Stages a picture (JPEG, already re-encoded) or a file (PDF or text) for a typed message or new
+    /// job (servers with `attachments`); returns its id for `TaskMessageRequest.attachments` /
+    /// `startJob(attachments:)`. `progress` gets 0...1 as the body goes out. Refusals are `HTTPError`s
+    /// with the plugin's reason: 409 too_many, 413 too_large, 415 unsupported.
+    public func stageAttachment(_ attachment: EncodedAttachment, as kind: AttachmentUploadKind,
+                                progress: (@Sendable (Double) -> Void)? = nil) async throws -> StagedAttachmentReply {
+        precondition(kind != .screen, "screen captures go to a call")
+        let headers = attachmentUploadHeaders(kind: kind, mimeType: attachment.mimeType, filename: attachment.filename)
+        let timeout: TimeInterval = attachment.data.count > 1_000_000 ? 120 : 30
+        let req = request(StagedAttachmentRoute.stage, method: "POST", headers: headers, timeout: timeout)
+        let delegate = UploadProgress(progress)
+        let (data, response) = try await sessionFor(timeout).upload(for: req, from: attachment.data, delegate: delegate)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else { throw HTTPError(status: status, body: data, fallback: "Upload HTTP \(status)") }
+        guard let reply = StagedAttachmentReply(json: try? JSONSerialization.jsonObject(with: data)) else {
+            throw HTTPError(status: 502, message: "Server returned an invalid attachment")
+        }
+        progress?(1)
+        return reply
+    }
+
+    /// The x on a staged chip. 404 = already gone (sent, removed or expired).
+    public func removeStagedAttachment(id: String) async throws {
+        _ = try await json(StagedAttachmentRoute.remove(id), method: "DELETE")
+    }
+
     /// The ✕ on a pending picture or file. 404 = already gone; 409 reason `sent` = it went with a request.
     public func removeAttachment(interactionID: String, attachmentID: String) async throws {
         _ = try await json(SharingRoute.attachment(interactionID, attachmentID), method: "DELETE")
@@ -516,6 +548,17 @@ public final class ServerClient: @unchecked Sendable {
             throw HTTPError(status: (response as? HTTPURLResponse)?.statusCode ?? 502, message: "Image unavailable")
         }
         return data
+    }
+
+    /// Reports an upload's sent fraction (URLSession task delegate).
+    private final class UploadProgress: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        let report: (@Sendable (Double) -> Void)?
+        init(_ report: (@Sendable (Double) -> Void)?) { self.report = report }
+        func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                        totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+            guard totalBytesExpectedToSend > 0 else { return }
+            report?(min(0.99, Double(totalBytesSent) / Double(totalBytesExpectedToSend)))
+        }
     }
 
     private func escape(_ id: String) -> String {

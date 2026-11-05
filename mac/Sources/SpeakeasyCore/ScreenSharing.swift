@@ -113,6 +113,26 @@ func percentEncodedHeader(_ text: String) -> String {
     return text.addingPercentEncoding(withAllowedCharacters: unreserved) ?? ""
 }
 
+/// Pictures and files staged on a device for a typed message or new job, before it is sent
+/// (servers with `attachments`): `POST /voice/attachments` takes the raw bytes with
+/// `attachmentUploadHeaders(kind: .picture | .file, ...)`; the message names them by id.
+public enum StagedAttachmentRoute {
+    public static let stage = "/voice/attachments"
+    public static func remove(_ id: String) -> String { "/voice/attachments/\(SharingRoute.pathID(id))" }
+}
+
+/// The plugin's answer to a staged upload.
+public struct StagedAttachmentReply: Equatable, Sendable {
+    public var id: String
+    public var kind: String
+    public var name: String?
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = o["id"] as? String, !id.isEmpty,
+              let kind = o["kind"] as? String else { return nil }
+        self.id = id; self.kind = kind; self.name = o["name"] as? String
+    }
+}
+
 /// The sharing routes under one call. Ids are percent-encoded like every other api path.
 public enum SharingRoute {
     public static func screen(_ interactionID: String) -> String { "/voice/interactions/\(pathID(interactionID))/screen" }

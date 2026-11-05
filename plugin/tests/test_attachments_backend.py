@@ -201,7 +201,8 @@ def hermes_modules(monkeypatch, *, supports=None, aux_backend=None, fails=None):
 
 
 LIMITS = {"max_attachments": 3, "max_image_bytes": 2_500_000, "max_request_image_bytes": 6_500_000,
-          "max_file_bytes": 10_000_000}
+          "max_file_bytes": 10_000_000,
+          "file_types": ["application/json", "application/pdf", "text/csv", "text/markdown", "text/plain"]}
 
 
 def test_without_hermes_image_routing_status_reports_no_images(service, monkeypatch):

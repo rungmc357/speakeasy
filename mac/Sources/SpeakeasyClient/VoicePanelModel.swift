@@ -328,6 +328,9 @@ public final class VoicePanelModel: ObservableObject {
         guard let notice = state.sharing.notice, notice.isFresh(at: state.now) else { return nil }
         return notice
     }
+    /// A staged attachment's local thumbnail (`OutgoingAttachment.id`) for a sent bubble; the phone's
+    /// composer keeps them. Nil draws the file/picture symbol.
+    public var outgoingThumbnail: (String) -> CGImage? = { _ in nil }
     /// A screen capture or picture a task carried (run id, `SharedItem.number`), through the authenticated api.
     public var loadSharedImage: (String, Int) async -> Data? = { _, _ in nil }
 
@@ -595,14 +598,14 @@ public final class VoicePanelModel: ObservableObject {
     /// Send what's in a job's reply field (or `text`). False when there's nothing to send or no target.
     @discardableResult
     public func sendReply(jobID: String, text: String? = nil, choiceTaskID: String? = nil,
-                          source: TaskMessageSource = .typed) -> Bool {
+                          source: TaskMessageSource = .typed, attachments: [OutgoingAttachment] = []) -> Bool {
         guard taskMessagesEnabled, let job = jobs.first(where: { $0.id == jobID }) else { return false }
         let body = text ?? replyDrafts[jobID] ?? ""
         let run: String?
         if let choiceTaskID { run = state.tasks.first { $0.id == choiceTaskID }?.info.runID ?? replyTarget(job)?.runID }
         else { run = replyTarget(job)?.runID }
         guard let run, outbox.enqueue(jobID: jobID, runID: run, taskName: job.name, text: body,
-                                      source: source, choiceTaskID: choiceTaskID) != nil else { return false }
+                                      source: source, choiceTaskID: choiceTaskID, attachments: attachments) != nil else { return false }
         if text == nil { replyDrafts[jobID] = nil }
         if let choiceTaskID, let clean = TaskMessageRequest.clean(body) { answers[choiceTaskID] = clean }
         pumpOutbox()

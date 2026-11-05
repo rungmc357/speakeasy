@@ -34,8 +34,10 @@ public enum AttachmentEncoder {
     public static let imageTypes: Set<String> = Set(CGImageSourceCopyTypeIdentifiers() as? [String] ?? [])
 
     /// A screen capture, or any decoded picture, as JPEG named `name`.jpg.
-    public static func encode(_ image: CGImage, name: String) throws -> EncodedAttachment {
-        guard let prepared = opaque(image, size: AttachmentPolicy.fittedSize(CGSize(width: image.width, height: image.height))) else {
+    public static func encode(_ image: CGImage, name: String,
+                              longEdge: Int = AttachmentPolicy.maxLongEdge) throws -> EncodedAttachment {
+        let size = AttachmentPolicy.fittedSize(CGSize(width: image.width, height: image.height), longEdge: longEdge)
+        guard let prepared = opaque(image, size: size) else {
             throw AttachmentFailure.unsupported
         }
         let data = try AttachmentPolicy.fitToBudget { jpeg(prepared, quality: $0) }
@@ -43,16 +45,17 @@ public enum AttachmentEncoder {
     }
 
     /// Picture bytes, such as a paste. `.unsupported` when ImageIO can't read them.
-    public static func encodeImage(_ data: Data, name: String) throws -> EncodedAttachment {
+    public static func encodeImage(_ data: Data, name: String,
+                                   longEdge: Int = AttachmentPolicy.maxLongEdge) throws -> EncodedAttachment {
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else {
             throw AttachmentFailure.unsupported
         }
-        return try encode(try decode(source), name: name)
+        return try encode(try decode(source, longEdge: longEdge), name: name, longEdge: longEdge)
     }
 
     /// A dropped item. Pictures are re-encoded; other regular files pass through with their name and
     /// type. Links, folders, packages and aliases are `.unsupported`; files over 10 MB `.tooLarge`.
-    public static func encode(fileAt url: URL) throws -> EncodedAttachment {
+    public static func encode(fileAt url: URL, longEdge: Int = AttachmentPolicy.maxLongEdge) throws -> EncodedAttachment {
         // Drops from other apps can be security-scoped on iPhone; a no-op for the unsandboxed Mac app.
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -68,7 +71,8 @@ public enum AttachmentEncoder {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else {
                 throw AttachmentFailure.unsupported
             }
-            return try encode(try decode(source), name: url.deletingPathExtension().lastPathComponent)
+            return try encode(try decode(source, longEdge: longEdge), name: url.deletingPathExtension().lastPathComponent,
+                              longEdge: longEdge)
         case .success(.file):
             guard let data = try? Data(contentsOf: url) else { throw AttachmentFailure.unsupported }
             // The size was checked before reading; the file may have grown since.
@@ -94,15 +98,15 @@ public enum AttachmentEncoder {
     }
 
     /// The primary image (the first frame of a GIF), oriented upright and no larger than the cap.
-    private static func decode(_ source: CGImageSource) throws -> CGImage {
+    private static func decode(_ source: CGImageSource, longEdge cap: Int = AttachmentPolicy.maxLongEdge) throws -> CGImage {
         guard CGImageSourceGetCount(source) > 0 else { throw AttachmentFailure.unsupported }
         let index = CGImageSourceGetPrimaryImageIndex(source)
         let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
         let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
         let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
         // Ask for the image's own long edge when it's under the cap, so nothing is scaled up.
-        let fitted = AttachmentPolicy.fittedSize(CGSize(width: width, height: height))
-        let longEdge = fitted == .zero ? AttachmentPolicy.maxLongEdge : Int(max(fitted.width, fitted.height))
+        let fitted = AttachmentPolicy.fittedSize(CGSize(width: width, height: height), longEdge: cap)
+        let longEdge = fitted == .zero ? cap : Int(max(fitted.width, fitted.height))
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,

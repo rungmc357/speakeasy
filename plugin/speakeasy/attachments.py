@@ -498,6 +498,14 @@ class CallAttachments:
         with self._cond:
             self._note_waiter = False
 
+    def attach_bound(self, delegation_id: str, attachments: list[Attachment]) -> None:
+        """Pictures and files staged on a device (``StagedPool``) that a typed message or new job
+        carries: held for this handoff, as if it had bound them, so ``take_bound`` hands them over.
+        They never count against what waits on a call's panel."""
+        with self._cond:
+            for attachment in attachments:
+                self._items[attachment.id] = _Item(attachment, "bound", delegation_id)
+
     # -- end -------------------------------------------------------------------------------
     def end(self, reason: str = "ended") -> list[Attachment]:
         """The call ended or paused: sharing off, every capture request closed (captures not taken are
@@ -514,6 +522,173 @@ class CallAttachments:
             self._items = {k: i for k, i in self._items.items() if i.state != "pending"}
             self._cond.notify_all()
             return dropped
+
+
+# -- staged on a device: pictures and files for a typed message or a new job ------------------------
+
+MAX_STAGED = 6                # waiting on one device across its composers (each message takes at most 3)
+STAGED_TTL_S = 30 * 60        # an attachment nobody sent goes after half an hour
+
+
+STAGED_FILE_TYPES = frozenset({"application/pdf", "text/plain", "text/markdown", "text/csv", "application/json"})
+
+
+def staged_file_ok(mime: str, data: bytes) -> bool:
+    """A staged file is what it says: a PDF starts %PDF-, text is UTF-8 with no NUL bytes."""
+    if mime == "application/pdf":
+        return data.startswith(b"%PDF-")
+    if mime in STAGED_FILE_TYPES:
+        if b"\x00" in data:
+            return False
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return True
+    return False
+
+
+def strip_metadata(data: bytes, mime: str) -> bytes:
+    """Remove what can say where a picture was taken (and by what): a JPEG's APP1 (Exif, XMP),
+    APP13 (IPTC) and comment segments, a PNG's eXIf, tEXt, zTXt and iTXt chunks. The pixels are
+    untouched. The phone strips location before upload; this makes sure nothing slips through.
+    Anything that doesn't parse cleanly is returned as it came (it was already sniffed)."""
+    try:
+        if mime == "image/jpeg":
+            return _strip_jpeg(data)
+        if mime == "image/png":
+            return _strip_png(data)
+    except (IndexError, ValueError):
+        pass
+    return data
+
+
+def _strip_jpeg(data: bytes) -> bytes:
+    if not data.startswith(b"\xff\xd8"):
+        return data
+    out, i = bytearray(b"\xff\xd8"), 2
+    while i + 4 <= len(data):
+        if data[i] != 0xFF:
+            raise ValueError("not a marker")
+        marker = data[i + 1]
+        if marker == 0xDA:          # start of scan: the rest is image data
+            out += data[i:]
+            return bytes(out)
+        if marker in (0x01,) or 0xD0 <= marker <= 0xD7:
+            out += data[i:i + 2]
+            i += 2
+            continue
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        if length < 2 or i + 2 + length > len(data):
+            raise ValueError("bad segment")
+        if marker not in (0xE1, 0xED, 0xFE):  # APP1 Exif/XMP, APP13 IPTC, COM
+            out += data[i:i + 2 + length]
+        i += 2 + length
+    raise ValueError("no scan")
+
+
+_PNG_DROP = {b"eXIf", b"tEXt", b"zTXt", b"iTXt"}
+
+
+def _strip_png(data: bytes) -> bytes:
+    sig = b"\x89PNG\r\n\x1a\n"
+    if not data.startswith(sig):
+        return data
+    out, i = bytearray(sig), len(sig)
+    while i + 12 <= len(data):
+        length = int.from_bytes(data[i:i + 4], "big")
+        kind = data[i + 4:i + 8]
+        end = i + 12 + length
+        if end > len(data):
+            raise ValueError("bad chunk")
+        if kind not in _PNG_DROP:
+            out += data[i:end]
+        i = end
+        if kind == b"IEND":
+            return bytes(out)
+    raise ValueError("no IEND")
+
+
+class StagedPool:
+    """Pictures and files a paired device uploaded before the message that carries them exists
+    (``POST /voice/attachments``): the iPhone's job-page reply bar and its new-job composer. Held per
+    device, in memory (pictures) or as saved copies in the shared folder (files), until a typed
+    message or new job names them (``claim``), the device removes one, or STAGED_TTL_S passes.
+    One device never sees or sends another's. Thread-safe."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._items: dict[str, dict[str, Attachment]] = {}  # device id -> attachment id -> attachment
+
+    def check_room(self, device_id: str, kind: str, size: int) -> None:
+        with self._lock:
+            self._check_room(device_id, kind, size)
+
+    def _check_room(self, device_id: str, kind: str, size: int) -> None:
+        if kind not in {"picture", "file"}:
+            raise Refused(400, "unsupported", "only pictures and files can be staged")
+        if len(self._items.get(device_id, {})) >= MAX_STAGED:
+            raise Refused(409, "too_many", f"{MAX_STAGED} things are already waiting to be sent from this device")
+
+    def add(self, device_id: str, kind: str, *, mime: str, size: int, data: bytes | None = None,
+            path: str | None = None, name: str | None = None) -> Attachment:
+        if kind == "picture" and data is None or kind == "file" and path is None:
+            raise ValueError("a picture needs data, a file needs its saved path")
+        with self._lock:
+            self._check_room(device_id, kind, size)
+            attachment = Attachment("att_" + secrets.token_hex(8), kind, mime, size, name=name, data=data, path=path)
+            self._items.setdefault(device_id, {})[attachment.id] = attachment
+            return attachment
+
+    def remove(self, device_id: str, attachment_id: str) -> Attachment:
+        with self._lock:
+            found = self._items.get(device_id, {}).pop(attachment_id, None)
+        if found is None:
+            raise Refused(404, "unknown", "no such attachment")
+        return found
+
+    def claim(self, device_id: str, ids: list[str]) -> list[Attachment]:
+        """Take these (in this order) for one message: all or nothing. Refused when one is unknown
+        (404, maybe expired), more than MAX_ATTACHMENTS (409 too_many) or the images break one
+        request's budget (409 too_large)."""
+        if len(set(ids)) != len(ids):
+            raise Refused(400, "duplicate", "an attachment is named twice")
+        if len(ids) > MAX_ATTACHMENTS:
+            raise Refused(409, "too_many", f"at most {MAX_ATTACHMENTS} pictures or files go with one message")
+        with self._lock:
+            mine = self._items.get(device_id, {})
+            if any(i not in mine for i in ids):
+                raise Refused(404, "unknown", "an attachment is gone (it was sent, removed or expired); add it again")
+            taken = [mine[i] for i in ids]
+            images = [a for a in taken if a.is_image]
+            if len(images) > MAX_REQUEST_IMAGES or sum(a.size for a in images) > MAX_REQUEST_IMAGE_BYTES:
+                raise Refused(409, "too_large", "those pictures are too much for one message together")
+            for i in ids:
+                del mine[i]
+            return taken
+
+    def restore(self, device_id: str, attachments: list[Attachment]) -> None:
+        """A message that claimed these never went: they wait again (a retry may send them)."""
+        with self._lock:
+            mine = self._items.setdefault(device_id, {})
+            for attachment in attachments:
+                mine[attachment.id] = attachment
+
+    def expire(self, now: float | None = None) -> list[Attachment]:
+        """Drop what waited longer than STAGED_TTL_S; returns it (so saved copies can go)."""
+        cutoff = (time.time() if now is None else now) - STAGED_TTL_S
+        gone: list[Attachment] = []
+        with self._lock:
+            for mine in self._items.values():
+                for key, attachment in list(mine.items()):
+                    if attachment.created < cutoff:
+                        gone.append(mine.pop(key))
+        return gone
+
+    def file_paths(self) -> set[str]:
+        """Saved files still waiting: never delete these."""
+        with self._lock:
+            return {a.path for mine in self._items.values() for a in mine.values() if a.path}
 
 
 # -- names and header values ---------------------------------------------------------------------

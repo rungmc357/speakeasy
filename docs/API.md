@@ -51,6 +51,8 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/interactions/{id}/captures/{capture_id}` | device | Report on a capture request |
 | POST | `/voice/interactions/{id}/attachments` | device | Upload a capture, picture or file (raw bytes) |
 | DELETE | `/voice/interactions/{id}/attachments/{attachment_id}` | device | Remove a pending picture or file |
+| POST | `/voice/attachments` | device | Stage a picture or file for a typed message or new job (raw bytes; iPhone/iPad) |
+| DELETE | `/voice/attachments/{attachment_id}` | device | Remove a staged picture or file |
 | GET | `/voice/work/latest` | device | Latest task + task list + recap |
 | GET | `/voice/work/{run_id}` | device | One task |
 | POST | `/voice/work/{run_id}/card-action` | device | Press a button on a task's card with no call open |
@@ -881,6 +883,44 @@ Hermes session, on the board, openable by `run_id`), never through routing. Idem
 
 While such a job runs, the server counts as busy: a newly installed plugin version loads only after
 it (and any call) has finished, exactly like a job started on a call.
+
+### Attachments on typed messages and new jobs
+
+Capability `attachments` (plugin 0.3.33+). Both bodies above also take `"attachments": ["att_…", …]`:
+up to 3 ids this device staged with `POST /voice/attachments` (below). With attachments, `text` may be
+empty (it becomes "Take a look at what I attached."). They take the same path as the Mac's panel
+attachments: pictures go to Hermes as image parts of the run (or, when its model doesn't read images
+or the task is running and gets a steer, by their saved copy's path), files by their saved copy's
+path; the task lists them under `shared` and its images come from `/voice/shared-image/{run_id}/{n}`.
+Never a screen capture. All or nothing: an unknown id (sent, removed, expired, or another device's) is
+`404 {"reason": "unknown"}` and nothing is sent; too many images for one request together is
+`409 {"reason": "too_large"}`; `400` for a malformed list. A task waiting on an approval, or a spoken
+choice, takes words only (`409 {"reason": "not_now"}`). A send that fails gives the ids back, so a retry
+with the same ids (and `client_id`) works. The `200`/`202` reply adds
+`"attachments": [{"id", "kind", "name"}]`.
+
+### POST /voice/attachments
+
+Raw bytes, the same headers as the call upload: `Content-Type`, `X-Speakeasy-Kind: picture | file`,
+`X-Speakeasy-Filename` (percent-encoded, required for files), `Content-Length`. Authenticated and
+size-checked before any of the body is read.
+
+- **Pictures**: `image/jpeg` or `image/png`, at most 2.5 MB (the app downscales to 2048 px and
+  re-encodes HEIC as JPEG first). The bytes must match the type. The server strips JPEG APP1 (Exif,
+  XMP), APP13 and comment segments and PNG `eXIf`/`tEXt`/`zTXt`/`iTXt` chunks, so no location
+  survives even if the app missed it; held in memory.
+- **Files**: `application/pdf` (must start `%PDF-`), `text/plain`, `text/markdown`, `text/csv`,
+  `application/json` (UTF-8, no NUL bytes), at most 10 MB; saved at once under
+  `<HERMES_HOME>/cache/speakeasy/shared/<sha256[:32]>/<safe name>` (0600), like the Mac's files.
+- Up to 6 waiting per device; one device never sees, sends or removes another's. What isn't sent
+  within 30 minutes is dropped (a saved file's copy too). Sent copies are kept with their task and
+  deleted with it, or after a week.
+
+`200 {"id": "att_…", "kind": "picture" | "file", "name", "size", "expires_in": 1800}`. Errors: `400`
+bad headers or empty, `401`, `409 {"reason": "too_many"}`, `413 {"reason": "too_large"}`,
+`415 {"reason": "unsupported"}` (HEIC, other types, bytes that aren't what they say). Logs carry kind
+and size only, never bytes or names. `DELETE /voice/attachments/{id}` → `200 {"id", "removed": true}`,
+`404` once sent, removed or expired.
 
 ### Where a spoken follow-up went
 

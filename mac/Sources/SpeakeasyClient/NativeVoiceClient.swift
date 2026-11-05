@@ -1412,11 +1412,12 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// Typed text to one task by run id (`POST /voice/work/{run}/message`). Works with or without a call.
     public func sendMessage(runID: String, text: String, source: TaskMessageSource = .typed,
-                            clientID: String = UUID().uuidString, choiceTaskID: String? = nil) async throws -> TaskMessageReply {
+                            clientID: String = UUID().uuidString, choiceTaskID: String? = nil,
+                            attachments: [String] = []) async throws -> TaskMessageReply {
         guard let api else { throw ServerClient.HTTPError(status: 0, message: "Not paired") }
         let interaction = model.state.connection.isOpen ? (model.state.interactionID ?? model.state.resumeFrom) : nil
         return try await api.sendMessage(runID: runID, text: text, source: source, clientID: clientID,
-                                         interactionID: interaction, choiceTaskID: choiceTaskID)
+                                         interactionID: interaction, choiceTaskID: choiceTaskID, attachments: attachments)
     }
 
     private func deliver(_ m: OutgoingMessage, done: @escaping (TaskMessageReply?, String?) -> Void) {
@@ -1435,7 +1436,7 @@ public final class NativeVoiceClient: VoiceCallClient {
             guard let self else { return }
             do {
                 let reply = try await self.sendMessage(runID: m.runID, text: m.text, source: m.source, clientID: m.id,
-                                                       choiceTaskID: m.choiceTaskID)
+                                                       choiceTaskID: m.choiceTaskID, attachments: m.attachments.map(\.id))
                 // The user's own turn (typed, not spoken), only while a call is there to show it in.
                 if self.model.state.connection.isOpen {
                     self.dispatch(.typedToTask(text: m.text, taskID: taskID, taskName: m.taskName))
