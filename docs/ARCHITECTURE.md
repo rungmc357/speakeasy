@@ -36,6 +36,13 @@ continuity: a spoken request that clearly refers to a recent Hermes chat on any 
 against `state.db` session titles/chat names) continues that Hermes session instead of starting a
 new one, and Speakeasy posts the answer into that chat with `hermes send`.
 
+Spoken progress follows the mic. The app POSTs `/voice/interactions/{id}/mic` `{"muted": bool}`
+once when the call connects and on every mute or unmute; the server keeps it on the call
+(`mic_muted` in the snapshot) and reads it each time it decides whether to speak an update, never
+caching it at task start. With the mic open (`speech.narration` `adaptive`) the first update comes
+after 12 s and one comes at least every 45 s; muted keeps the 45 s / 45 s, news-only cadence. A call
+that never reports is `null` and behaves as muted, so older apps hear exactly what they did before.
+
 Hermes `config.yaml`: Speakeasy changes it only during `hermes voice setup` (turns on the voice
 platform and adds itself to `plugins.enabled`), through `hermes_config.update()`, which only adds
 settings and refuses to write a config it cannot read. Nothing at runtime writes it.
@@ -90,7 +97,7 @@ reference client.
 - `GET /health` (no auth)
 - `POST /voice/sessions` (SDP offer → answer; response includes `voice_provider`)
 - `GET /voice/interactions/{id}`, `GET /voice/interactions/{id}/events` (SSE)
-- `POST /voice/interactions/{id}/end` | `/pause` | `/approval` | `/cancel-backend`
+- `POST /voice/interactions/{id}/end` | `/pause` | `/approval` | `/cancel-backend` | `/mic`
 - `GET /voice/work/latest`, `GET /voice/work/{run_id}`, `POST /voice/tasks/dismiss`
 - `GET /voice/card-image/{run_id}/{1-8}`
 - New in Speakeasy:
@@ -114,7 +121,10 @@ Server-side (`<HERMES_HOME>/speakeasy/settings.json`, editable from the app and 
   (default 5, 0 = off), `delivery.target` (default `none`; a Hermes send target such as `telegram`
   or `discord:<chat_id>`), `delivery.new_thread_per_task` (default off; used only when
   `threads_supported`), `continuity.enabled` (default on), `brief.auto_refresh`,
-  `instructions_extra` (optional extra persona text), `hermes_profile`, `image_roots`.
+  `instructions_extra` (optional extra persona text), `hermes_profile`, `image_roots`,
+  `speech.progress` (default on; off silences all spoken progress), `speech.narration`
+  (`adaptive` default | `classic`; `classic` keeps the muted cadence on every call, the rollback:
+  `hermes voice config set speech.narration classic`).
   Full table in API.md.
 
 Client-side (Mac app, UserDefaults; token in Keychain):

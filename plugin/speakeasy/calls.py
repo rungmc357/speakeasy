@@ -157,6 +157,13 @@ NARRATION_TICK_S = 2.0
 HEARTBEAT_RETRY_S = 15.0
 # Openers for a heartbeat whose wording came out identical to a line already said.
 _HEARTBEAT_OPENERS = ("Meanwhile", "Right now", "Continuing")
+# Once the openers are used up too: the latest step anchored to the task's age, which moves on between
+# lines. Line + openers + these outnumber the lines BackendRun.told keeps (5), so an open-mic
+# heartbeat always has a line that was not just said.
+_ANCHORED_SHAPES = ("Still on {step}, {age} in.", "{Age} in, still {step}.", "{Step}, still going, {age} in.")
+_ANCHORED_STEP_WORDS = 12
+# Outer deadline on the wording call: a hung model call must not wedge the call's narration.
+NARRATION_WORDING_S = 8.0
 ACTIVITY_KEEP = 10
 # Silent status notes to the voice model (so it can answer "how's it going?"): at most this often.
 # Every note used to go straight in, and the voice answered each one out loud ("Still on it")
@@ -180,6 +187,8 @@ def cap_words(line: str, limit: int = NARRATION_MAX_WORDS) -> str:
     cut = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
     if cut >= 0 and len(head[:cut + 1].split()) >= limit // 3:
         return head[:cut + 1]
+    if head.endswith((".", "!", "?", "\u2026")):
+        return head  # the kept words already end a sentence: no trailing "…" after it
     return head.rstrip(" ,;:-\u2014") + "\u2026"
 
 
@@ -187,19 +196,65 @@ def _said_key(line: str) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", line.lower()).split())
 
 
-def unrepeated(line: str, told: list[str]) -> str | None:
-    """`line`, or a re-worded version of it when it is word for word a line already spoken on this
-    task; None when every rewording has been used too."""
-    said = {_said_key(t) for t in told}
-    if _said_key(line) not in said:
-        return line
-    body = re.sub(r"(?i)^quick update:\s*", "", line.strip()).rstrip(".…") or line.strip()
-    body = body[:1].lower() + body[1:] if body[:2].istitle() else body
-    for opener in _HEARTBEAT_OPENERS:
-        again = cap_words(f"{opener}, {body}.")
-        if _said_key(again) not in said:
-            return again
-    return None
+_I_WORD = re.compile(r"^I(?:\b|['\u2019])")
+
+
+def _lead_lower(text: str) -> str:
+    """`text` with its first letter lowercased for use mid-sentence, unless that first word is "I"
+    ("I'm", "I've") or an acronym, which keep their capital."""
+    if not text or _I_WORD.match(text) or not text[:2].istitle():
+        return text
+    return text[:1].lower() + text[1:]
+
+
+def _age_phrase(age: float) -> str:
+    if age < 45:
+        return "under a minute"
+    if age < 90:
+        return "about a minute"
+    return f"about {round(age / 60)} minutes"
+
+
+def anchored_lines(step: str, age: float) -> list[str]:
+    """The latest step tied to how long the task has run ("Still on reading the logs, about 3
+    minutes in"), in every shape, starting from the one this heartbeat slot rotates to."""
+    step = re.sub(r"(?i)^quick update:\s*", "", " ".join(str(step or "").split())).rstrip(" .\u2026!?,;:")
+    words = step.split()
+    step = " ".join(words[:_ANCHORED_STEP_WORDS]) if words else "it"
+    low, phrase = _lead_lower(step), _age_phrase(age)
+    lines = [cap_words(shape.format(step=low, Step=step[:1].upper() + step[1:], age=phrase,
+                                    Age=phrase[:1].upper() + phrase[1:]))
+             for shape in _ANCHORED_SHAPES]
+    turn = int(max(age, 0.0) // UNMUTED_EVERY_S) % len(lines)
+    return lines[turn:] + lines[:turn]
+
+
+def unrepeated(line: str | None, told: list[str], step: str = "", age: float | None = None) -> str | None:
+    """`line`, unless it is word for word a line already spoken on this task (`told`); then the same
+    line re-worded behind an opener.
+
+    Without `age`: None when every rewording has been used too. With `age` (the open-mic heartbeat)
+    never None: after the openers come time-anchored lines on `step` (see anchored_lines), which with
+    the line and the openers outnumber the five lines `told` keeps; should even those all have been
+    said, the candidate said longest ago comes back, because an old line beats silence."""
+    said = [_said_key(t) for t in told]
+    candidates: list[str] = []
+    if line:
+        candidates.append(line)
+        body = re.sub(r"(?i)^quick update:\s*", "", line.strip()) or line.strip()
+        body = _lead_lower(body)
+        if not body.endswith((".", "!", "?", "\u2026")):
+            body += "."
+        candidates += [cap_words(f"{opener}, {body}") for opener in _HEARTBEAT_OPENERS]
+    if age is not None:
+        candidates += anchored_lines(step or "", age)
+    for candidate in candidates:
+        if _said_key(candidate) not in said:
+            return candidate
+    if age is None or not candidates:
+        return None
+    # Everything was said within the last few lines: the one said longest ago.
+    return min(candidates, key=lambda c: max(i for i, key in enumerate(said) if key == _said_key(c)))
 
 
 class ServiceError(Exception):
@@ -1596,6 +1651,7 @@ class SidebandWorker:
         if deferred is None:
             deferred = self.narration_deferred = {}
         new_steps: list[str] = []
+        covered, told, told_all = 0, [], []
         with self.interaction.lock:
             last_any = self.interaction.progress_spoken_at
             first_after = UNMUTED_FIRST_S if listening else PROGRESS_AFTER_S
@@ -1629,7 +1685,9 @@ class SidebandWorker:
                 held = deferred.get(backend.delegation_id) or ""
                 if urgent or not text_mod.HEADS_UP_RE.search(held):
                     deferred[backend.delegation_id] = milestone  # deferred, not dropped
-            else:
+            elif not reason or reason == "idle" or not listening:
+                # Dropped only once a line goes out, the task stops, or the mic shuts. A later event
+                # that merely lands inside the spacing (or early) leaves a held line for the ticker.
                 deferred.pop(backend.delegation_id, None)
             if not reason:
                 self.interaction.progress_spoken_at = now  # claim the slot before the (slow) wording call
@@ -1645,36 +1703,56 @@ class SidebandWorker:
         request = self.store.request_text(backend.idem_key) or ""
         writer = self.rt.progress_call or router.progress_update
         try:
-            line = await asyncio.to_thread(writer, request, new_steps, told)
-        except Exception as exc:
+            # An outer deadline: a hung wording call would otherwise hold the claimed slot (and, with
+            # the mic open, the heartbeat) forever. The thread is abandoned, the fallback speaks.
+            line = await asyncio.wait_for(asyncio.to_thread(writer, request, new_steps, told), NARRATION_WORDING_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # including asyncio.TimeoutError
             logger.info("speakeasy: progress wording unavailable (%s)", type(exc).__name__)
             line = None
         line = line or P.progress_fallback(new_steps, milestone)
-        if line and listening:
-            line = unrepeated(cap_words(line), told_all)
+        if listening:
+            # Open mic: never word for word a recent line, never over the cap, and never nothing —
+            # a heartbeat whose rewordings are used up falls back to the step plus the task's age.
+            step = new_steps[-1] if new_steps else milestone
+            line = unrepeated(cap_words(line) if line else None, told_all, step, age)
         if not line or not self.call_connected():
             with self.interaction.lock:
-                self.interaction.progress_spoken_at = last_any
+                if self.interaction.progress_spoken_at == now:  # only our own claim: never a newer one
+                    self.interaction.progress_spoken_at = last_any
                 backend.narration_failed_at = now
             self._log_narration(state, age, now, last_any, backend, "silent")
             return False
         with self.interaction.lock:
-            backend.told_count = covered
+            # An urgent line and a heartbeat can race on one task: the counter only moves forward.
+            backend.told_count = max(backend.told_count, covered)
             backend.told = (backend.told + [line])[-5:]
         self._log_narration(state, age, now, last_any, backend, "ok")
         await self.append("session.commentary.append", backend.say_id, line)
         return True
 
-    @staticmethod
-    def _log_narration(state: str, age: float, now: float, last_any: float, backend: BackendRun,
+    def _log_narration(self, state: str, age: float, now: float, last_any: float, backend: BackendRun,
                        reason: str) -> None:
         """One line per narration decision: how the constants get tuned after launch."""
         gap = f"{now - last_any:.1f}s" if last_any else "-"
-        logger.info("narration: state=%s first=%.1fs gap=%s task=%s reason=%s",
-                    state, age, gap, backend.idem_key[:6], reason)
+        logger.info("narration: state=%s age=%.1fs gap=%s call=%s task=%s reason=%s",
+                    state, age, gap, str(self.interaction.interaction_id)[:10], backend.idem_key[3:13], reason)
+
+    def narration_mic_state(self) -> bool | None:
+        """The mic state to build a task prompt with: the live one only while adaptive narration is
+        on, else None, so speech.progress = false and speech.narration = "classic" build exactly the
+        prompt they always did (no finer-granularity ask)."""
+        speech = self.rt.settings()["speech"]
+        if not speech["progress"] or narration_mode(speech) != "adaptive":
+            return None
+        return self.mic_state()
 
     def ensure_narration_ticker(self) -> None:
-        """Start this call's narration heartbeat on its own loop, unless it is already running."""
+        """Start this call's narration heartbeat on its own loop, unless it is already running or the
+        call has hung up."""
+        if self.interaction.call_closed:
+            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -1696,10 +1774,13 @@ class SidebandWorker:
         if deferred is None:
             deferred = self.narration_deferred = {}
         speech = self.rt.settings()["speech"]
-        if not speech["progress"]:
+        listening = narration_mode(speech) == "adaptive" and self.interaction.mic_muted is False
+        if not speech["progress"] or not listening:
+            # Lines are only held while the mic is open; once it shuts (or narration is switched off
+            # or rolled back to classic), a held line is dropped, not spoken where origin/main would
+            # have stayed quiet. Only a fresh event can narrate a muted call.
             deferred.clear()
             return []
-        listening = narration_mode(speech) == "adaptive" and self.interaction.mic_muted is False
         now = time.monotonic()
         due: list[tuple[bool, float, BackendRun, str]] = []
         with self.interaction.lock:
@@ -1721,8 +1802,8 @@ class SidebandWorker:
 
     async def _narration_heartbeat(self) -> None:
         """While the call has work in flight, every NARRATION_TICK_S: give a task due an open-mic line
-        its line and retry held ones. Muted, unknown and classic calls only ever get retries from
-        here, which they never need (nothing is held unless the mic is open)."""
+        its line and retry held ones. Muted, unknown and classic calls get nothing from here: held
+        lines are dropped once the mic is not open (see narration_due)."""
         while True:
             await asyncio.sleep(NARRATION_TICK_S)
             if self.interaction.call_closed:
@@ -3423,7 +3504,7 @@ class SidebandWorker:
             self.publish()
         prompt = P.build_task_prompt(self.names, revision, context, focus, label, shared=self.shared_prompt(
             items, bool(images), session_id if continuing else None, shared.capture is not None), room=room,
-            mic_muted=self.mic_state())
+            mic_muted=self.narration_mic_state())
         try:
             run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,
                                              **({"images": images} if images else {}))
@@ -3734,7 +3815,7 @@ class SidebandWorker:
         session_id = TASK_SESSION_PREFIX + hashlib.sha256(idem.encode()).hexdigest()[:24]
         if valid_delivery_target(conv.target):
             backend.deliver_to = conv.target
-        prompt = P.build_task_prompt(self.names, revision, context, focus, where, mic_muted=self.mic_state())
+        prompt = P.build_task_prompt(self.names, revision, context, focus, where, mic_muted=self.narration_mic_state())
         self.store.set_session(idem, session_id)
         self.store.progress(idem, "milestone", f"Working on it here; the answer goes to {where}")
         with self.interaction.lock:

@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin (next release) — Narration follows your mic
+
+- **With your mic open, you hear the work.** On a long task the voice says what it's doing after about 12 seconds, then at least every 45 seconds, even when there's nothing new (the latest step again, in different words). Lines stay short (22 words at most), don't repeat word for word, and wait while you're talking. *(Plugin; needs the app update that reports the mic)*
+- **Muted is unchanged.** With the mic muted, or with an app that doesn't report it yet, updates come as before: the first after 45 seconds, at most one every 45 seconds, and only when the task has done something new. A problem or something that needs you isn't held back by the 45-second spacing. *(Plugin)*
+- **Prefer the old pacing?** `hermes voice config set speech.narration classic` brings it back on every call, no update needed; `adaptive` is the default. `speech.progress false` still turns spoken progress off entirely. *(Plugin)*
+
 ## Plugin 0.3.22 — Keys and sign-ins only through Hermes
 
 - **Keys and sign-ins are read only through Hermes.** API keys, the Hermes API key and the xAI sign-in now come from Hermes' own secret, env and credential-pool readers, for the right profile; Speakeasy no longer opens the `.env` or `auth.json` files itself, and setup saves values through Hermes' env writer. Everything you already set keeps working, unchanged. *(Plugin)*

@@ -38,6 +38,7 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/interactions/{id}/answer` | device | Answer a task's question card (or a spoken-choice card) |
 | POST | `/voice/interactions/{id}/card-action` | device | Press a button on a task's card during a call |
 | POST | `/voice/interactions/{id}/mic-check` | device | Log a mic repair (numbers only, no audio or words) |
+| POST | `/voice/interactions/{id}/mic` | device | Report whether the user has the call's mic muted (spoken progress follows it) |
 | POST | `/voice/interactions/{id}/screen` | device | Turn screen sharing on or off for this call |
 | POST | `/voice/interactions/{id}/captures/{capture_id}` | device | Report on a capture request |
 | POST | `/voice/interactions/{id}/attachments` | device | Upload a capture, picture or file (raw bytes) |
@@ -221,6 +222,21 @@ A tap on a question card's option (or a typed answer). Body `{"task_id": "...", 
 The app found the call's mic wasn't getting through and reopened the connection. Body
 `{"note": "..."}` (at most 400 characters of numbers and state, no audio or words). Logged only.
 
+## POST /voice/interactions/{id}/mic
+
+Whether the user has the call's mic muted. The app sends it once when the call connects and again
+on every mute or unmute. Body exactly `{"muted": true}` or `{"muted": false}`: a missing or extra
+key, or a value that is not a boolean, is 400; an unknown interaction is 404. Spoken progress
+follows it (see `speech.narration` under settings). The server reads the value each time it decides
+whether to speak, so unmuting partway through a task changes the cadence from the next check on. A
+call that never reports (an older app) shows `mic_muted: null` in the snapshot and is treated as
+muted.
+
+`200`
+```json
+{"interaction_id": "vi_2436cf97524f58de64775b5a9ecc3e58", "mic_muted": false}
+```
+
 ## GET /voice/interactions/{id}
 
 Snapshot of one call. `run_id`/`status` describe the most recent task; `approval` is the pending tool approval, if any.
@@ -239,6 +255,7 @@ Snapshot of one call. `run_id`/`status` describe the most recent task; `approval
   "error": null,
   "paused": false,
   "resumed_from": null,
+  "mic_muted": null,
   "screen": {"on": false, "seq": 0, "declared": "ready"},
   "captures": [],
   "attachments": [],
@@ -252,6 +269,9 @@ polling fallback still gets them), pictures and files waiting for the next reque
 (`[{"id", "kind", "name", "app", "state": "pending" | "sending"}]`) and the held "look at my
 screen" request (`{"state": "waiting" | "not_sent", "text", "since"}` or `null`). Sharing is off
 at the start of every call and every resume.
+
+`mic_muted` is the last mic state the app reported with `POST /voice/interactions/{id}/mic`:
+`true`, `false`, or `null` when it never reported (treated as muted).
 
 ## GET /voice/interactions/{id}/events (SSE)
 
@@ -950,7 +970,8 @@ partial object (nested objects merge); unknown keys or invalid values are 400.
 | `voice.voice` | `""` | voice name; empty = provider default |
 | `voice.codex_path` | `""` | path to `codex`; empty = find on PATH |
 | `voice.max_call_minutes` | `30` | hard cap per call |
-| `speech.progress` | `true` | one short spoken update on tasks running over 20 s, at most every 30 s |
+| `speech.progress` | `true` | short spoken updates naming what a long task is doing; `false` turns them all off, whatever `speech.narration` says. Mic muted or never reported: the first after 45 s, at most one every 45 s, only when the task has done something new. Mic open (`speech.narration` `adaptive`): the first after 12 s, then at least one every 45 s. Details in the next row |
+| `speech.narration` | `"adaptive"` | `adaptive` or `classic`. **Adaptive**, mic muted or never reported: unchanged, the first update after a task has run 45 s, at most one every 45 s across the call, and only when the task has done something new. Adaptive, mic open: the first after 12 s, then one at least every 45 s even with nothing new (the latest step again, in new words), at most 22 words, not word for word one of the last five lines said on that task (a repeat is re-worded, and once the rewordings run out the latest step is tied to how long the task has run: "still on reading the logs, about 3 minutes in"), and held while the user is talking. A heads-up (a problem, a blocker, something that needs the user) skips the 45 s spacing either way, and with the mic open also the 12 s wait. **Classic** keeps the muted cadence on every call whatever the mic says. Switching to it is the rollback and takes effect on the next update, no rebuild: `hermes voice config set speech.narration classic` (or PATCH `{"speech": {"narration": "classic"}}`). Any other value is 400 |
 | `idle_pause_minutes` | `5` | pause a silent call after this long |
 | `instructions_extra` | `""` | extra voice instructions (up to 1,000 characters) |
 | `hermes_profile` | `""` | Hermes profile for runs; empty = this gateway's |
