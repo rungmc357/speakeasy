@@ -18,6 +18,12 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Clearer setup.** The restart message names the exact commands and says it's a first-install step only; the setup guide covers installing Codex (0.150.0 or newer), the iPhone and iPad beta, and Grok voice (beta, off by default). *(Plugin, docs)*
 - Declares the oldest Hermes it supports (`requires_hermes` in plugin.yaml). *(Plugin)*
 
+## Mac 0.3.12 — One-click plugin updates, and a calmer job page
+
+- **Update the plugin from the app.** When a newer Speakeasy plugin is out, the board shows it with an **Update** button. It starts the update as a job on your Hermes, and the app confirms when the new version is running. *(Mac)*
+- **Mute reaches your Hermes.** The plugin now knows when you're muted, so the "still working" updates wait while you are; answers are still spoken. *(Mac)*
+- **No step-count graphic.** A job without a picture of its own goes straight to what it found and the tool calls it's making. *(Mac)*
+
 ## Mac 0.3.11 — Watch the work, and type to any job
 
 - **See what a job is doing while it works.** The job page shows the latest tool call live, with every earlier call one click away (what it was given, what came back, how long it took), plus what it has found so far and the files, pages and commands it touched. *(Mac, with plugin 0.3.20+)*
