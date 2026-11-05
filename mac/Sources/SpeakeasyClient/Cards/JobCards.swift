@@ -203,7 +203,7 @@ struct DevicesCard: View {
             Text(item["name"].string ?? "").font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
             if let value = item["value"].string {
                 Text(value).font(.system(size: 12, weight: .semibold, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.7)
-                    .foregroundStyle(tone == nil || tone == "neutral" ? Color.secondary : toneColor(tone))
+                    .foregroundStyle(tone == nil || tone == "neutral" ? Color.secondary : toneColor(tone).ink)
             }
             if !history.isEmpty {
                 let hi = max(history.max() ?? 1, 0.0001)
@@ -255,7 +255,7 @@ public struct AnswerGlance: View {
                         .font(.system(size: 14, weight: .semibold).monospacedDigit()).lineLimit(1)
                     if let c = card["change_pct"].double {
                         Text(ViewCard.signed(c)).font(.system(size: 11, weight: .medium).monospacedDigit())
-                            .foregroundStyle(c >= 0 ? toneColor("good") : toneColor("bad"))
+                            .foregroundStyle((c >= 0 ? toneColor("good") : toneColor("bad")).ink)
                     }
                 }
             case "comparison":
@@ -292,7 +292,7 @@ public struct AnswerGlance: View {
         VStack(alignment: .trailing, spacing: 0) {
             Text(v).font(.system(size: 16, weight: .semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.6)
                 .frame(maxWidth: 96, alignment: .trailing)
-                .foregroundStyle(tone.map { toneColor($0) } ?? Color.primary)
+                .foregroundStyle(tone.map { toneColor($0).ink } ?? Color.primary)
             if let label { Text(label).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 96, alignment: .trailing) }
         }
     }

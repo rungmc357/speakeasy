@@ -110,7 +110,7 @@ struct CardButton: View {
     private var fg: Color {
         switch style {
         case .primary: return JobStyle.onBlue
-        case .destructive: return Color(red: 1, green: 0.62, blue: 0.58)
+        case .destructive: return .scheme(dark: Color(red: 1, green: 0.62, blue: 0.58), light: Color(red: 0.62, green: 0.16, blue: 0.14))
         case .secondary: return JobStyle.blueInk
         }
     }

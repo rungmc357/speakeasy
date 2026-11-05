@@ -765,7 +765,7 @@ struct VoicePanelView: View {
                         if model.orbAnswerDot && model.orbState != .working, model.orbReason != nil {
                             // New answers read in the orb dot's calm blue.
                             HStack(alignment: .firstTextBaseline, spacing: 3) {
-                                Text(model.headerStatus).font(.system(size: 11.5, weight: .medium)).foregroundStyle(JobOrb.answerBlue).lineLimit(1)
+                                Text(model.headerStatus).font(.system(size: 11.5, weight: .medium)).foregroundStyle(JobOrb.answerBlue.ink).lineLimit(1)
                                 if p.statusClickable || model.showsSlim {
                                     Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .semibold)).foregroundStyle(.secondary)
                                 }
@@ -844,7 +844,8 @@ struct TranscriptBubble: View {
                 Text(mine ? (turn.kind == .typed ? "You typed\(turn.taskName.map { " · to \(TaskMessageCopy.shortName($0))" } ?? "")" : "You")
                      : assistantName).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
                 Text(turn.cleanedText).font(.system(size: 11.5))
-                    .foregroundStyle(mine ? Color.white : Color.primary.opacity(0.9))
+                    // White on the brass bubble in dark; brass's own ink on the paler light one.
+                    .foregroundStyle(mine ? Color.scheme(dark: .white, light: Tokens.brassInk) : Color.primary.opacity(0.9))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 9).padding(.vertical, 6)
@@ -1715,7 +1716,7 @@ struct WorkDetailView: View {
                   let lower = AttributedString.Index(range.lowerBound, within: attributed),
                   let upper = AttributedString.Index(range.upperBound, within: attributed) else { continue }
             attributed[lower..<upper].link = url
-            attributed[lower..<upper].foregroundColor = Tokens.blue
+            attributed[lower..<upper].foregroundColor = Tokens.blue.ink
         }
         return attributed
     }
