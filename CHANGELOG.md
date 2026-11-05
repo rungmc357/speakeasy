@@ -2,6 +2,11 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.31 · Mac 0.3.16 · iPhone build 62 — See the helpers a job brings in
+
+- **Helpers on the job page.** When a job hands parts of the work to helpers, the job page lists each one with what it's doing now, how long it's been going, and how it ended. Open a helper to see what it was asked, what it found and every step it took.
+- A helper that fails never fails the job, and nothing about where your words go changes.
+
 ## Plugin 0.3.30 · Mac 0.3.15 · iPhone build 61 — Settings on your phone, and tidier sessions
 
 - **Settings on iPhone and iPad.** Change your voice, model, names, spoken updates, call limits, where results go and more, right from the phone. Changes save to your Hermes, so every device sees them. Connection details, pair again and unpair live there too.
