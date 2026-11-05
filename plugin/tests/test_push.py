@@ -80,7 +80,7 @@ def test_status_lists_the_push_capability(server):
 
 
 def test_push_settings_validate():
-    assert validate({})["push"] == {"enabled": True, "relay_url": "https://push.speakeasyvoice.ai", "presence_s": 45}
+    assert validate({})["push"] == {"enabled": True, "relay_url": "https://speakeasy-push.todd-562.workers.dev", "presence_s": 45}
     assert validate({"push": {"relay_url": "http://127.0.0.1:8787"}})["push"]["relay_url"] == "http://127.0.0.1:8787"
     for bad in ({"relay_url": "http://relay.example"}, {"presence_s": 1}, {"enabled": "yes"}, {"extra": 1}):
         with pytest.raises(SettingsError):
@@ -260,3 +260,23 @@ def test_every_kind_has_a_prefix():
     assert set(push_mod.PREFIX) == set(KINDS)
     notifier = PushNotifier.__new__(PushNotifier)
     assert notifier is not None
+
+
+def test_relay_requests_carry_a_user_agent_cloudflare_accepts(monkeypatch):
+    # Cloudflare refuses urllib's default "Python-urllib/3.x" with 403 before the Worker runs.
+    import urllib.request
+    from speakeasy import push
+    seen = {}
+
+    class Resp:
+        status = 201
+        def read(self, n=-1): return b"{}"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(request, timeout=None):
+        seen.update({k.lower(): v for k, v in request.header_items()})
+        return Resp()
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    push.RelayClient._urllib_post("https://relay.example/v1/register", b"{}", {})
+    assert seen["user-agent"] == push.USER_AGENT and "python-urllib" not in seen["user-agent"].lower()

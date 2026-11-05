@@ -1221,7 +1221,7 @@ leave this Hermes**: the relay that wakes the phone gets only opaque ids. `capab
 `GET /voice/status` says the plugin has this (0.3.33+).
 
 ```
-Hermes plugin ──signed {device_token, environment, kind, nonce, collapse_id, event_id}──▶ relay (push.speakeasyvoice.ai)
+Hermes plugin ──signed {device_token, environment, kind, nonce, collapse_id, event_id}──▶ relay (speakeasy-push.todd-562.workers.dev)
 relay ──generic alert "Your Hermes has an update" + mutable-content + event id──▶ APNs ──▶ phone
 phone's Notification Service Extension ──GET /voice/push/events/{id} (device token)──▶ this Hermes
                                         ◀── {"title": "Done: Speed up the dashboard", "body": …}
@@ -1233,7 +1233,7 @@ phone's Notification Service Extension ──GET /voice/push/events/{id} (device
 {"apns_token": "<hex>", "environment": "sandbox" | "production", "kinds": ["finished", "needs_you", "failed", "reply"]}
 ```
 
-→ `200 {"ok": true, "enabled": true, "kinds": [...], "relay": "https://push.speakeasyvoice.ai", "available": true}`.
+→ `200 {"ok": true, "enabled": true, "kinds": [...], "relay": "https://speakeasy-push.todd-562.workers.dev", "available": true}`.
 `{"enabled": false}` turns notifications off and forgets the token. The token is kept in
 `devices.json` next to the device (`push: {apns_token, environment, kinds, updated_at}`); revoking the
 device drops it. `400` for a token that isn't hex, an unknown environment or kind.
@@ -1268,7 +1268,7 @@ The relay refuses any body field beyond the six above, replays (nonce), timestam
 5 minutes, and rate-limits per install and per device token. Its reply `{ok, status, reason, invalid_token}`:
 `invalid_token: true` (APNs said the token is dead) makes the plugin forget that token.
 
-Settings: `push: {enabled: true, relay_url: "https://push.speakeasyvoice.ai", presence_s: 45}`
+Settings: `push: {enabled: true, relay_url: "https://speakeasy-push.todd-562.workers.dev", presence_s: 45}`
 (`relay_url` must be https, or http on 127.0.0.1/localhost for local testing).
 
 ## GET /voice/status

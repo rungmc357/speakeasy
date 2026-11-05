@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 
 KINDS = ("finished", "needs_you", "failed", "reply")
 ENVIRONMENTS = ("sandbox", "production")
-DEFAULT_RELAY = "https://push.speakeasyvoice.ai"
+DEFAULT_RELAY = "https://speakeasy-push.todd-562.workers.dev"
+USER_AGENT = "Speakeasy-Hermes-Plugin (+https://speakeasyvoice.ai)"
 APNS_TOKEN_RE = re.compile(r"^[0-9a-f]{64,200}$")
 EVENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 EVENT_TTL_S = 6 * 3600          # the extension asks within seconds; a late tap still finds the text
@@ -84,8 +85,10 @@ class RelayClient:
 
     @staticmethod
     def _urllib_post(url: str, body: bytes, headers: dict[str, str]) -> tuple[int, dict[str, Any]]:
+        # An explicit User-Agent: Cloudflare (the relay's host) answers urllib's default
+        # "Python-urllib/3.x" with 403 before the Worker runs.
         request = urllib.request.Request(url, data=body, method="POST",
-                                         headers={"Content-Type": "application/json", **headers})
+                                         headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, **headers})
         try:
             with urllib.request.urlopen(request, timeout=RELAY_TIMEOUT_S) as response:
                 raw, status = response.read(65536), response.status

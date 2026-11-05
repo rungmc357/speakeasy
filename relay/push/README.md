@@ -35,53 +35,35 @@ node test/e2e.mjs            # relay on :8787 + fake APNs on :8790 (records to $
 # then, from plugin/: E2E_OUT=<same file> python tests/e2e_push.py   (real plugin → relay → fake APNs → read back)
 ```
 
-## One-time setup (owner)
+## Deployment (live)
 
-### 1. APNs auth key (Apple Developer portal)
-1. Open <https://developer.apple.com/account/resources/authkeys/list> (team 278P4D6M8C).
-2. Click **+** (Create a key). Key name: `Speakeasy APNs`.
-3. Tick **Apple Push Notifications service (APNs)**, click **Configure**: Environment **Sandbox &
-   Production**, Key restriction **Team Scoped (All Topics)**, **Save**.
-4. **Continue** → **Register** → **Download** (`AuthKey_XXXXXXXXXX.p8`; it can be downloaded only
-   once). Note the **Key ID** (10 characters) shown on the page.
-5. In 1Password vault **Todd**, create item **Speakeasy APNs key**: attach the `.p8` (or paste its
-   contents in a concealed field `p8`), field `key id`, field `team id` = `278P4D6M8C`. Delete the
-   downloaded file.
+- **URL**: `https://speakeasy-push.todd-562.workers.dev` (Todd's Cloudflare account, free plan,
+  workers.dev). It is the plugin's default (`DEFAULT_RELAY` in `plugin/speakeasy/push.py`, the
+  `push.relay_url` settings default); any https relay can be set in settings instead.
+- **APNs key**: Key ID `ZBP98Z8JTQ`, team `278P4D6M8C`, Sandbox & Production, team scoped. The `.p8` is
+  the 1Password document **Speakeasy APNs key** (vault Todd). The install key is the 1Password item
+  **Speakeasy push relay install key**.
+- **Apple**: Push Notifications is on the `co.georgio.toddvoice` App ID (profile `Todd Voice App Store`
+  regenerated with it); the extension's App ID `co.georgio.toddvoice.notifications` has the profile
+  `Speakeasy Notifications App Store` (no capabilities). Push needs no Apple review.
 
-### 2. Push capability + profiles (App Store Connect / portal)
-- App ID `co.georgio.toddvoice`: <https://developer.apple.com/account/resources/identifiers/list> →
-  `co.georgio.toddvoice` → **Capabilities** → tick **Push Notifications** → **Save** → **Confirm**.
-  This invalidates the `Todd Voice App Store` profile; regenerate it under the same name (or run the
-  skill script `asc_enable_capability.py PUSH_NOTIFICATIONS "Todd Voice App Store"`, which does the
-  capability and the profile in one go).
-- New App ID `co.georgio.toddvoice.notifications` (the Notification Service Extension; no
-  capabilities needed) and an App Store profile named **Speakeasy Notifications App Store** with the
-  Apple Distribution certificate. Add it to `templates/phone-export.plist` `provisioningProfiles`.
-- Push needs no Apple review or approval. The archive must carry `aps-environment = production`
-  (project.yml sets it per configuration), and App Store Connect will warn on upload if the profile
-  lacks Push.
-
-### 3. Deploy the Worker (Todd's Cloudflare account, `npx wrangler` already signed in)
+Redeploy / rotate (from `relay/push`, never printing a secret):
 ```sh
-cd relay/push
-op read "op://Todd/Speakeasy APNs key/p8"     | npx wrangler secret put APNS_KEY_P8
-op read "op://Todd/Speakeasy APNs key/key id" | npx wrangler secret put APNS_KEY_ID
-openssl rand -base64 32                        | npx wrangler secret put INSTALL_KEY   # keep a copy in 1Password
 npx wrangler deploy
-curl https://push.speakeasyvoice.ai/health     # {"ok":true}
+op document get "Speakeasy APNs key" --vault Todd | npx wrangler secret put APNS_KEY_P8
+printf %s ZBP98Z8JTQ                               | npx wrangler secret put APNS_KEY_ID
+op read "op://Todd/Speakeasy push relay install key/password" | npx wrangler secret put INSTALL_KEY
+curl https://speakeasy-push.todd-562.workers.dev/health      # {"ok":true}
 ```
-(`wrangler secret put` before the first deploy creates the Worker; if it refuses, deploy once first.)
-Rotating `INSTALL_KEY` invalidates every install; plugins re-register by themselves on the next notify.
+(`APNS_TEAM_ID` and `APNS_TOPIC` are plain vars in `wrangler.toml`.) Rotating `INSTALL_KEY`
+invalidates every install; plugins re-register by themselves on the next notify.
 
-### 4. DNS for `push.speakeasyvoice.ai`
+### Later: `push.speakeasyvoice.ai`
 `speakeasyvoice.ai` is on **Porkbun** nameservers, and a Workers Custom Domain needs the zone on
-Cloudflare. Pick one:
-- **A (recommended):** add `speakeasyvoice.ai` to Cloudflare (free plan), copy over every Porkbun
-  record (GitHub Pages A/AAAA/CNAME, the support@ MX/SPF/DKIM/DMARC records, any TXT verifications),
-  switch the nameservers at Porkbun, then uncomment the `routes` line in `wrangler.toml` and
-  `npx wrangler deploy` again. Cloudflare creates the `push` record itself.
-- **B:** keep Porkbun and use the workers.dev address (`https://speakeasy-push.<account>.workers.dev`):
-  change `DEFAULT_RELAY` in `plugin/speakeasy/push.py` and the settings default before releasing.
+Cloudflare. To move: add the zone to Cloudflare (free), copy every Porkbun record (GitHub Pages
+A/AAAA/CNAME, support@ MX/SPF/DKIM/DMARC, TXT verifications), switch nameservers, uncomment `routes`
+in `wrangler.toml`, deploy, then change the plugin default. Keep workers.dev enabled so older plugins
+keep working.
 
 ## Privacy page (proposed wording, not published)
 

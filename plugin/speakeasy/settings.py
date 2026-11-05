@@ -72,7 +72,7 @@ DEFAULTS: dict[str, Any] = {
     # Phone notifications while the app is closed (push.py): relay_url is Speakeasy's notification
     # relay (relay/push), which only ever sees an opaque wake-up; presence_s is how recently the app
     # must have been heard from to count as open (then nothing is sent).
-    "push": {"enabled": True, "relay_url": "https://push.speakeasyvoice.ai", "presence_s": 45},
+    "push": {"enabled": True, "relay_url": "https://speakeasy-push.todd-562.workers.dev", "presence_s": 45},
 }
 DEFAULT_VOICES = {"codex": "cove", "openai": "marin", "grok": "Ara"}
 # Voices each provider accepts; they do not overlap (the ChatGPT-sign-in voice model rejects API
@@ -187,7 +187,7 @@ def validate_push(raw: Any) -> dict[str, Any]:
     if not isinstance(url, str) or not (
             re.fullmatch(r"https://[A-Za-z0-9.\-]{1,253}(?::\d{1,5})?(/[A-Za-z0-9._~/-]*)?", url)
             or re.fullmatch(r"http://(?:127\.0\.0\.1|localhost)(?::\d{1,5})?/?", url)):
-        raise SettingsError("push.relay_url must be an https URL, like https://push.speakeasyvoice.ai")
+        raise SettingsError("push.relay_url must be an https URL, like https://speakeasy-push.todd-562.workers.dev")
     presence = raw.get("presence_s")
     if isinstance(presence, bool) or not isinstance(presence, int) or not 5 <= presence <= 3600:
         raise SettingsError("push.presence_s must be 5-3600 seconds")
