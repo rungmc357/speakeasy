@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import contextlib
 import re
 import dataclasses
@@ -65,6 +66,42 @@ FOLLOW_UP_POLL_S = 2.0 # how often a queued follow-up is looked for in the task'
 FOLLOW_UP_SETTLE_S = 3.0  # after the run ends, how long its transcript gets to show a follow-up it read
 FENCE_POLL_S = 2.0     # how often a task held behind another (same project) checks on it
 FENCE_MAX_WAIT_S = 4 * 3600  # never held longer than this: it then starts and says so
+
+
+LOOP_GONE_POLL_S = 0.5
+# Set when the interpreter starts shutting down, before concurrent.futures joins its workers (threading
+# atexit hooks run newest first): a stream thread still waiting on a call's loop then lets go.
+_EXITING = threading.Event()
+try:
+    threading._register_atexit(_EXITING.set)  # type: ignore[attr-defined]
+except (AttributeError, RuntimeError):  # not CPython, or already shutting down
+    pass
+
+
+def on_loop(coro: Any, loop: asyncio.AbstractEventLoop) -> Any:
+    """Run ``coro`` on the call's ``loop`` from a worker thread (a Hermes event stream) and wait for it.
+
+    A bare ``run_coroutine_threadsafe(...).result()`` waits forever when the loop stops first (the typed
+    worker's loop is stopped on service close) or never gets to the coroutine: the stream's thread, a
+    non-daemon asyncio executor worker, then blocks interpreter exit (``concurrent.futures`` joins
+    every executor worker at exit), which is how the test suite hung after its last test. This gives
+    up with RuntimeError once the loop isn't running, which ends that stream like any other broken
+    stream, and at once when Python is exiting, so a gateway shutdown never waits on a call's work."""
+    if _EXITING.is_set() or loop.is_closed() or not loop.is_running():
+        coro.close()
+        raise RuntimeError("the call's event loop stopped")
+    try:
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+    except RuntimeError:  # the loop closed just now
+        coro.close()
+        raise
+    while True:
+        try:
+            return future.result(LOOP_GONE_POLL_S)  # short waits: _EXITING and a stopped loop are noticed
+        except concurrent.futures.TimeoutError:
+            if _EXITING.is_set() or loop.is_closed() or not loop.is_running():
+                future.cancel()
+                raise RuntimeError("the call's event loop stopped") from None
 
 
 def _same_words(fragment: str, request: str) -> bool:
@@ -3693,7 +3730,7 @@ class SidebandWorker:
             loop = asyncio.get_running_loop()
             terminal_seen = await asyncio.to_thread(
                 self.hermes.events, run_id,
-                lambda event: asyncio.run_coroutine_threadsafe(self.handle_hermes_event(backend, event), loop).result())
+                lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
             if not terminal_seen:
                 await self.reconcile_stream_end(backend)
         except Exception as exc:
@@ -3841,14 +3878,14 @@ class SidebandWorker:
                     # task's live status, read the same way as a thread task's. Only accepting strict
                     # STATUS: lines here left a continued task silent for its whole run.
                     text = payload["text"]
-                    asyncio.run_coroutine_threadsafe(self.thread_activity(
-                        backend, "commentary", text, {"event": "message.interim", "text": text}), loop).result()
+                    on_loop(self.thread_activity(
+                        backend, "commentary", text, {"event": "message.interim", "text": text}), loop)
                 elif name == "tool.started":
                     event = {"event": "tool.started", "tool": payload.get("tool_name") or payload.get("tool"),
                              "preview": payload.get("preview")}
                     if isinstance(payload.get("tool_call_id"), str):
                         event["tool_call_id"] = payload["tool_call_id"]
-                    asyncio.run_coroutine_threadsafe(self.handle_hermes_event(backend, event), loop).result()
+                    on_loop(self.handle_hermes_event(backend, event), loop)
                 elif name in {"tool.completed", "tool.failed"}:  # settles the step in the live activity
                     done = {"event": name, "tool": payload.get("tool_name") or payload.get("tool"),
                             "preview": payload.get("preview")}
@@ -3956,7 +3993,7 @@ class SidebandWorker:
 
         def on_activity(kind: str, text: str) -> None:
             event = {"event": "message.interim" if kind == "commentary" else "tool.completed", "text": text}
-            asyncio.run_coroutine_threadsafe(self.thread_activity(backend, kind, text, event), loop).result()
+            on_loop(self.thread_activity(backend, kind, text, event), loop)
         state_db, platform = self.rt.state_db, conv.platform
 
         def session_of() -> str | None:
@@ -4010,7 +4047,7 @@ class SidebandWorker:
             loop = asyncio.get_running_loop()
             terminal_seen = await asyncio.to_thread(
                 self.hermes.events, run_id,
-                lambda event: asyncio.run_coroutine_threadsafe(self.handle_hermes_event(backend, event), loop).result())
+                lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
             if not terminal_seen:
                 await self.reconcile_stream_end(backend)
         except Exception as exc:

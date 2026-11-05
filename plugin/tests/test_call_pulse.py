@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from fakes import http
+from fakes import ModuleClock, http
 from speakeasy import activity as A
 from speakeasy import calls, router
 from speakeasy.calls import BackendRun
@@ -22,8 +22,8 @@ class Clock:
 
     def __init__(self, monkeypatch):
         self.t = 1000.0
-        monkeypatch.setattr(calls.time, "monotonic", lambda: self.t)
-        monkeypatch.setattr(calls.time, "time", lambda: WALL + self.t)
+        # calls.py's own clock only: patching time.monotonic itself froze every other test's loops.
+        monkeypatch.setattr(calls, "time", ModuleClock(lambda: self.t, lambda: WALL + self.t))
 
     def wall(self) -> float:
         return WALL + self.t

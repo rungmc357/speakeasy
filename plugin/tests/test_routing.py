@@ -96,14 +96,15 @@ def _step(worker, backend, clock, at, detail):
 
 
 def _run_with_clock(fn):
+    from fakes import ModuleClock
     from speakeasy import calls
     clock = [0.0]
-    real = calls.time.monotonic
-    calls.time.monotonic = lambda: clock[0]
+    real = calls.time
+    calls.time = ModuleClock(lambda: clock[0])  # calls.py's clock only, never every loop's (fakes.ModuleClock)
     try:
         fn(clock)
     finally:
-        calls.time.monotonic = real
+        calls.time = real
 
 
 def test_progress_says_what_the_task_is_actually_doing(service):

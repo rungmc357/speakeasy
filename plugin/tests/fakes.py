@@ -23,6 +23,26 @@ for p in (str(PLUGIN_ROOT), str(HERMES_SRC)):
 
 from speakeasy.calls import SidebandWorker  # noqa: E402
 
+class ModuleClock:
+    """A stand-in for one module's ``time``: its own monotonic/time, everything else real.
+
+    Tests must never patch ``time.monotonic`` itself (``monkeypatch.setattr(calls.time, ...)`` does,
+    since ``calls.time`` IS the time module): every asyncio loop in the process reads it, so a loop left
+    by an earlier test schedules its next timer against the fake clock and sleeps in select() for about
+    the machine's uptime. That parked loop never finished a Hermes event its stream thread waited on,
+    and that thread (a non-daemon executor worker) kept pytest from exiting after the last test."""
+
+    def __init__(self, monotonic, wall=None):
+        import time as _time
+        self._real = _time
+        self.monotonic = monotonic
+        if wall is not None:
+            self.time = wall
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 SDP = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
 FAKE_API_KEY = "test-api-server-key-not-real"
 
