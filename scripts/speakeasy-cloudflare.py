@@ -177,6 +177,41 @@ def install_cloudflared(out: Callable[[str], None], which: Callable[[str], str |
 
 
 
+QUICK_HOST_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*\.trycloudflare\.com$")
+QUICK_URL_RE = re.compile(r"https://[a-z0-9]+(?:-[a-z0-9]+)*\.trycloudflare\.com")
+
+
+def read_quick_url(home: Path, metrics_port: int) -> str:
+    """The quick tunnel's address, like the plugin reads it: metrics ``/quicktunnel``, else the log."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{metrics_port}/quicktunnel", timeout=2) as r:  # noqa: S310
+            host = str(json.loads(r.read() or b"{}").get("hostname") or "").lower()
+        if QUICK_HOST_RE.fullmatch(host):
+            return f"https://{host}"
+    except Exception:
+        pass
+    try:
+        found = QUICK_URL_RE.findall(log_path(home).read_text(errors="replace")[-256 * 1024:])
+        return found[-1] if found else ""
+    except OSError:
+        return ""
+
+
+def wait_for_quick_url(home: Path, metrics_port: int, timeout_s: float = 45.0,
+                       read: Callable[[Path, int], str] = read_quick_url,
+                       sleep: Callable[[float], None] = None, clock: Callable[[], float] = None) -> str:
+    """Verify step: wait until the new tunnel reports its address ("" when it never does)."""
+    import time
+    sleep, clock = sleep or time.sleep, clock or time.monotonic
+    deadline = clock() + timeout_s
+    while True:
+        url = read(home, metrics_port)
+        if url or clock() >= deadline:
+            return url
+        sleep(1.0)
+
+
 def hermes_config(home: Path, *pairs: tuple[str, str], run: Callable[..., Any] = subprocess.run) -> None:
     """`hermes voice config set` for this profile (the plugin validates the values)."""
     env = dict(os.environ, HERMES_HOME=str(home))
@@ -225,6 +260,13 @@ def main(argv: list[str] | None = None) -> int:
     install_service(home, binary, args.port, args.metrics_port, named=NAMED_TUNNEL if hostname else "")
     hermes_config(home, ("server.tunnel", "cloudflare"), ("server.tunnel_metrics_port", str(args.metrics_port)),
                   ("server.tunnel_hostname", hostname or '""'))
+    if not hostname:
+        url = wait_for_quick_url(home, args.metrics_port)
+        if not url:
+            print(f"The tunnel service started, but it hasn't reported an address yet (log: {log_path(home)}). "
+                  "Check the log, then run `python3 speakeasy-cloudflare.py restart`.")
+            return 1
+        print(f"✓ Cloudflare address is up: {url}")
     print("Cloudflare tunnel service is running. Now run `hermes voice setup` (it shows the address and the "
           "pairing link).")
     return 0

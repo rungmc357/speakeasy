@@ -238,11 +238,12 @@ def test_stopped_tailnet_warns_prominently_and_stays_local(home):
     assert S.Settings(home).get()["server"]["advertised_url"] == ""
 
 
-def test_no_tailscale_is_one_quiet_line(home):
+def test_no_tailscale_is_one_line_then_the_cloudflare_step(home):
     fake = Fake(tailscale="missing")
     rc, _ = run_setup(fake, yes=True)
     text = "\n".join(fake.lines)
-    assert rc == 0 and "Tailscale not found" in text and "┏" not in text
+    assert rc == 0 and "Tailscale not found" in text and "stays local" not in text
+    assert text.count("┏") == 1 and "speakeasy-cloudflare.py quick" in text  # the agent turns Cloudflare on
 
 
 def test_no_tailscale_flag_skips_detection(home):
@@ -409,3 +410,43 @@ def test_codex_is_found_inside_a_leftover_codex_app(tmp_path, monkeypatch):
     assert old in found and new in found
     versions = {old: (0, 150, 0), new: (0, 160, 0)}
     assert find_codex(version_fn=lambda p: versions.get(p), candidates=found) == new
+
+
+# -- automatic Cloudflare: no Tailscale → the agent turns Cloudflare mode on, no menu ---------------
+
+def _setup_text(home, monkeypatch, *, tailscale="missing", tunnel=False, **kw):
+    from speakeasy import tunnel as T
+    from speakeasy.settings import Settings
+    if tunnel:
+        Settings(home).patch({"server": {"tunnel": "cloudflare"}})
+        monkeypatch.setattr(T, "wait_for_url", lambda *a, **k: "https://calm-river-sound-test.trycloudflare.com")
+    fake = Fake(tailscale=tailscale)
+    rc, _ = run_setup(fake, yes=True, **kw)
+    return rc, "\n".join(fake.lines)
+
+
+def test_no_tailscale_and_no_tunnel_prints_the_cloudflare_step_not_a_menu(home, monkeypatch):
+    rc, text = _setup_text(home, monkeypatch)
+    assert rc == 0 and "speakeasy-cloudflare.py quick" in text and "┏" in text
+    assert "No Tailscale? Your agent can" not in text and "Connected through Cloudflare\"" in text
+    assert "✓ Connected through Cloudflare" not in text
+
+
+def test_same_mac_needs_no_cloudflare(home, monkeypatch):
+    rc, text = _setup_text(home, monkeypatch, here=True)
+    assert "speakeasy-cloudflare.py quick" not in text
+
+
+def test_tunnel_on_without_tailscale_says_connected_through_cloudflare(home, monkeypatch):
+    from speakeasy import cli
+    rc, text = _setup_text(home, monkeypatch, tunnel=True, send="telegram")
+    assert cli.CLOUDFLARE_CONNECTED in text and cli.CLOUDFLARE_USER_MESSAGE in text
+    assert "speakeasy-cloudflare.py quick" not in text
+    assert "calm-river-sound-test.trycloudflare.com" in text
+
+
+def test_tunnel_with_tailscale_is_only_a_backup(home, monkeypatch):
+    from speakeasy import cli
+    rc, text = _setup_text(home, monkeypatch, tunnel=True, tailscale="running")
+    assert cli.CLOUDFLARE_BACKUP in text and cli.CLOUDFLARE_CONNECTED not in text
+    assert cli.CLOUDFLARE_USER_MESSAGE not in text and "speakeasy-cloudflare.py quick" not in text

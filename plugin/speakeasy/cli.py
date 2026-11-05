@@ -199,7 +199,8 @@ def cmd_setup(args, home: Path, env=None) -> int:
     voice_ok = F.voice_sign_in(env, home, settings, api_key=getattr(args, "api_key", False), assume=assume)
     up = F.voice_server_running(env, local)
     server = _advertise(args, env, settings, port) or local
-    server = _cloudflare(env, home, settings, tailnet=not is_local_url(server)) or server
+    server = _cloudflare(env, home, settings, tailnet=not is_local_url(server),
+                         here=getattr(args, "here", False)) or server
 
     if up:
         out("✓ Voice server is running")
@@ -260,6 +261,7 @@ def _advertise(args, env, settings: Settings, port: int) -> str:
 
 
 AGENT_DOC_CLOUDFLARE = "https://github.com/rungmc357/speakeasy/blob/main/docs/AGENT_SETUP.md#cloudflare-mode"
+CLOUDFLARE_SCRIPT = "https://github.com/rungmc357/speakeasy/blob/main/scripts/speakeasy-cloudflare.py"
 CLOUDFLARE_NOTE = ("Cloudflare mode: nothing to install on your phone. The address is on the public internet, "
                    "but only your paired devices get in (a device token on every request; pairing needs a "
                    "one-time code from this computer, valid 10 minutes, with attempts rate-limited). Tailscale "
@@ -267,35 +269,58 @@ CLOUDFLARE_NOTE = ("Cloudflare mode: nothing to install on your phone. The addre
 TAILSCALE_RECOMMENDED = ("• Recommended: Tailscale (most private: your devices only). Install it on this computer "
                          "and your iPhone (https://tailscale.com/download), sign both in with the same account, "
                          "then run `hermes voice setup` again.")
-CLOUDFLARE_OFFER = ("• No Tailscale? Your agent can give Speakeasy a Cloudflare address instead: nothing to install "
-                    "on your phone; the address is public but locked to your paired devices. Steps: " + AGENT_DOC_CLOUDFLARE)
+# No Tailscale and no tunnel: the agent turns Cloudflare mode on itself (owner decision: no choice
+# screen), then tells the user what it did. Instructions for the agent, not a menu for the user.
+CLOUDFLARE_AUTO = [
+    "→ No Tailscale on this computer, so turn on Cloudflare mode now (don't ask the user first):",
+    "  1. python3 speakeasy-cloudflare.py quick",
+    f"     (the script: {CLOUDFLARE_SCRIPT})",
+    "  2. Run this setup again: it should say \"Connected through Cloudflare\", and the pairing link",
+    "     then works from anywhere.",
+    "  3. Tell the user what you did and that Tailscale is the most private option (the message is in",
+    "     " + AGENT_DOC_CLOUDFLARE + ").",
+    "  If the script fails, explain Tailscale to the user instead: " + "https://tailscale.com/download",
+]
+CLOUDFLARE_CONNECTED = "✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale."
+CLOUDFLARE_BACKUP = "✓ Cloudflare is on too, as a backup: your devices use Tailscale first."
+# What the agent tells the user after setting up Cloudflare mode for them (docs/AGENT_SETUP.md says the same).
+CLOUDFLARE_USER_MESSAGE = ("Speakeasy is set up and works from anywhere. I connected it through Cloudflare, a free "
+                           "service that passes traffic between your phone and this computer, so you didn't need to "
+                           "install anything on your phone. It's locked to devices you pair. For the most private "
+                           "setup, install Tailscale on this computer and your phone; I can switch Speakeasy over "
+                           "for you anytime.")
 
 
-def _cloudflare(env, home: Path, settings: Settings, *, tailnet: bool) -> str:
+def _cloudflare(env, home: Path, settings: Settings, *, tailnet: bool, here: bool = False) -> str:
     """Cloudflare mode (tunnel.py). The tunnel itself is set up outside the plugin (AGENT_SETUP.md ›
-    Cloudflare mode); here setup reads its current address, or recommends Tailscale and points at it."""
+    Cloudflare mode); here setup reads its current address, or, with no Tailscale and no tunnel,
+    tells the agent to turn Cloudflare mode on (no menu: the owner's "automatic Cloudflare")."""
+    from . import setup_flow as F
     from . import tunnel as T
     s = settings.get()["server"]
     if not s["tunnel"]:
-        if not tailnet:
-            env.out(TAILSCALE_RECOMMENDED)
-            env.out(CLOUDFLARE_OFFER)
+        if not tailnet and not here:
+            F.banner(env, CLOUDFLARE_AUTO)
         return ""
     if s["tunnel_hostname"]:
         url = f"https://{s['tunnel_hostname']}"
-        env.out(f"✓ Cloudflare permanent address: {url}")
     else:
         url = T.wait_for_url(home, s["tunnel_metrics_port"], timeout_s=10, sleep=env.sleep, clock=env.clock)
         if not url:
             env.out("✗ Cloudflare mode is on, but its tunnel isn't reporting an address (is the tunnel service "
-                    f"running?). See {AGENT_DOC_CLOUDFLARE}")
+                    "running?). Run `python3 speakeasy-cloudflare.py restart`, then setup again. "
+                    f"See {AGENT_DOC_CLOUDFLARE}")
             return ""
         T.apply_new_url(settings, url)
-        env.out(f"✓ Cloudflare address: {url}")
+    env.out(CLOUDFLARE_BACKUP if tailnet else CLOUDFLARE_CONNECTED)
+    env.out(f"  Cloudflare {'permanent ' if s['tunnel_hostname'] else ''}address: {url}")
+    if not s["tunnel_hostname"]:
         env.out("  This free address changes when the tunnel restarts; the app finds the new one by itself "
                 "(an encrypted note via ntfy.sh) and Hermes messages you a link too. For one that never changes, "
                 "see the permanent address in " + AGENT_DOC_CLOUDFLARE)
     env.out(f"  {CLOUDFLARE_NOTE}")
+    if not tailnet:
+        env.out(f"  Agent: once the user has paired, tell them: \"{CLOUDFLARE_USER_MESSAGE}\"")
     return "" if tailnet else url
 
 

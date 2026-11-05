@@ -318,10 +318,38 @@ def test_pair_limiter_window_and_global_cap():
     assert lim.allow("a")
 
 
-def test_setup_without_tailscale_recommends_it_and_offers_cloudflare():
+def test_setup_without_tailscale_tells_the_agent_to_turn_cloudflare_on():
     from speakeasy import cli
-    assert "Recommended: Tailscale" in cli.TAILSCALE_RECOMMENDED
-    assert "AGENT_SETUP.md#cloudflare-mode" in cli.CLOUDFLARE_OFFER and "public" in cli.CLOUDFLARE_NOTE
+    text = "\n".join(cli.CLOUDFLARE_AUTO)
+    assert "speakeasy-cloudflare.py quick" in text and "don't ask" in text and "Tailscale" in text
+    assert "AGENT_SETUP.md#cloudflare-mode" in text and "public" in cli.CLOUDFLARE_NOTE
+    assert cli.CLOUDFLARE_CONNECTED == "✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale."
+
+
+def test_the_agent_guide_carries_the_same_user_message():
+    """docs/AGENT_SETUP.md (mirrored to the site) and the setup output say the same words."""
+    import re
+    from pathlib import Path
+    from speakeasy import cli
+    doc = (Path(__file__).resolve().parents[2] / "docs" / "AGENT_SETUP.md").read_text()
+    flat = re.sub(r"\s+", " ", re.sub(r"\n> ?", " ", doc))
+    assert cli.CLOUDFLARE_USER_MESSAGE in flat
+    assert "without asking" in flat and "speakeasy-cloudflare.py quick" in flat and "If Cloudflare setup fails" in flat
+    assert "Recommend Tailscale first, then offer" not in flat  # no choice screen any more
+
+
+def test_quick_mode_waits_for_the_address(home):
+    T = _script()
+    t = {"now": 0.0}
+    reads = iter(["", "", QUICK])
+    url = T.wait_for_quick_url(home, 8797, read=lambda h, p: next(reads),
+                               sleep=lambda s: t.__setitem__("now", t["now"] + s), clock=lambda: t["now"])
+    assert url == QUICK
+    assert T.wait_for_quick_url(home, 8797, timeout_s=3, read=lambda h, p: "",
+                                sleep=lambda s: t.__setitem__("now", t["now"] + s), clock=lambda: t["now"]) == ""
+    T.log_path(home).parent.mkdir(parents=True, exist_ok=True)
+    T.log_path(home).write_text(f"INF |  {QUICK2}  |\n")
+    assert T.read_quick_url(home, 1) == QUICK2  # metrics down (port 1): the log
 
 
 def test_prove_binds_token_nonce_and_host_without_revealing_the_token(server, service, home):

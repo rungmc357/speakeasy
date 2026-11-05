@@ -8,7 +8,8 @@ only opened once the voice server actually answers:
   3. Check whether the voice server is already running. Setup never restarts or starts Hermes:
      that is the user's call, so it says a restart is needed and stops there.
   4. Publish the voice server on the user's tailnet when Tailscale is connected (auto-detected;
-     ``--no-tailscale`` skips it) and remember that URL for `hermes voice pair`.
+     ``--no-tailscale`` skips it) and remember that URL for `hermes voice pair`. Without Tailscale,
+     show the Cloudflare address, or tell the agent to turn Cloudflare mode on (cli._cloudflare).
   5. Ask Hermes to write the voice brief, then hand over the pairing link: opened directly when
      the Mac is this machine, else sent to a chat (see handoff.py). When Hermes still needs a
      restart, the link is sent automatically once it's back.
@@ -266,12 +267,12 @@ def tailscale_url(env: Env, port: int, *, forced: bool = False) -> tuple[str | N
     net = tailnet_status(env)
     if net.state == "missing":
         env.out("✗ Tailscale isn't installed on this machine." if forced
-                else "• Tailscale not found; Speakeasy stays local to this machine.")
+                else "• Tailscale not found on this computer.")
         return None, ""
     if net.state == "stopped":
         banner(env, ["⚠ Tailscale is installed but not connected.",
-                     "  Speakeasy stays local to this machine for now.",
-                     "  Fix: run `tailscale up`, then `hermes voice setup` again."])
+                     "  Fix: run `tailscale up`, then `hermes voice setup` again,",
+                     "  or use Cloudflare mode (below) if it needs a sign-in."])
         return None, ""
     try:
         done = env.run([net.binary, "serve", "--bg", f"--https={port}", f"http://127.0.0.1:{port}"],

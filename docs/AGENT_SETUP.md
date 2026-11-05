@@ -15,11 +15,11 @@ The iPhone and iPad app is a beta: https://testflight.apple.com/join/2v7PfpRM. I
 to talk from an **iPhone or iPad** (they'll usually say so, or the request came from the Speakeasy
 iOS app), follow the same steps with these differences:
 
-- Treat it as **a different device**: always do step 2. The phone reaches Hermes over Tailscale
-  (recommended: an https `*.ts.net` address; this machine on Tailscale with HTTPS certificates on,
-  the phone with the Tailscale app signed in to the **same account**), or, when Tailscale isn't an
-  option, over a Cloudflare address ([Cloudflare mode](#cloudflare-mode): nothing to install on the
-  phone). Tell the user which in the same message as the link.
+- Treat it as **a different device**: always do step 2. If Tailscale is installed and signed in on
+  this computer, the phone reaches Hermes over Tailscale (an https `*.ts.net` address; the phone
+  needs the Tailscale app signed in to the **same account**). If not, you turn on
+  [Cloudflare mode](#cloudflare-mode) yourself, without asking: nothing to install on the phone,
+  and pairing works from anywhere right away. Afterwards, tell the user how it connects (step 5).
 - In step 3, use `hermes voice setup --send <this chat> --yes` so the pairing link arrives in
   the chat they're reading on the phone. Never use `--here` for a phone.
 - They tap the link on the phone and the Speakeasy app pairs. If tapping doesn't open the app,
@@ -50,33 +50,38 @@ installs the plugin or restarts Hermes: the plugin changes only when someone run
 `hermes plugins update speakeasy`. If the app cannot reach Hermes, it cannot check the running
 plugin version; help the user restore the connection first.
 
-## 2. A different device? Make sure Tailscale connects them
+## 2. A different device? Pick the connection: Tailscale if it's there, else Cloudflare
 
 Skip this step when the user talks from the Mac Hermes runs on.
 
-Otherwise their device reaches Hermes over Tailscale, privately, with nothing opened to the
-internet. Check this machine with `tailscale status`:
+Otherwise decide, without asking the user, from `tailscale status` on this computer:
 
-- **Connected:** good. Setup publishes the voice server to their tailnet only.
-- **Installed but stopped:** run `tailscale up` if you can; if it needs a browser sign-in, give
-  the user the sign-in link it prints.
-- **Not installed:** tell the user Speakeasy needs Tailscale when Hermes is on another computer,
-  and install it if you can (`brew install --cask tailscale` on a Mac, or the command at
-  https://tailscale.com/download for Linux). Signing in needs them once.
+- **Tailscale is installed and signed in** (`tailscale status` lists this machine; if it's only
+  stopped, `tailscale up` brings it back without a sign-in): use Tailscale. Setup publishes the
+  voice server to their tailnet only. Their device needs Tailscale too, signed in with the **same
+  account** (https://tailscale.com/download): say so in the same message as the link. If setup
+  reports that HTTPS certificates are off for the tailnet, the user turns them on once at
+  https://login.tailscale.com/admin/dns (HTTPS Certificates), then you run setup again.
+- **Anything else** (not installed, `tailscale` not found, logged out, or it needs a browser
+  sign-in): turn on Cloudflare mode **now, without asking**, so pairing works from anywhere
+  right away. Don't show the user a choice and don't ask them to install anything first:
 
-Their device needs Tailscale too, signed in with the **same account**: https://tailscale.com/download.
-Say so in the same message, since you can't check their device from here (unless you can operate it).
+      curl -fsSL https://raw.githubusercontent.com/rungmc357/speakeasy/main/scripts/speakeasy-cloudflare.py -o speakeasy-cloudflare.py
+      python3 speakeasy-cloudflare.py quick
 
-If setup reports that HTTPS certificates are off for the tailnet, the user turns them on once at
-https://login.tailscale.com/admin/dns (HTTPS Certificates), then you run setup again.
+  It installs Cloudflare's tunnel daemon (Homebrew on a Mac), runs a free quick tunnel as a
+  background service, turns on `server.tunnel`, and waits until the tunnel reports its address:
+  it prints `✓ Cloudflare address is up: …`. Then run step 3; setup's output must say
+  `✓ Connected through Cloudflare (works anywhere)`. That's the check that it worked.
 
-**No Tailscale, and the user doesn't want it?** Recommend Tailscale first, then offer
-[Cloudflare mode](#cloudflare-mode). Tell the user plainly: **Tailscale** is the most private
-(reachable only from your own devices). **Cloudflare** needs nothing on your phone; its address is
-on the public internet, but it's locked to your paired devices (every request needs a paired
-device, and pairing needs a one-time code from this computer). A free Cloudflare address changes
-when the tunnel restarts and the iPhone app follows it with one tap; a permanent address needs a
-free Cloudflare account and your own domain (about $10/year). Never use Tailscale Funnel.
+  **If Cloudflare setup fails** (the script exits non-zero, or setup doesn't say "Connected through
+  Cloudflare"): try once more (`python3 speakeasy-cloudflare.py restart`, then setup again). If it
+  still fails, don't send a pairing link that only works on this computer: explain Tailscale to
+  the user instead (the fallback message in step 5), install it here if you can
+  (`brew install --cask tailscale` on a Mac, or the command at https://tailscale.com/download for
+  Linux), and run setup again once they've signed in.
+
+Never use Tailscale Funnel. Details and the permanent-address upgrade: [Cloudflare mode](#cloudflare-mode).
 
 ## 3. Run setup
 
@@ -112,8 +117,10 @@ link in chat is enough on its own.
   `XAI_API_KEY`, then `hermes voice config set beta.grok_voice true` and
   `hermes voice config set voice.provider grok`.
 - Setup publishes the voice server on the user's Tailscale network when Tailscale is connected
-  (never Tailscale Funnel). Without Tailscale it recommends it, and shows the Cloudflare address
-  when Cloudflare mode is on.
+  (never Tailscale Funnel). With Cloudflare mode on and no Tailscale it prints
+  `✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale.` and the pairing
+  link carries the Cloudflare address. With neither, it prints a box telling you to run
+  `python3 speakeasy-cloudflare.py quick` (step 2) and set up again: do that, don't ask.
 
 ## 4. Read the result and tell the user the one thing to do
 
@@ -136,6 +143,34 @@ Setup never restarts Hermes. Its exit code tells you where things stand:
 Do not paste pairing codes or links from setup's output into other chats. Each link works once and
 expires after 30 minutes. For a new one: `hermes voice pair --send <this chat>`.
 
+## 5. Tell the user how it connects
+
+**If you turned on Cloudflare mode**, send this once setup is done (in your own words if you must,
+but keep every point: it works anywhere, what Cloudflare is, nothing to install on the phone,
+locked to paired devices, Tailscale is the most private and you can switch any time; if they talk
+from a Mac rather than a phone, say "your Mac"):
+
+> Speakeasy is set up and works from anywhere. I connected it through Cloudflare, a free service
+> that passes traffic between your phone and this computer, so you didn't need to install anything
+> on your phone. It's locked to devices you pair. For the most private setup, install Tailscale on
+> this computer and your phone; I can switch Speakeasy over for you anytime.
+
+When they ask you to switch: install and sign in to Tailscale here (the user signs in once), run
+`hermes voice setup` again, and tell them to install the Tailscale app on the phone and sign in
+with the same account. The app finds the new Tailscale address by itself and prefers it; no
+re-pairing. You can leave the Cloudflare tunnel running as a backup or remove it
+(`python3 speakeasy-cloudflare.py remove`).
+
+**If Cloudflare setup failed**, explain Tailscale instead:
+
+> I couldn't set up Speakeasy's connection through Cloudflare on this computer. The other way is
+> Tailscale, a free app that connects your own devices privately: install it on this computer and
+> on your phone (https://tailscale.com/download), sign both in with the same account, and tell me
+> when that's done. I'll finish setting up Speakeasy.
+
+**If it uses Tailscale**, say so in the same message as the link, with the reminder that the phone
+needs the Tailscale app signed in to the same account.
+
 ## What the user sees
 
 They open the link on their device. If Speakeasy is installed, it opens and connects. If not, the
@@ -147,9 +182,10 @@ More: https://speakeasyvoice.ai · Source: https://github.com/rungmc357/speakeas
 
 ## Cloudflare mode
 
-The no-Tailscale option. A Cloudflare tunnel gives the voice server an https address the phone can
-reach from anywhere, with nothing to install on the phone. Tell the user the tradeoff plainly, in
-their words:
+The no-Tailscale path, which you turn on automatically when this computer has no usable Tailscale
+(step 2). A Cloudflare tunnel gives the voice server an https address the phone can reach from
+anywhere, with nothing to install on the phone. If the user asks about the tradeoff, in their
+words:
 
 > **Tailscale** is the most private: Speakeasy is reachable only from your own devices.
 > **Cloudflare** needs nothing on your phone. Its address is on the public internet, but it's
@@ -181,12 +217,12 @@ an update). Brief sleep or a network drop keeps it. The app finds a new address 
    `cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:8797 --url http://127.0.0.1:8795`,
    logging to `<HERMES_HOME>/speakeasy/tunnel.log`, kept alive by launchd (macOS, `KeepAlive`) or a
    systemd user unit (Linux, `Restart=always`). The Speakeasy repo's
-   [`scripts/speakeasy-cloudflare.py`](../scripts/speakeasy-cloudflare.py) does steps 1-3:
-   `python3 speakeasy-cloudflare.py quick` (and `restart`, `remove`).
+   [`scripts/speakeasy-cloudflare.py`](../scripts/speakeasy-cloudflare.py) does steps 1-3 and waits
+   for the address: `python3 speakeasy-cloudflare.py quick` (and `status`, `restart`, `remove`).
 3. `hermes voice config set server.tunnel cloudflare` (and `server.tunnel_metrics_port` if you
    used another port).
-4. `hermes voice setup --send <this chat> --yes`: it prints `✓ Cloudflare address: …` and the
-   pairing link carries that address.
+4. `hermes voice setup --send <this chat> --yes`: it prints `✓ Connected through Cloudflare (works
+   anywhere)` and the Cloudflare address, and the pairing link carries that address.
 
 **When the address changes**, the plugin notices within seconds and:
 - publishes an encrypted note with the new address to `https://ntfy.sh/<random topic>` (an open
@@ -218,4 +254,5 @@ The app shows **Can't reach your Hermes right now** with *Install Tailscale (rec
 certificates on) or the Cloudflare tunnel service (restart it if it stopped), re-run
 `hermes voice setup`, send the new pairing or update link, and reply with step-by-step phone
 instructions. The app also tries every address it knows (tailnet first, then Cloudflare) and keeps
-the one that works, so adding Tailscale later needs no re-pair.
+the one that works, so adding Tailscale later needs no re-pair: once Hermes reports a tailnet
+address, the app switches to it by itself when it answers.
