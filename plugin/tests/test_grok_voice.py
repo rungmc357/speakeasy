@@ -153,7 +153,7 @@ def test_session_start_returns_relay_transport_and_configures_xai(grok_server, g
     assert xai.auth == [f"Bearer {TOKEN}"]
     assert xai.paths[0] == "/v1/realtime?model=grok-voice-latest"
     assert update["voice"] == "Rex"
-    assert update["turn_detection"] == {"type": "server_vad"}
+    assert update["turn_detection"] == {"type": "server_vad", "silence_duration_ms": 1000}
     assert update["audio"] == {"input": {"format": {"type": "audio/pcm", "rate": 24000}},
                                "output": {"format": {"type": "audio/pcm", "rate": 24000}}}
     [tool] = update["tools"]

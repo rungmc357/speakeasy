@@ -19,6 +19,21 @@ final class JobLiveTests: XCTestCase {
         return TaskItem(json: json)!
     }
 
+    // MARK: The job page shows the work in progress
+
+    /// A job with a running task (tool log) and a newer follow-up only queued behind it: the page's
+    /// live block is the running task's, never the queued one's (which has no log and no steps).
+    func testActiveTaskIsTheOneDoingTheWork() {
+        let running = task("a", "running", extra: ["activity": [["id": "a1", "kind": "run", "text": "Ran the tests",
+                                                                  "status": "running", "tool": "terminal"]],
+                                                   "job": ["id": "j1", "name": "Setup fix"]])
+        let queued = task("b", "admitting", extra: ["job": ["id": "j1", "name": "Setup fix"]])
+        let job = Job(id: "j1", name: "Setup fix", tasks: [running, queued], stage: .running)
+        XCTAssertEqual(job.activeTask?.id, "a")
+        let onlyQueued = Job(id: "j2", name: "x", tasks: [queued], stage: .running)
+        XCTAssertEqual(onlyQueued.activeTask?.id, "b")
+    }
+
     // MARK: Raw call fields
 
     func testDecodesToolArgsResultAndTimes() {

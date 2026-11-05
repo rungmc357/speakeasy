@@ -893,7 +893,9 @@ def tool_step(name: str) -> str:
 
 
 def status_answer(name: str, status: str | None, steps: list[str], age_s: float, result: str | None,
-                  live: list[str] | None = None) -> str:
+                  live: list[str] | None = None, request: str | None = None, tools: list[str] | None = None,
+                  findings: list[str] | None = None, queued_behind: str | None = None,
+                  confused: bool = False) -> str:
     """What the voice says to "what's the status?", built from what the task has reported and, when it
     has said little, from what its session has actually been doing."""
     concrete = [re.sub(r"\s+", " ", s).strip().rstrip(".") for s in steps if s and not _PLUMBING.search(s)]
@@ -911,9 +913,83 @@ def status_answer(name: str, status: str | None, steps: list[str], age_s: float,
         facts = f"Running for {running}; no concrete step reported yet."
     if live and status not in {"completed", "failed", "interrupted", "cancelled"}:
         facts += " What it has been doing most recently, oldest first: " + "; ".join(live[-5:]) + "."
-    return (f"They asked how the \"{name}\" task is going. Answer now, briefly, in your own words, from these facts "
-            f"only, like a colleague giving a quick update: what it's done and what it's on now; do not start new work, "
-            f"don't read them out verbatim, and never answer with just a stock phrase. {facts}")[:2000]
+    if queued_behind and status not in {"completed", "failed", "interrupted", "cancelled"}:
+        facts = f"It hasn't started: it's queued behind \"{notice_text(queued_behind, 80)}\" in the same chat. " + facts
+    job = []
+    asked = notice_text(request, 300) if request else None
+    if asked and _words_of(asked) != _words_of(name):
+        job.append(f"What they asked it: \"{asked}\".")
+    tool_lines = [re.sub(r"\s+", " ", t).strip().rstrip(".") for t in (tools or []) if t and t.strip()]
+    if tool_lines and status not in {"completed"}:
+        job.append("Its own tool log, oldest first: " + "; ".join(tool_lines[-5:]) + ".")
+    found = [notice_text(f, 160) for f in (findings or []) if f and not f.startswith("Voice:")]
+    if found:
+        job.append("What it has found so far: " + "; ".join(found[-3:]) + ".")
+    opener = (f"They don't follow what you just said. Say plainly which job you meant (\"{name}\") and what it is doing, "
+              f"in one or two sentences, from these facts only; no apology speech, don't start or add any work. "
+              if confused else
+              f"They asked how the \"{name}\" task is going. Answer now, briefly, in your own words, from these facts "
+              f"only, like a colleague giving a quick update: what it's done and what it's on now; do not start new work, "
+              f"don't read them out verbatim, and never answer with just a stock phrase. ")
+    specifics = ("Name the job in a few words and say specifically what it is working on (what it changed, what it is "
+                 "testing or checking and why), e.g. \"The pricing-page fix: it changed the plan names; now it's running "
+                 "the full test suite before shipping.\" ")
+    return (opener + specifics + " ".join(job + [facts]))[:2000]
+
+
+def _words_of(text: str | None) -> set[str]:
+    return set(re.findall(r"[a-z0-9']+", (text or "").lower()))
+
+
+_NAME_TAIL = re.compile(r"(?i)\s+(?:a|an|and|the|of|for|to|in|on|with|from|by|at|or|my|your|as|is|are|was|that|this|"
+                        r"about|like|so|but|because|if|when|he|she|they|we|i|it|its)$")
+
+
+def spoken_name(title: str | None, limit: int = 60) -> str:
+    """A task's name to say aloud: its whole title when short, else cut at a word with no dangling
+    "as"/"and"/"the" at the end. Never a fragment like "Speakeasy app responding as"."""
+    text = re.sub(r"\s+", " ", re.sub(r"[\"“”]", "", title or "")).strip(" .,:;-")
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0]
+    while _NAME_TAIL.search(text):
+        text = _NAME_TAIL.sub("", text)
+    return text.strip(" .,:;-")
+
+
+def named_pulse(line: str | None, name: str, needs: bool) -> str | None:
+    """A pulse line that says which job it is about when more than one could be meant (or this one
+    wasn't the last thing talked about), unless it already names it."""
+    if not line or not needs or not name:
+        return line
+    if _words_of(name) and len(_words_of(name) & _words_of(line)) >= max(1, len(_words_of(name)) // 2):
+        return line
+    return f"{name}: {line[0].lower() + line[1:] if line[:2].istitle() else line}"
+
+
+def hold_note(names: "Names") -> str:
+    """They're mid-thought ("wait, I wasn't done", "let me finish"): stop, listen, send nothing."""
+    return (f"{names.user_cap} isn't finished. Stop talking now. Say at most two words (\"Go ahead.\") or nothing, then "
+            "listen until they've finished the whole thought. Don't start, add or send any work, don't ask a task's "
+            "question, and don't summarize what they said until they're done.")
+
+
+def undo_note(names: "Names", took: str | None) -> str:
+    """\"No, don't add that\": what just went out of their unfinished thought was taken back (or nothing had)."""
+    head = (f"It was taken back from \"{notice_text(took, 80)}\" before it went any further. " if took else
+            "Nothing was sent from it. ")
+    return (f"{names.user_cap} said not to send what they were saying yet. {head}Acknowledge in a few words at most "
+            "(\"Okay, holding it.\"), then listen until they've finished. Send nothing until they ask.")
+
+
+def confused_note(names: "Names") -> str:
+    return (f"{names.user_cap} doesn't follow what you just said. Say plainly, in one short sentence, what you meant; "
+            "don't start or add any work.")
+
+
+def unfinished_note(names: "Names") -> str:
+    """The request stopped mid-sentence: nothing was sent. Ask, once, short."""
+    return (f"What {names.user} just said stopped mid-sentence, so nothing was sent. If they're still talking, say "
+            "nothing and keep listening. If they've stopped, ask only: \"Want me to send that?\"")
 
 
 def late_result(asked: str, spoken: str) -> str:

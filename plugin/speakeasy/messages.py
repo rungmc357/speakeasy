@@ -206,7 +206,11 @@ async def announce_routed(worker: "SidebandWorker", delegation_id: str, revision
                           part: router.Part) -> None:
     """The router attached spoken words to an existing task: the voice says so first, and it is
     remembered so an immediate "no, the X one" moves it instead of starting something new."""
-    name = task_name(worker, part.task_id or "")
+    with worker.interaction.lock:
+        run = worker.interaction.runs.get(part.task_id or "")
+    # Said aloud: the task's own title in full, never a job name cut to a few words.
+    name = (worker.spoken_task_name(run.idem_key) if run is not None and hasattr(worker, "spoken_task_name")
+            else "") or task_name(worker, part.task_id or "")
     worker.last_routed = {"delegation_id": delegation_id, "task_id": part.task_id, "request": part.request,
                           "context": context, "at": time.monotonic(), "asked": False}
     await worker.append("session.thinking.append", delegation_id, P.adding_to_note(name))

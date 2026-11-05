@@ -1287,6 +1287,92 @@ def is_status_question(request: str) -> bool:
     return 0 < len(text.split()) <= 12 and bool(_STATUS_Q.search(text))
 
 
+# "What are you testing?", "what's it checking?", "can't you look at the task and see": what the
+# running work is doing, answered from the job itself (its request, tool log, findings), never sent
+# to the task as more context.
+_TASK_ASK = re.compile(
+    r"(?i)\bwhat(?:'s|\s+is|\s+are|\s+was|\s+were)?\s+(?:it|you|he|she|they|that|this|todd|hermes|the\s+(?:task|job|agent|run))"
+    r"\s+(?:(?:is|are|was|were)\s+)?(?:still\s+)?(?:testing|checking|doing|running|working\s+on|looking\s+(?:at|into|for)"
+    r"|building|fixing|changing|waiting\s+(?:on|for)|stuck\s+on|on\s+(?:now|right\s+now))\b"
+    r"(?!\s+(?:tonight|today|tomorrow|later|this\s+(?:weekend|week|evening|morning|afternoon)|for\s+(?:dinner|lunch|fun|work)))"
+    r"|\bwhat\s+(?:tests?|checks?|commands?)\s+(?:is\s+it|are\s+you|are\s+they)\s+running\b"
+    r"|\b(?:can'?t|could(?:n'?t)?|can)\s+you\s+(?:just\s+)?(?:look\s+at|check)\s+the\s+(?:task|job)\b")
+
+
+def asks_about_task(request: str) -> bool:
+    """A question about what the running work is doing (see _TASK_ASK)."""
+    text = " ".join((request or "").split())
+    return 0 < len(text.split()) <= 30 and bool(_TASK_ASK.search(text))
+
+
+# Talk about the conversation itself, never work. HOLD: they're still mid-thought ("wait, I wasn't
+# done", "let me finish"): stop and listen. UNDO: what just went out of their unfinished thought must
+# not go ahead ("no, don't add it"). CONFUSED: they don't follow what the voice said ("for what?",
+# "I don't know what test run you're talking about"): explain plainly, from the job if it's about one.
+META_HOLD, META_UNDO, META_CONFUSED = "hold", "undo", "confused"
+_META_HOLD = re.compile(
+    r"(?i)\b(?:i\s+(?:was(?:n'?t|\s+not)|am\s+not|'?m\s+not)\s+(?:done|finished|through)(?:\s+(?:yet|speaking|talking|explaining))?"
+    r"|(?:wasn'?t|not)\s+(?:done|finished)\s+(?:talking|speaking)"
+    r"|let\s+me\s+(?:finish|talk|speak|explain|get\s+(?:this|it)\s+out)|(?:wanna|want\s+to|need\s+to|gonna)\s+finish\s+my\s+(?:thought|sentence|point)"
+    r"|finish\s+my\s+(?:thought|sentence|point)|(?:you|ya)\s+(?:just\s+)?(?:cut|keep\s+cutting)\s+me\s+off"
+    r"|stop\s+(?:interrupting(?:\s+me)?|cutting\s+me\s+off)|i'?m\s+(?:still\s+)?(?:talking|speaking|thinking)(?:\s+here)?"
+    r"|(?:hold|hang)\s+on|wait(?:\s+a\s+(?:sec(?:ond)?|minute|moment))?|one\s+sec(?:ond)?|give\s+me\s+a\s+(?:sec(?:ond)?|minute))\b")
+_META_UNDO = re.compile(
+    r"(?i)\b(?:(?:don'?t|do\s+not)\s+(?:add|send|start|dispatch|kick\s+off|hand\s+off|run)\s+(?:it|that|this|anything)(?:\s+(?:yet|off|in))?"
+    r"|(?:i\s+)?didn'?t\s+(?:mean\s+(?:to|for\s+you\s+to)\s+send|want\s+(?:you\s+)?to\s+(?:send|add|start))"
+    r"|(?:before|until)\s+(?:i(?:'m|\s+am)?\s+(?:finish(?:ed)?|done)|you\s+send(?:\s+(?:it|that|incomplete\s+\w+))?)"
+    r"|incomplete\s+(?:context|thought|request)|(?:un-?send|pull\s+back|take\s+back)\s+(?:it|that|this))\b")
+_META_CONFUSED_ANY = re.compile(
+    r"(?i)\b(?:what\s+do\s+you\s+mean|what\s+(?:\w+\s+){0,3}(?:are\s+you|you'?re)\s+(?:talking|referring)\s+(?:about|to)"
+    r"|(?:don'?t|do\s+not)\s+(?:know|understand|get|follow)\s+what\s+(?:\w+\s+){0,3}(?:you'?re|you\s+are)\s+(?:talking|referring)\s+(?:about|to)"
+    r"|what\s+are\s+you\s+on\s+about)\b")
+_META_CONFUSED_SHORT = re.compile(
+    r"(?i)^\W*(?:(?:but|so|wait|um+|uh+|and|okay|ok|no|sorry)\W+)*(?:(?:for|about|to)\s+what|which\s+(?:one|task|job|test|thing)"
+    r"|what\s+(?:test|tests|task|job|run|thing)(?:\s+run)?|meaning\s+what|like\s+what)\W*$")
+_META_WORDS = re.compile(r"[a-z0-9']+")
+
+
+def meta_kind(request: str) -> str | None:
+    """Talk about the conversation itself (see META_*), or None. Only when nothing else in it asks
+    for work: "wait, also check the weather" is still a request."""
+    text = " ".join((request or "").split())
+    words = text.split()
+    if not words or len(words) > 30:
+        return None
+    if _META_CONFUSED_SHORT.search(text) and len(words) <= 5:
+        return META_CONFUSED
+    undo, hold = _META_UNDO.search(text), _META_HOLD.search(text)
+    confused = _META_CONFUSED_ANY.search(text)
+    if not (undo or hold or confused):
+        return None
+    rest = _META_CONFUSED_ANY.sub(" ", _META_HOLD.sub(" ", _META_UNDO.sub(" ", text)))
+    if _WORK.search(_HYPOTHETICAL.sub(" ", rest)) or _POLITE_ASK.search(rest) or asks_about_task(rest):
+        return None
+    if hold and not undo and not confused:
+        # A bare "wait"/"hold on" leading into a real request ("wait, what time is the game") is a
+        # request; "wait" alone or "I wasn't done" is about the conversation.
+        tail = [w for w in _META_WORDS.findall(_META_HOLD.sub(" ", text).lower()) if w not in _STOP]
+        strong = re.search(r"(?i)\b(?:done|finished|finish|through|cut|interrupt|talking|speaking|thinking)\b", hold.group(0))
+        if not strong and len(tail) > 2:
+            return None
+    return META_UNDO if undo else META_CONFUSED if confused else META_HOLD
+
+
+# A thought that trails off ("…because he", "and then", "so like"): not the end of the request.
+_UNFINISHED_TAIL = re.compile(
+    r"(?i)\b(?:and|or|but|so|because|cause|cuz|if|when|then|either|the|a|an|my|his|her|their|our|"
+    r"he|she|they|we|i|um+|uh+|er+)\W*$")
+
+
+def trails_off(request: str) -> bool:
+    """The words stop mid-sentence: a dangling joiner, pronoun or article at the end, with enough
+    before it to be a real thought (a short "and" on its own is a scrap, handled elsewhere)."""
+    text = " ".join((request or "").split())
+    # Only their own words: "(following up: ...)" / "(Geo is looking at: ...)" are added by Speakeasy.
+    text = re.sub(r"\s*\((?:following up|\w+ is looking at):.*$", "", text, flags=re.I | re.S).strip()
+    return len(text.split()) >= 6 and not re.search(r"[.!?]\W*$", text) and bool(_UNFINISHED_TAIL.search(text))
+
+
 # Talking an idea through: answered by the voice itself, never a task.
 _TALK = re.compile(
     r"(?i)\b(?:what\s+do\s+you\s+think|what\s+are\s+your\s+thoughts|(?:any\s+)?thoughts\s+on|your\s+take"

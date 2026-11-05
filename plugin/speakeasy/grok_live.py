@@ -115,11 +115,16 @@ def voice_name(voice: str) -> str:
     return voice[:1].upper() + voice[1:].lower() if voice else "Ara"
 
 
+# How long the user must be quiet before Grok takes its turn. Its default ends a turn on a short
+# breath, which cut long multi-part thoughts in half; a second still feels quick for a reply.
+GROK_SILENCE_MS = 1000
+
+
 def session_update(instructions: str, voice: str) -> dict[str, Any]:
     return {"type": "session.update", "session": {
         "instructions": instructions + GROK_RULES,
         "voice": voice_name(voice),
-        "turn_detection": {"type": "server_vad"},
+        "turn_detection": {"type": "server_vad", "silence_duration_ms": GROK_SILENCE_MS},
         "tools": [HANDOFF_TOOL],
         "audio": {"input": {"format": dict(AUDIO_FORMAT)}, "output": {"format": dict(AUDIO_FORMAT)}},
     }}

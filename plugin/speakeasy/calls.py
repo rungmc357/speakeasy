@@ -156,6 +156,15 @@ PULSE_IDLE_EVERY_S = 90.0
 PULSE_IDLE_AFTER = 3
 PULSE_TICK_S = 5.0
 PULSE_QUIET_S = 6.0
+# Never talk over a thought in progress: a result, a task's question or a pulse waits until the user has
+# paused USER_PAUSE_S (UNFINISHED_PAUSE_S when their last words trailed off, "...because he"), or
+# until a "wait, I wasn't done" hold (HOLD_S) ends; never longer than RESULT_HOLD_MAX_S in all.
+USER_PAUSE_S = 2.5
+UNFINISHED_PAUSE_S = 12.0
+HOLD_S = 25.0
+RESULT_HOLD_MAX_S = 45.0
+UNDO_WINDOW_S = 60.0       # "no, don't add that" this soon after something went out takes it back
+PENDING_THOUGHT_S = 90.0   # a trailing-off request held for "Want me to send that?" this long
 
 
 class ServiceError(Exception):
@@ -1307,8 +1316,9 @@ class SidebandWorker:
         # The tap is answered as soon as it's taken: following up can take a while (a task in a chat
         # thread waits for that thread, a continued session is looked up), and the app must not see a
         # slow reply as a failed tap and put the question back up while the answer is already working.
+        request = self.picked_request(task_id, text)
         follow = asyncio.get_running_loop().create_task(
-            self.follow_up(delegation_id, 0, f"User: {text}", router.Part("follow_up", text, task_id)))
+            self.follow_up(delegation_id, 0, f"User: {text}", router.Part("follow_up", request, task_id)))
         tasks = getattr(self, "dispatch_tasks", None)
         if tasks is None:
             tasks = self.dispatch_tasks = set()
@@ -1316,6 +1326,18 @@ class SidebandWorker:
         follow.add_done_callback(tasks.discard)
         follow.add_done_callback(_log_follow_up_failure)
         return delegation_id
+
+    def picked_request(self, task_id: str, text: str) -> str:
+        """A tapped answer carries the question it answers ("Fix and ship: Fix the onboarding gaps for
+        ChatGPT-app users?"), so its task, title and spoken name say what it is about."""
+        with self.interaction.lock:
+            run = self.interaction.runs.get(task_id)
+            key = run.idem_key if run else None
+        work = self.store.work(idem_key=key) if key else None
+        asked = ((work or {}).get("result") or {}).get("question")
+        question = asked.get("question") if isinstance(asked, dict) else asked if isinstance(asked, str) else None
+        question = notice_text(question, 200) if question else None
+        return f"{text.rstrip('.')}: {question}" if question and set(_words(question).split()) - set(_words(text).split()) else text
 
     def waiting_on_user(self) -> list[str]:
         """This call's tasks waiting on the user, oldest first: an approval, or a finished task's
@@ -1571,6 +1593,51 @@ class SidebandWorker:
         fragments = list(self.fragments)
         return bool(fragments) and now - fragments[-1].get("at", 0) < PULSE_QUIET_S
 
+    def user_mid_thought(self, now: float) -> bool:
+        """The user is still in the middle of a thought: a "wait, I wasn't done" hold, words still being
+        transcribed, the last words under USER_PAUSE_S ago, or trailing off under UNFINISHED_PAUSE_S ago.
+        Nothing is spoken over that: not a result, not a task's question, not a pulse."""
+        if now < getattr(self, "speech_hold_until", 0.0) or getattr(self, "user_pending", False):
+            return True
+        fragments = list(self.fragments)
+        if not fragments or fragments[-1]["speaker"] != "user":
+            return False
+        if fragments[-1].get("at", 0.0) <= getattr(self, "last_handoff_at", float("-inf")):
+            return False  # what they said last was handed off: they finished that thought
+        tail: list[str] = []
+        for f in reversed(fragments):
+            if f["speaker"] != "user":
+                break
+            tail.insert(0, f.get("text") or "")
+        age = now - fragments[-1].get("at", 0.0)
+        if age < USER_PAUSE_S:
+            return True
+        return age < UNFINISHED_PAUSE_S and router.trails_off("".join(tail))
+
+    async def wait_for_pause(self, limit: float = RESULT_HOLD_MAX_S) -> None:
+        """Wait (up to ``limit``) until the user is not mid-thought before speaking on our own."""
+        start = time.monotonic()
+        while (self.call_connected() and time.monotonic() - start < limit
+               and self.user_mid_thought(time.monotonic())):
+            await asyncio.sleep(0.25)
+
+    def hold_speech(self, seconds: float = HOLD_S) -> None:
+        self.speech_hold_until = max(getattr(self, "speech_hold_until", 0.0), time.monotonic() + seconds)
+
+    def spoken_task_name(self, key: str | None) -> str:
+        """A task's name to say aloud: its own title (never a job name cut to a few words)."""
+        if not key:
+            return ""
+        return P.spoken_name(self.store.title(key) or self.store.request_text(key) or "")
+
+    def pulse_needs_name(self, backend: BackendRun) -> bool:
+        """Say which job a pulse is about when more than one could be meant, or it wasn't the
+        last thing talked about."""
+        with self.interaction.lock:
+            live = [r for r in self.interaction.runs.values() if r.status in ACTIVE_RUN_STATES]
+            latest = self.interaction.latest_delegation_id
+        return len(live) > 1 or latest != backend.delegation_id
+
     def last_spoke_at(self) -> float:
         """When the assistant last said anything on this call (monotonic): its own speech, a spoken
         update, a handoff's acknowledgement, or the call coming up."""
@@ -1626,7 +1693,7 @@ class SidebandWorker:
         with self.interaction.lock:
             asking = any(r.status in {"waiting_for_approval", "resolving_approval"} or r.approval
                          for r in self.interaction.runs.values())
-        if asking or self.held is not None or self.someone_speaking(now):
+        if asking or self.held is not None or self.someone_speaking(now) or self.user_mid_thought(now):
             return False
         last = self.last_spoke_at()
         if now - last < PULSE_EVERY_S:
@@ -1669,6 +1736,7 @@ class SidebandWorker:
             line = None
         line = line or P.pulse_fallback([i["text"] for i in fresh] + notes, current.get("text") if current else None,
                                         running_s, self.store.title(backend.idem_key), idle)
+        line = P.named_pulse(line, self.spoken_task_name(backend.idem_key), self.pulse_needs_name(backend))
         late = time.monotonic()
         if (not line or not self.call_connected() or self.muted_now() or self.someone_speaking(late)
                 or self.last_spoke_at() > now or backend.status not in {"running", "working"}):
@@ -1819,6 +1887,88 @@ class SidebandWorker:
             await self.append("session.thinking.append", delegation_id, P.talk_note(self.names))
             return True
         return False
+
+    async def _pending_thought(self, delegation_id: str, revision: int, request: str) -> tuple[str, bool]:
+        """A request held because it trailed off ("Want me to send that?"): a yes sends it, a no drops
+        it, more words finish it. (request, True) when this handoff is handled here."""
+        pending = getattr(self, "pending_thought", None)
+        if pending is None:
+            return request, False
+        self.pending_thought = None
+        earlier, _context, at = pending
+        if time.monotonic() - at > PENDING_THOUGHT_S:
+            return request, False
+        words = " ".join(request.split())
+        if router._AGREE.search(words) or re.fullmatch(r"(?i)\W*(?:yes|yeah|yep|sure)?\W*(?:send|send it|send that)\W*", words):
+            logger.info("speakeasy: the held request was confirmed; sending it")
+            self.confirmed_thought = delegation_id  # not a repeat of the words held back
+            return earlier, False
+        if router.meta_kind(words):
+            return request, False  # "wait, I'm not done": still unsent, and answered as talk
+        if re.fullmatch(r"(?i)\W*(?:no|nope|nah|not yet|never ?mind|forget it|don'?t)\W*", words):
+            logger.info("speakeasy: the held request stays unsent")
+            await self._drop(delegation_id, revision, "Not sent", None)
+            await self.append("session.thinking.append", delegation_id, P.hold_note(self.names))
+            return request, True
+        if set(_words(earlier).split()) <= set(_words(words).split()):
+            return request, False  # the voice handed off the whole thought again
+        self.confirmed_thought = delegation_id
+        return f"{earlier.rstrip()} {request.lstrip()}", False
+
+    async def _meta_by_voice(self, delegation_id: str, revision: int, kind: str, marked: Any = None) -> None:
+        """Talk about the conversation itself never starts or adds to work. "Wait, I wasn't done":
+        stop and listen. "No, don't add that": take back what just went out. "For what?" / "what
+        test run?": explain, from the job if one is running."""
+        self.hold_speech()
+        self.handoff_at.pop(delegation_id, None)
+        if kind == router.META_UNDO:
+            took = await self._undo_recent()
+            logger.info("speakeasy: told not to send it (%s)", "took it back" if took else "nothing to take back")
+            await self._drop(delegation_id, revision, "Held back", None)
+            await self.append("session.thinking.append", delegation_id, P.undo_note(self.names, took))
+            return
+        if kind == router.META_CONFUSED:
+            target = self._status_target(marked)
+            if target is not None:
+                logger.info("speakeasy: asked what the voice meant; answered from the job")
+                await self.answer_status(delegation_id, target, confused=True)
+                return
+            logger.info("speakeasy: asked what the voice meant; answered by the voice (no task)")
+            await self._drop(delegation_id, revision, "Talked it through", None)
+            await self.append("session.thinking.append", delegation_id, P.confused_note(self.names))
+            return
+        logger.info("speakeasy: the user isn't done; listening (no task)")
+        await self._drop(delegation_id, revision, "Listening", None)
+        await self.append("session.thinking.append", delegation_id, P.hold_note(self.names))
+
+    async def _undo_recent(self) -> str | None:
+        """Take back the newest thing sent from what they just said (UNDO_WINDOW_S): words added to a
+        task, or a task that started. Returns its name, or None when nothing recent went out."""
+        routed = messages_mod._recent_route(self)
+        if routed is not None:
+            name = messages_mod.task_name(self, routed["task_id"] or "")
+            await messages_mod._take_back(self, routed)
+            self.last_routed = None
+            return name
+        now = time.monotonic()
+        for _words_, at, task_id, _request in reversed(list(getattr(self, "started", []))):
+            if now - at > UNDO_WINDOW_S:
+                break
+            with self.interaction.lock:
+                run = self.interaction.runs.get(task_id)
+            if run is None or run.status not in ACTIVE_RUN_STATES:
+                continue
+            name = self.spoken_task_name(run.idem_key) or "that"
+            if run.run_id and run.status in {"running", "working"}:
+                await self._supersede(task_id)
+            with self.interaction.lock:
+                run.status, run.error = "rejected", "Taken back"
+            self.store.update_run(run.idem_key, None, "cancelled")
+            self.store.progress(run.idem_key, "milestone", "Taken back: you weren't done")
+            self.store.dismiss_key(run.idem_key)
+            self.publish()
+            return name
+        return None
 
     async def _set_aside_by_voice(self, delegation_id: str, revision: int, kind: str, marked: Any = None) -> bool:
         """"It's already handled", "never mind that one": set aside the question waiting on the
@@ -2101,6 +2251,15 @@ class SidebandWorker:
         if self.last_routed is not None and await messages_mod.retarget(self, delegation_id, revision,
                                                                         last_request, marked):
             return  # "no, the dashboard one" right after a follow-up: moved there, not a new task
+        if delegation_id not in getattr(self, "force_work", set()):
+            last_request, held_back = await self._pending_thought(delegation_id, revision, last_request)
+            if held_back:
+                return
+            meta = router.meta_kind(last_request)
+            if meta is not None:
+                await self._meta_by_voice(delegation_id, revision, meta, marked)
+                return
+        self.speech_hold_until = 0.0  # they finished the thought: what waited for a pause can go
         aside = router.set_aside_kind(last_request)
         if aside and await self._set_aside_by_voice(delegation_id, revision, aside, marked):
             return
@@ -2162,7 +2321,8 @@ class SidebandWorker:
             self.handoff_at.pop(delegation_id, None)
             await self._drop(delegation_id, revision, "Already on its way with your screen", None)
             return
-        if not marked and (self._echoes_recent(last_request) or (self._duplicate(last_request) and not offered)):
+        if not marked and delegation_id != getattr(self, "confirmed_thought", None) and (
+                self._echoes_recent(last_request) or (self._duplicate(last_request) and not offered)):
             logger.info("speakeasy: handoff repeats a request started seconds ago; not started twice")
             await self._drop(delegation_id, revision, "Added to the previous request", None)
             return
@@ -2178,11 +2338,10 @@ class SidebandWorker:
         if (router.is_show_me(last_request) and (not showing or router.about_task_view(last_request))
                 and await self.show_me(delegation_id, last_request)):
             return
-        if router.is_status_question(last_request):
-            running = [t for t in self.open_tasks() if t.status not in TERMINAL]
-            if running:
-                target = next((t for t in running if marked and t.task_id == marked), running[-1])
-                await self.answer_status(delegation_id, target.task_id)
+        if router.is_status_question(last_request) or router.asks_about_task(last_request):
+            target = self._status_target(marked)
+            if target is not None:
+                await self.answer_status(delegation_id, target)
                 return
         with self.interaction.lock:
             device = self.interaction.device_id
@@ -2218,6 +2377,14 @@ class SidebandWorker:
             if settled != before_settle:
                 context = _with_request(context, last_request)
             self._note_started(delegation_id, last_request)
+            if (router.trails_off(last_request) and router.meta_kind(last_request) is None
+                    and delegation_id != getattr(self, "confirmed_thought", None)):
+                # "...because he": the thought stopped mid-sentence. Never send a fragment: ask.
+                self.pending_thought = (last_request, context, time.monotonic())
+                logger.info("speakeasy: request trails off (%d words); asked before sending", len(last_request.split()))
+                await self._drop(delegation_id, revision, "Waiting for the rest", None)
+                await self.append("session.thinking.append", delegation_id, P.unfinished_note(self.names))
+                return
         if not released and await self.wait_for_screen(delegation_id, revision, context, marked, last_request):
             return
         if not marked and not showing and await self.quick_answer(delegation_id, revision, last_request):
@@ -2297,7 +2464,24 @@ class SidebandWorker:
             return
         await self.start_routed(delegation_id, revision, context, last_request, choice)
 
-    async def answer_status(self, delegation_id: str, task_id: str) -> None:
+    def _status_target(self, marked: Any = None) -> str | None:
+        """The task a status question is about: the marked one if it's still open, else the newest
+        one actually doing work (one queued behind another, or with nothing reported, comes last)."""
+        running = [t for t in self.open_tasks() if t.status not in TERMINAL]
+        if not running:
+            return None
+        if isinstance(marked, str) and any(t.task_id == marked for t in running):
+            return marked
+        with self.interaction.lock:
+            runs = {t.task_id: self.interaction.runs.get(t.task_id) for t in running}
+        def busy(t: router.OpenTask) -> tuple[int, int]:
+            run = runs.get(t.task_id)
+            key = run.idem_key if run else None
+            items = len(activity_mod.speech_steps(self.store, key)[0]) if key else 0
+            return (int(t.status in {"running", "working", "waiting_for_approval"}), int(items > 0))
+        return max(enumerate(running), key=lambda p: (busy(p[1]), p[0]))[1].task_id
+
+    async def answer_status(self, delegation_id: str, task_id: str, confused: bool = False) -> None:
         """"What's the status?": answered now from the steps the task has reported, never queued
         behind the task itself (that made status questions wait up to eight minutes)."""
         with self.interaction.lock:
@@ -2318,9 +2502,15 @@ class SidebandWorker:
         self.handoff_at.pop(delegation_id, None)
         self.replied_task = task_id
         logger.info("speakeasy: status answered from %d steps (%s)", len(steps), status or "unknown")
+        request = self.store.request_text(key) if key else ""
+        tools = [i for i in ((work or {}).get("activity") or []) if isinstance(i, dict)]
+        findings = [f.get("text", "") for f in ((work or {}).get("findings") or [])]
+        queued = (work or {}).get("queued_behind")
         await self.append("session.commentary.append", delegation_id,
                           P.status_answer(name or "that task", status, steps, time.monotonic() - started, result,
-                                          live))
+                                          live, request=request, tools=[i.get("text", "") for i in tools if
+                                                                        not str(i.get("text", "")).startswith("Found: ")],
+                                          findings=findings, queued_behind=queued, confused=confused))
 
     def live_steps(self, session_id: str) -> list[str]:
         """What the task's Hermes session has done lately, in plain words, newest last: the voice's
@@ -3088,6 +3278,7 @@ class SidebandWorker:
         earlier = notice_text(self.store.request_text(key), 200) or "an earlier request"
         placed = self.store.continued_for(key)
         sharing = self.shares_with_task(delegation_id)
+        self.store.link_job(self._idem(delegation_id, revision), key)  # whatever it starts is this job
 
         async def answered_home(why: str) -> None:
             # A new task that references the running one carries what was shared, answered home.
@@ -3457,6 +3648,10 @@ class SidebandWorker:
         where = notice_text(conv.where, 100) or "that"
         self.record_timing(task_id, idem)
         self.store.set_continued(idem, conv.session_id, conv.where)
+        if joins is None and not self.store.has_job_link(idem) and not self.store.speakeasy_session(conv.session_id):
+            # A new request placed into an outside chat (a thread other work also uses): its own job,
+            # so its page shows its own plan, tool log and answer, never another request's.
+            self.store.link_job(idem, None)
         self.store.progress(idem, "request", request)
         self.name_task(idem, request)
         self.store.progress(idem, "milestone", f"Continuing in {where}")
@@ -4038,6 +4233,9 @@ class SidebandWorker:
             for draft in stored_drafts:
                 if not self.call_connected():
                     self.notices.draft_waiting(draft["draft_id"], draft.get("subject"))
+            if self.call_connected():
+                # Never over a thought in progress: the answer (or its question) waits for a pause.
+                await self.wait_for_pause()
             if status == "completed":
                 spoken = result["spoken"] if result else "Done."
                 notes = list(P.result_notes(self.store.title(idem) or self.store.request_text(idem),

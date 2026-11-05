@@ -418,6 +418,13 @@ public struct TaskItem: Equatable, Sendable, Identifiable {
 
     /// Still in flight: counts toward "N tasks" and can be stopped.
     public var isActive: Bool { !info.isTerminal && info.status != "rejected" && info.status != "ambiguous" }
+    /// Started and doing something: running with activity or progress, or waiting on an approval.
+    /// Not a task still queued (`admitting`, `waiting_on_task`) with nothing logged.
+    public var isWorking: Bool {
+        guard isActive, info.status != "waiting_on_task" else { return false }
+        if info.status == "waiting_for_approval" { return true }
+        return !info.activity.isEmpty || (info.status != "admitting" && info.status != "accepted")
+    }
 
     /// Active, has a Hermes run to stop, and no stop is already in flight.
     public var canStop: Bool { isActive && info.runID != nil && info.status != "cancel_requested" }

@@ -67,6 +67,30 @@ def _is_stand_in(title: str | None, request: str | None, continued: str | None =
 
 
 RECEIPTS = {"Request received", "Started working"}  # milestones that are receipts, not progress
+# Milestones about where a task went or what was added to it: bookkeeping, never a plan step done.
+PLUMBING = re.compile(r"^(?:Continuing in |Sent into |You added: |Moved to another task|Replaced by your correction|"
+                      r"Taken back|Queued|Waiting for |Started in |Answer will land)")
+NOT_STARTED = {"admitting", "waiting_on_task"}
+_PLAN_STOP = set("""a an the and or to of in on for with at by from is are be it its this that your my our me you we
+it's do does get go up out as""".split())
+# Words of a plan step that say nothing about the actual work ("Recall prior points", "Continue the
+# topic", "Add your input", "Find the answer", "Your review").
+_GENERIC_STEP = set("""recall prior points point continue topic add input read context find answer answers trace
+confusion explain confirm clarify discuss discussion respond response reply review call thought thoughts speak
+understand request question questions info information details detail check look gather collect summarize
+summary wrap next steps step previous earlier talk talking listen note notes share update""".split())
+
+
+def concrete_plan(plan: list[str], request: str | None = None, title: str | None = None) -> list[str]:
+    """A model-written plan only when it names real work: dropped when most of its steps are
+    generic ("Recall prior points / Continue the topic / Add your input"). The tool log shows what
+    is really happening; a generic plan is worse than none."""
+    def generic(step: str) -> bool:
+        words = [w for w in re.findall(r"[a-z0-9']+", step.lower()) if w not in _PLAN_STOP]
+        return not words or all(w in _GENERIC_STEP for w in words)
+    if not plan:
+        return plan
+    return [] if sum(map(generic, plan)) * 2 > len(plan) else plan
 
 
 def job_progress(status: str, created: float | None, settled_at: float | None, plan: list[str],
@@ -81,8 +105,12 @@ def job_progress(status: str, created: float | None, settled_at: float | None, p
     if not plan:
         return out
     count = len(plan)
+    if status in NOT_STARTED:
+        out["step_count"] = count  # not started: no step is done, none is under way
+        return out
     done = count if status == "completed" else min(
-        sum(1 for e in events if e.get("kind") == "milestone" and e.get("text") not in RECEIPTS), count - 1)
+        sum(1 for e in events if e.get("kind") == "milestone" and e.get("text") not in RECEIPTS
+            and not PLUMBING.match(str(e.get("text") or ""))), count - 1)
     out["step_count"] = count
     out["step_index"] = count if status == "completed" else done + 1
     if status not in TERMINAL and created and done >= 2:
@@ -139,6 +167,10 @@ class StateStore:
             # kept here once, from the first task's own title (never a chat thread's name).
             self._db.execute("""CREATE TABLE IF NOT EXISTS jobs (
                 job_id TEXT PRIMARY KEY, name TEXT NOT NULL, from_key TEXT, updated REAL NOT NULL)""")
+            # A task's job when its session doesn't say it: a follow-up joins its parent's job; a new
+            # request placed into a chat thread that other, unrelated work also uses is its own job.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS job_links (
+                idem_key TEXT PRIMARY KEY, job_id TEXT NOT NULL, created REAL NOT NULL)""")
             # What the user added to a running task by voice (/steer), and whether it is known to have
             # reached the agent: queued -> landed | not_read (see receipts.py). ``body`` is the exact text
             # sent, kept server-side only to look for it in the transcript; clients get ``words``.
@@ -354,17 +386,74 @@ class StateStore:
                 return idem, title
         return None
 
+    def link_job(self, key: str, parent: str | None) -> None:
+        """Record a task's job: its parent's job (a follow-up), else its own (``parent`` None)."""
+        # Stored as the parent's key and resolved when read: the parent's session may not be known yet.
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO job_links (idem_key, job_id, created) VALUES (?,?,?)",
+                             (key, parent if parent and parent != key else key, time.time()))
+
+    def has_job_link(self, key: str) -> bool:
+        with self._lock:
+            return self._db.execute("SELECT 1 FROM job_links WHERE idem_key=?", (key,)).fetchone() is not None
+
+    def speakeasy_session(self, session_id: str | None) -> bool:
+        """A Hermes session a Speakeasy task started itself (a job's own session), not an outside chat."""
+        if not session_id:
+            return False
+        with self._lock:
+            return self._db.execute("SELECT 1 FROM runs WHERE session_id=? AND continued IS NULL LIMIT 1",
+                                    (session_id,)).fetchone() is not None
+
+    def _job_id(self, key: str, session_id: str | None, continued: str | None) -> str:
+        """A task's job id: a recorded link (link_job) wins; else its Hermes session (or the one it
+        continued), unless that session is a chat the task was only placed into and the task was
+        linked as its own job; else the task itself."""
+        seen: set[str] = set()
+        while key not in seen:
+            seen.add(key)
+            with self._lock:
+                row = self._db.execute("SELECT job_id FROM job_links WHERE idem_key=?", (key,)).fetchone()
+                if row is None:
+                    return session_id or _placed_session(continued) or key
+                if row[0] == key:
+                    return key  # its own job
+                parent = self._db.execute("SELECT session_id, continued FROM runs WHERE idem_key=?",
+                                          (row[0],)).fetchone()
+            if parent is None:
+                return session_id or _placed_session(continued) or key
+            key, session_id, continued = row[0], parent[0], parent[1]
+        return key
+
+    def queued_behind(self, key: str, session_id: str | None, status: str) -> str | None:
+        """The title of the task this one waits behind in its chat thread: it hasn't started (no
+        activity) and an older task in the same session is still working. None otherwise."""
+        if status != "admitting" or not session_id:
+            return None
+        with self._lock:
+            mine = self._db.execute("SELECT rowid FROM runs WHERE idem_key=?", (key,)).fetchone()
+            started = self._db.execute("SELECT 1 FROM activity WHERE idem_key=?", (key,)).fetchone()
+            if mine is None or started is not None:
+                return None
+            ahead = self._db.execute(
+                "SELECT title, summary FROM runs WHERE session_id=? AND rowid<? AND status IN "
+                "('running','working','admitting','waiting_for_approval') AND COALESCE(dismissed,0)=0 "
+                "ORDER BY rowid LIMIT 1", (session_id, mine[0])).fetchone()
+        if ahead is None:
+            return None
+        return (ahead[0] or ahead[1] or "another task")[:120]
+
     def job(self, key: str, session_id: str | None, continued: str | None) -> dict[str, str]:
-        """The job a task belongs to: {id, name}. The id is its Hermes session (else the session it
-        continued, else the task itself); the name is set once, from the job's first task."""
-        job_id = session_id or _placed_session(continued) or key
+        """The job a task belongs to: {id, name}. The id is _job_id's; the name is set once, from the
+        job's first task."""
+        job_id = self._job_id(key, session_id, continued)
         with self._lock, self._db:
             row = self._db.execute("SELECT name FROM jobs WHERE job_id=?", (job_id,)).fetchone()
             if row:
                 return {"id": job_id, "name": row[0]}
             first = self._db.execute(
-                "SELECT idem_key, own_title FROM runs WHERE (session_id=? OR idem_key=?) AND own_title IS NOT NULL "
-                "ORDER BY rowid LIMIT 1", (job_id, key)).fetchone()
+                "SELECT idem_key, own_title FROM runs WHERE (session_id=? OR idem_key=? OR idem_key=?) "
+                "AND own_title IS NOT NULL ORDER BY rowid LIMIT 1", (job_id, job_id, key)).fetchone()
             if first is None:
                 first = self._older_title(job_id, key)
             name = job_name(first[1]) if first else None
@@ -1124,9 +1213,20 @@ class StateStore:
             "status_source": source, "result": public_result(result),
             "title": title, "summary": summary, "dismissed": bool(dismissed),
             "email_drafts": self.drafts_for(key),
-            "plan": self.plan(key),
+            "plan": concrete_plan(self.plan(key), next((t for k, t, _ in reversed(events) if k == "request"), None),
+                                  title),
             "job": self.job(key, session_id, continued),
         }
+        behind = self.queued_behind(key, session_id, status)
+        if behind:
+            # Queued in its chat thread behind another task's turn: shown as waiting for that task
+            # (the same contract as a project hold), never "working" with a timer and steps done.
+            work["status"], work["stale"] = "waiting_on_task", False
+            work["queued_behind"] = behind
+            work["waiting"] = {"name": behind, "project": ""}
+            work["short_status"] = f"Queued behind \u201c{notice_text(behind, 60)}\u201d"
+            work["detail"] = f"Starts when \u201c{notice_text(behind, 80)}\u201d finishes in the same chat."
+            work["status_source"] = "system"
         if set_aside:
             # Its question was set aside: nothing waits on the user any more (only sent when true).
             work["set_aside"] = True
@@ -1150,7 +1250,7 @@ class StateStore:
                 work["short_status"] = "Waiting for another task"
                 work["detail"] = f"Starts when \"{work['waiting']['name']}\" finishes (same project)."
                 work["status_source"] = "system"
-        work.update(job_progress(status, created, settled_at, work["plan"], work["events"]))
+        work.update(job_progress(work["status"], created, settled_at, work["plan"], work["events"]))
         # One short plain sentence for a failed (or restart-interrupted) task, never "unknown".
         work["failure_reason"] = failure_reason(status, failure, failure_hint)
         why = public_failure(failure, self.hermes_home) if status == "failed" else None

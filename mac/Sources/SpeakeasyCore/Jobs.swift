@@ -133,8 +133,13 @@ public struct Job: Equatable, Sendable, Identifiable {
     public var updated: Date? { tasks.compactMap { $0.info.updatedAt ?? $0.info.updated }.max() }
     public var decisionTask: TaskItem? { decisionTaskID.flatMap { id in tasks.first { $0.id == id } } }
     public var decision: Decision? { decisionTask?.info.decision }
-    /// The task the job is busy with right now (newest still running).
-    public var activeTask: TaskItem? { tasks.last(where: \.isActive) }
+    /// The task the job is busy with right now: the newest one actually doing work (running, with
+    /// a tool log, or waiting on an approval), else the newest still open. A follow-up that only
+    /// queued behind it (not started, nothing logged) never hides the work in progress.
+    public var activeTask: TaskItem? {
+        let open = tasks.filter(\.isActive)
+        return open.last(where: \.isWorking) ?? open.last
+    }
 
     /// The finished task this job answered with: it completed with a result and nothing waits on
     /// the user (no question, approval, draft or review). Information brought back, not a decision.
