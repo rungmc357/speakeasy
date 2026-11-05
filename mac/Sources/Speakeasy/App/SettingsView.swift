@@ -670,7 +670,18 @@ private struct BehaviorSettings: View {
                 Toggle("Give a short update on long tasks", isOn: Binding(
                     get: { draft.speech?.progress ?? true },
                     set: { v in var x = draft.speech ?? .init(); x.progress = v; draft.speech = x }))
-                Text("Where a task went (like a new thread) is always said.").font(.caption).foregroundStyle(.secondary)
+                if draft.speech?.intervalSeconds != nil {
+                    Picker("Spoken updates", selection: Binding(
+                        get: { draft.speech?.intervalSeconds ?? ServerSettings.Speech.defaultInterval },
+                        set: { v in var x = draft.speech ?? .init(); x.intervalSeconds = v; draft.speech = x })) {
+                        ForEach(ServerSettings.Speech.intervalChoices, id: \.self) { s in
+                            Text("Every \(ServerSettings.Speech.intervalLabel(s))").tag(s)
+                        }
+                    }
+                    .disabled(draft.speech?.progress == false)
+                }
+                Text("How often it says where a long task is at while the call is quiet. Finished work, questions and approvals are always said, even when you're muted; so is where a task went (like a new thread).")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Toggle("Lower the Mac's volume while the assistant speaks", isOn: Binding(
                     get: { draft.audioDuck?.enabled ?? false },
                     set: { v in var x = draft.audioDuck ?? .init(); x.enabled = v; draft.audioDuck = x }))

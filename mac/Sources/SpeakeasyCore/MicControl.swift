@@ -173,3 +173,24 @@ public func cleanTranscript(_ text: String) -> String {
     out = out.replacingOccurrences(of: #" +([,.!?;:])"#, with: "$1", options: .regularExpression)
     return out.trimmingCharacters(in: .whitespaces)
 }
+
+// MARK: - Mic report
+
+/// What the plugin was last told about a call's mic (`POST /voice/interactions/{id}/mic`). Every
+/// call reports its mic once at the start, open or muted, and again on each change: the plugin
+/// treats a never-reported mic as unknown (its open-mic call pulse stays off), so a call that
+/// starts unmuted has to say so too.
+public struct MicReport: Equatable, Sendable {
+    public private(set) var interaction: String?
+    public private(set) var muted: Bool?
+
+    public init() {}
+
+    /// The `muted` value to post for this call now, or nil when the plugin already knows it.
+    public mutating func next(interaction id: String, muted: Bool) -> Bool? {
+        if interaction == id, self.muted == muted { return nil }
+        interaction = id
+        self.muted = muted
+        return muted
+    }
+}

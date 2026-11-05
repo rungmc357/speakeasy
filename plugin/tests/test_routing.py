@@ -55,7 +55,7 @@ def test_legacy_acknowledge_setting_is_dropped(service):
     raw = json.loads(service.settings.path.read_text())
     raw["speech"]["acknowledge"] = True
     service.settings.path.write_text(json.dumps(raw))
-    assert service.settings.get()["speech"] == {"progress": False}
+    assert service.settings.get()["speech"] == {"progress": False, "interval_seconds": 45}
 
 
 def test_spoken_lines_can_be_turned_off(server, service, hermes, monkeypatch):
