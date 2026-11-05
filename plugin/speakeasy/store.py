@@ -345,6 +345,20 @@ class StateStore:
         self.add_run_alias(local, key)
         return local
 
+    def keys_for_session(self, session_id: str) -> list[tuple[str, str | None, str]]:
+        """Every task that ran in a Hermes session, newest first: (idem key, run id, status). Kept after
+        a task is dismissed from the board, so the history still knows the session is Speakeasy's."""
+        with self._lock:
+            rows = self._db.execute("SELECT idem_key, run_id, status FROM runs WHERE session_id=? ORDER BY rowid DESC",
+                                    (session_id,)).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def speakeasy_sessions(self) -> set[str]:
+        """The Hermes sessions Speakeasy's tasks ran in."""
+        with self._lock:
+            rows = self._db.execute("SELECT DISTINCT session_id FROM runs WHERE session_id IS NOT NULL").fetchall()
+        return {r[0] for r in rows if r[0]}
+
     def run_row(self, key: str) -> dict[str, Any] | None:
         """One task's bookkeeping row: what a message sent to it by id needs (messages.py)."""
         with self._lock:
