@@ -120,7 +120,20 @@ final class ContractTests: XCTestCase {
             "attachment_file": try spec("POST", SharingRoute.attachments(call), headers: attachmentUploadHeaders(
                 kind: .file, mimeType: "application/pdf", filename: "Q3 report.pdf"), raw: "text"),
             "attachment_delete": try spec("DELETE", SharingRoute.attachment(call, attachment)),
+            // A typed turn (plugin input_text): replayed through the real handler by
+            // plugin/tests/test_input_text.py::test_the_apps_typed_turn_request_is_taken.
+            "input_text": try spec("POST", TypedText.path(interactionID: call),
+                                   body: JSONSerialization.data(withJSONObject: TypedText.body(typedContractText()),
+                                                                options: [.sortedKeys])),
         ]
+    }
+
+    /// What the app sends for "  Add oat milk⏎for the 👨‍👩‍👧 trip ": normalized, the family emoji intact.
+    private func typedContractText() throws -> String {
+        guard case .ok(let text) = TypedText.check("  Add oat milk\nfor the \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} trip ") else {
+            throw XCTSkip("typed text check failed")
+        }
+        return text
     }
 
     /// Writes the in-call requests under `Contract/requests/call/`, so the top-level replay above (no
@@ -182,6 +195,12 @@ final class ContractTests: XCTestCase {
         let delete = try spec("attachment_delete")
         XCTAssertEqual(delete["method"] as? String, "DELETE")
         XCTAssertEqual(delete["path"] as? String, "/voice/interactions/{interaction_id}/attachments/{attachment_id}")
+        let typed = try spec("input_text")
+        XCTAssertEqual(typed["path"] as? String, "/voice/interactions/{interaction_id}/input-text")
+        let typedBody = try XCTUnwrap(typed["body"] as? [String: String])
+        XCTAssertEqual(Set(typedBody.keys), ["type", "text"], "exactly {type, text}: the plugin refuses any other key")
+        XCTAssertEqual(typedBody["type"], "session.input_text")
+        XCTAssertEqual(typedBody["text"], "Add oat milk for the \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} trip")
     }
 
     /// Replies shaped exactly as the plugin builds them (service.attachment_status, Interaction.snapshot,

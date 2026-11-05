@@ -7,6 +7,8 @@ gateway's profile scope.
 from __future__ import annotations
 
 import asyncio
+import collections
+import concurrent.futures
 import datetime as _dt
 import hashlib
 import json
@@ -24,8 +26,10 @@ from . import delivery as D
 from . import duck as duck_mod
 from . import messages as M
 from .brief import BriefInvalid, BriefManager
-from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, MAX_TASKS, ServiceError, Interaction, Notices, Runtime, SidebandWorker,
-                    end_shared, interaction_tasks, publish_state)
+from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
+                    TYPED_SENT, ServiceError,
+                    Interaction, Notices, Runtime, SidebandWorker, end_shared, interaction_tasks, publish_state,
+                    typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
 from .devices import DeviceStore
 from .emails import canonical_json, extract_email_drafts
@@ -44,6 +48,8 @@ from .threads import ThreadRunner, capability, sync_routes
 from .text import ID_RE, MAX_CARDS, MAX_ROOM_CHARS, TERMINAL, notice_text, safe_room_text, split_result
 
 logger = logging.getLogger(__name__)
+# How long POST .../input-text waits for the call to take a typed turn before answering 504.
+INPUT_TEXT_WAIT_S = 15.0
 
 ROUTING_EXPLAINER = ("When you ask for something on a call, a quick model first decides where it goes: a new task, an addition to a task that's already running, several separate tasks, or a Hermes chat or thread you were already working in. It also decides whether you want to see something on screen. It doesn't do the work; your Hermes agent does. Every request waits on this step, so pick a fast model; a wrong call can put a task in the wrong place.")
 HOME_EXPLAINER = ("Home control lets your voice run your Home Assistant devices directly, in about a second. "
@@ -68,6 +74,9 @@ EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the 
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
 CAPABILITIES["start_jobs"] = True  # POST /voice/work: a new job from typed text, no call needed (the app's Update button)
 CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the pair response): every address of this Hermes
+# POST /voice/interactions/{id}/input-text: a turn typed to the call itself (same as the top-level
+# "input_text"; listed here too so both typing features sit together). task_messages types to one job.
+CAPABILITIES["input_text"] = True
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 
 
@@ -171,6 +180,11 @@ class VoiceService:
                                 names=self._tune_names)
         self.interactions: dict[str, Interaction] = {}
         self.lock = threading.Lock()
+        # Typed turns sent with a client_id, per call chain: (root interaction id, client_id) ->
+        # (text, the send's future). A retry of the same id waits on, or reports, the first send.
+        self.typed_sends: collections.OrderedDict[tuple[str, str], tuple[str, concurrent.futures.Future]] = \
+            collections.OrderedDict()
+        self.typed_lock = threading.Lock()
         self._codex_factory = codex_factory
         self._openai_negotiate = openai_negotiate
         self._openai_worker = openai_worker
@@ -804,6 +818,133 @@ class VoiceService:
         if not sent:
             raise ServiceError(404, "that task isn't in this call")
         return {"interaction_id": interaction_id, "task_id": task_id, "sent": True}
+
+    def input_text(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """A turn typed on the call screen instead of spoken (``session.input_text``): into the live
+        call as the user's turn. After Pause/Resume the newest call in the chain takes it.
+
+        An optional ``client_id`` makes a retry safe: the same id again on this call (a resend after
+        a 504 or a dropped connection) never reaches the voice twice; it waits on, or reports, the
+        first send. Without one the route behaves as it always has."""
+        text = body.get("text") if isinstance(body, dict) else None
+        client_id = body.get("client_id") if isinstance(body, dict) else None
+        if (not isinstance(body, dict) or set(body) - {"client_id"} != {"type", "text"}
+                or body.get("type") != INPUT_TEXT_TYPE or not isinstance(text, str)
+                or ("client_id" in body and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)))):
+            raise ServiceError(400, f"body must be exactly type={INPUT_TEXT_TYPE} and text, plus an optional "
+                                    "client_id", reason="invalid_body")
+        text = typed_text(text)
+        if not text:
+            raise ServiceError(400, "text is empty", reason="empty_text")
+        if len(text) > MAX_INPUT_TEXT:
+            raise ServiceError(400, f"text is longer than {MAX_INPUT_TEXT} characters", reason="text_too_long")
+        try:
+            asked = self.interaction(interaction_id)
+        except ServiceError:
+            raise ServiceError(404, "interaction not found", reason="unknown_interaction") from None
+        interaction = asked.head()
+        key = (self._chain_root(asked), client_id) if client_id else None
+        with self.typed_lock:
+            prior = self.typed_sends.get(key) if key else None
+            if prior is not None:
+                if prior[0] != text:
+                    raise ServiceError(409, "client_id was already used for a different message",
+                                       reason="client_id_reused")
+                if self._typed_failed(prior[1]):
+                    del self.typed_sends[key]  # the first try didn't get through: this one is a new send
+                    prior = None
+            if prior is None:
+                future = self._typed_send(interaction, text, client_id)
+                if key:
+                    self.typed_sends[key] = (text, future)
+                    while len(self.typed_sends) > 256:
+                        self.typed_sends.popitem(last=False)
+            else:
+                future = prior[1]
+        outcome, took = self._typed_wait(future, retry_safe=key is not None)
+        if outcome == TYPED_NOT_CONNECTED:
+            raise ServiceError(409, "the call isn't connected", reason="not_connected")
+        if outcome != TYPED_SENT:
+            # The call is up; only this send failed. Nothing was recorded, so sending it again is safe.
+            raise ServiceError(502, "the call didn't take the message; nothing was recorded", reason="not_delivered")
+        reply: dict[str, Any] = {"interaction_id": took or interaction.interaction_id, "type": INPUT_TEXT_TYPE,
+                                 "sent": True}
+        if client_id:
+            reply["client_id"] = client_id
+            if prior is not None:
+                reply["duplicate"] = True  # an earlier send with this id already took it
+        return reply
+
+    def _chain_root(self, interaction: Interaction) -> str:
+        """The first call of a Pause/Resume chain: a typed turn's client_id is one turn per chain."""
+        current, seen = interaction, set()
+        while current.resumed_from and current.resumed_from not in seen:
+            seen.add(current.interaction_id)
+            with self.lock:
+                earlier = self.interactions.get(current.resumed_from)
+            if earlier is None:
+                break
+            current = earlier
+        return current.interaction_id
+
+    def _typed_send(self, interaction: Interaction, text: str, client_id: str | None) -> concurrent.futures.Future:
+        """Start one typed turn on the call's worker loop (409 when there's no live call to take it)."""
+        with interaction.lock:
+            closed, paused = interaction.call_closed, interaction.paused
+        if closed or paused:
+            raise ServiceError(409, "the call isn't connected",
+                               reason="call_paused" if paused else "call_ended")
+        worker = interaction.worker
+        loop = getattr(worker, "loop", None)
+        if worker is None or loop is None or loop.is_closed() or not worker.call_connected():
+            raise ServiceError(409, "the call isn't connected", reason="not_connected")
+
+        async def send() -> tuple[str, str]:
+            return await worker.input_text(text, client_id), interaction.interaction_id
+        try:
+            return asyncio.run_coroutine_threadsafe(send(), loop)
+        except RuntimeError:  # the loop closed in between
+            raise ServiceError(409, "the call isn't connected", reason="not_connected") from None
+
+    @staticmethod
+    def _typed_failed(future: concurrent.futures.Future) -> bool:
+        """A finished send that didn't take the turn (a retry with its id may send it afresh)."""
+        if not future.done():
+            return False
+        if future.cancelled() or future.exception() is not None:
+            return True
+        return future.result()[0] != TYPED_SENT
+
+    @staticmethod
+    def _typed_wait(future: concurrent.futures.Future, retry_safe: bool) -> tuple[str, str | None]:
+        """Wait for a typed send. A 504 says what is true: the outcome isn't known, and the voice may
+        already have the words. With a client_id the send carries on, so a retry with the same id
+        learns how it ended without sending twice; without one it is cancelled, as before, and its
+        echo guard goes with it (CodexSidebandWorker.forward_typed)."""
+        try:
+            return future.result(INPUT_TEXT_WAIT_S)
+        except concurrent.futures.CancelledError:
+            raise ServiceError(504, "the call didn't confirm the message in time; the voice may already "
+                                    "have it", reason="timeout") from None
+        except TimeoutError:  # concurrent.futures.TimeoutError is TimeoutError on 3.11+
+            if not future.done():
+                if retry_safe:
+                    raise ServiceError(504, "the call hasn't confirmed the message yet and it may still go "
+                                            "through; send it again with the same client_id to learn how it "
+                                            "ended (it won't reach the call twice)", reason="timeout") from None
+                future.cancel()
+                raise ServiceError(504, "the call didn't confirm the message in time; the voice may already "
+                                        "have it, so check before sending it again", reason="timeout") from None
+            # It finished between the timeout and this check: report what the send actually did. A send
+            # that went through is `sent`, never a 502 (which tells the app nothing was recorded).
+            try:
+                return future.result()
+            except Exception as caught:
+                exc = caught
+        except Exception as caught:
+            exc = caught
+        logger.warning("speakeasy: typed turn failed (%s)", type(exc).__name__)
+        raise ServiceError(502, f"typed message failed ({type(exc).__name__})", reason="transport_error") from None
 
     def focus(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """Vision Pro: the task the user is facing or holding (or none). Unnamed requests go there."""
@@ -1789,6 +1930,9 @@ class VoiceService:
             "room_listening": True,
             "room_on_resume": True,
             "focus": True,
+            # POST /voice/interactions/{id}/input-text takes a typed turn on a live call (the app shows
+            # its composer only when this is true; older plugins 404 the route).
+            "input_text": True,
             "version": __version__,
             # What this server supports from the UX contract; a missing flag means an older server.
             "capabilities": dict(CAPABILITIES),

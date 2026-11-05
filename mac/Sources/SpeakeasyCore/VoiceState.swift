@@ -67,7 +67,8 @@ public struct TranscriptTurn: Equatable, Sendable, Identifiable {
     public enum Speaker: Equatable, Sendable { case you, assistant }
     /// `speech` is what was said on the call; `text` is a task's full written answer, shown only in the
     /// expanded transcript (the voice still speaks its short spoken version as usual). `typed` is a
-    /// message the user typed (or held the mic) to one task: always the user's turn, never spoken.
+    /// message the user typed: to the call (no task, `session.input_text`, counts exactly like saying it)
+    /// or to one task (the reply bar, "Something else…"; carries the task). Always the user's turn.
     public enum Kind: Equatable, Sendable { case speech, text, typed }
     public var id: Int
     public var speaker: Speaker
@@ -77,6 +78,10 @@ public struct TranscriptTurn: Equatable, Sendable, Identifiable {
     public var taskID: String?
     public var taskName: String?
     public init(id: Int, speaker: Speaker, text: String) { self.id = id; self.speaker = speaker; self.text = text }
+    /// What the user typed to the call itself (`session.input_text`): the user's turn, no task.
+    public init(typed text: String, id: Int) {
+        self.id = id; self.speaker = .you; self.text = text; self.kind = .typed
+    }
     public init(textReply text: String, id: Int, taskID: String, taskName: String?) {
         self.id = id; self.speaker = .assistant; self.text = text; self.kind = .text
         self.taskID = taskID; self.taskName = taskName
@@ -121,6 +126,11 @@ public struct VoiceState: Equatable, Sendable {
     public var resumeFrom: String?
     /// The whole call so far, oldest first (kept across Pause/Resume).
     public var transcript: [TranscriptTurn] = []
+    /// Typed turns on screen whose other copy may still arrive: the sender's local echo and the
+    /// stream's `transcript` event are the same turn (shown once, whichever comes first).
+    public var typedEchoes: [TypedTurnEcho] = []
+    /// Stream events (call|SSE id) already shown as typed turns: a replay doesn't show one again.
+    public var typedStreamIDs: Set<String> = []
     /// Tasks whose full answer is already a text reply in `transcript` (one bubble per task).
     public var textRepliedTaskIDs: Set<String> = []
     /// The call's first task list arrived: tasks in it that were already finished (an earlier call's
@@ -177,6 +187,9 @@ public struct VoiceState: Equatable, Sendable {
     /// thread take well under this; a crash or a broken install never produces a task).
     public static let notReceivedAfter: TimeInterval = 45
     public static let freshFor: TimeInterval = 45
+
+    /// How long one copy of a typed turn waits for its other copy (local echo vs stream event).
+    public static let typedEchoWindow: TimeInterval = 60
 
     /// Remote audio should play unless the user quieted the assistant.
     public var remoteAudioEnabled: Bool { speech != .quieted }
@@ -238,6 +251,9 @@ public enum VoiceEvent: Equatable, Sendable {
     case sharing(SharingEvent)
     /// The user typed to a task (sent): the user's turn in the transcript, kind `typed`.
     case typedToTask(text: String, taskID: String, taskName: String?)
+    /// A turn typed on a call screen that the server took (`session.input_text`): this device's own
+    /// send after the 200, or the call's SSE `transcript` event. Text is as the server took it.
+    case typedTurn(String, origin: TypedTurnOrigin)
 }
 
 /// Pure reducer. `now` is supplied by the caller so tests are deterministic.
@@ -352,6 +368,29 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         if heardWords { s.lastActivityAt = now }
         // the user speaking real words again un-quiets the assistant and interrupts the speaking label.
         if s.mic == .live && heardWords { s.speech = .idle }
+
+    case .typedTurn(let raw, let origin):
+        // One complete user turn of its own: it never joins the user's spoken words and never runs
+        // into the assistant's reply, and it leaves the speaking label and mic state alone.
+        let text = TypedText.normalized(raw)
+        guard !text.isEmpty, s.connection.isOpen else { break }
+        if case .stream(let id?) = origin {
+            let key = "\(s.interactionID ?? s.resumeFrom ?? "")|\(id)"
+            guard !s.typedStreamIDs.contains(key) else { break }   // a replayed event
+            s.typedStreamIDs.insert(key)
+        }
+        s.typedEchoes.removeAll { now.timeIntervalSince($0.at) > VoiceState.typedEchoWindow }
+        if let i = s.typedEchoes.firstIndex(where: { $0.text == text && $0.local != origin.isLocal }) {
+            s.typedEchoes.remove(at: i)   // the other copy of this turn is already on screen
+            break
+        }
+        s.typedEchoes.append(TypedTurnEcho(text: text, local: origin.isLocal, at: now))
+        if s.typedEchoes.count > 16 { s.typedEchoes.removeFirst(s.typedEchoes.count - 16) }
+        s.transcript.append(TranscriptTurn(typed: text, id: s.transcript.count))
+        // The next spoken words or reply start fresh turns after it (no late-input join either).
+        s.exchange = Exchange(you: text, replyStarted: true)
+        s.lastInputAt = nil
+        s.lastActivityAt = now
 
     case .outputDelta(let text):
         guard !text.isEmpty else { break }

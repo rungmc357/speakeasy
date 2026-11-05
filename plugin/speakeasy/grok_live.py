@@ -21,7 +21,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from .calls import SidebandWorker
+from .calls import TYPED_NOT_CONNECTED, TYPED_NOT_DELIVERED, TYPED_SENT, SidebandWorker
 from .relay import READ_TIMEOUT_S, RelayClient, RelayProtocolError, RelaySocket
 from .settings import XAI_KEY_NAME, hermes_secret, profile_scope
 from .text import ID_RE, clean_transcript
@@ -249,6 +249,23 @@ class GrokRelayWorker(SidebandWorker):
         self.respond_after = False
         self.response_active = True  # until response.created/done says otherwise
         await self._send_json({"type": "response.create"})
+
+    # -- typed turns -------------------------------------------------------------------------------
+    async def forward_typed(self, text: str) -> str:
+        """xAI takes real user text: a user message item. The reply is asked for once it's in the
+        transcript (typed_recorded), so a handoff it leads to finds the words already there."""
+        if not self.call_connected():
+            return TYPED_NOT_CONNECTED
+        if await self._send_json({"type": "conversation.item.create", "item": {
+                "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}}):
+            return TYPED_SENT
+        return TYPED_NOT_DELIVERED if self.call_connected() else TYPED_NOT_CONNECTED
+
+    def typed_offset(self) -> int:
+        return self.now_ms()
+
+    async def typed_recorded(self) -> None:
+        await self._respond()
 
     # -- the app's relay (handler threads) ---------------------------------------------------------
     def serve_client(self, ws: RelaySocket) -> None:

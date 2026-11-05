@@ -8,6 +8,7 @@ tasks; every task goes to the user's Hermes.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import os
@@ -16,12 +17,27 @@ import re
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from .calls import SidebandWorker
+from .calls import TYPED_ECHO_S, TYPED_NOT_CONNECTED, TYPED_NOT_DELIVERED, TYPED_SENT, SidebandWorker, _words
 from .prompt import builder as P
 from .text import ID_RE, clean_transcript
+
+
+def _same_words(typed: str, heard: str) -> bool:
+    """A transcript that says what was typed: the same words ignoring case and punctuation, or, for
+    four words or more, at least 80% of them in order (an echo that reworded a word or two). Short
+    turns ("yes", "turn it off") must match exactly, so a different short answer is never eaten."""
+    a, b = _words(typed).replace("'", "").split(), _words(heard).replace("'", "").split()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 4:
+        return False
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= 0.8
 
 REPEAT_HANDOFF_S = 8.0  # the same words handed off again this soon are a repeat, not a new request
 
@@ -285,6 +301,9 @@ class CodexSidebandWorker(SidebandWorker):
         super().__init__(rt, interaction)
         self.transport = transport
         self.offset = 0
+        # Typed turns sent as realtime user text, as [text, when Codex took it]: if Codex transcribes
+        # one back as the user's turn, it is the same turn and is not recorded twice (_typed_echo).
+        self.typed_echoes: deque[list[Any]] = deque(maxlen=8)
 
     def call_connected(self) -> bool:
         return not self.transport.closed and not self.interaction.call_closed
@@ -343,9 +362,63 @@ class CodexSidebandWorker(SidebandWorker):
         text = clean_transcript(text).strip()
         if not text or len(text.encode()) > 8192:
             return
+        if self._typed_echo(text):
+            return  # Codex's transcript of a turn already recorded as typed
         self.offset += 1
         await self.handle_event({"type": "session.input_transcript.delta", "delta": text,
                                  "start_ms": self.offset, "end_ms": self.offset})
+
+    def _typed_echo(self, text: str) -> bool:
+        """Is this user transcript Codex's echo of a typed turn? Bounded three ways, because a wrong
+        yes drops a real spoken turn: only within TYPED_ECHO_S of the voice taking the turn, each
+        typed turn suppresses at most one transcript, and the first user transcript that isn't a
+        match ends every pending window (an echo comes as the next user turn, so the user is now
+        talking and anything they say, the same words included, is theirs). Words are compared
+        loosely (case, punctuation, a reworded word or two) so a reworded echo isn't recorded twice."""
+        now = time.monotonic()
+        live = [entry for entry in self.typed_echoes if now - entry[1] <= TYPED_ECHO_S]
+        self.typed_echoes.clear()
+        for index, entry in enumerate(live):
+            if _same_words(entry[0], text):
+                # Consumed; any older typed turn still waiting never echoed, so its window closes too.
+                self.typed_echoes.extend(live[index + 1:])
+                return True
+        return False
+
+    async def forward_typed(self, text: str) -> str:
+        """Codex takes a typed turn as realtime user text: `thread/realtime/appendText` with role user
+        (the protocol's ConversationTextRole; the server's own notes go in as developer). A failed
+        request is this send's failure only (not_delivered): unlike `_send` it never writes
+        interaction.error, and the call stays usable for the next turn."""
+        if self.transport.closed:
+            return TYPED_NOT_CONNECTED
+        echo = [text, time.monotonic()]
+        self.typed_echoes.append(echo)
+        try:
+            await asyncio.to_thread(self.transport.request, "thread/realtime/appendText",
+                                    {"threadId": self.transport.thread_id, "text": text, "role": "user"}, 10)
+        except (RuntimeError, TimeoutError, OSError) as exc:
+            self._drop_echo(echo)
+            logger.warning("speakeasy: Codex did not take a typed turn (%s)", type(exc).__name__)
+            return TYPED_NOT_CONNECTED if self.transport.closed else TYPED_NOT_DELIVERED
+        except asyncio.CancelledError:
+            # The route gave up waiting (504). Whether Codex got the text is unknown, and this turn
+            # won't be recorded as typed, so no guard may outlive it: if Codex does echo it, that
+            # echo is the transcript's only copy and must be kept.
+            self._drop_echo(echo)
+            raise
+        echo[1] = time.monotonic()  # the echo window runs from when Codex took it
+        return TYPED_SENT
+
+    def _drop_echo(self, echo: list) -> None:
+        for index, entry in enumerate(self.typed_echoes):
+            if entry is echo:
+                del self.typed_echoes[index]
+                return
+
+    def typed_offset(self) -> int:
+        self.offset += 1
+        return self.offset
 
     async def _handoff(self, item: Any) -> None:
         """Only a provider-owned handoff_request can start Hermes work; transcripts never do."""

@@ -37,6 +37,7 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/interactions/{id}/early-request` | device | Words heard while the call connected: the first request (or, in a call from listening mode, "answer from the room") |
 | POST | `/voice/interactions/{id}/answer` | device | Answer a task's question card (or a spoken-choice card) |
 | POST | `/voice/interactions/{id}/card-action` | device | Press a button on a task's card during a call |
+| POST | `/voice/interactions/{id}/input-text` | device | A turn typed on the call screen instead of spoken |
 | POST | `/voice/interactions/{id}/mic-check` | device | Log a mic repair (numbers only, no audio or words) |
 | POST | `/voice/interactions/{id}/mic` | device | The call's mic went on or off (pauses the progress pulse) |
 | POST | `/voice/interactions/{id}/screen` | device | Turn screen sharing on or off for this call |
@@ -260,6 +261,56 @@ Words the app transcribed on the device while the call was connecting. Body `{"t
 A tap on a question card's option (or a typed answer). Body `{"task_id": "...", "text": "..."}`
 (text at most 400 characters); it goes back to that task as a follow-up.
 
+## POST /voice/interactions/{id}/input-text
+
+A turn typed on the call screen instead of spoken (plugin with `input_text: true` in
+`GET /voice/status`). Body `{"type": "session.input_text", "text": "...", "client_id": "..."}`, where
+`client_id` is optional and nothing else is allowed. The text is made one line (control characters and
+runs of whitespace become one space) and must then be 1 to 1,000 characters. It goes to the live call
+as the user's turn:
+
+- Codex voice: `thread/realtime/appendText` with `role: "user"`. If Codex transcribes it back as a
+  user turn, that copy isn't recorded again. Only the next user transcript within 6 s of Codex taking
+  the text can be that copy, and each typed turn absorbs at most one. A different user turn ends the
+  window, so saying the same words out loud later is always recorded.
+- GPT-Live: a session-wide `session.commentary.append` (no delegation id). Its event channel takes no
+  user text, so the note quotes the words and asks for a spoken reply. It goes on the commentary channel
+  because thinking notes are background the voice may hold without answering.
+- Grok voice: a user `message` item, then a reply is asked for.
+
+The turn joins the call's transcript (so the next task the voice hands off carries it) and is
+published on the call's event stream as `transcript` `{"role": "user", "text", "source": "typed"}`,
+plus `client_id` when the send had one, so the sending app can tell that copy from its own echo.
+After Pause and Resume the newest call in the chain takes it.
+
+**`client_id` (optional; same rules as an `Idempotency-Key`: 1 to 128 of `A-Z a-z 0-9 _ -`).** The
+app's id for this turn, which makes retries safe. Send the same id again on the same call, before or
+after a Pause and Resume (for example after a 504 or a dropped connection), and the voice never gets the
+turn twice:
+
+- The first send went through: `200` with the same body plus `"duplicate": true`.
+- It's still in flight: the retry waits on it, and may itself get a 504.
+- It failed (409, 502): the retry is a new send.
+- The same id with different text gets `409 client_id_reused`.
+
+Without a `client_id` the route works as before and every send is a new turn.
+
+`200 {"interaction_id", "type": "session.input_text", "sent": true}` (`interaction_id` is the call
+that took it; `client_id` is echoed back when sent). Errors carry `error` and `reason`:
+
+| status | reason | when |
+|---|---|---|
+| 400 | `invalid_body`, `empty_text`, `text_too_long` | any other body (including a malformed `client_id`), nothing left after cleanup, over 1,000 characters |
+| 401 | | missing or wrong device token |
+| 404 | `unknown_interaction` | no such call (a plugin without the route also answers 404, with no `reason`) |
+| 409 | `call_ended`, `call_paused`, `not_connected` | the call ended or is paused, or its voice connection is gone |
+| 409 | `client_id_reused` | this `client_id` was already used for different text on this call |
+| 502 | `not_delivered` | the call is still up, but this one send failed. Nothing was recorded, the call is not marked as failed, and sending again is safe |
+| 502 | `transport_error` | the voice connection failed unexpectedly |
+| 504 | `timeout` | the call didn't confirm within 15 s. **The outcome is unknown: the voice may already have the words.** With a `client_id` the send keeps going, and retrying with the same id gives the outcome without sending twice. Without one the send is abandoned and never recorded, so check the call before sending the same words again |
+
+Nothing is recorded or published unless the voice took the turn.
+
 ## POST /voice/interactions/{id}/mic-check
 
 The app found the call's mic wasn't getting through and reopened the connection. Body
@@ -324,6 +375,7 @@ The stream ends after `closed`.
 | `capture` | `{"capture_id"}`: capture the user's window for one request (see Look at this) |
 | `screen.hint` | `{"reason": "screen_off" \| "no_permission" \| "share_request"}`: draw the user's eye to the screen button |
 | `screen.state` | `{"on", "seq"}`: sharing changed on the server side ("stop looking at my screen") |
+| `transcript` | `{"role": "user", "text", "source": "typed"[, "client_id"]}`: a turn typed on a call screen (`input-text`) joined the call's transcript. Spoken turns don't come here (they arrive on the voice connection). The same event with a `task_id` is a message typed to one task (see Messages to a task), not a turn to the call: apps show it with that task's name and never as a call turn |
 
 ```
 id: 1
@@ -737,7 +789,10 @@ a link, copy, chart scrubbing) need no server call.
 
 Capability `task_messages` (plugin 0.3.19+). The app sends typed words to **one task, by its id**:
 from the task's reply bar or a decision card's "Something else…" field. These never go through task
-routing, and live speech routing is unchanged.
+routing, and live speech routing is unchanged. (Typing to the call itself, `input-text` below the
+`input_text` flag, is different: it counts exactly like saying it and goes through the same routing as
+speech. One box per screen, labelled with who gets it: "Message <assistant>" on the call screen,
+"Message this job" on a job page, "Something else…" on a decision.)
 
 ### POST /voice/work/{run_id}/message
 
@@ -1114,13 +1169,13 @@ then marked edited, so auto-refresh leaves it alone). Calls are kept locally in 
 
 ## GET /voice/status
 
-Readiness. `voice_ready` is true when the chosen provider can start a call. When Codex is missing or signed out, `codex_message` says what to do. Grok voice (beta): `grok_beta` (the setting), `grok_signed_in` (Hermes holds an xAI sign-in), `grok_api_key_set` (`XAI_API_KEY` fallback), `grok_ready` and `grok_message` (what to do, e.g. run `hermes auth add xai-oauth`); with provider `grok`, onboarding's `codex_message` carries the Grok message. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only). `room_listening` (plugin 0.2.51+) is true when the server takes listening mode's `room` with `POST /voice/sessions`; missing on older plugins, which reject unknown session fields. `room_on_resume` is true when it also takes `room` with `resume_from`, which listening mode during a call needs (the app checks it before pausing the call for listening).
+Readiness. `voice_ready` is true when the chosen provider can start a call. When Codex is missing or signed out, `codex_message` says what to do. Grok voice (beta): `grok_beta` (the setting), `grok_signed_in` (Hermes holds an xAI sign-in), `grok_api_key_set` (`XAI_API_KEY` fallback), `grok_ready` and `grok_message` (what to do, e.g. run `hermes auth add xai-oauth`); with provider `grok`, onboarding's `codex_message` carries the Grok message. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only). `room_listening` (plugin 0.2.51+) is true when the server takes listening mode's `room` with `POST /voice/sessions`; missing on older plugins, which reject unknown session fields. `room_on_resume` is true when it also takes `room` with `resume_from`, which listening mode during a call needs (the app checks it before pausing the call for listening). `input_text` is true when the server takes a typed turn on a live call (`POST /voice/interactions/{id}/input-text`); missing on older plugins, which answer that route with 404, so apps show their composer only when it's true.
 `attachments` says whether runs can carry images (`images`) and how Hermes reads them (`vision`:
 `native` the main model sees them, `described` an auxiliary vision model describes them, `none`, or
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `job_activity`, `tool_log` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`
@@ -1152,9 +1207,10 @@ hide the matching controls and keep the old behaviour.
                   "max_request_image_bytes": 6500000, "max_file_bytes": 10000000},
   "room_listening": true,
   "room_on_resume": true,
+  "input_text": true,
   "version": "0.2.0",
   "capabilities": {"card_actions": true, "job_progress": true, "spoken_choices": true, "summary_points": true,
-                   "task_messages": true, "job_activity": true, "tool_log": true}
+                   "task_messages": true, "input_text": true, "job_activity": true, "tool_log": true}
 }
 ```
 
