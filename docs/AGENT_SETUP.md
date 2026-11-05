@@ -70,8 +70,13 @@ Say so in the same message, since you can't check their device from here (unless
 If setup reports that HTTPS certificates are off for the tailnet, the user turns them on once at
 https://login.tailscale.com/admin/dns (HTTPS Certificates), then you run setup again.
 
-**No Tailscale, and the user doesn't want it?** Offer [Cloudflare mode](#cloudflare-mode) instead.
-Recommend Tailscale first: it is the most private.
+**No Tailscale, and the user doesn't want it?** Recommend Tailscale first, then offer
+[Cloudflare mode](#cloudflare-mode). Tell the user plainly: **Tailscale** is the most private
+(reachable only from your own devices). **Cloudflare** needs nothing on your phone; its address is
+on the public internet, but it's locked to your paired devices (every request needs a paired
+device, and pairing needs a one-time code from this computer). A free Cloudflare address changes
+when the tunnel restarts and the iPhone app follows it with one tap; a permanent address needs a
+free Cloudflare account and your own domain (about $10/year). Never use Tailscale Funnel.
 
 ## 3. Run setup
 
@@ -107,7 +112,8 @@ link in chat is enough on its own.
   `XAI_API_KEY`, then `hermes voice config set beta.grok_voice true` and
   `hermes voice config set voice.provider grok`.
 - Setup publishes the voice server on the user's Tailscale network when Tailscale is connected
-  (never Tailscale Funnel, so nothing is exposed to the internet).
+  (never Tailscale Funnel). Without Tailscale it recommends it, and shows the Cloudflare address
+  when Cloudflare mode is on.
 
 ## 4. Read the result and tell the user the one thing to do
 

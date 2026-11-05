@@ -111,9 +111,22 @@ final class CloudflareModeTests: XCTestCase {
         XCTAssertEqual(ReachabilityCard.decide(paired: true, reachable: false, verifiedUpdate: nil,
                                                endpoints: ServerEndpoints(tailnet: URL(string: "https://m.t.ts.net")!), current: nil),
                        .unreachable(hasTailnet: true, hasCloudflare: false))
-        let request = AwaySetupRequest.text()
-        XCTAssertTrue(request.contains("hermes voice setup") && request.contains("https://login.tailscale.com/admin/dns")
-                      && request.contains("cloudflared") && request.contains("same account"))
-        XCTAssertFalse(request.lowercased().contains("funnel"))
+    }
+
+    func testFixItMessagesAskForOneThingEach() {
+        let tailscale = AwaySetupRequest.tailscaleCheck()
+        XCTAssertTrue(tailscale.contains("tailscale status") && tailscale.contains("hermes voice setup")
+                      && tailscale.contains("Reply with what you found") && tailscale.contains("same account"))
+        XCTAssertFalse(tailscale.lowercased().contains("cloudflare"))
+        let cloudflare = AwaySetupRequest.cloudflareRestart()
+        XCTAssertTrue(cloudflare.contains("speakeasy-cloudflare.py status") && cloudflare.contains("speakeasy-cloudflare.py restart")
+                      && cloudflare.contains("hermes voice setup") && cloudflare.contains("\"Update Speakeasy's address\" link"))
+        XCTAssertFalse(cloudflare.lowercased().contains("tailscale"))
+        let move = AwaySetupRequest.switchToTailscale(device: "iPad")
+        XCTAssertTrue(move.contains("Install and start Tailscale") && move.contains("hermes voice setup")
+                      && move.contains("step-by-step iPad instructions") && move.contains("same account"))
+        XCTAssertFalse(move.lowercased().contains("cloudflare"))
+        for text in [tailscale, cloudflare] { XCTAssertFalse(text.lowercased().contains("funnel")) }
+        XCTAssertTrue(move.contains("never Tailscale Funnel"))
     }
 }

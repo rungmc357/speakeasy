@@ -193,21 +193,45 @@ public enum ReachabilityCard: Equatable, Sendable {
     }
 }
 
-/// "Copy setup request for your Hermes": the message the user sends their agent when the phone
-/// can't reach it (or to set it up for away from home).
+/// "Copy a fix-it message for your Hermes": what the user pastes to their agent (in Telegram, Discord
+/// or wherever they chat with it) when the phone can't reach it. One message per way the phone was
+/// connected, so each asks for exactly one thing.
 public enum AwaySetupRequest {
     public static let tailscaleAppStore = URL(string: "https://apps.apple.com/app/tailscale/id1470499037")!
+    public static let cloudflareScript = "https://github.com/rungmc357/speakeasy/blob/main/scripts/speakeasy-cloudflare.py"
 
-    public static func text(device: String = "iPhone") -> String {
+    /// The phone reached Hermes over Tailscale: check Tailscale on the computer, nothing else.
+    public static func tailscaleCheck(device: String = "iPhone") -> String {
         """
-        My Speakeasy app on my \(device) can't reach you. Please fix it so it works from anywhere:
-        1. Check Tailscale on this computer (recommended: most private). If it's installed, make sure it's running \
-        and HTTPS certificates are on (if you need me for that, give me the one link: https://login.tailscale.com/admin/dns). \
-        If Tailscale isn't an option, check Speakeasy's Cloudflare tunnel instead (cloudflared): restart it if it stopped.
+        My Speakeasy app on my \(device) can't reach you over Tailscale. On this computer, please:
+        1. Check Tailscale with `tailscale status`. If it's stopped, start it (`tailscale up`). If it needs me \
+        to sign in or to turn on HTTPS certificates, send me the one link (certificates: https://login.tailscale.com/admin/dns).
         2. Re-run `hermes voice setup` so Speakeasy publishes its current address.
-        3. Send me the new pairing or "Update Speakeasy's address" link.
-        4. Reply with step-by-step \(device) instructions (for Tailscale: install the Tailscale app, sign in with the \
-        same account as this computer, then open Speakeasy).
+        3. Reply with what you found, and anything I need to do on my \(device) (Tailscale on, signed in to the \
+        same account as this computer).
+        """
+    }
+
+    /// The phone reached Hermes only through a Cloudflare tunnel: restart it and send the update link.
+    public static func cloudflareRestart(device: String = "iPhone") -> String {
+        """
+        My Speakeasy app on my \(device) can't reach you through its Cloudflare connection. On this computer, please:
+        1. Check Speakeasy's Cloudflare tunnel: `python3 speakeasy-cloudflare.py status` (the script from \
+        Speakeasy's Cloudflare mode: \(cloudflareScript)). If it stopped, run `python3 speakeasy-cloudflare.py restart`.
+        2. Re-run `hermes voice setup` so Speakeasy publishes its current address.
+        3. Send me the "Update Speakeasy's address" link.
+        """
+    }
+
+    /// Move to Tailscale (the most private option).
+    public static func switchToTailscale(device: String = "iPhone") -> String {
+        """
+        Please set up Tailscale for my Speakeasy app so my \(device) reaches you privately from anywhere:
+        1. Install and start Tailscale on this computer if it isn't already (never Tailscale Funnel). If it needs me \
+        to sign in or to turn on HTTPS certificates, send me the one link (certificates: https://login.tailscale.com/admin/dns).
+        2. Re-run `hermes voice setup` so Speakeasy publishes its Tailscale address.
+        3. Reply with step-by-step \(device) instructions: install the Tailscale app, sign in with the same account \
+        as this computer, then open Speakeasy.
         """
     }
 }
