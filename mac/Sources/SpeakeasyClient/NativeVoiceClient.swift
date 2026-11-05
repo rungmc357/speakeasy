@@ -102,6 +102,8 @@ public final class NativeVoiceClient: VoiceCallClient {
     private var streamTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var workOnlyTask: Task<Void, Never>?
+    /// Which `/voice/work/latest` answers may still touch the board (see `WorkPollGate`).
+    private var workPoll = WorkPollGate()
     private var ticker: Timer?
     private var levelTimer: Timer?
     /// Checks the call's mic really gets through (see MicCheck); runs even with the screen off.
@@ -1142,7 +1144,7 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// The x button: idle → hide (leaving any work-only view); in a call → hide only.
     public func closePanel() {
-        if model.state.workOnly { workOnlyTask?.cancel(); workOnlyTask = nil; dispatch(.reset) }
+        if model.state.workOnly { workOnlyTask?.cancel(); workOnlyTask = nil; workPoll.stop(); dispatch(.reset) }
         model.selectedTaskID = nil
         model.workExpanded = false
         hideNow()
@@ -1222,7 +1224,8 @@ public final class NativeVoiceClient: VoiceCallClient {
     /// Refetch tasks so the card shows the server's current draft (SSE also pushes it).
     private func refreshDraftSources() async {
         guard let api else { return }
-        if let (work, tasks) = try? await api.latestWork() {
+        let ticket = workPoll.ticket()
+        if let (work, tasks) = try? await api.latestWork(), workPoll.accepts(ticket) {
             if !tasks.isEmpty, tasks.map(\.id) == model.state.tasks.map(\.id) || model.state.workOnly || !model.state.connection.isOpen {
                 dispatch(.tasks(tasks))
             } else if !tasks.isEmpty {
@@ -1316,15 +1319,25 @@ public final class NativeVoiceClient: VoiceCallClient {
         surface.focus()
         startTicker()
         workOnlyTask?.cancel()
+        // A new loop: whatever the replaced one still has in flight is dropped, and its
+        // cancellation is not an error (it was the "Work unavailable: cancelled" banner).
+        let loop = workPoll.startLoop()
         workOnlyTask = Task { [weak self] in
             while !Task.isCancelled {
+                guard let ticket = self?.workPoll.ticket(generation: loop) else { return }
                 do {
                     let (work, tasks) = try await api.latestWork()
-                    guard let self, self.model.state.workOnly else { return }
+                    guard let self, !Task.isCancelled, self.model.state.workOnly else { return }
+                    // Sent before a newer loop or before the user cleared tasks: may be older than the board.
+                    guard self.workPoll.accepts(ticket) else { continue }
+                    self.workPoll.succeeded(ticket)
                     self.dispatch(.work(work))
                     if tasks != self.model.state.tasks { self.dispatch(.tasks(tasks)) }
                 } catch {
-                    self?.dispatch(.error("Work unavailable: \(error.localizedDescription)"))
+                    guard let self else { return }
+                    if let notice = self.workPoll.failed(error, ticket: ticket, cancelled: Task.isCancelled) {
+                        self.dispatch(.error(notice))
+                    }
                 }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
@@ -1458,6 +1471,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.workExpanded = false
         if model.state.workOnly {
             workOnlyTask?.cancel(); workOnlyTask = nil
+            workPoll.stop()
             dispatch(.reset)
             surface.hide()
             stopTicker()
@@ -1496,11 +1510,16 @@ public final class NativeVoiceClient: VoiceCallClient {
             model.selectedTaskID = nil
         }
         dispatch(.tasksDismissed(runIDs))
+        // A list fetched before the server has the clear may still hold these tasks: drop it.
+        workPoll.listChanged()
         surface.setNeedsResize()
         guard let api, !previewMode else { return }
         Task { [weak self] in
-            do { try await api.dismissTasks(runIDs: runIDs) }
-            catch { self?.dispatch(.error("Couldn't clear tasks: \(error.localizedDescription)")) }
+            do { try await api.dismissTasks(runIDs: runIDs); self?.workPoll.listChanged() }
+            catch {
+                self?.workPoll.listChanged()
+                self?.dispatch(.error("Couldn't clear tasks: \(error.localizedDescription)"))
+            }
         }
     }
 
