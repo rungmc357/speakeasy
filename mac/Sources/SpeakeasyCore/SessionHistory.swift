@@ -264,6 +264,9 @@ public struct HistoryConversation: Equatable, Sendable {
     /// Its Speakeasy tasks, newest first, with their cards (approvals, questions) and helpers.
     public var jobs: [WorkInfo]
     public var approvals: [HistoryApproval]
+    /// Archived in Hermes (the page offers Unarchive) / pinned on any device.
+    public var archived = false
+    public var pinned = false
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
@@ -284,6 +287,8 @@ public struct HistoryConversation: Equatable, Sendable {
                   hasMore: o["has_more"] as? Bool ?? false, before: (o["before"] as? NSNumber)?.intValue,
                   jobs: (o["jobs"] as? [Any] ?? []).compactMap(WorkInfo.init(json:)),
                   approvals: (o["approvals"] as? [Any] ?? []).compactMap(HistoryApproval.init(json:)))
+        archived = o["archived"] as? Bool ?? false
+        pinned = o["pinned"] as? Bool ?? false
     }
 
     /// The ONE job whose question (a decision card) waits on the user, as the plugin decides it
@@ -291,9 +296,12 @@ public struct HistoryConversation: Equatable, Sendable {
     /// before it: the newest unanswered question only, never two cards for the same question.
     public var waitingQuestions: [WorkInfo] {
         let open = jobs.filter { $0.status == "completed" && $0.decision != nil && !$0.setAside && !$0.answered }
-        guard let newest = open.first else { return [] }
-        // Jobs are newest first: an older question with a newer job after it was moved past.
-        return jobs.first?.runID == newest.runID ? [newest] : []
+        if let flagged = open.first(where: { $0.questionOpen == true }) { return [flagged] }
+        if open.contains(where: { $0.questionOpen == false }) {
+            return []   // the plugin decided: none of these still waits
+        }
+        // Older plugins: one card at most (jobs are newest first), never the same question twice.
+        return open.first.map { [$0] } ?? []
     }
     public var isWorking: Bool { state == .running }
 

@@ -216,6 +216,11 @@ struct HistorySidebar: View {
                         ForEach(sessions) { s in row(s) }
                     } header: { sectionHeader(store.list.archived ? "Archived · " + group.rawValue : group.rawValue) }
                 }
+                if !store.list.archivedMatches.isEmpty {
+                    Section {
+                        ForEach(store.list.archivedMatches) { s in row(s) }
+                    } header: { sectionHeader("Archived") }
+                }
                 footer.padding(.vertical, 12)
             }
             .padding(.bottom, 8)
@@ -301,6 +306,10 @@ struct HistoryRow: View {
                             .foregroundStyle(Color.primary.opacity(selected ? 1 : 0.92))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
+                        if session.archived {
+                            Image(systemName: "archivebox").font(.system(size: 9)).foregroundStyle(.tertiary)
+                                .accessibilityLabel("Archived")
+                        }
                         if session.pinned {
                             Image(systemName: "pin.fill").font(.system(size: 8.5)).foregroundStyle(.tertiary)
                                 .accessibilityLabel("Pinned")

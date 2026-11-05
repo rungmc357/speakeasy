@@ -276,3 +276,15 @@ def test_a_client_that_hangs_up_is_logged_once_without_a_traceback(server, state
     s.close()
     time.sleep(0.5)
     assert not [r for r in caplog.records if r.levelname == "ERROR" and "history" in r.getMessage()]
+
+
+def test_search_finds_archived_threads_marked_and_the_list_still_hides_them(server, hermes, pinned_col):
+    hermes.state_db = pinned_col
+    assert post(server, "/voice/history/d1/archive", {"archived": True})[0] == 200
+    assert "d1" not in [r["id"] for r in get(server, "/voice/history")[1]["sessions"]]
+    found = get(server, "/voice/history?q=walnut")[1]["sessions"]
+    row = next(r for r in found if r["id"] == "d1")
+    assert row["archived"] is True
+    assert "d1" not in [r["id"] for r in get(server, "/voice/history?q=walnut&include_archived=0")[1]["sessions"]]
+    assert [r["id"] for r in get(server, "/voice/history?archived=1")[1]["sessions"]] == ["d1"]
+    assert get(server, "/voice/history/d1")[1]["session"]["archived"] is True   # the page offers Unarchive

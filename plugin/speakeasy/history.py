@@ -370,6 +370,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                   speakeasy_ids: Callable[[], set[str]] = set, live: Callable[[str], bool] = lambda sid: False,
                   folded: Callable[[], dict[str, str]] = dict,
                   marks: Callable[[], dict[str, dict[str, Any]]] = dict, archived: bool = False,
+                  include_archived: bool | None = None,
                   now: float | None = None) -> dict[str, Any]:
     """``GET /voice/history``: conversations newest first, ``limit`` per page; pass ``next_cursor`` back
     as ``cursor`` for the next page.
@@ -380,7 +381,8 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
 
     *marks*: {session: {pinned, read_at}} (the plugin's, shared by every device): rows carry ``pinned``
     and ``unread``; the first page lists pinned rows first. *archived*: list only archived conversations
-    (Hermes' own ``archived`` flag, set by any Hermes app)."""
+    (Hermes' own ``archived`` flag, set by any Hermes app). *include_archived*: list archived ones too,
+    marked ``archived`` (default: when searching, so an archived thread is still found)."""
     after = parse_cursor(cursor)
     now = time.time() if now is None else now
     limit = max(1, min(int(limit or PAGE), MAX_PAGE))
@@ -400,8 +402,13 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             linked_last = _last_expr(cols).replace("s.", "l.")
             last = (f"max({last}, coalesce((SELECT max({linked_last}) FROM (VALUES {pairs}) AS f "
                     f"JOIN sessions l ON l.id = f.column2 WHERE f.column1 = s.id), 0))")
-        where = [f"s.source NOT IN ({','.join('?' * len(HIDDEN_SOURCES))})", _flag(cols, "hidden"),
-                 ("coalesce(s.archived,0)!=0" if "archived" in cols else "1=0") if archived else _flag(cols, "archived")]
+        if include_archived is None:
+            include_archived = bool(q.strip())
+        where = [f"s.source NOT IN ({','.join('?' * len(HIDDEN_SOURCES))})", _flag(cols, "hidden")]
+        if archived:
+            where.append("coalesce(s.archived,0)!=0" if "archived" in cols else "1=0")
+        elif not include_archived:
+            where.append(_flag(cols, "archived"))
         params: list[Any] = list(HIDDEN_SOURCES)
         if "parent_session_id" in cols:
             # The newest segment of a conversation only; children of another source are helpers.
@@ -461,8 +468,9 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
         display = "s.display_name" if "display_name" in cols else "NULL"
         chat_type = "s.chat_type" if "chat_type" in cols else "NULL"
         title = "s.title" if "title" in cols else "NULL"
+        arch = "coalesce(s.archived,0)" if "archived" in cols else "0"
         rows = db.execute(f"SELECT s.id, s.source, {title} AS title, {display} AS display_name, {chat_type} AS chat_type, "
-                          f"s.started_at, {last} AS last, {pin_rank} AS pin FROM sessions s WHERE {' AND '.join(where)} "
+                          f"s.started_at, {last} AS last, {pin_rank} AS pin, {arch} AS arch FROM sessions s WHERE {' AND '.join(where)} "
                           f"ORDER BY (pin = 0), pin, last DESC, s.id DESC LIMIT ?", (*params, limit + 1)).fetchall()
         more = len(rows) > limit
         out = []
@@ -488,7 +496,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             mark = marked.get(sid) or {}
             if row["pin"]:
                 entry["pinned"] = True
-            if archived:
+            if archived or row["arch"]:
                 entry["archived"] = True
             read_at = mark.get("read_at")
             if read_at is not None and float(row["last"] or 0) > float(read_at) + 1 and entry["state"] != "running":
@@ -566,7 +574,8 @@ def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
         tip = _tips(db, {session_id}).get(session_id, session_id) if "parent_session_id" in cols else session_id
         display = "display_name" if "display_name" in cols else "NULL AS display_name"
         chat = "chat_type" if "chat_type" in cols else "NULL AS chat_type"
-        row = db.execute(f"SELECT id, source, title, {display}, {chat} FROM sessions WHERE id=?", (tip,)).fetchone()
+        arch = "coalesce(archived,0) AS archived" if "archived" in cols else "0 AS archived"
+        row = db.execute(f"SELECT id, source, title, {display}, {chat}, {arch} FROM sessions WHERE id=?", (tip,)).fetchone()
         return dict(row) if row else None
     except sqlite3.Error:
         return None

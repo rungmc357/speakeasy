@@ -1756,7 +1756,9 @@ class VoiceService:
                                    limit=limit, linked=self._linked_with_continuations,
                                    speakeasy_ids=self.store.speakeasy_sessions, folded=self.store.folded_sessions,
                                    marks=self.store.session_marks,
-                                   archived=str(query.get("archived") or "") in {"1", "true"})
+                                   archived=str(query.get("archived") or "") in {"1", "true"},
+                                   include_archived=(None if query.get("include_archived") in (None, "")
+                                                     else str(query.get("include_archived")) in {"1", "true"}))
         except H.HistoryError as exc:
             raise ServiceError(exc.status, exc.message) from None
 
@@ -1846,6 +1848,8 @@ class VoiceService:
             "source_label": H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), own),
             "state": "needs_you" if needs_you else ("running" if running else "idle"),
             "send_via": "task" if own and link else ("session_job" if meta["source"] == "api_server" else "linked"),
+            **({"archived": True} if meta.get("archived") else {}),
+            **({"pinned": True} if (self.store.session_marks().get(sid) or {}).get("pinned") else {}),
             "entries": entries, "has_more": page["has_more"], "before": page["before"],
             "jobs": jobs, "approvals": self._session_approvals(keys)}}
 

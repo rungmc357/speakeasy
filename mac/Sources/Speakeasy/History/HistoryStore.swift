@@ -133,6 +133,9 @@ final class HistoryStore: ObservableObject {
             conversations[id]?.title = clean
         case .pin(let on): list.update(id) { $0.pinned = on }
         case .read: list.update(id) { $0.unread = false }
+        case .archive(let on) where !list.activeQuery.isEmpty:
+            list.update(id) { $0.archived = on }   // a search keeps archived matches (marked)
+            if on, let row = before { showUndo(row.title, id) }
         case .archive(let on):
             removed = list.remove(id)
             if on, let row = removed?.0 { showUndo(row.title, id) }

@@ -54,7 +54,7 @@ public struct HistoryList: Equatable, Sendable {
     }
 
     /// Pinned rows first (as the server lists them), then the rest in their day groups.
-    public var pinned: [HistorySession] { archived ? [] : sessions.filter(\.pinned) }
+    public var pinned: [HistorySession] { archived ? [] : sessions.filter { $0.pinned && !$0.archived } }
 
     /// Change one row in place (rename, pin, read), at once, before the server confirms.
     public mutating func update(_ id: String, _ change: (inout HistorySession) -> Void) {
@@ -163,8 +163,12 @@ public struct HistoryList: Equatable, Sendable {
     }
 
     public func grouped(now: Date, calendar: Calendar = .current) -> [(HistoryGroup, [HistorySession])] {
-        HistoryGroup.grouped(archived ? sessions : sessions.filter { !$0.pinned }, now: now, calendar: calendar)
+        HistoryGroup.grouped(archived ? sessions : sessions.filter { !$0.pinned && !$0.archived }, now: now, calendar: calendar)
     }
+
+    /// A search's archived matches (the server includes them when searching): listed below the rest,
+    /// under "Archived". None outside a search, and none in the Archived filter (everything is).
+    public var archivedMatches: [HistorySession] { archived ? [] : sessions.filter(\.archived) }
 
     /// The filter's choices: what the server listed, else the usual ones.
     public var filterChoices: [HistoryFilter] { filters.isEmpty ? Self.defaultFilters : filters }
