@@ -813,7 +813,11 @@ _TITLE_PROMPT = (
     "remaining items\", \"Confusion about ...\", \"Clarify request\", \"Voice task\", \"Quick question\".\n"
     "- Never just repeat a short request word for word; never a raw question cut short; never end on a "
     "dangling word (to, the, of, for, in, and).\n"
-    "- Drop filler and the assistant's name. Fix obvious speech-to-text slips from context.\n"
+    "- Never put the user's or the assistant's name in a title (they are listed after \"Names to leave out\"): "
+    "the list is the user's own, so \"Push my five open PRs\", not \"Push Sam's PRs\". Drop filler. Fix obvious "
+    "speech-to-text slips from context.\n"
+    "- Only the earlier task named after \"It continues or answers\" is what a short request refers to; with "
+    "none given, work from the request and the call's last turns alone and stay general rather than guess.\n"
     "- Spell product names exactly: Speakeasy, Hermes, TestFlight, ChatGPT, Codex, Claude Code, GitHub.\n"
     "- Never answer the request. Name it.\n\n"
     "Good: {\"title\": \"Ship the ChatGPT login onboarding fix\"} (for \"Fix and ship\" after a task about "
@@ -826,18 +830,13 @@ _TITLE_PROMPT = (
     "Bad: {\"title\": \"Check the weather for tomorrow in\"} (cut off)\n\n"
     "Reply with JSON only: {\"title\": \"...\"}"
 )
-_TITLE_META = re.compile(
-    r"(?i)^(?:continu(?:e|ing)|resum(?:e|ing)|follow(?:ing)?[\s-]?up|discuss(?:ion|ing)?|clarif|confusion|handle|"
-    r"respond|reply|answer(?:ing)? (?:the|a) |voice (?:task|request)|quick (?:question|choice)|geo's (?:request|question))"
-    r"|\b(?:previous|earlier|prior|other) (?:discussion|conversation|topic|stuff|items)\b|\bremaining items\b"
-    r"|\b(?:voice|speakeasy) (?:task|request)\b|\bthis conversation\b")
 _TITLE_TRANSCRIPT_TAIL = {"to", "the", "a", "an", "of", "for", "in", "at", "with", "from", "and", "or", "but", "my",
                           "our", "your", "is", "are", "be", "going", "gonna", "about", "by", "into", "on", "that"}
 
 
 def clean_task_title(raw: str | None, request: str = "") -> tuple[str | None, str]:
     """The titler's reply as a task title, or (None, why) when it isn't a usable one."""
-    from .text import fix_product_names, is_fragment, _title_content
+    from .text import TITLE_META, fix_product_names, has_name, is_fragment, names_in, _title_content
     text = str(raw or "").strip()
     match = re.search(r"\{.*\}", text, re.S)
     if match:
@@ -856,8 +855,11 @@ def clean_task_title(raw: str | None, request: str = "") -> tuple[str | None, st
         return None, f"{len(words)} words; it must be 4 to 8"
     if words[-1].lower().strip(",:;") in _TITLE_TRANSCRIPT_TAIL:
         return None, "it ends mid-phrase"
-    if _TITLE_META.search(text):
+    if TITLE_META.search(text):
         return None, "it describes the conversation, not the task"
+    named = has_name(text, names_in(request))
+    if named:
+        return None, f"it uses the name {named}; leave the user's and the assistant's names out"
     said = re.sub(r"\(.*$", "", request.split("\n", 1)[0].removeprefix("Request:")).strip()
     if said and is_fragment(said) and set(_title_content(text)) <= set(_title_content(said)):
         return None, "it only repeats the short request; name what it refers to"

@@ -938,9 +938,11 @@ def stand_in_titles(request: str | None) -> set[str]:
 
 
 def title_input(request: str, *, parent: str | None = None, parent_request: str | None = None,
-                recent: list[dict[str, str]] | None = None) -> str:
-    """What the task titler reads: the request, the task it continues or answers, and the last
-    few turns of the call (so "that", "both" and "ship it" can be named)."""
+                recent: list[dict[str, str]] | None = None, names: "list[str] | tuple[str, ...]" = ()) -> str:
+    """What the task titler reads: the request, the task it continues or answers (only the one it
+    really answers or joins: never a chat thread's name or whatever ran before it on the call), the
+    last few turns of the call (so "that", "both" and "ship it" can be named), and the names a
+    title must leave out (the user's and the assistant's)."""
     lines = [f"Request: {' '.join(request.split())[:1000]}"]
     if parent or parent_request:
         about = " — ".join(x for x in ((parent or "").strip(), " ".join((parent_request or "").split())[:400]) if x)
@@ -951,7 +953,61 @@ def title_input(request: str, *, parent: str | None = None, parent_request: str 
         for turn in turns:
             role = "User" if turn.get("role") == "user" else "Assistant"
             lines.append(f"{role}: {' '.join(str(turn['text']).split())[:300]}")
+    left_out = [n for n in dict.fromkeys(" ".join(str(n or "").split()) for n in names) if n]
+    if left_out:
+        lines.append(f"{NAMES_LINE}{', '.join(left_out)}")
     return "\n".join(lines)
+
+
+# A title about the conversation rather than the task ("Continue previous discussion"): never shown, and
+# never handed to the titler as the name of the task a follow-up continues.
+TITLE_META = re.compile(
+    r"(?i)^(?:continu(?:e|ing)|resum(?:e|ing)|follow(?:ing)?[\s-]?up|discuss(?:ion|ing)?|clarif|confusion|handle|"
+    r"respond|reply|answer(?:ing)? (?:the|a) |voice (?:task|request)|quick (?:question|choice)|[a-z]+'s (?:request|question))"
+    r"|\b(?:previous|earlier|prior|other) (?:discussion|conversation|topic|stuff|items)\b|\bremaining items\b"
+    r"|\b(?:voice|speakeasy) (?:task|request)\b|\bthis conversation\b")
+
+
+NAMES_LINE = "Names to leave out of the title: "
+
+
+def names_in(text: str | None) -> list[str]:
+    """The names a titler input (``title_input``) says to leave out."""
+    match = re.search(r"(?m)^" + re.escape(NAMES_LINE) + r"(.+)$", str(text or ""))
+    return [n.strip() for n in match.group(1).split(",") if n.strip()] if match else []
+
+
+def has_name(title: str | None, names: "list[str] | tuple[str, ...]") -> str | None:
+    """The first of *names* that *title* mentions (whole word, any case, possessive too), or None."""
+    for name in names:
+        name = " ".join(str(name or "").split())
+        if name and re.search(r"(?i)(?<![\w])" + re.escape(name) + r"(?:'s|’s)?(?![\w])", title or ""):
+            return name
+    return None
+
+
+def drop_names(title: str | None, user: str | None = None, assistant: str | None = None) -> str | None:
+    """*title* without the user's or the assistant's name: a task list is the user's own, so
+    "Sam's PRs" reads "my PRs", "the weather for Ava" reads "the weather". None when nothing
+    worth showing is left."""
+    text = " ".join(str(title or "").split())
+    if not text:
+        return None
+    for name, owner in ((user, "my"), (assistant, "the")):
+        name = " ".join(str(name or "").split())
+        if not name:
+            continue
+        n = re.escape(name)
+        text = re.sub(rf"(?i)\b(?:the\s+|my\s+)?{n}(?:'s|’s)(?![\w])", owner, text)  # Sam's PRs -> my PRs
+        text = re.sub(rf"(?i)\b(?:ask|tell|have|get)\s+{n}\s+(?:to\s+)?", "", text)  # "Ask Ava to check" -> "check"
+        text = re.sub(rf"(?i)\s*\b(?:for|to|with|from|by|ask|tell|asks?|tells?)\s+{n}(?![\w])", "", text)
+        text = re.sub(rf"(?i)^\s*(?:hey\s+)?{n}\s*[,:]\s*", "", text)  # "Ava, check ..."
+        text = re.sub(rf"(?i)(?<![\w]){n}(?![\w])", "", text)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", " ".join(text.split())).strip(" ,;:-")
+    text = re.sub(r"(?i)\b(my|the)\s+(?:my|the)\b", r"\1", text)
+    if len(_title_content(text)) < 2:
+        return None
+    return text[0].upper() + text[1:]
 
 
 _HOME_STATE = re.compile(

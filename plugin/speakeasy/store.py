@@ -21,7 +21,7 @@ from .emails import canonical_json, draft_sha256
 from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
                    short_title, valid_short_status)
-from .text import fix_product_names, stand_in_titles as _stand_ins
+from .text import TITLE_META, fix_product_names, stand_in_titles as _stand_ins
 
 STALE_AFTER_S = 90
 MAX_REVIEWS = 3  # finished-image review cards carried onto the call panel
@@ -218,6 +218,8 @@ class StateStore:
                 self._db.execute("ALTER TABLE runs ADD COLUMN set_aside REAL")
             if "seen" not in columns:  # nothing to read (a finished home command): never a new answer
                 self._db.execute("ALTER TABLE runs ADD COLUMN seen INTEGER")
+            if "parent" not in columns:  # the task this one answers or joins (its idem key): what names a follow-up
+                self._db.execute("ALTER TABLE runs ADD COLUMN parent TEXT")
             # Finished tasks that never had a Hermes run id (quick answers, home control) could not be
             # cleared: "Clear done" and the x address tasks by run id. Give them their local id.
             settled = sorted(TERMINAL | {"rejected"})
@@ -1055,16 +1057,85 @@ class StateStore:
                 break
         return out
 
-    def title_context(self, key: str) -> tuple[str | None, str | None]:
-        """The task just before this one on the same call: (its title, its request). What a short
-        follow-up ("Fix and ship") is about, for the titler."""
+    def set_parent(self, key: str, parent: str | None) -> None:
+        """The task this one answers or joins (a decision's answer, a follow-up, a joined turn)."""
+        if not parent or parent == key:
+            return
+        with self._lock, self._db:
+            self._db.execute("UPDATE runs SET parent=? WHERE idem_key=?", (parent, key))
+
+    def parent_of(self, key: str) -> str | None:
+        """The task this one answers or joins, as recorded when it started; for tasks saved before
+        that was recorded, only what the store itself shows they joined (see ``title_context``)."""
         with self._lock:
-            row = self._db.execute(
-                "SELECT p.title, (SELECT e.text FROM work_events e WHERE e.idem_key=p.idem_key AND e.kind='request' "
-                "ORDER BY e.seq LIMIT 1) FROM runs r JOIN runs p ON p.interaction_id=r.interaction_id "
-                "AND p.rowid<r.rowid AND p.title IS NOT NULL WHERE r.idem_key=? ORDER BY p.rowid DESC LIMIT 1",
-                (key,)).fetchone()
-        return (row[0], row[1]) if row else (None, None)
+            row = self._db.execute("SELECT parent FROM runs WHERE idem_key=?", (key,)).fetchone()
+            if row and row[0]:
+                return row[0]
+            return self._recorded_parent(key)
+
+    def _recorded_parent(self, key: str) -> str | None:
+        """An older task's parent from what was recorded at the time, never a guess from position:
+        a turn that joined a running task left "You added: <its words>" on that task; a follow-up
+        to a finished one was asked as "<words> (following up: <the earlier request>)". Call with
+        the lock held."""
+        row = self._db.execute(
+            "SELECT r.interaction_id, r.rowid, (SELECT e.text FROM work_events e WHERE e.idem_key=r.idem_key "
+            "AND e.kind='request' ORDER BY e.seq LIMIT 1), r.delegation_id FROM runs r WHERE r.idem_key=?",
+            (key,)).fetchone()
+        if not row or not row[2]:
+            return None
+        interaction, rowid, request, delegation_id = row
+        if str(delegation_id or "").startswith("answer_"):
+            # A tapped answer on a task's question card: only a task with a question shows one, one
+            # decision at a time, so it answers the newest such task before it on the call.
+            for other, result in self._db.execute(
+                    "SELECT idem_key, result_json FROM runs WHERE interaction_id=? AND rowid<? AND result_json "
+                    "IS NOT NULL ORDER BY rowid DESC LIMIT 20", (interaction, rowid)):
+                try:
+                    if (json.loads(result) or {}).get("question"):
+                        return other
+                except (ValueError, AttributeError):
+                    continue
+            return None
+        said = notice_text(request, 200) or ""
+        joined = self._db.execute(
+            "SELECT r.idem_key FROM runs r JOIN work_events e ON e.idem_key=r.idem_key WHERE r.interaction_id=? "
+            "AND r.rowid<? AND e.kind='milestone' AND e.text=? ORDER BY r.rowid DESC LIMIT 1",
+            (interaction, rowid, f"You added: {said}")).fetchone()
+        if joined:
+            return joined[0]
+        match = re.search(r"\(following up: (.+)\)\s*$", " ".join(request.split()))
+        if match:
+            earlier = match.group(1).strip()
+            for other, text in self._db.execute(
+                    "SELECT r.idem_key, (SELECT e.text FROM work_events e WHERE e.idem_key=r.idem_key AND "
+                    "e.kind='request' ORDER BY e.seq LIMIT 1) FROM runs r WHERE r.interaction_id=? AND r.rowid<? "
+                    "ORDER BY r.rowid DESC", (interaction, rowid)):
+                if text and (notice_text(text, 200) or "") == earlier:
+                    return other
+        return None
+
+    def parent_name(self, key: str | None) -> str | None:
+        """A parent task's own name: never the chat thread's name it ran in (a thread task's shown
+        title is the thread's), so a follow-up is never named after an unrelated older conversation."""
+        if not key:
+            return None
+        with self._lock:
+            row = self._db.execute("SELECT own_title, title, continued FROM runs WHERE idem_key=?", (key,)).fetchone()
+        if not row:
+            return None
+        own, title, continued = row
+        name = own or (title if not continued else None)  # an older row that never ran in a chat: its title is its own
+        # A meta name ("Continue previous discussion") says nothing; the parent's request still goes along.
+        return name if name and not TITLE_META.search(name) else None
+
+    def title_context(self, key: str) -> tuple[str | None, str | None]:
+        """The task this one really answers or joins: (its own name, its request), or (None, None).
+        Never the task that merely ran before it on the call, and never a chat thread's name."""
+        parent = self.parent_of(key)
+        if not parent:
+            return None, None
+        return self.parent_name(parent), self.request_text(parent)
 
     def rename_stand_in(self, key: str, title: str) -> bool:
         """Set the app's on-device title only while the task still shows its stand-in label, checked

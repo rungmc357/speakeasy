@@ -638,11 +638,15 @@ class VoiceService:
         self._title_sweep.start()
 
     def sweep_titles(self, limit: int = TITLE_SWEEP_BATCH) -> int:
-        """Give stand-in-named finished tasks a real name, with the task before them on the call as
-        context (a "Fix and ship" is named for what it ships). A task the titler can't name is not
-        retried this run. Returns how many were renamed."""
+        """Give stand-in-named finished tasks a real name, with the task each one really answers or
+        joined as context (a "Fix and ship" is named for what it ships), by the same rule as a live
+        call: never the task that merely ran before it, never a chat thread's name; with none, from
+        its own words. A task the titler can't name is not retried this run. Returns how many were
+        renamed."""
         from . import router
-        from .text import title_input
+        from .text import drop_names, title_input
+        settings = self.settings.get()
+        user, assistant = settings.get("user_name") or "", settings.get("assistant_name") or ""
         tried = self.__dict__.setdefault("_title_tried", set())
         titler = getattr(self.rt, "title_call", None) or router.smart_title
         renamed = attempts = 0
@@ -656,7 +660,8 @@ class VoiceService:
             attempts += 1
             parent, parent_request = self.store.title_context(key)
             try:
-                title = titler(title_input(task["request"], parent=parent, parent_request=parent_request))
+                title = drop_names(titler(title_input(task["request"], parent=parent, parent_request=parent_request,
+                                                      names=(user, assistant))), user, assistant)
             except Exception as exc:
                 logger.info("speakeasy: title sweep skipped a task (%s)", type(exc).__name__)
                 title = None
