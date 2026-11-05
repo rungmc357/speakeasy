@@ -445,6 +445,31 @@ EMAIL_DRAFT_RULE = (
 )
 
 
+# "Update my Speakeasy plugin": a normal task, told the one command that works for any install, and
+# never to force a reload (Speakeasy loads the new files by itself once no call or task is running).
+PLUGIN_UPDATE_FOCUS = (" (This is an update of the Speakeasy voice plugin on this Hermes. Run "
+                       "`hermes plugins update speakeasy` here, without --force, then check with "
+                       "`hermes plugins list` that speakeasy is enabled, and report the version it now has. Do not "
+                       "run `hermes voice reload` and do not restart Hermes or its gateway: Speakeasy loads the new "
+                       "version by itself once no call or task is running, so a live call is never cut off. If the "
+                       "update is refused (for example by the security scan), stop and report the reason and the "
+                       "findings; don't work around it. SPOKEN: say it's downloaded and switches over after the call.)")
+_PLUGIN_UPDATE_RE = re.compile(r"(?i)\b(?:update|upgrade|updating|upgrading)\b.{0,40}\bspeakeasy\b"
+                               r"|\bspeakeasy\b.{0,40}\b(?:update|upgrade)\b")
+_APP_ONLY_RE = re.compile(r"(?i)\b(?:app|iphone|ipad|mac app|testflight)\b")
+
+
+def plugin_update_focus(request: str | None) -> str:
+    """PLUGIN_UPDATE_FOCUS for a request to update the Speakeasy plugin, else "". An app update (the
+    Mac or iPhone app) is not one, and a request that already names the command needs no repeat."""
+    text = request or ""
+    if not _PLUGIN_UPDATE_RE.search(text) or "hermes plugins update" in text.lower():
+        return ""
+    if _APP_ONLY_RE.search(text) and not re.search(r"(?i)\bplugin\b", text):
+        return ""
+    return PLUGIN_UPDATE_FOCUS
+
+
 # "Show me": the server opens the image in the app, then (and only then) the voice says so.
 SHOW_ME_ON_SCREEN = "It's on your screen."
 SHOW_IT_FOCUS = (" (They want to SEE this, not just hear about it: include a picture of it, an image of the "
@@ -462,7 +487,7 @@ def status_rule(names: Names) -> str:
         "{user_name_cap} watches a one-line live status while you work, so keep them company: narrate the thinking, "
         "research and background activity as it happens. Before your first tool call, write interim commentary "
         "exactly as two lines: STATUS: <specific present-tense action of 2-6 words, e.g. Checking the weather forecast> "
-        "then DETAIL: <one sentence on what you are thinking through or researching right now and what you found so far, "
+        "then DETAIL: <one sentence on what you are thinking through or researching at this moment and what you found so far, "
         "with specifics: names, numbers, files, sites, e.g. Found three hotels under 200 euros near the port; checking reviews next>. "
         "Write a fresh pair as an interim message, before the tool call that starts each meaningful step, not just the first: "
         "when a subagent or delegate tool call you make in this session starts or returns, when a long operation (a build, "

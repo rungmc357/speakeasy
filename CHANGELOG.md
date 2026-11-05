@@ -2,6 +2,13 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin (unreleased) — Update Speakeasy from the app, in one tap
+
+- **One-tap plugin update.** When a newer plugin is out, the apps show it with an **Update** button; it starts an update job on your Hermes like any other job, no call needed (`POST /voice/work`, capability `start_jobs`). *(Plugin; needs the app update)*
+- **"Update my Speakeasy plugin" on a call.** The voice hands it off and says it switches over when you hang up; the job runs `hermes plugins update speakeasy` and never forces a reload, so the call isn't cut off. *(Plugin)*
+- **A plain `hermes plugins update speakeasy` passes Hermes' install scan,** with no `--force`. *(Plugin)*
+- Jobs started with no call (typed follow-ups too) now hold back an automatic plugin reload until they finish, like jobs started on a call. *(Plugin)*
+
 ## Plugin 0.3.22 — Keys and sign-ins only through Hermes
 
 - **Keys and sign-ins are read only through Hermes.** API keys, the Hermes API key and the xAI sign-in now come from Hermes' own secret, env and credential-pool readers, for the right profile; Speakeasy no longer opens the `.env` or `auth.json` files itself, and setup saves values through Hermes' env writer. Everything you already set keeps working, unchanged. *(Plugin)*

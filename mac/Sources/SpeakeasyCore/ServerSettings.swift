@@ -805,15 +805,19 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     /// Activity items carry `tool`, `started_at`, `ended_at`; `GET /voice/work/{run_id}` adds the
     /// redacted `args` / `result` previews and every kept item (the tool-call log).
     public var toolLog: Bool
+    /// A new job from typed text with no call (`POST /voice/work`): the plugin-update notice's Update.
+    public var startJobs: Bool
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
-                jobActivity: Bool = false, toolLog: Bool = false) {
+                jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false) {
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
         self.taskMessages = taskMessages; self.jobActivity = jobActivity; self.toolLog = toolLog
+        self.startJobs = startJobs
     }
     enum CodingKeys: String, CodingKey {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
+        case startJobs = "start_jobs"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -823,5 +827,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         taskMessages = (try? c.decodeIfPresent(Bool.self, forKey: .taskMessages)) ?? false
         jobActivity = (try? c.decodeIfPresent(Bool.self, forKey: .jobActivity)) ?? false
         toolLog = (try? c.decodeIfPresent(Bool.self, forKey: .toolLog)) ?? false
+        startJobs = (try? c.decodeIfPresent(Bool.self, forKey: .startJobs)) ?? false
     }
 }

@@ -23,9 +23,9 @@ enum FilmFrames {
             FileHandle.standardError.write("film: task\n".data(using: .utf8)!)
             let set = ProcessInfo.processInfo.environment["SPEAKEASY_FILM_SET"]
             let site = set == "site"
-            cleanShots = site || set == "ux" || set == "typing" || set == "redesign"
+            cleanShots = site || set == "ux" || set == "typing" || set == "redesign" || set == "plugin-update"
             stillMotion = set == "redesign"
-            let shots: [Shot] = set == "redesign" ? redesignBeats() : set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
+            let shots: [Shot] = set == "plugin-update" ? pluginUpdateBeats() : set == "redesign" ? redesignBeats() : set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
             for shot in shots {
                 let (name, state, open) = (shot.name, shot.state, shot.open)
                 let m = client.model
@@ -37,6 +37,7 @@ enum FilmFrames {
                     : set == "typing" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true, taskMessages: true)
                     : set == "redesign" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true, taskMessages: true, jobActivity: true)
                     : set == "typing-old" ? ServerCapabilities(cardActions: true, jobProgress: true, spokenChoices: true) : nil
+                m.pluginUpdate.preview(.none)
                 client.showPreview(state, workExpanded: false)
                 client.model.onOpenJob(open)
                 client.model.boardFocusID = nil
@@ -379,6 +380,27 @@ enum FilmFrames {
         return out
     }
 
+
+    /// The plugin-update notice (`SPEAKEASY_FILM_SET=plugin-update`): available on the board before a
+    /// call, updating, updated, and didn't take. Invented data.
+    static func pluginUpdateBeats() -> [Shot] {
+        let now = Date()
+        var s = VoiceState(); s.now = now; s.workOnly = true
+        let trip = task("t", "completed", "Find a quiet hotel near the harbour for two nights", title: "Harbour hotels",
+                        short: "Done", age: 40 * 60, now: now)
+        var deck = task("k", "working", "Tidy the slides for Thursday's review", title: "Tidy the review deck",
+                        short: "Fixing the chart labels", age: 90, now: now, milestones: ["Opened the deck", "Fixing the chart labels"])
+        deck.info.startedAt = now - 3 * 60
+        s.tasks = [deck, trip]
+        s.work = deriveWork(s, now: now)
+        let note = "Update Speakeasy from the app, in one tap"
+        return [
+            Shot("plugin-update-01-available", s, nil) { m in m.pluginUpdate.preview(.available(version: "0.9.1", note: note)) },
+            Shot("plugin-update-02-updating", s, nil) { m in m.pluginUpdate.preview(.updating(version: "0.9.1", runID: "run_upd")) },
+            Shot("plugin-update-03-updated", s, nil) { m in m.pluginUpdate.preview(.updated(version: "0.9.1")) },
+            Shot("plugin-update-04-didnt-take", s, nil) { m in m.pluginUpdate.preview(.didntTake(version: "0.9.1", runID: "run_upd")) },
+        ]
+    }
 
     /// Typing to one task (`SPEAKEASY_FILM_SET=typing`; `typing-old` = an older plugin
     /// without `task_messages`: no reply bar, no "Something else…"). Invented data.

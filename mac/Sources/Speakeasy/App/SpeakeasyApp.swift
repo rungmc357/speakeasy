@@ -132,8 +132,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .sink { [weak self] caps in self?.native.model.capabilities = caps }
             .store(in: &bag)
         Timer.publish(every: 24 * 3600, on: .main, in: .common).autoconnect()
-            .sink { [weak self] _ in self?.app.checkForUpdatesIfDue() }
+            .sink { [weak self] _ in
+                self?.app.checkForUpdatesIfDue()
+                Task { await self?.app.checkPluginVersion() }
+            }
             .store(in: &bag)
+        Task { await app.checkPluginVersion() }
+        configurePluginUpdate()
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(400)) { [weak self] in
             guard let self, !self.active else { return }
             self.native.hideIfIdle()
@@ -161,6 +166,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         if active { native.end() }
         room?.discard()   // what listening mode heard lives only in memory; quitting drops it
+    }
+
+    // MARK: Plugin update notice
+
+    /// The panel's "Speakeasy plugin X is available" card: Update starts the update as a normal job
+    /// (no call needed), then the card confirms the new version or says the update didn't take.
+    private func configurePluginUpdate() {
+        let notice = native.model.pluginUpdate
+        native.model.onPluginUpdate = { [weak self] in
+            guard let self, let api = self.app.api else { return }
+            Task { @MainActor in
+                await notice.update { text in try await api.startJob(text: text) }
+                if notice.error == nil, !self.native.model.state.workOnly, !self.active {
+                    self.native.showWork(active: false)   // the job shows on the board like any other
+                }
+            }
+        }
+        native.model.onCopyPluginUpdate = { [weak self] in self?.app.copyPluginUpdateRequest() }
+        native.model.onOpenPluginUpdateJob = { [weak self] runID in
+            guard let self else { return }
+            if let job = self.native.model.jobs.first(where: { j in j.tasks.contains { $0.info.runID == runID } }) {
+                self.native.model.onOpenJob(job.id)
+            } else {
+                self.native.showWork(active: self.active)
+            }
+        }
+        let board: AnyPublisher<PluginBoardSnapshot, Never> = native.model.$state
+            .map { PluginBoardSnapshot(tasks: $0.tasks, inCall: $0.connection.isInCall) }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+        let server: AnyPublisher<(ServerStatus?, String?), Never> = app.$status.combineLatest(app.$latestPluginVersion)
+            .eraseToAnyPublisher()
+        server.combineLatest(board)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] server, snapshot in
+                guard let self, self.app.isPaired else { return }
+                let (status, latest) = server
+                notice.setLatest(latest)
+                notice.setCall(active: snapshot.inCall)
+                notice.observe(running: status?.version, startJobs: status?.capabilities?.startJobs == true,
+                               tasks: snapshot.tasks)
+                if case .available(let version, _) = notice.phase, notice.needsNote(for: version) {
+                    notice.setNote(nil, for: version)
+                    Task { notice.setNote(await PluginUpdateFetch.whatsNew(version: version, userAgent: "Speakeasy/\(self.app.appVersion)"),
+                                          for: version) }
+                }
+            }.store(in: &bag)
+        notice.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.native.surface.setNeedsResize() }
+            .store(in: &bag)
+        // While an update is under way, look at the server's version every 15 s (the new version loads
+        // by itself once the call and the job are over).
+        Timer.publish(every: 15, on: .main, in: .common).autoconnect()
+            .sink { [weak self] _ in
+                guard let self, case .updating = notice.phase else { return }
+                Task { await self.app.refresh() }
+            }.store(in: &bag)
     }
 
     // MARK: Model wiring
@@ -363,11 +426,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.icon = NSApp.applicationIconImage
             if let version = app.pluginUpdateAvailable {
                 alert.messageText = "Hermes plugin update available"
-                alert.informativeText = "Speakeasy on Hermes is \(app.status?.version ?? "unknown"); \(version) is available. Ask your agent to update the plugin, then restart Hermes yourself when prompted. The Mac app updates separately."
-                alert.addButton(withTitle: "Copy update request")
+                let oneTap = app.status?.capabilities?.startJobs == true
+                alert.informativeText = "Speakeasy on Hermes is \(app.status?.version ?? "unknown"); \(version) is available. "
+                    + (oneTap ? "Update starts the update as a job on your Hermes. It switches over by itself after any call; nothing restarts."
+                              : "Ask your agent to update the plugin (the request below runs `hermes plugins update speakeasy`).")
+                    + " The Mac app updates separately."
+                alert.addButton(withTitle: oneTap ? "Update" : "Copy update request")
                 alert.addButton(withTitle: "Later")
                 NSApp.activate(ignoringOtherApps: true)
-                if alert.runModal() == .alertFirstButtonReturn { app.copyPluginUpdateRequest() }
+                if alert.runModal() == .alertFirstButtonReturn {
+                    if oneTap { native.model.onPluginUpdate() } else { app.copyPluginUpdateRequest() }
+                }
             } else if AppUpdater.shared.isAvailable {
                 AppUpdater.shared.checkForUpdates()
             } else if let release = app.updateAvailable {

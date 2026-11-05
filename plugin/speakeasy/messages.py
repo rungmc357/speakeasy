@@ -328,6 +328,33 @@ def make_text_worker(rt: Any) -> "SidebandWorker":
     return worker
 
 
+JOB_PREFIX = "job_"
+
+
+async def start_job(worker: "SidebandWorker", text: str) -> dict[str, Any]:
+    """A new job from text typed in the app, no call needed (``POST /voice/work``): the same
+    ``start_task`` a spoken request reaches, on this worker. Runs on the worker's loop and returns
+    ``{task_id}`` once Hermes has the run (or it ended), at most START_WAIT_S later; the job keeps
+    running after that like any other."""
+    from .calls import TERMINAL
+    task_id = JOB_PREFIX + secrets.token_hex(8)
+    worker.touch()
+    job = asyncio.get_running_loop().create_task(worker.start_task(task_id, 0, f"User: {text}", text))
+    worker.dispatch_tasks.add(job)
+    job.add_done_callback(worker.dispatch_tasks.discard)
+    deadline = time.monotonic() + START_WAIT_S
+    while time.monotonic() < deadline and not job.done():
+        with worker.interaction.lock:
+            run = worker.interaction.runs.get(task_id)
+            begun = run is not None and (run.run_id or run.status in TERMINAL | {"rejected"})
+        if begun:
+            break
+        await asyncio.sleep(0.05)
+    if job.done() and not job.cancelled() and job.exception() is not None:
+        raise job.exception()  # type: ignore[misc]
+    return {"task_id": task_id}
+
+
 def adopt_row(worker: "SidebandWorker", row: dict[str, Any]) -> str:
     """Make a task from the store known to a worker (by its task id) so it can be followed up."""
     from .calls import BackendRun

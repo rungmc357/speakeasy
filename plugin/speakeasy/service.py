@@ -64,6 +64,7 @@ IDLE_CHECK_S = 15
 IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model setup rarely changes)
 EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the call's event channel
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
+CAPABILITIES["start_jobs"] = True  # POST /voice/work: a new job from typed text, no call needed (the app's Update button)
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 
 
@@ -213,6 +214,13 @@ class VoiceService:
                 return True
             if any(r.status in ACTIVE_RUN_STATES for r in interaction.runs.values()):
                 return True
+        # Jobs with no call (typed follow-ups, POST /voice/work, the app's plugin Update) run on the
+        # voiceless worker: a reload while one runs would drop its tracking, so they count too.
+        text = self._text_worker
+        if text is not None:
+            with text.interaction.lock:
+                if any(r.status in ACTIVE_RUN_STATES for r in text.interaction.runs.values()):
+                    return True
         return False
 
     def close(self) -> None:
@@ -992,8 +1000,12 @@ class VoiceService:
                 raise ServiceError(400, f"{name} must be an id.")
         if not ID_RE.fullmatch(run_id or ""):
             raise ServiceError(404, "I couldn't find that task.")
+        return self._once(client_id, lambda: self._task_message(run_id, text, interaction_id, choice_task_id))
+
+    def _once(self, client_id: str | None, send: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        """Run ``send`` once per client_id (MESSAGE_REPLAY_S); a retry gets the first reply."""
         if client_id is None:
-            return self._task_message(run_id, text, interaction_id, choice_task_id)
+            return send()
         mine, event = self._claim_message(client_id)
         if not mine:
             event.wait(M.START_WAIT_S + 15)
@@ -1003,7 +1015,7 @@ class VoiceService:
                 raise ServiceError(409, "That message is still being sent. Try again in a moment.")
             return done[2]
         try:
-            reply = self._task_message(run_id, text, interaction_id, choice_task_id)
+            reply = send()
         except Exception:
             with self._message_lock:
                 self._message_replies.pop(client_id, None)  # a failed send may be retried with the same id
@@ -1013,6 +1025,44 @@ class VoiceService:
             self._message_replies[client_id] = (time.monotonic(), event, reply)
         event.set()
         return reply
+
+    def start_job(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/work``: a new job from text typed in the app, with no call (the plugin-update
+        notice's Update button). It runs like a job started on a call, on the voiceless worker, never
+        through routing, and shows on the board. Idempotent on client_id."""
+        if not isinstance(body, dict) or "text" not in body or not set(body) <= {"text", "source", "client_id"}:
+            raise ServiceError(400, "Send the job as text.")
+        text, source, client_id = body.get("text"), body.get("source") or "typed", body.get("client_id")
+        if not isinstance(text, str) or not text.strip():
+            raise ServiceError(400, "The job is empty.")
+        text = " ".join(text.split())
+        if len(text) > M.MAX_TEXT:
+            raise ServiceError(400, f"The job is too long (at most {M.MAX_TEXT} characters).")
+        if source != "typed":
+            raise ServiceError(400, "source must be typed.")
+        if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
+            raise ServiceError(400, "client_id must be an id.")
+        return self._once(client_id, lambda: self._start_job(text))
+
+    def _start_job(self, text: str) -> dict[str, Any]:
+        worker = self.text_worker()
+        future = asyncio.run_coroutine_threadsafe(M.start_job(worker, text), worker.loop)
+        try:
+            got = future.result(M.START_WAIT_S + 10)
+        except Exception as exc:
+            logger.warning("speakeasy: a typed job could not start (%s)", type(exc).__name__)
+            raise ServiceError(502, "I couldn't start that job. Try again.") from None
+        with worker.interaction.lock:
+            run = worker.interaction.runs.get(got["task_id"])
+            key, run_id = (run.idem_key, run.run_id) if run else (None, None)
+        run_id = (self.store.openable_run_id(key) if key else None) or run_id
+        task = self.store.work(idem_key=key, assistant_name=self.settings.get()["assistant_name"]) if key else None
+        if task is not None:
+            task["task_id"] = got["task_id"]
+        if key:
+            self.publish_all(key)
+        logger.info("speakeasy: a typed job started with no call")
+        return {"ok": True, "run_id": run_id, "task_id": got["task_id"], "task": task}
 
     def _claim_message(self, client_id: str) -> tuple[bool, threading.Event]:
         now = time.monotonic()
