@@ -39,7 +39,10 @@ struct MediaCard: View {
                 .font(.system(size: 9.5).monospacedDigit()).foregroundStyle(.tertiary)
             }
             if let overview = card["overview"].string {
-                Text(overview).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4)
+                CardDisclosure(expandable: true) { expanded in
+                    Text(overview).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(expanded ? nil : 4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -96,7 +99,13 @@ struct EntityCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(card["title"].string ?? "").font(.system(size: 14, weight: .semibold))
                     if let s = card["subtitle"].string { Text(s).font(.system(size: 11)).foregroundStyle(.secondary) }
-                    if let s = card["summary"].string { Text(s).font(.system(size: 11)).lineLimit(4).padding(.top, 2) }
+                    if let s = card["summary"].string {
+                        CardDisclosure(expandable: true) { expanded in
+                            Text(s).font(.system(size: 11)).lineLimit(expanded ? nil : 4)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.top, 2)
+                    }
                 }
                 Spacer(minLength: 0)
                 openable(card["url"].url)
@@ -236,6 +245,8 @@ struct StatsCard: View {
 
 struct ComparisonCard: View {
     let card: ViewCard
+    /// Rows opened in place (by index): their values show in full, without the 3-line limit.
+    @State private var openRows: Set<Int> = []
     var body: some View {
         let columns = card["columns"].strings
         let winner = card["winner"].string
@@ -247,16 +258,24 @@ struct ComparisonCard: View {
                     ForEach(columns, id: \.self) { c in
                         HStack(spacing: 3) {
                             Text(c).font(.system(size: 11.5, weight: .semibold)).lineLimit(2)
-                            if c == winner { Image(systemName: "checkmark.seal.fill").font(.system(size: 10)).foregroundStyle(.green) }
+                            if c == winner {
+                                Image(systemName: "checkmark.seal.fill").font(.system(size: 10)).foregroundStyle(.green)
+                                    .help("Winner").accessibilityLabel("Winner")
+                            }
                         }
                     }
                 }
                 Divider().gridCellUnsizedAxes(.horizontal)
-                ForEach(Array(card["rows"].array.prefix(10).enumerated()), id: \.offset) { _, row in
+                ForEach(Array(card["rows"].array.prefix(10).enumerated()), id: \.offset) { n, row in
+                    let open = Binding(get: { openRows.contains(n) },
+                                       set: { if $0 { openRows.insert(n) } else { openRows.remove(n) } })
+                    let values = Array(row["values"].strings.prefix(columns.count))
                     GridRow {
-                        Text(row["label"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
-                        ForEach(Array(row["values"].strings.prefix(columns.count).enumerated()), id: \.offset) { _, v in
-                            Text(v).font(.system(size: 11.5)).lineLimit(3)
+                        CardDisclosure(expandable: !values.isEmpty, isExpanded: open) { _ in
+                            Text(row["label"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        ForEach(Array(values.enumerated()), id: \.offset) { _, v in
+                            Text(v).font(.system(size: 11.5)).lineLimit(open.wrappedValue ? nil : 3).textSelection(.enabled)
                         }
                     }
                 }
@@ -306,18 +325,15 @@ struct ChartCard: View {
     static let chartHint = "Drag across to read values"
     #endif
     let card: ViewCard
-    struct Point: Identifiable { let id: Int; let series: String; let label: String; let value: Double }
     /// The x label under the pointer (hover or drag): its values show above the chart.
     @State private var selected: String?
     var body: some View {
         let labels = card["labels"].strings
         let series = card["series"].array
-        let points: [Point] = series.enumerated().flatMap { s, entry in
-            entry["values"].doubles.enumerated().map { i, v in
-                Point(id: s * 1000 + i, series: entry["name"].string ?? "Series \(s + 1)",
-                      label: i < labels.count ? labels[i] : "\(i + 1)", value: v)
-            }
-        }
+        // A null value leaves a gap at its own label instead of shifting later values left.
+        let points = card.chartPoints
+        // One rule per selected label, drawn from its first point (series 0 may be null there).
+        let ruleID = selected.flatMap { label in points.first { $0.label == label }?.id }
         let style = card["style"].string ?? "bar"
         CardBox {
             HStack {
@@ -326,10 +342,11 @@ struct ChartCard: View {
             }
             // Hover (Mac) or drag (iPhone/iPad) across the chart to read exact values.
             let unit = card["unit"].string.map { ["%", "°", "x", "×"].contains($0) ? $0 : " \($0)" } ?? ""
-            Text(selected.map { label in
+            let readout = selected.map { label in
                 let vals = points.filter { $0.label == label }
                 return "\(label): " + vals.map { (series.count > 1 ? "\($0.series) " : "") + CardText.number($0.value) + unit }.joined(separator: " · ")
-            } ?? Self.chartHint)
+            }
+            Text(readout ?? Self.chartHint)
                 .font(.system(size: 11.5, weight: selected == nil ? .regular : .semibold).monospacedDigit())
                 .foregroundStyle(selected == nil ? Color.secondary : Color.primary)
                 .lineLimit(1)
@@ -345,7 +362,7 @@ struct ChartCard: View {
                 if let selected, selected == p.label, style == "line" {
                     PointMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
                 }
-                if let selected, p.id % 1000 == 0 || series.count == 1, selected == p.label {
+                if let selected, p.id == ruleID {
                     RuleMark(x: .value("x", selected)).foregroundStyle(Color.primary.opacity(0.25))
                 }
             }
@@ -393,17 +410,19 @@ struct NewsCard: View {
             CardHeader(icon: "newspaper.fill", title: card["title"].string ?? "News")
             ForEach(Array(card["items"].array.prefix(5).enumerated()), id: \.offset) { i, n in
                 if i > 0 { Divider().opacity(0.4) }
-                let row = HStack(alignment: .top, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(n["headline"].string ?? "").font(.system(size: 12, weight: .medium)).lineLimit(3)
-                            .multilineTextAlignment(.leading)
-                        Text([n["source"].string, n["when"].string].compactMap { $0 }.joined(separator: " · "))
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                // A story with a link opens it; one without opens in place to its full headline.
+                CardDetailRow(value: n, shows: ["headline", "source", "when"]) { expanded in
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(n["headline"].string ?? "").font(.system(size: 12, weight: .medium)).lineLimit(expanded ? nil : 3)
+                                .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: expanded)
+                            Text([n["source"].string, n["when"].string].compactMap { $0 }.joined(separator: " · "))
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        if let img = n["image_url"].url { CardImage(url: img, size: 48, corner: 6, fill: true).frame(width: 64) }
                     }
-                    Spacer(minLength: 0)
-                    if let img = n["image_url"].url { CardImage(url: img, size: 48, corner: 6, fill: true).frame(width: 64) }
                 }
-                if let url = n["url"].url { Link(destination: url) { row }.buttonStyle(.plain) } else { row }
             }
         }
     }

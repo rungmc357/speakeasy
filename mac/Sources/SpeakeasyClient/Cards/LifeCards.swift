@@ -7,18 +7,19 @@ import SpeakeasyCore
 struct EventRow: View {
     let event: JSONValue
     var body: some View {
-        LinkedRow(url: event["url"].url) { row }
+        // An event with a link opens it; one without opens in place to its full title, time and place.
+        CardDetailRow(value: event, shows: ["title", "start", "end", "place"], showsLinkArrow: true) { row($0) }
     }
 
-    private var row: some View {
+    private func row(_ expanded: Bool) -> some View {
         HStack(alignment: .top, spacing: 8) {
             RoundedRectangle(cornerRadius: 2).fill(eventColor(event["color"].string)).frame(width: 3)
             VStack(alignment: .leading, spacing: 1) {
-                Text(event["title"].string ?? "").font(.system(size: 12, weight: .medium)).lineLimit(2)
+                Text(event["title"].string ?? "").font(.system(size: 12, weight: .medium)).lineLimit(expanded ? nil : 2)
                 Text(event["all_day"].bool == true ? "All day"
                      : [[event["start"].string, event["end"].string].compactMap { $0 }.joined(separator: " – "),
                         event["place"].string].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · "))
-                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(expanded ? nil : 1)
             }
             Spacer(minLength: 0)
         }
@@ -161,19 +162,27 @@ struct PlacesCard: View {
             ForEach(Array(card["items"].array.prefix(6).enumerated()), id: \.offset) { i, p in
                 if i > 0 { Divider().opacity(0.4) }
                 HStack(spacing: 10) {
-                    if let photo = p["photo_url"].url { CardImage(url: photo, size: 40, corner: 8, fill: true).frame(width: 40) }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(i + 1). \(p["name"].string ?? "")").font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        HStack(spacing: 6) {
-                            if let r = p["rating"].double { Text("★ " + String(format: "%.1f", r)).foregroundStyle(.orange) }
-                            if let c = p["category"].string { Text(c) }
-                            if let price = p["price"].string { Text(price) }
-                            if let d = p["distance"].string { Text(d) }
-                            if let open = p["open_now"].bool { Text(open ? "Open" : "Closed").foregroundStyle(open ? Color.green : Color.red) }
+                    // The row opens in place (full name and details, plus address/hours/phone when
+                    // supplied); the arrow keeps opening the place's page or Maps.
+                    CardDetailRow(value: p, shows: ["name", "rating", "category", "price", "distance"],
+                                  reveals: ["address", "hours_today", "phone"], linksRow: false) { expanded in
+                        HStack(spacing: 10) {
+                            if let photo = p["photo_url"].url { CardImage(url: photo, size: 40, corner: 8, fill: true).frame(width: 40) }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(i + 1). \(p["name"].string ?? "")").font(.system(size: 12, weight: .medium))
+                                    .lineLimit(expanded ? nil : 1)
+                                HStack(spacing: 6) {
+                                    if let r = p["rating"].double { Text("★ " + String(format: "%.1f", r)).foregroundStyle(.orange) }
+                                    if let c = p["category"].string { Text(c) }
+                                    if let price = p["price"].string { Text(price) }
+                                    if let d = p["distance"].string { Text(d) }
+                                    if let open = p["open_now"].bool { Text(open ? "Open" : "Closed").foregroundStyle(open ? Color.green : Color.red) }
+                                }
+                                .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(expanded ? nil : 1)
+                            }
+                            Spacer(minLength: 0)
                         }
-                        .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
                     }
-                    Spacer(minLength: 0)
                     openable(p["url"].url ?? mapsURL(p["name"].string, lat: p["lat"].double, lon: p["lon"].double))
                 }
             }
@@ -308,17 +317,27 @@ struct PackageCard: View {
                 Text(card["status"].string ?? "").font(.system(size: 13, weight: .semibold))
                 if let eta = card["eta"].string { Text(eta).font(.system(size: 11)).foregroundStyle(.secondary) }
             }
+            // Past six steps (the catalog allows 8) the timeline opens in place to all of them, each in full.
             let steps = card["steps"].array
-            ForEach(Array(steps.prefix(6).enumerated()), id: \.offset) { i, s in
-                HStack(alignment: .top, spacing: 8) {
-                    VStack(spacing: 0) {
-                        Circle().fill(s["done"].bool == false ? Color.primary.opacity(0.2) : Color.green).frame(width: 8, height: 8)
-                        if i < min(steps.count, 6) - 1 { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1.5, height: 16) }
+            CardDisclosure(expandable: steps.count > 6) { expanded in
+                let shown = expanded ? steps : Array(steps.prefix(6))
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(shown.enumerated()), id: \.offset) { i, s in
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(spacing: 0) {
+                                Circle().fill(s["done"].bool == false ? Color.primary.opacity(0.2) : Color.green).frame(width: 8, height: 8)
+                                if i < shown.count - 1 { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1.5, height: 16) }
+                            }
+                            .padding(.top, 3)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(s["text"].string ?? "").font(.system(size: 11)).lineLimit(expanded ? nil : 2)
+                                    .fixedSize(horizontal: false, vertical: expanded)
+                                if let w = s["when"].string { Text(w).font(.system(size: 11.5)).foregroundStyle(.secondary) }
+                            }
+                        }
                     }
-                    .padding(.top, 3)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(s["text"].string ?? "").font(.system(size: 11)).lineLimit(2)
-                        if let w = s["when"].string { Text(w).font(.system(size: 11.5)).foregroundStyle(.secondary) }
+                    if !expanded, steps.count > 6 {
+                        Text("\(steps.count - 6) more").font(.system(size: 11.5)).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -420,16 +439,23 @@ struct InboxCard: View {
             CardHeader(icon: "tray.full.fill", title: card["title"].string ?? (card.kind == "message" ? (card["channel"].string ?? "Message") : "Inbox"))
             ForEach(Array(items.prefix(6).enumerated()), id: \.offset) { i, m in
                 if i > 0 { Divider().opacity(0.4) }
-                HStack(alignment: .top, spacing: 8) {
-                    Circle().fill(m["unread"].bool == true ? Color.accentColor : Color.clear).frame(width: 6, height: 6).padding(.top, 5)
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack {
-                            Text(m["from"].string ?? "").font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                            Spacer(minLength: 0)
-                            Text(m["when"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
+                // A message opens in place to its full subject and preview; a supplied `body` is one
+                // more disclosure inside (the current catalog doesn't send one).
+                CardDetailRow(value: m, shows: ["from", "when", "subject", "preview"], reveals: ["body"]) { expanded in
+                    HStack(alignment: .top, spacing: 8) {
+                        Circle().fill(m["unread"].bool == true ? Color.accentColor : Color.clear).frame(width: 6, height: 6).padding(.top, 5)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack {
+                                Text(m["from"].string ?? "").font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Text(m["when"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
+                            }
+                            if let s = m["subject"].string { Text(s).font(.system(size: 11.5)).lineLimit(expanded ? nil : 1) }
+                            if let p = m["preview"].string {
+                                Text(p).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(expanded ? nil : 2)
+                                    .fixedSize(horizontal: false, vertical: expanded)
+                            }
                         }
-                        if let s = m["subject"].string { Text(s).font(.system(size: 11.5)).lineLimit(1) }
-                        if let p = m["preview"].string { Text(p).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2) }
                     }
                 }
             }
