@@ -362,6 +362,9 @@ public final class VoicePanelModel: ObservableObject {
     /// One task's full activity with its tool calls' args/result previews (`GET /voice/work/{run_id}`,
     /// servers with `tool_log`), for the tool-call log; nil when it can't be fetched.
     public var loadToolLog: (String) async -> [JobActivityItem]? = { _ in nil }
+    /// One task's helpers with their own steps and previews (`GET /voice/work/{run_id}`, servers
+    /// with `job_subagents`), for a helper's page; nil when it can't be fetched.
+    public var loadSubagents: (String) async -> [JobSubagent]? = { _ in nil }
     /// "Tell it something": turn the mic on; what's said next goes to this job (job id).
     public var onTellJob: (String) -> Void = { _ in }
     /// The job waiting to hear from the user after "Tell it something".

@@ -14,7 +14,7 @@ extension FilmFrames {
         base.merge(json) { $1 }
         guard let decoded = WorkInfo(json: base) else { return t }
         t.info.activity = decoded.activity; t.info.findings = decoded.findings
-        t.info.touched = decoded.touched; t.info.hero = decoded.hero
+        t.info.touched = decoded.touched; t.info.hero = decoded.hero; t.info.subagents = decoded.subagents
         return t
     }
 
@@ -246,6 +246,36 @@ extension FilmFrames {
             m.panelWidth = narrow; m.extraHeight = 220
             m.replyDrafts["task:t"] = "Also run it on Safari before you call it fixed."
         })
+        // Helpers (`job_subagents`): a job that handed three parts to helpers, one done, one working, one failed.
+        var gifts = task("g", "working", "Which of the three shops should I order the housewarming gift from?",
+                         title: "Pick the shop for the gift", short: "Waiting on its helpers", age: 3, now: now)
+        gifts.info.startedAt = now - 214
+        let t0 = now.timeIntervalSince1970 - 214
+        gifts = withLive(gifts, [
+            "activity": [call("g1", "read", "Read its notes on gift orders", ago: 212, took: 0.8, now: now, tool: "skill_view"),
+                         call("g2", "tool", "Handed part of the work to helpers", ago: 210, took: nil, now: now,
+                              tool: "delegate_task", detail: "3 helpers")],
+            "findings": [["id": "gf1", "text": "Lark Home has the longest return window: 60 days, free label"]],
+            "subagents": [
+                ["id": "sa-0-a1b2c3d4", "title": "Compare the shops' return policies", "status": "done",
+                 "goal": "Compare the return policies of Lark Home, Oak & Pine and Fern Market.",
+                 "started_at": t0 + 4, "ended_at": t0 + 92, "steps_total": 4,
+                 "summary": "Lark Home is the most generous: 60 days with a free return label. Oak & Pine gives 30 days; Fern Market 14, store credit.",
+                 "activity": [call("h1a", "search", "Searched the web for “return policy”", ago: 208, took: 1.8, now: now, tool: "web_search"),
+                              call("h1b", "browse", "Read larkhome.example/returns", ago: 204, took: 2.6, now: now, tool: "web_extract",
+                                   args: "https://larkhome.example/returns", result: "Returns accepted within 60 days. Free return label.")]],
+                ["id": "sa-1-e5f6a7b8", "title": "Find the cheapest small-parcel shipping", "status": "running",
+                 "started_at": t0 + 4, "now": "Read parcelwise.example/pricing", "steps_total": 3],
+                ["id": "sa-2-c9d0e1f2", "title": "Check island delivery for Fern Market", "status": "failed",
+                 "started_at": t0 + 5, "ended_at": t0 + 49, "steps_total": 2,
+                 "summary": "Fern Market's shipping page didn't load (timed out twice), so I couldn't confirm island delivery."],
+            ]])
+        s = base(); s.tasks = [gifts]
+        both("redesign-13-helpers", s, "task:g") { m in m.extraHeight = 260 }
+        both("redesign-14-helper-open", s, "task:g") { m in
+            m.extraHeight = 320
+            m.openSections.insert(HelpersCard.key(job: "task:g", helper: "sa-0-a1b2c3d4"))
+        }
         return out
     }
 }

@@ -229,6 +229,8 @@ public struct WorkInfo: Equatable, Sendable {
     public var touched: [JobTouched] = []
     /// The picture for its kind of work.
     public var hero: JobHero?
+    /// Helpers it started (servers with `job_subagents`; JobSubagents.swift), oldest first.
+    public var subagents: [JobSubagent] = []
 
     /// The receipt for one "You added: …" step, if the api sent one.
     public func followUp(forStep text: String) -> FollowUp? { followUps.last { $0.milestone == text } }

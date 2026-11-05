@@ -248,11 +248,14 @@ extension WorkInfo {
         findings = JobFinding.list(json: object["findings"])
         touched = JobTouched.list(json: object["touched"])
         hero = JobHero(json: object["hero"])
+        subagents = JobSubagent.list(json: object["subagents"])
     }
 
     /// The task's tool calls, oldest first (what the tool log lists).
     public var toolCalls: [JobActivityItem] { activity.filter(\.isToolCall) }
 
     /// The server sent any live activity for this task.
-    public var hasLiveActivity: Bool { !activity.isEmpty || !findings.isEmpty || !touched.isEmpty || hero != nil }
+    public var hasLiveActivity: Bool {
+        !activity.isEmpty || !findings.isEmpty || !touched.isEmpty || hero != nil || !subagents.isEmpty
+    }
 }

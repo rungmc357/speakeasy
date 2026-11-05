@@ -816,17 +816,20 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var toolLog: Bool
     /// A new job from typed text with no call (`POST /voice/work`): the plugin-update notice's Update.
     public var startJobs: Bool
+    /// Tasks carry `subagents`: the helpers (Hermes subagents) a task started; `GET /voice/work/{run_id}`
+    /// adds each one's steps.
+    public var jobSubagents: Bool
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
-                jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false) {
+                jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false) {
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
         self.taskMessages = taskMessages; self.jobActivity = jobActivity; self.toolLog = toolLog
-        self.startJobs = startJobs
+        self.startJobs = startJobs; self.jobSubagents = jobSubagents
     }
     enum CodingKeys: String, CodingKey {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
-        case startJobs = "start_jobs"
+        case startJobs = "start_jobs", jobSubagents = "job_subagents"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -837,5 +840,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         jobActivity = (try? c.decodeIfPresent(Bool.self, forKey: .jobActivity)) ?? false
         toolLog = (try? c.decodeIfPresent(Bool.self, forKey: .toolLog)) ?? false
         startJobs = (try? c.decodeIfPresent(Bool.self, forKey: .startJobs)) ?? false
+        jobSubagents = (try? c.decodeIfPresent(Bool.self, forKey: .jobSubagents)) ?? false
     }
 }

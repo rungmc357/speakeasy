@@ -71,6 +71,7 @@ TITLE_SWEEP_TICKS = 40  # idle ticks between stand-in title sweeps (about ten mi
 TITLE_SWEEP_BATCH = 5   # tasks a sweep may name (one model call each)
 IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model setup rarely changes)
 EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the call's event channel
+CAPABILITIES["job_subagents"] = True  # helpers a task started (delegate_task) on its work object (subagents.py)
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
 CAPABILITIES["start_jobs"] = True  # POST /voice/work: a new job from typed text, no call needed (the app's Update button)
 CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the pair response): every address of this Hermes
