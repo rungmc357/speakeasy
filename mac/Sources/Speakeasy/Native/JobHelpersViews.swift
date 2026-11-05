@@ -82,7 +82,7 @@ struct HelperRowMac: View {
             .onTapGesture(perform: toggle)
             if open { expanded.padding(.leading, 32).padding(.trailing, 4).padding(.bottom, 10).transition(.opacity) }
         }
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(hover ? 0.045 : 0)))
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(hover ? 0.045 : 0)))
         .onHover { hover = $0 }
         .help(open ? "Fold" : "Show what this helper did")
         .accessibilityElement(children: open ? .contain : .combine)
@@ -96,7 +96,7 @@ struct HelperRowMac: View {
         case .running: LiveDot(color: Live.brass, size: 7)
         case .done: Circle().fill(Live.green).frame(width: 7, height: 7)
         case .failed: Circle().fill(Live.red).frame(width: 7, height: 7)
-        case .stopped: Circle().strokeBorder(Color.white.opacity(0.45), lineWidth: 1.3).frame(width: 8, height: 8)
+        case .stopped: Circle().strokeBorder(Color.primary.opacity(0.45), lineWidth: 1.3).frame(width: 8, height: 8)
         }
     }
 
@@ -104,12 +104,12 @@ struct HelperRowMac: View {
         VStack(alignment: .leading, spacing: 8) {
             if let goal = helper.goal {
                 label("Asked to")
-                Text(goal).font(.system(size: 11.5)).foregroundStyle(Color.white.opacity(0.75))
+                Text(goal).font(.system(size: 11.5)).foregroundStyle(Color.primary.opacity(0.75))
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             }
             if let summary = helper.summary {
                 label(helper.status == .failed ? "What went wrong" : "What it found")
-                Text(summary).font(.system(size: 12)).foregroundStyle(Color.white.opacity(0.9))
+                Text(summary).font(.system(size: 12)).foregroundStyle(Color.primary.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
             } else if let note = helper.note, !helper.isRunning {
                 Text(note).font(.system(size: 11.5)).foregroundStyle(.secondary)

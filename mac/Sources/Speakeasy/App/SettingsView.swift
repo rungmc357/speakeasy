@@ -73,6 +73,7 @@ private struct ServerForm<Content: View>: View {
 
 private struct GeneralSettings: View {
     @EnvironmentObject var app: AppModel
+    @AppStorage(Prefs.appearance) private var appearance = MacAppearance.system.rawValue
     @AppStorage(Prefs.startMuted) private var startMuted = false
     @AppStorage(Prefs.showPanelOnStart) private var showPanelOnStart = true
     @AppStorage(Prefs.followSystemAudio) private var followSystemAudio = true
@@ -96,6 +97,15 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Appearance", selection: $appearance) {
+                    ForEach(MacAppearance.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .onChange(of: appearance) { _, _ in MacAppearance.apply() }
+            } header: { Text("Appearance") } footer: {
+                Text("The panel, History and Settings. System follows your Mac's Light or Dark setting.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Calls") {
                 Toggle("Start calls muted", isOn: $startMuted)
                 Toggle("Follow the system's audio devices (AirPods etc.)", isOn: $followSystemAudio)

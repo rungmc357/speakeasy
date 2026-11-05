@@ -14,14 +14,15 @@ enum Tokens {
     static let radius: CGFloat = 18
     static let blue = Color(red: 0.49, green: 0.67, blue: 1.0)
     /// Brand palette (matches speakeasyvoice.ai): brass on warm near-black.
-    static let brass = Color(red: 0.831, green: 0.635, blue: 0.298)      // #d4a24c
-    static let brassLight = Color(red: 0.941, green: 0.784, blue: 0.447) // #f0c872
-    static let brassInk = Color(red: 0.09, green: 0.067, blue: 0.039)    // #17110a
+    /// Light Mode: a deeper brass (AA on the light panel) with ivory text on it (`BrandPalette`).
+    static let brass = BrandPalette.brass                                // #d4a24c
+    static let brassLight = Color.adaptive(dark: Color(red: 0.941, green: 0.784, blue: 0.447), light: Color(hex: 0xb07a22)) // #f0c872
+    static let brassInk = BrandPalette.onBrass                           // #17110a
     static let panelDark = Color(red: 0.086, green: 0.075, blue: 0.059)  // #16130f
-    static let amber = Color(red: 0.97, green: 0.745, blue: 0.44)
-    static let amberInk = Color(red: 0.23, green: 0.15, blue: 0.02)
-    static let red = Color(red: 0.93, green: 0.36, blue: 0.36)
-    static let green = Color(red: 0.45, green: 0.82, blue: 0.56)
+    static let amber = BrandPalette.amber
+    static let amberInk = Color.adaptive(dark: Color(red: 0.23, green: 0.15, blue: 0.02), light: Color(hex: 0xfff8ec))
+    static let red = BrandPalette.red
+    static let green = BrandPalette.green
     /// Screen sharing: the purple macOS uses for its screen-recording indicator.
     static let screen = Color(nsColor: .systemPurple)
 }

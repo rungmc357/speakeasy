@@ -16,8 +16,10 @@ enum Live {
     static let green = Tokens.green
     static let red = JobStyle.red
     static let amber = JobStyle.tileAmber
-    static let card = Color.white.opacity(0.055)
-    static let hairline = Color.white.opacity(0.08)
+    static let card = Color.adaptive(dark: Color.white.opacity(0.055), light: Color.white.opacity(0.7))
+    static let hairline = Color.primary.opacity(0.08)
+    /// A recessed well (code, commands): darker than the card on dark, a faint ink wash on light.
+    static let well = Color.adaptive(dark: Color.black.opacity(0.32), light: Color.black.opacity(0.05))
 
     /// Reduce Motion, read from the system (hosted scroll content doesn't inherit the environment).
     static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || FilmFrames.stillMotion }
@@ -28,7 +30,7 @@ enum Live {
         case .needsYou: return amber
         case .done: return green
         case .failed: return red
-        case .quiet: return Color.white.opacity(0.5)
+        case .quiet: return Color.primary.opacity(0.5)
         }
     }
 
@@ -166,9 +168,9 @@ struct HeroCard<Content: View>: View {
         content()
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.07)))
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.primary.opacity(0.07)))
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(LinearGradient(colors: [.white.opacity(0.20), .white.opacity(0.03)], startPoint: .top, endPoint: .bottom),
+                .strokeBorder(LinearGradient(colors: [Color.primary.opacity(0.20), Color.primary.opacity(0.03)], startPoint: .top, endPoint: .bottom),
                               lineWidth: 0.75))
             .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
     }
@@ -199,7 +201,7 @@ struct LiveJobTitle: View {
                             .contentTransition(.numericText(countsDown: false))
                     } else if let extra {
                         Text("·").foregroundStyle(.secondary)
-                        Text(extra.uppercased()).tracking(0.6).lineLimit(1).foregroundStyle(Color.white.opacity(0.55))
+                        Text(extra.uppercased()).tracking(0.6).lineLimit(1).foregroundStyle(Color.primary.opacity(0.55))
                     }
                 }
                 .font(.system(size: 10.5, weight: .bold))
@@ -215,7 +217,7 @@ struct LiveJobTitle: View {
             if let line, !line.isEmpty {
                 Text(line)
                     .font(.system(size: wide ? 14 : 13, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.74))
+                    .foregroundStyle(Color.primary.opacity(0.74))
                     .fixedSize(horizontal: false, vertical: true)
                     .lineLimit(3)
             }
@@ -250,7 +252,7 @@ struct TrialsPicture: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text("\(passed)").font(.system(size: 46, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                Text("\(passed)").font(.system(size: 46, weight: .bold, design: .rounded)).foregroundStyle(.primary)
                     .contentTransition(.numericText(value: Double(passed)))
                     .animation(Live.reduceMotion ? nil : .snappy(duration: 0.35), value: passed)
                 VStack(alignment: .leading, spacing: 1) {
@@ -260,7 +262,7 @@ struct TrialsPicture: View {
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 1) {
                     Text("\(failed)").font(.system(size: 24, weight: .bold, design: .rounded))
-                        .foregroundStyle(failed > 0 ? Live.red : Color.white.opacity(0.35))
+                        .foregroundStyle(failed > 0 ? Live.red : Color.primary.opacity(0.35))
                         .contentTransition(.numericText(value: Double(failed)))
                     Text("failed").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -308,7 +310,7 @@ struct DotsGrid: View {
         } else if i == passed + failed && running {
             Circle().strokeBorder(Live.brass, lineWidth: 1.5).background(Circle().fill(Live.brass.opacity(0.22)))
         } else {
-            Circle().fill(Color.white.opacity(0.09))
+            Circle().fill(Color.primary.opacity(0.09))
         }
     }
 }
@@ -327,7 +329,7 @@ struct SourcesPicture: View {
                 }
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 0) {
-                    Text("\(items.count)").font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                    Text("\(items.count)").font(.system(size: 34, weight: .bold, design: .rounded)).foregroundStyle(.primary)
                         .contentTransition(.numericText(value: Double(items.count)))
                     Text(items.count == 1 ? "source read" : "sources read").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
@@ -380,7 +382,7 @@ struct DiffPicture: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 16) {
-                stat("\(files)", files == 1 ? "file" : "files", .white)
+                stat("\(files)", files == 1 ? "file" : "files", .primary)
                 stat("+\(added)", "added", Live.green)
                 stat("−\(removed)", "removed", Live.red)
                 Spacer(minLength: 0)
@@ -407,7 +409,7 @@ struct DiffPicture: View {
                 }
                 .textSelection(.enabled)
                 .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.black.opacity(0.35)))
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Live.well))
                 if preview.count > 3 {
                     Button { withAnimation(Live.reduceMotion ? nil : .snappy) { peek.toggle() } } label: {
                         Label(peek ? "Less" : "Peek at the change", systemImage: peek ? "chevron.up" : "eye")
@@ -443,7 +445,7 @@ struct SeriesPicture: View {
             if let low {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(CardText.number(low.y)).font(.system(size: 34, weight: .bold, design: .rounded))
-                    if let unit { Text(unit).font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.white.opacity(0.7)) }
+                    if let unit { Text(unit).font(.system(size: 14, weight: .semibold)).foregroundStyle(Color.primary.opacity(0.7)) }
                 }
                 Text("Lowest, at \(low.x) · usually \(CardText.number(typical))").font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
@@ -479,7 +481,7 @@ struct StepPathPicture: View {
                     node(state).frame(width: 18)
                     HStack(alignment: .firstTextBaseline) {
                         Text(step).font(.system(size: 13, weight: state == 2 ? .semibold : .regular))
-                            .foregroundStyle(state == 0 ? Color.white.opacity(0.45) : .white)
+                            .foregroundStyle(state == 0 ? Color.primary.opacity(0.45) : .white)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 6)
                         if state == 1, let t = times.indices.contains(i) ? times[i] : nil, !t.isEmpty {
@@ -493,7 +495,7 @@ struct StepPathPicture: View {
                 // The path down to the next step, as tall as this row (a background takes the row's height).
                 .background(alignment: .topLeading) {
                     if i < plan.count - 1 {
-                        Rectangle().fill(i < done ? Live.green.opacity(0.6) : Color.white.opacity(0.12))
+                        Rectangle().fill(i < done ? Live.green.opacity(0.6) : Color.primary.opacity(0.12))
                             .frame(width: 2).padding(.top, 20).padding(.leading, 8)
                     }
                 }
@@ -512,7 +514,7 @@ struct StepPathPicture: View {
                 Circle().fill(Live.brass.opacity(0.25))
                 Circle().fill(Live.brass).padding(4).shadow(color: Live.brass, radius: 4)
             default:
-                Circle().strokeBorder(Color.white.opacity(0.22), lineWidth: 1.5)
+                Circle().strokeBorder(Color.primary.opacity(0.22), lineWidth: 1.5)
             }
         }
         .frame(width: 18, height: 18)
@@ -539,10 +541,10 @@ struct FindingsList: View {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(Array(findings.reversed().enumerated()), id: \.element.id) { i, f in
                     HStack(alignment: .firstTextBaseline, spacing: 9) {
-                        Circle().fill(i == 0 ? Live.brass : Color.white.opacity(0.3)).frame(width: 6, height: 6)
+                        Circle().fill(i == 0 ? Live.brass : Color.primary.opacity(0.3)).frame(width: 6, height: 6)
                             .alignmentGuide(.firstTextBaseline) { d in d[VerticalAlignment.center] + 4 }
                         Text(f.text).font(.system(size: i == 0 ? 13 : 12, weight: i == 0 ? .medium : .regular))
-                            .foregroundStyle(Color.white.opacity(i == 0 ? 1 : 0.7))
+                            .foregroundStyle(Color.primary.opacity(i == 0 ? 1 : 0.7))
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
@@ -615,7 +617,7 @@ struct DisclosureRow: View {
                     .rotationEffect(.degrees(open ? 90 : 0))
             }
             .padding(.horizontal, 10).frame(height: 30)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(hover ? 0.05 : 0)))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(hover ? 0.05 : 0)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -638,10 +640,10 @@ struct ToolCallRow: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 9) {
                 ZStack {
-                    Circle().fill(live ? Live.brass.opacity(0.22) : Color.white.opacity(0.07))
+                    Circle().fill(live ? Live.brass.opacity(0.22) : Color.primary.opacity(0.07))
                     Image(systemName: item.status == .failed ? "exclamationmark" : item.symbol)
                         .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(item.status == .failed ? Live.red : live ? Live.brass : Color.white.opacity(0.7))
+                        .foregroundStyle(item.status == .failed ? Live.red : live ? Live.brass : Color.primary.opacity(0.7))
                 }
                 .frame(width: 24, height: 24)
                 VStack(alignment: .leading, spacing: 1) {
@@ -669,7 +671,7 @@ struct ToolCallRow: View {
             .onTapGesture { if more { toggle() } }
             if open && more { expanded.padding(.leading, 41).padding(.trailing, 8).padding(.bottom, 9) }
         }
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(hover && more ? 0.045 : 0)))
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(hover && more ? 0.045 : 0)))
         .onHover { hover = $0 }
         .help(more ? (open ? "Fold" : "Show the call's details") : item.text)
         .accessibilityElement(children: open ? .contain : .combine)
@@ -697,12 +699,12 @@ struct ToolCallRow: View {
     private func block(_ label: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label.uppercased()).font(.system(size: 9.5, weight: .semibold)).tracking(0.6).foregroundStyle(.tertiary)
-            Text(text).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.white.opacity(0.82))
+            Text(text).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.primary.opacity(0.82))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 8).padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.black.opacity(0.32)))
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Live.well))
                 .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Live.hairline, lineWidth: 0.5))
         }
     }
@@ -746,8 +748,8 @@ struct TouchedChip: View {
                 }
             }
             .padding(.horizontal, 9).frame(height: 24)
-            .background(Capsule().fill(Color.white.opacity(hover ? 0.11 : 0.065)))
-            .overlay(Capsule().strokeBorder(Color.white.opacity(hover ? 0.16 : 0.08), lineWidth: 0.5))
+            .background(Capsule().fill(Color.primary.opacity(hover ? 0.11 : 0.065)))
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(hover ? 0.16 : 0.08), lineWidth: 0.5))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)

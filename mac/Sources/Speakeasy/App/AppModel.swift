@@ -8,6 +8,8 @@ import SpeakeasyClient
 
 /// Client-side preferences (UserDefaults). Server-side settings live in `AppModel.settings`.
 enum Prefs {
+    /// Light / Dark / System for Speakeasy's windows (Settings › General › Appearance).
+    static let appearance = "appearance"
     static let serverURL = "serverURL"
     static let deviceName = "pairedDeviceName"
     static let deviceID = "pairedDeviceID"
@@ -634,4 +636,26 @@ final class AppModel: ObservableObject {
         }
         return error.localizedDescription
     }
+}
+
+
+/// Light / Dark / System for the panel, History and Settings; kept on this Mac (not on your Hermes).
+enum MacAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var title: String { self == .system ? "System" : self == .light ? "Light" : "Dark" }
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+    static var stored: MacAppearance {
+        // Screenshots: SPEAKEASY_APPEARANCE=light|dark wins over the stored choice.
+        if let env = ProcessInfo.processInfo.environment["SPEAKEASY_APPEARANCE"], let a = MacAppearance(rawValue: env) { return a }
+        return MacAppearance(rawValue: UserDefaults.standard.string(forKey: Prefs.appearance) ?? "") ?? .system
+    }
+    /// Applies the stored choice to the whole app (every window follows NSApp's appearance).
+    @MainActor static func apply() { NSApp.appearance = stored.nsAppearance }
 }
