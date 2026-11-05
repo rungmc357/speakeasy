@@ -409,6 +409,8 @@ class Runtime:
     # nothing uses any more (no task records them, no live call holds them). None = not kept.
     shared: Any = None
     discard_files: Callable[[list[str]], int] | None = None
+    # Phone notifications while the app is closed (push.PushNotifier); None = never.
+    push: Any = None
 
     @property
     def names(self) -> P.Names:
@@ -1225,6 +1227,37 @@ class SidebandWorker:
 
     def touch(self) -> None:
         self.interaction.last_activity = time.monotonic()
+
+    def push(self, kind: str, key: str, title: str | None, body: str | None = None, run_id: str | None = None) -> None:
+        """Wake a closed phone (push.py decides which, if any). Never raises into the task path."""
+        notifier = getattr(self.rt, "push", None)
+        if notifier is None:
+            return
+        try:
+            notifier.notify(kind, key=key, title=title, body=body, run_id=run_id)
+        except Exception as exc:
+            logger.warning("speakeasy: push failed: %s", type(exc).__name__)
+
+    def push_result(self, backend: Any, idem: str, status: str, result: dict[str, Any] | None, reason: str | None,
+                    drafts: list[dict[str, Any]], event: dict[str, Any]) -> None:
+        """A task ended: Done / Needs you (a question or an email draft) / Failed / New reply (an
+        answer in a Hermes conversation). Stopped by the user, or still going elsewhere: nothing."""
+        title = self.store.title(idem) or self.store.request_text(idem)
+        run = backend.run_id or idem
+        if status == "failed":
+            self.push("failed", f"run:{run}", title, reason or "It stopped before finishing.", backend.run_id)
+        elif status != "completed" or event.get("still_going"):
+            return
+        elif result and result.get("question"):
+            question = result["question"].get("question") if isinstance(result["question"], dict) else None
+            self.push("needs_you", f"question:{run}", title, question or result.get("spoken"), backend.run_id)
+        elif drafts:
+            subject = drafts[0].get("subject")
+            self.push("needs_you", f"draft:{drafts[0].get('draft_id')}", title,
+                      f"Email draft ready: {subject}" if subject else "An email draft is ready to check.", backend.run_id)
+        else:
+            self.push("reply" if event.get("continued") else "finished", f"run:{run}", title,
+                      (result or {}).get("spoken") or "Done.", backend.run_id)
 
     # -- provider events --------------------------------------------------------------------
     async def handle_event(self, event: dict[str, Any]) -> None:
@@ -4264,7 +4297,7 @@ class SidebandWorker:
             self.store.progress(idem, "result", f"Still going in {where}; the answer will land there")
             await self.handle_hermes_event(backend, {"event": "run.completed",
                                                      "output": f"Still working on it in {where}. The answer will land there.",
-                                                     "continued": True})
+                                                     "continued": True, "still_going": True})
             return True
         await self.handle_hermes_event(backend, {"event": "run.completed", "output": P.without_voice_header(answer),
                                                  "continued": True})
@@ -4594,6 +4627,8 @@ class SidebandWorker:
             self.store.progress(idem, "milestone", "Waiting for your approval")
             if not self.call_connected():
                 self.notices.needs_you(request_id, safe["description"])
+            self.push("needs_you", f"approval:{request_id}", self.store.title(idem) or self.store.request_text(idem),
+                      f"Approve? {safe['description']}", backend.run_id)
             await self.append("session.thinking.append", delegation_id, P.approval_rules_note(self.names))
             await self.append("session.commentary.append", delegation_id,
                               P.approval_note(self.names, description, choices))
@@ -4673,6 +4708,7 @@ class SidebandWorker:
             for draft in stored_drafts:
                 if not self.call_connected():
                     self.notices.draft_waiting(draft["draft_id"], draft.get("subject"))
+            self.push_result(backend, idem, status, result, reason, stored_drafts, event)
             if self.call_connected():
                 # Never over a thought in progress: the answer (or its question) waits for a pause.
                 await self.wait_for_pause()

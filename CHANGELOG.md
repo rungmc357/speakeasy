@@ -15,6 +15,9 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Swiping a job away works.** On iPhone and iPad a left swipe on a board card shows Dismiss (a long swipe dismisses at once) instead of opening the job, and Dismiss takes the card off right away with an **Undo**. Dismissed jobs stay gone after a refresh or a new call.
 - **Better "Try saying" ideas.** Every example works as the first thing you say on a call (no more "Actually, make it shorter"), and home examples (lights, heat, fans) only show when home control is on for your Hermes.
 - **Start a call from anywhere, set up in a minute.** The board's tip has **Set it up**: step-by-step for the Action Button, Control Center, the Lock Screen and Siri/Shortcuts, plus Open Shortcuts. The tip hides by itself once you've started a call from outside the app, ✕ hides it for good, and Settings › Start a call from anywhere brings it back.
+- **Your phone tells you when a job is done, needs you, fails, or gets a reply**, even with Speakeasy closed. Speakeasy asks for permission the first time a job outlives your call, not at launch.
+- **The words never leave your Hermes on the way.** Your Hermes sends only a wake-up signal through Speakeasy's notification relay; your phone fetches the text straight from your Hermes and shows "Done: …" / "Needs you: …".
+- **Pick which ones** in Settings › Notifications: Finished, Needs you, Failed, New replies.
 
 ## Plugin 0.3.32 · iPhone build 63 — Works from anywhere, right after setup
 

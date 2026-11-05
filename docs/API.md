@@ -81,6 +81,8 @@ used in the tests (timestamps and IDs will differ).
 | GET, POST | `/voice/onboarding` | device | First-run checklist |
 | GET | `/voice/endpoints` | device | Every address of this Hermes (tailnet, Cloudflare) + the address note |
 | POST | `/voice/prove` | none | Proves this is the paired Hermes before the app sends its token to a new address |
+| POST | `/voice/push` | device | Turn notifications on (APNs token, environment, kinds) or off for this device |
+| GET | `/voice/push/events/{id}` | device | The real text of one notification (read by the phone's notification extension) |
 
 ## GET /health
 
@@ -1378,6 +1380,63 @@ then marked edited, so auto-refresh leaves it alone). Calls are kept locally in 
 14 days / 60 calls); their text goes to the model Hermes uses only when a tune is requested. Each entry
 carries the paired device's id (`device`) and the app build it last reported (`client`, see
 the client header above; absent for older apps).
+
+## Push notifications
+
+Notifications reach a paired iPhone or iPad while the app is closed, and **no words about the work
+leave this Hermes**: the relay that wakes the phone gets only opaque ids. `capabilities.push` in
+`GET /voice/status` says the plugin has this (0.3.33+).
+
+```
+Hermes plugin ──signed {device_token, environment, kind, nonce, collapse_id, event_id}──▶ relay (speakeasy-push.todd-562.workers.dev)
+relay ──generic alert "Your Hermes has an update" + mutable-content + event id──▶ APNs ──▶ phone
+phone's Notification Service Extension ──GET /voice/push/events/{id} (device token)──▶ this Hermes
+                                        ◀── {"title": "Done: Speed up the dashboard", "body": …}
+```
+
+### POST /voice/push
+
+```json
+{"apns_token": "<hex>", "environment": "sandbox" | "production", "kinds": ["finished", "needs_you", "failed", "reply"]}
+```
+
+→ `200 {"ok": true, "enabled": true, "kinds": [...], "relay": "https://speakeasy-push.todd-562.workers.dev", "available": true}`.
+`{"enabled": false}` turns notifications off and forgets the token. The token is kept in
+`devices.json` next to the device (`push: {apns_token, environment, kinds, updated_at}`); revoking the
+device drops it. `400` for a token that isn't hex, an unknown environment or kind.
+
+### When Hermes notifies
+
+Only when the app is **not** open on that device: no live `/events` stream from it and no request
+from it in the last `push.presence_s` seconds (default 45). The extension's own fetch doesn't count.
+Each event notifies a device once.
+
+| kind | when | title |
+|---|---|---|
+| `finished` | a task completed | `Done: <task>` |
+| `needs_you` | an approval is waiting, a result asks a question, or an email draft is ready | `Needs you: <task>` |
+| `failed` | a task failed | `Failed: <task>` |
+| `reply` | an answer landed in a Hermes conversation the task was sent to | `New reply: <task>` |
+
+A user stopping a task, and a conversation turn still going elsewhere, notify nothing.
+
+### GET /voice/push/events/{id}
+
+`200 {"kind", "title", "body", "run_id", "thread_id"}` for the device the notification went to;
+`404` for any other device, an unknown id, or after 6 hours (kept in memory only). Not a sign the app is open.
+
+### The relay
+
+`relay/push/` (Cloudflare Worker). The plugin registers once (`POST /v1/register` →
+`{install_id, secret}`, saved to `speakeasy/push_install.json`, 0600) and signs every
+`POST /v1/notify`: `X-Speakeasy-Install`, `X-Speakeasy-Timestamp`, and
+`X-Speakeasy-Signature = hex HMAC-SHA256(secret, "v1\n<install>\n<timestamp>\n<sha256 hex of body>")`.
+The relay refuses any body field beyond the six above, replays (nonce), timestamps off by more than
+5 minutes, and rate-limits per install and per device token. Its reply `{ok, status, reason, invalid_token}`:
+`invalid_token: true` (APNs said the token is dead) makes the plugin forget that token.
+
+Settings: `push: {enabled: true, relay_url: "https://speakeasy-push.todd-562.workers.dev", presence_s: 45}`
+(`relay_url` must be https, or http on 127.0.0.1/localhost for local testing).
 
 ## GET /voice/status
 
