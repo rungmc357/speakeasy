@@ -15,12 +15,14 @@ public struct HistoryQuery: Equatable, Sendable {
     public var limit: Int
     /// A reply for an older generation (an older search or filter) is dropped.
     public var generation: Int
+    /// Only archived conversations (the Archived filter).
+    public var archived = false
 
     public init(cursor: String? = nil, q: String = "", source: String? = nil, limit: Int = HistoryList.pageSize, generation: Int = 0) {
         self.cursor = cursor; self.q = q; self.source = source; self.limit = limit; self.generation = generation
     }
 
-    public var path: String { HistoryPage.path(query: q, source: source, cursor: cursor, limit: limit) }
+    public var path: String { HistoryPage.path(query: q, source: source, cursor: cursor, limit: limit, archived: archived) }
 }
 
 /// The sidebar list: sessions loaded so far, the cursor, the search and the filter. Changing the
@@ -40,8 +42,41 @@ public struct HistoryList: Equatable, Sendable {
     /// Older plugins: the filter ids of every row loaded so far (any search or filter).
     public private(set) var seenSources: Set<String> = []
     public private(set) var generation = 0
+    /// Showing archived conversations (with Unarchive) instead of the live list.
+    public private(set) var archived = false
 
     public init() {}
+
+    public mutating func setArchived(_ on: Bool) -> HistoryQuery? {
+        guard on != archived else { return nil }
+        archived = on
+        return reset()
+    }
+
+    /// Pinned rows first (as the server lists them), then the rest in their day groups.
+    public var pinned: [HistorySession] { archived ? [] : sessions.filter(\.pinned) }
+
+    /// Change one row in place (rename, pin, read), at once, before the server confirms.
+    public mutating func update(_ id: String, _ change: (inout HistorySession) -> Void) {
+        guard let i = sessions.firstIndex(where: { $0.id == id }) else { return }
+        change(&sessions[i])
+        if sessions[i].pinned {   // a new pin goes to the top of the Pinned section
+            let row = sessions.remove(at: i)
+            sessions.insert(row, at: 0)
+        }
+    }
+
+    /// Take a row out (archived, or unarchived from the Archived list); returns it and where it was, for Undo.
+    @discardableResult
+    public mutating func remove(_ id: String) -> (HistorySession, Int)? {
+        guard let i = sessions.firstIndex(where: { $0.id == id }) else { return nil }
+        return (sessions.remove(at: i), i)
+    }
+
+    public mutating func restore(_ row: HistorySession, at index: Int) {
+        guard !sessions.contains(where: { $0.id == row.id }) else { return }
+        sessions.insert(row, at: min(index, sessions.count))
+    }
 
     /// The trimmed search, empty for none.
     public var activeQuery: String { String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)) }
@@ -79,7 +114,9 @@ public struct HistoryList: Equatable, Sendable {
     private mutating func begin() -> HistoryQuery? {
         guard !loading, !reachedEnd else { return nil }
         loading = true
-        return HistoryQuery(cursor: nextCursor, q: activeQuery, source: source, limit: Self.pageSize, generation: generation)
+        var q = HistoryQuery(cursor: nextCursor, q: activeQuery, source: source, limit: Self.pageSize, generation: generation)
+        q.archived = archived
+        return q
     }
 
     /// A page arrived: sessions already shown are updated in place, never repeated; no cursor ends
@@ -100,6 +137,18 @@ public struct HistoryList: Equatable, Sendable {
         return true
     }
 
+    /// A fresh first page while rows are showing (the live feed): the first page's rows replace what
+    /// they cover, in the server's order, and rows from later pages stay below. Archived/vanished rows
+    /// inside the first page's span drop out.
+    public mutating func merge(_ page: HistoryPage, for request: HistoryQuery) {
+        guard request.generation == generation, request.cursor == nil else { return }
+        let fresh = Set(page.sessions.map(\.id))
+        let covered = sessions.prefix(max(page.sessions.count, 0))
+        let rest = sessions.dropFirst(covered.count).filter { !fresh.contains($0.id) }
+        sessions = page.sessions + rest
+        if let facet = page.sources { sources = facet }
+    }
+
     @discardableResult
     public mutating func fail(_ message: String, for request: HistoryQuery) -> Bool {
         guard request.generation == generation else { return false }
@@ -114,7 +163,7 @@ public struct HistoryList: Equatable, Sendable {
     }
 
     public func grouped(now: Date, calendar: Calendar = .current) -> [(HistoryGroup, [HistorySession])] {
-        HistoryGroup.grouped(sessions, now: now, calendar: calendar)
+        HistoryGroup.grouped(archived ? sessions : sessions.filter { !$0.pinned }, now: now, calendar: calendar)
     }
 
     /// The filter's choices: what the server listed, else the usual ones.

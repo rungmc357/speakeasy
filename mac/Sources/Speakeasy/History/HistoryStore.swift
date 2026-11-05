@@ -12,6 +12,17 @@ protocol HistoryBackend: AnyObject {
     /// New chat; returns the new task's run id (or a session id).
     func startChat(text: String, clientID: String) async throws -> String?
     func answerApproval(sessionID: String, runID: String, choice: String) async throws
+    /// Rename / pin / archive / mark read (plugins from 0.3.34).
+    func act(_ action: HistorySessionAction, sessionID: String) async throws
+}
+
+/// What the row's context menu (and swipes) do to a conversation.
+enum HistorySessionAction: Equatable {
+    case rename(String), pin(Bool), archive(Bool), read
+}
+
+extension HistoryBackend {
+    func act(_ action: HistorySessionAction, sessionID: String) async throws {}
 }
 
 @MainActor
@@ -24,6 +35,14 @@ final class LiveHistoryBackend: HistoryBackend {
     func startChat(text: String, clientID: String) async throws -> String? { try await api.startChat(text: text, clientID: clientID) }
     func answerApproval(sessionID: String, runID: String, choice: String) async throws {
         try await api.answerSessionApproval(sessionID: sessionID, runID: runID, choice: choice)
+    }
+    func act(_ action: HistorySessionAction, sessionID: String) async throws {
+        switch action {
+        case .rename(let title): try await api.renameSession(sessionID, title: title)
+        case .pin(let on): try await api.pinSession(sessionID, pinned: on)
+        case .archive(let on): try await api.archiveSession(sessionID, archived: on)
+        case .read: try await api.markSessionRead(sessionID)
+        }
     }
 }
 
@@ -63,9 +82,17 @@ final class HistoryStore: ObservableObject {
 
     // MARK: List
 
+    /// The live history feed (plugins from 0.3.34); nil on demo backends.
+    private var feed: HistoryLiveFeed?
+
     func start() {
         guard supported, backend != nil else { return }
         if list.sessions.isEmpty && !list.loading { run(list.reset()) }
+        if feed == nil, let live = backend as? LiveHistoryBackend {
+            let api = live.api
+            feed = HistoryLiveFeed(api: { api }) { [weak self] event, sid in self?.liveChange(event, sessionID: sid) }
+        }
+        feed?.start()
         if clockTimer == nil {
             clockTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.tick() }
@@ -76,6 +103,7 @@ final class HistoryStore: ObservableObject {
     func stop() {
         clockTimer?.invalidate(); clockTimer = nil
         pollTask?.cancel(); pollTask = nil
+        feed?.stop()
         cancelVoice()
     }
 
@@ -83,6 +111,80 @@ final class HistoryStore: ObservableObject {
     func loadMore() { if let q = list.loadMore() { run(q) } }
     func retryList() { if let q = list.retry() { run(q) } }
     func setSource(_ id: String?) { if let q = list.setSource(id) { run(q) } }
+    func setArchived(_ on: Bool) { if let q = list.setArchived(on) { run(q) } }
+
+    // MARK: Row actions (context menu)
+
+    /// The last archive, for Undo (the toast).
+    @Published private(set) var undoArchive: (title: String, id: String)?
+    @Published private(set) var actionError: String?
+    private var undoTask: Task<Void, Never>?
+
+    /// Applied to the row at once, then sent; put back with a note if the server refuses.
+    func act(_ action: HistorySessionAction, on id: String) {
+        guard let backend else { return }
+        let before = list.sessions.first { $0.id == id }
+        var removed: (HistorySession, Int)?
+        switch action {
+        case .rename(let title):
+            let clean = title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            guard !clean.isEmpty else { return }
+            list.update(id) { $0.title = clean }
+            conversations[id]?.title = clean
+        case .pin(let on): list.update(id) { $0.pinned = on }
+        case .read: list.update(id) { $0.unread = false }
+        case .archive(let on):
+            removed = list.remove(id)
+            if on, let row = removed?.0 { showUndo(row.title, id) }
+            if target == .session(id), on { target = nil }
+        }
+        actionError = nil
+        Task { [weak self] in
+            do { try await backend.act(action, sessionID: id) } catch {
+                guard let self else { return }
+                if let removed { self.list.restore(removed.0, at: removed.1) }
+                else if let before { self.list.update(id) { $0 = before } }
+                self.actionError = Self.message(error)
+            }
+        }
+    }
+
+    private func showUndo(_ title: String, _ id: String) {
+        undoArchive = (title, id)
+        undoTask?.cancel()
+        undoTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.undoArchive = nil
+        }
+    }
+
+    func undoLastArchive() {
+        guard let undo = undoArchive, let backend else { return }
+        undoArchive = nil
+        Task { [weak self] in
+            try? await backend.act(.archive(false), sessionID: undo.id)
+            self?.refresh()
+        }
+    }
+
+    /// A change arrived on the live feed (another device, another Hermes app, a task finishing):
+    /// the list and the open page catch up now, never waiting for the next poll.
+    func liveChange(_ event: String, sessionID: String?) {
+        softRefresh()
+        if let open = target?.sessionID, sessionID == nil || sessionID == open || event == "history_changed" { load(open) }
+    }
+
+    /// The first page again without clearing what's shown (no flash): rows update in place.
+    private func softRefresh() {
+        guard let backend, !list.loading else { return }
+        var q = HistoryQuery(limit: HistoryList.pageSize, generation: list.generation)
+        q.q = list.activeQuery; q.source = list.source; q.archived = list.archived
+        Task { [weak self] in
+            guard let page = try? await backend.page(q), let self else { return }
+            self.list.merge(page, for: q)
+        }
+    }
 
     private func scheduleSearch() {
         searchTask?.cancel()
@@ -186,6 +288,11 @@ final class HistoryStore: ObservableObject {
             outbox.add(request, at: Date())
             transmit(request, backend)
         case .newChat(let text, let clientID):
+            if startingChat {
+                // The first message's chat is still starting: this one continues it once it has its
+                // session (never a second new chat).
+                queuedForNewChat.append((text, source)); return true
+            }
             startingChat = true; newChatError = nil
             Task { [weak self] in
                 do {
@@ -204,8 +311,15 @@ final class HistoryStore: ObservableObject {
     /// A new chat started: find its session (the row listing the new run, or the id itself) and
     /// open it. Hermes can take a moment to record the session.
     private func openStarted(_ ref: String?) async {
-        defer { startingChat = false }
+        defer { startingChat = false; flushQueuedForNewChat() }
         guard let backend, let ref else { refresh(); return }
+        if HistoryStore.isSessionID(ref), target == .newChat {
+            // Plugins from 0.3.34 name the session at once: the page becomes it now, so the next
+            // message continues it by id.
+            open(ref)
+            refresh()
+            return
+        }
         for attempt in 0..<10 {
             if attempt > 0 { try? await Task.sleep(nanoseconds: 1_000_000_000) }
             guard target == .newChat else { refresh(); return }   // the user moved on
@@ -219,6 +333,24 @@ final class HistoryStore: ObservableObject {
         }
         refresh()
         newChatError = "Started. It shows up in the list as soon as Hermes records it."
+    }
+
+    /// Messages typed into a New chat while its first was still starting.
+    private var queuedForNewChat: [(String, HistoryMessageRequest.Source)] = []
+
+    private func flushQueuedForNewChat() {
+        let queued = queuedForNewChat
+        queuedForNewChat = []
+        guard case .session = target else {
+            if let first = queued.first { drafts["new"] = first.0 }   // never lost: back in the composer
+            return
+        }
+        for (text, source) in queued { _ = deliver(text, source: source) }
+    }
+
+    /// A Hermes session id rather than a run id (run ids are `run_…` / `lr_…`).
+    nonisolated static func isSessionID(_ ref: String) -> Bool {
+        !(ref.hasPrefix("run_") || ref.hasPrefix("lr_") || ref.hasPrefix("job_"))
     }
 
     func retry(clientID: String) {

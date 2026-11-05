@@ -97,7 +97,27 @@ struct HistorySidebar: View {
             Rectangle().fill(Live.hairline).frame(height: 1)
             if !store.supported { updateNote } else { listBody }
         }
+        .overlay(alignment: .bottom) { undoToast }
         .onChange(of: store.focusSearch) { _, _ in searchFocused = true }
+    }
+
+    /// "Archived <title> · Undo" after an archive (6 s), or why a change didn't go through.
+    @ViewBuilder private var undoToast: some View {
+        if let undo = store.undoArchive {
+            HStack(spacing: 10) {
+                Text("Archived “\(undo.title)”").font(.system(size: 11.5)).lineLimit(1).truncationMode(.middle)
+                Button("Undo") { store.undoLastArchive() }.buttonStyle(.plain)
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Live.brassText)
+                    .accessibilityIdentifier("history-undo-archive")
+            }
+            .padding(.horizontal, 12).frame(height: 30)
+            .background(Capsule().fill(.regularMaterial))
+            .padding(.bottom, 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if let error = store.actionError {
+            Text(error).font(.system(size: 11)).foregroundStyle(Live.red).padding(8)
+                .background(Capsule().fill(.regularMaterial)).padding(.bottom, 12)
+        }
     }
 
     private var header: some View {
@@ -148,12 +168,18 @@ struct HistorySidebar: View {
 
     private var sourceMenu: some View {
             Menu {
-                Button { store.setSource(nil) } label: { Label("All sources", systemImage: store.list.source == nil ? "checkmark" : "") }
+                Button { store.setArchived(false); store.setSource(nil) } label: {
+                    Label("All sources", systemImage: store.list.source == nil && !store.list.archived ? "checkmark" : "")
+                }
                 Divider()
                 ForEach(store.list.shownFilters) { s in
-                    Button { store.setSource(s.id) } label: {
-                        Label(s.label, systemImage: store.list.source == s.id ? "checkmark" : "")
+                    Button { store.setArchived(false); store.setSource(s.id) } label: {
+                        Label(s.label, systemImage: store.list.source == s.id && !store.list.archived ? "checkmark" : "")
                     }
+                }
+                Divider()
+                Button { store.setArchived(!store.list.archived) } label: {
+                    Label("Archived", systemImage: store.list.archived ? "checkmark" : "archivebox")
                 }
             } label: {
                 HStack(spacing: 5) {
@@ -172,6 +198,7 @@ struct HistorySidebar: View {
     }
 
     private var sourceName: String {
+        if store.list.archived { return "Archived" }
         guard let id = store.list.source else { return "All sources" }
         return store.list.filterChoices.first { $0.id == id }?.label ?? id.capitalized
     }
@@ -179,26 +206,36 @@ struct HistorySidebar: View {
     @ViewBuilder private var listBody: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                if !store.list.pinned.isEmpty {
+                    Section {
+                        ForEach(store.list.pinned) { s in row(s) }
+                    } header: { sectionHeader("Pinned") }
+                }
                 ForEach(store.list.grouped(now: store.now), id: \.0.id) { group, sessions in
                     Section {
-                        ForEach(sessions) { s in
-                            HistoryRow(session: s, selected: store.target == .session(s.id), now: store.now,
-                                       query: store.list.activeQuery.isEmpty ? nil : store.list.activeQuery) { store.open(s.id) }
-                                .onAppear { if s.id == store.list.sessions.last?.id { store.loadMore() } }
-                        }
-                    } header: {
-                        Text(group.rawValue.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.9)
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 5)
-                            .background(HistoryLook.sidebar.opacity(0.97))
-                    }
+                        ForEach(sessions) { s in row(s) }
+                    } header: { sectionHeader(store.list.archived ? "Archived · " + group.rawValue : group.rawValue) }
                 }
                 footer.padding(.vertical, 12)
             }
             .padding(.bottom, 8)
         }
         .scrollIndicators(.automatic)
+    }
+
+    private func row(_ s: HistorySession) -> some View {
+        HistoryRow(session: s, selected: store.target == .session(s.id), now: store.now,
+                   query: store.list.activeQuery.isEmpty ? nil : store.list.activeQuery) { store.open(s.id) }
+            .onAppear { if s.id == store.list.sessions.last?.id { store.loadMore() } }
+            .contextMenu { HistoryRowMenu(session: s, store: store) }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.9)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 5)
+            .background(HistoryLook.sidebar.opacity(0.97))
     }
 
     @ViewBuilder private var footer: some View {
@@ -264,6 +301,10 @@ struct HistoryRow: View {
                             .foregroundStyle(Color.primary.opacity(selected ? 1 : 0.92))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
+                        if session.pinned {
+                            Image(systemName: "pin.fill").font(.system(size: 8.5)).foregroundStyle(.tertiary)
+                                .accessibilityLabel("Pinned")
+                        }
                         Text(HistoryLook.short(session.lastActivity, now: now)).font(.system(size: 10.5).monospacedDigit())
                             .foregroundStyle(.tertiary).fixedSize()
                     }
@@ -304,7 +345,11 @@ struct HistoryRow: View {
         switch session.state {
         case .running: LiveDot(color: Live.brass, size: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
         case .needsYou: Circle().fill(Live.amber).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
-        case .idle: EmptyView()
+        case .idle:
+            if session.unread {
+                Circle().fill(Color.accentColor).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
+                    .accessibilityLabel("Unread")
+            }
         }
     }
 
@@ -323,6 +368,50 @@ struct HistoryRow: View {
             from = r.upperBound
         }
         return s
+    }
+}
+
+/// Right-click on a row: the same actions as the phone's long-press menu.
+struct HistoryRowMenu: View {
+    let session: HistorySession
+    @ObservedObject var store: HistoryStore
+
+    var body: some View {
+        Button("Rename…") { HistoryRename.ask(session.title) { store.act(.rename($0), on: session.id) } }
+        Button(session.pinned ? "Unpin" : "Pin") { store.act(.pin(!session.pinned), on: session.id) }
+        if session.unread { Button("Mark as Read") { store.act(.read, on: session.id) } }
+        Divider()
+        Button("Copy Link") {
+            if let url = session.link {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            }
+        }
+        Divider()
+        if session.archived {
+            Button("Unarchive") { store.act(.archive(false), on: session.id) }
+        } else {
+            Button("Archive") { store.act(.archive(true), on: session.id) }
+        }
+    }
+}
+
+/// The rename sheet as a plain alert with a field (AppKit: works from a context menu).
+enum HistoryRename {
+    @MainActor static func ask(_ current: String, done: @escaping (String) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Rename conversation"
+        alert.informativeText = "The new name shows in every Hermes app."
+        let field = NSTextField(string: current)
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty, text != current { done(String(text.prefix(100))) }
+        }
     }
 }
 

@@ -133,6 +133,22 @@ def _merge_rooms(kept: str, heard: str) -> str:
         lines.pop(0)
     return "\n".join(lines)
 
+def _submodule(name: str) -> Any:
+    """One of this plugin's modules, imported lazily. Retried briefly: while Hermes re-imports the
+    plugin's files underneath the running server (reloader.py), the import machinery can raise
+    KeyError for a sibling module mid-swap. Seen live 16:26-16:28 as GET /voice/status 500s, which
+    the apps then showed as "can't reach your Hermes" while Tailscale was up."""
+    import importlib
+    for attempt in range(4):
+        try:
+            return importlib.import_module(f".{name}", __package__)
+        except KeyError:
+            if attempt == 3:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    raise ImportError(name)
+
+
 class HistoryEvents:
     """One device-wide event feed for the history: ``session_updated`` / ``session_archived`` /
     ``decision_resolved`` from the actions that cause them, and ``history_changed`` when the shared
@@ -2597,8 +2613,7 @@ class VoiceService:
         if self._codex_login is not None:
             ok, msg = self._codex_login(binary)
         else:
-            from .codex_transport import login_status
-            ok, msg = login_status(binary)
+            ok, msg = _submodule("codex_transport").login_status(binary)
         return binary is not None, ok, msg
 
     @staticmethod

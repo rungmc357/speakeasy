@@ -200,6 +200,8 @@ public struct WorkInfo: Equatable, Sendable {
     /// Nothing in it to read: a finished home command ("lights off") the server already counts as
     /// seen, so it never sits in New answers. The answer is still there when the job is opened.
     public var seen = false
+    /// Its question was answered (on any device): it waits on nobody (the plugin's one truth).
+    public var answered = false
     /// An earlier call's task kept on this call's list only for its pending draft or review card
     /// (the server marks it); it's not an answer of this conversation.
     public var carried = false
@@ -295,6 +297,7 @@ public struct WorkInfo: Equatable, Sendable {
         sessionID = nonEmpty(object["session_id"])
         setAside = object["set_aside"] as? Bool ?? false
         seen = object["seen"] as? Bool ?? false
+        answered = object["answered"] as? Bool ?? false
         carried = object["carried"] as? Bool ?? false
         followUps = FollowUp.list(json: object["follow_ups"])
         if status == "waiting_on_task", let waiting = object["waiting"] as? [String: Any] {

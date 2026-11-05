@@ -1621,7 +1621,9 @@ class SidebandWorker:
             return previous[0]
         delegation_id = "answer_" + secrets.token_hex(8)
         answers[key] = (delegation_id, now)
-        self.question_answered(task_id)
+        answered = getattr(self, "question_answered", None)
+        if callable(answered):
+            answered(task_id)
         self.delegations.add(delegation_id)
         self.last_handoff_at = time.monotonic()
         self.touch()
