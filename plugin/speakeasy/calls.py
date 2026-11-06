@@ -16,8 +16,11 @@ import functools
 import hashlib
 import json
 import logging
+import mimetypes
+import os
 import queue
 import secrets
+import stat
 import threading
 import time
 from collections import deque
@@ -209,6 +212,9 @@ MAX_TASKS = 8
 MAX_BOARD = 12
 ACTIVE_RUN_STATES = {"admitting", "running", "working", "waiting_for_approval", "resolving_approval",
                      "cancel_requested", "waiting_on_task"}
+# A follow-up to a task in one of these states (Retry, "try again") takes that task's pictures and
+# files again (carry_failed_shared): the failed run may never have reached Hermes with them.
+RETRY_CARRY_STATES = {"failed", "interrupted"}
 CONTINUITY_WAIT_S = 600
 THREAD_OPEN_WAIT_S = 20
 # Thread tasks whose answer this process is waiting for right now, with when the wait began
@@ -3324,6 +3330,63 @@ class SidebandWorker:
             return bool(shared.pictures or shared.files) or (self.share_refs[base] and shared.capture is not None)
         return self.shares_with_task(task_id)
 
+    def carry_failed_shared(self, task_id: str, failed_key: str) -> int:
+        """A follow-up to a task that failed or was cut off (Retry, "try again", a typed follow-up)
+        takes the pictures and files that task carried, from Speakeasy's saved copies, as if they
+        had been attached again: the run that failed may never have reached Hermes, so the new one
+        must not go with words only. Anything the follow-up already carries is kept (same content
+        isn't added twice) and the total stays within MAX_ATTACHMENTS; screen captures are not
+        carried (the screen has moved on; a call that is sharing takes a fresh one). Never a capture
+        of its own. Returns how many were carried."""
+        folder = self.rt.shared
+        if folder is None:
+            return 0
+        base = _base(task_id)
+        attachments = self.interaction.attachments
+        have = attachments.bound(base)
+        seen = {Path(a.path).parent.name for a in have if a.path}
+        seen |= {hashlib.sha256(a.data).hexdigest()[:32] for a in have if a.data}
+        room = A.MAX_ATTACHMENTS - len(have)
+        carried: list[Attachment] = []
+        for item in self.store.shared_items(failed_key):
+            kind, path = item.get("kind"), item.get("path")
+            if room <= 0:
+                break
+            if kind not in {"picture", "file"} or not path or not folder.owns(path):
+                continue
+            digest = Path(path).parent.name
+            if digest in seen:
+                continue
+            try:
+                info = os.lstat(path)
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                if kind == "picture":
+                    if info.st_size > A.MAX_IMAGE_BYTES:
+                        continue
+                    data = Path(path).read_bytes()
+                    mime = "image/png" if data.startswith(b"\x89PNG") else "image/jpeg"
+                    found = Attachment("att_" + secrets.token_hex(8), "picture", mime, len(data),
+                                       name=item.get("name"), app=item.get("app"), data=data)
+                else:
+                    mime = mimetypes.guess_type(Path(path).name)[0] or "application/octet-stream"
+                    found = Attachment("att_" + secrets.token_hex(8), "file", mime, info.st_size,
+                                       name=item.get("name"), path=path)
+            except OSError as exc:  # its copy is gone (cleared, expired): the retry goes without it
+                logger.info("speakeasy: a failed task's shared copy is gone (%s)", type(exc).__name__)
+                continue
+            seen.add(digest)
+            carried.append(found)
+            room -= 1
+        if not carried:
+            return 0
+        attachments.attach_bound(base, carried)
+        if base not in self.share_refs:  # a typed or tapped retry: nothing bound it yet
+            self.share_refs[base] = False
+            self.no_capture.add(base)
+        logger.info("speakeasy: a retry of a failed task carries its %d picture(s) or file(s) again", len(carried))
+        return len(carried)
+
     def forgo_capture(self, task_id: str) -> None:
         """This request goes somewhere a capture may not (a group chat, a thread, a topical channel) and
         its words don't need one: its capture is discarded and none is asked for at task start."""
@@ -3751,6 +3814,8 @@ class SidebandWorker:
             await self.start_task(delegation_id, revision, context, part.request)
             return
         earlier = notice_text(self.store.request_text(key), 200) or "an earlier request"
+        if status in RETRY_CARRY_STATES:
+            self.carry_failed_shared(delegation_id, key)  # a retry takes the pictures and files again
         placed = self.store.continued_for(key)
         sharing = self.shares_with_task(delegation_id)
         self.store.link_job(self._idem(delegation_id, revision), key)  # whatever it starts is this job
