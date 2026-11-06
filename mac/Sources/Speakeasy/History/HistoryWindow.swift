@@ -191,7 +191,9 @@ enum DemoHistory {
                                   args: "npx playwright test checkout.spec.ts --repeat-each=50")]),
                 bot("m4", ago(1), "Changed the test to wait for the mock. Running it 50 times now: 31 passes so far, no failures."),
             ], jobs: [["run_id": "run_0012", "status": "running", "title": "Fix the flaky checkout test",
-                       "short_status": "Rerunning the checkout test: 31 of 50", "step_index": 3, "step_count": 4, "subagents": [
+                       "short_status": "Rerunning the checkout test: 31 of 50",
+                       "now_line": "Running the checkout test 50 times · 31 passed so far",
+                       "so_far": "Found the fixed 500 ms wait, made the test wait for the mock, started the repeat run", "subagents": [
                 ["id": "h1", "title": "Check the other payment tests", "status": "done", "goal": "Look for the same fixed wait in the other payment specs",
                  "started_at": ago(5), "ended_at": ago(3.5), "summary": "Two more specs wait 500 ms for the mock: refund.spec.ts and saved-card.spec.ts."],
                 ["id": "h2", "title": "Find when the wait was added", "status": "running", "started_at": ago(4), "now": "Reading git blame for checkout.spec.ts"]]]])
@@ -323,6 +325,11 @@ enum HistoryShots {
                 store.open("s_flaky")
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 store.openSections = ["s_flaky|m4", "s_flaky|m4|b2", "s_flaky|call|m1"]
+            }
+            await shot("1b-task-live-line") {
+                // A running task opened from the panel: its card at the end, with the live line and So far.
+                store.openSections = []
+                store.open("s_flaky")
             }
             await shot("2-approval") { store.openSections = []; store.open("s_deploy") }
             await shot("3-question-search") {

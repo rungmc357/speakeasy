@@ -1030,11 +1030,18 @@ struct HistoryTaskCard: View {
                 Spacer(minLength: 6)
                 Text(word).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint)
             }
-            if running, let now = job.shortStatus ?? job.activity.last?.text, !now.isEmpty {
+            // What it is doing now, from its real steps (the plugin's live line), then what it has done
+            // so far. Never the opening plan: that was a guess made at handoff.
+            if running, let now = Self.nowLine(job) {
                 HStack(spacing: 6) {
                     LiveDot(color: Live.brass, size: 6)
                     Text(now).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
                 }
+                .accessibilityIdentifier("history-task-now-line")
+            }
+            if running, let soFar = Self.soFar(job) {
+                Text("So far: \(soFar)").font(.system(size: 11.5)).foregroundStyle(.tertiary).lineLimit(2)
+                    .accessibilityIdentifier("history-task-so-far")
             }
             if job.status == "failed", let why = job.failureReason ?? job.failure?.text {
                 Text(why).font(.system(size: 12)).foregroundStyle(Live.red).lineLimit(3)
@@ -1046,6 +1053,9 @@ struct HistoryTaskCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("history-task-card")
     }
+
+    static func nowLine(_ job: WorkInfo) -> String? { TaskLiveLine.now(job) }
+    static func soFar(_ job: WorkInfo) -> String? { TaskLiveLine.soFar(job) }
 
     private var word: String {
         switch job.status {

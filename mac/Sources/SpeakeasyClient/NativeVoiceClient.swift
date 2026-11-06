@@ -219,6 +219,7 @@ public final class NativeVoiceClient: VoiceCallClient {
             return try? await api.image(runID: runID, index: number)
         }
         model.onSelectTask = { [weak self] id in self?.selectTask(id) }
+        model.onOpenTask = { [weak self] id in self?.openTask(id) }
         model.onOpenJob = { [weak self] id in self?.openJob(id) }
         model.onTellJob = { [weak self] id in self?.tellJob(id) }
         model.deliverMessage = { [weak self] message, done in
@@ -1385,10 +1386,43 @@ public final class NativeVoiceClient: VoiceCallClient {
         surface.focus()
     }
 
-    /// Open a job from the board (nil = back to the board). The call is told which job is on screen,
-    /// so "do the first one" goes there; leaving the job clears it.
+    /// Opens a session page (the History window), set by the app. Every way into a task lands there
+    /// (`VisualTaskRoute`); the panel's own job page is only the fallback.
+    public var openSessionPage: ((String) -> Void)?
+
+    /// The session page standing in for a job's or task's old page, or nil to keep the panel's.
+    private func visualSession(job: Job? = nil, taskID: String? = nil) -> String? {
+        guard !previewMode, openSessionPage != nil else { return nil }
+        let history = model.capabilities?.history == true
+        if let job { return VisualTaskRoute.sessionID(for: job, historySupported: history) }
+        if let taskID {
+            return VisualTaskRoute.sessionID(forTask: taskID, in: model.jobs, tasks: model.state.tasks, historySupported: history)
+        }
+        return nil
+    }
+
+    /// One task from the task list: its session page, else the panel's task view.
+    private func openTask(_ id: String) {
+        if let session = visualSession(taskID: id) {
+            if let job = model.jobs.first(where: { j in j.tasks.contains { $0.id == id } }) { model.markAnswerSeen(job) }
+            openSessionPage?(session)
+            return
+        }
+        selectTask(id)
+    }
+
+    /// Open a job from the board (nil = back to the board). It opens in its session page when it has
+    /// one (live line, So far, tool steps, helpers, approvals); otherwise in the panel, where the call
+    /// is told which job is on screen, so "do the first one" goes there; leaving the job clears it.
     private func openJob(_ id: String?) {
         guard let id, let job = model.jobs.first(where: { $0.id == id }) else { closeJob(); return }
+        if let session = visualSession(job: job) {
+            if model.selectedJobID != nil { closeJob() }
+            model.boardFocusID = id
+            model.markAnswerSeen(job)
+            openSessionPage?(session)
+            return
+        }
         if model.showsSlim { model.slim = false }
         model.selectedTaskID = nil
         model.selectedJobID = id
