@@ -182,7 +182,7 @@ public enum JobAnswer {
     }
 
     /// Kinds a board tile can draw small, best first.
-    public static let glanceKinds = ["chart", "weather", "quote", "comparison", "stats", "fact", "conversion", "math", "progress"]
+    public static let glanceKinds = ["chart", "weather", "quote", "comparison", "stats", "fact", "conversion", "math"]
 
     /// The result card the board tile shows small, when one has something to draw.
     public static func glanceCard(_ info: WorkInfo) -> ViewCard? {
@@ -200,7 +200,6 @@ public enum JobAnswer {
         case "fact": return c["value"].string != nil
         case "conversion": return c["to_value"].string != nil
         case "math": return c["result"].string != nil
-        case "progress": return c["value"].double != nil && (c["total"].double ?? 0) > 0
         default: return false
         }
     }
