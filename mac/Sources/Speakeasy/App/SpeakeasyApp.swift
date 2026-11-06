@@ -152,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.supported = caps?.history ?? false
                     self.history.store.modelsSupported = caps?.modelChoice ?? false
                     self.history.store.schedulesSupported = caps?.schedules ?? false
+                    self.history.store.boardsSupported = caps?.boards ?? false
                 }
             }
             .store(in: &bag)
@@ -573,6 +574,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.supported = app.status?.capabilities?.history ?? false
         store.modelsSupported = app.status?.capabilities?.modelChoice ?? false
         store.schedulesSupported = app.status?.capabilities?.schedules ?? false
+        if store.board.backend == nil { store.board.backend = LiveBoardBackend { [weak self] in self?.native.api } }
+        store.boardsSupported = app.status?.capabilities?.boards ?? false
         store.setCallLive(native.model.state.connection.isInCall)
         history.show()
         if let session { store.open(session) }

@@ -97,6 +97,9 @@ struct HistorySidebar: View {
             if store.supported && store.schedulesSupported {
                 ScheduledSidebarRow(store: store, schedules: store.schedules).padding(.horizontal, 6).padding(.bottom, 6)
             }
+            if store.supported && store.boardsSupported {
+                BoardSidebarRow(store: store, board: store.board).padding(.horizontal, 6).padding(.bottom, 6)
+            }
             Rectangle().fill(Live.hairline).frame(height: 1)
             if !store.supported { updateNote } else { listBody }
         }
@@ -232,7 +235,7 @@ struct HistorySidebar: View {
     }
 
     private func row(_ s: HistorySession) -> some View {
-        HistoryRow(session: s, selected: !store.showingSchedules && store.target == .session(s.id), now: store.now,
+        HistoryRow(session: s, selected: !store.showingSchedules && !store.showingBoard && store.target == .session(s.id), now: store.now,
                    query: store.list.activeQuery.isEmpty ? nil : store.list.activeQuery) { store.open(s.id) }
             .onAppear { if s.id == store.list.sessions.last?.id { store.loadMore() } }
             .contextMenu { HistoryRowMenu(session: s, store: store) }
@@ -456,6 +459,8 @@ struct HistoryDetailPane: View {
         VStack(spacing: 0) {
             if store.showingSchedules {
                 SchedulesPane(store: store, schedules: store.schedules)
+            } else if store.showingBoard {
+                BoardPane(store: store, board: store.board)
             } else {
             switch store.target {
             case .none: placeholder
