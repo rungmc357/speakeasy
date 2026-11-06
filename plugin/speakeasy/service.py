@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from . import __version__
 from . import attachments as A
+from . import questions as Q
 from . import transcribe as T
 from . import delivery as D
 from . import duck as duck_mod
@@ -120,6 +121,10 @@ CAPABILITIES["codex_login"] = True
 # Decision cards: POST /voice/tasks/{run_id}/question/{dismiss|undo}, history messages may name the
 # question they answer ("answers": run_id), and work carries question_closed (dismissed | moved_on).
 CAPABILITIES["question_actions"] = True
+# One question state (SPK-79): work carries question_state (open / answered / set_aside / dismissed /
+# moved_on / expired / superseded), every close publishes decision_resolved and withdraws the Needs you
+# push, and POST /voice/tasks/{run_id}/question/answer {text, client_id} answers by run id, no call needed.
+CAPABILITIES["question_state"] = True
 # mode "steer" | "queue" on POST /voice/work/{id}/message and /voice/history/{id}/message: a message to a
 # running task goes into it now (steer, the default) or waits and is sent as the next turn once it is done
 # (queue). Session pages and tasks list held messages (``queued``); DELETE cancels one, .../steer sends it now.
@@ -339,6 +344,7 @@ class VoiceService(SecureInputMixin):
         # session page, board, widgets and Live Activity refresh within ~1-2 s of a change anywhere.
         self.history_events = HistoryEvents(self._history_stamp)
         self.rt.history_events = self.history_events
+        Q.wire(self.store, self.rt)  # every closed question: decision_resolved + the push withdrawn
         self._suggest_run = suggest_run or self._brief_run
         self.brief = BriefManager(self.home, brief_run or self._brief_run, self.settings.get,
                                   error_fn=lambda: getattr(self.hermes, "last_error", "") or "")
@@ -939,6 +945,7 @@ class VoiceService(SecureInputMixin):
                 logger.warning("speakeasy: idle check failed: %s", type(exc).__name__)
             ticks += 1
             self._drain_quietly()  # held messages whose task settled while nothing was listening
+            self.sweep_questions(force=True)  # questions that closed by themselves (moved on, a day old)
             if ticks % 4 == 0:  # about once a minute
                 self.settle_stuck_tasks()
                 self.expire_staged()
@@ -2331,43 +2338,49 @@ class VoiceService(SecureInputMixin):
 
     def _open_questions(self, keys: list[str], now: float | None = None) -> list[str]:
         """The tasks whose question a conversation still waits on (idem keys, newest first). The single
-        rule every surface uses (the list's Needs you, the session page's cards, the board): each
-        thread of work (a Hermes session) can wait on its newest task's question only (a reply or a
-        follow-up after it moved on); two threads' questions are independent. A question isn't open once
-        answered, set aside, dismissed, superseded, asked and answered on another task, over a day old,
-        or when the conversation went on without it (a newer message in its session, or in the chat a
-        linked task continued). Closures found here are recorded (``moved_on``) and published, so the
-        board, notifications and Live Activity clear too."""
+        rule every surface uses (the list's Needs you, the session page's cards, the board): a question
+        is open only while its recorded state is ``open`` (Store.close_question is the one way out),
+        and each thread of work (a Hermes session) waits on its newest task's question only; two
+        threads' questions are independent. A read never writes: the sweep (``sweep_questions``, on
+        the idle loop) records what this hides (superseded, expired, moved on) and tells every client."""
+        return [r["key"] for r in self._question_scan(keys, now)[0]]
+
+    def _question_scan(self, keys: list[str], now: float | None = None
+                       ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
+        """(open rows newest first, [(key, close reason)] the sweep should record). Moved-on checks
+        read the Hermes state DB, so only the sweep asks for them (``moved_on`` closes)."""
         rows = self.store.question_rows(list(dict.fromkeys(keys)))
         if not rows:
-            return []
+            return [], []
         now = time.time() if now is None else now
         answered = {r["question"] for r in rows if r["set_aside"] and r["question"]}
         groups: dict[str, list[dict[str, Any]]] = {}
         for r in rows:
             groups.setdefault(r["session_id"] or r["key"], []).append(r)
         out: list[dict[str, Any]] = []
-        closed: list[dict[str, Any]] = []
+        closes: list[tuple[str, str]] = []
         for group in groups.values():
             newest = max(group, key=lambda r: (r["created"], r["rowid"]))
             for r in group:
-                if not r["question"] or r["set_aside"] or r["closed"] or r["dismissed"]:
+                if r.get("state", "open") != "open" or r["dismissed"]:
+                    if r.get("state") == "open" and r["dismissed"]:
+                        closes.append((r["key"], "superseded"))  # its row was replaced by a follow-up
                     continue
                 if r is not newest:
-                    closed.append(r)  # a newer task of the same thread moved on
+                    closes.append((r["key"], "superseded"))  # a newer task of the same thread went on
                     continue
-                if (r["question"] in answered or r["status"] not in {"completed", "running", "working"}
-                        or now - r["created"] >= self.QUESTION_KEPT_S):
+                if r["question"] in answered:
+                    closes.append((r["key"], "answered"))  # the same question, answered on a twin
                     continue
-                if self._question_moved_on(r):
-                    closed.append(r)
+                if now - r["created"] >= self.QUESTION_KEPT_S:
+                    closes.append((r["key"], "expired"))
+                    continue
+                if r["status"] not in {"completed", "running", "working"}:
+                    closes.append((r["key"], "expired"))  # its task failed or stopped: nothing to answer
                     continue
                 out.append(r)
-        for r in closed:
-            if r["status"] in {"completed", "running", "working"} and now - r["created"] < self.QUESTION_KEPT_S:
-                self._close_question(r["key"], "moved_on")
         out.sort(key=lambda r: (r["created"], r["rowid"]), reverse=True)
-        return [r["key"] for r in out]
+        return out, closes
 
     def _question_moved_on(self, row: dict[str, Any]) -> bool:
         """The conversation went on after this task asked: the user wrote in its own session again,
@@ -2381,44 +2394,61 @@ class VoiceService(SecureInputMixin):
         return any(H.moved_on_after(self.rt.state_db, s, after, replies=True) for s in sources)
 
     def _close_question(self, key: str, reason: str) -> bool:
-        """Record a question closed unanswered and tell every client (decision_resolved clears the
-        card, the board's Needs you, a delivered notification and the Live Activity)."""
+        """Close a question (Store.close_question: the hook tells every client and withdraws the
+        push) and refresh the boards of live calls."""
         if not self.store.close_question(key, reason):
             return False
-        row = self.store.run_row(key) or {}
-        events = getattr(self.rt, "history_events", None)
-        if events is not None:
-            for sid in {row.get("session_id"), self.store.linked_source(key)} - {None}:
-                events.publish("decision_resolved", {"run_id": row.get("run_id"), "session_id": sid})
         try:
             self._republish_all()
         except Exception:
             logger.debug("speakeasy: republish after a closed question failed", exc_info=True)
         return True
 
-    def sweep_questions(self, force: bool = False) -> None:
-        """Close every open question whose conversation moved on (throttled; read paths call it, so
-        the board and the apps agree without a page being open)."""
+    def _settle_questions(self, keys: list[str]) -> int:
+        """Record, through the one close path, every question among *keys* that is no longer open.
+        The sweep runs it for each thread; a session page runs it for the thread it is about to show,
+        so the page and every other device agree the moment the page loads."""
+        still_open, closes = self._question_scan(keys)
+        closes += [(r["key"], "moved_on") for r in still_open if self._question_moved_on(r)]
+        return sum(bool(self.store.close_question(k, reason)) for k, reason in closes)
+
+    def sweep_questions(self, force: bool = False) -> int:
+        """Record every open question that is no longer open: replaced by a newer task of its thread
+        (superseded), a day old or on a failed task (expired), or its conversation went on (moved on).
+        Runs on the idle loop every IDLE_CHECK_S, so a card, the push and the Live Activity clear
+        with no page open; read paths kick it too (throttled). Returns how many closed."""
         now = time.monotonic()
         last = self.__dict__.get("_question_sweep_at")
         if not force and last is not None and now - last < self.QUESTION_SWEEP_S:
-            return
+            return 0
         self.__dict__["_question_sweep_at"] = now
+        closed = 0
         try:
             seen: set[str] = set()
-            for key in self.store.open_question_candidates(time.time() - self.QUESTION_KEPT_S):
+            for key in self.store.open_question_candidates(0.0):
                 if key in seen:
                     continue
                 sid = self.store.session_for(key)
                 group = [k for k, _, _ in self.store.keys_for_session(sid)] if sid else [key]
+                group = group or [key]
                 seen.update(group)
-                self._open_questions(group or [key])
+                closed += self._settle_questions(group)
         except Exception:
             logger.warning("speakeasy: question sweep failed", exc_info=True)
+        if closed:
+            try:
+                self._republish_all()
+            except Exception:
+                logger.debug("speakeasy: republish after the question sweep failed", exc_info=True)
+        return closed
 
     def question_action(self, run_id: str, action: str, body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /voice/tasks/{run_id}/question/{dismiss|undo}``: the ✕ on a decision card closes it on
-        every device without telling the agent anything; ``undo`` (the toast's Undo) puts it back."""
+        """``POST /voice/tasks/{run_id}/question/{dismiss|undo|answer}``: the ✕ on a decision card closes it
+        on every device without telling the agent anything; ``undo`` (the toast's Undo) puts it back;
+        ``answer`` ``{text, client_id?}`` is a tapped option or a typed answer, addressed by the run id
+        alone, so it reaches the task from the board with no call open (``question_answer``)."""
+        if action == "answer":
+            return self.question_answer(run_id, body)
         if not ID_RE.fullmatch(run_id) or not isinstance(body, dict) or body:
             raise ServiceError(400, "body must be empty")
         key = self.store.key_for_run(run_id)
@@ -2436,6 +2466,38 @@ class VoiceService(SecureInputMixin):
             events.publish("history_changed", {"run_id": run_id, "session_id": row.get("session_id")})
         self._republish_all()
         return {"run_id": run_id, "question": "open"}
+
+    def question_answer(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The answer to one task's question, by run id. It goes to the task the same way a message
+        typed on its page does (the follow-up that carries the answer, idempotent on client_id), and
+        the question closes as answered on every device even when the task had already settled some
+        other way (a tap on a card that just moved on is still the user's answer). 409 when the
+        question was already answered; 404 for an unknown run."""
+        if not ID_RE.fullmatch(run_id or "") or not isinstance(body, dict) or not set(body) <= {"text", "client_id"}:
+            raise ServiceError(400, "Send the answer as text.")
+        key = self.store.key_for_run(run_id)
+        if key is None:
+            raise ServiceError(404, "task not found")
+        state = self.store.question_state(key)
+        if state is None:
+            raise ServiceError(409, "That task isn't asking anything.", reason="no_question")
+        client_id = body.get("client_id")
+        if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
+            raise ServiceError(400, "client_id must be an id.")
+        if state == "answered" and not self._sent_before(client_id):
+            raise ServiceError(409, "That question was already answered.", reason="answered")
+        got = self.task_message(run_id, {"text": body.get("text"), "source": "typed",
+                                         **({"client_id": client_id} if client_id else {})})
+        self.store.close_question(key, "answered")
+        self._republish_all()
+        return {**got, "question": "answered"}
+
+    def _sent_before(self, client_id: str | None) -> bool:
+        """A retry of a message already taken (same client_id): it gets the first reply again."""
+        if not client_id:
+            return False
+        with self._message_lock:
+            return client_id in self._message_replies
 
     # Cached history replies: the apps poll an open page every few seconds and the list every ~12 s,
     # and state.db can be many GB. A reply is reused while nothing it depends on changed (H.fingerprint
@@ -2567,6 +2629,8 @@ class VoiceService(SecureInputMixin):
         if said:
             entries = [{**e, "voice": True} if e.get("kind") == "user" and H.said_key(e.get("text") or "") in said
                        else e for e in entries]
+        if self._settle_questions(keys):
+            self._republish_all()
         open_keys = set(self._open_questions(keys))
         jobs = []
         for key in keys[:8]:

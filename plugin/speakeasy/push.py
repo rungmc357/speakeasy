@@ -174,6 +174,7 @@ class PushNotifier:
         self._seen: dict[str, float] = {}
         self._streams: dict[str, int] = {}
         self._events: dict[str, dict[str, Any]] = {}
+        self._withdrawn: dict[str, float] = {}  # needs_you keys that closed (never woken for again)
         self._lock = threading.Lock()
         self.queue: "queue.Queue[tuple[str, dict[str, str]]] | None" = None
         if background:
@@ -239,7 +240,29 @@ class PushNotifier:
             found = self._events.get(event_id) if EVENT_ID_RE.fullmatch(event_id or "") else None
         if not found or found["device_id"] != device_id or now - found["created_at"] > EVENT_TTL_S:
             raise ServiceError(404, "not found")
-        return {k: found[k] for k in ("kind", "title", "body", "run_id", "thread_id")}
+        out = {k: found[k] for k in ("kind", "title", "body", "run_id", "thread_id")}
+        if found.get("resolved"):
+            # Answered or closed since it was sent: the extension shows that, never "Needs you".
+            out.update({"resolved": True, "title": found["title"].replace(f"{PREFIX['needs_you']}: ", "", 1),
+                        "body": "Already handled."})
+        return out
+
+    def withdraw(self, key: str) -> int:
+        """The thing a ``needs_you`` notification asked about closed (answered, dismissed, moved on,
+        expired, replaced). The relay can't take back a delivered alert, so: the extension's text for
+        it now says it was handled, the app clears it from Notification Center by its ``thread_id``
+        on the next decision_resolved / launch, and a later wake for the same key never goes out.
+        Returns how many kept events were marked."""
+        marked = 0
+        with self._lock:
+            self._withdrawn[key] = time.time()
+            while len(self._withdrawn) > MAX_EVENTS:
+                del self._withdrawn[next(iter(self._withdrawn))]
+            for event in self._events.values():
+                if event.get("key") == key and event.get("kind") == "needs_you" and not event.get("resolved"):
+                    event["resolved"] = True
+                    marked += 1
+        return marked
 
     def _keep(self, event: dict[str, Any]) -> str:
         event_id = secrets.token_urlsafe(18)
@@ -259,6 +282,9 @@ class PushNotifier:
         (one notification per device per task event). Returns the device ids queued."""
         if kind not in KINDS or not self.config()["enabled"]:
             return []
+        with self._lock:
+            if kind == "needs_you" and key in self._withdrawn:
+                return []  # it closed before the wake went out (answered on another device)
         sent: list[str] = []
         try:
             targets = self.devices.push_targets()
@@ -273,7 +299,7 @@ class PushNotifier:
                 continue
             if not self.claim(f"push:{device_id}:{kind}:{key}"):
                 continue
-            event_id = self._keep({"device_id": device_id, **text})
+            event_id = self._keep({"device_id": device_id, "key": key, **text})
             payload = {"device_token": push["apns_token"], "environment": push.get("environment", "production"),
                        "kind": kind, "nonce": secrets.token_urlsafe(18), "collapse_id": text["thread_id"],
                        "event_id": event_id}

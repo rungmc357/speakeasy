@@ -733,7 +733,7 @@ class Handler(BaseHTTPRequestHandler):
             if aside:
                 self._reply(200, self.service.set_aside(aside.group(1), self._body()))
                 return
-            question = re.fullmatch(rf"/voice/tasks/{_ID}/question/(dismiss|undo)", path)
+            question = re.fullmatch(rf"/voice/tasks/{_ID}/question/(dismiss|undo|answer)", path)
             if question:
                 self._reply(200, self.service.question_action(question.group(1), question.group(2), self._body()))
                 return
