@@ -51,7 +51,7 @@ def test_kanban_sessions_list_by_default_with_their_own_filter(server, state):
     assert row["source"] == "kanban" and row["source_label"] == "Kanban" and row["automated"] is True
     assert {"id": "kanban", "label": "Kanban"} in page["filters"]
     assert {"source": "kanban", "count": 1} in page["sources"]
-    assert page["automated"] == {"count": 2, "hidden": False}   # the worker + the scheduled run
+    assert {k: page["automated"][k] for k in ("count", "hidden")} == {"count": 2, "hidden": False}   # worker + scheduled run
     only = get(server, "/voice/history?source=kanban")[1]["sessions"]
     assert [s["id"] for s in only] == ["kan1"]
 
@@ -61,12 +61,68 @@ def test_automated_work_hides_with_one_switch(server, state):
     page = get(server, "/voice/history?automated=0")[1]
     ids = [s["id"] for s in page["sessions"]]
     assert "kan1" not in ids and "cron1" not in ids and "d1" in ids
-    assert page["automated"] == {"count": 2, "hidden": True}
+    assert {k: page["automated"][k] for k in ("count", "hidden")} == {"count": 2, "hidden": True}
     assert not {"kanban", "scheduled"} & {c["source"] for c in page["sources"]}
     # Searching hides them too; asking for the Kanban filter by name still lists them.
     assert get(server, "/voice/history?automated=0&q=wick")[1]["sessions"] == []
     assert [s["id"] for s in get(server, "/voice/history?automated=0&source=kanban")[1]["sessions"]] == ["kan1"]
     assert [s["id"] for s in get(server, "/voice/history?automated=0&source=scheduled")[1]["sessions"]] == ["cron1"]
+
+
+# -- the filter menu (SPK-72): each kind on its own, helpers off by default -----------------------
+
+
+def helper(path, sid="sub2", at=NOW - 15):
+    add_session(path, sid, "subagent", title="Subagent: Measure the lantern glass", parent="d1", at=at)
+    add_msg(path, sid, "user", "Measure the lantern glass and report the height.", at=at - 30)
+    add_msg(path, sid, "assistant", "The glass is 6 in tall.", at=at)
+
+
+def test_the_menu_kinds_carry_counts_and_what_is_shown(server, state):
+    worker(state)
+    helper(state)
+    kinds = get(server, "/voice/history")[1]["automated"]["kinds"]
+    assert kinds == [{"id": "kanban", "label": "Board workers", "count": 1, "shown": True},
+                     {"id": "scheduled", "label": "Scheduled jobs", "count": 1, "shown": True},
+                     {"id": "helpers", "label": "Background helpers", "count": 2, "shown": False}]
+
+
+def test_each_kind_hides_on_its_own(server, state):
+    worker(state)
+    page = get(server, "/voice/history?hide=kanban")[1]
+    ids = [s["id"] for s in page["sessions"]]
+    assert "kan1" not in ids and "d1" in ids
+    facet = {c["source"] for c in page["sources"]}
+    assert "kanban" not in facet and "scheduled" in facet, "only the board workers' filter goes"
+    assert page["automated"]["hidden"] is False
+    assert [k["shown"] for k in page["automated"]["kinds"]] == [False, True, False]
+    page = get(server, "/voice/history?hide=scheduled")[1]
+    assert "kan1" in [s["id"] for s in page["sessions"]]
+    assert "scheduled" not in {c["source"] for c in page["sources"]}
+    both = get(server, "/voice/history?hide=kanban,scheduled,nonsense")[1]
+    assert both["automated"]["hidden"] is True and "kan1" not in [s["id"] for s in both["sessions"]]
+
+
+def test_background_helpers_list_only_when_asked(server, state):
+    helper(state)
+    plain = get(server, "/voice/history")[1]
+    assert not {"sub1", "sub2"} & {s["id"] for s in plain["sessions"]}
+    assert "helpers" not in {c["source"] for c in plain["sources"]}
+    assert get(server, "/voice/history?q=lantern+glass")[1]["sessions"] == [], "not found by search either"
+    page = get(server, "/voice/history?helpers=1")[1]
+    rows = {s["id"]: s for s in page["sessions"]}
+    row = rows["sub2"]
+    assert row["title"] == "Measure the lantern glass" and row["source_label"] == "Helper" and row["automated"] is True
+    assert "sub1" in rows, "a helper whose parent is gone lists too"
+    assert {"source": "helpers", "count": 2} in page["sources"]
+    assert page["automated"]["kinds"][2]["shown"] is True
+    assert page["automated"]["count"] == 1, "the older count stays board workers + scheduled jobs (the cron run)"
+    only = get(server, "/voice/history?helpers=1&source=helpers")[1]["sessions"]
+    assert {s["id"] for s in only} == {"sub1", "sub2"}
+    assert [s["id"] for s in get(server, "/voice/history?helpers=1&q=lantern+glass")[1]["sessions"]] == ["sub2"]
+    # Opening one works like any other automated session.
+    status, body = get(server, "/voice/history/sub2")
+    assert status == 200 and body["session"]["automated"] is True and body["session"]["source_label"] == "Helper"
 
 
 def test_automated_rows_are_never_unread(server, state):

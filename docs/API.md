@@ -1057,11 +1057,15 @@ titles and chat names; `search` says which ran (`fts`, or `like` when the index 
   these as source filters and hide the filter row when there's one source (added after plugin 0.3.33;
   older plugins don't send it and the apps fall back to the sources of the rows they've loaded).
 
-- `automated=0` hides automated work (Kanban board workers, `kanban`; scheduled jobs, `cron`) from
-  the list, the search and `sources`, unless `source` names one of them (`source=kanban`). The reply's
-  `automated: {count, hidden}` says how many automated sessions there are (the apps offer their
-  show/hide switch only when `count` > 0) and whether they were hidden. Automated rows carry
-  `automated: true` and are never `unread` or `needs_you` (added in plugin 0.3.37).
+- `hide=kanban,scheduled` leaves automated work out (Kanban board workers, `kanban`; scheduled jobs,
+  `cron`; either or both) of the list, the search and `sources`, unless `source` names one of them
+  (`source=kanban`); `automated=0` is the older spelling of hiding both. `helpers=1` also lists
+  background helpers (`subagent` sessions, source label "Helper", filter `helpers`), left out by
+  default. The reply's `automated: {count, hidden, kinds}` says how many board-worker and scheduled
+  sessions there are, whether both were hidden, and `kinds: [{id, label, count, shown}]` (`kanban`
+  "Board workers", `scheduled` "Scheduled jobs", `helpers` "Background helpers") is what the apps'
+  filter menu offers. Automated rows (helpers too) carry `automated: true` and are never `unread` or
+  `needs_you` (added in plugin 0.3.37).
 
 - `source`: `speakeasy` for a Hermes API session one of Speakeasy's tasks ran in, else Hermes'
   source (`discord`, `telegram`, `cli`, `gui`, `cron`, …). `source_label` is ready to show

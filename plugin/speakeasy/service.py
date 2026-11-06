@@ -2492,6 +2492,8 @@ class VoiceService(SecureInputMixin):
                                    marks=self.store.session_marks,
                                    archived=str(query.get("archived") or "") in {"1", "true"},
                                    automated=str(query.get("automated") or "") not in {"0", "false", "hide"},
+                                   hide=[k.strip() for k in str(query.get("hide") or "").split(",") if k.strip()],
+                                   helpers=str(query.get("helpers") or "") in {"1", "true", "show"},
                                    include_archived=(None if query.get("include_archived") in (None, "")
                                                      else str(query.get("include_archived")) in {"1", "true"}))
         except H.HistoryError as exc:
@@ -2594,7 +2596,7 @@ class VoiceService(SecureInputMixin):
             "source_label": H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), own),
             "state": "needs_you" if needs_you else ("running" if running or live else "idle"),
             **({"live": live} if live else {}),
-            **({"automated": True} if meta["source"] in H.AUTOMATED_SOURCES and not own else {}),
+            **({"automated": True} if meta["source"] in (*H.AUTOMATED_SOURCES, H.HELPER_SOURCE) and not own else {}),
             "send_via": "task" if own and link else ("session_job" if meta["source"] == "api_server" else "linked"),
             **({"archived": True} if meta.get("archived") else {}),
             **({"pinned": True} if (self.store.session_marks().get(sid) or {}).get("pinned") else {}),
