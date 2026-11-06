@@ -50,7 +50,12 @@ MAX_EVENTS = 500
 RELAY_TIMEOUT_S = 10.0
 SIGNATURE_VERSION = "v1"
 # What the relay is allowed to see. Anything else in a notify body is a bug (and the relay refuses it).
-RELAY_FIELDS = ("device_token", "environment", "kind", "nonce", "collapse_id", "event_id")
+RELAY_FIELDS = ("device_token", "environment", "kind", "nonce", "collapse_id", "event_id", "sealed")
+# ``sealed`` (SPK-124 Q4): the notification's words, encrypted on this Mac with the phone's own key
+# (ChaCha20-Poly1305, CryptoKit's ChaChaPoly combined box, base64url). The relay and APNs carry it
+# without being able to read it; the phone's Notification Service Extension opens it. A relay that
+# doesn't know the field yet gets the old body (the extension then fetches the words as before).
+SEALED_MAX = 2400
 PREFIX = {"finished": "Done", "needs_you": "Needs you", "failed": "Failed", "reply": "New reply"}
 
 
@@ -60,6 +65,24 @@ def signature(secret: str, install_id: str, timestamp: str, body: bytes) -> str:
     digest = hashlib.sha256(body).hexdigest()
     message = f"{SIGNATURE_VERSION}\n{install_id}\n{timestamp}\n{digest}".encode()
     return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+def seal(key: str, message: dict[str, Any]) -> str | None:
+    """*message* as JSON, sealed with the device's key: base64url(nonce 12 | ciphertext | tag 16),
+    exactly what CryptoKit's ``ChaChaPoly.SealedBox(combined:)`` opens. None when it can't be sealed
+    (no key, or the cryptography package is missing): the notification goes out without it."""
+    import base64
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+        raw = base64.urlsafe_b64decode(key + "=" * (-len(key) % 4))
+        if len(raw) != 32:
+            return None
+        nonce = secrets.token_bytes(12)
+        box = nonce + ChaCha20Poly1305(raw).encrypt(nonce, json.dumps(message, separators=(",", ":")).encode(), b"speakeasy-push-v1")
+    except Exception:
+        return None
+    out = base64.urlsafe_b64encode(box).decode().rstrip("=")
+    return out if len(out) <= SEALED_MAX else None
 
 
 def token_hash(token: str) -> str:
@@ -138,8 +161,10 @@ class RelayClient:
         """Send one wake-up. Returns ``{ok, status, reason, invalid_token}``. Registers on first use,
         and once more when the relay no longer knows this install."""
         assert set(payload) <= set(RELAY_FIELDS), "only the opaque fields may go to the relay"
+        if "sealed" in payload and getattr(self, "sealed_refused", False):
+            payload = {k: v for k, v in payload.items() if k != "sealed"}
         with self._lock:
-            for attempt in range(2):
+            for attempt in range(3):
                 record = self.install() or self.register()
                 if record is None:
                     return {"ok": False, "status": 0, "reason": "not_registered", "invalid_token": False}
@@ -153,6 +178,11 @@ class RelayClient:
                     return {"ok": False, "status": 0, "reason": type(exc).__name__, "invalid_token": False}
                 if status == 401 and data.get("reason") == "unknown_install" and attempt == 0:
                     self.forget_install()
+                    continue
+                if status == 400 and "sealed" in payload and "exactly" in str(data.get("reason") or data.get("error") or ""):
+                    # A relay from before sealed text: send the plain wake-up, and stop trying.
+                    self.sealed_refused = True
+                    payload = {k: v for k, v in payload.items() if k != "sealed"}
                     continue
                 return {"ok": status == 200 and bool(data.get("ok")), "status": status,
                         "reason": str(data.get("reason") or "")[:60], "invalid_token": bool(data.get("invalid_token"))}
@@ -230,7 +260,9 @@ class PushNotifier:
         if not self.devices.set_push(device_id, token.lower(), environment, sorted(set(kinds), key=KINDS.index)):
             raise ServiceError(404, "device not found")
         return {"ok": True, "enabled": True, "kinds": sorted(set(kinds), key=KINDS.index),
-                "relay": self.config()["relay_url"], "available": bool(self.config()["enabled"])}
+                "relay": self.config()["relay_url"], "available": bool(self.config()["enabled"]),
+                # The key the notification words are sealed with (devices paired before keys get one here).
+                "seal_key": self.devices.seal_key(device_id)}
 
     # -- events the extension reads (GET /voice/push/events/{id}) ----------------------------
     def event(self, device_id: str, event_id: str) -> dict[str, Any]:
@@ -277,7 +309,7 @@ class PushNotifier:
 
     # -- the rules ---------------------------------------------------------------------------
     def notify(self, kind: str, *, key: str, title: str | None, body: str | None = None,
-               run_id: str | None = None) -> list[str]:
+               run_id: str | None = None, level: str = "personal") -> list[str]:
         """Wake every registered phone that wants ``kind`` and isn't open right now. ``key`` dedupes
         (one notification per device per task event). Returns the device ids queued."""
         if kind not in KINDS or not self.config()["enabled"]:
@@ -303,6 +335,10 @@ class PushNotifier:
             payload = {"device_token": push["apns_token"], "environment": push.get("environment", "production"),
                        "kind": kind, "nonce": secrets.token_urlsafe(18), "collapse_id": text["thread_id"],
                        "event_id": event_id}
+            sealed = seal(push["seal_key"], {**{k: text[k] for k in ("title", "body", "kind", "run_id")},
+                                             "level": level}) if push.get("seal_key") else None
+            if sealed:
+                payload["sealed"] = sealed
             if self.queue is not None:
                 self.queue.put((device_id, payload))
             else:

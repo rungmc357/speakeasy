@@ -628,7 +628,8 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(403, "pairing code is wrong or expired")
         device_id, token = result
         out: dict[str, Any] = {"device_id": device_id, "token": token, "assistant_name": self.settings.get()["assistant_name"],
-                               "agent": agent_slot.agent_info(self.agent, self.host)}
+                               "agent": agent_slot.agent_info(self.agent, self.host),
+                               "seal_key": self.devices.seal_key(device_id)}
         out.update(self.endpoints())  # endpoints + the address-drop key: only a paired device sees them
         return out
 

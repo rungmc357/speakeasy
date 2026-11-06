@@ -1986,7 +1986,14 @@ phone's Notification Service Extension ──GET /voice/push/events/{id} (device
 {"apns_token": "<hex>", "environment": "sandbox" | "production", "kinds": ["finished", "needs_you", "failed", "reply"]}
 ```
 
-→ `200 {"ok": true, "enabled": true, "kinds": [...], "relay": "https://speakeasy-push.todd-562.workers.dev", "available": true}`.
+→ `200 {"ok": true, "enabled": true, "kinds": [...], "relay": "https://speakeasy-push.todd-562.workers.dev", "available": true, "seal_key": "<base64url, 32 bytes>"}`.
+`seal_key` (also in the pairing reply) is this device's own key for **sealed words**: each
+notification carries `sealed` = base64url(nonce 12 ‖ ChaCha20-Poly1305 ciphertext ‖ tag 16, AAD
+`speakeasy-push-v1`) of `{"title", "body", "kind", "run_id", "level"}`, sealed on this computer. The
+relay and APNs carry only that ciphertext; the phone's Notification Service Extension opens it and
+shows the real words (a secure-input request is `level: "restricted"`; a locked phone follows the
+privacy level). If it can't open it, the extension fetches `/voice/push/events/{id}` as before, and
+failing that shows "Hermes has a question for you". A relay from before `sealed` gets the old body.
 `{"enabled": false}` turns notifications off and forgets the token. The token is kept in
 `devices.json` next to the device (`push: {apns_token, environment, kinds, updated_at}`); revoking the
 device drops it. `400` for a token that isn't hex, an unknown environment or kind.

@@ -202,6 +202,15 @@ test("generic wording for every kind", () => {
   }
 });
 
+test("sealed words pass through unread; anything else extra is still refused", () => {
+  const sealed = "A".repeat(80);
+  assert.equal(validateNotify({ ...body({ kind: "needs_you" }), sealed }), null);
+  assert.equal(apnsPayload({ ...body({ kind: "needs_you" }), sealed }).s, sealed);
+  assert.equal(apnsPayload(body({ kind: "needs_you" })).s, undefined);
+  assert.equal(validateNotify({ ...body({}), sealed: "not base64!" }), "sealed");
+  assert.match(validateNotify({ ...body({}), title: "Desk hunt" }), /^exactly/);
+});
+
 test("unknown routes are 404", async () => {
   const r = await worker.fetch(new Request("https://push.speakeasyvoice.ai/v1/anything"), env);
   assert.equal(r.status, 404);
