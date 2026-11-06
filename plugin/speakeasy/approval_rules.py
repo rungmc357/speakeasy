@@ -59,7 +59,7 @@ _KINDS: list[tuple[str, str]] = [
     (r"sudo|privilege", "Running commands as administrator"),
     (r"permission|writable|chown|icacls|acl", "Changing who can read or change files"),
     (r"system config|system file", "Changing the computer's system files"),
-    (r"project env|project config", "Overwriting a project's settings file"),
+    (r"project (?:config|env)", "Overwriting a project's settings file"),
     (r"package manager uninstall", "Uninstalling software"),
     (r"parser limit|malformed", "Commands too complex to check"),
     (r"protected_instruction_file", "Editing the agent's instruction files"),
