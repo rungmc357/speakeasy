@@ -25,7 +25,7 @@ from .emails import canonical_json, draft_sha256
 from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
                    short_title, valid_short_status)
-from .text import TITLE_META, fix_product_names, outcome_headline, stand_in_titles as _stand_ins, vague_title
+from .text import TITLE_META, fix_product_names, outcome_headline, request_notes, stand_in_titles as _stand_ins, vague_title
 
 STALE_AFTER_S = 90
 MAX_REVIEWS = 3  # finished-image review cards carried onto the call panel
@@ -2126,7 +2126,8 @@ class StateStore:
                     "SELECT r.idem_key, (SELECT e.text FROM work_events e WHERE e.idem_key=r.idem_key AND "
                     "e.kind='request' ORDER BY e.seq LIMIT 1) FROM runs r WHERE r.interaction_id=? AND r.rowid<? "
                     "ORDER BY r.rowid DESC", (interaction, rowid)):
-                if text and (notice_text(text, 200) or "") == earlier:
+                if text and earlier in {notice_text(text, 200) or "",
+                                        notice_text(request_notes(text)[0], 200) or ""}:
                     return other
         return None
 

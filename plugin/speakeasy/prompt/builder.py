@@ -597,11 +597,16 @@ def call_so_far_block(lines: list[str]) -> str:
         return ""
     return (f"{CALL_SO_FAR} (other tasks from this call, each in its own session; don't redo them, and use "
             "their answers when the request points back at one):\n" + "\n".join(lines))
+# A sentence only the full task brief carries: while it is in a session's live context, a later turn
+# there is a follow-up that needs no rules (build_follow_up_prompt); once compaction dropped it, the
+# next turn sends the full brief again.
+TASK_RULES_MARK = "This session belongs to this task alone"
 
 
 def build_task_prompt(names: Names, revision: int, context: str, focus: str | None = None,
                       delivery_label: str = "", shared: str = "", room: str = "", typed: bool = False,
-                      skill: str = "", names_hint: str = "", others: list[str] | None = None) -> str:
+                      skill: str = "", names_hint: str = "", others: list[str] | None = None,
+                      on_screen: str = "") -> str:
     """Prompt for a voice task running in its own Hermes session, beside other tasks.
 
     The session is private to this task (and its follow-ups), so it names the job and carries the
@@ -623,7 +628,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
                + ("sent you as a message in the Speakeasy app, with no call. " if typed else
                   "gave you by voice from Speakeasy on their Mac. "), names)
         + render(
-               "This session belongs to this task alone; other tasks from the same call run in their own sessions at "
+               TASK_RULES_MARK + "; other tasks from the same call run in their own sessions at "
                "the same time. Use your normal tools, memory, skills and session-history lookup when the user refers "
                "to another project or conversation. Do the work yourself in this session, start to finish, even if it "
                "takes a while: {user_name} can hang up and ", names)
@@ -642,6 +647,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         + (shared + " " if shared else "")
         + (names_hint.strip() + " " if names_hint.strip() else "")
         + status_rule(names) + "\n\n"
+        + (on_screen_line(on_screen) + "\n\n" if on_screen.strip() else "")
         + (heard + "\n\n" if heard else "")
         + (skill.strip() + "\n\n" if skill and skill.strip() else "")
         + (so_far + "\n\n" if so_far else "")
@@ -773,9 +779,58 @@ def group_chat_focus(request: str, where: str) -> str:
             "if you need its context.)")
 
 
-def follow_up_focus(request: str, earlier: str, result: str | None, status: str | None) -> str:
-    return (f"{request} (This follows up an earlier task: \"{earlier}\""
-            + (f", which finished with: {result}" if result else f", status {status}") + ".)")
+def continues_line(earlier: str, result: str | None, status: str | None, question: str | None = None,
+                   tapped: bool = False) -> str:
+    """What a follow-up continues, named once and flat: never "(following up: A (following up: B…".
+    *question*: the question the earlier turn ended on (a tapped answer answers it)."""
+    if question:
+        where = f" (in the earlier request \"{earlier}\")" if earlier else ""
+        return (f"Answering your question \"{question}\"{where}" if tapped else
+                f"Your last answer asked: \"{question}\"{where}")
+    return (f"It follows up the earlier request \"{earlier}\""
+            + (f", which finished with: {result}" if result else f" (status {status})" if status else ""))
+
+
+def follow_up_focus(request: str, earlier: str, result: str | None, status: str | None,
+                    question: str | None = None, tapped: bool = False) -> str:
+    return f"{request} ({continues_line(earlier, result, status, question, tapped)}.)"
+
+
+# The opening line of a follow-up turn in a task's session (history.py shows only the words on it).
+FOLLOW_UP_HEAD = "[Speakeasy follow-up]"
+
+
+def build_follow_up_prompt(names: Names, words: str, *, continues: str = "", on_screen: str = "",
+                           shared: str = "", call_lines: str = "", note: str = "", typed: bool = False,
+                           tapped: bool = False) -> str:
+    """A later turn in a task's own session, whose first turn carried the full rules
+    (``build_task_prompt``): just what is new, the way a chat follow-up is just the person's words.
+    The words come first on their own line, labelled once; then, each on its own line, what it
+    continues, what is on screen, what was shared and the call lines since this session's last turn.
+    The rules are not repeated (``TASK_RULES_MARK`` still in the session's context says so); one line
+    keeps the reply's DONE/SPOKEN ending."""
+    how = ("answered by tapping" if tapped else "typed in the Speakeasy app" if typed else "said on the call")
+    said = " ".join(str(words or "").split())
+    lines = [f"{FOLLOW_UP_HEAD} {names.user_cap} {how}: {said}"]
+    if continues.strip():
+        lines.append(continues.strip().rstrip(".") + ".")
+    if note.strip():
+        lines.append(note.strip())
+    if on_screen.strip():
+        lines.append(on_screen_line(on_screen))
+    if shared.strip():
+        lines.append(shared.strip())
+    if call_lines.strip():
+        lines.append(("Messages since your last turn:\n" if typed else "The call since your last turn:\n")
+                     + call_lines.strip())
+    lines.append("Same rules as the first message in this session: keep the STATUS/DETAIL lines while you work "
+                 "and end with the DONE: and SPOKEN: lines.")
+    return "\n\n".join(lines)
+
+
+def on_screen_line(detail: str) -> str:
+    """What the user had open when they spoke: context, on its own line, never part of their words."""
+    return f"On screen: {' '.join(str(detail or '').split())}"
 
 
 def continuation_message(names: Names, request: str, summary: str, room: str = "") -> str:
