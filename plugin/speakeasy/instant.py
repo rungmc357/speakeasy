@@ -1,6 +1,6 @@
 """Instant answers computed on this machine: clock, date and arithmetic. No search, no model.
 
-"What time is it in Tokyo", "what's the date", "what's 18 percent of 240", "what's 12 times 7".
+"What time is it in Nairobi", "what's the date", "what's 18 percent of 240", "what's 12 times 7".
 Each returns a finished spoken sentence, or None when the question isn't one of these.
 """
 from __future__ import annotations

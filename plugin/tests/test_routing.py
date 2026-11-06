@@ -204,7 +204,7 @@ def test_routing_model_timeout_and_garbage_fall_back_to_rules():
 
 def test_routing_skips_the_model_when_nothing_to_decide():
     calls = []
-    d = router.decide("What time is it in Tokyo?", [], None, [], lambda m: calls.append(m) or "{}")
+    d = router.decide("What time is it in Nairobi?", [], None, [], lambda m: calls.append(m) or "{}")
     assert calls == [] and d.parts[0].kind == router.NEW
 
 

@@ -139,7 +139,7 @@ def test_screen_references_match(request_):
     "what's on your screen", "how much screen time did I have this week", "fix the screen door",
     "add sunscreen to the list", "let me look at this", "let me take a look at this", "what's that",
     "draft this email to my landlord", "remind me to call Sam", "make this the header image", "summarize this",
-    "look at this year's budget", "what time is it in Tokyo", "show me", "can I see this"])
+    "look at this year's budget", "what time is it in Nairobi", "show me", "can I see this"])
 def test_screen_references_never_match(request_):
     assert not router.refers_to_screen(request_)
 
@@ -314,10 +314,10 @@ def test_home_control_never_asks_for_a_capture(open_call, server, service, herme
 
 
 def test_the_instant_lane_answers_and_drops_its_capture(open_call, server, service, hermes):
-    call = open_call("req_tokyo")
+    call = open_call("req_nairobi")
     call.sharing(True)
-    call.say("call_tokyo", "what time is it in Tokyo")
-    wait_for(lambda: any("Tokyo" in c for c in call.spoken()))
+    call.say("call_nairobi", "what time is it in Nairobi")
+    wait_for(lambda: any("Nairobi" in c for c in call.spoken()))
     [capture_id] = call.captures()
     wait_for(lambda: call.interaction.attachments.open_captures() == [])
     assert call.interaction.attachments.wait_capture_blocking(capture_id, 0.1).reason == "cancelled"

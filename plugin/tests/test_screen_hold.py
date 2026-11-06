@@ -176,7 +176,7 @@ def test_requests_that_need_the_screen(words):
     "what's on your screen", "how much screen time did I have this week", "fix the screen door",
     "add sunscreen to the list", "let me look at this", "let me take a look at this", "what's that",
     "draft this email to my landlord", "remind me to call Sam", "make this the header image", "summarize this",
-    "look at this year's budget", "what time is it in Tokyo", "show me", "can I see this",
+    "look at this year's budget", "what time is it in Nairobi", "show me", "can I see this",
     "my screen keeps flickering", "my screen went black", "how do I share my screen in Zoom",
     "how do I take a screenshot of my screen", "stop looking at my screen", "share my screen",
     # commands for the device itself
