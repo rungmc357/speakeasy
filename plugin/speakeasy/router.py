@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from .transcript import ROUTER_CONTEXT_CHARS, tail_text
+
 logger = logging.getLogger(__name__)
 
 MAX_OPEN_TASKS = 8
@@ -766,7 +768,8 @@ def route_messages(request: str, tasks: list[OpenTask], topics: list[Topic],
         {"role": "user", "content": f"Open tasks:\n{open_lines}\n\nChannels:\n{channel_lines}\n\n"
                                     f"Existing conversations:\n{chat_lines(chats or [])}\n\n"
                                     + (f"The call so far (for what 'that', 'it', 'the X one' refer to):\n"
-                                       f"{call_so_far[-1200:]}\n\n" if call_so_far and (chats or tasks) else "")
+                                       f"{tail_text(call_so_far, ROUTER_CONTEXT_CHARS)}\n\n"
+                                       if call_so_far and (chats or tasks) else "")
                                     + (focus_line(focus, tasks[-MAX_OPEN_TASKS:])
                                        or just_started_line(tasks))
                                     + f"Request: {request[:1500]}"},
