@@ -415,8 +415,9 @@ public struct HistoryConversation: Equatable, Sendable {
     /// answered one → none). Two pieces of work can each wait on their own question (newest first).
     /// Plugins before it: the newest unanswered question only, never two cards for the same question.
     public var waitingQuestions: [WorkInfo] {
+        // `question_state` (plugins with it) is the server's one word; the older fields still apply.
         let open = jobs.filter { $0.status == "completed" && $0.decision != nil && !$0.setAside && !$0.answered
-            && $0.questionClosed == nil }
+            && $0.questionClosed == nil && ($0.questionState.map(\.isOpen) ?? true) }
         let flagged = open.filter { $0.questionOpen == true }
         if !flagged.isEmpty {
             var seen = Set<String>()   // the same question asked twice is one card

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 import SpeakeasyCore
@@ -94,9 +95,15 @@ final class HistoryStore: ObservableObject {
     @Published private(set) var answerError: String?
     /// "Reply…" on a decision card: the composer answers that task's question (its run id, its words).
     @Published private(set) var replyingTo: HistoryWaiting?
-    /// Questions dismissed here (✕): hidden at once, before the server's copy says so; also the whole
-    /// dismissal on plugins without question actions.
-    @Published private(set) var dismissedQuestions: Set<String> = []
+    /// Picks and ✕ dismisses not yet confirmed by the server: the app's one pending-pick store, shared
+    /// with the panel and board (SPK-79), keyed by the asking task's run id. Everything else about a
+    /// question is the server's `question_state` / `question_open`.
+    let pending: PendingPicks = .shared
+    private var pendingRelay: Any?
+    private func bindPending() {
+        guard pendingRelay == nil else { return }
+        pendingRelay = pending.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
     /// The Undo toast after a ✕ (a few seconds).
     @Published private(set) var undoQuestion: HistoryWaiting?
     private var undoTimer: Task<Void, Never>?
@@ -128,7 +135,7 @@ final class HistoryStore: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var clockTimer: Timer?
 
-    init() {}
+    init() { bindPending() }
 
     // MARK: List
 
@@ -329,6 +336,12 @@ final class HistoryStore: ObservableObject {
                 guard let self else { return }
                 self.conversations[sessionID] = c
                 self.detailErrors[sessionID] = nil
+                // The server's word on each question replaces what was pending here.
+                let states = Dictionary(c.jobs.compactMap { j in j.runID.map { ($0, j) } }, uniquingKeysWith: { a, _ in a })
+                self.pending.reconcile { id in
+                    states[id].flatMap { $0.questionOpen == false ? ($0.questionStateOrDerived == .open ? .superseded : $0.questionStateOrDerived)
+                                                                   : $0.questionStateOrDerived }
+                }
                 self.outbox.prune(HistoryThread(c).messages, session: sessionID)
             } catch {
                 self?.detailErrors[sessionID] = Self.message(error)
@@ -529,6 +542,7 @@ final class HistoryStore: ObservableObject {
     func answer(_ waiting: HistoryWaiting, choice: String) {
         guard waiting.runID != nil else {
             if replyingTo?.id == waiting.id { replyingTo = nil }
+            if let run = waiting.questionRunID { bindPending(); pending.set(run, .init(kind: .answer, text: choice)) }
             deliver(choice, source: .typed, answers: waiting.questionRunID); return
         }
         guard let sessionID = target?.sessionID, let backend else { return }
@@ -556,7 +570,8 @@ final class HistoryStore: ObservableObject {
     /// Undo is offered for a few seconds. The agent is told nothing.
     func dismiss(_ waiting: HistoryWaiting) {
         guard let runID = waiting.questionRunID else { return }
-        dismissedQuestions.insert(waiting.id)
+        bindPending()
+        pending.set(runID, .init(kind: .dismissed))
         if replyingTo?.id == waiting.id { replyingTo = nil }
         undoQuestion = waiting
         undoTimer?.cancel()
@@ -579,14 +594,18 @@ final class HistoryStore: ObservableObject {
         let sessionID = target?.sessionID
         Task { [weak self] in
             try? await self?.backend?.dismissQuestion(runID: runID, undo: true)
-            self?.dismissedQuestions.remove(waiting.id)
+            self?.pending.remove(runID)
             if let sessionID { self?.load(sessionID) }
         }
     }
 
     /// What the page shows as waiting: the thread's cards minus the ones dismissed here.
     func waiting(_ thread: HistoryThread) -> [HistoryWaiting] {
-        thread.waiting.filter { !dismissedQuestions.contains($0.id) }
+        bindPending()
+        return thread.waiting.filter { w in
+            guard let run = w.questionRunID, w.runID == nil else { return true }
+            return pending[run] == nil
+        }
     }
 
     // MARK: Model (servers with `model_choice`)

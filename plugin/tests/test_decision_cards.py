@@ -87,7 +87,9 @@ def test_a_newer_task_in_the_same_thread_supersedes_the_question(service):
     store.set_session("q_new", "s_shed")
     store.update_run("q_new", "run_q_new", "completed")
     assert service._open_questions(["q_old", "q_new"]) == []
-    assert store.question_closed("q_old") == "moved_on"
+    assert store.question_state("q_old") == "open", "a read never writes"
+    service.sweep_questions(force=True)
+    assert store.question_closed("q_old") == "superseded"
 
 
 # -- 2. dismiss, with undo ----------------------------------------------------------------------------

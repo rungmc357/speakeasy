@@ -1765,7 +1765,7 @@ class SidebandWorker:
         answers[key] = (delegation_id, now)
         answered = getattr(self, "question_answered", None)
         if callable(answered):
-            answered(task_id)
+            answered(task_id, text)
         self.delegations.add(delegation_id)
         self.last_handoff_at = time.monotonic()
         self.touch()
@@ -1787,16 +1787,14 @@ class SidebandWorker:
         follow.add_done_callback(_log_follow_up_failure)
         return delegation_id
 
-    def question_answered(self, task_id: str) -> None:
+    def question_answered(self, task_id: str, answer: str | None = None) -> None:
         """The task's question was answered: recorded in the store (the one truth every device's board,
         panel and session page read), and every client told at once (decision_resolved)."""
         with self.interaction.lock:
             run = self.interaction.runs.get(task_id)
             key, run_id = (run.idem_key, run.run_id) if run else (None, None)
-        if key and self.store.mark_answered(key):
-            events = getattr(self.rt, "history_events", None)
-            if events is not None:
-                events.publish("decision_resolved", {"run_id": run_id, "session_id": self.store.session_for(key)})
+        # Store.close_question tells every device (decision_resolved) and withdraws the push.
+        if key and self.store.mark_answered(key, answer):
             self.publish()
 
     def picked_request(self, task_id: str, text: str) -> str:
@@ -4200,6 +4198,7 @@ class SidebandWorker:
         replaced_key = self._register(task_id, backend, replaces)
         if replaced_key:
             self.store.dismiss_key(replaced_key)
+            self.store.close_question(replaced_key, "superseded")  # its open card goes everywhere
         self.publish()
         continuing = bool(session_id)  # an existing session: it may hold an earlier screenshot
         if not session_id:
@@ -4433,6 +4432,7 @@ class SidebandWorker:
                 replaced_key = self._register(task_id, backend, replaces=joins.delegation_id)
                 if replaced_key:
                     self.store.dismiss_key(replaced_key)
+                    self.store.close_question(replaced_key, "superseded")
                 self.store.set_title(idem, self.store.title(joins.idem_key) or short_title(request))
                 self.publish()
                 # The task grew: name it for what it is now, not just the first ask.

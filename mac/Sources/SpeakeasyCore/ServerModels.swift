@@ -211,6 +211,21 @@ public struct WorkInfo: Equatable, Sendable {
     /// undoable for a few seconds) or `moved_on` (the conversation went on without it). It waits on
     /// nobody; the thread keeps a quiet "Question · moved on" line.
     public var questionClosed: String?
+    /// The server's one record of its question (plugins with `question_state`), nil when it asks
+    /// nothing or on older plugins (then `questionStateOrDerived` reads the older fields).
+    public var questionState: QuestionState?
+    /// The words its question was answered with (on any device), when the server saw them.
+    public var questionAnswer: String?
+    /// Its question's state from the server: `question_state`, else derived from answered /
+    /// set_aside / question_closed. nil when the task asks nothing.
+    public var questionStateOrDerived: QuestionState? {
+        if let questionState { return questionState }
+        guard decision != nil else { return nil }
+        if answered { return .answered }
+        if let closed = questionClosed { return QuestionState(rawValue: closed) ?? .movedOn }
+        if setAside { return .setAside }
+        return .open
+    }
     /// An earlier call's task kept on this call's list only for its pending draft or review card
     /// (the server marks it); it's not an answer of this conversation.
     public var carried = false
@@ -323,6 +338,8 @@ public struct WorkInfo: Equatable, Sendable {
         answered = object["answered"] as? Bool ?? false
         questionOpen = object["question_open"] as? Bool
         questionClosed = nonEmpty(object["question_closed"])
+        questionState = (object["question_state"] as? String).flatMap(QuestionState.init(rawValue:))
+        questionAnswer = nonEmpty(object["question_answer"])
         carried = object["carried"] as? Bool ?? false
         followUps = FollowUp.list(json: object["follow_ups"])
         if status == "waiting_on_task", let waiting = object["waiting"] as? [String: Any] {

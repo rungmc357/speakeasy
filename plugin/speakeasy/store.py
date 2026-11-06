@@ -57,6 +57,34 @@ def _question_text(result_json: str | None) -> str | None:
     return " ".join(text.split()) if isinstance(text, str) and text.strip() else None
 
 
+# A question's lifecycle (docs/state-machines.md, item 3). ``open`` is the only state that waits on
+# the user; every other one is closed, and every close goes through ``Store.close_question`` (the
+# service then publishes decision_resolved and withdraws the Needs you notification).
+QUESTION_STATES = ("open", "answered", "set_aside", "dismissed", "moved_on", "expired", "superseded")
+QUESTION_CLOSES = frozenset(QUESTION_STATES) - {"open"}
+# Closes that carry over to the same question asked again by another task of the conversation (a
+# joined turn, a retry): one decision, closed once everywhere. A conversation moving on, a day
+# passing or a newer task replacing this one close only this task's ask.
+_TWIN_CLOSES = frozenset({"answered", "set_aside", "dismissed"})
+
+
+def _question_state(state: str | None, result_json: str | None, answered: Any = None, set_aside: Any = None,
+                    closed: str | None = None) -> str | None:
+    """A row's question state: the recorded one, else (a row written before question_state, or a
+    result stored without set_result) read from the older columns. None when it asks nothing."""
+    if not _question_text(result_json):
+        return None
+    if state in QUESTION_STATES:
+        return state
+    if answered:
+        return "answered"
+    if closed in QUESTION_CLOSES:
+        return closed
+    if set_aside:
+        return "set_aside"
+    return "open"
+
+
 def _placed_session(continued: str | None) -> str | None:
     """The session id a task's placement names (the conversation it continued), if any."""
     try:
@@ -317,6 +345,24 @@ class StateStore:
                 self._db.execute("ALTER TABLE runs ADD COLUMN parent TEXT")
             if "model" not in columns:  # the model/reasoning it was started with and what Hermes served (models.py)
                 self._db.execute("ALTER TABLE runs ADD COLUMN model TEXT")
+            if "question_state" not in columns:
+                # The one lifecycle of a task's question (QUESTION_STATES): NULL = it asks nothing.
+                # Every close goes through close_question; answered/set_aside/question_closed stay
+                # written for apps that read them. Rows from before it get their state from those.
+                self._db.execute("ALTER TABLE runs ADD COLUMN question_state TEXT")
+                self._db.execute("ALTER TABLE runs ADD COLUMN question_state_at REAL")
+                self._db.execute(
+                    "UPDATE runs SET question_state = CASE WHEN answered IS NOT NULL THEN 'answered' "
+                    "WHEN question_closed IS NOT NULL THEN question_closed WHEN set_aside IS NOT NULL THEN 'set_aside' "
+                    "ELSE 'open' END, question_state_at = COALESCE(answered, question_closed_at, set_aside, updated) "
+                    "WHERE result_json LIKE '%\"question\"%'")
+                for key, result in self._db.execute(
+                        "SELECT idem_key, result_json FROM runs WHERE question_state IS NOT NULL").fetchall():
+                    if not _question_text(result):
+                        self._db.execute("UPDATE runs SET question_state=NULL, question_state_at=NULL WHERE idem_key=?",
+                                         (key,))
+            if "question_answer" not in {row[1] for row in self._db.execute("PRAGMA table_info(runs)")}:
+                self._db.execute("ALTER TABLE runs ADD COLUMN question_answer TEXT")  # its answer's words, when known
             # A chosen model/reasoning (models.py): scope "session:<hermes session id>" (Use for this chat)
             # or "task:<idem key>" (one task: a voice preset, a new chat's first job).
             self._db.execute("""CREATE TABLE IF NOT EXISTS model_choices (
@@ -621,16 +667,19 @@ class StateStore:
         with self._lock:
             rows = self._db.execute(
                 f"SELECT idem_key, status, COALESCE(created, updated), set_aside, dismissed, result_json, rowid, answered, "
-                f"question_closed, session_id, settled_at FROM runs WHERE idem_key IN ({marks})", tuple(keys)).fetchall()
+                f"question_closed, session_id, settled_at, question_state FROM runs WHERE idem_key IN ({marks})",
+                tuple(keys)).fetchall()
         out = []
-        for key, status, created, aside, dismissed, result, rowid, answered, closed, session_id, settled in rows:
-            aside = aside or answered
+        for key, status, created, aside, dismissed, result, rowid, answered, closed, session_id, settled, state in rows:
+            state = _question_state(state, result, answered, aside, closed)
+            aside = aside or answered or state in {"answered", "set_aside"}
+            closed = state if state in {"dismissed", "moved_on", "expired", "superseded"} else None
             try:
                 question = ((json.loads(result) or {}).get("question") or {}) if result else {}
             except (ValueError, AttributeError):
                 question = {}
             text = question.get("question") if isinstance(question, dict) else None
-            out.append({"key": key, "status": status, "created": float(created or 0), "rowid": rowid,
+            out.append({"key": key, "status": status, "created": float(created or 0), "rowid": rowid, "state": state,
                         "set_aside": bool(aside), "dismissed": bool(dismissed), "closed": closed or None,
                         "session_id": session_id, "settled": float(settled or created or 0),
                         "question": " ".join(text.split()) if isinstance(text, str) and text.strip() else None})
@@ -982,90 +1031,134 @@ class StateStore:
             cursor = self._db.execute(
                 f"UPDATE runs SET set_aside=COALESCE(set_aside, ?) WHERE idem_key=? AND status IN ({marks})",
                 (now, key, *settled))
-            if cursor.rowcount:
-                self._close_same_question(key, "set_aside", now)
+            closed = self._close_locked(key, "set_aside", now) if cursor.rowcount else []
+        self._closed(closed)
         return bool(cursor.rowcount)
 
-    def mark_answered(self, key: str) -> bool:
+    def mark_answered(self, key: str, answer: str | None = None) -> bool:
         """The user answered this task's question (a tapped option, a typed or spoken reply): it waits on
         nobody any more, on every device (the board, the panel's Needs you, the session page). True when
-        it had an open question."""
-        now = time.time()
-        with self._lock, self._db:
-            row = self._db.execute("SELECT result_json, answered FROM runs WHERE idem_key=?", (key,)).fetchone()
-            if not row or not _question_text(row[0]) or row[1]:
-                return False
-            self._db.execute("UPDATE runs SET answered=? WHERE idem_key=?", (now, key))
-            self._close_same_question(key, "answered", now)
-        return True
+        it had an open question. *answer*: the words, so every device shows which option was taken."""
+        return bool(self.close_question(key, "answered", answer=answer))
 
-    def close_question(self, key: str, reason: str) -> bool:
-        """Close this task's still-open question without answering it: ``dismissed`` (the user's ✕) or
-        ``moved_on`` (the conversation went on). Nothing is said to the agent. The same question asked
-        again by another task of this conversation closes with it. True when it was open."""
-        if reason not in {"dismissed", "moved_on"}:
+    def close_question(self, key: str, reason: str, answer: str | None = None) -> list[str]:
+        """The one way a question closes (``reason`` in QUESTION_CLOSES). Returns the idem keys whose
+        question closed (this task's, plus the same question asked again by another task of the
+        conversation for an answer, a set-aside or a dismiss); empty when it wasn't open.
+
+        ``answered`` also closes a question already closed some other way (a tap on a card that had
+        just moved on is still the user's answer); nothing closes an answered one again."""
+        if reason not in QUESTION_CLOSES:
             raise ValueError(reason)
-        now = time.time()
         with self._lock, self._db:
-            row = self._db.execute("SELECT result_json, answered, set_aside, question_closed, session_id, "
-                                   "interaction_id FROM runs WHERE idem_key=?", (key,)).fetchone()
-            asked = _question_text(row[0]) if row else None
-            if not asked or row[1] or row[2] or row[3]:
-                return False
+            closed = self._close_locked(key, reason, time.time())
+            if closed and reason == "answered" and isinstance(answer, str) and answer.strip():
+                for k in closed:
+                    self._db.execute("UPDATE runs SET question_answer=? WHERE idem_key=?",
+                                     (" ".join(answer.split())[:500], k))
+        self._closed(closed)
+        return closed
+
+    # Told (outside the lock, after the write committed) which tasks' questions just closed, by every
+    # close path (questions.wire: decision_resolved to every device + the Needs you push withdrawn).
+    on_question_closed: Any = None
+
+    def _closed(self, keys: list[str]) -> None:
+        hook = self.on_question_closed
+        if keys and hook is not None:
+            try:
+                hook(list(keys))
+            except Exception:
+                logger.warning("speakeasy: question-closed hook failed", exc_info=True)
+
+    def _close_locked(self, key: str, reason: str, now: float) -> list[str]:
+        row = self._db.execute("SELECT result_json, question_state, answered, set_aside, question_closed, "
+                               "session_id, interaction_id FROM runs WHERE idem_key=?", (key,)).fetchone()
+        asked = _question_text(row[0]) if row else None
+        if not asked:
+            return []
+        state = _question_state(row[1], row[0], row[2], row[3], row[4])
+        if not self._may_close(state, reason):
+            return []
+        self._write_close(key, reason, now)
+        closed = [key]
+        if reason in _TWIN_CLOSES:
+            for other, result, o_state, o_answered, o_aside, o_closed in self._db.execute(
+                    "SELECT idem_key, result_json, question_state, answered, set_aside, question_closed FROM runs "
+                    "WHERE idem_key != ? AND result_json IS NOT NULL AND "
+                    "((? IS NOT NULL AND session_id = ?) OR interaction_id = ?)",
+                    (key, row[5], row[5], row[6])).fetchall():
+                if _question_text(result) != asked:
+                    continue
+                if self._may_close(_question_state(o_state, result, o_answered, o_aside, o_closed), reason):
+                    self._write_close(other, reason, now)
+                    closed.append(other)
+        return closed
+
+    @staticmethod
+    def _may_close(state: str | None, reason: str) -> bool:
+        if state is None or state == "answered":
+            return False
+        return state == "open" or reason == "answered"
+
+    def _write_close(self, key: str, reason: str, now: float) -> None:
+        """Lock held. The state, plus the columns older apps read (answered / set_aside /
+        question_closed), so a card closes there too."""
+        self._db.execute("UPDATE runs SET question_state=?, question_state_at=? WHERE idem_key=?", (reason, now, key))
+        if reason == "answered":
+            self._db.execute("UPDATE runs SET answered=COALESCE(answered, ?) WHERE idem_key=?", (now, key))
+        elif reason == "set_aside":
+            self._db.execute("UPDATE runs SET set_aside=COALESCE(set_aside, ?) WHERE idem_key=?", (now, key))
+        else:
             self._db.execute("UPDATE runs SET question_closed=?, question_closed_at=? WHERE idem_key=?",
                              (reason, now, key))
-            if reason != "dismissed":
-                return True  # moved on: only this task's ask (a newer twin of it may still be the open one)
-            for other, result in self._db.execute(
-                    "SELECT idem_key, result_json FROM runs WHERE idem_key != ? AND question_closed IS NULL AND "
-                    "answered IS NULL AND result_json IS NOT NULL AND ((? IS NOT NULL AND session_id = ?) OR "
-                    "interaction_id = ?)", (key, row[4], row[4], row[5])).fetchall():
-                if _question_text(result) == asked:
-                    self._db.execute("UPDATE runs SET question_closed=?, question_closed_at=? WHERE idem_key=?",
-                                     (reason, now, other))
-        return True
 
     def reopen_question(self, key: str) -> bool:
         """Undo a dismiss (only a dismiss: an answer or a moved-on conversation stays closed). Its twins
         (the same question on another task, closed in the same moment) reopen with it."""
         with self._lock, self._db:
-            row = self._db.execute("SELECT question_closed, question_closed_at, answered FROM runs WHERE idem_key=?",
-                                   (key,)).fetchone()
-            if not row or row[0] != "dismissed" or row[2]:
+            row = self._db.execute("SELECT question_closed, question_closed_at, answered, question_state "
+                                   "FROM runs WHERE idem_key=?", (key,)).fetchone()
+            if not row or row[2] or (row[3] or row[0]) != "dismissed":
                 return False
-            self._db.execute("UPDATE runs SET question_closed=NULL, question_closed_at=NULL WHERE "
-                             "question_closed='dismissed' AND (idem_key=? OR question_closed_at=?)", (key, row[1]))
+            now = time.time()
+            for (other,) in self._db.execute(
+                    "SELECT idem_key FROM runs WHERE question_closed='dismissed' AND answered IS NULL AND "
+                    "(idem_key=? OR question_closed_at=?)", (key, row[1])).fetchall():
+                self._db.execute("UPDATE runs SET question_closed=NULL, question_closed_at=NULL, "
+                                 "question_state='open', question_state_at=? WHERE idem_key=?", (now, other))
         return True
 
-    def open_question_candidates(self, since: float) -> list[str]:
-        """Tasks created after *since* whose question nobody answered, set aside or closed yet."""
+    def open_question_candidates(self, since: float = 0.0) -> list[str]:
+        """Tasks whose question is still open (oldest first). *since* is kept for callers that only
+        want recent ones; the sweep passes 0 so a day-old question can close as expired."""
         with self._lock:
             rows = self._db.execute(
-                "SELECT idem_key, result_json FROM runs WHERE COALESCE(created, updated) >= ? AND answered IS NULL "
-                "AND set_aside IS NULL AND question_closed IS NULL AND result_json LIKE '%\"question\"%'",
+                "SELECT idem_key, result_json, question_state, answered, set_aside, question_closed FROM runs "
+                "WHERE COALESCE(created, updated) >= ? AND (question_state='open' OR (question_state IS NULL AND "
+                "answered IS NULL AND set_aside IS NULL AND question_closed IS NULL)) "
+                "AND result_json LIKE '%\"question\"%' ORDER BY COALESCE(created, updated), rowid",
                 (since,)).fetchall()
-        return [key for key, result in rows if _question_text(result)]
+        return [key for key, result, *rest in rows if _question_state(rest[0], result, *rest[1:]) == "open"]
+
+    def question_state(self, key: str) -> str | None:
+        """This task's question state (QUESTION_STATES), None when it asks nothing."""
+        with self._lock:
+            row = self._db.execute("SELECT question_state, result_json, answered, set_aside, question_closed "
+                                   "FROM runs WHERE idem_key=?", (key,)).fetchone()
+        return _question_state(*row) if row else None
+
+    def question_answer(self, key: str) -> str | None:
+        """The words the user answered this task's question with, when the server saw them."""
+        with self._lock:
+            row = self._db.execute("SELECT question_answer FROM runs WHERE idem_key=?", (key,)).fetchone()
+        return row[0] if row and row[0] else None
 
     def question_closed(self, key: str) -> str | None:
-        """``dismissed`` / ``moved_on`` when this task's question closed unanswered, else None."""
-        with self._lock:
-            row = self._db.execute("SELECT question_closed FROM runs WHERE idem_key=?", (key,)).fetchone()
-        return row[0] if row else None
-
-    def _close_same_question(self, key: str, column: str, now: float) -> None:
-        """The same question asked again by another task of this conversation (a joined turn, a retry)
-        is the same decision: closed once, closed everywhere (never a second card). Lock held."""
-        row = self._db.execute("SELECT session_id, interaction_id, result_json FROM runs WHERE idem_key=?",
-                               (key,)).fetchone()
-        asked = _question_text(row[2]) if row else None
-        if not asked:
-            return
-        for other, result in self._db.execute(
-                f"SELECT idem_key, result_json FROM runs WHERE idem_key != ? AND {column} IS NULL AND "
-                "result_json IS NOT NULL AND ((? IS NOT NULL AND session_id = ?) OR interaction_id = ?)",
-                (key, row[0], row[0], row[1])).fetchall():
-            if _question_text(result) == asked:
-                self._db.execute(f"UPDATE runs SET {column}=? WHERE idem_key=?", (now, other))
+        """How this task's question closed unanswered (dismissed / moved_on / expired / superseded),
+        else None (open, answered, set aside, or no question)."""
+        state = self.question_state(key)
+        return state if state in {"dismissed", "moved_on", "expired", "superseded"} else None
 
     def mark_seen(self, key: str) -> None:
         """Nothing in this task's answer the user needs to read (a home command that went through):
@@ -1612,9 +1705,16 @@ class StateStore:
             return cursor.rowcount > 0
 
     def set_result(self, key: str, result: dict[str, Any] | None) -> None:
+        raw = json.dumps(result) if result else None
+        asks = _question_text(raw) is not None
         with self._lock, self._db:
-            self._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?",
-                             (json.dumps(result) if result else None, key))
+            self._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?", (raw, key))
+            if asks:  # a result that asks opens its question (once: a rewrite keeps how it closed)
+                self._db.execute("UPDATE runs SET question_state='open', question_state_at=? "
+                                 "WHERE idem_key=? AND question_state IS NULL", (time.time(), key))
+            else:
+                self._db.execute("UPDATE runs SET question_state=NULL, question_state_at=NULL "
+                                 "WHERE idem_key=? AND question_state='open'", (key,))
 
     def run_result(self, run_id: str) -> tuple[str, dict[str, Any]] | None:
         """(idem key, stored result) for one run, server-side fields included; None if unknown."""
@@ -2041,7 +2141,17 @@ class StateStore:
         if set_aside:
             # Its question was set aside: nothing waits on the user any more (only sent when true).
             work["set_aside"] = True
-        closed = self.question_closed(key) if result_json and '"question"' in result_json else None
+        state = self.question_state(key) if result_json and '"question"' in result_json else None
+        if state:
+            # Its question's one state (open / answered / set_aside / dismissed / moved_on / expired /
+            # superseded): apps show the card from this alone (the fields below are for older apps).
+            work["question_state"] = state
+            if state == "answered":
+                answer = self.question_answer(key)
+                if answer:
+                    work["question_answer"] = answer  # which option was taken, on every device
+        closed = state if state in {"dismissed", "moved_on", "expired", "superseded"} else None
+        answered = answered or state == "answered"
         if closed and not answered and not set_aside:
             # Its question closed unanswered (dismissed, or the conversation moved on): nothing waits on
             # the user. set_aside too, so apps from before question_closed stop showing the card.

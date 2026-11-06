@@ -104,7 +104,7 @@ async def deliver(worker: "SidebandWorker", task_id: str, text: str,
         # A reply on the task's page to its question answers it (on every device), as a tapped option does.
         answered = getattr(worker, "question_answered", None)
         if callable(answered):
-            answered(task_id)
+            answered(task_id, text)
     delegation_id = TYPED_PREFIX + secrets.token_hex(8)
     worker.delegations.add(delegation_id)
     worker.silent_ids.add(delegation_id)
