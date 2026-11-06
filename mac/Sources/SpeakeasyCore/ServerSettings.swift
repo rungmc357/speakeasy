@@ -587,7 +587,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
                              fix: codexSignedIn == true ? nil : "On the Hermes machine, run hermes voice setup (it signs you in to ChatGPT)"))
         case .openai:
             out.append(Check(id: "voice", ok: apiKeySet == true, title: "OpenAI API key",
-                             fix: apiKeySet == true ? nil : "On the Hermes machine, run hermes voice setup --api-key"))
+                             fix: apiKeySet == true ? nil : OpenAIKeyCopy.fix(canAddKey: canAddOpenAIKey)))
         case .grok:
             let ok = grokSignedIn ?? voiceReady ?? false
             out.append(Check(id: "voice", ok: ok, title: "Grok Voice via your X/SuperGrok sign-in",
@@ -889,11 +889,14 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var schedules: Bool = false
     /// Sign in to ChatGPT from the app (`/voice/codex/login`, CodexLogin.swift).
     public var codexLogin: Bool = false
+    /// Add the OpenAI API key for the API-key voice from the app (`POST /voice/openai-key`, OpenAIKey.swift).
+    public var openaiKey: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
-                history: Bool = false, callNoLimit: Bool = false, modelChoice: Bool = false, codexLogin: Bool = false) {
-        self.codexLogin = codexLogin
+                history: Bool = false, callNoLimit: Bool = false, modelChoice: Bool = false, codexLogin: Bool = false,
+                openaiKey: Bool = false) {
+        self.codexLogin = codexLogin; self.openaiKey = openaiKey
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
         self.taskMessages = taskMessages; self.jobActivity = jobActivity; self.toolLog = toolLog
         self.startJobs = startJobs; self.jobSubagents = jobSubagents; self.history = history
@@ -904,6 +907,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login"
+        case openaiKey = "openai_key"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -920,5 +924,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         modelChoice = (try? c.decodeIfPresent(Bool.self, forKey: .modelChoice)) ?? false
         schedules = (try? c.decodeIfPresent(Bool.self, forKey: .schedules)) ?? false
         codexLogin = (try? c.decodeIfPresent(Bool.self, forKey: .codexLogin)) ?? false
+        openaiKey = (try? c.decodeIfPresent(Bool.self, forKey: .openaiKey)) ?? false
     }
 }

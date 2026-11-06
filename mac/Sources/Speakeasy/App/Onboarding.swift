@@ -382,9 +382,17 @@ private struct VoiceSignInStep: View {
             }
             DisclosureGroup(app.status?.offersCodexSignIn == true ? CodexLoginCopy.alternative : "Use an API key instead",
                             isExpanded: $showAPIKeyHelp) {
-                Text("On the Hermes machine, run hermes voice setup --api-key and paste your OpenAI API key when asked. Calls then use GPT-Live-1 through the OpenAI API and bill that account per minute. The key is stored only in that Hermes profile, never on this Mac.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                if app.status?.canAddOpenAIKey == true {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Add your OpenAI API key here. Calls then use GPT-Live-1 through the OpenAI API and bill that account per minute. The key is saved only on your Hermes computer, never on this Mac.")
+                            .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        OpenAIKeyButton(useAfterSaving: true)
+                    }
+                } else {
+                    Text("On the Hermes machine, run hermes voice setup --api-key and paste your OpenAI API key when asked. Calls then use GPT-Live-1 through the OpenAI API and bill that account per minute. The key is stored only in that Hermes profile, never on this Mac.")
+                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
             Spacer()
             HStack {

@@ -389,12 +389,15 @@ private struct VoiceSettings: View {
             }
         case .openai:
             LabeledContent("OpenAI API key") {
-                if let set = app.status?.apiKeySet {
-                    Text(set ? "Set on the server" : "Not set — add SPEAKEASY_OPENAI_API_KEY to the Hermes .env")
+                if let status = app.status, let set = status.apiKeySet {
+                    Text(set ? OpenAIKeyCopy.set : status.canAddOpenAIKey ? OpenAIKeyCopy.notSet : OpenAIKeyCopy.oldPluginNote)
                         .foregroundStyle(set ? Color.secondary : Color.orange)
                 } else { Text("Unknown").foregroundStyle(.secondary) }
             }
-            Text("The key stays on the Hermes machine. Speakeasy never asks for it or stores it on this Mac.")
+            if app.status?.canAddOpenAIKey == true {
+                HStack { Spacer(); OpenAIKeyButton() }
+            }
+            Text(OpenAIKeyCopy.footer)
                 .font(.caption).foregroundStyle(.secondary)
         case .grok:
             LabeledContent("Grok Voice via your X/SuperGrok sign-in") {

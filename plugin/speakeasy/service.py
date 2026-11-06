@@ -109,6 +109,9 @@ CAPABILITIES["schedules"] = True
 # device-code login (codex_login.py). The plugin first looks for a working sign-in in every Codex
 # copy on the machine, and installs Codex when there is none; the app asks only when nothing works.
 CAPABILITIES["codex_login"] = True
+# POST /voice/openai-key: add the OpenAI API key for the API-key voice from the app (Settings › Voice),
+# saved to this profile through Hermes' env writer; never logged or returned (openai_key.py).
+CAPABILITIES["openai_key"] = True
 
 
 
@@ -359,6 +362,14 @@ class VoiceService(SecureInputMixin):
 
     def openai_key(self) -> str:
         return openai_api_key(self.home)
+
+    def save_openai_key(self, device_id: str, raw: bytearray) -> dict[str, Any]:
+        """``POST /voice/openai-key``: ``raw`` is zeroed; the reply never carries the key."""
+        store = getattr(self, "_openai_key_store", None)
+        if store is None:
+            from .openai_key import OpenAIKeyStore
+            store = self._openai_key_store = OpenAIKeyStore(self.home, is_set=lambda: bool(self.openai_key()))
+        return store.save(device_id, raw)
 
     def image_roots(self) -> tuple[Path, ...]:
         return default_image_roots(self.home, self.settings.get()["image_roots"])

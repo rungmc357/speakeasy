@@ -30,14 +30,18 @@ public struct SecureInputRequest: Equatable, Sendable, Identifiable {
     /// Where it goes, in the plugin's words.
     public var storedWhere: String
     public var expiresAt: Date
+    /// Opened by the user from the app (Settings › Voice › Add key), not asked for by a task: no
+    /// countdown, no "needs you", and the title says what it adds.
+    public var userStarted: Bool
 
     public init(id: String, kind: Kind, job: String, runID: String? = nil, sessionID: String? = nil, envVar: String = "",
                 label: String = "", prompt: String = "", help: String = "", skill: String = "", command: String = "",
-                origin: String = "", site: String = "", storedWhere: String = "", expiresAt: Date) {
+                origin: String = "", site: String = "", storedWhere: String = "", expiresAt: Date,
+                userStarted: Bool = false) {
         self.id = id; self.kind = kind; self.job = job; self.runID = runID; self.sessionID = sessionID
         self.envVar = envVar; self.label = label; self.prompt = prompt; self.help = help; self.skill = skill
         self.command = command; self.origin = origin; self.site = site
-        self.storedWhere = storedWhere; self.expiresAt = expiresAt
+        self.storedWhere = storedWhere; self.expiresAt = expiresAt; self.userStarted = userStarted
     }
 
     /// One entry of `requests` / `secure_inputs`; nil when it isn't a valid request.
@@ -74,7 +78,8 @@ public struct SecureInputRequest: Equatable, Sendable, Identifiable {
     /// The card's headline.
     public var title: String {
         switch kind {
-        case .secret: return "Your agent needs your \(label.isEmpty ? "key" : label)"
+        case .secret: return userStarted ? "Add your \(label.isEmpty ? "key" : label)"
+                                         : "Your agent needs your \(label.isEmpty ? "key" : label)"
         case .sudo: return "Your agent needs your Mac's password to run:"
         case .login: return "Add a login for \(site)"
         case .code: return "Enter the code \(site) sent you"
@@ -101,7 +106,7 @@ public struct SecureInputRequest: Equatable, Sendable, Identifiable {
     public var primaryButton: String {
         switch kind { case .secret, .login: return "Save securely"; case .sudo: return "Allow once"; case .code: return "Send code" }
     }
-    public var skipButton: String { kind == .sudo ? "Don't allow" : "Skip" }
+    public var skipButton: String { userStarted ? "Cancel" : kind == .sudo ? "Don't allow" : "Skip" }
     public var fieldPlaceholder: String {
         switch kind {
         case .secret: return label.isEmpty ? "Key" : label

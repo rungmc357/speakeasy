@@ -144,6 +144,17 @@ public final class ServerClient: @unchecked Sendable {
         }
         return state
     }
+    /// Add key (OpenAIKey.swift): send the OpenAI API key to `POST /voice/openai-key`. The body bytes
+    /// are zeroed after the request; the reply never carries the key. Returns whether a key is now set.
+    @discardableResult
+    public func saveOpenAIKey(_ value: String) async throws -> Bool {
+        var bytes = SecureInputRequest.answerBody(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        var body = Data(bytes)
+        defer { for i in bytes.indices { bytes[i] = 0 }; body.resetBytes(in: 0..<body.count) }
+        let out = try await data("/voice/openai-key", method: "POST", body: body, timeout: 20)
+        let object = (try? JSONSerialization.jsonObject(with: out)) as? [String: Any]
+        return (object?["api_key_set"] as? Bool) ?? true
+    }
     public func cancelCodexLogin() async throws {
         _ = try await json("/voice/codex/login", method: "DELETE")
     }

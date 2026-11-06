@@ -86,6 +86,7 @@ enum SecureInputShots {
             ("mac-key-filled", SecureInputFixtures.weatherKey, false, "FAKE-owm-key-0000"),
             ("mac-sudo", SecureInputFixtures.sudo, false, ""),
             ("mac-login", SecureInputFixtures.login, false, "fake-password"),
+            ("mac-openai-key", SecureInputRequest.openAIKey(), false, ""),
         ]
         for (name, request, revealed, typed) in cases {
             for (look, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
