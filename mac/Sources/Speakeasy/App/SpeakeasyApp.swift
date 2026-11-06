@@ -84,6 +84,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let i = args.firstIndex(of: "--relay-smoke"), i + 1 < args.count {
             RelaySmoke.run(url: args[i + 1], seconds: i + 2 < args.count ? Double(args[i + 2]) ?? 5 : 5); return
         }
+        if let i = args.firstIndex(of: "--codex-login-snapshot"), i + 1 < args.count {
+            let rest = Array(args.dropFirst(i + 2))
+            CodexLoginSnapshot.render(to: args[i + 1], appearance: rest.first ?? "dark",
+                                      phase: rest.count > 1 ? rest[1] : "pending"); return
+        }
         if let i = args.firstIndex(of: "--onboarding-snapshot"), i + 1 < args.count {
             OnboardingSnapshot.render(to: args[i + 1], step: i + 2 < args.count && !args[i + 2].hasPrefix("--") ? args[i + 2] : nil); return
         }
@@ -746,6 +751,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.updateMenu()
         }
         native.model.onStart = { [weak self] in self?.startConversation() }
+        // A failed call's Sign in to ChatGPT / Choose another voice: Settings › Voice (with the sheet).
+        native.onAccountFix = { [weak self] fix in
+            guard let app = self?.app else { return }
+            app.showSettings(.voice)
+            if fix == .signInCodex { app.showingCodexLogin = true }
+        }
         native.model.onTogglePause = { [weak self] in self?.togglePause() }
         native.model.onSkipTour = { [weak self] in self?.native.skipTour() }
         native.onTourStarted = { UserDefaults.standard.set(false, forKey: Prefs.tourPending) }

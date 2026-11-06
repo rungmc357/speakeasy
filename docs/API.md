@@ -76,6 +76,7 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/brief/tune/apply` | device | Apply the accepted edits: `{"accept": ["e1", ...]}` |
 | POST | `/voice/brief/tune/dismiss` | device | Discard the proposal |
 | GET | `/voice/status` | device | Provider, Hermes API, brief readiness |
+| POST, GET, DELETE | `/voice/codex/login` | device | Sign Codex in to ChatGPT from the app (device code): start, poll, cancel |
 | GET | `/voice/destinations` | device | Where finished results can be posted |
 | POST | `/voice/destinations/suggest` | device | Ask Hermes to propose delivery channels (never saved) |
 | GET, POST | `/voice/onboarding` | device | First-run checklist |
@@ -1265,6 +1266,42 @@ Wrong hash:
   "error": "draft changed; review the current draft"
 }
 ```
+
+## Sign in to ChatGPT: /voice/codex/login
+
+Capability `codex_login`. Voice through Codex needs the Codex program on the Hermes computer signed
+in to ChatGPT, and that computer often has no screen. These routes run Codex's own device-code
+login (`codex app-server` → `account/login/start {"type": "chatgptDeviceCode"}`, Codex 0.150.0+):
+the user opens the link on any device, enters the code, and Codex saves the sign-in in its own
+store. Speakeasy never sees, copies or logs a token and never touches Hermes' own sign-in.
+
+Before any code is shown, the plugin looks for a working sign-in in **every Codex copy on the
+machine** (`voice.codex_path`, PATH, Homebrew, npm, the ChatGPT app's bundled Codex, the older
+Codex app, Speakeasy's own copy) and silently uses the first one signed in with ChatGPT (saved as
+`voice.codex_path`). `GET /voice/status` reports the result as `codex_sign_in`: `chatgpt`,
+`api_key` (Codex works but bills an OpenAI API key) or `none`. Apps show **Sign in to ChatGPT**
+only for `none` (and offer a switch for `api_key`), never while a working sign-in exists.
+
+**POST** `{}` or `{"switch_from_api_key": true}` (the body may be empty):
+
+- already signed in with ChatGPT (any copy): `{"state": "signed_in"}`; no code.
+- signed in with an API key, no `switch_from_api_key`: `409` with `reason: "api_key_signed_in"`.
+- no Codex (or only copies older than 0.150.0): Codex is installed/updated the way
+  `hermes voice setup --yes` does it, `{"state": "installing"}`; the flow then starts on its own.
+- otherwise `{"state": "pending", "verification_url": "https://auth.openai.com/codex/device",
+  "user_code": "ABCD-12345", "expires_at": 1767225600, "expires_in": 885}`. A second POST while a
+  code is waiting returns the same code (one flow at a time). The URL is always https on an
+  openai.com / chatgpt.com host; anything else fails the flow (`502`, `reason: "codex_login_failed"`).
+
+**GET** reports `state`: `idle`, `installing`, `pending` (with the fields above), `signed_in`,
+`expired`, `failed` or `cancelled`, plus `message`, `sign_in` and `codex_found`. Poll every ~2 s
+while the sheet is open. **DELETE** cancels a waiting code (Codex's child process is stopped).
+The code expires with Codex's own 15-minute limit; the child is stopped on expiry.
+
+A call that can't start through Codex returns `502` with a `reason`: `codex_not_signed_in` (the
+apps show **Sign in to ChatGPT** instead of Try again, when the server has `codex_login`) or
+`codex_plan_no_voice` (the ChatGPT plan or workspace has no realtime voice: the apps offer Grok or
+an API key in Settings › Voice instead of a redial).
 
 ## GET /voice/settings, PATCH /voice/settings
 

@@ -48,23 +48,66 @@ _LOGIN_CACHE: dict[str, tuple[float, tuple[bool, str]]] = {}
 
 
 class CodexStartError(RuntimeError):
-    """A voice start failure with a message that is safe and useful to show the user."""
+    """A voice start failure with a message that is safe and useful to show the user, and a short
+    reason code the apps map to an action (``codex_not_signed_in`` → Sign in to ChatGPT,
+    ``codex_plan_no_voice`` → Grok / API key)."""
+
+    def __init__(self, message: str, reason: str | None = None):
+        super().__init__(message)
+        self.reason = reason
+
+
+PLAN_NO_VOICE = ("Your ChatGPT plan doesn't include voice through Codex (or your workspace turned it off). "
+                 "Use Grok or an OpenAI API key for voice instead: Settings › Voice.")
+NOT_SIGNED_IN = ("Codex isn't signed in to ChatGPT on the Hermes computer. Tap Sign in to ChatGPT in the app, "
+                 "or run codex login there.")
+
+
+def plan_lacks_voice(message: str) -> bool:
+    """Codex's error says the account/plan can't use realtime voice (not a sign-in problem)."""
+    text = message.lower()
+    plan = any(k in text for k in ("plan", "subscription", "tier", "workspace", "entitle", "upgrade", "access"))
+    voice = any(k in text for k in ("realtime", "voice", "gpt-live", "audio"))
+    refused = any(k in text for k in ("not available", "not included", "not supported on", "not enabled",
+                                      "does not have access", "doesn't have access", "do not have access",
+                                      "not allowed", "not entitled", "requires", "upgrade", "disabled",
+                                      "403", "forbidden", "unavailable"))
+    if "model_not_found" in text and ("gpt-live" in text or "realtime" in text):
+        return True
+    return plan and voice and refused
+
+
+def codex_error_reason(message: str) -> str | None:
+    if "rate" in message.lower() and "limit" in message.lower():
+        return None
+    if plan_lacks_voice(message):
+        return "codex_plan_no_voice"
+    text = message.lower()
+    if "didn't provide an api key" in text or "not logged in" in text:
+        return "codex_not_signed_in"
+    if is_auth_error(message):
+        return "codex_not_signed_in"
+    return None
 
 
 def explain_codex_error(message: str) -> str:
     """Map Codex's error text to a plain reason. Only known shapes pass through; nothing else
     from the provider is reflected."""
     text = message.lower()
+    if "rate" in text and "limit" in text:
+        return "ChatGPT's voice limit was reached. Try again later or switch to an OpenAI API key."
+    if plan_lacks_voice(message):
+        return PLAN_NO_VOICE
     if "unknown variant" in text and ("v3" in text or "version" in text):
         return ("This Codex is too old for voice. Update it (npm install -g @openai/codex@latest), "
                 "or run hermes voice setup to use a current copy.")
     if "voice" in text and "not supported" in text:
         return "That voice isn't available. Pick another voice in Speakeasy Settings."
     if "didn't provide an api key" in text or "not logged in" in text:
-        return "Codex isn't signed in to ChatGPT. Run codex login on the Hermes machine."
+        return NOT_SIGNED_IN
     if "login" in text or "auth" in text or "unauthorized" in text or "401" in text:
         return ("OpenAI rejected Codex's saved sign-in (it may have expired or been signed out). "
-                "Run codex login again on the Hermes machine.")
+                "Tap Sign in to ChatGPT in the app, or run codex login again on the Hermes machine.")
     if "rate" in text and "limit" in text:
         return "ChatGPT's voice limit was reached. Try again later or switch to an OpenAI API key."
     return "Codex couldn't start the voice call."
@@ -195,9 +238,10 @@ class CodexTransport:
         # The raw reason goes only to the Hermes log (keys masked); the user sees the mapped one.
         logger.warning("speakeasy: codex voice start failed: %s", _redacted(message))
         explained = explain_codex_error(message)
-        if is_auth_error(message):
+        reason = codex_error_reason(message)
+        if reason == "codex_not_signed_in":
             mark_signed_out(self.binary, explained)
-        raise CodexStartError(explained)
+        raise CodexStartError(explained, reason)
 
     def request(self, method: str, params: dict | None = None, timeout: float = 20) -> dict:
         waiter: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=1)

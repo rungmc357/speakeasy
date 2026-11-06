@@ -368,14 +368,20 @@ private struct VoiceSignInStep: View {
                     }
                     .accessibilityElement(children: .combine)
                 }
-                if status.codexSignedIn != true && status.resolvedProvider == .codex {
+                if status.offersCodexSignIn {
+                    Text(status.codexOnAPIKey ? CodexLoginCopy.apiKeyNote
+                         : "\(CodexLoginCopy.notSignedIn) Sign in here: you'll get a code to enter on any device.")
+                        .font(.callout).fixedSize(horizontal: false, vertical: true)
+                    CodexSignInButton(onAlternative: { showAPIKeyHelp = true }).controlSize(.large)
+                } else if status.codexSignedIn != true && status.resolvedProvider == .codex {
                     Text("On the Hermes machine, run hermes voice setup in Terminal. It signs you in to GPT-Live-1 with your ChatGPT account through Codex (a browser window opens). Then press Check again.")
                         .font(.callout).fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 Text(app.lastError ?? "Checking…").foregroundStyle(.secondary)
             }
-            DisclosureGroup("Use an API key instead", isExpanded: $showAPIKeyHelp) {
+            DisclosureGroup(app.status?.offersCodexSignIn == true ? CodexLoginCopy.alternative : "Use an API key instead",
+                            isExpanded: $showAPIKeyHelp) {
                 Text("On the Hermes machine, run hermes voice setup --api-key and paste your OpenAI API key when asked. Calls then use GPT-Live-1 through the OpenAI API and bill that account per minute. The key is stored only in that Hermes profile, never on this Mac.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)

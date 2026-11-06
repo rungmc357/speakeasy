@@ -616,6 +616,8 @@ def codex_candidates(home: Path | None = None) -> list[Path]:
                  apps / "Codex.app/Contents/Resources/codex"]
     seen += [
              home / ".hermes/speakeasy/codex/node_modules/.bin/codex",
+             # npm/volta global installs the gateway's PATH may not include.
+             home / ".npm-global/bin/codex", home / ".local/bin/codex", home / ".volta/bin/codex",
              Path("/opt/homebrew/bin/codex"), Path("/usr/local/bin/codex")]
     out: list[Path] = []
     for path in seen:

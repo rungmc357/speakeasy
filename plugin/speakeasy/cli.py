@@ -45,6 +45,10 @@ def setup_parser(parser) -> None:
     setup.add_argument("--send", default="", help="Send the pairing link to this Hermes chat (e.g. telegram or discord:<chat_id>); "
                             "if Hermes needs a restart first, it is sent once Hermes is back")
     setup.add_argument("--yes", "-y", action="store_true", help="Answer yes to every question (installing Codex)")
+    setup.add_argument("--sign-in", choices=("browser", "remote"), default="browser",
+                       help="How to sign Codex in to ChatGPT when no copy on this computer is signed in: "
+                            "browser (codex login here) or remote (print a link + one-time code to open on "
+                            "any device, wait, exit 0 once signed in)")
     setup.add_argument("--no-restart", action="store_true", help=argparse.SUPPRESS)  # setup never restarts Hermes now
     setup.add_argument("--no-open", action="store_true", help="Print the pairing link instead of opening it")
     setup.add_argument("--here", action="store_true",
@@ -196,7 +200,11 @@ def cmd_setup(args, home: Path, env=None) -> int:
         return 1
 
     settings = Settings(home)
-    voice_ok = F.voice_sign_in(env, home, settings, api_key=getattr(args, "api_key", False), assume=assume)
+    sign_in = getattr(args, "sign_in", "browser") or "browser"
+    voice_ok = F.voice_sign_in(env, home, settings, api_key=getattr(args, "api_key", False), assume=assume,
+                               sign_in=sign_in)
+    if sign_in == "remote" and not voice_ok:
+        return 3  # the code expired, was cancelled or failed; the retry hint is printed
     up = F.voice_server_running(env, local)
     server = _advertise(args, env, settings, port) or local
     server = _cloudflare(env, home, settings, tailnet=not is_local_url(server),
