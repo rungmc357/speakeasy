@@ -551,10 +551,12 @@ struct VoicePanelView: View {
         let holding = model.hold?.isWaiting == true
         return VStack(alignment: .leading, spacing: 0) {
             if !model.state.workOnly { header(p) }
-            // A call problem with a one-click fix (mic permission, a dead mic, a failed connect).
-            if !model.state.workOnly, let problem = model.callProblem {
+            // A call problem with a one-click fix (mic permission, a dead mic, a failed connect), or
+            // on the board alone its "can't load your work" notice (Try again reloads the board).
+            if let problem = model.callProblem, !model.state.workOnly || problem.fix == .reloadBoard {
                 ProblemBanner(problem: problem, action: { model.onFixProblem(problem.fix) })
                     .padding(.horizontal, 12).padding(.bottom, 10)
+                    .padding(.top, model.state.workOnly ? 10 : 0)
                     .transition(.opacity)
             }
             // Pictures and files waiting for the next request: under the header in every layout.

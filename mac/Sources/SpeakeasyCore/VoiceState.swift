@@ -224,6 +224,9 @@ public enum VoiceEvent: Equatable, Sendable {
     case transportLost
     case failed(String)
     case error(String)
+    /// The board loaded again (or the user reloaded it): its "can't load your work" notice goes.
+    /// Any other error (a call's own) stays.
+    case workNoticeCleared
     case toggleMic
     case setMic(MicState)
     case quietAssistant
@@ -465,6 +468,9 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
 
     case .error(let message):
         s.lastError = message
+
+    case .workNoticeCleared:
+        if WorkPollGate.isNotice(s.lastError) { s.lastError = nil }
 
     case .toggleMic:
         if s.connection == .live || s.connection == .connecting { s.mic = s.mic == .live ? .muted : .live; s.lastActivityAt = now }

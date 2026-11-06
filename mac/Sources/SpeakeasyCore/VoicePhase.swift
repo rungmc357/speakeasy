@@ -109,6 +109,8 @@ public struct CallProblem: Equatable, Sendable {
         case signInCodex
         /// The ChatGPT plan has no voice through Codex: Settings › Voice to pick Grok or an API key.
         case chooseVoice
+        /// The board couldn't load its work: load it again (never a call).
+        case reloadBoard
     }
     public var title: String
     public var detail: String?
@@ -117,7 +119,7 @@ public struct CallProblem: Equatable, Sendable {
         switch fix {
         case .openMicSettings: return "Open Settings"
         case .restartCall: return "Restart call"
-        case .retry: return "Try again"
+        case .retry, .reloadBoard: return "Try again"
         case .signInCodex: return CodexLoginCopy.button
         case .chooseVoice: return CodexLoginCopy.chooseVoice
         }
@@ -153,6 +155,11 @@ public struct CallProblem: Equatable, Sendable {
             return CallProblem(title: "Your mic isn't reaching the call",
                                detail: "Restarting reopens the voice connection. The conversation and tasks are kept.",
                                fix: .restartCall)
+        }
+        // The board alone (no call): its own notice, in plain words. The HTTP code the notice may
+        // carry is for the iPhone's reworded banner; here the short line says enough.
+        if s.workOnly, !s.connection.isInCall, WorkPollGate.isNotice(s.lastError) {
+            return CallProblem(title: "Can't load your work right now", detail: "Speakeasy keeps trying.", fix: .reloadBoard)
         }
         return nil
     }
