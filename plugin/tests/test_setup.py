@@ -229,12 +229,14 @@ def test_running_tailnet_is_imported_without_a_flag_and_remembered_for_pair(home
     assert "speakeasyvoice.ai/pair#server=https%3A%2F%2Fbox.tail123.ts.net%3A8795" in capsys.readouterr().out
 
 
-def test_stopped_tailnet_warns_prominently_and_stays_local(home):
+def test_stopped_tailnet_falls_back_to_cloudflare_with_a_plain_note(home):
     fake = Fake(tailscale="stopped")
     rc, opened = run_setup(fake, yes=True, no_open=False)
-    assert rc == 0 and len(opened) == 1 and "127.0.0.1" in opened[0]
+    assert rc == 0 and len(opened) == 1 and "127.0.0.1" in opened[0]  # the app on this Mac still pairs
     text = "\n".join(fake.lines)
-    assert "not connected" in text and "tailscale up" in text and "┏" in text
+    assert "not connected, so Speakeasy connects through Cloudflare instead" in text
+    assert "To use Tailscale later: run `tailscale up`" in text and "speakeasy-cloudflare.py quick" in text
+    assert "stays local" not in text and "Fix:" not in text
     assert not any("serve" in c for c in fake.cmds)
     assert S.Settings(home).get()["server"]["advertised_url"] == ""
 
@@ -258,6 +260,8 @@ def test_serve_certificate_failure_prints_the_fix_and_falls_back(home):
     rc, opened = run_setup(fake, yes=True, no_open=False)
     text = "\n".join(fake.lines)
     assert rc == 0 and "https://login.tailscale.com/admin/dns" in text and "HTTPS Certificates" in text
+    assert "HTTPS certificates are off, so Speakeasy connects through Cloudflare instead" in text
+    assert "speakeasy-cloudflare.py quick" in text
     assert len(opened) == 1 and "127.0.0.1" in opened[0]
     assert S.Settings(home).get()["server"]["advertised_url"] == ""
 
@@ -451,3 +455,48 @@ def test_tunnel_with_tailscale_is_only_a_backup(home, monkeypatch):
     rc, text = _setup_text(home, monkeypatch, tunnel=True, tailscale="running")
     assert cli.CLOUDFLARE_BACKUP in text and cli.CLOUDFLARE_CONNECTED not in text
     assert cli.CLOUDFLARE_USER_MESSAGE not in text and "speakeasy-cloudflare.py quick" not in text
+
+
+# -- Tailscale stopped / HTTPS off: Cloudflare, never a link that only works on this computer ------
+
+CERTS_OFF = "error: HTTPS certificates are not enabled for this tailnet"
+
+
+@pytest.mark.parametrize("ts", [dict(tailscale="stopped"), dict(tailscale="running", serve_error=CERTS_OFF)])
+def test_unusable_tailnet_with_a_tunnel_pairs_through_cloudflare(home, monkeypatch, ts):
+    from speakeasy import tunnel as T
+    S.Settings(home).patch({"server": {"tunnel": "cloudflare"}})
+    monkeypatch.setattr(T, "wait_for_url", lambda *a, **k: "https://calm-river-sound-test.trycloudflare.com")
+    sent = []
+    monkeypatch.setattr(cli, "_send_link", lambda h, target, link, out: sent.append((target, link)) or True)
+    fake = Fake(**ts)
+    rc, _ = run_setup(fake, yes=True, send="telegram")
+    text = "\n".join(fake.lines)
+    assert rc == 0 and cli.CLOUDFLARE_CONNECTED in text and "Cloudflare instead" in text
+    assert sent and "calm-river-sound-test.trycloudflare.com" in sent[0][1]
+
+
+@pytest.mark.parametrize("ts", [dict(tailscale="stopped"), dict(tailscale="running", serve_error=CERTS_OFF),
+                                dict(tailscale="missing")])
+def test_no_usable_connection_never_sends_a_loopback_link(home, monkeypatch, ts):
+    sent = []
+    monkeypatch.setattr(cli, "_send_link", lambda h, target, link, out: sent.append((target, link)) or True)
+    fake = Fake(**ts)
+    rc, _ = run_setup(fake, yes=True, send="telegram")
+    text = "\n".join(fake.lines)
+    assert rc == 1 and sent == [] and cli.LOCAL_ONLY_NOT_SENT in text
+    assert "speakeasy-cloudflare.py quick" in text
+
+
+def test_here_with_a_stopped_tailnet_does_not_promise_cloudflare(home):
+    fake = Fake(tailscale="stopped")
+    rc, opened = run_setup(fake, yes=True, here=True)
+    text = "\n".join(fake.lines)
+    assert rc == 0 and opened and "stays on this computer for now" in text
+    assert "Cloudflare instead" not in text and "speakeasy-cloudflare.py quick" not in text
+
+
+def test_forced_tailscale_never_falls_back(home):
+    fake = Fake(tailscale="stopped")
+    run_setup(fake, yes=True, tailscale=True)
+    assert "Cloudflare instead" not in "\n".join(fake.lines)

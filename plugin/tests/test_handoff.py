@@ -72,3 +72,43 @@ def test_longer_code_lifetime_for_links_sent_to_chat(tmp_path):
     assert store.redeem(code, "Mac", now=H.LINK_TTL_S - 5) is not None
     code = store.new_pairing_code(now=0)
     assert store.redeem(code, "Mac", now=601) is None  # the 10-minute default is unchanged
+
+
+# -- the expiry the user reads matches the code's real lifetime in each mode -----------------------
+
+def test_pair_link_carries_the_real_lifetime_per_mode(tmp_path):
+    from speakeasy.settings import Settings
+    from speakeasy.devices import DeviceStore
+    assert H.pair_link(tmp_path, "https://box.tail123.ts.net:8795", "123456").endswith("&code=123456&minutes=30")
+    Settings(tmp_path).patch({"server": {"tunnel": "cloudflare"}})
+    assert H.link_ttl(tmp_path) == 600
+    assert H.pair_link(tmp_path, "https://x.trycloudflare.com", "123456").endswith("&minutes=10")
+    code = DeviceStore(tmp_path).new_pairing_code(ttl=H.link_ttl(tmp_path))
+    assert code  # minted with the same lifetime the link states
+
+
+def test_pending_delivery_states_ten_minutes_in_cloudflare_mode(tmp_path):
+    from speakeasy.settings import Settings
+    Settings(tmp_path).patch({"server": {"tunnel": "cloudflare"}})
+    H.save_pending(tmp_path, "telegram")
+    sent = []
+    assert H.deliver_pending(tmp_path, "https://x.trycloudflare.com", send=lambda t, m: sent.append(m) or True,
+                             new_code=lambda: "123456", sleep=lambda s: None)
+    assert "for 10 minutes" in sent[0] and "&minutes=10" in sent[0] and "30 minutes" not in sent[0]
+
+
+def test_setup_and_pair_print_the_same_lifetime_as_the_code(tmp_path, monkeypatch, capsys):
+    from argparse import Namespace
+    from speakeasy import cli
+    from speakeasy.settings import Settings
+    Settings(tmp_path).patch({"server": {"tunnel": "cloudflare", "advertised_url": "https://x.trycloudflare.com"}})
+    assert cli.cmd_pair(Namespace(server="", send=""), tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "expires in 10 minutes" in out and "&minutes=10" in out
+
+
+def test_the_agent_guide_states_both_lifetimes():
+    import re
+    from pathlib import Path
+    doc = re.sub(r"\s+", " ", (Path(__file__).resolve().parents[2] / "docs" / "AGENT_SETUP.md").read_text())
+    assert "expires after 30 minutes, or 10 minutes once Cloudflare mode is on" in doc

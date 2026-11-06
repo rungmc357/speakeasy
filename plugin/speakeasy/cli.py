@@ -105,9 +105,10 @@ def add_env_if_missing(home: Path, values: dict[str, str]) -> list[str]:
     return added
 
 
-def enable_voice_platform(home: Path, port: int) -> bool:
+def enable_voice_platform(home: Path, port: int, move_port: bool = False) -> bool:
     """Turn on gateway.platforms.voice in this profile's config.yaml. Returns True if changed.
-    Only adds settings; refuses (config untouched) if the file can't be read."""
+    Only adds settings (``move_port`` also replaces the voice port, when another profile holds
+    it); refuses (config untouched) if the file can't be read."""
     from . import hermes_config
 
     def turn_on(data: dict) -> bool:
@@ -123,7 +124,7 @@ def enable_voice_platform(home: Path, port: int) -> bool:
         changed = not voice.get("enabled")
         voice["enabled"] = True
         extra = voice.setdefault("extra", {})
-        if isinstance(extra, dict) and "port" not in extra:
+        if isinstance(extra, dict) and ("port" not in extra or (move_port and extra["port"] != port)):
             extra["port"] = port
             changed = True
         plugins = data.setdefault("plugins", {})
@@ -166,7 +167,7 @@ def _open(url: str) -> bool:
 
 # -- commands -------------------------------------------------------------------------------------
 
-def _prepare_profile(home: Path, port: int, out) -> None:
+def _prepare_profile(home: Path, port: int, out, move_port: bool = False) -> None:
     """Step 1: what Speakeasy needs in this profile. Never overwrites an existing value."""
     added = add_env_if_missing(home, {
         "API_SERVER_KEY": secrets.token_urlsafe(32),
@@ -177,7 +178,7 @@ def _prepare_profile(home: Path, port: int, out) -> None:
         out(f"  Note: API_SERVER_HOST is {host}; Speakeasy only talks to it over loopback.")
     if added:
         out("✓ Turned on Hermes' local API (Speakeasy uses it to hand work to your agent)")
-    enable_voice_platform(home, port)
+    enable_voice_platform(home, port, move_port)
     Settings(home).ensure()  # settings.json (0600) with defaults
     out("✓ Speakeasy is enabled in this Hermes profile")
 
@@ -187,31 +188,44 @@ def cmd_setup(args, home: Path, env=None) -> int:
     from . import setup_flow as F
     env = env or F.Env()
     out = env.out
+    from . import profiles as P
     assume = True if getattr(args, "yes", False) else None
-    port = voice_port(home)
+    whois = env.whois(home)
+    # Another profile's server on our port must never be mistaken for ours (profiles.py).
+    was = P.configured_port(home) or P.DEFAULT_PORT
+    port, holder = P.choose_port(home, identity=whois, free=env.is_port_free())
     local = f"http://127.0.0.1:{port}"
+    me = P.profile_name(home)
     out("Setting up Speakeasy…")
     from .hermes_config import ConfigWriteRefused
     try:
-        _prepare_profile(home, port, out)
+        _prepare_profile(home, port, out, move_port=bool(holder))
     except ConfigWriteRefused as exc:
         out(f"✗ Left your Hermes config.yaml untouched: {exc}")
         out("  Fix or restore config.yaml (hermes config check), then run setup again.")
         return 1
 
     settings = Settings(home)
+    if holder:
+        held = "another program" if holder == "another program" else f"the Hermes profile '{holder}'"
+        out(f"• Port {was} is already used by {held}, so this profile ('{me}') uses port {port} instead."
+            if port != was else f"✗ Port {was} is used by {held} and no free port was found nearby.")
     sign_in = getattr(args, "sign_in", "browser") or "browser"
     voice_ok = F.voice_sign_in(env, home, settings, api_key=getattr(args, "api_key", False), assume=assume,
                                sign_in=sign_in)
     if sign_in == "remote" and not voice_ok:
         return 3  # the code expired, was cancelled or failed; the retry hint is printed
-    up = F.voice_server_running(env, local)
+    owner = P.whose(home, whois(local), port, P.claimed_ports(home))
+    up = owner == "ours"
+    if owner not in {"ours", "none"}:
+        out(f"✗ The voice server on port {port} belongs to {owner}, not this profile ('{me}'): "
+            "not pairing with it.")
     server = _advertise(args, env, settings, port) or local
     server = _cloudflare(env, home, settings, tailnet=not is_local_url(server),
                          here=getattr(args, "here", False)) or server
 
     if up:
-        out("✓ Voice server is running")
+        out(f"✓ Voice server is running (Hermes profile '{me}', port {port})")
         out("✓ Your agent will write a short voice brief in the background: what the voice should know about "
             "you and what it can hand off. You can read and edit it in the app.")
     _print_routing_model(out)
@@ -221,26 +235,64 @@ def cmd_setup(args, home: Path, env=None) -> int:
 
     target = getattr(args, "send", "") or ""
     if not up:
-        out(f"• {F.RESTART_NOTE}")
+        restarting = F.gateway_running(home)
+        out(f"• {F.not_up_note(home)}")
         if target and valid_delivery_target(target) and target != "none":
             H.save_pending(home, target)
-            out(f"  Once Hermes is back, the pairing link arrives in {_chat_name(target)} by itself.")
+            out(f"  Once Hermes is {'back' if restarting else 'running'}, the pairing link arrives in "
+                f"{_chat_name(target)} by itself.")
         else:
             out("  Then run `hermes voice pair` for the pairing link.")
-        out(f"  No Speakeasy on your Mac yet? Download it: {H.DOWNLOAD_PAGE}")
+        out(f"  No Speakeasy on your iPhone, iPad or Mac yet? Get it: {H.DOWNLOAD_PAGE}")
         return 2 if voice_ok else 1
 
     H.clear_pending(home)
+    if is_local_url(server) and not getattr(args, "here", False) and getattr(args, "send", ""):
+        # A loopback link sent to a chat can only fail on the phone or other Mac: wait for Cloudflare.
+        out(LOCAL_ONLY_NOT_SENT)
+        return 1
     delivered = _deliver_link(args, env, home, settings, server)
     if not delivered:
         code = _store(home).new_pairing_code(ttl=H.link_ttl(home))
-        out("Open this link on the Mac you'll talk from. It connects Speakeasy, or offers the download first:")
-        out(f"  {H.web_link(server, code)}")
+        link = H.pair_link(home, server, code)
+        out("Open this link on the iPhone, iPad or Mac you'll talk from. It connects Speakeasy, or offers "
+            "the download first:")
+        out(f"  {link}")
+        _print_qr(link, out, phone=not is_local_url(server))
         out(f"  Or type code {code} in Speakeasy › Connect (works once, for {H.link_ttl(home) // 60} minutes).")
     if not voice_ok:
         out("Voice isn't signed in yet; the app will show how to finish that.")
         return 1
     return 0
+
+
+def qr_text(data: str) -> str:
+    """A terminal QR code for ``data`` (Hermes ships the ``qrcode`` package), "" when unavailable."""
+    try:
+        import io
+        import qrcode  # type: ignore[import-untyped]
+    except ImportError:
+        return ""
+    try:
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=1, border=1)
+        qr.add_data(data)
+        qr.make(fit=True)
+        buf = io.StringIO()
+        qr.print_ascii(out=buf, invert=True)
+        return buf.getvalue().rstrip("\n")
+    except Exception:
+        return ""
+
+
+def _print_qr(link: str, out, *, phone: bool) -> None:
+    """At a terminal with no chat to send to, a phone camera scans this instead of typing the link."""
+    if not phone:
+        return  # a loopback address only works on this computer: nothing for a phone to scan
+    art = qr_text(link)
+    if art:
+        out("  Or scan this with the iPhone or iPad camera:")
+        for line in art.splitlines():
+            out("  " + line)
 
 
 def _chat_name(target: str) -> str:
@@ -263,7 +315,8 @@ def _advertise(args, env, settings: Settings, port: int) -> str:
         env.out("• Tailscale skipped (--no-tailscale); Speakeasy stays local to this machine.")
         settings.patch({"server": {"advertised_url": "", "tailscale_name": ""}})
         return ""
-    url, name = F.tailscale_url(env, port, forced=getattr(args, "tailscale", False))
+    url, name = F.tailscale_url(env, port, forced=getattr(args, "tailscale", False),
+                                fallback=not getattr(args, "here", False))
     settings.patch({"server": {"advertised_url": url or "", "tailscale_name": name}})
     return url or ""
 
@@ -280,7 +333,7 @@ TAILSCALE_RECOMMENDED = ("• Recommended: Tailscale (most private: your devices
 # No Tailscale and no tunnel: the agent turns Cloudflare mode on itself (owner decision: no choice
 # screen), then tells the user what it did. Instructions for the agent, not a menu for the user.
 CLOUDFLARE_AUTO = [
-    "→ No Tailscale on this computer, so turn on Cloudflare mode now (don't ask the user first):",
+    "→ No usable Tailscale on this computer, so turn on Cloudflare mode now (don't ask the user first):",
     "  1. python3 speakeasy-cloudflare.py quick",
     f"     (the script: {CLOUDFLARE_SCRIPT})",
     "  2. Run this setup again: it should say \"Connected through Cloudflare\", and the pairing link",
@@ -289,6 +342,19 @@ CLOUDFLARE_AUTO = [
     "     " + AGENT_DOC_CLOUDFLARE + ").",
     "  If the script fails, explain Tailscale to the user instead: " + "https://tailscale.com/download",
 ]
+LOCAL_ONLY_NOT_SENT = ("✗ No pairing link sent yet: without Tailscale or Cloudflare it would only work on this "
+                       "computer. Turn on Cloudflare mode (the box above), then run setup again.")
+def cloudflare_auto(home: Path, port: int) -> list[str]:
+    """CLOUDFLARE_AUTO for this profile: a second profile's tunnel needs its own home and ports."""
+    from . import profiles as P
+    if port == DEFAULT_PORT and P.profile_name(home) == "default":
+        return list(CLOUDFLARE_AUTO)
+    lines = list(CLOUDFLARE_AUTO)
+    lines[1] = (f"  1. python3 speakeasy-cloudflare.py quick --hermes-home {home} --port {port} "
+                f"--metrics-port {port + 2}")
+    return lines
+
+
 CLOUDFLARE_CONNECTED = "✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale."
 CLOUDFLARE_BACKUP = "✓ Cloudflare is on too, as a backup: your devices use Tailscale first."
 # What the agent tells the user after setting up Cloudflare mode for them (docs/AGENT_SETUP.md says the same).
@@ -308,7 +374,7 @@ def _cloudflare(env, home: Path, settings: Settings, *, tailnet: bool, here: boo
     s = settings.get()["server"]
     if not s["tunnel"]:
         if not tailnet and not here:
-            F.banner(env, CLOUDFLARE_AUTO)
+            F.banner(env, cloudflare_auto(home, voice_port(home)))
         return ""
     if s["tunnel_hostname"]:
         url = f"https://{s['tunnel_hostname']}"
@@ -529,23 +595,23 @@ def _deliver_link(args, env, home: Path, settings: Settings, server: str) -> str
     """"opened" | "sent" | "": ``--send`` sends a link to that chat; ``--here`` opens it on this
     machine (the app, or the download page when it isn't installed). Without either, open here
     when the app is installed on this machine and the server is local; else offer a chat."""
-    from .handoff import app_link, chat_message, link_ttl, web_link
+    from .handoff import app_link, link_ttl, pair_link
     if getattr(args, "send", ""):
         code = _store(home).new_pairing_code(ttl=link_ttl(home))
-        return "sent" if _send_link(home, args.send, web_link(server, code), env.out) else ""
+        return "sent" if _send_link(home, args.send, pair_link(home, server, code), env.out) else ""
     here = getattr(args, "here", False)
     if here or (is_local_url(server) and not args.no_open and _app_installed()):
         local = f"http://127.0.0.1:{voice_port(home)}"
         code = _store(home).new_pairing_code(ttl=link_ttl(home))
         installed = _app_installed()
-        if _open(app_link(local, code) if installed else web_link(local, code)):
+        if _open(app_link(local, code) if installed else pair_link(home, local, code)):
             env.out("✓ Opened Speakeasy to pair. Finish setup there (about a minute)." if installed else
                     "✓ Opened the Speakeasy download page on this Mac. Install the app, then click Open Speakeasy there.")
             return "opened"
-    target = _pick_chat(env, home, settings)
+    target = "" if is_local_url(server) else _pick_chat(env, home, settings)  # loopback can't work elsewhere
     if target:
         code = _store(home).new_pairing_code(ttl=link_ttl(home))
-        if _send_link(home, target, web_link(server, code), env.out):
+        if _send_link(home, target, pair_link(home, server, code), env.out):
             return "sent"
     return ""
 
@@ -587,21 +653,23 @@ def _send_link(home: Path, target: str, link: str, out) -> bool:
         return False
     from .handoff import chat_message, link_ttl
     ok = HermesSendNotifier(home).send(target, chat_message(link, link_ttl(home) // 60))
-    out(f"✓ Sent the pairing link to {_chat_name(target)}. Open it on your Mac." if ok
+    out(f"✓ Sent the pairing link to {_chat_name(target)}. Open it on the iPhone, iPad or Mac you'll talk from."
+        if ok
         else "✗ Couldn't send the pairing link.")
     return ok
 
 
 def cmd_pair(args, home: Path) -> int:
-    from .handoff import link_ttl, web_link
+    from .handoff import link_ttl, pair_link
     code = _store(home).new_pairing_code(ttl=link_ttl(home))
     server = (args.server or Settings(home).get()["server"]["advertised_url"]
               or f"http://127.0.0.1:{voice_port(home)}")
-    link = web_link(server, code)
+    link = pair_link(home, server, code)
     print(f"Pairing code: {code}  (single use, expires in {link_ttl(home) // 60} minutes)")
     print(f"Pairing link: {link}")
     if args.send:
         return 0 if _send_link(home, args.send, link, print) else 1
+    _print_qr(link, print, phone=not is_local_url(server))
     return 0
 
 
@@ -698,7 +766,8 @@ def cmd_reload(home: Path, timeout: float = 30) -> int:
         time.sleep(.3)
     (state / REQUEST_FILE).unlink(missing_ok=True)
     print("No answer from Speakeasy. Is the Hermes gateway running with Speakeasy 0.2.17 or newer? "
-          "If it's older, restart the gateway once: `hermes gateway restart`.")
+          "If it's older, restart Hermes once: send /restart in your chat with Hermes "
+          "(or run `hermes gateway restart` in a terminal).")
     return 1
 
 

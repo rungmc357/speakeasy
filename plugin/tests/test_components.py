@@ -133,6 +133,7 @@ def test_cli_setup_before_restart_prepares_profile(tmp_path, monkeypatch):
     env = F.Env(run=lambda *a, **k: type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})(),
                 out=lines.append, interactive=False, health=lambda url: False, which=lambda n: None)
     monkeypatch.setattr(F, "find_codex", lambda configured="": None)
+    monkeypatch.setattr(F, "gateway_running", lambda h: True)   # running, but without the voice platform yet
     rc = cli.cmd_setup(Namespace(server="", tailscale=False, api_key=False, send="", yes=False,
                                  no_restart=True, no_open=True), tmp_path, env=env)
     assert rc == 1

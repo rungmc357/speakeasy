@@ -50,6 +50,24 @@ class Env:
     sleep: Callable[[float], None] = time.sleep
     which: Callable[[str], str | None] = shutil.which
     clock: Callable[[], float] = time.monotonic
+    identity: Callable[[str], dict | None] | None = None   # the local /health answer (profiles.py)
+    port_free: Callable[[int], bool] | None = None
+
+    def whois(self, home: Path) -> Callable[[str], dict | None]:
+        """Who answers on a local URL. Tests that fake only ``health`` get "this profile" for a yes."""
+        from . import profiles
+        if self.identity is not None:
+            return self.identity
+        if self.health is not None:
+            me = {"platform": "voice", "home_id": profiles.home_id(home), "profile": profiles.profile_name(home)}
+            return lambda url: dict(me) if self.health(url) else None
+        return profiles.health_identity
+
+    def is_port_free(self) -> Callable[[int], bool]:
+        from . import profiles
+        if self.port_free is not None:
+            return self.port_free
+        return (lambda port: True) if self.health is not None else profiles.port_free  # faked health: faked ports
 
     def confirm(self, question: str, default: bool = True, assume: bool | None = None) -> bool:
         if assume is not None:
@@ -292,9 +310,24 @@ def voice_server_running(env: Env, url: str) -> bool:
     return bool((env.health or voice_health)(url))
 
 
-RESTART_NOTE = ("Hermes needs a restart, once, to turn Speakeasy on: `hermes gateway restart` if the gateway "
-                "runs as a service, or stop `hermes gateway` and start it again if it runs in a terminal. "
-                "Chats pause for a few seconds. Later updates load without a restart.")
+# Users are in a chat with Hermes: its built-in /restart (lets running work finish first) is the
+# step. The terminal form is only the fallback for someone at a terminal.
+RESTART_CHAT = "send /restart in your chat with Hermes"
+RESTART_TERMINAL = ("From a terminal instead: `hermes gateway restart` (or stop `hermes gateway` and start it "
+                    "again if it runs in a terminal).")
+RESTART_NOTE = (f"Hermes needs a restart, once, to turn Speakeasy on: {RESTART_CHAT}. It lets running work "
+                f"finish, then comes back in a few seconds. {RESTART_TERMINAL} Later updates load without a restart.")
+
+
+# The gateway was never started (CLI-only Hermes): there's nothing to restart, it needs a start.
+GATEWAY_START_NOTE = ("The Hermes gateway isn't running, so nothing serves Speakeasy yet. Start it once: "
+                      "`hermes gateway install` runs it in the background and keeps it running "
+                      "(or run `hermes gateway` in a terminal and leave it open).")
+
+
+def not_up_note(home: Path) -> str:
+    """What the user does when the voice server doesn't answer: restart a running gateway, or start one."""
+    return RESTART_NOTE if gateway_running(home) else GATEWAY_START_NOTE
 
 
 # -- 4. tailscale ---------------------------------------------------------------------------------
@@ -341,21 +374,26 @@ def _serve_failure_is_https(done: Any) -> bool:
     return any(word in text for word in ("https", "certificate", "cert"))
 
 
-def tailscale_url(env: Env, port: int, *, forced: bool = False) -> tuple[str | None, str]:
+def tailscale_url(env: Env, port: int, *, forced: bool = False, fallback: bool = True) -> tuple[str | None, str]:
     """Publish the loopback voice server on the tailnet only (never Funnel).
 
     Returns (url or None, tailnet DNS name or ""). Auto-detects: running → imported with a boxed
-    notice; installed but stopped → an equally prominent warning and local mode; not installed →
-    one quiet line (or an error when ``forced``)."""
+    notice; installed but stopped, or `serve` failing (HTTPS certificates off) → a plain boxed note
+    that Speakeasy connects through Cloudflare instead (``fallback``; cli._cloudflare does it) and
+    how to switch to Tailscale later; not installed → one quiet line (or an error when ``forced``).
+    Without ``fallback`` (``--tailscale``, or the user talks from this machine) the note says
+    Speakeasy stays on this computer for now."""
+    fallback = fallback and not forced
+    instead = ("so Speakeasy connects through Cloudflare instead (works anywhere, nothing to install on "
+               "the phone)." if fallback else "so Speakeasy stays on this computer for now.")
     net = tailnet_status(env)
     if net.state == "missing":
         env.out("✗ Tailscale isn't installed on this machine." if forced
                 else "• Tailscale not found on this computer.")
         return None, ""
     if net.state == "stopped":
-        banner(env, ["⚠ Tailscale is installed but not connected.",
-                     "  Fix: run `tailscale up`, then `hermes voice setup` again,",
-                     "  or use Cloudflare mode (below) if it needs a sign-in."])
+        banner(env, [f"⚠ Tailscale is installed but not connected, {instead}",
+                     "  To use Tailscale later: run `tailscale up`, then `hermes voice setup` again."])
         return None, ""
     try:
         done = env.run([net.binary, "serve", "--bg", f"--https={port}", f"http://127.0.0.1:{port}"],
@@ -363,9 +401,11 @@ def tailscale_url(env: Env, port: int, *, forced: bool = False) -> tuple[str | N
     except (OSError, subprocess.SubprocessError):
         done = None
     if done is None or getattr(done, "returncode", 1) != 0:
-        lines = ["⚠ Tailscale is connected, but `tailscale serve` failed.", "  Speakeasy stays local for now."]
         if done is None or _serve_failure_is_https(done):
-            lines.append("  " + TAILSCALE_HTTPS_FIX)
+            lines = [f"⚠ Tailscale is connected, but its HTTPS certificates are off, {instead}",
+                     "  To use Tailscale later: " + TAILSCALE_HTTPS_FIX + ", then run setup again."]
+        else:
+            lines = [f"⚠ Tailscale is connected, but `tailscale serve` failed, {instead}"]
         banner(env, lines)
         return None, ""
     url = f"https://{net.dns}:{port}"

@@ -42,9 +42,16 @@ def app_link(server: str, code: str) -> str:
     return f"speakeasy://pair?server={quote(server, safe='')}&code={code}"
 
 
-def web_link(server: str, code: str) -> str:
-    """Works from any chat on any Mac: opens the app, or offers the download first."""
-    return f"{PAIR_PAGE}#server={quote(server, safe='')}&code={code}"
+def web_link(server: str, code: str, minutes: int | None = None) -> str:
+    """Works from any chat on any device: opens the app, or offers the download first. ``minutes``
+    (how long the code lasts) rides along so the page can say the real expiry for this mode."""
+    link = f"{PAIR_PAGE}#server={quote(server, safe='')}&code={code}"
+    return f"{link}&minutes={int(minutes)}" if minutes else link
+
+
+def pair_link(home: Path, server: str, code: str) -> str:
+    """The web link for a code minted now in this profile, carrying this mode's lifetime."""
+    return web_link(server, code, link_ttl(home) // 60)
 
 
 def chat_message(link: str, minutes: int = LINK_TTL_S // 60) -> str:
@@ -92,7 +99,7 @@ def deliver_pending(home: Path, server: str, *, send: Callable[[str, str], bool]
         return False
     for attempt in range(attempts):
         sleep(delay * (attempt + 1))
-        if send(target, chat_message(web_link(server, new_code()), link_ttl(home) // 60)):
+        if send(target, chat_message(pair_link(home, server, new_code()), link_ttl(home) // 60)):
             clear_pending(home)
             logger.info("speakeasy: sent the pairing link to %s", target.split(":", 1)[0])
             return True

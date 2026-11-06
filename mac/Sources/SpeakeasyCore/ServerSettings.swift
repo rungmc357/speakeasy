@@ -591,7 +591,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         case .grok:
             let ok = grokSignedIn ?? voiceReady ?? false
             out.append(Check(id: "voice", ok: ok, title: "Grok Voice via your X/SuperGrok sign-in",
-                             fix: ok ? nil : "On the Hermes machine, run hermes voice setup and sign in with X"))
+                             fix: ok ? nil : "On the Hermes machine, run hermes auth add xai-oauth (SuperGrok or X Premium+), or set XAI_API_KEY"))
         }
         let briefReady = briefState == "ready" || briefState == "edited"
         out.append(Check(id: "brief", ok: briefReady, title: "Voice brief",

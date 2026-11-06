@@ -49,7 +49,52 @@ def is_connected(config) -> bool:
     return bool(extra.get("port") or extra.get("enabled"))
 
 
+MIN_HERMES = "0.22.0"
+UPDATE_HERMES = ("Speakeasy needs Hermes {min} or newer (this is Hermes {current}). Update Hermes first: run "
+                 "`hermes update`, then restart it (send /restart in your chat with Hermes), then run "
+                 "`hermes voice setup` again.")
+
+
+def hermes_too_old() -> str | None:
+    """The running Hermes version when it predates every API Speakeasy uses, else None.
+
+    Hermes 0.19+ skips the plugin before import when ``requires_hermes`` rejects it (``hermes
+    plugins list`` shows why), so reaching this code with that gate present means the version is
+    fine. Hermes before the gate imports the plugin anyway; then this answers instead of a crash."""
+    try:
+        from hermes_cli.plugins_manifest import running_hermes_version  # noqa: F401  (0.19+: gated)
+        return None
+    except ImportError:
+        pass
+    try:
+        from hermes_cli import __version__ as current  # type: ignore[attr-defined]
+    except Exception:
+        current = "an older version"
+    return str(current or "an older version")
+
+
+def _register_update_notice(ctx, current: str) -> None:
+    """On a too-old Hermes, `hermes voice …` says to update instead of being an unknown command."""
+    message = UPDATE_HERMES.format(min=MIN_HERMES, current=current)
+    logger.warning("speakeasy: %s", message)
+
+    def _handle(args=None, *rest, **kw) -> int:
+        print(message)
+        return 1
+
+    try:
+        ctx.register_cli_command("voice", help="Speakeasy voice (needs a newer Hermes)",
+                                 setup_fn=lambda parser: None, handler_fn=_handle,
+                                 description=message)
+    except Exception as exc:
+        logger.warning("speakeasy: could not register the update notice: %s", exc)
+
+
 def register(ctx) -> None:
+    too_old = hermes_too_old()
+    if too_old:
+        _register_update_notice(ctx, too_old)
+        return
     from .adapter import VoiceAdapter
     from .cli import handle, setup_parser
 
