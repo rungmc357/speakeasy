@@ -132,6 +132,8 @@ final class HistoryStore: ObservableObject {
     /// The server has `capabilities.model_choice`: the composer's model chip.
     /// The server has `capabilities.voice_notes`: on a session page, stop sends the recording itself.
     @Published var voiceNotesSupported = false
+    /// The server has `capabilities.now`: the window's Now column (SPK-124).
+    @Published var nowSupported = false
     @Published var modelsSupported = false { didSet { if modelsSupported && !oldValue { loadModels() } } }
     @Published private(set) var catalog: ModelCatalog?
     /// New chat's pick (its first job runs on it, and the chat keeps it).

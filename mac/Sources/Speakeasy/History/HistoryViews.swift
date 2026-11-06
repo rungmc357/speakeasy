@@ -61,11 +61,31 @@ struct HistoryRootView: View {
     @ObservedObject var store: HistoryStore
 
     var body: some View {
+        GeometryReader { geo in
+            // Home (SPK-124 phase 4b): sidebar · Now · conversation; under 1,000 wide, Now · conversation.
+            let wide = !store.nowSupported || geo.size.width >= 1000
+            columns(sidebar: wide)
+        }
+    }
+
+    private var divider: some View {
+        Rectangle().fill(Color.adaptive(dark: Color.black.opacity(0.45), light: Color.black.opacity(0.08))).frame(width: 1)
+    }
+
+    private func columns(sidebar: Bool) -> some View {
         HStack(spacing: 0) {
-            HistorySidebar(store: store)
-                .frame(width: HistoryLook.sidebarWidth)
-                .background(HistoryLook.sidebar)
-            Rectangle().fill(Color.adaptive(dark: Color.black.opacity(0.45), light: Color.black.opacity(0.08))).frame(width: 1)
+            if sidebar {
+                HistorySidebar(store: store)
+                    .frame(width: store.nowSupported ? 260 : HistoryLook.sidebarWidth)
+                    .background(HistoryLook.sidebar)
+                divider
+            }
+            if store.nowSupported {
+                MacNowColumn(now: MacNowModel.shared, store: store)
+                    .frame(width: 420)
+                    .background(HistoryLook.sidebar.opacity(0.5))
+                divider
+            }
             HistoryDetailPane(store: store)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(HistoryLook.window)

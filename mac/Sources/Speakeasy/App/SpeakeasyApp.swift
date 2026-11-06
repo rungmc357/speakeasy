@@ -165,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.boardsSupported = caps?.boards ?? false
                     self.history.store.skillsSupported = caps?.slashSkills ?? false
                     self.history.store.filesSupported = caps?.files ?? false
+                    self.wireNow(caps?.now ?? false)
                 }
             }
             .store(in: &bag)
@@ -365,9 +366,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         idle = continuity
     }
 
+    /// Home (SPK-124): the window's Now column, and the menu bar dot while a question waits.
+    private var questionsWaiting = 0
+    private func wireNow(_ on: Bool) {
+        history.store.nowSupported = on
+        let now = MacNowModel.shared
+        guard on else { now.stop(); return }
+        now.api = { [weak self] in self?.native.api }
+        now.onQuestions = { [weak self] n in
+            guard let self, n != self.questionsWaiting else { return }
+            self.questionsWaiting = n
+            self.statusItem?.button?.image = BrandGlyph.menuBarImage(badge: self.badgeOn || n > 0, listening: self.room?.isOn == true)
+        }
+        now.start()
+    }
+
     private func setBadge(_ on: Bool) {
         badgeOn = on
-        statusItem?.button?.image = BrandGlyph.menuBarImage(badge: on, listening: room?.isOn == true)
+        statusItem?.button?.image = BrandGlyph.menuBarImage(badge: on || questionsWaiting > 0, listening: room?.isOn == true)
     }
 
     // MARK: Pairing links
@@ -611,6 +627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.skillsSupported = app.status?.capabilities?.slashSkills ?? false
         if store.files.backend == nil { store.files.backend = LiveAgentFilesBackend { [weak self] in self?.native.api } }
         store.filesSupported = app.status?.capabilities?.files ?? false
+        wireNow(app.status?.capabilities?.now ?? false)
         store.setCallLive(native.model.state.connection.isInCall)
         history.show()
         if let session { store.open(session) }
