@@ -241,6 +241,13 @@ PROGRESS_EVERY_S = 45.0
 # Every note used to go straight in, and the voice answered each one out loud ("Still on it")
 # every few seconds on a long task.
 STATUS_NOTE_EVERY_S = 60.0
+# A question about a running task its steps can't answer goes to the task itself (ask_task): its next
+# STATUS/DETAIL line within ASK_REPLY_KEEP_S is the answer, spoken; after ASK_REPLY_WAIT_S without
+# one the voice says once that it hasn't answered yet. A line written within ASK_REPLY_MIN_S of the
+# question was already on its way and isn't taken for the answer.
+ASK_REPLY_WAIT_S = 20.0
+ASK_REPLY_KEEP_S = 180.0
+ASK_REPLY_MIN_S = 1.0
 # The call pulse: while a task runs and the call has been quiet this long since the assistant last
 # spoke, it says one short line about what the task is doing (its real tool calls and findings),
 # so a call never goes minutes without a word. After PULSE_IDLE_AFTER updates in a row with nothing
@@ -422,6 +429,9 @@ class Runtime:
     # The spoken request as clean written text (None = the title model; returns None when unavailable).
     polish_call: Callable[[str], str | None] | None = None
     status_call: Callable[[str], str | None] | None = None
+    # A question about a running task's work answered from its facts (question, facts) -> answer, ""
+    # (the facts don't say) or None (no model): None = router.answer_from_work. Tests swap in a fake.
+    answer_call: Callable[[str, str], str | None] | None = None
     plan_call: Callable[[str], list[str] | None] | None = None
     shape_call: Callable[[str, str], dict[str, Any] | None] | None = None
     # A finished answer's outcome headline (request, reply) -> str | None (None = the title model).
@@ -574,6 +584,9 @@ class BackendRun:
     refusal_retries: int = 0
     retry_refused: bool = False
     can_retry: bool = False
+    # A question the user asked this task about its own work (ask_task): (question, the handoff that
+    # asked it, monotonic time asked). Its next STATUS/DETAIL is spoken as the answer.
+    asked: tuple[str, str, float] | None = None
 
     @property
     def say_id(self) -> str:
@@ -2921,7 +2934,12 @@ class SidebandWorker:
         if (router.is_show_me(last_request) and (not showing or router.about_task_view(last_request))
                 and await self.show_me(delegation_id, last_request)):
             return
-        if router.is_status_question(last_request) or router.asks_about_task(last_request):
+        if router.asks_about_task(last_request):
+            target = self._status_target(marked)
+            if target is not None:
+                await self.answer_task_question(delegation_id, target, last_request)
+                return
+        if router.is_status_question(last_request):
             target = self._status_target(marked)
             if target is not None:
                 await self.answer_status(delegation_id, target)
@@ -3011,7 +3029,10 @@ class SidebandWorker:
             await self.append("session.commentary.append", delegation_id, P.DIDNT_CATCH)
             return
         if part.kind == router.STATUS and part.task_id:
-            await self.answer_status(delegation_id, part.task_id)
+            if router.asks_about_task(last_request):
+                await self.answer_task_question(delegation_id, part.task_id, last_request)
+            else:
+                await self.answer_status(delegation_id, part.task_id)
             return
         if decision.show and not showing:
             # "What do those speakers look like?": about an open task, show what it already has (or ask
@@ -3067,9 +3088,10 @@ class SidebandWorker:
             return (int(t.status in {"running", "working", "waiting_for_approval"}), int(items > 0))
         return max(enumerate(running), key=lambda p: (busy(p[1]), p[0]))[1].task_id
 
-    async def answer_status(self, delegation_id: str, task_id: str, confused: bool = False) -> None:
-        """"What's the status?": answered now from the steps the task has reported, never queued
-        behind the task itself (that made status questions wait up to eight minutes)."""
+    async def work_facts(self, task_id: str) -> dict[str, Any]:
+        """Everything known about a task's work right now, for answering a question about it: its name,
+        status, reported steps, card line, what its session has been doing, its tool log (with each
+        call's own detail, which names the tests, files and pages), findings and what it touched."""
         with self.interaction.lock:
             run = self.interaction.runs.get(task_id)
             status = run.status if run else None
@@ -3085,19 +3107,164 @@ class SidebandWorker:
         session = (work or {}).get("session_id") or ((work or {}).get("job") or {}).get("id")
         if status not in TERMINAL and isinstance(session, str) and session:
             live = await asyncio.to_thread(self.live_steps, session)
+        items = [i for i in ((work or {}).get("activity") or []) if isinstance(i, dict)]
+        tools = [str(i.get("text", "")) for i in items if not str(i.get("text", "")).startswith("Found: ")]
+        tool_details = []
+        for i in items[-8:]:
+            text, detail = str(i.get("text") or "").strip(), str(i.get("detail") or "").strip()
+            if text and not text.startswith("Found: "):
+                tool_details.append(f"{text} ({detail})" if detail and detail != text else text)
+        touched = [str(t.get("label")) for t in ((work or {}).get("touched") or [])
+                   if isinstance(t, dict) and t.get("label")][-8:]
+        return {"key": key, "name": name or "that task", "spoken": self.spoken_task_name(key) or name or "that task",
+                "status": status, "age": time.monotonic() - started, "steps": steps, "result": result,
+                "live": live, "request": self.store.request_text(key) if key else "", "tools": tools,
+                "tool_details": tool_details, "touched": touched,
+                "findings": [f.get("text", "") for f in ((work or {}).get("findings") or [])],
+                "queued": (work or {}).get("queued_behind"),
+                "card": spoken_card(card[0], card[1], so_far=card[2], limit=60) if card else None,
+                "card_line": card[0] if card else None}
+
+    async def answer_status(self, delegation_id: str, task_id: str, confused: bool = False,
+                            question: str | None = None, facts: dict[str, Any] | None = None) -> None:
+        """"What's the status?": answered now from the steps the task has reported, never queued
+        behind the task itself (that made status questions wait up to eight minutes). ``question``: a
+        question about the work's content the side model couldn't take (the voice answers it from
+        the same facts)."""
+        f = facts or await self.work_facts(task_id)
         self.handoff_at.pop(delegation_id, None)
         self.replied_task = task_id
-        logger.info("speakeasy: status answered from %d steps (%s)", len(steps), status or "unknown")
-        request = self.store.request_text(key) if key else ""
-        tools = [i for i in ((work or {}).get("activity") or []) if isinstance(i, dict)]
-        findings = [f.get("text", "") for f in ((work or {}).get("findings") or [])]
-        queued = (work or {}).get("queued_behind")
+        logger.info("speakeasy: status answered from %d steps (%s)", len(f["steps"]), f["status"] or "unknown")
         await self.append("session.commentary.append", delegation_id,
-                          P.status_answer(name or "that task", status, steps, time.monotonic() - started, result,
-                                          live, request=request, tools=[i.get("text", "") for i in tools if
-                                                                        not str(i.get("text", "")).startswith("Found: ")],
-                                          findings=findings, queued_behind=queued, confused=confused,
-                                          card=spoken_card(card[0], card[1], so_far=card[2], limit=60) if card else None))
+                          P.status_answer(f["name"], f["status"], f["steps"], f["age"], f["result"], f["live"],
+                                          request=f["request"], tools=f["tools"], findings=f["findings"],
+                                          queued_behind=f["queued"], confused=confused, card=f["card"],
+                                          question=question))
+
+    @staticmethod
+    def facts_text(f: dict[str, Any]) -> str:
+        """A task's facts (work_facts) as plain lines for the side model."""
+        lines = [f"Task: {f['name']}", f"Status: {f['status'] or 'unknown'}, running for {int(f['age'] // 60)} min"]
+        if f.get("request"):
+            lines.append(f"What the user asked it: {notice_text(f['request'], 400)}")
+        if f.get("card_line"):
+            lines.append(f"Its live status line: {f['card']}")
+        for label, values in (("Steps it reported, oldest first", f.get("steps")),
+                              ("What its session did lately, oldest first", f.get("live")),
+                              ("Its tool log, oldest first (each with the call's own detail)", f.get("tool_details")),
+                              ("Files and pages it touched", f.get("touched")),
+                              ("What it has found", [x for x in f.get("findings") or [] if not str(x).startswith("Voice:")])):
+            values = [notice_text(v, 220) for v in values or [] if v]
+            if values:
+                lines.append(f"{label}: " + "; ".join(values))
+        if f.get("result"):
+            lines.append(f"Its result: {f['result']}")
+        return "\n".join(lines)
+
+    async def answer_task_question(self, delegation_id: str, task_id: str, question: str) -> None:
+        """"What is it testing?", "which files?", "for what?": a question about the work itself, not
+        "how's it going?". Answered from the task's real steps when they say (the side model reads
+        them); when they don't, the task itself is asked (ask_task) and its one-line reply spoken."""
+        f = await self.work_facts(task_id)
+        call = self.rt.answer_call or router.answer_from_work
+        try:
+            answer = await asyncio.to_thread(call, question, self.facts_text(f))
+        except Exception:
+            logger.debug("speakeasy: task question model failed", exc_info=True)
+            answer = None
+        if answer:
+            self.handoff_at.pop(delegation_id, None)
+            self.replied_task = task_id
+            logger.info("speakeasy: task question answered from its steps")
+            await self.append("session.commentary.append", delegation_id, P.task_answer(f["spoken"], question, answer))
+            return
+        concrete = bool(f["steps"] or f["live"] or f["tools"])
+        if (answer == "" or not concrete) and f["status"] not in TERMINAL and await self.ask_task(delegation_id, task_id, question):
+            return
+        # No side model (or the task can't be asked): the voice answers from the same facts.
+        await self.answer_status(delegation_id, task_id, question=question, facts=f)
+
+    async def ask_task(self, delegation_id: str, task_id: str, question: str) -> bool:
+        """Ask a running task the user's question (an immediate steer, or into its chat thread); its
+        next STATUS/DETAIL is spoken as the answer (task_replied). False when it can't be asked."""
+        with self.interaction.lock:
+            target = self.interaction.runs.get(task_id)
+            run_id = target.run_id if target else None
+            status = target.status if target else None
+        if target is None or status not in ACTIVE_RUN_STATES:
+            return False
+        key = target.idem_key
+        text = P.ask_task_text(self.names, question, typed=delegation_id.startswith(messages_mod.TYPED_PREFIX))
+        sent = False
+        if run_id and status in {"running", "working"}:
+            sent = await asyncio.to_thread(self.hermes.steer, run_id, text)
+            for _ in range(STEER_RETRIES):
+                if sent:
+                    break
+                with self.interaction.lock:
+                    going = target.status in ACTIVE_RUN_STATES
+                if not going:
+                    break
+                await asyncio.sleep(STEER_RETRY_S)
+                sent = await asyncio.to_thread(self.hermes.steer, run_id, text)
+        elif not run_id and target.deliver_to:
+            placed = self.store.continued_for(key) or {}
+            platform, thread_id = placed.get("platform"), placed.get("thread_id")
+            runner = self.rt.threads
+            if platform and thread_id and runner is not None and hasattr(runner, "post"):
+                sent = bool(await asyncio.to_thread(runner.post, platform, str(thread_id), message=text,
+                                                    delivery_id=f"{key[:40]}-{secrets.token_hex(4)}"))
+        if not sent:
+            logger.info("speakeasy: a running task could not be asked a question")
+            return False
+        asked_at = time.monotonic()
+        with self.interaction.lock:
+            target.asked = (question, delegation_id, asked_at)
+        self.store.progress(key, "milestone", f"You asked: {notice_text(question, 200)}")
+        self.publish()
+        self.handoff_at.pop(delegation_id, None)
+        self.replied_task = task_id
+        logger.info("speakeasy: asked the running task a question about its work")
+        await self.append("session.commentary.append", delegation_id,
+                          P.asking_task_note(self.spoken_task_name(key) or "that", question))
+        watch = asyncio.get_running_loop().create_task(self._await_task_reply(target, asked_at))
+        self.dispatch_tasks.add(watch)
+        watch.add_done_callback(self.dispatch_tasks.discard)
+        return True
+
+    async def _await_task_reply(self, backend: BackendRun, asked_at: float) -> None:
+        """Say once that the task hasn't answered yet if it takes a while; forget the question later."""
+        await asyncio.sleep(ASK_REPLY_WAIT_S)
+        with self.interaction.lock:
+            pending = backend.asked if backend.asked and backend.asked[2] == asked_at else None
+            going = backend.status in ACTIVE_RUN_STATES
+        if pending is None:
+            return
+        if not going:
+            with self.interaction.lock:
+                backend.asked = None
+            return
+        if self.call_connected():
+            await self.append("session.commentary.append", pending[1],
+                              P.task_reply_waiting(self.spoken_task_name(backend.idem_key) or "that", pending[0]))
+        await asyncio.sleep(max(0.0, ASK_REPLY_KEEP_S - ASK_REPLY_WAIT_S))
+        with self.interaction.lock:
+            if backend.asked and backend.asked[2] == asked_at:
+                backend.asked = None
+
+    async def task_replied(self, backend: BackendRun, detail: str) -> bool:
+        """A STATUS/DETAIL line from a task that was asked a question: spoken as its answer. False when
+        no question is waiting (the line is ordinary progress)."""
+        now = time.monotonic()
+        with self.interaction.lock:
+            pending = backend.asked
+            if not pending or now - pending[2] < ASK_REPLY_MIN_S or now - pending[2] > ASK_REPLY_KEEP_S:
+                return False
+            backend.asked = None
+        logger.info("speakeasy: the task answered the question it was asked (%.0f s)", now - pending[2])
+        await self.append("session.commentary.append", pending[1],
+                          P.task_reply(self.spoken_task_name(backend.idem_key) or "that", pending[0], detail))
+        return True
 
     def live_steps(self, session_id: str) -> list[str]:
         """What the task's Hermes session has done lately, in plain words, newest last: the voice's
@@ -4745,6 +4912,8 @@ class SidebandWorker:
             self.store.thread_progress(backend.idem_key, detail)
             self.store.progress(backend.idem_key, "milestone", detail)
             self.publish()
+            if await self.task_replied(backend, detail):
+                return
             if not await self.maybe_speak_progress(backend, detail):
                 await self.maybe_note_status(backend, detail)
         except Exception:
@@ -4904,7 +5073,9 @@ class SidebandWorker:
                 if progress:
                     self.store.user_progress(idem, *progress)
                     self.store.progress(idem, "milestone", progress[1])
-                    if not await self.maybe_speak_progress(backend, progress[0]):
+                    if await self.task_replied(backend, progress[1]):
+                        pass
+                    elif not await self.maybe_speak_progress(backend, progress[0]):
                         await self.maybe_note_status(backend, progress[1])
             elif backend.status != "ambiguous":
                 keys, edits = fence_mod.keys_from_tool(event.get("tool"), event.get("preview"))

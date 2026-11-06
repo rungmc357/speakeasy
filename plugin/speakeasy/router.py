@@ -1456,6 +1456,11 @@ def is_status_question(request: str) -> bool:
     return 0 < len(text.split()) <= 12 and bool(_STATUS_Q.search(text))
 
 
+# The things running work is about, as a user names them in a question about it.
+_WORK_NOUNS = (r"tests?|test\s+(?:suite|run|files?)|suites?|checks?|files?|pages?|screens?|steps?|commands?|"
+               r"builds?|bugs?|fix(?:es)?|errors?|branch(?:es)?|features?|parts?|code|changes?|crash(?:es)?")
+
+
 # "What are you testing?", "what's it checking?", "can't you look at the task and see": what the
 # running work is doing, answered from the job itself (its request, tool log, findings), never sent
 # to the task as more context.
@@ -1465,13 +1470,90 @@ _TASK_ASK = re.compile(
     r"|building|fixing|changing|waiting\s+(?:on|for)|stuck\s+on|on\s+(?:now|right\s+now))\b"
     r"(?!\s+(?:tonight|today|tomorrow|later|this\s+(?:weekend|week|evening|morning|afternoon)|for\s+(?:dinner|lunch|fun|work)))"
     r"|\bwhat\s+(?:tests?|checks?|commands?)\s+(?:is\s+it|are\s+you|are\s+they)\s+running\b"
-    r"|\b(?:can'?t|could(?:n'?t)?|can)\s+you\s+(?:just\s+)?(?:look\s+at|check)\s+the\s+(?:task|job)\b")
+    r"|\b(?:can'?t|could(?:n'?t)?|can)\s+you\s+(?:just\s+)?(?:look\s+at|check)\s+the\s+(?:task|job)\b"
+    # "Which tests?", "which files did it change", "what tests are those", "which page is it on".
+    rf"|\bwhich\s+(?:{_WORK_NOUNS})\b"
+    rf"|\bwhat\s+(?:{_WORK_NOUNS})\s+(?:is|are|was|were|did|does|do|has|have)\b"
+    # "Why is it running the tests again?", "why are you checking that?"
+    r"|\bwhy\s+(?:is|are|was|were|does|did)\s+(?:it|you|he|she|they|that|the\s+(?:task|job|agent|run))\s+(?:still\s+)?"
+    r"(?:testing|checking|running|building|rebuilding|fixing|changing|looking|waiting|doing\s+that|retrying|redoing)\b"
+    # "What's it checking for?", "what are the tests for?", "what's that test run for?"
+    rf"|\bwhat(?:'s|\s+is|\s+are)\s+(?:it|that|this|the|those|these)\s+(?:(?:{_WORK_NOUNS})\s+)?(?:(?:run|testing|checking)\s+)?for\b"
+    r"|\b(?:testing|checking)\s+(?:for\s+)?what\b")
 
 
 def asks_about_task(request: str) -> bool:
-    """A question about what the running work is doing (see _TASK_ASK)."""
+    """A question about the content of the running work, what it is testing, which files, why (see
+    _TASK_ASK): answered from its real steps, or by asking the task, never with a bare progress
+    update. "How's it going?" is is_status_question instead."""
     text = " ".join((request or "").split())
-    return 0 < len(text.split()) <= 30 and bool(_TASK_ASK.search(text))
+    if not (0 < len(text.split()) <= 30) or not _TASK_ASK.search(text):
+        return False
+    # "Which files should I delete?", "what page can you book for me": a request, not a question about
+    # what the running work is doing.
+    return not _NEW_ASK.search(_LOOK_AT_TASK.sub(" ", text))
+
+
+_LOOK_AT_TASK = re.compile(r"(?i)\b(?:can'?t|could(?:n'?t)?|can)\s+you\s+(?:just\s+)?(?:look\s+at|check)\s+the\s+(?:task|job)\b")
+_NEW_ASK = re.compile(r"(?i)\b(?:should\s+(?:i|we)|can\s+you|could\s+you|would\s+you|i\s+(?:want|need)|"
+                      r"let'?s|go\s+(?:ahead|and)|make|create|book|send|order|buy|find\s+me)\b")
+
+
+_ANSWER_PROMPT = (
+    "A user is on a voice call with their AI assistant while a task works in the background. They asked "
+    "a question about that task. You get the question and what is known about the task: what they asked "
+    "it, its live status line, the steps it reported, its own tool log (commands it ran, files it read or "
+    "changed) and what it has found.\n\n"
+    "If those facts answer the question, reply with JSON only: {\"answer\": \"...\"}, one or two short "
+    "spoken sentences in plain words that answer exactly what was asked, with the specifics the facts "
+    "give (which feature, which tests or files by what they are about, which page, which numbers). Name "
+    "the task once in plain words (\"the setup fix for the ChatGPT app\"), never \"the test run\" or \"the "
+    "task\". Never read out a command, a file path, a flag or a tool name: say what it is about (\"the "
+    "sign-in tests\", \"the pricing page code\"). Never guess beyond the facts.\n"
+    "If the facts don't say (for example they show tests running but not what they cover, or the "
+    "question asks why and nothing gives the reason), reply {\"answer\": null}."
+)
+
+
+def answer_from_work(question: str, facts: str, timeout: float = CHAT_ROUTE_TIMEOUT_S) -> str | None:
+    """The fast side model's answer to a content question about a running task, from its facts.
+    Returns the answer, "" when the facts can't answer it, None when no model answered (unavailable,
+    slow or unreadable): the caller then lets the voice work from the facts itself."""
+    question = " ".join(str(question or "").split())
+    if not question or not facts.strip():
+        return None
+    messages = [{"role": "system", "content": _ANSWER_PROMPT},
+                {"role": "user", "content": f"Question: {question[:400]}\n\nWhat is known about the task:\n{facts[:3500]}"}]
+    try:
+        raw = _EXECUTOR.submit(aux_call, messages, timeout, 200).result(timeout=timeout + 0.5)
+    except Exception as exc:
+        logger.info("speakeasy: task question model unavailable (%s)", type(exc).__name__)
+        return None
+    return clean_answer(raw)
+
+
+def clean_answer(raw: str | None) -> str | None:
+    """The side model's reply as a spoken answer, "" for "the facts don't say", None if unreadable."""
+    text = str(raw or "").strip()
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or "answer" not in data:
+        return None
+    answer = data.get("answer")
+    if answer is None or (isinstance(answer, str) and not answer.strip()):
+        return ""
+    if not isinstance(answer, str):
+        return None
+    answer = " ".join(answer.split())
+    # Spoken text never carries a command, a path or a raw tool name.
+    if re.search(r"(?:~/|/[A-Za-z0-9_.-]+/|\b[a-z]+_[a-z_]+\(|\s--?[a-z][\w-]*|`)", answer):
+        return ""
+    return answer[:400]
 
 
 # Talk about the conversation itself, never work. HOLD: they're still mid-thought ("wait, I wasn't

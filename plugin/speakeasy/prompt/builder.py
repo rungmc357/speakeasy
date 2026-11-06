@@ -834,7 +834,7 @@ def tool_step(name: str) -> str:
 def status_answer(name: str, status: str | None, steps: list[str], age_s: float, result: str | None,
                   live: list[str] | None = None, request: str | None = None, tools: list[str] | None = None,
                   findings: list[str] | None = None, queued_behind: str | None = None,
-                  confused: bool = False, card: str | None = None) -> str:
+                  confused: bool = False, card: str | None = None, question: str | None = None) -> str:
     """What the voice says to "what's the status?", built from what the task has reported and, when it
     has said little, from what its session has actually been doing. ``card``: what the task's card
     says right now (its live line and recap, calls.spoken_card); the answer leads with it, so the
@@ -869,16 +869,57 @@ def status_answer(name: str, status: str | None, steps: list[str], age_s: float,
     found = [notice_text(f, 160) for f in (findings or []) if f and not f.startswith("Voice:")]
     if found:
         job.append("What it has found so far: " + "; ".join(found[-3:]) + ".")
+    asked_now = notice_text(question, 200) if question else None
     opener = (f"They don't follow what you just said. Say plainly which job you meant (\"{name}\") and what it is doing, "
               f"in one or two sentences, from these facts only; no apology speech, don't start or add any work. "
               if confused else
+              f"They asked about the \"{name}\" task: \"{asked_now}\". Answer that exact question now, briefly, from "
+              f"these facts only, with the specifics they give (which feature, which tests or files by what they're "
+              f"about, which page, which numbers), never a general progress update; do not start new work. If the "
+              f"facts don't answer it, say what they do show in one sentence and that you'll ask the task. "
+              if asked_now else
               f"They asked how the \"{name}\" task is going. Answer now, briefly, in your own words, from these facts "
               f"only, like a colleague giving a quick update: what it's done and what it's on now; do not start new work, "
               f"don't read them out verbatim, and never answer with just a stock phrase. ")
     specifics = ("Name the job in a few words and say specifically what it is working on (what it changed, what it is "
                  "testing or checking and why), e.g. \"The pricing-page fix: it changed the plan names; now it's running "
-                 "the full test suite before shipping.\" ")
+                 "the full test suite before shipping.\" Name it once in plain words, never just \"the test run\" or "
+                 "\"the task\", and never read out a command, a file path or a tool name. ")
     return (opener + specifics + " ".join(job + [facts]))[:2000]
+
+
+def task_answer(name: str, question: str, answer: str) -> str:
+    """A content question about a running task ("what is it testing?") that its real steps answer."""
+    return (f"They asked about the \"{name}\" task: \"{notice_text(question, 200)}\". The answer, from its own steps: "
+            f"{notice_text(answer, 400)} Say that now in your own words, in one or two short sentences, naming the job "
+            "once in plain words; don't start or add any work.")[:1200]
+
+
+def asking_task_note(name: str, question: str) -> str:
+    """Its steps don't answer the question: the task itself was just asked; its reply follows in seconds."""
+    return (f"They asked about the \"{name}\" task: \"{notice_text(question, 200)}\". What it has reported so far "
+            "doesn't say, so the task itself was just asked; its answer arrives in a few seconds. Say only \"Let me "
+            "ask it.\" (or a few words like it), then wait. Don't guess the answer and don't start or add any work.")
+
+
+def task_reply(name: str, question: str, reply: str) -> str:
+    """The task answered the question it was asked (``asking_task_note``)."""
+    return (f"The \"{name}\" task answered their question \"{notice_text(question, 200)}\": {notice_text(reply, 400)} "
+            "Say that now in one short sentence, in plain words (never a command, a file path or a tool name).")[:1200]
+
+
+def task_reply_waiting(name: str, question: str) -> str:
+    """The task hasn't answered yet (it's mid-step): said once; the answer is spoken whenever it comes."""
+    return (f"The \"{name}\" task hasn't answered \"{notice_text(question, 120)}\" yet; it's in the middle of a step. "
+            "Say once, in a few words, that it hasn't answered yet and you'll tell them as soon as it does.")
+
+
+def ask_task_text(names: "Names", question: str, typed: bool = False) -> str:
+    """The steer that asks a running task the user's question about its own work."""
+    how = "typed" if typed else "asks"
+    return (f"{names.user_cap} {how}: {' '.join(str(question).split())} Answer in one short sentence as a STATUS/DETAIL "
+            "pair now (STATUS: a few words; DETAIL: the answer in plain words, naming what you're working on), then "
+            "carry on with the work; do not start over.")
 
 
 def _words_of(text: str | None) -> set[str]:
