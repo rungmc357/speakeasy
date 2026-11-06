@@ -55,6 +55,7 @@ def test_described_like_the_chat_footer_and_labelled_an_estimate():
     assert ctx["estimate"] is True and "estimate" in ctx["detail"].lower()
     assert ctx["detail"].startswith("About 40K of 200K tokens in the latest model call (peak about 22%)")
     assert ctx["percent"] == 20 and ctx["peak_percent"] == 22 and ctx["seconds"] == 185
+    assert ctx["use"] == "about 20% of context used" and ctx["took"] == "3 min"
 
 
 def test_unknown_window_says_tokens_not_a_made_up_share():
@@ -141,3 +142,19 @@ def test_session_page_carries_the_chats_latest_context(service):
     call("c2", 30_000, model="gpt-6.1")                                  # newest segment ran last
     ctx = service.history_session("c1", {})["session"]["context"]
     assert ctx["line"] == "GPT-6.1 · about 15% of context used" and ctx["estimate"] is True
+
+
+def test_the_plugin_registers_the_hook_and_it_reaches_the_live_module():
+    import speakeasy
+
+    class Ctx:
+        hooks: dict = {}
+
+        def register_hook(self, name, fn):
+            self.hooks[name] = fn
+
+    ctx = Ctx()
+    speakeasy._register_context_hook(ctx)
+    hook = ctx.hooks["post_api_request"]
+    hook(session_id="s9", model="gpt-6.1", usage={"prompt_tokens": 4000}, context_length=400_000)
+    assert CU.latest("s9")["tokens"] == 4000
