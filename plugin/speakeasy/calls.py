@@ -574,6 +574,11 @@ class BackendRun:
     refusal_retries: int = 0
     retry_refused: bool = False
     can_retry: bool = False
+    # The user took this ask back ("no, don't send that", "I wasn't talking to you"): whatever it
+    # ends with is background for the voice, never read aloud as work that was done.
+    retracted: bool = False
+    # The newest progress the task reported (a STATUS line or milestone), for the overclaim check.
+    last_progress: str = ""
 
     @property
     def say_id(self) -> str:
@@ -1397,6 +1402,7 @@ class SidebandWorker:
                 self.watch_acknowledgement()
                 if delta.rstrip().endswith("?"):
                     self.watch_choice()
+                self.watch_overclaim()
             return
         if kind == "session.delegation.created":
             delegation = event.get("delegation") or {}
@@ -1460,6 +1466,38 @@ class SidebandWorker:
         task = loop.create_task(self.offer_choice(question, options))
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
+
+    def watch_overclaim(self) -> None:
+        """The voice just said a running task's step is done ("the build is submitted") while the task
+        itself still says it's doing it ("submitting build 50"): correct it once, in one line. Only a
+        task's final result may say done, sent, submitted or live."""
+        fragments = list(getattr(self, "fragments", []))
+        turn = next((i for i in range(len(fragments) - 1, -1, -1) if fragments[i]["speaker"] == "user"), -1)
+        said = "".join(f["text"] for f in fragments[turn + 1:] if f["speaker"] == "assistant")
+        if not said.rstrip().endswith((".", "!", "?")) or not re.search(r"(?i)ed\b|\bsent\b|\bbought\b", said):
+            return  # mid-sentence, or no done-word at all: nothing to check yet
+        fixed = getattr(self, "overclaims_fixed", None)
+        if fixed is None:
+            fixed = self.overclaims_fixed = set()
+        with self.interaction.lock:
+            runs = [r for r in self.interaction.runs.values()
+                    if r.status in {"running", "working"} and r.delegation_id not in fixed]
+        for run in runs:
+            progress = run.last_progress
+            verb = P.overclaimed(said, progress)
+            if not verb:
+                continue
+            fixed.add(run.delegation_id)
+            logger.info("speakeasy: the voice called a running step done (%s); correcting it", verb)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            task = loop.create_task(self.append("session.commentary.append", run.say_id,
+                                                P.overclaim_correction(verb, progress)))
+            self.dispatch_tasks.add(task)
+            task.add_done_callback(self.dispatch_tasks.discard)
+            return
 
     async def offer_choice(self, question: str, options: list[str]) -> str | None:
         """A lightweight task holding the question card (no Hermes run). A tap goes back to the voice
@@ -2058,6 +2096,8 @@ class SidebandWorker:
         """Keep the voice model's picture of a running task current without prompting it to talk."""
         now = time.monotonic()
         with self.interaction.lock:
+            if detail and detail not in backend.last_progress:
+                backend.last_progress = " ".join(str(detail).split())[:400]
             last = backend.noted_at
             if last and now - last < STATUS_NOTE_EVERY_S:
                 return
@@ -2099,7 +2139,15 @@ class SidebandWorker:
         name = self.spoken_task_name(backend.idem_key)
         needs = bool(name) and self.pulse_needs_name(backend)
         reserve = len(name.split()) + 1 if needs else 0
+        # A task's update is news about that task, never "picking up where I left off" (on a brand-new
+        # task it is false); a line that was only that gives way to the detail under it.
+        line, fresh_recap = P.without_resume_lead(line) or "", P.without_resume_lead(fresh_recap)
+        if not line and fresh_recap:
+            line, fresh_recap = fresh_recap, None
         text = spoken_card(line, fresh_recap, so_far=so_far, limit=PULSE_MAX_WORDS - reserve)
+        if text and backend.status in ACTIVE_RUN_STATES:
+            # Still running: "submitting" never becomes "submitted"; only the result may say done.
+            text = P.in_progress_line(text, spoken_card(line, None, so_far=so_far, limit=PULSE_MAX_WORDS - reserve))
         text = cap_words(P.named_pulse(text, name, needs) or text) if text else None
         if not text or _said_key(text) in said:
             return None
@@ -2109,6 +2157,8 @@ class SidebandWorker:
                         stale: bool) -> None:
         line, recap, _ = card
         with self.interaction.lock:
+            if line and line not in backend.last_progress:
+                backend.last_progress = " ".join(f"{line}. {backend.last_progress}".split())[:400]
             backend.card_said = card_key(line)
             if recap:
                 backend.recap_said = card_key(recap)
@@ -2215,10 +2265,11 @@ class SidebandWorker:
         self.speech_hold_until = max(getattr(self, "speech_hold_until", 0.0), time.monotonic() + seconds)
 
     def spoken_task_name(self, key: str | None) -> str:
-        """A task's name to say aloud: its own title (never a job name cut to a few words)."""
+        """What a task is about, to say aloud: its subject in a few words ("build sixty-seven"), never
+        its title read out ("Adding that to Plan remaining work for build sixty-seven")."""
         if not key:
             return ""
-        return P.spoken_name(self.store.title(key) or self.store.request_text(key) or "")
+        return P.spoken_subject(self.store.title(key) or self.store.request_text(key) or "")
 
     def pulse_needs_name(self, backend: BackendRun) -> bool:
         """Say which job a pulse is about when more than one could be meant, or it wasn't the
@@ -2545,7 +2596,7 @@ class SidebandWorker:
             if run.run_id and run.status in {"running", "working"}:
                 await self._supersede(task_id)
             with self.interaction.lock:
-                run.status, run.error = "rejected", "Taken back"
+                run.status, run.error, run.retracted = "rejected", "Taken back", True
             self.store.update_run(run.idem_key, None, "cancelled")
             self.store.progress(run.idem_key, "milestone", "Taken back: you weren't done")
             self.store.dismiss_key(run.idem_key)
@@ -4740,6 +4791,8 @@ class SidebandWorker:
             detail = progress[1] if progress else thread_commentary(text)
             if not detail:
                 return
+            with self.interaction.lock:
+                backend.last_progress = " ".join(f"{progress[0]}. {detail}".split() if progress else detail.split())[:400]
             if progress:
                 self.store.user_progress(backend.idem_key, *progress)
             self.store.thread_progress(backend.idem_key, detail)
@@ -4902,6 +4955,8 @@ class SidebandWorker:
             if kind == "message.interim":
                 progress = interim_progress(event)
                 if progress:
+                    with self.interaction.lock:
+                        backend.last_progress = " ".join(f"{progress[0]}. {progress[1]}".split())[:400]
                     self.store.user_progress(idem, *progress)
                     self.store.progress(idem, "milestone", progress[1])
                     if not await self.maybe_speak_progress(backend, progress[0]):
@@ -5021,7 +5076,12 @@ class SidebandWorker:
             if self.call_connected():
                 # Never over a thought in progress: the answer (or its question) waits for a pause.
                 await self.wait_for_pause()
-            if status == "completed" and self.store.is_seen(idem):
+            if backend.retracted:
+                # Taken back by the user (it wasn't meant for the voice): never read out as work done.
+                await self.append("session.thinking.append", delegation_id, P.retracted_result_note(
+                    notice_text(self.store.request_text(idem), 140) or "an earlier request",
+                    result["spoken"] if result and status == "completed" else f"it {status}"))
+            elif status == "completed" and self.store.is_seen(idem):
                 # They already opened this answer in the app while the voice was busy: reading it out
                 # now would repeat what they've read. The voice knows it, and says it only if asked.
                 await self.append("session.thinking.append", delegation_id, P.result_already_seen_note(
