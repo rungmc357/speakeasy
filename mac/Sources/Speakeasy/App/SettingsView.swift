@@ -356,12 +356,21 @@ private struct VoiceSettings: View {
                                                              var voice = draft.voice ?? .init(); voice.provider = VoiceProvider.codex.rawValue
                                                              voice.voice = VoiceCatalog.compatible(voice.voice, provider: .codex); draft.voice = voice
                                                          } }))
-            providerStatus
+            VoiceProviderStatus(draft: $draft)
             VoiceChooser(provider: draft.resolvedProvider,
                          selection: Binding(get: { draft.voice?.voice ?? "" },
                                             set: { v in var voice = draft.voice ?? .init(); voice.voice = v.isEmpty ? nil : v; draft.voice = voice }))
         }
     }
+
+}
+
+/// The voice provider's sign-in/key line and its fix (Settings › Voice). Never a terminal command.
+struct VoiceProviderStatus: View {
+    @EnvironmentObject var app: AppModel
+    @Binding var draft: ServerSettings
+
+    var body: some View { providerStatus }
 
     @ViewBuilder private var providerStatus: some View {
         switch draft.resolvedProvider {
