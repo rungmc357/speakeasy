@@ -891,6 +891,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var codexLogin: Bool = false
     /// Steer a running task or queue a message for when it's done (`mode`, docs/API.md "Steer or queue").
     public var messageModes: Bool = false
+    /// Voice messages transcribed by Hermes (`POST /voice/transcribe`), like a Telegram voice note.
+    public var transcribe: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -905,7 +907,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
-        case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login"
+        case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe
         case messageModes = "message_modes"
     }
     public init(from decoder: Decoder) throws {
@@ -924,5 +926,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         schedules = (try? c.decodeIfPresent(Bool.self, forKey: .schedules)) ?? false
         codexLogin = (try? c.decodeIfPresent(Bool.self, forKey: .codexLogin)) ?? false
         messageModes = (try? c.decodeIfPresent(Bool.self, forKey: .messageModes)) ?? false
+        transcribe = (try? c.decodeIfPresent(Bool.self, forKey: .transcribe)) ?? false
     }
 }

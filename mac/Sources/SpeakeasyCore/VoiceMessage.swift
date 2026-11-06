@@ -128,3 +128,9 @@ public struct VoiceMessageFlow: Equatable, Sendable {
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 }
+
+/// `POST /voice/transcribe` (servers with `transcribe`): a voice message's recorded audio as the raw
+/// body (`audio/mp4`), answered with `{"text": ...}` from Hermes' own transcription.
+public enum VoiceTranscribeRoute {
+    public static let path = "/voice/transcribe"
+}

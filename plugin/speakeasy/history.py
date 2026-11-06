@@ -71,6 +71,20 @@ AUTOMATED_FILTERS = ("kanban", "scheduled")
 # A context-compaction handoff (as a user or an assistant row): one quiet divider per page at most.
 COMPACTED = "Earlier messages were summarized"
 _COMPACTION = re.compile(r"^\s*(?:\[[^\]\n]{1,60}\]\s*)?\[(?:CONTEXT COMPACTION|PRIOR CONTEXT)|_compressed_summary")
+
+
+def is_compaction(text: str) -> bool:
+    """A context-compaction handoff (Hermes' model-facing summary of earlier turns)."""
+    return bool(_COMPACTION.match(text or ""))
+
+
+# The same handoff appended after a user's words in one row: everything from it on is Hermes'.
+_COMPACTION_TAIL = re.compile(r"\n\s*\[(?:CONTEXT COMPACTION|PRIOR CONTEXT)\b")
+
+
+def _before_compaction(text: str) -> str:
+    m = _COMPACTION_TAIL.search(text or "")
+    return text[:m.start()].rstrip() if m and text[:m.start()].strip() else text
 # User rows that are Hermes talking to itself, never the person: hidden. (kind, step) where ``step``
 # is the plain line the reply's work shows for it ("A helper finished"), or None.
 _HIDDEN_RES = (
@@ -459,6 +473,7 @@ def user_words(content: str) -> tuple[str, str]:
     text = strip_gateway(content)
     if _COMPACTION.match(text):
         return "note", COMPACTED
+    text = _before_compaction(text)
     for _ in range(4):   # a scheduled job's prompt, model notes and skill files can stack
         before = text
         if _CRON_HINT.match(text):

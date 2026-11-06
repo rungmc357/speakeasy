@@ -1,9 +1,13 @@
 import AVFoundation
 import Foundation
+import SpeakeasyClient
 import Speech
 
-/// Records a voice message for a session (no call needed) and transcribes it on this Mac with
-/// Apple's on-device speech recognition. No audio leaves the Mac: only the reviewed text is sent.
+/// Records a voice message for a session (no call needed). The live words come from Apple's
+/// on-device recognition; when the server can transcribe (`transcribe`), the whole recorded clip goes
+/// to Hermes when you stop and its text, made the way a Telegram voice note's is, replaces them
+/// (on-device recognition could drop the start, or everything before a pause). Without that
+/// server, or if Hermes fails, the on-device text stays and no audio leaves the Mac.
 @MainActor
 protocol VoiceMessageRecording: AnyObject {
     /// Asks for the mic and speech recognition (prompts once). Completes on the main actor with
@@ -25,6 +29,9 @@ final class VoiceMessageRecorder: VoiceMessageRecording {
     private var latest = ""
     private var onFinished: (@MainActor (String?, String?) -> Void)?
     private var stopFallback: DispatchWorkItem?
+    private var audio: VoiceMemoAudio?
+    /// Hermes' transcription of the recorded clip (`ServerClient.transcribeVoice`); nil = on-device only.
+    var hermes: (@MainActor (Data) async throws -> String)?
 
     /// A debug binary without an Info.plist would crash asking for permission: it never asks.
     static var declared: Bool {
@@ -55,14 +62,16 @@ final class VoiceMessageRecorder: VoiceMessageRecording {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { return false }
+        let audio = hermes == nil ? nil : VoiceMemoAudio(format: format)
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
             request.append(buffer)
+            audio?.append(buffer)
             let rms = Self.rms(buffer)
             Task { @MainActor in level(rms) }
         }
         engine.prepare()
         do { try engine.start() } catch { input.removeTap(onBus: 0); return false }
-        self.engine = engine; self.request = request; self.latest = ""; self.onFinished = finished
+        self.engine = engine; self.request = request; self.latest = ""; self.onFinished = finished; self.audio = audio
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
@@ -92,6 +101,7 @@ final class VoiceMessageRecorder: VoiceMessageRecording {
 
     func cancel() {
         onFinished = nil
+        audio?.discard(); audio = nil
         stopAudio()
         task?.cancel()
         teardown()
@@ -102,7 +112,17 @@ final class VoiceMessageRecorder: VoiceMessageRecording {
         onFinished = nil
         stopAudio()
         teardown()
-        done(text, error)
+        let clip = audio?.finish()
+        audio = nil
+        guard let clip, let hermes else { done(text, error); return }
+        Task { @MainActor in
+            // Hermes heard the whole clip; keep the on-device words if it can't answer.
+            if let heard = try? await hermes(clip), !heard.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                done(heard.trimmingCharacters(in: .whitespacesAndNewlines), nil)
+            } else {
+                done(text, error)
+            }
+        }
     }
 
     private func stopAudio() {

@@ -961,7 +961,7 @@ struct HistoryMessageView: View {
     }
 
     private func markdown(_ s: String) -> AttributedString {
-        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+        AgentMarkdown.attributed(s)
     }
 
     /// The message's own time, on hover ("9:41 PM", "Yesterday, 9:41 PM").

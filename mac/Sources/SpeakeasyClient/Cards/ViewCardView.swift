@@ -182,20 +182,10 @@ func webURL(_ url: URL?) -> URL? {
     return url
 }
 
-/// Report text with its markdown links ([name](https://…)) and bare https links tappable.
+/// Report text rendered with `AgentMarkdown` (bold, headings, bullets, never raw marks), its markdown
+/// links ([name](https://…)) and bare https links tappable.
 func linkedText(_ text: String) -> AttributedString {
-    var source = text
-    if let regex = try? NSRegularExpression(pattern: #"(?<![\[(<])\bhttps://[^\s<>()\[\]]+"#) {
-        let ns = source as NSString
-        for match in regex.matches(in: source, range: NSRange(location: 0, length: ns.length)).reversed() {
-            var raw = ns.substring(with: match.range)
-            var tail = ""
-            while let last = raw.last, ".,;:!?".contains(last) { tail = String(last) + tail; raw.removeLast() }
-            source = (source as NSString).replacingCharacters(in: match.range, with: "[\(raw)](\(raw))" + tail)
-        }
-    }
-    let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    guard var out = try? AttributedString(markdown: source, options: options) else { return AttributedString(text) }
+    var out = AgentMarkdown.attributed(text)
     for run in out.runs where run.link != nil {
         if webURL(run.link) == nil { out[run.range].link = nil } else { out[run.range].underlineStyle = .single }
     }
