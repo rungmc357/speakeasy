@@ -3,6 +3,11 @@
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
 ## Plugin 0.3.41 — Commands and code from a finished task show in the conversation
+## Apps (unreleased) — Who hears what
+
+- **Who hears what.** A plain privacy screen in setup (Mac: right after the voice; iPhone and iPad: from the You're connected screen) and in Settings (top of Voice, and About). It says what stays on your computer (your agent, sessions, files and tools) and what the call voice hears (with the ChatGPT voice, OpenAI hears the call itself and a short note about you and your running tasks' names, but not your sessions, files, tools or attachments). It follows your voice setting, and adds a line about Cloudflare, notifications or listening mode only when you use them.
+
+## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
 
 - **The written answer shows, not just the spoken line.** When a task finishes, its conversation page now shows the full answer, with commands and code blocks intact, so the line the voice told you to paste is really there. The conversation list keeps the short line as its preview.
 - **"On screen" means on screen.** The voice only says a command is on screen when it is; a command the voice had but the written answer didn't is added to the answer.
