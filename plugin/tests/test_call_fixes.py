@@ -228,9 +228,13 @@ def test_generic_plans_are_not_shown(st):
                                                                   "Add your input"])
     assert st.work(idem_key="k1")["plan"] == [] and "started_with" not in st.work(idem_key="k1")
     _run(st, "k2", "s_other2", "running", "Fix the setup", plan=["Find the issue", "Fix and test", "Ship it"])
+    # Stock steps that fit any task: worse than none, not even as "Started with".
+    assert st.work(idem_key="k2")["plan"] == [] and "started_with" not in st.work(idem_key="k2")
+    _run(st, "k3", "s_other3", "running", "Fix the setup", plan=["Find why setup misses the app",
+                                                                  "Point setup at the app", "Try setup again"])
     # A concrete plan is only ever "Started with": never a list of steps to tick off.
-    assert st.work(idem_key="k2")["plan"] == []
-    assert st.work(idem_key="k2")["started_with"] == "Find the issue; Fix and test; Ship it"
+    assert st.work(idem_key="k3")["plan"] == []
+    assert st.work(idem_key="k3")["started_with"] == "Find why setup misses the app; Point setup at the app; Try setup again"
     # Four stock steps planned for a bug report: nothing in them says what the bug is.
     _run(st, "k4", "s_other4", "running", "Fix the flaky checkout test",
          plan=["Find the cause", "Trace the stuck state", "Fix and test", "Your review"])
