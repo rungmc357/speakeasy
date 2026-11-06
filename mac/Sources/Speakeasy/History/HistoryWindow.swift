@@ -102,6 +102,7 @@ final class DemoHistoryBackend: HistoryBackend {
     var models = ModelCatalog.sample
     var sessionModels: [SessionModelRequest] = []
     func models() async throws -> ModelCatalog { models }
+    func skills() async throws -> [SlashSkill] { DemoSlashSkills.all }
     func setSessionModel(_ request: SessionModelRequest) async throws {
         sessionModels.append(request)
         conversations[request.sessionID]?.modelChoice = request.choice.isEmpty ? nil : request.choice
@@ -386,6 +387,26 @@ enum HistoryShots {
                 store.setCallLive(false)
                 c.window?.setContentSize(NSSize(width: 1040, height: 720))
                 store.open("s_dash")
+            }
+            await shot("14-slash-skills") {
+                store.skillsSupported = true
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                store.open("s_flaky")
+                store.draft = "/"
+            }
+            await shot("15-slash-filtered") {
+                store.skillsSupported = true
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                store.newChat()
+                store.draft = "/s"
+                store.slash.move(1)
+            }
+            await shot("16-slash-picked") {
+                store.skillsSupported = true
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                store.drafts = [:]
+                store.open("s_flaky")
+                store.draft = "/soup-scaler for twelve people, in cups"
             }
             exit(0)
         }
