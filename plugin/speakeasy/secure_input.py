@@ -24,6 +24,15 @@ bound and the current turn is a live Speakeasy run (its approval session key is 
 its session is a Speakeasy task session, on the ``api_server`` platform), the lookup returns this
 module's callback. Every other turn sees exactly what it saw before.
 
+A skill's key is not asked for just because the agent opened the skill (``skill_view`` runs the
+capture while loading it, before the agent knows whether this task needs that skill at all — the
+agent often has another way in, such as a script or login that already works). The first ask in a
+job is *deferred*: no box, and :func:`transform_tool_result` adds a note to that ``skill_view``
+result telling the agent to use what it already has, or to open the skill again if the task truly
+needs the key. That second ask opens the box, which names the skill and why it asked, and offers
+"Skip — the agent has another way"; a skip tells the agent to carry on without that key and is never
+asked again in that job.
+
 What the value touches: the request body of ``POST /voice/secrets/{id}`` (read into a bytearray
 that is zeroed after the answer is handed over), the agent thread waiting on that request, and then
 Hermes (``.env`` for a key, ``sudo -S`` stdin for a password). Nothing here logs it, stores it in
@@ -56,6 +65,8 @@ RATE_MAX = 12              # answers per device per minute (wrong ids included)
 MAX_PENDING = 8
 REDACTED = "[redacted]"
 SKIPPED_MESSAGE = "Secret setup was skipped."
+SKIP_LABEL_SECRET = "Skip — the agent has another way"
+MAX_KEY_STATES = 256       # (job, env var) decisions kept in memory, oldest dropped first
 STORED_MESSAGE = "Secret stored securely. The secret value was not exposed to the model."
 VOICE_LINE = "I need a key to continue — I've put a secure box on your screen."
 VOICE_LINE_LOGIN = "I need a login to continue — I've put a secure box on your screen."
@@ -96,6 +107,7 @@ class Pending:
     help: str = ""
     skill: str = ""
     command: str = ""
+    required_for: str = ""   # secret: what the skill says the key is for
     origin: str = ""         # login: the page origin the login is saved for
     site: str = ""           # login / code: the host the user recognises
     created: float = 0.0
@@ -114,7 +126,8 @@ class Pending:
         }
         if self.kind == "secret":
             out.update({"env_var": self.env_var, "label": self.label, "prompt": self.prompt, "help": self.help,
-                        "skill": self.skill,
+                        "skill": self.skill, "reason": secret_reason(self.skill, self.required_for),
+                        "skip_label": SKIP_LABEL_SECRET,
                         "stored_where": f"Saved to your Hermes's private settings as {self.env_var}. The AI never sees it."})
         elif self.kind == "sudo":
             out.update({"command": self.command, "label": "Your Mac's password",
@@ -137,6 +150,22 @@ def friendly_label(env_var: str, prompt: str | None) -> str:
     words = [w for w in env_var.split("_") if w]
     out = [_WORDS.get(w, w.capitalize()) for w in words]
     return " ".join(out) or "key"
+
+
+def skill_title(skill: str) -> str:
+    """"weather" → "Weather", "google-workspace" → "Google workspace" (the user reads it, not the id)."""
+    words = " ".join(str(skill or "").replace("-", " ").replace("_", " ").split())
+    return words[:1].upper() + words[1:]
+
+
+def secret_reason(skill: str, required_for: str = "") -> str:
+    """Why the box is open, in the user's words: which skill asked, and for what."""
+    name = skill_title(skill)
+    who = f"The {name} skill" if name else "A skill your agent is using"
+    why = " ".join(str(required_for or "").split()).rstrip(".")
+    if why:
+        return f"{who} needs this key for {why[:1].lower() + why[1:]}. Your agent asked for it because this task uses that skill."
+    return f"{who} needs this key. Your agent asked for it because this task uses that skill."
 
 
 def _wipe(buf: bytearray | None) -> None:
@@ -230,13 +259,41 @@ class SecureInputs:
         # code prompt on the same site: (job key, site) -> (bytes, expires).
         self._held_codes: dict[tuple[str, str], tuple[bytearray, float]] = {}
         self.prints = _Fingerprints()
+        # A skill key's story within one job: (job key, env var) -> "deferred" | "skipped" |
+        # "unanswered" | "stored", and the notes waiting to be added to that job's skill_view result.
+        self._key_states: dict[tuple[str, str], str] = {}
+        self._notes: dict[str, list[str]] = {}
+
+    # -- skill keys: ask only when the task really needs one ---------------------------------
+    def key_state(self, key: str, env_var: str) -> str:
+        with self._lock:
+            return self._key_states.get((key, env_var), "")
+
+    def set_key_state(self, key: str, env_var: str, state: str) -> None:
+        with self._lock:
+            self._key_states.pop((key, env_var), None)
+            self._key_states[(key, env_var)] = state
+            while len(self._key_states) > MAX_KEY_STATES:
+                self._key_states.pop(next(iter(self._key_states)))
+
+    def add_note(self, key: str, note: str) -> None:
+        with self._lock:
+            notes = self._notes.setdefault(key, [])
+            if note not in notes:
+                notes.append(note)
+            while len(self._notes) > MAX_KEY_STATES:
+                self._notes.pop(next(iter(self._notes)))
+
+    def take_notes(self, key: str) -> list[str]:
+        with self._lock:
+            return self._notes.pop(key, [])
 
     # -- the agent side ----------------------------------------------------------------------
     def ask(self, kind: str, target: Target, *, env_var: str = "", prompt: str = "", metadata: dict | None = None,
             command: str = "", origin: str = "", site: str = "", hint: str = "", timeout: float | None = None,
-            cancelled: Callable[[], bool] = lambda: False) -> bytearray | None:
+            cancelled: Callable[[], bool] = lambda: False, report: dict | None = None) -> bytearray | None:
         """Open one request and block until it is answered (the value, as a bytearray the caller
-        must wipe), skipped, cancelled or expired (``None``)."""
+        must wipe), skipped, cancelled or expired (``None``). ``report["outcome"]`` says which."""
         meta = metadata if isinstance(metadata, dict) else {}
         now = self.clock()
         wait = min(self.timeout, timeout) if timeout is not None else self.timeout
@@ -245,10 +302,13 @@ class SecureInputs:
                           prompt=_clip(prompt, 300) if kind == "secret" else "",
                           help=_clip(meta.get("help") if kind == "secret" else hint, 300),
                           skill=_clip(meta.get("skill_name"), 80), command=_clip(command, 4000),
+                          required_for=_clip(meta.get("required_for"), 200) if kind == "secret" else "",
                           origin=_clip(origin, 300), site=_clip(site, 120),
                           created=now, expires=now + wait, expires_at=time.time() + wait)
         with self._lock:
             if len(self._pending) >= MAX_PENDING:
+                if report is not None:
+                    report["outcome"] = "busy"
                 return None
             self._pending[pending.id] = pending
         try:
@@ -273,6 +333,8 @@ class SecureInputs:
                 self.settled(pending)
             except Exception as exc:
                 logger.warning("speakeasy: secure input settle failed: %s", type(exc).__name__)
+        if report is not None:
+            report["outcome"] = pending.outcome
         if pending.outcome != "provided" or not value:
             _wipe(value)
             return None
@@ -447,7 +509,8 @@ def _clip(text: Any, limit: int) -> str:
 
 # -- the Hermes bridge ----------------------------------------------------------------------------
 
-_ACTIVE: dict[str, Any] = {"inputs": None, "resolve": None}
+# "notes": the transform_tool_result hook is registered (plugin __init__), so a key can be deferred.
+_ACTIVE: dict[str, Any] = {"inputs": None, "resolve": None, "notes": False}
 _SECRET_PROXY_ATTR = "_speakeasy_secure_input"
 
 
@@ -504,8 +567,33 @@ def _cancelled_for(target: Target) -> Callable[[], bool]:
     return cancelled
 
 
+def _deferred_note(var_name: str, skill: str) -> str:
+    name = skill or "this skill"
+    return (f"Speakeasy has not asked the user for {var_name} yet: opening a skill is no reason to interrupt "
+            f"them. If you can do this task another way you already have (another tool, a script, a CLI or a "
+            f"login that already works), do it that way and ignore {name}'s setup. Only if the task truly "
+            f"cannot be done without {var_name}, call skill_view for {name} again: the user then gets a secure "
+            f"box to type it in. Never ask them to say, paste or type the key in the conversation.")
+
+
+def _skipped_note(var_name: str, skill: str) -> str:
+    name = skill or "this skill"
+    return (f"The user skipped the secure box for {var_name}: they say you already have another way in. "
+            f"Carry on with the task without {name}'s key, using the other tools, scripts or logins you have. "
+            f"Don't ask for {var_name} again in this task, and don't treat the skip as a failure.")
+
+
+def _unanswered_note(var_name: str, skill: str) -> str:
+    name = skill or "this skill"
+    return (f"The user didn't answer the secure box for {var_name}. Carry on without {name}'s key if you can; "
+            f"if the task can't be done without it, say so plainly in your reply (they can add it later).")
+
+
 def secret_callback(target: Target) -> Callable[..., dict[str, Any]]:
-    """Hermes' secret-capture callback shape ``(var_name, prompt, metadata) -> result``."""
+    """Hermes' secret-capture callback shape ``(var_name, prompt, metadata) -> result``.
+
+    The first ask for a key in a job only defers (see the module notes); the box opens when the
+    agent asks again. A skip or an unanswered box is remembered for the job, so it never re-pops."""
 
     def callback(var_name: str, prompt: str, metadata: dict | None = None) -> dict[str, Any]:
         inputs: SecureInputs | None = _ACTIVE.get("inputs")
@@ -513,9 +601,29 @@ def secret_callback(target: Target) -> Callable[..., dict[str, Any]]:
                    "skipped": True, "message": SKIPPED_MESSAGE}
         if inputs is None or not isinstance(var_name, str) or not _ENV_RE.fullmatch(var_name):
             return skipped
-        buf = inputs.ask("secret", target, env_var=var_name, prompt=prompt or "", metadata=metadata,
-                         cancelled=_cancelled_for(target))
+        meta = metadata if isinstance(metadata, dict) else {}
+        skill = _clip(meta.get("skill_name"), 80)
+        state = inputs.key_state(target.key, var_name)
+        if state in ("skipped", "unanswered"):
+            inputs.add_note(target.key, (_skipped_note if state == "skipped" else _unanswered_note)(var_name, skill))
+            return {**skipped, "reason": "skipped_earlier"}
+        if not state and _ACTIVE.get("notes"):
+            # Loading the skill isn't a need: tell the agent (via the skill_view result) and wait for it
+            # to ask again. Without the note hook (an older Hermes) the box opens straight away.
+            inputs.set_key_state(target.key, var_name, "deferred")
+            inputs.add_note(target.key, _deferred_note(var_name, skill))
+            return {**skipped, "reason": "deferred", "message": "Not asked yet."}
+        report: dict = {}
+        buf = inputs.ask("secret", target, env_var=var_name, prompt=prompt or "", metadata=meta,
+                         cancelled=_cancelled_for(target), report=report)
         if buf is None:
+            outcome = report.get("outcome")
+            if outcome == "skipped":
+                inputs.set_key_state(target.key, var_name, "skipped")
+                inputs.add_note(target.key, _skipped_note(var_name, skill))
+            elif outcome == "expired":
+                inputs.set_key_state(target.key, var_name, "unanswered")
+                inputs.add_note(target.key, _unanswered_note(var_name, skill))
             return skipped
         try:
             value = buf.decode("utf-8")
@@ -528,10 +636,39 @@ def secret_callback(target: Target) -> Callable[..., dict[str, Any]]:
             return {**skipped, "reason": "save_failed", "message": "Secret could not be saved."}
         finally:
             _wipe(buf)
+        inputs.set_key_state(target.key, var_name, "stored")
         return {**(result if isinstance(result, dict) else {"success": True, "stored_as": var_name}),
                 "skipped": False, "message": STORED_MESSAGE}
 
     return callback
+
+
+def transform_tool_result(tool_name: str = "", args: Any = None, result: Any = None, **_: Any) -> str | None:
+    """``transform_tool_result`` hook: a Speakeasy job's ``skill_view`` result gets the note about
+    its skill key (not asked yet / skipped / unanswered) as ``speakeasy_note``. Every other tool,
+    turn and result passes through untouched (``None``)."""
+    if tool_name != "skill_view":
+        return None
+    inputs: SecureInputs | None = _ACTIVE.get("inputs")
+    if inputs is None:
+        return None
+    target = current_target()
+    if target is None:
+        return None
+    notes = inputs.take_notes(target.key)
+    if not notes:
+        return None
+    note = " ".join(notes)
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            parsed["speakeasy_note"] = note
+            return json.dumps(parsed, ensure_ascii=False)
+        return f"{result}\n\n[Speakeasy] {note}"
+    return None
 
 
 def sudo_callback(target: Target) -> Callable[[], str]:

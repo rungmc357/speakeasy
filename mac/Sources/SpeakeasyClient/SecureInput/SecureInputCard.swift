@@ -128,7 +128,7 @@ public struct SecureInputCard: View {
     }
 
     @ViewBuilder private var purpose: some View {
-        let lines = [request.help, request.prompt == request.label ? "" : request.prompt].filter { !$0.isEmpty }
+        let lines = [request.reason, request.help, request.prompt == request.label ? "" : request.prompt].filter { !$0.isEmpty }
         if !lines.isEmpty {
             Text(lines.joined(separator: "\n")).font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -280,29 +280,38 @@ public struct SecureInputCard: View {
         }
     }
 
-    private var buttons: some View {
-        HStack(spacing: 12) {
-            Button {
-                value = ""
-                Task { sending = true; await onSkip(); sending = false }
-            } label: {
-                Text(request.skipButton).frame(maxWidth: .infinity)
-            }
-            .buttonStyle(SecureSecondaryButtonStyle())
-            .accessibilityIdentifier("secure-input-skip")
-            Button(action: send) {
-                HStack(spacing: 6) {
-                    if sending { ProgressView().controlSize(.small) }
-                    else { Image(systemName: isSudo ? "checkmark.shield.fill" : request.kind == .code ? "arrow.up.circle.fill" : "lock.fill") }
-                    Text(request.primaryButton)
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(SecurePrimaryButtonStyle(fill: accent, text: request.kind == .secret ? BrandPalette.onBrass : Self.onAccent))
-            .disabled(!canSend)
-            .keyboardShortcut(.defaultAction)
-            .accessibilityIdentifier("secure-input-save")
+    @ViewBuilder private var buttons: some View {
+        if request.stacksButtons {
+            VStack(spacing: 10) { saveButton; skipButton }
+        } else {
+            HStack(spacing: 12) { skipButton; saveButton }
         }
+    }
+
+    private var skipButton: some View {
+        Button {
+            value = ""
+            Task { sending = true; await onSkip(); sending = false }
+        } label: {
+            Text(request.skipButton).multilineTextAlignment(.center).frame(maxWidth: .infinity)
+        }
+        .buttonStyle(SecureSecondaryButtonStyle())
+        .accessibilityIdentifier("secure-input-skip")
+    }
+
+    private var saveButton: some View {
+        Button(action: send) {
+            HStack(spacing: 6) {
+                if sending { ProgressView().controlSize(.small) }
+                else { Image(systemName: isSudo ? "checkmark.shield.fill" : request.kind == .code ? "arrow.up.circle.fill" : "lock.fill") }
+                Text(request.primaryButton)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(SecurePrimaryButtonStyle(fill: accent, text: request.kind == .secret ? BrandPalette.onBrass : Self.onAccent))
+        .disabled(!canSend)
+        .keyboardShortcut(.defaultAction)
+        .accessibilityIdentifier("secure-input-save")
     }
 
     private var countdown: String {
@@ -410,7 +419,9 @@ public enum SecureInputFixtures {
     public static let weatherKey = SecureInputRequest(
         id: "sec_fixture_weather_key_000", kind: .secret, job: "Weather for the Lisbon trip", envVar: "OPENWEATHER_API_KEY",
         label: "OpenWeather API key", prompt: "OpenWeather API key", help: "Get a free key at openweathermap.org/api.",
-        skill: "weather", expiresAt: Date().addingTimeInterval(118))
+        skill: "weather", expiresAt: Date().addingTimeInterval(118),
+        reason: "The Weather skill needs this key for current conditions and forecasts. Your agent asked for it because this task uses that skill.",
+        skipLabel: "Skip — the agent has another way")
     public static let sudo = SecureInputRequest(
         id: "sec_fixture_sudo_command_00", kind: .sudo, job: "Fix the Mac mini's SSH", label: "Your Mac's password",
         command: "sudo launchctl kickstart -k system/com.openssh.sshd", expiresAt: Date().addingTimeInterval(97))

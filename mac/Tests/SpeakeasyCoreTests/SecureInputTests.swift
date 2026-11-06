@@ -25,6 +25,31 @@ final class SecureInputTests: XCTestCase {
         XCTAssertEqual(list[1].primaryButton, "Allow once")
         XCTAssertEqual(list[1].skipButton, "Don't allow")
         XCTAssertTrue(list[1].title.hasPrefix("Your agent needs your Mac's password"))
+        // An older plugin sends no reason / skip wording: plain Skip, side by side.
+        XCTAssertEqual(list[0].reason, "")
+        XCTAssertEqual(list[0].skipButton, "Skip")
+        XCTAssertFalse(list[0].stacksButtons)
+    }
+
+    func testSkillKeySaysWhichSkillAskedAndWhyAndOffersTheOtherWay() {
+        let json = """
+        {"requests":[{"id":"sec_tidepoolxxxxxxxxxxxxxxx","kind":"secret","job":"Tide times for Saturday",
+          "expires_at":4102444800,"env_var":"TIDEPOOL_API_TOKEN","label":"Tidepool API token","skill":"tidepool",
+          "reason":"The Tidepool skill needs this key for reading tide charts. Your agent asked for it because this task uses that skill.",
+          "skip_label":"Skip — the agent has another way"}]}
+        """
+        let list = SecureInputRequest.list(Data(json.utf8))
+        XCTAssertEqual(list.count, 1)
+        guard let card = list.first else { return }
+        XCTAssertEqual(card.askedBy, "Tidepool skill · Tide times for Saturday")
+        XCTAssertTrue(card.reason.hasPrefix("The Tidepool skill needs this key for reading tide charts."))
+        XCTAssertEqual(card.skipButton, "Skip — the agent has another way")
+        XCTAssertTrue(card.stacksButtons)
+        // The wording never leaks onto sudo or a box the user opened.
+        var sudo = card; sudo.kind = .sudo
+        XCTAssertEqual(sudo.skipButton, "Don't allow")
+        var mine = card; mine.userStarted = true
+        XCTAssertEqual(mine.skipButton, "Cancel")
     }
 
     func testAnswerBodyIsValidJSONForAwkwardValues() throws {
