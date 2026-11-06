@@ -147,7 +147,7 @@ def _before_compaction(text: str) -> str:
 # A task's machine blocks (```speakeasy-question / -views ...): the app draws them as cards.
 _MACHINE_BLOCK = re.compile(r"(?s)\n?```speakeasy-[\w-]+[ \t]*\n.*?(?:\n```|\Z)")
 # A relayed voice request written into a chat: "[sender] [Voice request from Geo, relayed by Speakeasy] <words>".
-_RELAYED = re.compile(r"^\s*(?:\[[^\]\n]{1,60}\]\s*)?\[Voice request from [^\]\n]{1,60}\]\s*", re.I)
+_RELAYED = re.compile(r"^\s*(?:\[[^\]\n]{1,60}\]\s*)?\[Voice(?: request)?,? from [^\]\n]{1,60}\]\s*", re.I)
 _RELAY_TAIL = re.compile(r"\n\s*\n\s*(?:Begin your reply with exactly one line|Recent voice conversation for context)", re.I)
 # The note Speakeasy adds to a request: "(Geo is looking at: Find previous sessions)", "(following up: ...)".
 _LOOKING_AT = re.compile(r"\s*\((?:[^():\n]{0,40}\bis looking at|following up)\s*:[^\n]*\)\s*$", re.I | re.M)
@@ -163,7 +163,7 @@ _SPOKEN = re.compile(r"(?is)^[ \t]*SPOKEN[ \t]*:[ \t]*(.+?)(?=^[ \t]*(?:DONE|SPO
 # -- gateway plumbing on user rows (Discord, Telegram, ...) ------------------------------------
 _TRIGGER_NOTE = re.compile(r"\[Triggering message id:[^\]\n]{0,300}\]\s*", re.I)
 _MEMORY_CONTEXT = re.compile(r"(?s)<memory-context>.*?(?:</memory-context>|\Z)\s*")
-_ORIGIN_HEADER = re.compile(r"(?s)^\s*Gateway message origin \(JSON data[^\n]*\n(?:\s*```[a-z]*\n)?\s*\{.*?\}\s*(?:```\s*)?")
+_ORIGIN_HEADER = re.compile(r"(?s)^\s*Gateway message origin \(JSON data[^\n]*\n(?:\s*```[a-z]*\n)?\s*\{.*?\}\s*(?:```\s*)?(?:Do not guess a reply destination[^\n]*\s*)?")
 _IMAGE_ATTACHED = re.compile(r"\[Image attached at:[^\]\n]{0,500}\]\s*", re.I)
 _NO_TEXT = re.compile(r"\(The user sent a message with no text content\)\s*", re.I)
 _SENDER_PREFIX = re.compile(r"^\s*\[[A-Za-z0-9_.\- ]{1,40}\]\s+(?=\S)")

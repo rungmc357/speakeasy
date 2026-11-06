@@ -2,6 +2,13 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.37 — Voice messages transcribed by Hermes, clean session chats
+
+- **Voice messages are transcribed by your Hermes, the same way a voice note sent in Telegram is.** When you stop recording, the app sends the recording to your Hermes, which turns it into text with the speech-to-text you have set up. You still see the words appear as you talk, but the text that lands in the box is Hermes'. On-device recognition could drop the start of a message, or everything before a pause; Hermes hears the whole clip. If your Hermes can't transcribe, the app keeps the on-device words. The recording is deleted as soon as it's transcribed, and neither the audio nor the words are logged. On iPhone and Mac this works once the apps update.
+- **Session chats show only what people actually said.** Text Hermes writes for the model no longer shows up as a message: context-compaction summaries (now a short "Earlier messages were summarized" note), Discord and Telegram routing headers, the full skill file behind a /skill command (you see "/skill-name your words"), scheduled-job and Kanban prompts (shown as a short note), reply wrappers, message ids and saved image paths.
+- **Agent text renders properly.** Bold, headings, bullets and links display as formatting instead of raw asterisks and # marks, including while a reply is still streaming in (iPhone and Mac, once the apps update).
+- **A follow-up's bubble shows only your words.** Sending a follow-up into a running task no longer shows the note that wraps it or a shared picture's saved path, and a typed follow-up with a picture is no longer labeled as voice.
+
 ## Plugin 0.3.36 — Easier setup, and session pages end with the latest message
 
 - **Session pages end with the latest message.** When you've continued a Discord or Telegram chat from Speakeasy, those replies now sit in the chat in time order instead of piling up at the bottom after newer messages.

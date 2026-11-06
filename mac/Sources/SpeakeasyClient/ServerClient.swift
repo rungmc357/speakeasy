@@ -608,7 +608,7 @@ public final class ServerClient: @unchecked Sendable {
     }
 
     /// A recorded voice message's audio, transcribed by Hermes the way a Telegram voice note is
-    /// (servers with `transcribe`, plugin 0.3.36+). Returns the text. Errors are `HTTPError`s with
+    /// (servers with `transcribe`, plugin 0.3.37+). Returns the text. Errors are `HTTPError`s with
     /// the plugin's reason: 413 too_large, 415 unsupported, 502 failed, 503 unavailable/busy.
     public func transcribeVoice(_ audio: Data, mimeType: String = "audio/mp4") async throws -> String {
         let timeout: TimeInterval = audio.count > 2_000_000 ? 180 : 90
