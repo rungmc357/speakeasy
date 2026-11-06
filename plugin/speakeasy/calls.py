@@ -33,6 +33,7 @@ from . import instant as instant_mod
 from . import fence as fence_mod
 from . import jev as jev_mod
 from . import receipts
+from . import skills as skills_mod
 from . import session_titles
 from . import quick as quick_mod
 from . import views as views_mod
@@ -3808,6 +3809,9 @@ class SidebandWorker:
             text = (P.shared_steer_text(self.names, part.request, P.shared_block(self.names, items, attached=False))
                     if items else P.typed_steer_text(self.names, part.request)
                     if delegation_id.startswith(messages_mod.TYPED_PREFIX) else P.steer_text(self.names, part.request))
+            skill = await asyncio.to_thread(skills_mod.invocation, part.request, key)
+            if skill:  # "/skill do this" typed to a running task: it loads that skill too
+                text = f"{text}\n\n{skill}"
             nameable = all(i["path"] for i in items)  # an image with no saved copy can't be pointed at
             accepted = nameable and await self.steer_follow_up(target, key, part.request, text)
             if accepted:
@@ -4050,7 +4054,8 @@ class SidebandWorker:
             self.store.add_shared(idem, items)
             self.publish()
         prompt = P.build_task_prompt(self.names, revision, context, focus, label, shared=self.shared_prompt(
-            items, bool(images), session_id if continuing else None, shared.capture is not None), room=room)
+            items, bool(images), session_id if continuing else None, shared.capture is not None), room=room,
+            skill=await asyncio.to_thread(skills_mod.invocation, request, idem) if request else "")
         try:
             choice = await self.model_choice(task_id, idem, session_id, request)
             run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,

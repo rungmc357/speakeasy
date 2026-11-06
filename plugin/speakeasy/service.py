@@ -29,6 +29,7 @@ from . import settings as S
 from . import history as H
 from . import messages as M
 from . import models as MD
+from . import skills as SK
 from .brief import BriefInvalid, BriefManager
 from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_BOARD, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
                     TYPED_SENT, BackendRun, ServiceError,
@@ -105,6 +106,9 @@ CAPABILITIES["model_choice"] = True
 # GET /voice/schedules (+ /{id}, preview, create, pause/resume/run, PATCH, DELETE): the Hermes scheduled
 # (cron) jobs of this profile, seen and managed from the apps through Hermes' own cron API (schedules.py).
 CAPABILITIES["schedules"] = True
+# GET /voice/skills: the user's Hermes skills, offered when "/" is typed in a message box; a typed
+# "/skill words" runs as a real skill invocation (skills.py), like /skill in Telegram or Discord.
+CAPABILITIES["slash_skills"] = True
 # POST/GET/DELETE /voice/codex/login: sign Codex in to ChatGPT from the app with Codex's own
 # device-code login (codex_login.py). The plugin first looks for a working sign-in in every Codex
 # copy on the machine, and installs Codex when there is none; the app asks only when nothing works.
@@ -1772,6 +1776,10 @@ class VoiceService(SecureInputMixin):
     def _entries(self) -> dict[str, dict[str, Any]] | None:
         raw = self.catalog.peek()
         return self.catalog.entries(raw) if raw is not None else None
+
+    def skills(self) -> dict[str, Any]:
+        """``GET /voice/skills``: every skill a typed ``/command`` can invoke here (skills.catalog)."""
+        return {"skills": SK.catalog()}
 
     def models(self, query: dict[str, str] | None = None) -> dict[str, Any]:
         """``GET /voice/models[?refresh=1]``: what the model chip offers (models.public)."""

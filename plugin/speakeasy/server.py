@@ -546,6 +546,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.routing_models(provider))
             elif path == "/voice/models":
                 self._reply(200, self.service.models(self._query()))
+            elif path == "/voice/skills":
+                self._reply(200, self.service.skills())
             elif work:
                 self._reply(200, self.service.work(work.group(1)))
             elif path == "/voice/schedules":

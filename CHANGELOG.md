@@ -2,6 +2,10 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.37 (unreleased) — Skills in the message box
+
+- **Type / for your skills.** Typing `/` in a message box lists your Hermes skills with a one-line description; keep typing to narrow it, tap one to put it in the box, add what you want and send. It runs that skill exactly like `/skill` in Telegram or Discord, and the chat shows just what you typed.
+
 ## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
 
 - **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.

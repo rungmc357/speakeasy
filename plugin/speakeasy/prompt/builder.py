@@ -551,13 +551,15 @@ def status_rule(names: Names) -> str:
 
 
 def build_task_prompt(names: Names, revision: int, context: str, focus: str | None = None,
-                      delivery_label: str = "", shared: str = "", room: str = "") -> str:
+                      delivery_label: str = "", shared: str = "", room: str = "", skill: str = "") -> str:
     """Prompt for a voice task running in its own Hermes session, beside other tasks.
 
     The session is private to this task (and its follow-ups), so it names the job and carries the
     call transcript for context. ``shared`` is the block naming what the user shared with this
     request (``shared_block``), never the bytes. A call started from listening mode also carries the
-    room transcript, labeled as background, just before the call transcript that holds the request."""
+    room transcript, labeled as background, just before the call transcript that holds the request.
+    ``skill``: the skill block Hermes builds for a typed ``/skill …`` request (skills.invocation), placed
+    before the transcript so the person's words stay its last "User:" line (what history shows)."""
     where = (f"your final answer is still shown in the Speakeasy app and posted to {delivery_label}"
              if delivery_label else "your final answer is still shown in the Speakeasy app")
     heard = task_room_block(names, room) if room.strip() else ""
@@ -582,6 +584,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         + (shared + " " if shared else "")
         + status_rule(names) + "\n\n"
         + (heard + "\n\n" if heard else "")
+        + (skill.strip() + "\n\n" if skill and skill.strip() else "")
         + f"Recent timestamped voice transcript (revision {revision}):\n{context}"
     )
 
