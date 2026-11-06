@@ -1443,11 +1443,16 @@ def typed_note(task: str, text: str, muted: bool) -> str:
             f"on its way to that task. Don't hand it off again and don't answer it yourself. {tail}")[:2000]
 
 
-def adding_to_note(task: str) -> str:
-    """The router attached what was just said to an existing task: the voice says where, first."""
+def adding_to_note(task: str, say: bool = True) -> str:
+    """The router attached what was just said to an existing task. ``say``: the voice names where it
+    went, once; otherwise it's obvious or already said, and it isn't said again."""
     name = notice_text(task, 80) or "that task"
-    return (f"What they just said was added to the existing task \"{name}\". Start your next line with "
-            f"\"Adding that to {name}.\" and keep the rest short.")
+    head = f"What they just said was added to the existing task \"{name}\"."
+    if say:
+        return (head + f" Say where it went once, briefly (\"Adding that to {name}.\"), unless you already "
+                "said so in this reply; never say it twice in one reply. Keep the rest short.")
+    return (head + " Where it went is obvious or you already said it: don't announce where it went or name "
+            "the task again. A couple of words at most, or nothing.")
 
 
 def moved_note(task: str) -> str:

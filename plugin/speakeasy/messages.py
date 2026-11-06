@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 MAX_TEXT = 4000
 RETARGET_WINDOW_S = 30.0  # "no, the dashboard one" this soon after a spoken follow-up moves it
+ROUTE_SAID_WINDOW_S = 120.0  # where a follow-up went is said once; more for that task this soon goes quietly
 TYPED_PREFIX = "typed_"
 START_WAIT_S = 20.0     # how long a message waits to see the task take it (or its follow-up start)
 
@@ -227,10 +228,31 @@ def match_task(worker: "SidebandWorker", name: str, exclude: str | None) -> list
     return [t for s, t in scored if s == best and best > 0]
 
 
+def should_say_route(worker: "SidebandWorker", task_id: str, obvious: bool = False) -> bool:
+    """Whether the voice says where a spoken follow-up went: once per task within a few minutes, and
+    never when it can only have gone one place (one task open, or the one they picked or are looking
+    at). Several handoffs in one breath each used to open with "Adding that to …", three times in a reply."""
+    now = time.monotonic()
+    said = getattr(worker, "route_said", None)
+    if said is None:
+        said = worker.route_said = {}
+    for key in [k for k, at in said.items() if now - at > ROUTE_SAID_WINDOW_S]:
+        said.pop(key, None)
+    if obvious:
+        return False
+    others = [t for t in worker.open_tasks() if not t.task_id.startswith("choice_") and t.task_id != task_id]
+    if not others:
+        return False
+    repeat = task_id in said
+    said[task_id] = now
+    return not repeat
+
+
 async def announce_routed(worker: "SidebandWorker", delegation_id: str, revision: int, context: str,
-                          part: router.Part) -> None:
-    """The router attached spoken words to an existing task: the voice says so first, and it is
-    remembered so an immediate "no, the X one" moves it instead of starting something new."""
+                          part: router.Part, obvious: bool = False) -> None:
+    """The router attached spoken words to an existing task: the voice says where (once, and only
+    when it isn't obvious), and it is remembered so an immediate "no, the X one" moves it instead of
+    starting something new."""
     with worker.interaction.lock:
         run = worker.interaction.runs.get(part.task_id or "")
     # Said aloud: the task's own title in full, never a job name cut to a few words.
@@ -238,7 +260,8 @@ async def announce_routed(worker: "SidebandWorker", delegation_id: str, revision
             else "") or task_name(worker, part.task_id or "")
     worker.last_routed = {"delegation_id": delegation_id, "task_id": part.task_id, "request": part.request,
                           "context": context, "at": time.monotonic(), "asked": False}
-    await worker.append("session.thinking.append", delegation_id, P.adding_to_note(name))
+    say = should_say_route(worker, part.task_id or "", obvious)
+    await worker.append("session.thinking.append", delegation_id, P.adding_to_note(name, say=say))
 
 
 def _recent_route(worker: "SidebandWorker") -> dict[str, Any] | None:

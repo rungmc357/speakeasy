@@ -1019,6 +1019,7 @@ class SidebandWorker:
         self.silent_ids: set[str] = set()
         self.typed: list[dict[str, Any]] = []
         self.last_routed: dict[str, Any] | None = None
+        self.route_said: dict[str, float] = {}  # task id -> when the voice last said a follow-up went there
         interaction.worker = self
 
     # -- plumbing -------------------------------------------------------------------------
@@ -3004,7 +3005,9 @@ class SidebandWorker:
                 # an instruction for the task, which must still reach it.
             self.wants_show.add(delegation_id)
         if part.kind == "follow_up" and part.task_id:
-            await messages_mod.announce_routed(self, delegation_id, revision, context, part)
+            # Where it went is obvious when they picked or are looking at that task: not said aloud.
+            obvious = part.task_id == marked or (focus is not None and part.task_id == focus.task_id)
+            await messages_mod.announce_routed(self, delegation_id, revision, context, part, obvious=obvious)
             await self.follow_up(delegation_id, revision, context, part)
             return
         named = self.rt.explicit_channel(last_request)
