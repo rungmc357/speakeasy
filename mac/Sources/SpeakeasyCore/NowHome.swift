@@ -14,6 +14,10 @@ public struct NowHome: Equatable, Sendable {
     public var background: [NowBackgroundItem]
     public var backgroundRunning: Int
     public var notice: String?
+    /// The live call (phase 3): which card the voice is talking about now. Nil off a call.
+    public var call: NowCall?
+    /// The "Your call · 6 min" card after a call ends, until it's cleared or rolls over.
+    public var callSummary: NowCallSummary?
 
     public struct Counts: Equatable, Sendable {
         public var needsYou = 0, stopped = 0, working = 0, waiting = 0, finishedUnread = 0, onItsOwn = 0
@@ -47,10 +51,59 @@ public struct NowHome: Equatable, Sendable {
         background = (bg["items"] as? [Any] ?? []).compactMap(NowBackgroundItem.init(json:))
         backgroundRunning = (bg["running"] as? NSNumber)?.intValue ?? background.count
         notice = nonEmpty((json["notice"] as? [String: Any])?["text"])
+        call = NowCall(json: json["call"])
+        callSummary = NowCallSummary(json: json["call_summary"])
     }
 
     /// The items of one kind, in the plugin's order.
     public func items(_ kind: NowItem.Kind) -> [NowItem] { items.filter { $0.kind == kind } }
+}
+
+public struct NowCall: Equatable, Sendable {
+    public var interactionID: String
+    public var startedAt: Date?
+    /// The item id of the card the voice is talking about (lit with a brass border), if any.
+    public var focus: String?
+    public var focusLabel: String?
+    public init(interactionID: String, startedAt: Date? = nil, focus: String? = nil, focusLabel: String? = nil) {
+        self.interactionID = interactionID; self.startedAt = startedAt; self.focus = focus; self.focusLabel = focusLabel
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["interaction_id"]) else { return nil }
+        self.init(interactionID: id, startedAt: (o["started_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
+                  focus: nonEmpty(o["focus"]), focusLabel: nonEmpty(o["focus_label"]))
+    }
+}
+
+public struct NowCallSummary: Equatable, Sendable, Identifiable {
+    public var id: String
+    public var title: String
+    public var minutes: Int
+    public var endedAt: Date
+    public var sessionID: String?
+    public var things: [String]
+    public var moreThings: Int
+    public var decisions: [String]
+    public init(id: String, title: String, minutes: Int, endedAt: Date, sessionID: String? = nil, things: [String] = [],
+                moreThings: Int = 0, decisions: [String] = []) {
+        self.id = id; self.title = title; self.minutes = minutes; self.endedAt = endedAt; self.sessionID = sessionID
+        self.things = things; self.moreThings = moreThings; self.decisions = decisions
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
+              let ended = (o["ended_at"] as? NSNumber)?.doubleValue else { return nil }
+        self.init(id: id, title: nonEmpty(o["title"]) ?? "Your call", minutes: (o["minutes"] as? NSNumber)?.intValue ?? 1,
+                  endedAt: Date(timeIntervalSince1970: ended), sessionID: nonEmpty(o["session_id"]),
+                  things: (o["things"] as? [Any] ?? []).compactMap(nonEmpty), moreThings: (o["more_things"] as? NSNumber)?.intValue ?? 0,
+                  decisions: (o["decisions"] as? [Any] ?? []).compactMap(nonEmpty))
+    }
+    /// Line 2: what the call started, then the user's own decisions ("You said: the wider desk").
+    public var started: String {
+        guard !things.isEmpty else { return "Talked it through." }
+        let list = things.count == 1 ? things[0] : things.dropLast().joined(separator: ", ") + " and " + things.last!
+        return "Started \(list)" + (moreThings > 0 ? " and \(moreThings) more." : ".")
+    }
+    public var youSaid: String? { decisions.isEmpty ? nil : decisions.joined(separator: "; ") }
 }
 
 public struct NowBackgroundItem: Equatable, Sendable, Identifiable {
@@ -92,11 +145,20 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     public var provenance: Provenance?
     public var fix: Fix?
     public var question: NowQuestion?
+    /// On a call: `asking` (the question the voice is asking now, first on Home) or `heard` (the voice
+    /// read this answer out, so it's already read).
+    public var onCall: OnCall?
+    /// Asking on a call: a spoken answer may pick a choice (false: a risky one, it needs a tap).
+    public var sayOK: Bool = true
+    /// Asking on a call with a risky choice: "Can't be undone · Needs a tap".
+    public var lockLine: String?
+    public enum OnCall: String, Sendable { case asking, heard }
 
     public init(id: String, kind: Kind, sessionID: String? = nil, runID: String? = nil, title: String, line: String,
                 sourceLabel: String? = nil, startedAt: Date? = nil, updatedAt: Date? = nil, finishedAt: Date? = nil,
                 unread: Bool = false, idleSeconds: Int? = nil, thumbs: [String] = [], provenance: Provenance? = nil,
-                fix: Fix? = nil, question: NowQuestion? = nil) {
+                fix: Fix? = nil, question: NowQuestion? = nil, onCall: OnCall? = nil, sayOK: Bool = true, lockLine: String? = nil) {
+        self.onCall = onCall; self.sayOK = sayOK; self.lockLine = lockLine
         self.id = id; self.kind = kind; self.sessionID = sessionID; self.runID = runID; self.title = title
         self.line = line; self.sourceLabel = sourceLabel; self.startedAt = startedAt; self.updatedAt = updatedAt
         self.finishedAt = finishedAt; self.unread = unread; self.idleSeconds = idleSeconds; self.thumbs = thumbs
@@ -125,6 +187,9 @@ public struct NowItem: Equatable, Sendable, Identifiable {
                   thumbs: (o["thumbs"] as? [Any] ?? []).compactMap { nonEmpty(($0 as? [String: Any])?["url"]) },
                   provenance: prov, fix: (((o["fix"] as? [String: Any])?["kind"]) as? String).flatMap(Fix.init(rawValue:)),
                   question: NowQuestion(json: o["question"]))
+        onCall = (o["on_call"] as? String).flatMap(OnCall.init(rawValue:))
+        sayOK = o["say_ok"] as? Bool ?? true
+        lockLine = nonEmpty(o["lock_line"])
     }
 
     /// The one footnote that says where a card came from ("From yesterday · 9:40 PM").

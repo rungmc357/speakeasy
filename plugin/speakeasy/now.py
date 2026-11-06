@@ -54,6 +54,12 @@ _HTTPS_RE = re.compile(r"https://[^\s<>\"']{4,500}")
 
 # -- words ---------------------------------------------------------------------------------------
 
+# Home on a call (phase 3): the voice's card stays lit this long after it last spoke of it, and the
+# "Your call" card shows for at most this long after the call (or until the next 4 AM / cleared).
+TALKING_S = 600
+CALL_CARD_S = 6 * 3600
+
+
 def number(n: int) -> str:
     """One to nine as words, 10 and up as numerals."""
     return _NUMBERS[n] if 0 <= n < 10 else str(n)
@@ -169,6 +175,58 @@ class NowModel:
                     and i.worker is not None]
         return live[-1] if live else None
 
+    def last_call(self, now: float, edge: float, cleared: float) -> Any:
+        """The call that ended most recently, while its "Your call" card still shows: until it's
+        cleared, opened, or the next 4 AM; and for at most CALL_CARD_S."""
+        with self.svc.lock:
+            ended = [i for i in self.svc.interactions.values()
+                     if getattr(i, "ended_at", None) and i.successor is None]
+        if not ended:
+            return None
+        last = max(ended, key=lambda i: i.ended_at)
+        seen = self._meta_float(f"now_call_seen:{last.interaction_id}")
+        if last.ended_at < max(edge, cleared, seen) or now - last.ended_at > CALL_CARD_S:
+            return None
+        return last
+
+    def call_summary(self, call: Any, now: float) -> dict[str, Any] | None:
+        """The "Your call · 6 min" card: what the call did, and the decisions said on it."""
+        with call.lock:
+            runs = [(t, r.idem_key, r.status) for t, r in call.runs.items()
+                    if r.idem_key and r.status != "rejected" and r.idem_key not in call.carried_keys]
+        things, decisions = [], []
+        for task_id, key, _status in runs:
+            if task_id.startswith("choice_"):
+                answer = self.store.question_answer(key)
+                if answer:
+                    decisions.append(_clip(answer, 80))
+                continue
+            title = self.store.title(key) or self.store.request_text(key)
+            if title:
+                things.append(_clip(title, TITLE_CHARS))
+            answer = self.store.question_answer(key)
+            if answer:
+                decisions.append(_clip(answer, 80))
+        minutes = max(1, round((call.ended_at - call.started_at) / 60))
+        return {"id": f"call:{call.interaction_id}", "interaction_id": call.interaction_id,
+                "title": f"Your call \u00b7 {minutes} min", "started_at": round(call.started_at, 3),
+                "ended_at": round(call.ended_at, 3), "minutes": minutes,
+                "session_id": getattr(call, "live_session_id", None), "things": things[:4],
+                "more_things": max(0, len(things) - 4), "decisions": decisions[:3]}
+
+    def call_state(self, call: Any, now: float) -> dict[str, Any]:
+        """What Home needs from a live call: which task the voice is on (and since when), which
+        answers it read out, and which tasks belong to it. Vision Pro's focus wins over the voice's."""
+        with call.lock:
+            keys = {r.idem_key: t for t, r in call.runs.items() if r.idem_key}
+            talking, at = call.focus_task_id or call.talking_about, call.talking_at
+            if call.focus_task_id:
+                at = now
+            spoken = dict(call.spoken_tasks)
+        if talking and not call.focus_task_id and now - at > TALKING_S:
+            talking = None
+        return {"keys": keys, "talking": talking, "spoken": spoken}
+
     def _session_line(self, sid: str) -> str | None:
         """A running Hermes conversation's live line (what it's doing), cached for 10 s."""
         now = self.clock()
@@ -189,7 +247,8 @@ class NowModel:
     # -- one Speakeasy task ----------------------------------------------------------------------
     def _task_item(self, row: dict[str, Any], work: dict[str, Any], open_question: bool,
                    approvals: dict[str, dict[str, Any]], read_at: float | None, edge: float,
-                   cleared: float, now: float, call: Any) -> dict[str, Any] | None:
+                   cleared: float, now: float, call: Any,
+                   call_info: dict[str, Any] | None = None) -> dict[str, Any] | None:
         status = work.get("status") or row["status"]
         run_id = work.get("run_id") or row["run_id"]
         result = work.get("result") or {}
@@ -265,6 +324,19 @@ class NowModel:
             started_call = getattr(call, "started_at", None)
             if started_call and (started or 0) < started_call:
                 item["provenance"] = {"kind": "earlier_call", "at": started}
+        task_id = (call_info or {}).get("keys", {}).get(row["key"])
+        if task_id is not None:
+            if item["kind"] in {NEW_ANSWER, SEEN_ANSWER} and task_id in call_info["spoken"]:
+                # Told on the call: already read, and says so.
+                item.update(kind=SEEN_ANSWER, unread=False, on_call="heard", line="Told you on the call.")
+            elif item["kind"] == QUESTION and (task_id == call_info["talking"] or float(
+                    (item.get("question") or {}).get("asked_at") or 0) >= float(getattr(call, "started_at", 0) or 0)):
+                # Asked on this call: tier 0, the one card that moves during a call.
+                options = (item.get("question") or {}).get("options") or []
+                risky = any(o.get("risk") == "high" for o in options)
+                item.update(on_call="asking", say_ok=not risky, asking_label="Asking now",
+                            **({"lock_line": "Can't be undone \u00b7 Needs a tap"} if risky else {}))
+            item["_task_id"] = task_id
         thumbs = _thumbs(result, run_id)
         if thumbs:
             item["thumbs"] = thumbs
@@ -279,6 +351,7 @@ class NowModel:
         svc = self.svc
         marks = self.store.session_marks()
         call = self.live_call()
+        call_info = self.call_state(call, now) if call is not None else None
         rows = self.store.now_runs(since=min(edge - 86400, now - UNREAD_KEPT_S))
         rows = [r for r in rows if not r["dismissed"]]
         # Which question each conversation still waits on: the one rule every surface uses.
@@ -295,7 +368,8 @@ class NowModel:
             place = row.get("linked_source") or row.get("session_id") or row["key"]
             work = self.store.work(idem_key=row["key"], assistant_name=name) or {}
             read_at = (marks.get(place) or {}).get("read_at")
-            item = self._task_item(row, work, row["key"] in open_keys, approvals, read_at, edge, cleared, now, call)
+            item = self._task_item(row, work, row["key"] in open_keys, approvals, read_at, edge, cleared, now, call,
+                                   call_info)
             if item is None:
                 continue
             held = by_place.get(place)
@@ -339,10 +413,16 @@ class NowModel:
                               "finished_at": s.get("last_activity")})
         items = self._apply_later(items, now)
         items = order(items, self._first_seen(items, now))
+        # On a call: the question the voice is asking right now goes first (tier 0).
+        items.sort(key=lambda i: 0 if i.get("on_call") == "asking" else 1)
         total = len(items)
         items = items[:MAX_ITEMS]
+        focus = None
         for i in items:
-            i["tier"] = TIER[i["kind"]]
+            i["tier"] = 0 if i.get("on_call") == "asking" else TIER[i["kind"]]
+            if call_info and call_info["talking"] and i.pop("_task_id", None) == call_info["talking"]:
+                focus = focus or i["id"]
+            i.pop("_task_id", None)
         counts = {"needs_you": sum(i["kind"] == QUESTION for i in items),
                   "stopped": sum(i["kind"] == STOPPED for i in items),
                   "working": sum(i["kind"] == WORKING for i in items),
@@ -354,8 +434,11 @@ class NowModel:
             tiers[str(i["tier"])] = tiers.get(str(i["tier"]), 0) + 1
         body: dict[str, Any] = {
             "sentence": sentence(items), "counts": counts, "tiers": tiers,
-            "call": ({"interaction_id": call.interaction_id, "started_at": getattr(call, "started_at", None)}
+            "call": ({"interaction_id": call.interaction_id, "started_at": getattr(call, "started_at", None),
+                      "focus": focus, "focus_label": "Talking about this" if focus else None}
                      if call is not None else None),
+            "call_summary": None if call is not None else (
+                self.call_summary(ended, now) if (ended := self.last_call(now, edge, cleared)) is not None else None),
             "items": items, "background": {"running": len(background), "items": background[:BACKGROUND_ITEMS]},
             "earlier": {"today_more": max(0, total - len(items))},
         }

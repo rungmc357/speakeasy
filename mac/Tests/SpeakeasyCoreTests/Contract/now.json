@@ -1,10 +1,11 @@
 {
- "as_of": 1794001751.623,
+ "as_of": 1794004905.59,
  "background": {
   "items": [],
   "running": 0
  },
  "call": null,
+ "call_summary": null,
  "counts": {
   "finished_unread": 1,
   "needs_you": 1,
@@ -18,13 +19,13 @@
  },
  "items": [
   {
-   "finished_at": 1794001721.620118,
+   "finished_at": 1794004875.5825632,
    "id": "q:run_c_q",
    "kind": "question",
    "line": "Which desk should I order?",
    "question": {
     "approvable": false,
-    "asked_at": 1794001721.620118,
+    "asked_at": 1794004875.5825632,
     "options": [
      {
       "facts": [
@@ -49,7 +50,7 @@
    "run_id": "run_c_q",
    "session_id": "s_cq",
    "source": "speakeasy",
-   "started_at": 1794001751.6201332,
+   "started_at": 1794004905.582613,
    "thumbs": [
     {
      "url": "/voice/card-image/run_c_q/1"
@@ -58,24 +59,24 @@
    "tier": 1,
    "title": "Desk hunt",
    "unread": false,
-   "updated_at": 1794001751.6205812
+   "updated_at": 1794004905.583839
   },
   {
-   "finished_at": 1794001701.620118,
+   "finished_at": 1794004855.5825632,
    "fix": {
     "kind": "credits"
    },
    "id": "s:s_cf",
    "kind": "stopped",
-   "line": "Hermes's model provider is out of credits.",
+   "line": "Your Hermes's AI account is out of credits.",
    "run_id": "run_c_f",
    "session_id": "s_cf",
    "source": "speakeasy",
-   "started_at": 1794001751.6207821,
+   "started_at": 1794004905.5846322,
    "tier": 2,
    "title": "Book the cabin",
    "unread": false,
-   "updated_at": 1794001751.6211169
+   "updated_at": 1794004905.5853288
   },
   {
    "id": "s:s_cw",
@@ -84,25 +85,25 @@
    "run_id": "run_c_w",
    "session_id": "s_cw",
    "source": "speakeasy",
-   "started_at": 1794001751.62132,
+   "started_at": 1794004905.586142,
    "tier": 3,
    "title": "Sort the garden photos",
    "unread": false,
-   "updated_at": 1794001751.6216478
+   "updated_at": 1794004905.5867362
   },
   {
-   "finished_at": 1794001711.620118,
+   "finished_at": 1794004865.5825632,
    "id": "s:s_ca",
    "kind": "new_answer",
    "line": "Brandywine wins for your shade.",
    "run_id": "run_c_a",
    "session_id": "s_ca",
    "source": "speakeasy",
-   "started_at": 1794001751.6217248,
+   "started_at": 1794004905.586889,
    "tier": 4,
    "title": "Compare tomato seeds",
    "unread": true,
-   "updated_at": 1794001751.622068
+   "updated_at": 1794004905.5874078
   }
  ],
  "notice": null,

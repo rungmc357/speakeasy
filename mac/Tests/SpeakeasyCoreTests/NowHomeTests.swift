@@ -50,4 +50,28 @@ final class NowHomeTests: XCTestCase {
         XCTAssertTrue(item.provenanceLine(calendar: cal)?.hasPrefix("From yesterday · ") == true)
         XCTAssertFalse(item.provenanceLine(calendar: cal)?.contains("so far") == true)
     }
+
+    func testCallFocusOnCallMarksAndTheCallSummaryDecode() {
+        let home = NowHome(json: [
+            "rev": 3, "sentence": "Two things in the works.",
+            "call": ["interaction_id": "vi_1", "started_at": 1_800_000_000, "focus": "s:s_w", "focus_label": "Talking about this"],
+            "items": [["id": "q:run_q", "kind": "question", "title": "Desk hunt", "on_call": "asking", "say_ok": false,
+                       "lock_line": "Can't be undone · Needs a tap"],
+                      ["id": "s:s_h", "kind": "seen_answer", "title": "Tire shop", "on_call": "heard", "line": "Told you on the call."]],
+        ])
+        XCTAssertEqual(home.call?.focus, "s:s_w")
+        XCTAssertEqual(home.call?.focusLabel, "Talking about this")
+        XCTAssertEqual(home.items[0].onCall, .asking)
+        XCTAssertFalse(home.items[0].sayOK)
+        XCTAssertEqual(home.items[0].lockLine, "Can't be undone · Needs a tap")
+        XCTAssertEqual(home.items[1].onCall, .heard)
+        XCTAssertNil(home.callSummary)
+        let after = NowHome(json: ["call_summary": ["id": "call:vi_1", "title": "Your call · 6 min", "minutes": 6,
+                                                    "ended_at": 1_800_000_400, "things": ["Desk hunt", "Saturday plan"],
+                                                    "decisions": ["The wider desk"]]])
+        XCTAssertNil(after.call)
+        XCTAssertEqual(after.callSummary?.minutes, 6)
+        XCTAssertEqual(after.callSummary?.started, "Started Desk hunt and Saturday plan.")
+        XCTAssertEqual(after.callSummary?.youSaid, "The wider desk")
+    }
 }

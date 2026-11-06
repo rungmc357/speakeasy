@@ -1868,3 +1868,9 @@ def retract_steer_text(names: Names, words: str) -> str:
 
 def typed_steer_text(names: Names, text: str) -> str:
     return f"{names.user_cap} typed to this task: {text} Fold it into the work you are doing; do not start over."
+
+
+def needs_a_tap_line(title: str) -> str:
+    """Said when a spoken answer would make a risky choice (send, pay, delete): the tap decides."""
+    return (f"That one needs a tap. {title} is on your screen." if title
+            else "That one needs a tap. It's on your screen.")

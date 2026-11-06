@@ -176,6 +176,7 @@ CAPABILITIES["agent_model"] = True
 # approval, /voice/now/clear-seen, the ``now`` {rev} event on /voice/history/events, Earlier's
 # ``?kinds=`` filter menu with counts, and one read state (a read conversation's answers are seen).
 CAPABILITIES["now"] = True
+CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking/heard), call_summary
 
 
 
@@ -370,6 +371,7 @@ class VoiceService(SecureInputMixin):
         self.push = PushNotifier(self.devices, self.settings.get, hermes_home=self.home,
                                  claim=self.store.claim_notice, background=start_threads)
         self.rt.push = self.push
+        self.rt.now_changed = self._now_changed  # a call's voice moved to another card (Home lights it up)
         self.rt.pause_call = lambda interaction_id: self.pause(interaction_id, stop_transport=True, limit=True)
         self.shared = A.SharedFolder(self.home)
         self.rt.shared = self.shared
@@ -1467,6 +1469,8 @@ class VoiceService(SecureInputMixin):
         worker = interaction.worker
         if changed and worker is not None and worker.loop is not None and not worker.loop.is_closed():
             asyncio.run_coroutine_threadsafe(worker.focus_changed(), worker.loop)
+        if changed:
+            self._now_changed()
         return {"interaction_id": interaction_id, "task_id": task_id}
 
     def set_mic(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:

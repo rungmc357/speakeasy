@@ -1062,6 +1062,16 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
   Questions sort by expiry, then high risk first, then oldest; a working card keeps its place while it
   keeps working (new ones go on top); answers newest first; waiting oldest first. Up to 60 items;
   the device caps are the app's, from `tiers`.
+- On a call (`call` is set; capability `now_focus`): `call.focus` is the item id of the card the voice
+  is talking about (Vision Pro's own focus wins; it lapses 10 min after the voice last spoke of it),
+  `call.focus_label` "Talking about this". A question asked on this call (or the one being talked
+  about) comes first with `tier: 0`, `on_call: "asking"`, `asking_label: "Asking now"` and `say_ok`
+  (false when a choice is `risk: high`: the voice says "That one needs a tap." and a spoken yes does
+  nothing; `lock_line` then reads "Can't be undone · Needs a tap"). An answer the voice read out is
+  marked seen everywhere and listed as `seen_answer` with `on_call: "heard"`, line "Told you on the call.".
+- `call_summary` (off a call): the call that just ended, until Clear-seen, the next 4 AM or 6 hours:
+  `{id: "call:<interaction>", title: "Your call · 6 min", minutes, started_at, ended_at, session_id,
+  things: [what it started, up to 4], more_things, decisions: [the user's own answers, up to 3]}`.
 - `sentence`: one clause for every kind of card shown, in list order (questions, stopped, in the
   works, new answers, waiting), so nothing below it goes unmentioned; one to nine as words, the item named when it's the only one. "All quiet." / "All caught up.".
 - There are no pins. A seen answer leaves Home at the next 4:00 AM in the phone's zone (or the one
