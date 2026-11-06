@@ -247,8 +247,9 @@ def test_saying_use_the_smart_model_runs_that_task_on_it(server, service, hermes
     worker.delegate("call_fast", "Use the fast model for this: what time does the bakery open?")
     call = wait_for(lambda: hermes.calls)[-1]
     assert call["model"] == "claude-haiku-4-5" and call["model_options"]["reasoning"]["effort"] == "low"
-    key = service.store.key_for_run(call["run_id"])
-    assert service.store.run_model(key)["preset"] == "fast"
+    # Hermes sees the run a moment before Speakeasy records the id it got back.
+    key = wait_for(lambda: service.store.key_for_run(call["run_id"]))
+    assert wait_for(lambda: service.store.run_model(key))["preset"] == "fast"
     worker.delegate("call_smart", "Use the smart model for this, plan next week's meals")
     wait_for(lambda: len(hermes.calls) == 2)
     assert hermes.calls[-1]["model"] == "claude-opus-5-5"

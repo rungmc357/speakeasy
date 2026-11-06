@@ -574,6 +574,9 @@ class BackendRun:
     refusal_retries: int = 0
     retry_refused: bool = False
     can_retry: bool = False
+    # How the run ended for follow-ups: Hermes' handed-back steer text and whether it reports one at
+    # all, kept so a follow-up recorded just after the end is settled on the same evidence.
+    ended_steer: tuple[Any, bool] | None = None
 
     @property
     def say_id(self) -> str:
@@ -1491,9 +1494,10 @@ class SidebandWorker:
             # A short question names its card as asked; a long one gets a clean cut, never an ellipsis.
             whole = notice_text(question, 200) or ""
             self.store.set_title(idem, (whole if len(whole) <= 60 else short_title(question)) or "A quick choice")
-            self.store.update_run(idem, None, "completed")
+            # The card's question is stored before its finished status, so no reader sees it without one.
             self.store.set_result(idem, {"spoken": question, "full": f"**{question}**\n{listed}",
                                          "question": view, "views": [view]})
+            self.store.update_run(idem, None, "completed")
         except Exception:
             logger.warning("speakeasy: could not record the spoken choice card")
             return None
@@ -3166,11 +3170,11 @@ class SidebandWorker:
             # Named for what the house did ("Office lamp off · Bedroom lamps on"), else the ask itself.
             self.store.set_title(idem, (home_title(reply.spoken) if reply.ok else None) or short_title(request) or "Home")
             self.store.progress(idem, "request", request)
-            self.store.update_run(idem, None, backend.status)
             result = split_result(reply.spoken, ()) or {}
             if cards:
                 result["views"] = cards
-            self.store.set_result(idem, result or None)
+            self.store.set_result(idem, result or None)  # the answer first, then the finished status
+            self.store.update_run(idem, None, backend.status)
             self.store.progress(idem, "result", reply.spoken)
             if reply.ok:
                 # "Lights off" -> "Done": heard on the call, nothing to read, so no new-answer badge.
@@ -3246,11 +3250,11 @@ class SidebandWorker:
             self.store.set_title(idem, short_title(request) or "Quick answer")
             self.retitle(idem, request)
             self.store.progress(idem, "request", request)
-            self.store.update_run(idem, None, "completed")
             result = split_result(spoken, ()) or {"spoken": spoken, "full": spoken}
             if shown:
                 result["views"] = shown
-            self.store.set_result(idem, result)
+            self.store.set_result(idem, result)  # the answer first, then the finished status
+            self.store.update_run(idem, None, "completed")
             self.store.progress(idem, "result", spoken)
         except Exception:
             logger.warning("speakeasy: could not record the quick-answer card")
@@ -4034,6 +4038,15 @@ class SidebandWorker:
         milestone = f"You added: {notice_text(words, 200)}"
         self.store.progress(key, "milestone", milestone)
         self.store.add_follow_up(key, words, text, milestone, after)
+        with self.interaction.lock:
+            ended = target.status if target.status in TERMINAL else None
+        if ended:
+            # The run ended while Hermes was taking this: its own settling has already passed, so the
+            # receipt would stay "queued" for good. Settle it on the same evidence and say so.
+            pending, modern = target.ended_steer or (None, False)
+            unread = await self.settle_follow_ups(target, pending, ended, modern=modern)
+            await self.tell_unread(target.say_id, unread, ended)
+            return True
         loop = asyncio.get_running_loop()
         watch = loop.create_task(self.watch_follow_ups(target))
         self.dispatch_tasks.add(watch)
@@ -4942,7 +4955,26 @@ class SidebandWorker:
             status = kind.split(".", 1)[1]
             if status == "failed" and self._retry_refusal(backend, event):
                 return  # run_on_hermes starts the same turn again: nothing settles, nothing is said
-            if status in TERMINAL and not backend.run_id:
+            if status not in TERMINAL:
+                self.store.update_run(idem, None, status)
+                return
+            output, error = event.get("output"), event.get("error")
+            if status == "failed" and (line := failures.provider_line(output)):
+                # The session chat stream (and its run status) carry no error field: a failed turn's
+                # reply is Hermes' failure message quoting the provider. Keep only what it means.
+                output, error = None, error or line
+            result = split_result(output, self.rt.image_roots())
+            drafts = (result or {}).pop("_email_drafts", None) or []
+            # The answer (and why it failed) is stored before the finished status: anyone reading the
+            # task between the two writes saw "completed" with no answer or question yet.
+            self.store.set_result(idem, result)
+            failed_as = None  # a failures.py kind
+            if status == "failed":
+                # Hermes' error line maps to Speakeasy's own sentence; with neither a known reason nor
+                # an answer, the app points at Hermes' errors.log instead.
+                failed_as = failures.failure_kind(error) or (None if result else failures.UNKNOWN)
+                self.store.set_failure(idem, failed_as, None if failed_as in failures.REASONS else failures.failure_hint(error))
+            if not backend.run_id:
                 # A task that ran in a Discord/Telegram thread has no Hermes run id, and review cards,
                 # image routes, dismissals and "show" are all addressed by one: give it a local id
                 # so its pictures are not silently dropped.
@@ -4952,22 +4984,7 @@ class SidebandWorker:
                 self.store.update_run(idem, local, status)
             else:
                 self.store.update_run(idem, None, status)
-            if status not in TERMINAL:
-                return
-            output, error = event.get("output"), event.get("error")
-            if status == "failed" and (line := failures.provider_line(output)):
-                # The session chat stream (and its run status) carry no error field: a failed turn's
-                # reply is Hermes' failure message quoting the provider. Keep only what it means.
-                output, error = None, error or line
-            result = split_result(output, self.rt.image_roots())
-            drafts = (result or {}).pop("_email_drafts", None) or []
-            self.store.set_result(idem, result)
-            failed_as = None  # a failures.py kind
             if status == "failed":
-                # Hermes' error line maps to Speakeasy's own sentence; with neither a known reason nor
-                # an answer, the app points at Hermes' errors.log instead.
-                failed_as = failures.failure_kind(error) or (None if result else failures.UNKNOWN)
-                self.store.set_failure(idem, failed_as, None if failed_as in failures.REASONS else failures.failure_hint(error))
                 if failed_as in failures.REASONS:
                     logger.info("speakeasy: Hermes run %s failed (%s)", backend.run_id, failed_as)
                 else:
@@ -4982,6 +4999,7 @@ class SidebandWorker:
                 "interrupted": "Work interrupted"}.get(status, "Work ended")))
             with self.interaction.lock:
                 backend.status, backend.approval = status, None
+                backend.ended_steer = (event.get("pending_steer"), "interrupted" in event or "pending_steer" in event)
             # ``interrupted`` rides on every terminal event from a Hermes that also hands back unread steer
             # text (pending_steer); without it, "nothing handed back" proves nothing.
             unread = await self.settle_follow_ups(backend, event.get("pending_steer"), status,
@@ -5018,6 +5036,9 @@ class SidebandWorker:
                 if not self.call_connected():
                     self.notices.draft_waiting(draft["draft_id"], draft.get("subject"))
             self.push_result(backend, idem, status, result, reason, stored_drafts, event)
+            # The app gets the answer, its drafts and pictures now; the voice may still wait for a pause
+            # before saying so, and the card must not wait with it.
+            self.publish()
             if self.call_connected():
                 # Never over a thought in progress: the answer (or its question) waits for a pause.
                 await self.wait_for_pause()
@@ -5078,12 +5099,15 @@ class SidebandWorker:
                 await self.append("session.commentary.append", delegation_id, P.FAILED_SPOKEN)
             else:
                 await self.append("session.commentary.append", delegation_id, P.ended_without_result(status))
-            if unread:
-                # What they added never reached it: say so (after its outcome) and offer it as new work.
-                await self.append("session.thinking.append", delegation_id, P.follow_up_not_read_note(unread))
-                await self.append("session.commentary.append", delegation_id,
-                                  P.follow_up_not_read_spoken(unread, status == "completed"))
+            await self.tell_unread(delegation_id, unread, status)
             await self.release_fenced(backend, status)
+
+    async def tell_unread(self, delegation_id: str, unread: list[str], status: str) -> None:
+        """What they added never reached the run: say so (after its outcome) and offer it as new work."""
+        if unread:
+            await self.append("session.thinking.append", delegation_id, P.follow_up_not_read_note(unread))
+            await self.append("session.commentary.append", delegation_id,
+                              P.follow_up_not_read_spoken(unread, status == "completed"))
 
 
 LATE_RESULT_S = 20.0  # the user spoke in the last 20 s of a task that took longer: say what it answers

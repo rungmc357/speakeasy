@@ -226,7 +226,8 @@ def test_look_at_my_screen_waits_for_sharing_then_runs_with_it(open_call, hermes
     assert len(call.captures()) == 1 and images_in(hermes.calls[0]["input"]) == [WINDOW]
     assert "Look at my screen" in text_of(hermes.calls[0]["input"])
     assert call.snap()["hold"] is None and P.HOLD_RELEASED_NOTE in call.notes()
-    assert call.run("call_look").run_id == hermes.calls[0]["run_id"]
+    # The id Hermes handed back is recorded a moment after Hermes saw the run.
+    wait_for(lambda: (call.run("call_look") or None) and call.run("call_look").run_id == hermes.calls[0]["run_id"])
 
 
 def test_the_hold_runs_with_pictures_dropped_while_it_waited(open_call, server, hermes):

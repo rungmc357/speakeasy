@@ -76,13 +76,18 @@ def test_the_task_says_what_was_asked_even_after_many_steps(server, service, her
 
 
 def test_an_older_answer_gets_its_headline_on_read(server, service, hermes):
+    hermes.hold = True  # the real run stays open, so its own ending never overwrites the stored answer
     _, worker = start_call(server, service)
     worker.delegate("call_a", "drop the card fix from build 66")
     wait_for(lambda: hermes.calls, timeout=5)
-    key = next(r.idem_key for t, r in worker.interaction.runs.items() if t == "call_a")
-    service.store.update_run(key, None, "completed")
-    service.store.set_result(key, {"spoken": "Okay, I'm dropping it.", "full": "Okay, I'm dropping it. Nothing goes into build 66."})
-    assert service.store.work(idem_key=key)["result"]["headline"] == "Nothing goes into build 66."
+    running = wait_for(lambda: (lambda r: r if r and r.run_id else None)(worker.interaction.runs.get("call_a")))
+    key = running.idem_key
+    try:
+        service.store.update_run(key, None, "completed")
+        service.store.set_result(key, {"spoken": "Okay, I'm dropping it.", "full": "Okay, I'm dropping it. Nothing goes into build 66."})
+        assert service.store.work(idem_key=key)["result"]["headline"] == "Nothing goes into build 66."
+    finally:
+        hermes.runs[running.run_id]["done"].set()
 
 
 def _choice_rows(server):

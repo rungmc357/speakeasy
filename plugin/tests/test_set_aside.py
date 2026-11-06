@@ -22,8 +22,9 @@ def _asked(server, service, hermes):
     hermes.responder = lambda prompt, sid: ASK
     session, worker = start_call(server, service)
     worker.delegate("call_lamp", "Turn on my office lamp")
-    done = wait_for(lambda: [t for t in tasks(server) if t["status"] == "completed"])[0]
-    assert done["result"]["question"]
+    # Wait for the question itself, not just the finished status.
+    done = wait_for(lambda: [t for t in tasks(server) if t["status"] == "completed"
+                             and (t.get("result") or {}).get("question")])[0]
     return session, worker, done
 
 

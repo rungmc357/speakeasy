@@ -158,3 +158,28 @@ def test_an_old_hermes_without_terminal_fields_proves_nothing(server, service, h
 def test_the_voice_rule_names_queued():
     rules = Path(P.__file__).with_name("rules.md").read_text()
     assert '"Queued" means only lined up, not read yet' in rules
+
+
+def test_a_follow_up_taken_just_as_the_run_ends_is_still_settled(server, service, hermes, home, monkeypatch):
+    """Hermes takes what they added, and the run finishes before Speakeasy has recorded it: the
+    run's own settling has passed, so the receipt must not stay "queued" for good."""
+    hermes.hold = True
+    state_db(Path(home) / "state.db")
+    _, worker = start_call(server, service)
+    say(worker, "call_trip", "Plan a four day trip to Lisbon")
+    run = wait_for(lambda: next((r for r in worker.interaction.runs.values()
+                                 if r.delegation_id == "call_trip" and r.run_id), None))
+    real_steer = worker.hermes.steer
+
+    def steer_then_end(run_id, text):
+        accepted = real_steer(run_id, text)
+        hermes.runs[run_id]["events"] = [{"event": "run.cancelled", "completed": False, "partial": False,
+                                          "interrupted": True}]
+        hermes.runs[run_id]["done"].set()
+        wait_for(lambda: run.status == "cancelled")  # the end is handled before the steer returns
+        time.sleep(0.2)
+        return accepted
+    monkeypatch.setattr(worker.hermes, "steer", steer_then_end)
+    say(worker, "call_more", "make it lighter, fewer museums", task_id="call_trip")
+    wait_for(lambda: _state(server) == ["not_read"])
+    wait_for(lambda: [c for c in _notes(worker, "session.commentary.append") if "stopped before it read" in c])

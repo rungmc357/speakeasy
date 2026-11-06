@@ -112,6 +112,13 @@ def delegation_of(service, run_id: str) -> str:
     return service.store.task_id_for(service.store.key_for_run(run_id))
 
 
+def runs_started(service, hermes, count: int) -> dict:
+    """The first ``count`` Hermes runs by task id, once each run's id is recorded against its task
+    (the fake Hermes sees the request a moment before the plugin stores the run id it got back)."""
+    return wait_for(lambda: (lambda by: by if len(hermes.calls) == count and len(by) == count and None not in by
+                             else None)({delegation_of(service, run["run_id"]): run for run in hermes.calls}))
+
+
 def tasks(server):
     return http(server.base_url, "GET", "/voice/work/latest", token=server.token)[1]["tasks"]
 
@@ -421,16 +428,17 @@ def test_close_handoffs_never_swap_captures(open_call, server, service, hermes, 
     def reply(capture_id):
         first = call.mac.seen.index(capture_id) == 0  # A's request came first ...
         shots[capture_id] = jpeg(b"window-A " if first else b"window-B ")
-        return {"data": shots[capture_id], "app": "Xcode", "delay": 0.6 if first else 0}  # ... B's capture lands first
+        # ... B's capture lands first: A's waits until B's upload is answered (not a fixed delay, which a
+        # busy machine outlasts before B's request is even asked).
+        b_answered = lambda: len(call.mac.seen) > 1 and call.mac.seen[1] in call.mac.answers
+        return {"data": shots[capture_id], "app": "Xcode", **({"after": b_answered} if first else {})}
     mac = call.mac_replies(reply)
     call.say("call_a", "Fix the login bug")
     call.say("call_b", "Rename the release notes file")
-    wait_for(lambda: len(hermes.calls) == 2)
+    by = runs_started(service, hermes, 2)
     a_shot, b_shot = (shots[c] for c in mac.seen)
     assert list(mac.answers) == mac.seen[::-1], "B's capture was uploaded before A's"
-    for run in hermes.calls:
-        want = a_shot if delegation_of(service, run["run_id"]) == "call_a" else b_shot
-        assert images_in(run["input"]) == [want]
+    assert images_in(by["call_a"]["input"]) == [a_shot] and images_in(by["call_b"]["input"]) == [b_shot]
 
 
 def test_a_picture_dropped_while_a_request_routes_goes_with_the_next(open_call, server, service, hermes):
@@ -439,7 +447,7 @@ def test_a_picture_dropped_while_a_request_routes_goes_with_the_next(open_call, 
     def route_call(messages):
         if "offsite" in messages[-1]["content"].rsplit("Request: ", 1)[-1]:
             routing.set()
-            go.wait(2.5)
+            go.wait(15)  # released by the test once B has started, never by the clock
         return None
     service.rt.route_call = route_call
     call = open_call("req_late_drop")
@@ -449,8 +457,7 @@ def test_a_picture_dropped_while_a_request_routes_goes_with_the_next(open_call, 
     call.say("call_b", "Make this the header image")
     wait_for(lambda: hermes.calls)
     go.set()
-    wait_for(lambda: len(hermes.calls) == 2)
-    by = {delegation_of(service, run["run_id"]): run for run in hermes.calls}
+    by = runs_started(service, hermes, 2)
     assert images_in(by["call_b"]["input"]) == [PICTURE] and images_in(by["call_a"]["input"]) == []
 
 

@@ -123,7 +123,7 @@ def test_a_picture_from_a_thread_task_still_pops_up(home, hermes):
         data, mime = svc.card_image(show["run_id"], 1)
         assert data.startswith(b"\xff\xd8") and mime == "image/jpeg"
         assert all(str(p) not in json.dumps(feed.last) for p in photos)
-        notes = [c for _, _, c in workers[-1].sent]
-        assert any("2 pictures from this task are on the user's screen" in c for c in notes)
+        # The picture goes up first; the voice's note about it follows once the answer is told.
+        wait_for(lambda: any("2 pictures from this task are on the user's screen" in c for _, _, c in workers[-1].sent))
     finally:
         svc.close()
