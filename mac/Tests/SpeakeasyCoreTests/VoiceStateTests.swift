@@ -241,7 +241,8 @@ final class VoiceStateTests: XCTestCase {
         XCTAssertEqual(complete.connection, .ended(.complete))
         let timedOut = reduce(s, .endTimedOut, now: t0 + 8)
         XCTAssertEqual(timedOut.connection, .ended(.incomplete))
-        XCTAssertEqual(present(timedOut).secondary, "Final usage confirmation unavailable")
+        XCTAssertEqual(present(timedOut).secondary, "Connection dropped")
+        XCTAssertEqual(present(timedOut).tone, .plain)
         // A late session.closed after timing out does not rewrite history.
         XCTAssertEqual(reduce(timedOut, .sessionClosed, now: t0 + 9).connection, .ended(.incomplete))
         s = reduce(s, .serverClosed(.incomplete, error: nil), now: t0 + 2)
@@ -256,6 +257,48 @@ final class VoiceStateTests: XCTestCase {
         XCTAssertEqual(early.connection, .ended(.complete))
         let lost = reduce(live(), .transportLost, now: t0)
         XCTAssertEqual(lost.connection, .ended(.incomplete))
+    }
+
+    /// SPK-153: how a call ends is told in plain words, never in metering/billing terms.
+    func testCallEndWordsArePlainAndNeverAboutUsage() {
+        let ending = reduce(live(), .endRequested, now: t0)
+        XCTAssertEqual(present(ending).primary, "Ending…")
+        XCTAssertEqual(present(ending).secondary, "Hanging up")
+        let clean = reduce(ending, .sessionClosed, now: t0 + 1)
+        XCTAssertEqual(present(clean).primary, "Call ended")
+        XCTAssertEqual(present(clean).secondary, "Call again any time")
+        XCTAssertEqual(present(clean).tone, .plain)
+        let lost = reduce(live(), .transportLost, now: t0)
+        XCTAssertEqual(present(lost).primary, "Call ended")
+        XCTAssertEqual(present(lost).secondary, "Connection dropped")
+        XCTAssertEqual(present(lost).tone, .plain)
+        XCTAssertEqual(lost.lastError, "The call dropped. Your tasks keep running.")
+        XCTAssertEqual(lost.lastError, VoiceState.callDropped)
+        // The server's own "Voice connection lost…" reads the same to the user.
+        let server = reduce(live(), .serverClosed(.incomplete, error: "Voice connection lost: ConnectionResetError"), now: t0)
+        XCTAssertEqual(server.lastError, VoiceState.callDropped)
+        XCTAssertEqual(present(server).secondary, "Connection dropped")
+        // Other server errors pass through unchanged.
+        let other = reduce(live(), .serverClosed(.incomplete, error: "The voice service didn't answer."), now: t0)
+        XCTAssertEqual(other.lastError, "The voice service didn't answer.")
+        for s in [ending, clean, lost, server] {
+            let p = present(s)
+            for text in [p.primary, p.secondary, s.lastError ?? ""] {
+                XCTAssertFalse(text.localizedCaseInsensitiveContains("usage"), text)
+                XCTAssertFalse(text.localizedCaseInsensitiveContains("confirm"), text)
+            }
+        }
+    }
+
+    /// A drop while pausing is a pause: no dropped-call banner (ours or the server's wording).
+    func testDropWhilePausingLeavesNoDroppedBanner() {
+        for event in [VoiceEvent.transportLost, .serverClosed(.incomplete, error: "Voice connection lost.")] {
+            var s = live()
+            s.pausing = true
+            s = reduce(s, event, now: t0 + 1)
+            XCTAssertEqual(s.connection, .paused)
+            XCTAssertNil(s.lastError)
+        }
     }
 
     func testWorkSurvivesEndOfCall() {

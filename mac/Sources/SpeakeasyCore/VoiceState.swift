@@ -178,6 +178,13 @@ public struct VoiceState: Equatable, Sendable {
         return s
     }
 
+    /// What the user is told when a live call drops on its own (network, the voice channel closed).
+    public static let callDropped = "The call dropped. Your tasks keep running."
+    /// A dropped-call message: ours, or the server's "Voice connection lost…" (older and newer plugins).
+    public static func isCallDropped(_ message: String) -> Bool {
+        message == callDropped || message.hasPrefix("Voice connection lost")
+    }
+
     /// A live call with no speech from either side for this long closes its paid voice
     /// session (pause, so Resume keeps the conversation and tasks keep running).
     public static let defaultIdleTimeout: TimeInterval = 15 * 60
@@ -430,7 +437,7 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
 
     case .serverClosed(let fin, let error):
         if !isEnded(s.connection) && s.connection != .paused { s.connection = .ended(fin) }
-        if let error, !s.pausing { s.lastError = error }
+        if let error, !s.pausing { s.lastError = VoiceState.isCallDropped(error) ? VoiceState.callDropped : error }
         s.speech = .idle
 
     case .endRequested:
@@ -453,7 +460,7 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         switch s.connection {
         case .live, .connecting:
             s.connection = .ended(.incomplete)
-            s.lastError = "Voice connection lost; final usage confirmation unavailable"
+            s.lastError = VoiceState.callDropped
             s.speech = .idle
         default: break   // .ending: wait for api finalization or the deadline
         }
@@ -535,7 +542,7 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s.connection = .paused
         s.pausing = false
         s.speech = .idle
-        if s.lastError == "Voice connection lost; final usage confirmation unavailable" { s.lastError = nil }
+        if let error = s.lastError, VoiceState.isCallDropped(error) { s.lastError = nil }
     }
     // Paused: sharing is off and nothing is captured; pictures and files not sent yet wait for Resume.
     // Ended: nothing of the call's sharing is kept.

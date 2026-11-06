@@ -230,12 +230,13 @@ public func present(_ s: VoiceState) -> PillPresentation {
             else { secondary = "Go ahead" }
         case .ending where s.micHealth == .repairing:
             secondary = "Mic wasn't picking you up · reconnecting, conversation kept"
-        case .ending: secondary = s.pausing ? "Holding your place" : "Confirming final usage"
+        case .ending: secondary = s.pausing ? "Holding your place" : "Hanging up"
         case .paused:
             if let minutes = s.quietPausedMinutes { secondary = quietPauseLine(minutes) }
             else { secondary = "Voice off · not billed · Resume to continue" }
-        case .ended(.complete): secondary = "Closed and confirmed"
-        case .ended(.incomplete): secondary = "Final usage confirmation unavailable"; tone = .warning
+        // Plain facts about the call, never about metering: a dropped call is not a billing problem.
+        case .ended(.complete): secondary = "Call again any time"
+        case .ended(.incomplete): secondary = "Connection dropped"
         case .failed(let message): secondary = message; tone = .error
         case .idle: secondary = s.workOnly ? "No recent work" : s.callShortcutHint
         }
