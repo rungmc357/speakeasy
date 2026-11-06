@@ -18,6 +18,17 @@ def test_quick_answer_without_run_id_gets_a_clearable_id(tmp_path):
     assert store.work(idem_key="se_quick")["dismissed"]
 
 
+def test_a_finished_run_is_recorded_whole_and_once(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    result = {"spoken": "Short or long?", "question": {"question": "Short or long?"}}
+    assert store.record_finished_run("se_pick", "vi_1", "choice_1", "Short or long?", result)
+    work = store.work(idem_key="se_pick")
+    assert work is not None and work["status"] == "completed" and work["run_id"] == local_run_id("se_pick")
+    assert work["title"] == "Short or long?" and work["result"]["question"]["question"] == "Short or long?"
+    assert not store.record_finished_run("se_pick", "vi_1", "choice_1", "Other", None)
+    assert store.work(idem_key="se_pick")["title"] == "Short or long?"
+
+
 def test_real_run_id_is_kept(tmp_path):
     store = StateStore(tmp_path / "state.sqlite3")
     store.reserve_run("se_real", "vi_1", "item_real", 1)

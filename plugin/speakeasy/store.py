@@ -297,6 +297,25 @@ class StateStore:
                 (key, interaction_id, delegation_id, revision, None, "admitting", time.time(), time.time()))
             return "created", None
 
+    def record_finished_run(self, key: str, interaction_id: str, delegation_id: str, title: str | None,
+                            result: dict[str, Any] | None, status: str = "completed") -> bool:
+        """A task that is finished the moment it exists (a spoken choice card): row, title, status and
+        result written in one transaction, so a board fetched meanwhile never sees it half-made (a
+        card with no question). False when the key was already recorded."""
+        with self._lock, self._db:
+            if self._db.execute("SELECT 1 FROM runs WHERE idem_key=?", (key,)).fetchone():
+                return False
+            now = time.time()
+            self._db.execute(
+                """INSERT INTO runs (idem_key,interaction_id,delegation_id,revision,run_id,status,updated,created)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (key, interaction_id, delegation_id, 0, None, "admitting", now, now))
+            self._set_title_locked(key, title, None, False)
+            self._update_run_locked(key, None, status)
+            self._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?",
+                             (json.dumps(result) if result else None, key))
+            return True
+
     def set_session(self, key: str, session_id: str) -> None:
         with self._lock, self._db:
             self._db.execute("UPDATE runs SET session_id=? WHERE idem_key=?", (session_id, key))
@@ -543,15 +562,18 @@ class StateStore:
         """A task's display title. ``thread`` marks a chat thread's own name: shown on the task, but
         never used to name its job. A task's own new title refines the job it first named."""
         with self._lock, self._db:
-            if title:
-                title = fix_product_names(title)
-                self._db.execute("UPDATE runs SET title=? WHERE idem_key=?", (title, key))
-                name = None if thread else job_name(title)
-                if name:
-                    self._db.execute("UPDATE runs SET own_title=? WHERE idem_key=?", (title, key))
-                    self._db.execute("UPDATE jobs SET name=?, updated=? WHERE from_key=?", (name, time.time(), key))
-            if summary:
-                self._db.execute("UPDATE runs SET summary=? WHERE idem_key=?", (summary, key))
+            self._set_title_locked(key, title, summary, thread)
+
+    def _set_title_locked(self, key: str, title: str | None, summary: str | None, thread: bool) -> None:
+        if title:
+            title = fix_product_names(title)
+            self._db.execute("UPDATE runs SET title=? WHERE idem_key=?", (title, key))
+            name = None if thread else job_name(title)
+            if name:
+                self._db.execute("UPDATE runs SET own_title=? WHERE idem_key=?", (title, key))
+                self._db.execute("UPDATE jobs SET name=?, updated=? WHERE from_key=?", (name, time.time(), key))
+        if summary:
+            self._db.execute("UPDATE runs SET summary=? WHERE idem_key=?", (summary, key))
 
     def _older_title(self, job_id: str, key: str) -> tuple[str, str] | None:
         """A task saved before tasks kept their own title: its shown title, unless it ran in a new
@@ -896,16 +918,19 @@ class StateStore:
             self._db.execute("UPDATE runs SET run_id=NULL WHERE idem_key=?", (key,))
 
     def update_run(self, key: str, run_id: str | None, status: str) -> None:
-        now = time.time()
         with self._lock, self._db:
-            self._db.execute("UPDATE runs SET run_id=COALESCE(?,run_id),status=?,updated=? WHERE idem_key=?",
-                             (run_id, status, now, key))
-            if status in TERMINAL or status == "rejected":
-                # Every finished task needs a run id so "Clear done" and the x can clear it.
-                self._db.execute("UPDATE runs SET run_id=? WHERE idem_key=? AND run_id IS NULL",
-                                 (local_run_id(key), key))
-            if status in SETTLED:
-                self._db.execute("UPDATE runs SET settled_at=? WHERE idem_key=?", (now, key))
+            self._update_run_locked(key, run_id, status)
+
+    def _update_run_locked(self, key: str, run_id: str | None, status: str) -> None:
+        now = time.time()
+        self._db.execute("UPDATE runs SET run_id=COALESCE(?,run_id),status=?,updated=? WHERE idem_key=?",
+                         (run_id, status, now, key))
+        if status in TERMINAL or status == "rejected":
+            # Every finished task needs a run id so "Clear done" and the x can clear it.
+            self._db.execute("UPDATE runs SET run_id=? WHERE idem_key=? AND run_id IS NULL",
+                             (local_run_id(key), key))
+        if status in SETTLED:
+            self._db.execute("UPDATE runs SET settled_at=? WHERE idem_key=?", (now, key))
 
     def set_failure(self, key: str, kind: str | None, hint: str | None = None) -> None:
         """Why the run failed, as a ``failures`` kind (the app and voice get Speakeasy's own words),
