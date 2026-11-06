@@ -406,7 +406,9 @@ enum HistoryShots {
             NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
         }
         c.show()
-        c.window?.setContentSize(NSSize(width: 1040, height: 720))
+        // HISTORY_WIDTH (e.g. 720, the window's minimum) shoots every page at a narrower window.
+        let width = ProcessInfo.processInfo.environment["HISTORY_WIDTH"].flatMap(Double.init) ?? 1040
+        c.window?.setContentSize(NSSize(width: max(720, width), height: 720))
         c.window?.center()
         let only = ProcessInfo.processInfo.environment["HISTORY_SHOT"]
         if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {

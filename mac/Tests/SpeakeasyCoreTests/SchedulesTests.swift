@@ -39,6 +39,11 @@ final class SchedulesTests: XCTestCase {
         """#))
         XCTAssertEqual(list.schedules.count, 3)
         XCTAssertEqual(list.timezone, "America/New_York")
+        XCTAssertEqual(ScheduleList.zoneLabel(list.timezone), "Hermes time · New York")
+        XCTAssertEqual(ScheduleList.zoneLabel("America/Argentina/Buenos_Aires"), "Hermes time · Buenos Aires")
+        XCTAssertEqual(ScheduleList.zoneLabel("UTC"), "Hermes time · UTC")
+        XCTAssertEqual(ScheduleList.zoneLabel(nil), "Hermes")
+        XCTAssertEqual(ScheduleList.zoneLabel(" "), "Hermes")
         let a = list.schedules[0]
         XCTAssertEqual(a.scheduleLabel, "Weekdays at 8:00 AM")
         XCTAssertEqual(a.nextRun, at("2026-11-06T08:00:00-05:00"))
