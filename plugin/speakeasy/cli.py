@@ -223,6 +223,10 @@ def cmd_setup(args, home: Path, env=None) -> int:
         return 2 if voice_ok else 1
 
     H.clear_pending(home)
+    if is_local_url(server) and not getattr(args, "here", False) and getattr(args, "send", ""):
+        # A loopback link sent to a chat can only fail on the phone or other Mac: wait for Cloudflare.
+        out(LOCAL_ONLY_NOT_SENT)
+        return 1
     delivered = _deliver_link(args, env, home, settings, server)
     if not delivered:
         code = _store(home).new_pairing_code(ttl=H.link_ttl(home))
@@ -255,7 +259,8 @@ def _advertise(args, env, settings: Settings, port: int) -> str:
         env.out("• Tailscale skipped (--no-tailscale); Speakeasy stays local to this machine.")
         settings.patch({"server": {"advertised_url": "", "tailscale_name": ""}})
         return ""
-    url, name = F.tailscale_url(env, port, forced=getattr(args, "tailscale", False))
+    url, name = F.tailscale_url(env, port, forced=getattr(args, "tailscale", False),
+                                fallback=not getattr(args, "here", False))
     settings.patch({"server": {"advertised_url": url or "", "tailscale_name": name}})
     return url or ""
 
@@ -272,7 +277,7 @@ TAILSCALE_RECOMMENDED = ("• Recommended: Tailscale (most private: your devices
 # No Tailscale and no tunnel: the agent turns Cloudflare mode on itself (owner decision: no choice
 # screen), then tells the user what it did. Instructions for the agent, not a menu for the user.
 CLOUDFLARE_AUTO = [
-    "→ No Tailscale on this computer, so turn on Cloudflare mode now (don't ask the user first):",
+    "→ No usable Tailscale on this computer, so turn on Cloudflare mode now (don't ask the user first):",
     "  1. python3 speakeasy-cloudflare.py quick",
     f"     (the script: {CLOUDFLARE_SCRIPT})",
     "  2. Run this setup again: it should say \"Connected through Cloudflare\", and the pairing link",
@@ -281,6 +286,8 @@ CLOUDFLARE_AUTO = [
     "     " + AGENT_DOC_CLOUDFLARE + ").",
     "  If the script fails, explain Tailscale to the user instead: " + "https://tailscale.com/download",
 ]
+LOCAL_ONLY_NOT_SENT = ("✗ No pairing link sent yet: without Tailscale or Cloudflare it would only work on this "
+                       "computer. Turn on Cloudflare mode (the box above), then run setup again.")
 CLOUDFLARE_CONNECTED = "✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale."
 CLOUDFLARE_BACKUP = "✓ Cloudflare is on too, as a backup: your devices use Tailscale first."
 # What the agent tells the user after setting up Cloudflare mode for them (docs/AGENT_SETUP.md says the same).
@@ -534,7 +541,7 @@ def _deliver_link(args, env, home: Path, settings: Settings, server: str) -> str
             env.out("✓ Opened Speakeasy to pair. Finish setup there (about a minute)." if installed else
                     "✓ Opened the Speakeasy download page on this Mac. Install the app, then click Open Speakeasy there.")
             return "opened"
-    target = _pick_chat(env, home, settings)
+    target = "" if is_local_url(server) else _pick_chat(env, home, settings)  # loopback can't work elsewhere
     if target:
         code = _store(home).new_pairing_code(ttl=link_ttl(home))
         if _send_link(home, target, web_link(server, code), env.out):

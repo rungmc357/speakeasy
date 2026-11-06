@@ -56,15 +56,17 @@ Skip this step when the user talks from the Mac Hermes runs on.
 
 Otherwise decide, without asking the user, from `tailscale status` on this computer:
 
-- **Tailscale is installed and signed in** (`tailscale status` lists this machine; if it's only
-  stopped, `tailscale up` brings it back without a sign-in): use Tailscale. Setup publishes the
-  voice server to their tailnet only. Their device needs Tailscale too, signed in with the **same
-  account** (https://tailscale.com/download): say so in the same message as the link. If setup
-  reports that HTTPS certificates are off for the tailnet, the user turns them on once at
-  https://login.tailscale.com/admin/dns (HTTPS Certificates), then you run setup again.
-- **Anything else** (not installed, `tailscale` not found, logged out, or it needs a browser
-  sign-in): turn on Cloudflare mode **now, without asking**, so pairing works from anywhere
-  right away. Don't show the user a choice and don't ask them to install anything first:
+- **Tailscale is installed, signed in and connected** (`tailscale status` lists this machine):
+  use Tailscale. Setup publishes the voice server to their tailnet only. Their device needs
+  Tailscale too, signed in with the **same account** (https://tailscale.com/download): say so in
+  the same message as the link.
+- **Anything else** (not installed, `tailscale` not found, stopped, logged out, needs a browser
+  sign-in, or setup says its HTTPS certificates are off): turn on Cloudflare mode **now, without
+  asking**, so pairing works from anywhere right away. Setup itself says "connects through
+  Cloudflare instead" in these cases and won't send a link that only works on this computer.
+  Tailscale can come later: `tailscale up`, or the user turns HTTPS Certificates on once at
+  https://login.tailscale.com/admin/dns, then you run setup again (no re-pairing). Don't show the user a
+  choice and don't ask them to install anything first:
 
       curl -fsSL https://raw.githubusercontent.com/rungmc357/speakeasy/main/scripts/speakeasy-cloudflare.py -o speakeasy-cloudflare.py
       python3 speakeasy-cloudflare.py quick
@@ -142,9 +144,10 @@ Setup never restarts Hermes. Its exit code tells you where things stand:
   restart it yourself. Once Hermes is back:
   - with `--send`, the pairing link arrives in this chat by itself;
   - with `--here`, run `hermes voice setup --here --yes` again to open the link.
-- **1: something needs the user.** Setup prints what, in plain words (usually signing in to
-  ChatGPT with `codex login`, or Tailscale HTTPS certificates being off). Pass that on in one or
-  two sentences. When it's fixed, run setup again.
+- **1: something needs the user (or you).** Setup prints what, in plain words (usually signing in
+  to ChatGPT with `codex login`). If it says `No pairing link sent yet`, there's no connection the
+  phone can use: turn on Cloudflare mode (step 2) and run setup again. Otherwise pass it on in one
+  or two sentences. When it's fixed, run setup again.
 
 Do not paste pairing codes or links from setup's output into other chats. Each link works once and
 expires after 30 minutes. For a new one: `hermes voice pair --send <this chat>`.

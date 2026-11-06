@@ -83,9 +83,11 @@ When Hermes and the app are on the same Mac, setup opens the link directly.
 **Tailscale is picked up automatically.** When `tailscale` is installed and connected, setup
 serves the voice server to your tailnet only (`tailscale serve`, never Funnel), prints a
 `✓ Tailscale detected` box with the `https://<machine>.<tailnet>.ts.net:8795` address, and
-remembers it so `hermes voice pair` reuses it. If Tailscale is installed but stopped, setup says
-so loudly (run `tailscale up`) and stays local. If HTTPS certificates are off for your tailnet,
-turn them on at https://login.tailscale.com/admin/dns (HTTPS Certificates) and run setup again.
+remembers it so `hermes voice pair` reuses it. If Tailscale is installed but stopped, or HTTPS
+certificates are off for your tailnet, setup says so plainly and connects through Cloudflare
+instead (below), so the pairing link works right away; to switch to Tailscale later, run
+`tailscale up` or turn certificates on at https://login.tailscale.com/admin/dns (HTTPS
+Certificates), then run setup again.
 `--tailscale` insists on it, `--no-tailscale` skips it, `--server <url>` sets the address by hand.
 
 **No Tailscale?** Setup recommends it (most private), and your agent can give Speakeasy a

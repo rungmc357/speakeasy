@@ -262,21 +262,26 @@ def _serve_failure_is_https(done: Any) -> bool:
     return any(word in text for word in ("https", "certificate", "cert"))
 
 
-def tailscale_url(env: Env, port: int, *, forced: bool = False) -> tuple[str | None, str]:
+def tailscale_url(env: Env, port: int, *, forced: bool = False, fallback: bool = True) -> tuple[str | None, str]:
     """Publish the loopback voice server on the tailnet only (never Funnel).
 
     Returns (url or None, tailnet DNS name or ""). Auto-detects: running → imported with a boxed
-    notice; installed but stopped → an equally prominent warning and local mode; not installed →
-    one quiet line (or an error when ``forced``)."""
+    notice; installed but stopped, or `serve` failing (HTTPS certificates off) → a plain boxed note
+    that Speakeasy connects through Cloudflare instead (``fallback``; cli._cloudflare does it) and
+    how to switch to Tailscale later; not installed → one quiet line (or an error when ``forced``).
+    Without ``fallback`` (``--tailscale``, or the user talks from this machine) the note says
+    Speakeasy stays on this computer for now."""
+    fallback = fallback and not forced
+    instead = ("so Speakeasy connects through Cloudflare instead (works anywhere, nothing to install on "
+               "the phone)." if fallback else "so Speakeasy stays on this computer for now.")
     net = tailnet_status(env)
     if net.state == "missing":
         env.out("✗ Tailscale isn't installed on this machine." if forced
                 else "• Tailscale not found on this computer.")
         return None, ""
     if net.state == "stopped":
-        banner(env, ["⚠ Tailscale is installed but not connected.",
-                     "  Fix: run `tailscale up`, then `hermes voice setup` again,",
-                     "  or use Cloudflare mode (below) if it needs a sign-in."])
+        banner(env, [f"⚠ Tailscale is installed but not connected, {instead}",
+                     "  To use Tailscale later: run `tailscale up`, then `hermes voice setup` again."])
         return None, ""
     try:
         done = env.run([net.binary, "serve", "--bg", f"--https={port}", f"http://127.0.0.1:{port}"],
@@ -284,9 +289,11 @@ def tailscale_url(env: Env, port: int, *, forced: bool = False) -> tuple[str | N
     except (OSError, subprocess.SubprocessError):
         done = None
     if done is None or getattr(done, "returncode", 1) != 0:
-        lines = ["⚠ Tailscale is connected, but `tailscale serve` failed.", "  Speakeasy stays local for now."]
         if done is None or _serve_failure_is_https(done):
-            lines.append("  " + TAILSCALE_HTTPS_FIX)
+            lines = [f"⚠ Tailscale is connected, but its HTTPS certificates are off, {instead}",
+                     "  To use Tailscale later: " + TAILSCALE_HTTPS_FIX + ", then run setup again."]
+        else:
+            lines = [f"⚠ Tailscale is connected, but `tailscale serve` failed, {instead}"]
         banner(env, lines)
         return None, ""
     url = f"https://{net.dns}:{port}"
