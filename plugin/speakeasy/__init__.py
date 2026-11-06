@@ -110,7 +110,7 @@ def register(ctx) -> None:
     ctx.register_cli_command(
         "voice", help="Speakeasy voice: setup, pairing and devices",
         setup_fn=setup_parser, handler_fn=handle,
-        description="Set up Speakeasy, pair a Mac, list or revoke paired devices.",
+        description="Set up Speakeasy, pair your Mac, iPhone or iPad, list or revoke paired devices.",
     )
 
 
