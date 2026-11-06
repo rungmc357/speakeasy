@@ -1,0 +1,117 @@
+{
+ "as_of": 1794001751.623,
+ "background": {
+  "items": [],
+  "running": 0
+ },
+ "call": null,
+ "counts": {
+  "finished_unread": 1,
+  "needs_you": 1,
+  "on_its_own_running": 0,
+  "stopped": 1,
+  "waiting": 0,
+  "working": 1
+ },
+ "earlier": {
+  "today_more": 0
+ },
+ "items": [
+  {
+   "finished_at": 1794001721.620118,
+   "id": "q:run_c_q",
+   "kind": "question",
+   "line": "Which desk should I order?",
+   "question": {
+    "approvable": false,
+    "asked_at": 1794001721.620118,
+    "options": [
+     {
+      "facts": [
+       "$389",
+       "60 in. wide"
+      ],
+      "id": "o1",
+      "image": "/voice/card-image/run_c_q/1",
+      "link": "https://desks.example/oakline",
+      "text": "Oakline 60 in."
+     },
+     {
+      "id": "o2",
+      "text": "Birch 55 in."
+     }
+    ],
+    "prompt": "Which desk should I order?",
+    "recommended": 0,
+    "risk": "high",
+    "shape": "things"
+   },
+   "run_id": "run_c_q",
+   "session_id": "s_cq",
+   "source": "speakeasy",
+   "started_at": 1794001751.6201332,
+   "thumbs": [
+    {
+     "url": "/voice/card-image/run_c_q/1"
+    }
+   ],
+   "tier": 1,
+   "title": "Desk hunt",
+   "unread": false,
+   "updated_at": 1794001751.6205812
+  },
+  {
+   "finished_at": 1794001701.620118,
+   "fix": {
+    "kind": "credits"
+   },
+   "id": "s:s_cf",
+   "kind": "stopped",
+   "line": "Hermes's model provider is out of credits.",
+   "run_id": "run_c_f",
+   "session_id": "s_cf",
+   "source": "speakeasy",
+   "started_at": 1794001751.6207821,
+   "tier": 2,
+   "title": "Book the cabin",
+   "unread": false,
+   "updated_at": 1794001751.6211169
+  },
+  {
+   "id": "s:s_cw",
+   "kind": "working",
+   "line": "Working on it",
+   "run_id": "run_c_w",
+   "session_id": "s_cw",
+   "source": "speakeasy",
+   "started_at": 1794001751.62132,
+   "tier": 3,
+   "title": "Sort the garden photos",
+   "unread": false,
+   "updated_at": 1794001751.6216478
+  },
+  {
+   "finished_at": 1794001711.620118,
+   "id": "s:s_ca",
+   "kind": "new_answer",
+   "line": "Brandywine wins for your shade.",
+   "run_id": "run_c_a",
+   "session_id": "s_ca",
+   "source": "speakeasy",
+   "started_at": 1794001751.6217248,
+   "tier": 4,
+   "title": "Compare tomato seeds",
+   "unread": true,
+   "updated_at": 1794001751.622068
+  }
+ ],
+ "notice": null,
+ "rev": 1,
+ "sentence": "One question for you, and one thing stopped.",
+ "tiers": {
+  "1": 1,
+  "2": 1,
+  "3": 1,
+  "4": 1
+ }
+}

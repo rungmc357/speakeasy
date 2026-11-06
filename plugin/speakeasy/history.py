@@ -74,6 +74,27 @@ HELPER_SOURCE = "subagent"
 # The filter menu's kinds, in its order: id -> label (each id is also its source filter's id).
 AUTOMATED_KINDS = {"kanban": "Board workers", "scheduled": "Scheduled jobs", "helpers": "Background helpers"}
 
+# Earlier's filter menu (SPK-124, ``?kinds=``): checkboxes in Hermes' own words, each with its count.
+# Conversations (everything a person talks in), scheduled jobs (cron), Kanban workers, subagents (a
+# task's helpers, otherwise never listed) and archived conversations (Hermes' own archived flag).
+KINDS = ("conversations", "scheduled", "kanban", "subagents", "archived")
+KIND_LABELS = {"conversations": "Conversations", "scheduled": "Scheduled jobs", "kanban": "Kanban",
+               "subagents": "Subagents", "archived": "Archived"}
+DEFAULT_KINDS = ("conversations",)
+_KIND_SQL = ("(CASE WHEN s.source='cron' THEN 'scheduled' WHEN s.source='kanban' THEN 'kanban' "
+             "WHEN s.source='subagent' THEN 'subagents' ELSE 'conversations' END)")
+
+
+def parse_kinds(raw: str | None) -> tuple[str, ...] | None:
+    """``?kinds=conversations,kanban``: the checked boxes (None: the parameter wasn't sent, the list
+    behaves as it did before Earlier). Empty or unknown names: 400."""
+    if raw is None:
+        return None
+    kinds = tuple(dict.fromkeys(k.strip() for k in str(raw).split(",") if k.strip()))
+    if not kinds or any(k not in KINDS for k in kinds):
+        raise HistoryError(400, f"kinds is a comma-separated list of: {', '.join(KINDS)}")
+    return kinds
+
 # A context-compaction handoff (as a user or an assistant row): one quiet divider per page at most.
 COMPACTED = "Earlier messages were summarized"
 # The row Hermes writes to close a turn that failed before any reply (a provider refusal, an error):
@@ -886,7 +907,8 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                   marks: Callable[[], dict[str, dict[str, Any]]] = dict, archived: bool = False,
                   include_archived: bool | None = None, automated: bool = True,
                   hide: Iterable[str] = (), helpers: bool = False,
-                  now: float | None = None, only: set[str] | None = None) -> dict[str, Any]:
+                  now: float | None = None, only: set[str] | None = None, kinds: Sequence[str] | None = None,
+                  on_now: Callable[[], set[str]] | None = None, exclude_now: bool = False) -> dict[str, Any]:
     """``GET /voice/history``: conversations newest first, ``limit`` per page; pass ``next_cursor`` back
     as ``cursor`` for the next page.
 
@@ -904,18 +926,29 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
     *automated* False is the older spelling of hiding both. *helpers*: also list background helpers
     (``subagent`` sessions; left out by default). The reply's ``automated`` says how many automated
     sessions there are and whether both are hidden, and ``kinds`` gives the apps' filter menu each
-    kind's id, label, count and whether it's shown. Automated rows are never unread or needs-you."""
+    kind's id, label, count and whether it's shown. Automated rows are never unread or needs-you.
+
+    *kinds* (SPK-124 Earlier, ``parse_kinds``): list only those kinds, with ``kinds`` in the reply
+    ({id, label, count, on} for every kind, counted with the same search) and no pinned-first order
+    (Home has no pins). It replaces *source*, *archived* and *automated*. *on_now*: the sessions Home
+    shows; rows carry ``on_now``, and *exclude_now* leaves them out (Earlier never repeats Home)."""
     hidden_kinds = {k for k in hide if k in AUTOMATED_FILTERS} | (set() if automated else set(AUTOMATED_FILTERS))
     automated = not set(AUTOMATED_FILTERS) <= hidden_kinds
+    if kinds is not None:  # Earlier's checkboxes decide on their own (below)
+        hidden_kinds, automated, helpers = set(), True, True
     after = parse_cursor(cursor)
     now = time.time() if now is None else now
     limit = max(1, min(int(limit or PAGE), MAX_PAGE))
     if source and source not in FILTERS:
         raise HistoryError(400, f"source must be one of: {', '.join(FILTERS)}")
+    if kinds is not None:
+        kinds = tuple(k for k in kinds if k in KINDS) or DEFAULT_KINDS
+        source, archived, automated, include_archived = "", False, True, True
     db = _open(state_db)
     if db is None:
         return {"sessions": [], "next_cursor": None, "filters": _filters(), "sources": [],
-                "automated": {"count": 0, "hidden": not automated, "kinds": []}, "search": "none" if q else None}
+                "automated": {"count": 0, "hidden": not automated, "kinds": []}, "search": "none" if q else None,
+                **({"kinds": _kind_list({}, kinds)} if kinds is not None else {})}
     try:
         cols = _columns(db, "sessions")
         fold = {k: v for k, v in (folded() or {}).items() if k != v and SAFE_ID_RE.fullmatch(k) and SAFE_ID_RE.fullmatch(v)}
@@ -937,7 +970,8 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             where.append(_flag(cols, "archived"))
         params: list[Any] = list(hidden_sources)
         if "parent_session_id" in cols:
-            # The newest segment of a conversation only; children of another source are helpers.
+            # The newest segment of a conversation only; children of another source are helpers
+            # (listed only under Earlier's Subagents box).
             where.append("NOT EXISTS (SELECT 1 FROM sessions c WHERE c.parent_session_id = s.id AND c.source = s.source)")
             where.append("(s.parent_session_id IS NULL OR EXISTS (SELECT 1 FROM sessions p "
                          f"WHERE p.id = s.parent_session_id AND p.source = s.source) OR s.source = '{HELPER_SOURCE}')")
@@ -955,6 +989,32 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             where.append(f"s.id IN ({','.join('?' * len(ids))})" if ids else "1=0")
             params += ids
         mine = speakeasy_ids()
+        shown_now = (on_now() if on_now is not None else set()) or set()
+        if exclude_now and shown_now:
+            ids_now = sorted(sid for sid in shown_now if SAFE_ID_RE.fullmatch(sid))
+            if ids_now:
+                where.append(f"s.id NOT IN ({','.join('?' * len(ids_now))})")
+                params += ids_now
+        kind_counts: dict[str, int] = {}
+        if kinds is not None:
+            arch_col = "coalesce(s.archived,0)" if "archived" in cols else "0"
+            kind_where, kind_params = list(where), list(params)
+            if q.strip():
+                hits, _ = _search_ids(db, q)
+                tips = {fold.get(t, t) for t in _tips(db, set(hits)).values()}
+                kind_where.append(f"s.id IN ({','.join('?' * len(tips))})" if tips else "1=0")
+                kind_params += sorted(tips)
+            for kind, arch, n in db.execute(
+                    f"SELECT {_KIND_SQL}, {arch_col} != 0, count(*) FROM sessions s WHERE {' AND '.join(kind_where)} "
+                    f"GROUP BY 1, 2", kind_params).fetchall():
+                key = "archived" if arch else kind
+                kind_counts[key] = kind_counts.get(key, 0) + int(n)
+            cats = [k for k in kinds if k != "archived"]
+            shown = [f"({arch_col} = 0 AND {_KIND_SQL} IN ({','.join('?' * len(cats))}))"] if cats else []
+            if "archived" in kinds:
+                shown.append(f"{arch_col} != 0")
+            where.append("(" + " OR ".join(shown) + ")")
+            params += cats
         sources = _source_counts(db, where, params, mine)
         counts = {c["source"]: c["count"] for c in sources}
         shown = {"kanban": "kanban" not in hidden_kinds, "scheduled": "scheduled" not in hidden_kinds, "helpers": helpers}
@@ -979,7 +1039,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             params += list(covered)
             if source == "api":
                 where.append(f"s.id NOT LIKE '{SPEAKEASY_PREFIX}%'")
-        else:
+        elif kinds is None:
             where.append("s.source != 'cron'")
         snippets: dict[str, str] = {}
         search_kind = None
@@ -995,7 +1055,8 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                 snippets.setdefault(tip, hits.get(sid, ""))
             if not snippets:
                 return {"sessions": [], "next_cursor": None, "filters": _filters(), "sources": sources,
-                        "automated": auto, "search": search_kind}
+                        "automated": auto, "search": search_kind,
+                        **({"kinds": _kind_list(kind_counts, kinds)} if kinds is not None else {})}
             where.append(f"s.id IN ({','.join('?' * len(snippets))})")
             params += list(snippets)
         if after is not None:
@@ -1005,7 +1066,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
         pins = sorted((sid for sid, m in marked.items() if m.get("pinned") and SAFE_ID_RE.fullmatch(sid)),
                       key=lambda sid: -float(marked[sid]["pinned"]))
         pin_rank = "0"
-        if pins and not archived:
+        if pins and not archived and kinds is None:
             # Pinned first (newest pin on top), then everything else by last activity. The cursor
             # pages only the unpinned rest: every pinned row comes on the first page.
             pin_rank = "(CASE s.id " + " ".join(f"WHEN '{sid}' THEN {i + 1}" for i, sid in enumerate(pins[:50])) + " ELSE 0 END)"
@@ -1056,15 +1117,24 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                 entry["run_ids"] = link.run_ids[:5]
             if snippets.get(sid):
                 entry["match"] = snippets[sid]
+            if sid in shown_now:
+                entry["on_now"] = True
             out.append(entry)
         next_cursor = f"{float(tail['last'] or 0)!r}|{tail['id']}" if tail is not None else None
         return {"sessions": out, "next_cursor": next_cursor, "filters": _filters(), "sources": sources,
-                "automated": auto, "search": search_kind}
+                "automated": auto, "search": search_kind,
+                **({"kinds": _kind_list(kind_counts, kinds)} if kinds is not None else {})}
     except sqlite3.Error as exc:
         logger.warning("speakeasy: history list failed (%s)", type(exc).__name__)
         raise HistoryError(502, "I couldn't read the Hermes history.") from None
     finally:
         db.close()
+
+
+def _kind_list(counts: dict[str, int], kinds: Sequence[str] | None) -> list[dict[str, Any]]:
+    """Earlier's filter menu: every kind in order, its label, how many it holds and whether it's on."""
+    on = set(kinds or DEFAULT_KINDS)
+    return [{"id": k, "label": KIND_LABELS[k], "count": int(counts.get(k, 0)), "on": k in on} for k in KINDS]
 
 
 def _source_counts(db: sqlite3.Connection, where: list[str], params: list[Any], mine: set[str]) -> list[dict[str, Any]]:

@@ -739,6 +739,7 @@ class Interaction:
     # Listening mode: the voice already responded from the room on this call (any leg of it).
     room_nudged: bool = False
     last_activity: float = dataclasses.field(default_factory=time.monotonic)
+    started_at: float = dataclasses.field(default_factory=time.time)  # wall clock, for Home's "From the earlier call"
     successor: "Interaction | None" = dataclasses.field(default=None, repr=False)
     # A later call (not a resume) that took on this ended or paused call's open tasks: their results,
     # approvals and follow-ups go there (head()), and carried_keys on it names the tasks it took on.

@@ -386,6 +386,11 @@ class StateStore:
                 client_id TEXT PRIMARY KEY, idem_key TEXT NOT NULL, page_session TEXT, text TEXT NOT NULL,
                 sent_at REAL NOT NULL, state TEXT NOT NULL, seen_at REAL, follow_up_run TEXT, updated REAL NOT NULL)""")
             self._db.execute("CREATE INDEX IF NOT EXISTS steered_messages_key ON steered_messages(idem_key, sent_at)")
+            # Home (now.py): an item the user put off ("Later"): off Home until *until* (epoch) or, with
+            # on_change, until the item's words change from *seen_sig*. woke_at: when it came back.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS later (
+                item_id TEXT PRIMARY KEY, until REAL, on_change INTEGER NOT NULL DEFAULT 0, seen_sig TEXT,
+                set_at REAL NOT NULL, woke_at REAL)""")
             # A send cut off by a reload: held again (at least once beats silently never).
             self._db.execute("UPDATE queued_messages SET state='queued' WHERE state='sending'")
             # The Hermes profile (agents.py) a chat ("session:<id>") or a new chat's first task
@@ -741,6 +746,51 @@ class StateStore:
             self._db.execute("INSERT INTO session_marks (session_id, read_at, updated) VALUES (?,?,?) "
                              "ON CONFLICT(session_id) DO UPDATE SET read_at=max(coalesce(read_at,0), excluded.read_at), "
                              "updated=excluded.updated", (session_id, now if at is None else at, now))
+
+    def mark_session_runs_seen(self, session_id: str, at: float | None = None) -> int:
+        """One read state (SPK-124): reading a conversation marks its finished tasks seen, the ones
+        that ran in it and the ones that continued it, settled up to *at* (default: all of them)."""
+        with self._lock, self._db:
+            cur = self._db.execute(
+                "UPDATE runs SET seen=1 WHERE coalesce(seen,0)=0 AND settled_at IS NOT NULL AND (session_id=? OR "
+                "idem_key IN (SELECT idem_key FROM history_links WHERE source_session=?)) AND settled_at <= ?",
+                (session_id, session_id, time.time() + 1 if at is None else at + 1))
+            return cur.rowcount
+
+    def now_runs(self, since: float, limit: int = 120) -> list[dict[str, Any]]:
+        """Home's candidates (now.py): every task that isn't finished, and every one that settled
+        since *since*, newest first, helpers (a task's own parts) left to the task they belong to."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT r.idem_key, r.run_id, r.status, r.created, r.settled_at, r.session_id, r.interaction_id, "
+                "coalesce(r.dismissed,0), coalesce(r.seen,0), r.set_aside, r.question_closed, r.answered, "
+                "r.failure, r.updated, h.source_session FROM runs r LEFT JOIN history_links h ON h.idem_key = r.idem_key "
+                "WHERE r.status != 'rejected' AND (r.settled_at IS NULL OR r.settled_at >= ? OR r.status NOT IN "
+                "('completed','failed','cancelled','interrupted')) ORDER BY r.rowid DESC LIMIT ?",
+                (since, limit)).fetchall()
+        names = ("key", "run_id", "status", "created", "settled_at", "session_id", "interaction_id", "dismissed",
+                 "seen", "set_aside", "question_closed", "answered", "failure", "updated", "linked_source")
+        return [dict(zip(names, r)) for r in rows]
+
+    def later_items(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute("SELECT item_id, until, on_change, seen_sig, set_at, woke_at FROM later").fetchall()
+        return {r[0]: {"until": r[1], "on_change": bool(r[2]), "seen_sig": r[3], "set_at": r[4], "woke_at": r[5]}
+                for r in rows}
+
+    def set_later(self, item_id: str, until: float | None, on_change: bool, seen_sig: str | None) -> None:
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO later (item_id, until, on_change, seen_sig, set_at, woke_at) "
+                             "VALUES (?,?,?,?,?,NULL)", (item_id, until, 1 if on_change else 0, seen_sig, time.time()))
+
+    def wake_later(self, item_id: str, at: float | None = None) -> None:
+        with self._lock, self._db:
+            self._db.execute("UPDATE later SET woke_at=? WHERE item_id=? AND woke_at IS NULL",
+                             (time.time() if at is None else at, item_id))
+
+    def clear_later(self, item_id: str) -> bool:
+        with self._lock, self._db:
+            return self._db.execute("DELETE FROM later WHERE item_id=?", (item_id,)).rowcount > 0
 
     def folded_sessions(self) -> dict[str, str]:
         """{Hermes session a linked task ran in: the chat it continues}. The history lists the chat once:
