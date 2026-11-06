@@ -24,18 +24,20 @@ def _task(store, key="k1", status="running", plan=None, milestones=(), error_kin
     return store.work(idem_key=key)
 
 
-def test_a_running_task_reports_its_start_and_step(store):
+def test_a_running_task_reports_its_start_never_a_plan_step(store):
+    # The opening plan is a handoff guess: at most "Started with", never a step number or a plan to tick.
     work = _task(store, plan=["Find PRs", "Read reviews", "Summarize"], milestones=["Started working", "Found 21 PRs"])
     assert work["started_at"] and abs(work["started_at"] - time.time()) < 5
     assert work["finished_at"] is None
-    assert (work["step_index"], work["step_count"]) == (2, 3)
+    assert (work["step_index"], work["step_count"]) == (None, None) and work["plan"] == []
+    assert work["started_with"] == "Find PRs; Read reviews; Summarize"
     assert work["eta_seconds"] is None                  # one step done is no basis for a guess
     assert work["failure_reason"] is None
 
 
-def test_a_finished_task_has_its_end_and_all_steps(store):
-    work = _task(store, status="completed", plan=["A", "B", "C"])
-    assert work["finished_at"] and work["step_index"] == work["step_count"] == 3
+def test_a_finished_task_has_its_end_and_no_step_counts(store):
+    work = _task(store, status="completed", plan=["Find PRs", "Read reviews", "Summarize"])
+    assert work["finished_at"] and work["step_index"] is None and work["step_count"] is None
 
 
 def test_no_plan_means_no_step_numbers(store):

@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import sqlite3
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import activity as activity_mod
+from . import live_status
 from .emails import canonical_json, draft_sha256
 from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
@@ -86,6 +88,7 @@ RECEIPTS = {"Request received", "Started working"}  # milestones that are receip
 PLUMBING = re.compile(r"^(?:Continuing in |Sent into |You added: |Moved to another task|Replaced by your correction|"
                       r"Taken back|Queued|Waiting for |Started in |Answer will land)")
 NOT_STARTED = {"admitting", "waiting_on_task"}
+logger = logging.getLogger(__name__)
 _PLAN_STOP = set("""a an the and or to of in on for with at by from is are be it its this that your my our me you we
 it's do does get go up out as""".split())
 # Words of a plan step that say nothing about the actual work ("Recall prior points", "Continue the
@@ -1488,7 +1491,7 @@ class StateStore:
         (``GET /voice/work/{run_id}``); otherwise the stream's smaller summary."""
         cols = """idem_key,run_id,status,updated,short_status,detail,progress_updated,
                   status_source,result_json,title,dismissed,summary,continued,settled_at,failure,shared,session_id,set_aside,seen,waiting,
-                  created,failure_hint,answered"""
+                  created,failure_hint,answered,authored_at"""
         with self._lock:
             if idem_key:
                 row = self._db.execute(f"SELECT {cols} FROM runs WHERE idem_key=?", (idem_key,)).fetchone()
@@ -1504,7 +1507,7 @@ class StateStore:
                 return None
             (key, actual_run_id, status, updated, short_status, detail, progress_updated,
              status_source, result_json, title, dismissed, summary, continued, settled_at, failure, shared,
-             session_id, set_aside, seen, waiting, created, failure_hint, answered) = row
+             session_id, set_aside, seen, waiting, created, failure_hint, answered, authored_at) = row
             events = self._db.execute(
                 "SELECT kind,text,created FROM work_events WHERE idem_key=? ORDER BY seq DESC LIMIT 30", (key,)).fetchall()
             if not created:  # saved before tasks kept their start time: the first thing recorded
@@ -1585,7 +1588,13 @@ class StateStore:
                 work["short_status"] = "Waiting for another task"
                 work["detail"] = f"Starts when \"{work['waiting']['name']}\" finishes (same project)."
                 work["status_source"] = "system"
-        work.update(job_progress(work["status"], created, settled_at, work["plan"], work["events"]))
+        # The opening plan is a guess made at handoff: never the progress indicator. It rides as
+        # ``started_with`` (a faint "Started with: ..." at most); ``plan`` and the step fields stay
+        # empty so no client draws "step 2 of 4" or a plan step as what it is doing now.
+        if work["plan"]:
+            work["started_with"] = notice_text("; ".join(work["plan"]), 160)
+        work["plan"] = []
+        work.update(job_progress(work["status"], created, settled_at, [], work["events"]))
         # One short plain sentence for a failed (or restart-interrupted) task, never "unknown".
         work["failure_reason"] = failure_reason(status, failure, failure_hint)
         why = public_failure(failure, self.hermes_home) if status == "failed" else None
@@ -1594,7 +1603,9 @@ class StateStore:
             # sentence for the detail. The provider's error text never reaches here.
             work["failure"] = why
         # Live activity (capability job_activity): activity, findings, touched, hero; each only when known.
-        work.update(activity_mod.public(self.activity_state(key), detail=activity_detail))
+        activity_state = self.activity_state(key)
+        work.update(activity_mod.public(activity_state, detail=activity_detail))
+        self._live_line(work, key, activity_state, created, authored_at, status_source, progress_updated, title)
         live = self.public_live_image(key)
         if live is not None:
             # Addressed by /voice/live-image/<run_id>; the path or URL stays on the server.
@@ -1614,6 +1625,47 @@ class StateStore:
             except ValueError:
                 pass
         return work
+
+    # -- the live line (live_status.py) -------------------------------------------------------
+    def _live_line(self, work: dict[str, Any], key: str, state: dict[str, Any] | None, created: float | None,
+                   authored_at: float | None, status_source: str | None, progress_updated: float | None,
+                   title: str | None) -> None:
+        """A running task's ``now_line`` / ``so_far`` from what it really did (live_status.py), and its
+        ``short_status`` / ``detail`` from them unless the task itself wrote a status recently. The
+        handoff guess ("Investigating the stopped task") stops reading as "now" after a minute."""
+        if work["status"] in TERMINAL or work["status"] in NOT_STARTED or work["status"] in {
+                "waiting_for_approval", "cancel_requested"} or work.get("queued_behind") or work.get("waiting"):
+            return
+        summarizer = getattr(self, "live_summarizer", None)
+        request = next((e["text"] for e in reversed(work["events"]) if e["kind"] == "request"), None) or title
+        on_ready = getattr(self, "live_publish", None)
+        try:
+            if summarizer is not None:
+                live = summarizer.line(key, state, request=request, started=created,
+                                       on_ready=(lambda: on_ready(key)) if on_ready else None)
+            else:
+                live = live_status.deterministic(state, now=time.time(), started=created)
+        except Exception:
+            logger.debug("speakeasy: live line failed", exc_info=True)
+            return
+        if not live or not live.get("now"):
+            return
+        work["now_line"] = live["now"]
+        if live.get("so_far"):
+            work["so_far"] = live["so_far"]
+        if live.get("quiet_s"):
+            work["quiet_s"] = live["quiet_s"]
+        now = time.time()
+        authored_fresh = (status_source == "authored" and authored_at is not None
+                          and now - authored_at < live_status.IDLE_AFTER_S and live["source"] != "idle")
+        if authored_fresh:
+            return  # the task's own words, just written, win over a summary of its steps
+        work["short_status"] = live["now"]
+        work["detail"] = live.get("so_far") or work.get("detail")
+        work["status_source"] = "tool"
+        work["updated_at"] = now if live["source"] != "idle" else work.get("updated_at")
+        if work.get("stale") and live["source"] == "activity":
+            work["stale"] = False  # it did something in the last two minutes: not unconfirmed
 
     # -- live activity (activity.py) ---------------------------------------------------------
     def set_activity(self, key: str, state: dict[str, Any]) -> None:

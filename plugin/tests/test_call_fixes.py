@@ -226,9 +226,11 @@ def test_plumbing_milestones_are_not_steps_done():
 def test_generic_plans_are_not_shown(st):
     _run(st, "k1", "s_other", "running", "I wasn't done", plan=["Recall prior points", "Continue the topic",
                                                                   "Add your input"])
-    assert st.work(idem_key="k1")["plan"] == []
+    assert st.work(idem_key="k1")["plan"] == [] and "started_with" not in st.work(idem_key="k1")
     _run(st, "k2", "s_other2", "running", "Fix the setup", plan=["Find the issue", "Fix and test", "Ship it"])
-    assert st.work(idem_key="k2")["plan"] == ["Find the issue", "Fix and test", "Ship it"]
+    # A concrete plan is only ever "Started with": never a list of steps to tick off.
+    assert st.work(idem_key="k2")["plan"] == []
+    assert st.work(idem_key="k2")["started_with"] == "Find the issue; Fix and test; Ship it"
 
 
 def test_unrelated_requests_in_one_chat_thread_are_separate_jobs(st):

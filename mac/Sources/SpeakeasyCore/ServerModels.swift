@@ -239,6 +239,11 @@ public struct WorkInfo: Equatable, Sendable {
     public var sessionID: String?
     /// The model doing (or that did) the work and how hard it thinks (servers with `model_choice`).
     public var model: ModelBadge?
+    /// A running task's live line from what it really did in the last couple of minutes (plugin
+    /// 0.3.36+, live_status.py): "Editing store.py and router.py", "Waiting on the tests · 4 min".
+    public var nowLine: String?
+    /// One growing recap of what it has done so far ("Read the code, edited 2 files, ran the tests").
+    public var soFar: String?
 
     /// The receipt for one "You added: …" step, if the api sent one.
     public func followUp(forStep text: String) -> FollowUp? { followUps.last { $0.milestone == text } }
@@ -300,6 +305,8 @@ public struct WorkInfo: Equatable, Sendable {
         job = JobRef(json: object["job"])
         sessionID = nonEmpty(object["session_id"])
         model = ModelBadge(json: object["model"])
+        nowLine = nonEmpty(object["now_line"])
+        soFar = nonEmpty(object["so_far"])
         setAside = object["set_aside"] as? Bool ?? false
         seen = object["seen"] as? Bool ?? false
         answered = object["answered"] as? Bool ?? false

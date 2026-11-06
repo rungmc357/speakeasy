@@ -914,14 +914,14 @@ def test_new_task_shows_what_it_was_handed_instead_of_a_bare_wait(server, servic
     assert task["detail"] == "Handed to Hermes: Write me a note summarizing the Portugal plans."
 
 
-def test_a_handed_off_task_gets_a_plan_for_its_progress_line(server, service, hermes):
+def test_a_handed_off_task_keeps_its_plan_only_as_started_with(server, service, hermes):
     service.rt.title_call = lambda request: "Plan Portugal trip"
     service.rt.plan_call = lambda request: ["Compare flights", "Draft itinerary", "Your review"]
     hermes.hold = True
     _, worker = start_call(server, service)
     worker.delegate("call_p", "plan me a long weekend in Portugal")
-    task = wait_for(lambda: [t for t in tasks(server) if t.get("plan")])[0]
-    assert task["plan"] == ["Compare flights", "Draft itinerary", "Your review"]
+    task = wait_for(lambda: [t for t in tasks(server) if t.get("started_with")])[0]
+    assert task["started_with"] == "Compare flights; Draft itinerary; Your review" and task["plan"] == []
 
 
 def test_plan_output_is_validated():

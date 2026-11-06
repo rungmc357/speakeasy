@@ -294,6 +294,11 @@ class VoiceService(SecureInputMixin):
         self._catalog_warming = threading.Lock()
         self.rt.choose_model = self.choose_model
         self.store.describe_model = self.describe_model
+        # A running task's live line (live_status.py): the side model words it at most every 40 s
+        # per task; a deterministic line from its steps otherwise. A fresh summary republishes.
+        from . import live_status as LS
+        self.store.live_summarizer = LS.Summarizer(self._live_summary_call)
+        self.store.live_publish = lambda key: self.publish_all(key)
         # Messages sent to a task by id (POST /voice/work/{id}/message): replies by client_id for
         # MESSAGE_REPLAY_S, and the voiceless worker for tasks whose call is gone.
         self._message_replies: dict[str, tuple[float, threading.Event, dict[str, Any] | None]] = {}
@@ -998,6 +1003,11 @@ class VoiceService(SecureInputMixin):
         if backend is not None and backend.run_id:
             return backend
         raise ServiceError(409, "run does not belong to this interaction")
+
+    @staticmethod
+    def _live_summary_call(messages: list[dict[str, str]]) -> str | None:
+        from .router import aux_call
+        return aux_call(messages, 8.0, 120)
 
     def publish_all(self, key: str | None = None) -> None:
         events = getattr(self, "history_events", None)
