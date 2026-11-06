@@ -17,7 +17,7 @@ goes through the call router. Which door it uses depends on who owns the session
   session without the reply going back to the chat (``/v1/runs`` refuses a foreign session; the
   chat-stream door and the gateway socket's viewer submit both deliver the reply to the platform),
   and Speakeasy never posts into a chat. Later messages from that page go to the same linked task.
-  The chat's page shows the linked task's messages after its own.
+  The chat's page shows the linked task's messages merged in by time (``merge_linked``).
 """
 from __future__ import annotations
 
@@ -86,6 +86,37 @@ _LOOKING_AT = re.compile(r"\s*\((?:[^():\n]{0,40}\bis looking at|following up)\s
 _VOICE_LINE = re.compile(r"^\s*Voice:[^\n]*(?:\n+|$)")
 _STATUS = re.compile(r"(?im)^[ \t]*STATUS:[ \t]*(.+?)[ \t]*$")
 _DETAIL = re.compile(r"(?im)^[ \t]*DETAIL:[ \t]*(.+?)[ \t]*$")
+# A voice report: "DONE: <what happened>" / "SPOKEN: <what the voice says>" lines. SPOKEN is the
+# person-facing sentence (it may run on over several lines until the next label).
+_REPORT_LABEL = re.compile(r"(?im)^[ \t]*(DONE|SPOKEN)[ \t]*:[ \t]*")
+_SPOKEN = re.compile(r"(?is)^[ \t]*SPOKEN[ \t]*:[ \t]*(.+?)(?=^[ \t]*(?:DONE|SPOKEN|STATUS|DETAIL)[ \t]*:|\Z)", re.M)
+
+# -- gateway plumbing on user rows (Discord, Telegram, ...) ------------------------------------
+_TRIGGER_NOTE = re.compile(r"\[Triggering message id:[^\]\n]{0,300}\]\s*", re.I)
+_MEMORY_CONTEXT = re.compile(r"(?s)<memory-context>.*?(?:</memory-context>|\Z)\s*")
+_ORIGIN_HEADER = re.compile(r"(?s)^\s*Gateway message origin \(JSON data[^\n]*\n(?:\s*```[a-z]*\n)?\s*\{.*?\}\s*(?:```\s*)?")
+_IMAGE_ATTACHED = re.compile(r"\[Image attached at:[^\]\n]{0,500}\]\s*", re.I)
+_NO_TEXT = re.compile(r"\(The user sent a message with no text content\)\s*", re.I)
+_SENDER_PREFIX = re.compile(r"^\s*\[[A-Za-z0-9_.\- ]{1,40}\]\s+(?=\S)")
+_INTERNAL_RES = (
+    (re.compile(r"\[IMPORTANT: Background process"), "Background job finished"),
+    (re.compile(r"\[ASYNC DELEGATION"), "Helpers finished"),
+    (re.compile(r"\[INTERNAL NOTIFICATION"), "Internal notification"),
+)
+
+
+def strip_gateway(content: str) -> str:
+    """A gateway user row without Hermes' wrappers: no triggering-message note, memory context,
+    origin header, image-path note, no-text placeholder or ``[sender]`` prefix."""
+    text = _MEMORY_CONTEXT.sub("", content or "")
+    text = _ORIGIN_HEADER.sub("", text)
+    text = _TRIGGER_NOTE.sub("", text)
+    text = _IMAGE_ATTACHED.sub("", text)
+    text = _NO_TEXT.sub("", text)
+    text = text.strip()
+    if not text.startswith(("[Voice request", "[SYSTEM", "[Cron")):
+        text = _SENDER_PREFIX.sub("", text, count=1)
+    return text.strip()
 _MD_MARKS = re.compile(r"(\*\*|__|~~|`+)")
 _MD_LEAD = re.compile(r"(?m)^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d{1,2}[.)]\s+)")
 _MD_LINK = re.compile(r"!?\[([^\]\n]{1,200})\]\([^)\s]{1,500}\)")
@@ -102,6 +133,9 @@ def assistant_text(text: str) -> str:
         rest = _DETAIL.sub("", _STATUS.sub("", out)).strip()
         said = " — ".join(m.group(1).strip().rstrip(".") for m in (status, detail) if m)
         out = (said + ("\n\n" + rest if rest else "")) if said else rest
+    if _REPORT_LABEL.search(out):
+        spoken = _SPOKEN.search(out)
+        out = spoken.group(1).strip() if spoken and spoken.group(1).strip() else _REPORT_LABEL.sub("", out)
     out = _VOICE_LINE.sub("", out, count=1)
     return out.strip()
 
@@ -189,6 +223,12 @@ def _one_line(text: str, limit: int = PREVIEW_CHARS) -> str:
 def user_words(content: str) -> tuple[str, str]:
     """(kind, text) for a user row: ``user`` with the person's words, or ``note`` for system rows
     (helper reports, summaries, deliveries) shown as a short label."""
+    if not isinstance(content, str):
+        return "user", ""
+    for pattern, label in _INTERNAL_RES:
+        if pattern.search(content[:4000]):
+            return "note", label
+    content = strip_gateway(content)
     for pattern, label in _SYSTEM_RES:
         if pattern.search(content[:4000]):
             return "note", label
@@ -228,6 +268,19 @@ def _title_from(row: sqlite3.Row, first_user: str | None) -> str:
     return "Untitled conversation"
 
 
+def snippet_text(snip: str) -> str:
+    """A search snippet as shown: the same cleaning as a message (no gateway wrappers, no voice-report
+    labels); an internal notification's snippet is left out."""
+    # A cut-off wrapper the snippet window started inside of ("…message id: `123` — use as …]").
+    snip = re.sub(r"^\s*…?[^\[\]\n]{0,200}(?:discord tools|reply/react/pin)[^\]\n]*\]\s*", "", snip or "")
+    snip = re.sub(r"^\s*…?[^<\n]{0,200}</memory-context>\s*", "", snip)
+    kind, text = user_words(snip)
+    if kind == "note":
+        return ""
+    text = _REPORT_LABEL.sub("", _STATUS.sub(r"\1", _DETAIL.sub(r"\1", text)))
+    return _one_line(preview_text(text, 200), 120)
+
+
 def _fts_query(q: str) -> str:
     words = [w for w in re.findall(r"[\w'’-]+", q) if w]
     return " ".join('"' + w.replace('"', "") + '"' for w in words[:8])
@@ -257,8 +310,7 @@ def _search_ids(db: sqlite3.Connection, q: str) -> tuple[dict[str, str], bool]:
                 rows = []
         for sid, snip in rows:
             if sid not in hits:
-                kind, text = user_words(str(snip or ""))
-                hits[sid] = _one_line(text if kind == "user" else "", 120) if not used_fts else _one_line(str(snip or ""), 120)
+                hits[sid] = snippet_text(str(snip or ""))
     try:
         for (sid,) in db.execute("SELECT id FROM sessions WHERE title LIKE ? OR display_name LIKE ? LIMIT 400",
                                  (f"%{q.strip()}%", f"%{q.strip()}%")):
@@ -718,6 +770,75 @@ def dedupe_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 last_text.pop("assistant", None)   # a new turn: the same answer again is a real answer
         out.append(e)
     return out
+
+
+def _units(entries: list[dict[str, Any]]) -> list[tuple[float, list[dict[str, Any]]]]:
+    """Entries as (time, [message, the untimed entries after it]): a tool group stays with the
+    message before it (one before any message takes the first message's time)."""
+    units: list[tuple[float, list[dict[str, Any]]]] = []
+    lead: list[dict[str, Any]] = []
+    for e in entries:
+        at = e.get("at")
+        if isinstance(at, (int, float)):
+            units.append((float(at), lead + [e]))
+            lead = []
+        elif units:
+            units[-1][1].append(e)
+        else:
+            lead.append(e)
+    if lead:
+        units.insert(0, (float("-inf"), lead))
+    return units
+
+
+def merge_linked(own: list[dict[str, Any]], linked: list[dict[str, Any]], *, lower: float | None,
+                 upper: float | None, note: str) -> list[dict[str, Any]]:
+    """A chat's page with what was said to it from Speakeasy (its linked tasks' entries) merged in by
+    time, so the page always ends with the newest activity. Only linked entries in this page's span
+    come in: ``lower`` <= at < ``upper`` (None: open-ended; the newest page has no upper bound and the
+    oldest no lower one), so each one shows on exactly one page. Each run of linked entries starts
+    with a small ``note`` (ids ``linked``, ``linked-2``, …)."""
+    lo = float("-inf") if lower is None else lower
+    hi = float("inf") if upper is None else upper
+    picked = [(at, items) for at, items in _units(linked) if lo <= at < hi]
+    if not picked:
+        return own
+    picked.sort(key=lambda u: u[0])  # stable: a linked session's own order on ties
+    # The chat's order is kept as written; each linked unit goes in before the first chat message
+    # newer than it (ties: the chat's first).
+    merged: list[tuple[int, list[dict[str, Any]]]] = []
+    i = 0
+    for at, items in _units(own):
+        while i < len(picked) and picked[i][0] < at:
+            merged.append((1, picked[i][1]))
+            i += 1
+        merged.append((0, items))
+    merged += [(1, items) for _, items in picked[i:]]
+    out: list[dict[str, Any]] = []
+    runs, prev = 0, 0
+    for origin, items in merged:
+        if origin == 1 and prev != 1:
+            runs += 1
+            out.append({"kind": "note", "id": "linked" if runs == 1 else f"linked-{runs}", "at": None, "text": note})
+        out += items
+        prev = origin
+    return out
+
+
+def message_time(state_db: Path, row_id: int | None) -> float | None:
+    """The timestamp of one message row (a page boundary), or None."""
+    if not row_id:
+        return None
+    db = _open(state_db)
+    if db is None:
+        return None
+    try:
+        row = db.execute("SELECT timestamp FROM messages WHERE id=?", (int(row_id),)).fetchone()
+        return float(row[0]) if row and isinstance(row[0], (int, float)) else None
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
 
 
 # -- continuing a chat Speakeasy can't write into ------------------------------------------------

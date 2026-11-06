@@ -1,7 +1,7 @@
 name: speakeasy
 label: Speakeasy
 kind: platform
-version: 0.3.34
+version: 0.3.35
 # Oldest Hermes with every API Speakeasy uses (secret scope + home override, env reader/writer,
 # credential pool, platform/CLI registration); the plugin suite passes against it.
 requires_hermes: ">=0.22.0"
