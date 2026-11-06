@@ -73,7 +73,7 @@ final class DemoHistoryBackend: HistoryBackend {
     func page(_ query: HistoryQuery) async throws -> HistoryPage {
         var all = sessions
         if let source = query.source { all = all.filter { HistorySources.filterID(for: $0.source) == source || $0.source == source } }
-        else if query.hideAutomated { all = all.filter { !$0.automated } }
+        else { all = all.filter { query.shown.lists($0) } }
         let q = query.q.lowercased()
         if !q.isEmpty {
             all = all.compactMap { s in
@@ -86,13 +86,12 @@ final class DemoHistoryBackend: HistoryBackend {
         let slice = Array(all.dropFirst(start).prefix(query.limit))
         let next = start + slice.count < all.count ? String(start + slice.count) : nil
         let counts = Dictionary(grouping: sessions.compactMap { HistorySources.filterID(for: $0.source) }, by: { $0 }).mapValues(\.count)
-        let automated = sessions.filter(\.automated).count
         return HistoryPage(sessions: slice, nextCursor: next, filters: HistoryList.defaultFilters,
                            sources: HistoryList.defaultFilters.compactMap { f in
-                               guard !(query.hideAutomated && ["kanban", "scheduled"].contains(f.id)) else { return nil }
+                               guard !query.shown.hides(filter: f.id) else { return nil }
                                return counts[f.id].map { HistorySourceCount(source: f.id, count: $0) }
                            },
-                           automated: HistoryAutomated(count: automated, hidden: query.hideAutomated))
+                           automated: query.shown.facet(for: sessions))
     }
 
     func conversation(_ sessionID: String) async throws -> HistoryConversation {
@@ -178,7 +177,7 @@ enum DemoHistory {
             var row: [String: Any] = ["id": id, "title": title, "source": source, "source_label": label, "last_activity": last,
                                       "preview": preview, "state": state, "pinned": pinned, "unread": unread,
                                       "run_ids": jobs.compactMap { $0["run_id"] as? String }]
-            if source == "kanban" || source == "cron" { row["automated"] = true }
+            if source == "kanban" || source == "cron" || source == "subagent" { row["automated"] = true }
             sessions.append(HistorySession(json: row)!)
             var full = row
             full["entries"] = entries; full["jobs"] = jobs; full["approvals"] = approvals; full["has_more"] = more
@@ -186,6 +185,13 @@ enum DemoHistory {
             full.merge(extra) { $1 }
             convs[id] = HistoryConversation(json: ["session": full])
         }
+
+        // A background helper a task started (listed only when the filter menu turns helpers on).
+        add("s_helper", "Measure the lantern glass", "subagent", "Helper", ago(18),
+            "The glass is 6 in tall and 3.5 in across.", entries: [
+                user("m1", ago(19), "Measure the lantern glass and report the height and width in inches."),
+                bot("m2", ago(18), "The glass is 6 in tall and 3.5 in across."),
+            ])
 
         // A Kanban board worker, running: its card as the header, its own updates as messages.
         let k0 = ago(26)
@@ -525,8 +531,9 @@ enum HistoryShots {
                 c.window?.setContentSize(NSSize(width: 1040, height: 720))
                 store.open("s_long")
             }
+            let shownBefore = HistoryAutomation.shown
             await shot("16-board-worker") {
-                store.setHideAutomated(false)
+                store.setShown(HistoryShown.standard)
                 c.window?.setContentSize(NSSize(width: 1040, height: 720))
                 store.open("s_board")
             }
@@ -534,12 +541,21 @@ enum HistoryShots {
                 store.openSections = ["s_board_done|m1|instructions"]
                 store.open("s_board_done")
             }
-            await shot("18-automated-hidden") {
-                store.setHideAutomated(true)
-                try? await Task.sleep(nanoseconds: 300_000_000)
+            await shot("18-automated-filter") {
+                store.openSections = []
                 store.open("s_flaky")
             }
-            store.setHideAutomated(false)
+            // The menu open: an NSMenu is its own window, so draw the window and the menu together.
+            if only == nil || only == "19-automated-filter-menu" {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                Self.shootMenu(c, to: "\(dir)/19-automated-filter-menu.png")
+            }
+            await shot("20-automated-filter-changed") {
+                store.setShown(HistoryShown(kanban: false, scheduled: true, helpers: true))
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                store.open("s_helper")
+            }
+            store.setShown(HistoryShown.standard)
             await shot("19-two-questions") { store.open("s_porch") }
             await shot("20-question-reply") {
                 store.open("s_porch")
@@ -553,8 +569,61 @@ enum HistoryShots {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 if let c = store.conversations["s_porch"], let w = store.thread(c).waiting.first { store.dismiss(w) }
             }
+            HistoryAutomation.shown = shownBefore
             exit(0)
         }
+    }
+
+    /// Click the filter icon's menu button and, while its menu is open, draw the window with the menu
+    /// over it into one image (a menu is its own window, which the window snapshot can't see); then
+    /// close the menu. Logs to stderr (unbuffered) so a stuck run still says how far it got.
+    static func shootMenu(_ c: HistoryWindowController, to path: String) {
+        func log(_ s: String) { FileHandle.standardError.write(Data(("history shot " + s + "\n").utf8)) }
+        guard let root = c.window?.contentView else { return }
+        func popUps(_ v: NSView) -> [NSView] {
+            (v is NSPopUpButton || String(describing: type(of: v)).contains("PopUp") ? [v] : []) + v.subviews.flatMap(popUps)
+        }
+        // SwiftUI's borderless menus are pop-up buttons; the filter icon is the one at the far end
+        // of the sidebar's filter row (the sources menu is at its start).
+        let candidates = popUps(root)
+        for p in candidates { log("candidate \(type(of: p)) \(p.convert(p.bounds, to: nil))") }
+        guard let target = candidates.max(by: { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX }) else {
+            log("FAILED 19-automated-filter-menu: no button"); return
+        }
+        let windowsBefore = Set(NSApp.windows.map(\.windowNumber))
+        let menu = (target as? NSPopUpButton)?.menu
+        let timer = Timer(timeInterval: 0.8, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                defer { menu?.cancelTracking() }
+                guard let window = c.window, let view = window.contentView,
+                      let base = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+                view.cacheDisplay(in: view.bounds, to: base)
+                let out = NSImage(size: view.bounds.size)
+                out.lockFocus()
+                base.draw(in: NSRect(origin: .zero, size: view.bounds.size))
+                for w in NSApp.windows where !windowsBefore.contains(w.windowNumber) && w.isVisible {
+                    guard let mv = w.contentView?.superview ?? w.contentView,
+                          let rep = mv.bitmapImageRepForCachingDisplay(in: mv.bounds) else { continue }
+                    mv.cacheDisplay(in: mv.bounds, to: rep)
+                    let f = window.convertFromScreen(w.frame)
+                    NSGraphicsContext.saveGraphicsState()
+                    NSBezierPath(roundedRect: f.insetBy(dx: 1, dy: 1), xRadius: 9, yRadius: 9).addClip()   // the menu's own corners
+                    rep.draw(in: f)
+                    NSGraphicsContext.restoreGraphicsState()
+                    log("menu window \(type(of: w)) \(w.frame)")
+                }
+                out.unlockFocus()
+                if let tiff = out.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: path))
+                    log("19-automated-filter-menu")
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        log("clicking \(type(of: target))")
+        if let button = target as? NSButton { button.performClick(nil) } else { _ = target.accessibilityPerformPress() }
+        log("menu closed")
     }
 
     /// A popover's content on its own (popovers are separate windows the main snapshot can't see).
