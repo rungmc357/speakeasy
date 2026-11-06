@@ -718,6 +718,9 @@ private struct BehaviorSettings: View {
                 JobModelSection(load: { try await (api.models(), api.jobModelDefaults()) },
                                 save: { try await api.setJobModelDefaults($0) })
             }
+            if app.status?.capabilities?.agents == true, let api = app.api {
+                AgentAllowSection(load: { try await api.agents() }, save: { try await api.setAllowedAgents($0) })
+            }
             Section("Task routing") {
                 Text(app.status?.routingExplainer ?? routingExplainerFallback)
                     .font(.callout).foregroundStyle(.secondary)
@@ -1220,6 +1223,59 @@ struct JobModelSection: View {
     }
 }
 
+// MARK: Agents: which Hermes profiles new chats may use
+
+/// "Agents" (settings `agents.allowed`; servers with `agents`): a switch per Hermes profile on this
+/// computer. Any switched on adds the agent chip to New chat on every device; none = no chip.
+struct AgentAllowSection: View {
+    var load: () async throws -> AgentRoster
+    var save: ([String]) async throws -> Void
+    @State private var roster: AgentRoster?
+    @State private var allowed: [String] = []
+    @State private var error: String?
+
+    var body: some View {
+        Section("Agents") {
+            if let roster {
+                if roster.others.isEmpty {
+                    Text("New chats talk to \(roster.ownAgent?.name ?? "Hermes"). If you set up more Hermes profiles (each its own agent, with its own memory, skills and model), you can let Speakeasy use them here.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    LabeledContent("Main agent", value: roster.ownAgent?.name ?? "Hermes")
+                    ForEach(roster.others) { agent in
+                        Toggle(isOn: Binding(get: { allowed.contains(agent.id) }, set: { on in
+                            if on { if !allowed.contains(agent.id) { allowed.append(agent.id) } }
+                            else { allowed.removeAll { $0 == agent.id } }
+                            commit()
+                        })) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(agent.name)
+                                if let d = agent.description { Text(d).font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
+                        .accessibilityIdentifier("settings-agent-\(agent.id)")
+                    }
+                    Text(error ?? "The ones you switch on show in a chip at the top of New chat, on the Mac, iPhone and iPad. A chat stays with the agent it started on and runs on that agent's own model.")
+                        .font(.caption).foregroundStyle(error == nil ? Color.secondary : BrandPalette.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                LabeledContent("Agents", value: error ?? "Loading…")
+            }
+        }
+        .task {
+            do { let r = try await load(); roster = r; allowed = r.allowed.filter { id in r.others.contains { $0.id == id } } }
+            catch { self.error = "Couldn't load your agents: \(error.localizedDescription)" }
+        }
+    }
+
+    private func commit() {
+        let value = allowed
+        error = nil
+        Task { do { try await save(value) } catch { self.error = "Couldn't save: \(error.localizedDescription)" } }
+    }
+}
+
 // MARK: On calls
 
 /// "Pause a quiet call" and "End a call after" (the same choices as the iPhone's Settings › On calls).
@@ -1255,6 +1311,29 @@ struct CallLimitsSection: View {
 enum CallLimitsSnapshot {
     static func run(dir: String) {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["SETTINGS_SHOT"] == "agents" {
+            if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
+                NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
+            }
+            var sample = AgentRoster.sample
+            sample.allowed = ["research-desk", "garden"]
+            let host = NSHostingController(rootView: Form {
+                AgentAllowSection(load: { sample }, save: { _ in })
+            }.formStyle(.grouped).frame(width: 560, height: 300))
+            let window = NSWindow(contentViewController: host)
+            window.setContentSize(NSSize(width: 560, height: 300))
+            window.makeKeyAndOrderFront(nil)
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                if let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/mac-settings-agents.png"))
+                    print("snapshot mac-settings-agents")
+                }
+                exit(0)
+            }
+            return
+        }
         if ProcessInfo.processInfo.environment["SETTINGS_SHOT"] == "jobs" {
             if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
                 NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)

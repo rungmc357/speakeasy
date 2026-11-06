@@ -27,6 +27,8 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
     public var unread: Bool
     /// Archived in Hermes (listed only under the Archived filter).
     public var archived: Bool
+    /// Servers with `agents`: the Hermes profile this chat talks to, when it isn't Speakeasy's own.
+    public var agent: AgentInfo?
 
     public init(id: String, title: String, source: String, sourceLabel: String, lastActivity: Date?,
                 preview: String = "", state: State = .idle, runIDs: [String] = [], match: String? = nil,
@@ -47,6 +49,7 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
                   runIDs: (o["run_ids"] as? [Any] ?? []).compactMap { nonEmpty($0) },
                   match: nonEmpty(o["match"]), pinned: o["pinned"] as? Bool ?? false,
                   unread: o["unread"] as? Bool ?? false, archived: o["archived"] as? Bool ?? false)
+        agent = AgentInfo(json: o["agent"])
     }
 
     /// The deep link that opens this conversation in any Speakeasy app.
@@ -272,6 +275,9 @@ public struct HistoryConversation: Equatable, Sendable {
     /// Archived in Hermes (the page offers Unarchive) / pinned on any device.
     public var archived = false
     public var pinned = false
+    /// Servers with `agents`: the Hermes profile this chat talks to, when it isn't Speakeasy's own
+    /// (it runs on that agent's own model, so the model chip doesn't apply).
+    public var agent: AgentInfo?
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
@@ -298,6 +304,7 @@ public struct HistoryConversation: Equatable, Sendable {
                   modelChoice: ModelChoice(json: o["model_choice"]))
         archived = o["archived"] as? Bool ?? false
         pinned = o["pinned"] as? Bool ?? false
+        agent = AgentInfo(json: o["agent"])
     }
 
     /// The ONE job whose question (a decision card) waits on the user, as the plugin decides it

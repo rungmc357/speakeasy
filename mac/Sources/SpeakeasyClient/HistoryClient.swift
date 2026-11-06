@@ -13,10 +13,13 @@ extension ServerClient {
     /// New chat: `POST /voice/work` with the first message (its own job and Hermes session, never
     /// routed). The route takes `source: "typed"`; a voice message's reviewed transcript goes as that.
     /// Returns the new task's run id (its session lists it in `run_ids`).
-    public func startChat(text: String, clientID: String = UUID().uuidString, choice: ModelChoice? = nil) async throws -> String? {
+    public func startChat(text: String, clientID: String = UUID().uuidString, choice: ModelChoice? = nil,
+                          agent: String? = nil) async throws -> String? {
         guard let clean = TaskMessageRequest.clean(text) else { throw HTTPError(status: 400, message: "The message is empty.") }
         var body: [String: Any] = ["text": clean, "source": "typed", "client_id": clientID]
-        if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
+        if let agent {
+            body["agent"] = agent   // another agent runs on its own model: no model fields
+        } else if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
         let reply = try await post("/voice/work", body)
         guard reply["ok"] as? Bool == true else {
             throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't start that.")
