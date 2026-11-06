@@ -262,6 +262,16 @@ class GrokRelayWorker(SidebandWorker):
             return TYPED_SENT
         return TYPED_NOT_DELIVERED if self.call_connected() else TYPED_NOT_CONNECTED
 
+    async def forward_typed_work(self, note: str) -> str:
+        """A typed message with pictures or files, whose work the plugin starts itself: a silent
+        system note; typed_recorded then asks for the voice's short acknowledgement."""
+        if not self.call_connected():
+            return TYPED_NOT_CONNECTED
+        if await self._send_json({"type": "conversation.item.create", "item": {
+                "type": "message", "role": "system", "content": [{"type": "input_text", "text": note}]}}):
+            return TYPED_SENT
+        return TYPED_NOT_DELIVERED if self.call_connected() else TYPED_NOT_CONNECTED
+
     def typed_offset(self) -> int:
         return self.now_ms()
 

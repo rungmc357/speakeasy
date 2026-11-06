@@ -166,6 +166,25 @@ def typed_text(text: str) -> str:
     return " ".join(_CONTROL_CHARS_RE.sub(" ", text).split())
 
 
+# Lead-ins a voice puts before reading the user's words back ("Also, <their words>.").
+_SAID_BACK_LEADS = {"also", "and", "okay", "ok", "so", "right", "got", "it", "you", "said", "typed", "noted"}
+
+
+def said_back(typed: str, said: str) -> bool:
+    """Is a voice line only the user's typed words read back? Only when the line's words, after any
+    short lead-in ("Also,", "Okay, so"), are exactly the typed words: same words, same order, nothing
+    added or dropped (case and punctuation aside). Never by similarity: hiding a line loses it, and a
+    near match is often a real reply ("the front door is locked" answering "is the front door
+    locked") or a correction that changes one word ("heater off" vs "heater on")."""
+    a = _words(typed).replace("'", "").split()
+    b = _words(said).replace("'", "").split()
+    if not a or not b:
+        return False
+    while b and b[0] in _SAID_BACK_LEADS and b[0] not in a[:1]:
+        b = b[1:]
+    return b == a
+
+
 def is_greeting(request: str) -> bool:
     return bool(GREETING_RE.match(request or ""))
 
@@ -207,6 +226,14 @@ def task_session_id(idem: str) -> str:
 LOCAL_RUN_PREFIX = "lr_"   # ids for tasks Hermes ran without a run id (thread tasks)
 EARLY_PREFIX = "early_"    # handoffs for words said while the call was still connecting
 EARLY_MAX_CHARS = 1000
+# A message typed on the call screen with pictures or files: the plugin starts its work itself (the
+# voice can't see them, and a typed turn alone never reliably becomes a handoff on every voice).
+TYPED_WORK_PREFIX = "typedwork_"
+# How long after a typed turn a handoff that arrives with no words of its own (Codex only carries
+# what was spoken) is taken to be about that turn, and the voice repeating it is caught.
+TYPED_HANDOFF_S = 20.0
+# Held background notes about what is shared on the call (quiet() keys).
+SHARE_NOTE_KEY = "share:"
 # A turn typed on the call screen instead of spoken (POST /voice/interactions/{id}/input-text).
 INPUT_TEXT_TYPE = "session.input_text"
 MAX_INPUT_TEXT = 1000
@@ -1197,6 +1224,10 @@ class SidebandWorker:
         # immediate "no, the X one" moves it).
         self.silent_ids: set[str] = set()
         self.typed: list[dict[str, Any]] = []
+        # Turns typed on this call's screen, newest last: {"text", "at", "started"} where started says
+        # the plugin already started the work (a message with pictures). Used to fill a handoff that
+        # came with no words and to drop the voice saying the typed words back as its own line.
+        self.recent_typed: deque[dict[str, Any]] = deque(maxlen=8)
         self.last_routed: dict[str, Any] | None = None
         self.route_said: dict[str, float] = {}  # task id -> when the voice last said a follow-up went there
         interaction.worker = self
@@ -1899,7 +1930,8 @@ class SidebandWorker:
         target = head.worker if head is not self.interaction else self
         if target is None or target is not self and not target.call_connected():
             return
-        if delegation_id and (delegation_id.startswith(EARLY_PREFIX) or messages_mod.is_message_id(delegation_id)):
+        if delegation_id and (delegation_id.startswith((EARLY_PREFIX, TYPED_WORK_PREFIX))
+                              or messages_mod.is_message_id(delegation_id)):
             delegation_id = None  # the provider never issued this handoff: say it session-wide
         if kind == "session.thinking.append" and self.quiet_notes:
             held = self.take_quiet_notes()
@@ -2134,7 +2166,11 @@ class SidebandWorker:
         TYPED_NOT_CONNECTED / TYPED_NOT_DELIVERED, and then nothing is recorded. A failed send is this
         send's outcome only: it never marks the call (interaction.error, the connection) as broken,
         so the next send on a healthy call goes through. ``client_id`` (the app's id for this turn)
-        rides on the SSE copy so the sending app can tell it from its own local echo."""
+        rides on the SSE copy so the sending app can tell it from its own local echo.
+
+        Pictures or files waiting on the call go with this message as ONE request: the plugin starts
+        the work itself with them attached, and the voice is only told to acknowledge it (it can't see
+        them, and a typed turn alone doesn't reliably become a handoff)."""
         if not isinstance(text, str):
             return TYPED_NOT_DELIVERED
         text = typed_text(text)
@@ -2142,7 +2178,14 @@ class SidebandWorker:
             return TYPED_NOT_DELIVERED
         if not self.call_connected():
             return TYPED_NOT_CONNECTED
-        outcome = await self.forward_typed(text)
+        waiting = self.interaction.attachments.pending()
+        if waiting:
+            pictures = sum(1 for a in waiting if a.kind == "picture")
+            files = len(waiting) - pictures
+            self.quiet_notes.pop(SHARE_NOTE_KEY + "pending", None)  # they go with this message now
+            outcome = await self.forward_typed_work(P.typed_work_note(self.names, text, pictures, files)[:2000])
+        else:
+            outcome = await self.forward_typed(text)
         if outcome != TYPED_SENT:
             return outcome
         self.touch()
@@ -2154,9 +2197,55 @@ class SidebandWorker:
         if client_id:
             event["client_id"] = client_id
         self.interaction.feed.publish("transcript", event)
-        logger.info("speakeasy: typed turn on the call (%d chars)", len(text))
+        self.recent_typed.append({"text": text, "at": time.monotonic(), "started": bool(waiting)})
+        logger.info("speakeasy: typed turn on the call (%d chars%s)", len(text),
+                    f", {len(waiting)} attached" if waiting else "")
         await self.typed_recorded()
+        if waiting:
+            self.start_typed_work(text)
         return TYPED_SENT
+
+    def start_typed_work(self, text: str) -> str:
+        """A typed message that carries pictures or files becomes work now, with them attached: they
+        are claimed for it at once (anything added after Send waits for the next request) and the
+        talk/fragment gates are skipped, since the words are about what was attached."""
+        delegation_id = TYPED_WORK_PREFIX + secrets.token_hex(8)
+        self.delegations.add(delegation_id)
+        self.interaction.attachments.bind_pending(delegation_id)
+        if getattr(self, "force_work", None) is None:
+            self.force_work = set()
+        self.force_work.add(delegation_id)
+        context = self.context(1 << 62)
+        if not context.endswith(f"User: {text}"):
+            context = (context + "\n" if context else "") + f"User: {text}"
+        self.publish()  # the app shows them as on their way
+        self.schedule_dispatch(delegation_id, context)
+        return delegation_id
+
+    def typed_handoff_words(self) -> str | None:
+        """The words of the newest typed turn a wordless handoff can be about: typed within
+        TYPED_HANDOFF_S, not already started by the plugin, not used by an earlier handoff."""
+        if not self.recent_typed:
+            return None
+        entry = self.recent_typed[-1]
+        if time.monotonic() - entry["at"] > TYPED_HANDOFF_S or entry["started"] or entry.get("used"):
+            return None
+        entry["used"] = True
+        return entry["text"]
+
+    def typed_said_back(self, said: str) -> bool:
+        """Is this voice line only the user's typed words read back ("Also, <what they typed>.")? Then
+        it is never shown or recorded as the assistant's reply."""
+        now = time.monotonic()
+        return any(now - entry["at"] <= TYPED_HANDOFF_S and said_back(entry["text"], said)
+                   for entry in self.recent_typed)
+
+    def typed_work_echo(self, request: str) -> bool:
+        """A handoff of the words of a typed message whose work the plugin already started."""
+        now = time.monotonic()
+        return any(entry["started"] and now - entry["at"] <= TYPED_HANDOFF_S
+                   and (said_back(entry["text"], request) or _words(request) == _words(entry["text"]))
+                   for entry in self.recent_typed)
 
     # GPT-Live's sideband takes no user text, only `session.thinking.append` and
     # `session.commentary.append`. A typed turn goes in as commentary, not thinking. From the code:
@@ -2175,6 +2264,16 @@ class SidebandWorker:
         if not self.call_connected():
             return TYPED_NOT_CONNECTED
         if await self.send_typed_note(self.TYPED_TURN_KIND, P.typed_turn_note(self.names, text)[:2000]):
+            return TYPED_SENT
+        return TYPED_NOT_DELIVERED if self.call_connected() else TYPED_NOT_CONNECTED
+
+    async def forward_typed_work(self, note: str) -> str:
+        """Tell the voice that a typed message with pictures or files was sent and its work is
+        starting (``typed_work_note``): it acknowledges and never hands it off again. GPT-Live: the
+        typed-turn channel. Providers whose spoken channel reads text out verbatim override this."""
+        if not self.call_connected():
+            return TYPED_NOT_CONNECTED
+        if await self.send_typed_note(self.TYPED_TURN_KIND, note):
             return TYPED_SENT
         return TYPED_NOT_DELIVERED if self.call_connected() else TYPED_NOT_CONNECTED
 
@@ -2208,6 +2307,15 @@ class SidebandWorker:
         if loop is None or not worker.call_connected():
             return
         asyncio.run_coroutine_threadsafe(worker._send(kind, None, content[:2000]), loop)
+
+    def quiet_from_thread(self, key: str, content: str) -> None:
+        """From HTTP threads: background the voice should know but never answer (``quiet``)."""
+        head = self.interaction.head()
+        worker = head.worker or self
+        loop = worker.loop
+        if loop is None or not worker.call_connected():
+            return
+        asyncio.run_coroutine_threadsafe(worker.quiet(key, None, content[:2000]), loop)
 
     # -- spoken acknowledgement and progress -------------------------------------------------
     def assistant_spoke_since(self, since: float) -> bool:
@@ -2599,6 +2707,9 @@ class SidebandWorker:
             await self._handoff_failed(delegation_id, revision, exc)
         finally:
             self.handoff_rooms.pop(delegation_id, None)  # this handoff's work is over (or never started)
+            if delegation_id.startswith(TYPED_WORK_PREFIX) and delegation_id not in self.releasing:
+                # It claimed the call's pictures at Send; any no run took go back to the tray.
+                self.finish_shared(delegation_id)
 
     async def settle(self, request: str) -> str:
         """Wait SETTLE_S after the handoff; every new user turn in that time restarts the wait (up to
@@ -3064,6 +3175,12 @@ class SidebandWorker:
             # The voice handed off what the user typed to a task (it only heard it in a note): sent already.
             await self._drop(delegation_id, revision, "Already sent to the task", None)
             return
+        if not delegation_id.startswith(TYPED_WORK_PREFIX) and self.typed_work_echo(last_request):
+            # A typed message with pictures already started its own work: the voice handing the same
+            # words off again would start a twin without the pictures.
+            logger.info("speakeasy: the voice handed off a typed message that already started; not started twice")
+            await self._drop(delegation_id, revision, "Added to the previous request", None)
+            return
         if self.last_routed is not None and await messages_mod.retarget(self, delegation_id, revision,
                                                                         last_request, marked):
             return  # "no, the dashboard one" right after a follow-up: moved there, not a new task
@@ -3249,6 +3366,10 @@ class SidebandWorker:
                 # What's on screen is its own line in the task's turn, never part of the user's words
                 # (a misheard title appended there became a "fact" in the next summary).
                 self.__dict__.setdefault("screen_notes", {})[delegation_id] = focus.detail
+        if part.kind == router.IGNORE and (delegation_id.startswith(TYPED_WORK_PREFIX)
+                                           or self.interaction.attachments.bound(delegation_id)):
+            # A short note under a picture ("this", "broken again") is about the picture: it's work.
+            part = router.Part(router.NEW, part.request or last_request)
         if part.kind == router.IGNORE:
             self.handoff_at.pop(delegation_id, None)
             if delegation_id.startswith(EARLY_PREFIX):
@@ -3852,7 +3973,8 @@ class SidebandWorker:
         call that can share: elsewhere "this page" is never theirs). A short reply to a question just
         asked takes that question's capture (``keep_capture``); anything else gets a capture of its own."""
         attachments = self.interaction.attachments
-        bound = attachments.bind_pending(delegation_id)
+        # A typed message with pictures claimed them when it was sent (start_typed_work).
+        bound = attachments.bind_pending(delegation_id) or attachments.bound(delegation_id)
         refs = bool(attachments.declared) and router.refers_to_screen(request)
         self.share_refs[delegation_id] = refs
         answers = len(request.split()) <= KEPT_ANSWER_WORDS and not refs  # "Just keep it with me"
@@ -4038,7 +4160,7 @@ class SidebandWorker:
         capture that was due didn't go. It never hears names, contents or bytes."""
         capture = shared.capture
         if shared:
-            await self.append("session.thinking.append", base, P.shared_note(
+            await self.quiet(SHARE_NOTE_KEY + "sent", base, P.shared_note(
                 capture.app if capture else None, capture is not None, len(shared.pictures), len(shared.files)))
         if capture is not None and not self.share_refs.get(base) and not self.capture_announced:
             self.capture_announced = True

@@ -313,7 +313,9 @@ def test_codex_gets_one_append_text_with_role_user(server, codex_call):
     status, body = typed(server, interaction.interaction_id, turn("Turn on the den  lights"))
     assert status == 200, body
     appends = [p for m, p in transport.requests if m == "thread/realtime/appendText"]
-    assert appends == [{"threadId": "thr_fake", "text": "Turn on the den lights", "role": "user"}]
+    # A developer cue first (treat it as said, never read it back), then the words as the user's turn.
+    assert [p["role"] for p in appends] == ["developer", "user"]
+    assert appends[1] == {"threadId": "thr_fake", "text": "Turn on the den lights", "role": "user"}
     assert worker.turns() == [{"role": "user", "text": "Turn on the den lights"}]
     assert typed_events(interaction) == [{"role": "user", "text": "Turn on the den lights", "source": "typed"}]
 
