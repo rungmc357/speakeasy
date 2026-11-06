@@ -9,18 +9,26 @@ import SpeakeasyCore
 /// Persisted, so a relaunch mid-send neither resurrects a dismissed card nor forgets a pick.
 @MainActor
 public final class PendingPicks: ObservableObject {
-    public static let shared = PendingPicks()
+    /// The app's store. Inside a unit-test run every caller gets its own unsaved store, so one
+    /// test's picks never leak into the next (tests that check sharing pass one store around).
+    public static var shared: PendingPicks {
+        if isUnitTestRun { return PendingPicks(defaults: nil) }
+        return app
+    }
+    private static let app = PendingPicks()
+    private nonisolated static let isUnitTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     public nonisolated static let defaultsKey = "speakeasy.pendingPicks"
 
     @Published public private(set) var store: PickStore
-    private let defaults: UserDefaults
+    private let defaults: UserDefaults?
     private let key: String
 
-    public init(defaults: UserDefaults = .standard, key: String = PendingPicks.defaultsKey) {
+    /// `defaults` nil: kept in memory only.
+    public init(defaults: UserDefaults? = .standard, key: String = PendingPicks.defaultsKey) {
         self.defaults = defaults; self.key = key
-        store = PickStore.load(defaults, key: key)
+        store = defaults.map { PickStore.load($0, key: key) } ?? PickStore()
         // The old per-surface answer store is retired: the server records every answer now.
-        defaults.removeObject(forKey: "speakeasy.questionAnswers")
+        defaults?.removeObject(forKey: "speakeasy.questionAnswers")
     }
 
     public subscript(id: String) -> PickStore.Entry? { store[id] }
@@ -54,6 +62,6 @@ public final class PendingPicks: ObservableObject {
     private func commit(_ next: PickStore) {
         guard next != store else { return }
         store = next
-        store.save(defaults, key: key)
+        if let defaults { store.save(defaults, key: key) }
     }
 }
