@@ -133,20 +133,24 @@ public struct SessionTaskLayout: Equatable, Sendable {
 
 /// The words of a finished task's quiet line.
 public enum TaskLineCopy {
-    /// "Fixed the login redirect · 9:41 PM" (failed/stopped tasks say so).
+    /// "Fixed the login redirect · Done 9:41 PM" ("Didn't finish 9:41 PM" / "Stopped 9:41 PM").
     public static func line(_ job: WorkInfo, now: Date = Date(), calendar: Calendar = .current,
                             locale: Locale = .current) -> String {
         let name = (job.title ?? job.summary ?? job.request ?? "Task").trimmingCharacters(in: .whitespacesAndNewlines)
-        var parts = [name]
+        return [name, outcome(job, now: now, calendar: calendar, locale: locale)].joined(separator: " · ")
+    }
+
+    /// "Done 9:05 PM", "Didn't finish 9:05 PM", "Stopped Tue 9:05 PM" (just the word with no time).
+    public static func outcome(_ job: WorkInfo, now: Date = Date(), calendar: Calendar = .current,
+                               locale: Locale = .current) -> String {
+        let word: String
         switch job.status {
-        case "failed": parts.append("Didn't finish")
-        case "cancelled": parts.append("Stopped")
-        default: break
+        case "failed": word = "Didn't finish"
+        case "cancelled": word = "Stopped"
+        default: word = "Done"
         }
-        if let when = job.finishedAt ?? job.updatedAt ?? job.updated ?? job.startedAt {
-            parts.append(time(when, now: now, calendar: calendar, locale: locale))
-        }
-        return parts.joined(separator: " · ")
+        guard let when = job.finishedAt ?? job.updatedAt ?? job.updated ?? job.startedAt else { return word }
+        return word + " " + time(when, now: now, calendar: calendar, locale: locale)
     }
 
     /// "9:41 PM" today, "Tue 9:41 PM" this week, "Oct 3" before that.

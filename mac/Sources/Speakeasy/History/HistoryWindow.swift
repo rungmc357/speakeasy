@@ -263,7 +263,8 @@ enum DemoHistory {
                              call(2, "edit", "Added an index on orders.created_at", "patch", ago(245), 0.8),
                              call(3, "run", "Checked the load time", "terminal", ago(236), 38, result: "p50 0.8 s (was 6.1 s)")]),
                 bot("m2", ago(232), "The dashboard loads in 0.8 seconds now, down from 6. One query was scanning every order; it has an index on created_at now.\n\n```sql\nCREATE INDEX orders_created_at_idx ON orders (created_at);\n```"),
-            ], pinned: true)
+            ], jobs: [["run_id": "run_0090", "status": "completed", "title": "Sped up the sales dashboard",
+                          "started_at": ago(260), "finished_at": ago(232)]], pinned: true)
         // A long session where several tasks finished along the way (two of them asked twice) and one still runs.
         func job(_ run: String, _ title: String, _ status: String, _ start: Double, _ end: Double? = nil,
                  now: String? = nil) -> [String: Any] {
@@ -274,12 +275,12 @@ enum DemoHistory {
         }
         add("s_long", "Polish the notes app", "speakeasy", "Speakeasy", ago(2), "Running the layout tests after the sidebar change",
             state: "running", entries: [
-                user("m1", ago(190), "Bold text in the chat bubbles shows the asterisks. Fix it."),
-                tools("t1", [call(1, "edit", "Edited the message renderer", "patch", ago(188), 1.2)]),
-                bot("m2", ago(180), "Fixed: bold now renders in every bubble, and the asterisks are gone."),
-                user("m3", ago(150), "A stopped task can't be dismissed. Make it dismissible."),
-                tools("t2", [call(2, "edit", "Edited the task list", "patch", ago(148), 0.9)]),
-                bot("m4", ago(140), "Stopped tasks now have a Dismiss button and swipe away like finished ones."),
+                user("m1", ago(1630), "Bold text in the chat bubbles shows the asterisks. Fix it."),
+                tools("t1", [call(1, "edit", "Edited the message renderer", "patch", ago(1628), 1.2)]),
+                bot("m2", ago(1620), "Fixed: bold now renders in every bubble, and the asterisks are gone."),
+                user("m3", ago(1590), "A stopped task can't be dismissed. Make it dismissible."),
+                tools("t2", [call(2, "edit", "Edited the task list", "patch", ago(1588), 0.9)]),
+                bot("m4", ago(1580), "Stopped tasks now have a Dismiss button and swipe away like finished ones."),
                 user("m5", ago(120), "The bold fix didn't reach the notifications. Fix that too."),
                 bot("m6", ago(110), "Notifications use the same renderer now, so bold shows there as well."),
                 user("m7", ago(80), "Make the export button bigger on iPad."),
@@ -294,9 +295,9 @@ enum DemoHistory {
                 job("run_0105", "Make stopped task dismissible in the app", "completed", ago(40), ago(31)),
                 job("run_0104", "Bigger export button on iPad", "completed", ago(80), ago(72)),
                 job("run_0103", "Fix asterisk bold in chat bubbles", "completed", ago(120), ago(110)),
-                job("run_0102", "Make stopped task dismissible in the app", "completed", ago(150), ago(140)),
-                job("run_0101", "Fix asterisk bold in chat bubbles", "completed", ago(190), ago(180)),
-                job("run_0100", "Rename the settings tabs", "completed", ago(400), ago(380)),
+                job("run_0102", "Make stopped task dismissible in the app", "completed", ago(1590), ago(1580)),
+                job("run_0101", "Fix asterisk bold in chat bubbles", "completed", ago(1630), ago(1620)),
+                job("run_0100", "Rename the settings tabs", "completed", ago(1840), ago(1820)),
             ], more: true)
         add("s_tickets", "This week's support tickets", "cli", "Terminal", daysAgo(1, 17, 52),
             "Half the billing tickets are the same card-declined message.", entries: [

@@ -4,7 +4,7 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 
 ## Mac · iPhone (next build) — Finished tasks stay where they were asked
 
-- **No pile of Done cards.** On a session page, a finished task is one quiet line in the conversation, right after the reply to the message that asked for it ("✓ Fixed the login redirect · 9:41 PM"); tap it to jump to that reply, or to open the task's own chat when it ran in another one.
+- **No pile of Done cards.** On a session page, a finished task is one quiet line in the conversation, right after the reply to the message that asked for it ("✓ Fixed the login redirect · Done 9:41 PM"); tap it to jump to that reply, or to open the task's own chat when it ran in another one.
 - **Only live work at the bottom.** Running tasks and anything that needs you stay just above the composer; when a task finishes it moves back to its place in the conversation.
 - **Asked twice, shown once.** Tasks with the same name or the same ask fold into one line.
 - **Earlier tasks in one row.** When the page doesn't reach back far enough to show where a task was asked, a single collapsed "N tasks finished in this chat" row at the top lists them.
@@ -14,6 +14,13 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Show or hide automated work.** One switch at the top of the conversation list shows or hides sessions nobody typed into: Kanban board workers and scheduled jobs. Each device remembers your choice; Kanban workers also get their own source filter.
 - **Never "unread".** Automated sessions never get the unread dot or Needs you.
 - **A board worker opens on its card.** Instead of the long instructions it was started with, a worker's chat starts with a compact header (issue number, title, a link to the issue and its one-line goal); the full instructions sit behind a collapsed Instructions row. The worker's own updates read as messages, a live line on top says what it's doing now and what it has done so far, and bookkeeping steps stay out of its work.
+## Mac · iPhone (next build) — When things happened
+
+- **Day dividers and quiet times.** A session page marks each new day ("Today", "Yesterday", "Tuesday") and shows a small time where the conversation picks up after a pause of 15 minutes or more, instead of a time under every message.
+- **Any message's time.** Tap a bubble on iPhone or iPad (hover on the Mac) to see exactly when it was sent.
+- **Started, done, how long.** A task's page says when it started, when it finished and how long it took ("Started 8:52 PM · Done 9:05 PM · Took 13 min"), or how long it has been running so far.
+- **When the steps ran.** A folded group of steps shows when it started and how long it took ("9:02 PM · 6 s").
+- **Done cards say when.** Finished task cards and lines read "Done 9:05 PM" (or "Didn't finish" / "Stopped" with the time). The session list's previews are unchanged.
 
 ## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
 
