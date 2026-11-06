@@ -26,6 +26,7 @@ from . import attachments as A
 from . import transcribe as T
 from . import delivery as D
 from . import duck as duck_mod
+from . import vocabulary as vocabulary_mod
 from . import settings as S
 from . import history as H
 from . import messages as M
@@ -520,7 +521,8 @@ class VoiceService(SecureInputMixin):
                                          resume=resume, extra=s["instructions_extra"], now=now,
                                          delivery_label=label, channels=s["delivery"]["channels"],
                                          tour=P.tour_block(names, tour, label, s["delivery"]["channels"])
-                                         if tour is not None else "", room=room, open_work=open_work)
+                                         if tour is not None else "", room=room, open_work=open_work,
+                                         vocabulary=vocabulary_mod.terms(self.home))
 
     def create_session(self, body: dict[str, Any], request_id: str, device_id: str = "",
                        local: bool = False) -> dict[str, Any]:
@@ -3019,7 +3021,7 @@ class VoiceService(SecureInputMixin):
     def transcribe_voice(self, suffix: str, data: bytes) -> dict[str, Any]:
         """``POST /voice/transcribe`` after its checked body arrived: the clip's text, never logged."""
         if self.transcriber is None:
-            self.transcriber = T.hermes_transcriber()
+            self.transcriber = T.hermes_transcriber(lambda: vocabulary_mod.terms(self.home))
         return T.transcribe(data, suffix, self.transcriber, self.dir / "voice-memos")
 
     def check_stage(self, device_id: str, headers: Any, length: int) -> dict[str, Any]:

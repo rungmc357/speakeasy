@@ -273,6 +273,12 @@ class Summarizer:
             return {**base, "now": cached["now"], "so_far": cached["so_far"] or base["so_far"], "source": "model"}
         return base
 
+    def forget(self, key: str) -> None:
+        """Drop the task's last line (its request was just corrected): the next one is asked afresh."""
+        with self._lock:
+            self._cache.pop(key, None)
+            self._asked.pop(key, None)
+
     def _ask(self, key: str, request: str | None, items: list[dict[str, Any]], findings: list[dict[str, Any]],
              basis: int, on_ready: Callable[[], None] | None) -> None:
         try:

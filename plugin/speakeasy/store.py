@@ -127,7 +127,7 @@ def fold_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 RECEIPTS = {"Request received", "Started working"}  # milestones that are receipts, not progress
 # Milestones about where a task went or what was added to it: bookkeeping, never a plan step done.
-PLUMBING = re.compile(r"^(?:Continuing in |Sent into |You added: |Moved to another task|Replaced by your correction|"
+PLUMBING = re.compile(r"^(?:Continuing in |Sent into |You added: |Moved to another task|Replaced by your correction|You corrected |"
                       r"Taken back|Queued|Waiting for |Started in |Answer will land)")
 NOT_STARTED = {"admitting", "waiting_on_task"}
 logger = logging.getLogger(__name__)
@@ -1249,6 +1249,70 @@ class StateStore:
                 "SELECT text FROM work_events WHERE idem_key=? AND kind='request' ORDER BY seq LIMIT 1", (key,)).fetchone()
         return row[0] if row else None
 
+    # -- corrections (corrections.py) -------------------------------------------------------
+    def corrections(self, key: str) -> list[dict[str, Any]]:
+        """Every correction made to this task's words, oldest first: {"wrong", "right", "at"}."""
+        try:
+            items = json.loads(self.get_meta("corrections:" + key) or "[]")
+        except ValueError:
+            return []
+        return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+    def correct_request(self, key: str, request: str, wrong: str | None, right: str | None) -> str | None:
+        """A correction rewrites what the task was asked (its request and, where it holds the misheard
+        words, its title) and clears the status lines written around those words. Returns the new
+        title when it changed."""
+        from . import corrections as corrections_mod
+        now = time.time()
+        title = self.title(key)
+        with self._lock, self._db:
+            row = self._db.execute("SELECT seq FROM work_events WHERE idem_key=? AND kind='request' ORDER BY seq LIMIT 1",
+                                   (key,)).fetchone()
+            if row and request:
+                self._db.execute("UPDATE work_events SET text=? WHERE seq=?", (re.sub(r"\s+", " ", request).strip(), row[0]))
+            got = self._db.execute("SELECT value FROM meta WHERE key=?", ("corrections:" + key,)).fetchone()
+            try:
+                items = json.loads(got[0]) if got else []
+            except ValueError:
+                items = []
+            items = (items if isinstance(items, list) else [])[-9:] + [{"wrong": wrong, "right": right, "at": now}]
+            self._db.execute("INSERT OR REPLACE INTO meta (key,value) VALUES (?,?)", ("corrections:" + key, json.dumps(items)))
+            detail = safe_user_text(f"Now working with {right}" if right else "Dropping the misheard words", 500)
+            self._db.execute(
+                """UPDATE runs SET short_status=?, detail=?, status_source='system',
+                   authored_at=NULL, progress_updated=?, updated=? WHERE idem_key=? AND status NOT IN
+                   ('completed','failed','cancelled','interrupted','ambiguous','rejected')""",
+                (corrections_mod.CORRECTING, detail, now, now, key))
+        summarizer = getattr(self, "live_summarizer", None)
+        forget = getattr(summarizer, "forget", None)
+        if callable(forget):
+            forget(key)  # its last line was written from the misheard request
+        new_title = None
+        if title and wrong and right:
+            fixed = corrections_mod.rewrite(title, wrong, right)
+            if fixed != title:
+                self.set_title(key, fixed)
+                new_title = fixed
+        self.progress(key, "milestone", f"You corrected it: {right}" if right else "You corrected a misheard word")
+        return new_title
+
+    def _drop_misheard(self, work: dict[str, Any], key: str) -> None:
+        """Status lines that still say the misheard words aren't shown (or spoken) after a correction."""
+        fixes = self.corrections(key)
+        if not fixes:
+            return
+        from . import corrections as corrections_mod
+        wrongs = [f["wrong"] for f in fixes if f.get("wrong")]
+        right = next((f["right"] for f in reversed(fixes) if f.get("right")), None)
+        for field in ("now_line", "short_status"):
+            if corrections_mod.mentions(work.get(field), wrongs):
+                work[field] = corrections_mod.CORRECTING
+        for field in ("so_far", "detail"):
+            if corrections_mod.mentions(work.get(field), wrongs):
+                work[field] = f"Now working with {right}" if right else None
+        if corrections_mod.mentions(work.get("title"), wrongs) and right:
+            work["title"] = corrections_mod.rewrite(work["title"], wrongs[-1], right)
+
     def told(self, key: str, limit: int = 600) -> str:
         """What the task has told the user so far (progress updates and result), newest last, capped."""
         with self._lock:
@@ -2005,6 +2069,7 @@ class StateStore:
         activity_state = self.activity_state(key)
         work.update(activity_mod.public(activity_state, detail=activity_detail))
         self._live_line(work, key, activity_state, created, authored_at, status_source, progress_updated, title)
+        self._drop_misheard(work, key)
         live = self.public_live_image(key)
         if live is not None:
             # Addressed by /voice/live-image/<run_id>; the path or URL stays on the server.
