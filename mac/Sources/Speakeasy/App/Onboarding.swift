@@ -15,6 +15,7 @@ import SwiftUI
 final class OnboardingFlow: ObservableObject {
     typealias Step = OnboardingStep
 
+    @Published var welcome: WelcomeJourney
     @Published var step: Step = .connect
     /// Paired, and the first status check hasn't answered yet: show "Checking…" rather than
     /// flashing a screen that may turn out to be done.
@@ -44,6 +45,7 @@ final class OnboardingFlow: ObservableObject {
 
     init(app: AppModel) {
         self.app = app
+        welcome = WelcomeJourney(seen: UserDefaults.standard.bool(forKey: WelcomeJourney.seenKey), paired: app.isPaired)
         if let saved = app.config.serverURL { server = saved.absoluteString }
         step = OnboardingPlan.first(facts)
         // Signing in to the voice (here, or with `hermes voice setup`) moves on by itself.
@@ -61,10 +63,18 @@ final class OnboardingFlow: ObservableObject {
     var backAction: (() -> Void)? { canGoBack ? { [weak self] in self?.back() } : nil }
 
     func pairFromLink(_ link: PairingLink) {
+        welcome.route = .setup
+        UserDefaults.standard.set(true, forKey: WelcomeJourney.seenKey)
         server = link.server.absoluteString
         code = link.code
         step = .connect
         pair()
+    }
+
+    func openSetup() {
+        welcome.route = .setup
+        UserDefaults.standard.set(true, forKey: WelcomeJourney.seenKey)
+        Task { await start() }
     }
 
     func pair() {
@@ -167,12 +177,14 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     func show() {
         if window == nil {
-            Task { await flow.start() }
+            if flow.welcome.route == .setup { Task { await flow.start() } }
             let hosting = NSHostingController(rootView: OnboardingView(flow: flow).environmentObject(flow.app))
             let w = NSWindow(contentViewController: hosting)
             w.title = "Welcome to Speakeasy"
-            w.styleMask = [.titled, .closable]
+            w.styleMask = [.titled, .closable, .resizable]
             w.setContentSize(OnboardingView.size)
+            w.contentMinSize = OnboardingView.size
+            w.contentMaxSize = NSSize(width: 800, height: 720)
             w.isReleasedWhenClosed = false
             w.delegate = self
             w.center()
@@ -196,6 +208,14 @@ struct OnboardingView: View {
     @EnvironmentObject var app: AppModel
 
     var body: some View {
+        if flow.welcome.route != .setup {
+            MacWelcomeView(journey: $flow.welcome, onConnect: flow.openSetup)
+        } else {
+            setup
+        }
+    }
+
+    private var setup: some View {
         Group {
             if flow.checking {
                 VStack(spacing: 10) {
@@ -213,7 +233,7 @@ struct OnboardingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
-        .frame(width: Self.size.width, height: Self.size.height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

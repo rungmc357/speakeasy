@@ -78,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applyDockPolicy()
         MacAppearance.apply()
         let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "--welcome-shots"), i + 1 < args.count { DispatchQueue.main.async { WelcomeShots.run(dir: args[i + 1]) }; return }
         if let i = args.firstIndex(of: "--history-shots"), i + 1 < args.count { HistoryShots.run(dir: args[i + 1]); return }
         if let i = args.firstIndex(of: "--secure-input-shots"), i + 1 < args.count { SecureInputShots.run(dir: args[i + 1]); return }
         if args.contains("--native-offer-smoke") { NativeSmoke.offer(); return }
