@@ -160,8 +160,12 @@ def test_qr_text_encodes_the_link():
 
 
 def test_grok_fix_names_the_real_command():
+    # SPK-156: the setup check never sends anyone to a terminal; the Grok fix asks Hermes to sign in
+    # to X (GrokSignInCopy), never the old "sign in with X" wording.
     swift = (REPO / "mac" / "Sources" / "SpeakeasyCore" / "ServerSettings.swift").read_text()
-    assert "sign in with X\"" not in swift and "hermes auth add xai-oauth" in swift
+    copy = (REPO / "mac" / "Sources" / "SpeakeasyCore" / "CodexLogin.swift").read_text()
+    assert "sign in with X\"" not in swift and "GrokSignInCopy.notSignedIn" in swift
+    assert "Ask your Hermes to sign in to X." in copy
 
 
 class _Ctx:

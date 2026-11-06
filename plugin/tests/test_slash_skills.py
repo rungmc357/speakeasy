@@ -130,8 +130,10 @@ def test_new_chat_with_a_skill_carries_the_skill_and_history_shows_the_typed_wor
     prompt = call["input"]
     assert '[IMPORTANT: The user has invoked the "soup-scaler" skill' in prompt
     assert "instruction alongside the skill invocation: for twelve people" in prompt
-    # The skill sits before the transcript: the person's words stay its last "User:" line.
-    assert prompt.index("soup-scaler steps") < prompt.index("Recent timestamped voice transcript")
+    # The skill sits before the transcript: the person's words stay its last "User:" line. (A typed
+    # task's messages carry the typed-messages header, 0.3.38.)
+    from speakeasy.prompt import builder as P
+    assert prompt.index("soup-scaler steps") < prompt.index(P.TYPED_MESSAGES)
     from speakeasy import history as H
     assert H.user_words(prompt) == ("user", "/soup-scaler for twelve people")
 
