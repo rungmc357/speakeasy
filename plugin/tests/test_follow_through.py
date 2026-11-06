@@ -161,7 +161,7 @@ def test_a_repeat_said_while_waiting_never_runs_twice():
 
 def test_the_routing_prompt_decides_by_topic_and_keeps_one_question_whole():
     system = router.route_messages("x", [], [])[0]["content"]
-    assert "Decide by topic, never by timing" in system and "is ONE part" in system
+    assert "Only the subject decides against it" in system and "different subject" in system and "is ONE part" in system
 
 
 def test_a_split_sentence_is_handed_on_whole():
