@@ -209,6 +209,20 @@ public struct ScheduleList: Equatable, Sendable {
         timezone = nonEmpty(o["timezone"])
     }
 
+    /// The zone as a person says it: "America/New_York" → "New York", "America/Argentina/Buenos_Aires"
+    /// → "Buenos Aires". Never shows the raw identifier; "UTC" / "Etc/UTC" stay "UTC".
+    public static func zoneName(_ id: String) -> String {
+        let last = id.split(separator: "/").last.map(String.init) ?? id
+        let name = last.replacingOccurrences(of: "_", with: " ").trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? id : name
+    }
+
+    /// The line above the Scheduled list: "Hermes time · New York" (just "Hermes" with no zone).
+    public static func zoneLabel(_ timezone: String?) -> String {
+        guard let tz = timezone?.trimmingCharacters(in: .whitespaces), !tz.isEmpty else { return "Hermes" }
+        return "Hermes time · \(zoneName(tz))"
+    }
+
     /// The list's sections, in order: running and upcoming, paused, finished one-time jobs.
     public enum Section: String, Sendable, CaseIterable { case upcoming = "Upcoming", paused = "Paused", done = "Done" }
 

@@ -125,15 +125,16 @@ struct ScheduleListView: View {
     private var header: some View {
         HStack(alignment: .bottom, spacing: 10) {
             VStack(alignment: .leading, spacing: 6) {
+                // Same words as the iPhone ("Hermes time · New York"): never the raw zone id, one line.
                 HStack(spacing: 6) {
-                    Image(systemName: "clock.fill").font(.system(size: 10, weight: .bold))
-                    Text("SCHEDULED").tracking(1.0)
-                    if let tz = schedules.timezone {
-                        Text("·").foregroundStyle(.secondary)
-                        Text(tz.replacingOccurrences(of: "_", with: " ").uppercased()).tracking(0.6).foregroundStyle(Color.primary.opacity(0.5))
-                    }
+                    Image(systemName: "clock.arrow.circlepath").font(.system(size: 10.5, weight: .bold))
+                    Text(ScheduleList.zoneLabel(schedules.timezone))
+                        .lineLimit(1).truncationMode(.tail)
                 }
-                .font(.system(size: 10.5, weight: .bold)).foregroundStyle(Live.brass)
+                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Live.brass)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("schedules-zone")
                 Text("Scheduled jobs").font(.system(size: 24, weight: .bold))
                 Text("What your Hermes does on its own, on a schedule. Results go where each one says.")
                     .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.primary.opacity(0.6))
