@@ -262,6 +262,8 @@ enum HistoryShots {
         c.store.scheduleDictation.recorder = SilentRecorder()
         c.store.schedules.backend = DemoScheduleBackend()
         c.store.schedulesSupported = true
+        c.store.files.backend = DemoAgentFilesBackend()
+        c.store.filesSupported = true
         if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
             NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
         }
@@ -326,7 +328,19 @@ enum HistoryShots {
                 box.mark("c2", .failed("Couldn't reach your Hermes."))
                 store.preview(outbox: box)
             }
+            await shot("14-files") {
+                store.setCallLive(false)
+                store.openFiles()
+                await store.files.reload()
+                for f in store.files.files { await store.files.thumbnail(for: f) }
+            }
+            await shot("15-files-images") {
+                store.openFiles()
+                await store.files.choose(kind: "image")
+                for f in store.files.files { await store.files.thumbnail(for: f) }
+            }
             await shot("9-scheduled-list") {
+                await store.files.choose(kind: nil)
                 store.setCallLive(false)
                 store.preview(outbox: HistoryOutbox())
                 store.openSchedules()

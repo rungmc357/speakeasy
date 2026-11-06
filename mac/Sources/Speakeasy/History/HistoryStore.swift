@@ -93,6 +93,10 @@ final class HistoryStore: ObservableObject {
     let scheduleDictation = ScheduleDictation()
     @Published var schedulesSupported = false
     @Published private(set) var showingSchedules = false
+    /// Files your agent made (servers with `files`): the sidebar row and its pane.
+    let files = AgentFilesModel()
+    @Published var filesSupported = false
+    @Published private(set) var showingFiles = false
     @Published var now = Date()
 
     var backend: HistoryBackend?
@@ -249,6 +253,7 @@ final class HistoryStore: ObservableObject {
 
     func open(_ sessionID: String) {
         showingSchedules = false
+        showingFiles = false
         guard target != .session(sessionID) else { return }
         cancelVoice()
         target = .session(sessionID)
@@ -259,6 +264,7 @@ final class HistoryStore: ObservableObject {
 
     func newChat() {
         showingSchedules = false
+        showingFiles = false
         cancelVoice()
         target = .newChat
         newChatError = nil
@@ -270,9 +276,27 @@ final class HistoryStore: ObservableObject {
     func openSchedules(_ id: String? = nil) {
         guard schedulesSupported else { return }
         cancelVoice()
+        showingFiles = false
         showingSchedules = true
         schedules.selected = id
         Task { await schedules.reload() }
+    }
+
+    /// The Files pane: every file the agent handed over in a reply, across all chats.
+    func openFiles() {
+        guard filesSupported else { return }
+        cancelVoice()
+        showingSchedules = false
+        showingFiles = true
+        Task { await files.reload() }
+    }
+
+    /// A file's "Open chat": the conversation it came from.
+    func openChat(of file: AgentFile) {
+        guard !file.sessionID.isEmpty else { return }
+        showingFiles = false
+        if target == .session(file.sessionID) { return }
+        open(file.sessionID)
     }
 
     func load(_ sessionID: String) {
