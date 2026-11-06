@@ -325,6 +325,11 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s.tasks = tasks.filter { !($0.isSettled && s.dismissedRunIDs.contains($0.info.runID ?? "")) }
         appendTextReplies(&s, before: before)
         s.tasksBaselined = true
+        // The list carries the newest flags for the header's run too (cleared or opened elsewhere).
+        if let run = s.workInfo?.runID, let row = tasks.first(where: { $0.info.runID == run })?.info {
+            if row.dismissed { s.workInfo?.dismissed = true }
+            if row.seen { s.workInfo?.seen = true }
+        }
 
     case .show(let request):
         s.showRequest = request
@@ -338,6 +343,10 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         let cleared = s.tasks.filter { $0.isSettled && ids.contains($0.info.runID ?? "") }
         s.dismissedRunIDs.formUnion(cleared.compactMap(\.info.runID))
         s.tasks.removeAll { task in cleared.contains(task) }
+        // The header's run is cleared too, even when the list no longer showed it.
+        if let info = s.workInfo, let run = info.runID, ids.contains(run), isSettledWork(info) {
+            s.dismissedRunIDs.insert(run)
+        }
 
     case .reviewDismissed(let runID, let cards):
         s.dismissedReviews.formUnion(cards.map { "\(runID)|\($0)" })
@@ -541,6 +550,7 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
     // Ended: nothing of the call's sharing is kept.
     if s.connection == .paused { s.sharing.callClosed(paused: true) }
     else if !s.connection.isOpen { s.sharing.callClosed(paused: false) }
+    forgetClearedWork(&s)
     s.work = deriveWork(s, now: now)
     return s
 }
@@ -589,6 +599,33 @@ private func replyWords(_ text: String) -> String {
         .components(separatedBy: CharacterSet.alphanumerics.inverted)
         .filter { !$0.isEmpty }
         .joined(separator: " ")
+}
+
+private func isSettledWork(_ info: WorkInfo) -> Bool {
+    info.isTerminal || info.status == "rejected" || info.status == "ambiguous"
+}
+
+/// Whether a finished run is off the user's plate: cleared from the board (here or on another
+/// device) or, for a failure, already opened. The header must not keep repeating it.
+public func isClearedWork(_ info: WorkInfo, dismissedRunIDs: Set<String>) -> Bool {
+    guard isSettledWork(info) else { return false }
+    if info.dismissed { return true }
+    if info.status == "failed" && info.seen { return true }
+    return info.runID.map(dismissedRunIDs.contains) ?? false
+}
+
+/// The header follows the board: once the user clears (or opens) the finished run it shows, the
+/// line goes quiet, never "Work failed" again and never "didn't get that" from the handoff time it
+/// leaves behind. The run can't come back as the header's run either (the board view keeps fetching
+/// the latest run, which may be this one); a newer run takes over as usual.
+private func forgetClearedWork(_ s: inout VoiceState) {
+    guard let info = s.workInfo, isClearedWork(info, dismissedRunIDs: s.dismissedRunIDs) else { return }
+    if let run = info.runID {
+        s.supersededRunIDs.insert(run)
+        if s.runID == run { s.runID = nil }
+    }
+    s.workInfo = nil
+    s.delegationAt = nil
 }
 
 /// Work axis is a pure function of api-owned inputs; never of speech or mic.
