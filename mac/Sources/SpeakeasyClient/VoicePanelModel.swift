@@ -10,10 +10,19 @@ public final class VoicePanelModel: ObservableObject {
         // changes on so the panel redraws and re-measures, or the card's height arrives a draw late
         // and the panel clips its top and bottom.
         pluginUpdateRelay = pluginUpdate.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        bindPending()
     }
     private var pluginUpdateRelay: AnyCancellable?
+    private var pendingRelay: AnyCancellable?
+    /// The app's one pending-pick store (shared with the session pages); tests give a model its own.
+    public var pending: PendingPicks = .shared { didSet { bindPending() } }
+    private func bindPending() {
+        pendingRelay = pending.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
     public static let defaultWidth: CGFloat = 360
-    @Published public var state = VoiceState()
+    @Published public var state = VoiceState() {
+        didSet { if state.tasks != oldValue.tasks { reconcilePicks() } }
+    }
     @Published public var workExpanded = false
     @Published public var captionExpanded = false
     /// Drafts whose body is expanded ("Show all"). Lives here, not in the card, so the panel re-measures and
@@ -169,9 +178,63 @@ public final class VoicePanelModel: ObservableObject {
     }
     /// Film frames show a problem without a real failure.
     @Published public var previewProblem: CallProblem?
-    /// Answers already given, by task id, so a card stays settled after the tap (kept across launches).
-    @Published public var answers: [String: String] = VoicePanelModel.loadAnswers() {
-        didSet { VoicePanelModel.save(answers.suffix(200), key: VoicePanelModel.answersKey) }
+    /// The one record of decisions acted on here that the server hasn't confirmed yet (SPK-79): picks,
+    /// ✕ dismisses and "Not needed", keyed by question id (the asking task's run id). Kept across
+    /// launches until the server's `question_state` says the question closed; everything else about a
+    /// question is shown from the server.
+    public var picks: PickStore {
+        get { pending.store }
+        set { pending.update { $0 = newValue } }
+    }
+    /// The question id a task's pick is kept under: its run id once it has one, else its task id.
+    public func questionID(_ taskID: String) -> String {
+        state.tasks.first(where: { $0.id == taskID })?.info.runID ?? taskID
+    }
+    private func pickEntry(_ taskID: String) -> PickStore.Entry? {
+        picks[questionID(taskID)] ?? picks[taskID]
+    }
+    private func setPick(_ taskID: String, _ entry: PickStore.Entry?) {
+        var next = picks
+        next.remove(taskID)
+        next.set(questionID(taskID), entry)
+        picks = next
+    }
+    private func pickedTasks(_ kind: PickStore.Kind) -> Set<String> {
+        var out = Set(state.tasks.filter { pickEntry($0.id)?.kind == kind }.map(\.id))
+        for (id, entry) in picks.entries where entry.kind == kind { out.insert(id) }
+        return out
+    }
+    /// Answers by task id: a pick waiting for the server, else the words the server recorded
+    /// (`question_answer`, answered on any device). Setting one records or drops a pending pick.
+    public var answers: [String: String] {
+        get {
+            var out: [String: String] = [:]
+            for (id, entry) in picks.entries where entry.kind == .answer { out[id] = entry.text }
+            for t in state.tasks {
+                if let e = pickEntry(t.id), e.kind == .answer { out[t.id] = e.text }
+                else if t.info.questionStateOrDerived == .answered {
+                    // Answered on another device (or before a relaunch): the server's words, or just
+                    // "answered" from a plugin that doesn't record them.
+                    out[t.id] = t.info.questionAnswer ?? out[t.id] ?? ""
+                }
+            }
+            return out
+        }
+        set {
+            let old = answers
+            for id in old.keys where newValue[id] == nil {
+                if pickEntry(id)?.kind == .answer { setPick(id, nil) }
+            }
+            for (id, text) in newValue where old[id] != text {
+                setPick(id, PickStore.Entry(kind: .answer, text: text))
+            }
+        }
+    }
+    /// Drop picks the server has settled (its `question_state` left `open`), so nothing local outlives
+    /// the server's word: a relaunch shows exactly what the server says.
+    public func reconcilePicks() {
+        let byID = Dictionary(state.tasks.map { ($0.info.runID ?? $0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        pending.reconcile { id in byID[id]?.info.questionStateOrDerived }
     }
     /// Fetches a task picture (run id, card number) through the authenticated api.
     public var loadCardImage: (String, Int) async -> Data? = { _, _ in nil }
@@ -189,10 +252,22 @@ public final class VoicePanelModel: ObservableObject {
     public var onSetAside: (String) -> Void = { _ in }
     /// ✕ on a decision (a task's question): close it on every device without telling the agent (run id).
     public var onDismissQuestion: (String) -> Void = { _ in }
-    /// Tasks whose question was dismissed here: off Needs you at once.
-    @Published public var dismissedQuestionTasks: Set<String> = []
-    /// Tasks the user set aside here, hidden from Needs you right away (the api confirms).
-    @Published public var setAsideTasks: Set<String> = []
+    /// Tasks whose question was dismissed here: off Needs you at once (a pending pick until the server
+    /// confirms; `picks`).
+    public var dismissedQuestionTasks: Set<String> {
+        get { pickedTasks(.dismissed) }
+        set { updatePicked(.dismissed, newValue) }
+    }
+    /// Tasks the user set aside here, hidden from Needs you right away (the api confirms; `picks`).
+    public var setAsideTasks: Set<String> {
+        get { pickedTasks(.setAside) }
+        set { updatePicked(.setAside, newValue) }
+    }
+    private func updatePicked(_ kind: PickStore.Kind, _ ids: Set<String>) {
+        let old = pickedTasks(kind)
+        for id in old.subtracting(ids) { if pickEntry(id)?.kind == kind { setPick(id, nil) }; if picks[id]?.kind == kind { picks.remove(id) } }
+        for id in ids.subtracting(old) { setPick(id, PickStore.Entry(kind: kind)) }
+    }
     /// nil shows the task list; an id opens that task.
     public var onSelectTask: (String?) -> Void = { _ in }
     /// Open one task from the task list: its session page when it has one, else the panel's task view.
@@ -239,11 +314,7 @@ public final class VoicePanelModel: ObservableObject {
     /// question from an old task must not greet you on every call.
     public static let questionPinnedFor: TimeInterval = 20 * 60
     static let dismissedKey = "speakeasy.dismissedCardTasks"
-    static let answersKey = "speakeasy.questionAnswers"
     static func loadList(_ key: String) -> [String] { UserDefaults.standard.stringArray(forKey: key) ?? [] }
-    static func loadAnswers() -> [String: String] {
-        (UserDefaults.standard.dictionary(forKey: answersKey) as? [String: String]) ?? [:]
-    }
     static func save(_ pairs: some Sequence<(key: String, value: String)>, key: String) {
         UserDefaults.standard.set(Dictionary(pairs.map { ($0.key, $0.value) }, uniquingKeysWith: { a, _ in a }), forKey: key)
     }

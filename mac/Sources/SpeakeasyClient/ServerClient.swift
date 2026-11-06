@@ -396,6 +396,12 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await post("/voice/tasks/\(escape(runID))/question/\(undo ? "undo" : "dismiss")", [:])
     }
 
+    /// A tapped option or typed answer to one task's question, by run id alone (servers with
+    /// `question_state`): it reaches the task with or without a call. Idempotent on `clientID`.
+    public func answerQuestion(runID: String, text: String, clientID: String) async throws {
+        _ = try await post("/voice/tasks/\(escape(runID))/question/answer", ["text": text, "client_id": clientID])
+    }
+
     /// Clear finished tasks from the task list (running tasks are never cleared).
     public func dismissTasks(runIDs: [String]) async throws {
         _ = try await post("/voice/tasks/dismiss", ["run_ids": runIDs])

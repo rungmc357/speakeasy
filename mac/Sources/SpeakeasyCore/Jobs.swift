@@ -332,9 +332,12 @@ public enum JobBoard {
         // A question card waits on the user whether or not the run has wrapped up (a run that asks
         // and keeps going must not sit under a Running pill).
         guard t.info.isTerminal || t.info.status == "working" || t.info.status == "running",
-              t.info.decision != nil, !t.info.answered, t.info.questionClosed == nil,
+              t.info.decision != nil, t.info.questionStateOrDerived?.isOpen ?? true,
               !answered.contains(t.id), !dismissed.contains(t.id),
               let at = t.info.updatedAt ?? t.info.updated else { return false }
+        // The server closes a day-old question itself (expired); the client clock only covers
+        // plugins from before question_state.
+        if t.info.questionState != nil { return true }
         return now.timeIntervalSince(at) < decisionKeptFor
     }
 
