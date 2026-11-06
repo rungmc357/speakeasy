@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import brief as B
+from .plain_errors import TUNE_FAILED
 from .prompt.builder import PROMPT_DIR
 
 logger = logging.getLogger(__name__)
@@ -293,8 +294,8 @@ class TuneManager:
             logger.info("speakeasy: tune proposed %d edits, %d product issues",
                         len(proposal["edits"]), len(proposal["product_issues"]))
         except Exception as exc:
-            message = str(exc) if isinstance(exc, B.BriefInvalid) else f"tune failed ({type(exc).__name__})"
-            logger.warning("speakeasy: %s", message)
+            message = str(exc) if isinstance(exc, B.BriefInvalid) else TUNE_FAILED
+            logger.warning("speakeasy: %s (%s)", message, type(exc).__name__)
             with self._lock:
                 self._save({"state": "failed", "created": now, "error": message[:200]})
         finally:

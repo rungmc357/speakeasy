@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import urllib.error
 import urllib.parse
@@ -14,6 +15,9 @@ import urllib.request
 from typing import Any, Callable
 
 from .calls import ServiceError, SidebandWorker, new_event_id
+from .plain_errors import VOICE_LOST, VOICE_UNREACHABLE
+
+logger = logging.getLogger(__name__)
 
 OPENAI_BASE = "https://api.openai.com"
 OPENAI_MODEL = "gpt-live-1"
@@ -32,7 +36,8 @@ def negotiate(key: str, payload: dict[str, Any], base: str = OPENAI_BASE,
         raise ServiceError(exc.code if 400 <= exc.code < 500 else 502,
                           f"GPT-Live session creation failed ({exc.code})") from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise ServiceError(502, f"GPT-Live unreachable ({type(exc).__name__})") from None
+        logger.warning("speakeasy: GPT-Live unreachable (%s)", type(exc).__name__)
+        raise ServiceError(502, VOICE_UNREACHABLE) from None
     if len(raw) > MAX_BODY:
         raise ServiceError(502, "GPT-Live response too large")
     try:
@@ -91,10 +96,11 @@ class OpenAISidebandWorker(SidebandWorker):
                     if isinstance(event, dict):
                         await self.handle_event(event)
         except Exception as exc:
+            logger.warning("speakeasy: GPT-Live connection lost (%s)", type(exc).__name__)
             with self.interaction.lock:
                 if self.interaction.finalization != "confirmed" and not self.interaction.paused:
                     self.interaction.status = "error"
-                    self.interaction.error = f"Voice connection lost: {type(exc).__name__}"
+                    self.interaction.error = VOICE_LOST
                     self.interaction.finalization = "incomplete"
             self.publish()
         finally:

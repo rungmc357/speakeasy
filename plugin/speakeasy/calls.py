@@ -48,6 +48,7 @@ from .settings import DEFAULT_UPDATE_INTERVAL_S, valid_delivery_target
 from .prompt import builder as P
 from . import text as text_mod
 from .store import fold_tasks
+from .plain_errors import STREAM_ENDED_EARLY, TASK_START_FAILED, THREAD_WAIT_LOST
 from .text import (ID_RE, MAX_TRANSCRIPT, TERMINAL, clean_transcript, delivery_text, derive_tool_status,
                    interim_progress, live_images_in, notice_text, safe_user_text, short_title, home_title, split_result,
                    thread_commentary, vetted_live_ref)
@@ -2798,7 +2799,8 @@ class SidebandWorker:
                 backend = BackendRun(delegation_id, revision, idem)
                 self.interaction.runs[delegation_id] = backend
                 self.interaction.latest_delegation_id = delegation_id
-            backend.status, backend.error = "failed", f"Couldn't start: {type(exc).__name__}"
+            logger.warning("speakeasy: a handoff couldn't start (%s)", type(exc).__name__)
+            backend.status, backend.error = "failed", TASK_START_FAILED
         try:
             self.store.reserve_run(idem, self.interaction.interaction_id, delegation_id, revision)
             self.store.update_run(idem, None, "failed")
@@ -4264,7 +4266,8 @@ class SidebandWorker:
         self.store.progress(idem, "result", f"Work failed: {reason}" if reason else
                             f"Work failed: {failures.failure_reason('failed', failed_as, failures.failure_hint(str(exc)) or 'start')}")
         with self.interaction.lock:
-            backend.status, backend.error = "failed", str(exc)[:240]
+            # Speakeasy's own sentence, never str(exc): that can be a bare exception name or key.
+            backend.status, backend.error = "failed", reason or TASK_START_FAILED
         self.publish()
         return failed_as
 
@@ -4690,7 +4693,8 @@ class SidebandWorker:
             except TypeError:  # an older runner without progress
                 answer = await in_own_thread(self.rt.threads.wait, opened, on_session, on_title)
         except Exception as exc:
-            answer, backend.error = None, type(exc).__name__
+            logger.warning("speakeasy: waiting on a thread's answer failed (%s)", type(exc).__name__)
+            answer, backend.error = None, THREAD_WAIT_LOST
         finally:
             vouch.set()
             await asyncio.to_thread(tools.stop)
@@ -4765,7 +4769,9 @@ class SidebandWorker:
                     event[field] = result[field]
             await self.handle_hermes_event(backend, event)
             return
-        detail = "Hermes event stream ended before a terminal event" + (f": {type(cause).__name__}" if cause else "")
+        if cause:
+            logger.warning("speakeasy: run %s stream ended early (%s)", backend.run_id, type(cause).__name__)
+        detail = STREAM_ENDED_EARLY
         self.store.update_run(backend.idem_key, None, "ambiguous")
         with self.interaction.lock:
             backend.status, backend.approval, backend.error = "ambiguous", None, detail

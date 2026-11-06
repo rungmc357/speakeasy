@@ -36,7 +36,7 @@ def test_a_slow_start_with_pictures_is_asked_again_under_the_same_key_not_failed
 def test_a_timeout_is_not_called_unreachable():
     exc = HermesError(504, "Hermes timed out answering")
     assert failures.start_failure_kind(exc) != "hermes_unreachable"
-    assert failures.start_failure_kind(HermesError(502, "Hermes unavailable: URLError")) == "hermes_unreachable"
+    assert failures.start_failure_kind(HermesError(502, "Hermes unavailable right now. Try again in a moment.")) == "hermes_unreachable"
 
 
 def test_a_just_started_run_refusing_guidance_is_asked_again(monkeypatch):

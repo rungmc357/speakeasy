@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from .plain_errors import BRIEF_FAILED
 from .prompt.builder import PROMPT_DIR
 
 logger = logging.getLogger(__name__)
@@ -245,8 +246,8 @@ class BriefManager:
                 _write_private(self.path, clean)
                 self._save_state(edited=False, updated_at=now, input_hash=digest, last_attempt=now, error=None)
         except Exception as exc:
-            message = str(exc) if isinstance(exc, BriefInvalid) else f"brief write failed ({type(exc).__name__})"
-            logger.warning("speakeasy: %s", message)
+            message = str(exc) if isinstance(exc, BriefInvalid) else BRIEF_FAILED
+            logger.warning("speakeasy: %s (%s)", message, type(exc).__name__)
             with self._lock:
                 self._save_state(last_attempt=now, error=message[:200])
         finally:

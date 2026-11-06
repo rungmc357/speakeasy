@@ -24,6 +24,7 @@ from typing import Any, Callable
 from .calls import TYPED_NOT_CONNECTED, TYPED_NOT_DELIVERED, TYPED_SENT, SidebandWorker
 from .relay import READ_TIMEOUT_S, RelayClient, RelayProtocolError, RelaySocket
 from .settings import XAI_KEY_NAME, hermes_secret, profile_scope
+from .plain_errors import VOICE_LOST
 from .text import ID_RE, clean_transcript
 
 logger = logging.getLogger(__name__)
@@ -383,7 +384,7 @@ class GrokRelayWorker(SidebandWorker):
                 self.ws = None
                 await ws.close()
         except Exception as exc:
-            failure = type(exc).__name__
+            failure = type(exc).__name__  # logged below; the app gets the plain sentence only
         finally:
             self._token = ""
             for task in (pump, watch):
@@ -397,7 +398,9 @@ class GrokRelayWorker(SidebandWorker):
                 with self.interaction.lock:
                     if self.interaction.finalization != "confirmed":
                         self.interaction.status = "error"
-                        self.interaction.error = f"Voice connection lost{': ' + failure if failure else ''}"
+                        if failure:
+                            logger.warning("speakeasy: Grok voice connection lost (%s)", failure)
+                        self.interaction.error = VOICE_LOST
                         self.interaction.finalization = "incomplete"
                 reason = "voice connection lost"
             self.call_closed()

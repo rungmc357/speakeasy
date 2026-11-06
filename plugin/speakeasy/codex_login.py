@@ -163,7 +163,8 @@ class CodexLogin:
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
                                      cwd=str(self.workdir), env=child_env())
             except OSError as exc:
-                raise CodexLoginError(f"Couldn't run Codex on the Hermes computer ({type(exc).__name__}).") from None
+                logger.warning("speakeasy: could not start codex app-server (%s)", type(exc).__name__)
+                raise CodexLoginError("Couldn't run Codex on your Hermes computer. Try again in a moment.") from None
             flow = _Flow(process, self.clock())
             flow.expires_at = flow.started + self.lifetime_s
             self.flow, self.binary = flow, Path(binary)
