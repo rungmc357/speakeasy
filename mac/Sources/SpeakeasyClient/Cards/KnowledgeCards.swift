@@ -532,7 +532,7 @@ struct ChartValueTable: View {
                 .rowAccessibility(row, facts: facts)
             }
         }
-        .accessibilityIdentifier("chart-values")
+        // No id on the table itself: it would replace each row's own id.
     }
 }
 
