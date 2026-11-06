@@ -31,6 +31,9 @@ public final class PluginUpdateNotice: ObservableObject {
             ?? PluginUpdateRecord()
     }
 
+    /// Update can start right here (an update is offered and the plugin runs it as a job).
+    public var canUpdateNow: Bool { canStartJob && phase.offersUpdate }
+
     public var phase: PluginUpdatePhase {
         PluginUpdateFlow.phase(latest: latest, running: running, record: record, note: note, inCall: inCall,
                                lastCallEnded: lastCallEnded, now: now)

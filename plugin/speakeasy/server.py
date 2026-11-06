@@ -185,6 +185,33 @@ class Handler(BaseHTTPRequestHandler):
             raise ServiceError(400, "JSON object required")
         return body
 
+    def _openai_key(self, device_id: str) -> None:
+        """``POST /voice/openai-key``: like a secret answer, the body goes into a bytearray that
+        openai_key zeroes; it is never parsed here, logged, or echoed back."""
+        from .openai_key import MAX_BODY_BYTES
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if length <= 0 or length > MAX_BODY_BYTES:
+            self._reply(413, {"error": "request body size rejected"})
+            return
+        raw = bytearray(length)
+        view = memoryview(raw)
+        got = 0
+        while got < length:
+            n = self.rfile.readinto(view[got:])
+            if not n:
+                break
+            got += n
+        view.release()
+        if got < length:
+            for i in range(len(raw)):
+                raw[i] = 0
+            self._reply(400, {"error": "incomplete body"})
+            return
+        self._reply(200, self.service.save_openai_key(device_id, raw))
+
     def _secret_answer(self, request_id: str, device_id: str) -> None:
         """``POST /voice/secrets/{id}``: the body is read into a bytearray that secure_input zeroes;
         it is never parsed here, logged, or echoed back."""
@@ -691,6 +718,9 @@ class Handler(BaseHTTPRequestHandler):
             secret = re.fullmatch(r"/voice/secrets/(sec_[A-Za-z0-9_-]{16,40})", path)
             if secret:
                 self._secret_answer(secret.group(1), device_id)
+                return
+            if path == "/voice/openai-key":
+                self._openai_key(device_id)
                 return
             if path == "/voice/push":
                 self._reply(200, self.service.register_push(device_id, self._body()))

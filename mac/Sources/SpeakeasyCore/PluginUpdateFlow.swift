@@ -38,6 +38,12 @@ public enum PluginUpdatePhase: Equatable, Sendable {
         case .available(let v, _), .updating(let v, _), .updated(let v), .didntTake(let v, _): return v
         }
     }
+
+    /// A newer plugin is offered and nothing is updating yet.
+    public var offersUpdate: Bool {
+        if case .available = self { return true }
+        return false
+    }
 }
 
 public enum PluginUpdateFlow {

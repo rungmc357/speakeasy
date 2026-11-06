@@ -160,6 +160,9 @@ CAPABILITIES["setup_check"] = True
 CAPABILITIES["questions"] = True
 # GET /voice/approvals: this profile's Hermes approval rules in plain words, read-only (approval_rules.py).
 CAPABILITIES["approval_rules"] = True
+# POST /voice/openai-key: add the OpenAI API key for the API-key voice from the app (Settings › Voice),
+# saved to this profile through Hermes' env writer; never logged or returned (openai_key.py).
+CAPABILITIES["openai_key"] = True
 
 
 
@@ -502,6 +505,14 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(exc.status, exc.message) from None
         except OSError:
             raise ServiceError(404, "file not found") from None
+
+    def save_openai_key(self, device_id: str, raw: bytearray) -> dict[str, Any]:
+        """``POST /voice/openai-key``: ``raw`` is zeroed; the reply never carries the key."""
+        store = getattr(self, "_openai_key_store", None)
+        if store is None:
+            from .openai_key import OpenAIKeyStore
+            store = self._openai_key_store = OpenAIKeyStore(self.home, is_set=lambda: bool(self.openai_key()))
+        return store.save(device_id, raw)
 
     def image_roots(self) -> tuple[Path, ...]:
         return default_image_roots(self.home, self.settings.get()["image_roots"])

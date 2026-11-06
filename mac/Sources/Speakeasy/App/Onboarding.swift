@@ -344,17 +344,29 @@ private struct VoiceSignInStep: View {
                         .font(.callout).fixedSize(horizontal: false, vertical: true)
                     CodexSignInButton(onAlternative: { showAPIKeyHelp = true }).controlSize(.large)
                 } else if status.codexSignedIn != true && status.resolvedProvider == .codex {
-                    Text("On the Hermes machine, run hermes voice setup in Terminal. It signs you in to GPT-Live-1 with your ChatGPT account through Codex (a browser window opens). Then press Check again.")
-                        .font(.callout).fixedSize(horizontal: false, vertical: true)
+                    // Older plugins: the checklist line above says to update; Update does it from here.
+                    PluginUpdateForSignInButton().controlSize(.large)
+                } else if status.resolvedProvider == .grok, status.grokVoiceReady == false {
+                    GrokSignInRequestButton()
                 }
             } else {
                 Text(app.lastError ?? "Checking…").foregroundStyle(.secondary)
             }
             DisclosureGroup(app.status?.offersCodexSignIn == true ? CodexLoginCopy.alternative : "Use an API key instead",
                             isExpanded: $showAPIKeyHelp) {
-                Text("On the Hermes machine, run hermes voice setup --api-key and paste your OpenAI API key when asked. Calls then use GPT-Live-1 through the OpenAI API and bill that account per minute. The key is stored only in that Hermes profile, never on this Mac.")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                if app.status?.canAddOpenAIKey == true {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Add your OpenAI API key here. Calls then use GPT-Live-1 through the OpenAI API and bill that account per minute. The key is saved only on your Hermes computer, never on this Mac.")
+                            .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        OpenAIKeyButton(useAfterSaving: true)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Update Speakeasy on your Hermes to add your OpenAI API key here. Calls then use GPT-Live-1 through the OpenAI API and bill that account per minute. The key is saved only on your Hermes computer, never on this Mac.")
+                            .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        PluginUpdateForSignInButton()
+                    }
+                }
             }
             Spacer()
             HStack {

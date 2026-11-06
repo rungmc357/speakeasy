@@ -1801,6 +1801,9 @@ public final class NativeVoiceClient: VoiceCallClient {
         case .signInCodex, .chooseVoice:
             dispatch(.reset)
             onAccountFix?(fix)
+        case .updatePlugin:
+            dispatch(.reset)
+            model.onPluginUpdate()
         }
     }
 

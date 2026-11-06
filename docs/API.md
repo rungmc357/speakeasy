@@ -90,6 +90,7 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/brief/tune/dismiss` | device | Discard the proposal |
 | GET | `/voice/status` | device | Provider, Hermes API, brief readiness |
 | POST, GET, DELETE | `/voice/codex/login` | device | Sign Codex in to ChatGPT from the app (device code): start, poll, cancel |
+| POST | `/voice/openai-key` | device | Add the OpenAI API key for the API-key voice from the app (Settings › Voice › Add key) |
 | GET | `/voice/destinations` | device | Where finished results can be posted |
 | POST | `/voice/destinations/suggest` | device | Ask Hermes to propose delivery channels (never saved) |
 | GET, POST | `/voice/onboarding` | device | First-run checklist |
@@ -1971,6 +1972,18 @@ line, stored in `state.sqlite3`, published or echoed. Values entered are fingerp
 hash, in memory) so any later Hermes output that echoes one is replaced with `[redacted]` before
 Speakeasy stores, speaks, pushes or returns it.
 
+### POST /voice/openai-key
+
+Settings › Voice › Add key (capability `openai_key`): the user pastes the OpenAI API key for the
+API-key voice into the app's secure box instead of running `hermes voice setup --api-key` on the
+Hermes computer. Body: `{"value": "sk-…"}` (exactly that key). Saved through Hermes' env writer as
+`SPEAKEASY_OPENAI_API_KEY` in this profile, the same place setup puts it. Reply:
+`{"saved": true, "api_key_set": true}` — never the key. 400 for anything that isn't a key (`reason`
+`not_a_key` when it doesn't start with `sk-`), 403 `managed` when Hermes refuses the write (an
+administrator manages the key), 429 after 8 tries a minute from one device, 413 over 16 KB. The
+body is read into a buffer that is zeroed whatever happens; it is never logged, stored in
+`state.sqlite3`, published or echoed.
+
 ## GET /voice/status
 
 Readiness. `voice_ready` is true when the chosen provider can start a call. When Codex is missing or signed out, `codex_message` says what to do. Grok voice (beta): `grok_beta` (the setting), `grok_signed_in` (Hermes holds an xAI sign-in), `grok_api_key_set` (`XAI_API_KEY` fallback), `grok_ready` and `grok_message` (what to do, e.g. run `hermes auth add xai-oauth`); with provider `grok`, onboarding's `codex_message` carries the Grok message. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only). `room_listening` (plugin 0.2.51+) is true when the server takes listening mode's `room` with `POST /voice/sessions`; missing on older plugins, which reject unknown session fields. `room_on_resume` is true when it also takes `room` with `resume_from`, which listening mode during a call needs (the app checks it before pausing the call for listening). `input_text` is true when the server takes a typed turn on a live call (`POST /voice/interactions/{id}/input-text`); missing on older plugins, which answer that route with 404, so apps show their composer only when it's true.
@@ -1979,7 +1992,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules`, `task_stop` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules`, `task_stop`, `openai_key` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 ### Agent kind

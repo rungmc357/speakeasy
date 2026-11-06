@@ -105,13 +105,15 @@ public struct SecureInputCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Image(systemName: "lock.fill").font(.system(size: 10, weight: .bold))
-                    Text(isSudo ? "ADMIN PASSWORD · NEEDS YOU" : isLogin ? "WEBSITE LOGIN · NEEDS YOU"
+                    Text(request.userStarted ? "SECURE" : isSudo ? "ADMIN PASSWORD · NEEDS YOU" : isLogin ? "WEBSITE LOGIN · NEEDS YOU"
                          : request.kind == .code ? "ONE-TIME CODE · NEEDS YOU" : "SECURE · NEEDS YOU")
                         .font(.system(size: 11, weight: .semibold)).tracking(0.6)
                     Spacer(minLength: 8)
-                    Text(countdown).font(.system(size: 11, weight: .medium)).monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel("\(request.secondsLeft(now: now)) seconds left")
+                    if !request.userStarted {
+                        Text(countdown).font(.system(size: 11, weight: .medium)).monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("\(request.secondsLeft(now: now)) seconds left")
+                    }
                 }
                 .foregroundStyle(accent)
                 Text(request.title)

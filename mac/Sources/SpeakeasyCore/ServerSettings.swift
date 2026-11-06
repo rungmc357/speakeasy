@@ -584,14 +584,14 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         switch provider.flatMap(VoiceProvider.init(rawValue:)) ?? .codex {
         case .codex:
             out.append(Check(id: "voice", ok: codexSignedIn == true, title: "ChatGPT sign-in",
-                             fix: codexSignedIn == true ? nil : "On the Hermes machine, run hermes voice setup (it signs you in to ChatGPT)"))
+                             fix: codexSignedIn == true ? nil : CodexLoginCopy.fix(canSignIn: canSignInCodex)))
         case .openai:
             out.append(Check(id: "voice", ok: apiKeySet == true, title: "OpenAI API key",
-                             fix: apiKeySet == true ? nil : "On the Hermes machine, run hermes voice setup --api-key"))
+                             fix: apiKeySet == true ? nil : OpenAIKeyCopy.fix(canAddKey: canAddOpenAIKey)))
         case .grok:
-            let ok = grokSignedIn ?? voiceReady ?? false
+            let ok = grokVoiceReady ?? voiceReady ?? false
             out.append(Check(id: "voice", ok: ok, title: "Grok Voice via your X/SuperGrok sign-in",
-                             fix: ok ? nil : "On the Hermes machine, run hermes auth add xai-oauth (SuperGrok or X Premium+), or set XAI_API_KEY"))
+                             fix: ok ? nil : GrokSignInCopy.notSignedIn))
         }
         let briefReady = briefState == "ready" || briefState == "edited"
         out.append(Check(id: "brief", ok: briefReady, title: "Voice brief",
@@ -907,11 +907,14 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var files: Bool = false
     /// The read-only Approvals page (`GET /voice/approvals`, ApprovalRules.swift).
     public var approvalRules: Bool = false
+    /// Add the OpenAI API key for the API-key voice from the app (`POST /voice/openai-key`, OpenAIKey.swift).
+    public var openaiKey: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
-                history: Bool = false, callNoLimit: Bool = false, modelChoice: Bool = false, codexLogin: Bool = false) {
-        self.codexLogin = codexLogin
+                history: Bool = false, callNoLimit: Bool = false, modelChoice: Bool = false, codexLogin: Bool = false,
+                openaiKey: Bool = false) {
+        self.codexLogin = codexLogin; self.openaiKey = openaiKey
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
         self.taskMessages = taskMessages; self.jobActivity = jobActivity; self.toolLog = toolLog
         self.startJobs = startJobs; self.jobSubagents = jobSubagents; self.history = history
@@ -923,7 +926,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
         case messageModes = "message_modes", questionState = "question_state", agents
-        case slashSkills = "slash_skills", files, approvalRules = "approval_rules"
+        case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -948,5 +951,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false
         files = (try? c.decodeIfPresent(Bool.self, forKey: .files)) ?? false
         approvalRules = (try? c.decodeIfPresent(Bool.self, forKey: .approvalRules)) ?? false
+        openaiKey = (try? c.decodeIfPresent(Bool.self, forKey: .openaiKey)) ?? false
     }
 }
