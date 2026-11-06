@@ -9,6 +9,10 @@ user's decision. The plugin only follows the tunnel's address (plugin/speakeasy/
     python3 speakeasy-cloudflare.py named speakeasy.example.com   # permanent address on your own domain
     python3 speakeasy-cloudflare.py restart | remove | status
 
+Needs no Homebrew: without cloudflared on PATH it downloads Cloudflare's own release into
+~/.hermes/bin and installs it only if it matches both GitHub's SHA-256 digest and the checksum in
+Cloudflare's release notes (Homebrew is still used first when it's there).
+
 Options: --hermes-home (default $HERMES_HOME or ~/.hermes), --port (default 8795), --metrics-port
 (default 8797). Never Tailscale Funnel. Docs: docs/AGENT_SETUP.md › Cloudflare mode.
 """
@@ -158,19 +162,128 @@ def remove_service(home: Path, run: Callable[..., Any] = subprocess.run) -> None
         pass
 
 
+RELEASES_API = "https://api.github.com/repos/cloudflare/cloudflared/releases/latest"
+CHECKSUM_LINE_RE = re.compile(r"^\s*([A-Za-z0-9._-]+):\s*([0-9a-f]{64})\s*$", re.MULTILINE)
+
+
+def release_asset_name(system: str, machine: str) -> str:
+    """The release file for this computer, "" when Cloudflare publishes none for it."""
+    system, machine = system.lower(), machine.lower()
+    arch = {"x86_64": "amd64", "amd64": "amd64", "arm64": "arm64", "aarch64": "arm64"}.get(machine, "")
+    if not arch:
+        return ""
+    if system == "darwin":
+        return f"cloudflared-darwin-{arch}.tgz"
+    if system == "linux":
+        return f"cloudflared-linux-{arch}"
+    return ""
+
+
+def bin_dir(home: Path) -> Path:
+    """``~/.hermes/bin`` (the Hermes root, shared by every profile), where the download goes."""
+    home = Path(home).expanduser()
+    root = home.parent.parent if home.parent.name == "profiles" else home
+    return root / "bin"
+
+
+def _fetch(url: str, timeout: float = 120) -> bytes:
+    """GET over HTTPS. A python.org Python on macOS often has no CA certificates installed
+    (CERTIFICATE_VERIFY_FAILED), so on any failure this retries with the system's curl."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "speakeasy-cloudflare", "Accept": "*/*"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 (fixed https GitHub URLs)
+            return r.read()
+    except Exception:
+        curl = shutil.which("curl")
+        if not curl:
+            raise
+    done = subprocess.run([curl, "-fsSL", "--proto", "=https", "--max-time", str(int(timeout)),
+                           "-A", "speakeasy-cloudflare", url], capture_output=True, timeout=timeout + 10)
+    if done.returncode != 0:
+        raise OSError(f"curl exited {done.returncode}")
+    return done.stdout
+
+
+def download_cloudflared(home: Path, out: Callable[[str], None], fetch: Callable[[str], bytes] = _fetch,
+                         system: str = "", machine: str = "") -> str:
+    """No package manager: download Cloudflare's own release into ``~/.hermes/bin`` and check it twice.
+
+    The archive must match GitHub's SHA-256 digest for that asset, and the program inside must match
+    the SHA-256 Cloudflare lists in the release notes. Anything else is refused and nothing is kept.
+    Returns the program's path, or "" (with the reason printed)."""
+    import io
+    import platform
+    import tarfile
+    name = release_asset_name(system or platform.system(), machine or platform.machine())
+    if not name:
+        out(f"  Cloudflare publishes no download for this computer ({platform.system()} {platform.machine()}).")
+        return ""
+    try:
+        release = json.loads(fetch(RELEASES_API))
+        asset = next(a for a in release.get("assets") or [] if a.get("name") == name)
+        digest = str(asset.get("digest") or "")
+        listed = dict(CHECKSUM_LINE_RE.findall(str(release.get("body") or "")))
+        program_sum = listed.get(name, "")
+        if not digest.startswith("sha256:") or not program_sum:
+            out("  The release has no checksum to verify the download against, so it wasn't installed.")
+            return ""
+        out(f"  Downloading {name} {release.get('tag_name', '')} from Cloudflare's GitHub releases…")
+        data = fetch(str(asset["browser_download_url"]))
+    except StopIteration:
+        out(f"  The latest release has no {name}.")
+        return ""
+    except Exception as exc:
+        out(f"  Couldn't download it ({type(exc).__name__}).")
+        return ""
+    if hashlib.sha256(data).hexdigest() != digest.split(":", 1)[1]:
+        out("  The download didn't match GitHub's checksum, so it wasn't installed.")
+        return ""
+    if name.endswith(".tgz"):
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+                member = next(m for m in tar.getmembers() if m.isfile() and Path(m.name).name == "cloudflared")
+                data = tar.extractfile(member).read()  # type: ignore[union-attr]
+        except (tarfile.TarError, StopIteration, AttributeError, OSError):
+            out("  The download wasn't the archive it should be, so it wasn't installed.")
+            return ""
+    if hashlib.sha256(data).hexdigest() != program_sum:
+        out("  The program didn't match the checksum in Cloudflare's release notes, so it wasn't installed.")
+        return ""
+    target = bin_dir(home) / "cloudflared"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(".cloudflared.partial")
+    partial.write_bytes(data)
+    partial.chmod(0o755)
+    os.replace(partial, target)
+    out(f"  ✓ Installed and verified: {target}")
+    return str(target)
+
+
 def install_cloudflared(out: Callable[[str], None], which: Callable[[str], str | None] = shutil.which,
-                        run: Callable[..., Any] = subprocess.run) -> str:
-    """cloudflared's path, installing it with Homebrew when that's available. "" when it isn't."""
+                        run: Callable[..., Any] = subprocess.run, home: Path | None = None,
+                        download: Callable[..., str] = download_cloudflared) -> str:
+    """cloudflared's path: already installed, or ``~/.hermes/bin``, or Homebrew when it's there, or a
+    verified download of Cloudflare's release (no package manager needed). "" when none works."""
     found = which("cloudflared")
     if found:
         return found
+    home = Path(home or os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
+    local = bin_dir(home) / "cloudflared"
+    if local.is_file() and os.access(local, os.X_OK):
+        return str(local)
     if which("brew"):
         out("  Running: brew install cloudflared")
         try:
             run(["brew", "install", "cloudflared"], timeout=900)
         except (OSError, subprocess.SubprocessError):
             pass
-        return which("cloudflared") or ""
+        found = which("cloudflared")
+        if found:
+            return found
+    got = download(home, out)
+    if got:
+        return got
     out("  Install cloudflared from Cloudflare's packages (https://developers.cloudflare.com/cloudflare-one/"
         "connections/connect-networks/downloads/), then run this script again.")
     return ""
@@ -241,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"service_file": str(service_file(home)), "installed": service_file(home).exists(),
                           "log": str(log_path(home))}, indent=2))
         return 0
-    binary = install_cloudflared(print)
+    binary = install_cloudflared(print, home=home)
     if not binary:
         return 1
     hostname = args.hostname.strip().lower().rstrip(".")

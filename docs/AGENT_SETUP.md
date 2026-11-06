@@ -76,7 +76,9 @@ Otherwise decide, without asking the user, from `tailscale status` on this compu
       curl -fsSL https://raw.githubusercontent.com/rungmc357/speakeasy/main/scripts/speakeasy-cloudflare.py -o speakeasy-cloudflare.py
       python3 speakeasy-cloudflare.py quick
 
-  It installs Cloudflare's tunnel daemon (Homebrew on a Mac), runs a free quick tunnel as a
+  It installs Cloudflare's tunnel daemon (Homebrew when it's there; otherwise it downloads
+  Cloudflare's own release into `~/.hermes/bin` and keeps it only if both published SHA-256
+  checksums match, so no package manager is needed), runs a free quick tunnel as a
   background service, turns on `server.tunnel`, and waits until the tunnel reports its address:
   it prints `✓ Cloudflare address is up: …`. Then run step 3; setup's output must say
   `✓ Connected through Cloudflare (works anywhere)`. That's the check that it worked.
@@ -233,6 +235,8 @@ an update). Brief sleep or a network drop keeps it. The app finds a new address 
 
 1. Install Cloudflare's tunnel daemon: `brew install cloudflared` on a Mac; on Linux, Cloudflare's
    package from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/.
+   Without either, the release file from https://github.com/cloudflare/cloudflared/releases works
+   (check its SHA-256 against the release notes; the script does this for you).
 2. Run it as a background service that outlives Hermes, pointed at the voice server, with its
    metrics on loopback (the plugin reads the address there):
    `cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:8797 --url http://127.0.0.1:8795`,
