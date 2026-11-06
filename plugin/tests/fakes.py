@@ -415,7 +415,9 @@ class FakeMac:
     """The Mac app's side of screen sharing: it answers every ``capture`` event on a call's feed over
     real HTTP, as the app does (``capturing`` first; only on 200 the upload or a failure).
     ``reply(capture_id)`` decides: ``{"data": bytes, "app": "Xcode", "delay": s}`` uploads,
-    ``{"fail": reason}`` reports a failed capture, None ignores the event."""
+    ``{"fail": reason}`` reports a failed capture, None ignores the event. ``"after": predicate``
+    holds the answer until the predicate is true (at most 10 s), for ordering that must not
+    depend on how fast the machine is."""
 
     def __init__(self, base: str, token: str, interaction: Any, reply: Callable[[str], dict[str, Any] | None]):
         self.base, self.token, self.interaction, self.reply = base, token, interaction, reply
@@ -438,6 +440,10 @@ class FakeMac:
         if how is None:
             return
         time.sleep(how.get("delay", 0))
+        if how.get("after"):
+            deadline = time.monotonic() + 10
+            while not how["after"]() and time.monotonic() < deadline and not self._stop.is_set():
+                time.sleep(0.02)
         iid = self.interaction.interaction_id
         url = f"/voice/interactions/{iid}/captures/{capture_id}"
         status, _ = http(self.base, "POST", url, {"status": "capturing"}, self.token)

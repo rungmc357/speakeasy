@@ -1478,9 +1478,10 @@ class SidebandWorker:
             # A short question names its card as asked; a long one gets a clean cut, never an ellipsis.
             whole = notice_text(question, 200) or ""
             self.store.set_title(idem, (whole if len(whole) <= 60 else short_title(question)) or "A quick choice")
-            self.store.update_run(idem, None, "completed")
+            # The card's question is stored before its finished status, so no reader sees it without one.
             self.store.set_result(idem, {"spoken": question, "full": f"**{question}**\n{listed}",
                                          "question": view, "views": [view]})
+            self.store.update_run(idem, None, "completed")
         except Exception:
             logger.warning("speakeasy: could not record the spoken choice card")
             return None
@@ -3153,11 +3154,11 @@ class SidebandWorker:
             # Named for what the house did ("Office lamp off · Bedroom lamps on"), else the ask itself.
             self.store.set_title(idem, (home_title(reply.spoken) if reply.ok else None) or short_title(request) or "Home")
             self.store.progress(idem, "request", request)
-            self.store.update_run(idem, None, backend.status)
             result = split_result(reply.spoken, ()) or {}
             if cards:
                 result["views"] = cards
-            self.store.set_result(idem, result or None)
+            self.store.set_result(idem, result or None)  # the answer first, then the finished status
+            self.store.update_run(idem, None, backend.status)
             self.store.progress(idem, "result", reply.spoken)
             if reply.ok:
                 # "Lights off" -> "Done": heard on the call, nothing to read, so no new-answer badge.
@@ -3233,11 +3234,11 @@ class SidebandWorker:
             self.store.set_title(idem, short_title(request) or "Quick answer")
             self.retitle(idem, request)
             self.store.progress(idem, "request", request)
-            self.store.update_run(idem, None, "completed")
             result = split_result(spoken, ()) or {"spoken": spoken, "full": spoken}
             if shown:
                 result["views"] = shown
-            self.store.set_result(idem, result)
+            self.store.set_result(idem, result)  # the answer first, then the finished status
+            self.store.update_run(idem, None, "completed")
             self.store.progress(idem, "result", spoken)
         except Exception:
             logger.warning("speakeasy: could not record the quick-answer card")
@@ -4887,7 +4888,26 @@ class SidebandWorker:
                               P.approval_note(self.names, description, choices))
         elif kind and kind.startswith("run."):
             status = kind.split(".", 1)[1]
-            if status in TERMINAL and not backend.run_id:
+            if status not in TERMINAL:
+                self.store.update_run(idem, None, status)
+                return
+            output, error = event.get("output"), event.get("error")
+            if status == "failed" and (line := failures.provider_line(output)):
+                # The session chat stream (and its run status) carry no error field: a failed turn's
+                # reply is Hermes' failure message quoting the provider. Keep only what it means.
+                output, error = None, error or line
+            result = split_result(output, self.rt.image_roots())
+            drafts = (result or {}).pop("_email_drafts", None) or []
+            # The answer (and why it failed) is stored before the finished status: anyone reading the
+            # task between the two writes saw "completed" with no answer or question yet.
+            self.store.set_result(idem, result)
+            failed_as = None  # a failures.py kind
+            if status == "failed":
+                # Hermes' error line maps to Speakeasy's own sentence; with neither a known reason nor
+                # an answer, the app points at Hermes' errors.log instead.
+                failed_as = failures.failure_kind(error) or (None if result else failures.UNKNOWN)
+                self.store.set_failure(idem, failed_as, None if failed_as in failures.REASONS else failures.failure_hint(error))
+            if not backend.run_id:
                 # A task that ran in a Discord/Telegram thread has no Hermes run id, and review cards,
                 # image routes, dismissals and "show" are all addressed by one: give it a local id
                 # so its pictures are not silently dropped.
@@ -4897,22 +4917,7 @@ class SidebandWorker:
                 self.store.update_run(idem, local, status)
             else:
                 self.store.update_run(idem, None, status)
-            if status not in TERMINAL:
-                return
-            output, error = event.get("output"), event.get("error")
-            if status == "failed" and (line := failures.provider_line(output)):
-                # The session chat stream (and its run status) carry no error field: a failed turn's
-                # reply is Hermes' failure message quoting the provider. Keep only what it means.
-                output, error = None, error or line
-            result = split_result(output, self.rt.image_roots())
-            drafts = (result or {}).pop("_email_drafts", None) or []
-            self.store.set_result(idem, result)
-            failed_as = None  # a failures.py kind
             if status == "failed":
-                # Hermes' error line maps to Speakeasy's own sentence; with neither a known reason nor
-                # an answer, the app points at Hermes' errors.log instead.
-                failed_as = failures.failure_kind(error) or (None if result else failures.UNKNOWN)
-                self.store.set_failure(idem, failed_as, None if failed_as in failures.REASONS else failures.failure_hint(error))
                 if failed_as in failures.REASONS:
                     logger.info("speakeasy: Hermes run %s failed (%s)", backend.run_id, failed_as)
                 else:
@@ -4963,6 +4968,9 @@ class SidebandWorker:
                 if not self.call_connected():
                     self.notices.draft_waiting(draft["draft_id"], draft.get("subject"))
             self.push_result(backend, idem, status, result, reason, stored_drafts, event)
+            # The app gets the answer, its drafts and pictures now; the voice may still wait for a pause
+            # before saying so, and the card must not wait with it.
+            self.publish()
             if self.call_connected():
                 # Never over a thought in progress: the answer (or its question) waits for a pause.
                 await self.wait_for_pause()

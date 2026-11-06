@@ -148,7 +148,7 @@ def test_an_answer_is_named_with_the_task_it_answers_not_the_newest_one(server, 
     service.rt.title_call = titler
     session, worker = start_call(server, service)
     worker.delegate("call_a", "Plan the garden beds for spring")
-    asked = wait_for(lambda: [t for t in tasks(server) if t["status"] == "completed" and t.get("result", {}).get("question")],
+    asked = wait_for(lambda: [t for t in tasks(server) if t["status"] == "completed" and (t.get("result") or {}).get("question")],
                      timeout=10)[0]
     wait_for(lambda: any(t.get("title") == "Plan the spring garden beds" for t in tasks(server)), timeout=10)
     worker.delegate("call_b", "Draft an email to the landlord about the broken boiler")
