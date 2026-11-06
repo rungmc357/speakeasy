@@ -205,7 +205,10 @@ final class HistoryBrowsingTests: XCTestCase {
         box.mark("c1", .failed("Couldn't reach your Hermes."))
         XCTAssertEqual(box.merged(into: [], session: "s").last?.delivery, .failed("Couldn't reach your Hermes."))
         box.mark("c1", .sent)
-        let echo = HistoryThreadMessage(id: "m2", role: .user, text: "yes", at: t0 + 2)
+        XCTAssertFalse(box.pending(in: "s"), "a sent message alone doesn't keep the page polling fast")
+        let unnamed = HistoryThreadMessage(id: "m2", role: .user, text: "yes", at: t0 + 2)
+        XCTAssertEqual(box.merged(into: [earlierYes, unnamed], session: "s").count, 3, "words never match (SPK-80)")
+        var echo = unnamed; echo.clientID = "c1"
         shown = box.merged(into: [earlierYes, echo], session: "s")
         XCTAssertEqual(shown.map(\.id), ["m1", "m2"], "the server's copy replaces ours")
         box.prune([earlierYes, echo], session: "s")

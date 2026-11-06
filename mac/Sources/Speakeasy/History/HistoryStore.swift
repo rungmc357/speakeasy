@@ -408,6 +408,7 @@ final class HistoryStore: ObservableObject {
                                                                    : $0.questionStateOrDerived }
                 }
                 self.outbox.prune(HistoryThread(c).messages, session: sessionID)
+                self.outbox.reconcile(c)
             } catch {
                 self?.detailErrors[sessionID] = Self.message(error)
             }
@@ -471,12 +472,10 @@ final class HistoryStore: ObservableObject {
     @Published private(set) var queuedBusy: Set<String> = []
     @Published var queuedError: String?
 
-    /// What became of a steered message: the server's receipt, or (just sent, or an older server)
-    /// "Sent to the running task".
-    func steerReceipt(_ text: String, at: Date?, session: String) -> SteeredMessage? {
-        if let r = conversations[session]?.steered.receipt(for: text, at: at) { return r }
-        guard !steered.isEmpty, steered.contains(text, at: at) else { return nil }
-        return SteeredMessage(clientID: "local", text: text, at: at, state: .sent)
+    /// What became of a steered message, by its client id only: the server's receipt, or (just
+    /// steered here) "Sent to the running task".
+    func steerReceipt(_ message: HistoryThreadMessage, session: String) -> SteeredMessage? {
+        steered.receipt(clientID: message.clientID, at: message.at, in: conversations[session]?.steered ?? [])
     }
 
     /// The open session works and its server can hold a message for later: Send asks first.
@@ -491,10 +490,9 @@ final class HistoryStore: ObservableObject {
     func cancelQueued(_ clientID: String) { actOnQueued(clientID) { try await $0.cancelQueued(sessionID: $1, clientID: clientID) } }
 
     func steerQueued(_ clientID: String) {
-        let text = target?.sessionID.flatMap { conversations[$0] }?.queued.first { $0.clientID == clientID }?.text
         actOnQueued(clientID) { backend, id in
             try await backend.steerQueued(sessionID: id, clientID: clientID)
-            if let text { self.steered.record(text) }
+            self.steered.record(clientID: clientID)
         }
     }
 
@@ -631,8 +629,8 @@ final class HistoryStore: ObservableObject {
                 if reply.deliveredAs == .queued {
                     self?.outbox.remove(request.clientID)   // the page's queued list shows it now
                 } else {
-                    if reply.deliveredAs == .steer && request.mode != nil { self?.steered.record(request.text) }
-                    self?.outbox.mark(request.clientID, .sent)
+                    if reply.deliveredAs == .steer && request.mode != nil { self?.steered.record(clientID: request.clientID) }
+                    self?.outbox.settle(request.clientID, reply.deliveredAs)
                 }
                 self?.bump(request.sessionID, text: request.text)
                 self?.load(request.sessionID)
@@ -869,7 +867,7 @@ final class HistoryStore: ObservableObject {
                 if reply.deliveredAs == .queued {
                     self?.outbox.remove(note.clientID)
                 } else {
-                    self?.outbox.mark(note.clientID, .sent)
+                    self?.outbox.settle(note.clientID, reply.deliveredAs)
                 }
                 self?.bump(session, text: reply.transcript ?? "Voice message")
                 self?.load(session)

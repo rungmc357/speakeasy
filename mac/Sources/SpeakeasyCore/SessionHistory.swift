@@ -358,6 +358,8 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
     public var card: HistoryWorkerTask?
     /// `assistant`: the worker's own update to the person (a tracker comment or its finish summary).
     public var update = false
+    /// `user`: the sending device's `client_id` (SPK-80): how an app knows this row is its message.
+    public var clientID: String?
 
     public init(id: String, kind: Kind, at: Date? = nil, text: String = "", tools: [JobActivityItem] = [], voice: Bool = false,
                 call: [HistoryCallLine]? = nil, card: HistoryWorkerTask? = nil, update: Bool = false) {
@@ -380,6 +382,7 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
         // The recording behind a voice row is named by the sending device's client id (SPK-80's id).
         voiceClip = nonEmpty(o["voice_clip"]) ?? (voice ? nonEmpty(o["client_id"]) : nil)
         voiceDuration = (o["voice_duration"] as? NSNumber)?.doubleValue
+        clientID = kind == .user ? nonEmpty(o["client_id"]) : nil
     }
 }
 
@@ -596,10 +599,14 @@ public struct HistoryMessageReply: Equatable, Sendable {
     public var deliveredAs: TaskMessageDelivery
     /// A queued message: 1 = sent next.
     public var queuePosition: Int?
+    /// The send's `client_id`, echoed, and the server's durable receipt (SPK-80).
+    public var clientID: String?
+    public var receiptID: String?
 
     public init(via: HistoryConversation.SendVia, runID: String?, deliveredAs: TaskMessageDelivery = .unknown,
-                queuePosition: Int? = nil) {
+                queuePosition: Int? = nil, clientID: String? = nil, receiptID: String? = nil) {
         self.via = via; self.runID = runID; self.deliveredAs = deliveredAs; self.queuePosition = queuePosition
+        self.clientID = clientID; self.receiptID = receiptID
     }
 
     public init?(json: Any?) {
@@ -607,7 +614,8 @@ public struct HistoryMessageReply: Equatable, Sendable {
               let via = (o["via"] as? String).flatMap(HistoryConversation.SendVia.init(rawValue:)) else { return nil }
         self.init(via: via, runID: nonEmpty(o["run_id"]),
                   deliveredAs: (o["delivered_as"] as? String).flatMap(TaskMessageDelivery.init(rawValue:)) ?? .unknown,
-                  queuePosition: (o["queue_position"] as? NSNumber)?.intValue)
+                  queuePosition: (o["queue_position"] as? NSNumber)?.intValue,
+                  clientID: nonEmpty(o["client_id"]), receiptID: nonEmpty(o["receipt_id"]))
     }
 }
 
