@@ -391,6 +391,7 @@ class VoiceService(SecureInputMixin):
         self._drain_lock = threading.Lock()
         self.store.settle_listeners.append(self._queue_settled)
         self.store.follow_up_listeners.append(self._follow_up_settled)
+        self.store.unused_listeners.append(self._messages_unused)
         # Device-wide live changes to the history (GET /voice/history/events): every client's list,
         # session page, board, widgets and Live Activity refresh within ~1-2 s of a change anywhere.
         self.history_events = HistoryEvents(self._history_stamp)
@@ -1786,7 +1787,9 @@ class VoiceService(SecureInputMixin):
                                             "now, or add them when it's done.", reason="not_now")
                 return self._queue(client_id, "task", run_id, self.store.session_for(key), key, text)
         got = self._once(client_id, lambda: self._with_staged(
-            device_id, ids, lambda staged: self._task_message(run_id, text, interaction_id, choice_task_id, staged)))
+            device_id, ids, lambda staged: self._task_message(run_id, text, interaction_id, choice_task_id, staged,
+                                                              client_id=client_id)),
+                         route="task", text=text)
         self._note_steered(client_id, got, None, text)
         return got
 
@@ -1803,6 +1806,7 @@ class VoiceService(SecureInputMixin):
                watch_key: str, text: str) -> dict[str, Any]:
         cid = client_id or ("q_" + secrets.token_hex(8))
         self.store.queue_message(cid, kind, target, page_session, watch_key, text)
+        self.store.begin_receipt(cid, "queued", page_session, H.said_key(text), state="queued")
         logger.info("speakeasy: a typed message waits for its task to finish")
         self.publish_all(watch_key)
         reply = self._queued_reply(cid)
@@ -1818,6 +1822,9 @@ class VoiceService(SecureInputMixin):
         run_id = self.store.openable_run_id(row["watch_key"]) or run_row.get("run_id")
         out: dict[str, Any] = {"ok": True, "run_id": run_id, "delivered_as": "queued", "client_id": client_id,
                                "queue_position": self.store.queue_position(client_id), "queue_state": row["state"]}
+        receipt = self.store.receipt(client_id)
+        if receipt is not None:
+            out["receipt_id"] = receipt["receipt_id"]
         if row["kind"] == "session":
             out["session_id"] = row["target"]
             out["via"] = self._send_via(row["target"])
@@ -1827,18 +1834,25 @@ class VoiceService(SecureInputMixin):
         return out
 
     @staticmethod
-    def _queued_public(row: dict[str, Any], position: int) -> dict[str, Any]:
+    def _queued_public(row: dict[str, Any], position: int | None) -> dict[str, Any]:
+        if row["state"] == "unused":
+            # Its task was stopped or cut off before it went: never sent on its own (Steer now or Cancel).
+            return {"client_id": row["client_id"], "text": row["text"], "at": row["created"], "position": None,
+                    "state": "unused", "label": "The task stopped before this was sent"}
         return {"client_id": row["client_id"], "text": row["text"], "at": row["created"], "position": position,
+                "state": "queued",
                 **({"error": "That didn't go through yet; it will be tried again."} if row.get("error") else {})}
 
     def queued_for(self, keys: list[str], page_session: str | None = None) -> list[dict[str, Any]]:
-        """Held messages for a page: waiting on any of *keys* or sent from *page_session*, oldest first."""
-        rows = self.store.queued_messages(keys, page_session)
+        """Held messages for a page: waiting on any of *keys* or sent from *page_session*, oldest first
+        (those a stopped task never sent too, as state unused, with no position)."""
+        rows = self.store.queued_messages(keys, page_session, states=("queued", "unused"))
         counts: dict[str, int] = {}
         out = []
         for row in rows:
-            counts[row["watch_key"]] = counts.get(row["watch_key"], 0) + 1
-            out.append(self._queued_public(row, counts[row["watch_key"]]))
+            if row["state"] == "queued":
+                counts[row["watch_key"]] = counts.get(row["watch_key"], 0) + 1
+            out.append(self._queued_public(row, counts.get(row["watch_key"]) if row["state"] == "queued" else None))
         return out
 
     def cancel_queued(self, client_id: str) -> dict[str, Any]:
@@ -1865,27 +1879,43 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(404, "That message isn't waiting any more.")
         if row["state"] == "sent" and row["reply"]:
             return {**row["reply"], "client_id": client_id}  # already sent (a retry)
-        if not self.store.claim_queued(client_id):
+        if not self.store.claim_queued(client_id, unused=True):
             raise ServiceError(409, "That message is being sent now.", reason="sending")
         return self._send_held(row, steered=True)
 
     def _send_held(self, row: dict[str, Any], steered: bool = False) -> dict[str, Any]:
         """Send one claimed held message (state sending) through the normal path; sent or back in the queue."""
         cid = row["client_id"]
+        receipt, mine = self.store.begin_receipt(cid, "queued", row["page_session"], H.said_key(row["text"]))
+        if not mine and receipt["stale"] and steered:
+            # Cut off mid-send by a restart (shown unused): Steer now is the user saying send it again.
+            self.store.drop_receipt(cid, back_to="queued")
+            receipt, mine = self.store.begin_receipt(cid, "queued", row["page_session"], H.said_key(row["text"]))
+        if not mine and receipt["state"] == "done" and receipt["reply"]:
+            # Sent already (a reload between sending it and noting it): never again.
+            self.store.finish_queued(cid, receipt["reply"])
+            self.publish_all(row["watch_key"])
+            return {**receipt["reply"], "client_id": cid}
+        if not mine:
+            self.store.release_queued(cid, "sending")
+            raise ServiceError(409, "That message is being sent now.", reason="sending")
         try:
             if row["kind"] == "session":
                 meta = H.session_meta(self.rt.state_db, row["target"])
                 if meta is None:
                     raise ServiceError(404, "I couldn't find that conversation.")
-                got = self._history_message(meta, row["text"])
+                got = self._history_message(meta, row["text"], client_id=cid)
             else:
-                got = self._task_message(row["target"], row["text"], None, None)
+                got = self._task_message(row["target"], row["text"], None, None, client_id=cid)
         except Exception as exc:
+            self.store.drop_receipt(cid, back_to="queued")
             self.store.release_queued(cid, type(exc).__name__)
             self.publish_all(row["watch_key"])
             raise
         reply = {k: v for k, v in got.items() if k != "task"}
         reply["client_id"] = cid
+        reply["receipt_id"] = receipt["receipt_id"]
+        self.store.finish_receipt(cid, reply, self._receipt_page(reply, row["page_session"]))
         if steered:
             self._note_steered(cid, got, row["page_session"], row["text"])
         self.store.finish_queued(cid, reply)
@@ -1919,6 +1949,18 @@ class VoiceService(SecureInputMixin):
             self.sweep_steered()
         except Exception as exc:
             logger.warning("speakeasy: checking steered messages failed (%s)", type(exc).__name__)
+
+    def _messages_unused(self, key: str, queued: list[str], steered: list[str]) -> None:
+        """store.unused_listeners: a stopped or interrupted task settled its held messages and unread
+        steers unused in the same write as its status; every page that lists them hears it."""
+        events = getattr(self, "history_events", None)
+        session = self.store.session_for(key)
+        for cid in [*queued, *steered]:
+            if events is not None:
+                events.publish("message_updated", {"session_id": session, "client_id": cid, "state": "unused"})
+        logger.info("speakeasy: a stopped task left %d held and %d steered message(s) unused",
+                    len(queued), len(steered))
+        self.publish_all(key)
 
     # -- what became of a steered message (docs/API.md "Steer or queue": receipts) --------------------
 
@@ -1994,7 +2036,15 @@ class VoiceService(SecureInputMixin):
                 continue
             target = self.store.openable_run_id(key) or run.get("run_id")
             try:
-                got = self._task_message(target, row["text"], None, None)
+                # Keyed by the steer's own id: a restart between sending it and noting it never sends twice.
+                got = self._once("fu-" + row["client_id"], lambda: self._task_message(
+                    target, row["text"], None, None, client_id="fu-" + row["client_id"]), route="steer_follow_up",
+                    page=row["page_session"], text=row["text"])
+                if got.get("delivered_as") == "pending" and not got.get("run_id"):
+                    if self.store.settle_steered(row["client_id"], "unused"):
+                        self._steer_changed(row, "unused")
+                        changed += 1
+                    continue
             except Exception as exc:
                 logger.warning("speakeasy: a steered message the task never read could not be resent (%s)",
                                type(exc).__name__)
@@ -2059,10 +2109,24 @@ class VoiceService(SecureInputMixin):
             self._drain_lock.release()
         return sent
 
-    def _once(self, client_id: str | None, send: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-        """Run ``send`` once per client_id (MESSAGE_REPLAY_S); a retry gets the first reply."""
+    def _once(self, client_id: str | None, send: Callable[[], dict[str, Any]], route: str = "message",
+              page: str | None = None, text: str | None = None) -> dict[str, Any]:
+        """Run ``send`` once per client_id, across restarts (store.message_receipts): a retry gets the
+        first reply, with the same receipt_id. A send a restart cut off is never sent again (it may
+        have gone): its retry is answered as pending. Every reply carries client_id and receipt_id
+        (a send with no client_id gets a fresh receipt_id, kept only for its history row).
+        *page*: the history page its user row shows on (else the session of the task it reached)."""
         if client_id is None:
-            return send()
+            cid = "srv_" + secrets.token_hex(8)
+            receipt, _ = self.store.begin_receipt(cid, route, page, H.said_key(text) if text else None)
+            try:
+                reply = send()
+            except Exception:
+                self.store.drop_receipt(cid)
+                raise
+            reply["receipt_id"] = receipt["receipt_id"]
+            self.store.finish_receipt(cid, self._receipt_reply(reply), self._receipt_page(reply, page))
+            return reply
         mine, event = self._claim_message(client_id)
         if not mine:
             event.wait(M.START_WAIT_S + 15)
@@ -2072,7 +2136,7 @@ class VoiceService(SecureInputMixin):
                 raise ServiceError(409, "That message is still being sent. Try again in a moment.")
             return done[2]
         try:
-            reply = send()
+            reply = self._once_durable(client_id, send, route, page, text)
         except Exception:
             with self._message_lock:
                 self._message_replies.pop(client_id, None)  # a failed send may be retried with the same id
@@ -2082,6 +2146,75 @@ class VoiceService(SecureInputMixin):
             self._message_replies[client_id] = (time.monotonic(), event, reply)
         event.set()
         return reply
+
+    def _once_durable(self, client_id: str, send: Callable[[], dict[str, Any]], route: str,
+                      page: str | None, text: str | None) -> dict[str, Any]:
+        receipt, mine = self.store.begin_receipt(client_id, route, page, H.said_key(text) if text else None)
+        if not mine:
+            if receipt["state"] == "done" and receipt["reply"] is not None:
+                return self._replayed(receipt)
+            if receipt["state"] == "queued":
+                held = self._queued_reply(client_id)
+                if held is not None:
+                    return held
+            if receipt["stale"]:
+                # Being sent when the service restarted: it may already have reached the task.
+                return {"ok": True, "run_id": None, "delivered_as": "pending", "client_id": client_id,
+                        "receipt_id": receipt["receipt_id"], "receipt_state": "interrupted"}
+            raise ServiceError(409, "That message is still being sent. Try again in a moment.")
+        try:
+            reply = send()
+        except Exception:
+            self.store.drop_receipt(client_id)
+            raise
+        reply["client_id"] = client_id
+        reply["receipt_id"] = receipt["receipt_id"]
+        self.store.finish_receipt(client_id, self._receipt_reply(reply), self._receipt_page(reply, page))
+        return reply
+
+    @staticmethod
+    def _receipt_reply(reply: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in reply.items() if k not in {"task", "attachments"}}
+
+    def _receipt_page(self, reply: dict[str, Any], page: str | None) -> str | None:
+        """The history page a sent message's user row shows on: the page it was sent from, else the
+        session of the task that took it."""
+        if page:
+            return page
+        if reply.get("session_id"):
+            return reply["session_id"]
+        key = self.store.key_for_run(reply["run_id"]) if reply.get("run_id") else None
+        return self.store.session_for(key) if key else None
+
+    def _replayed(self, receipt: dict[str, Any]) -> dict[str, Any]:
+        """The first reply again, for a retry (after a restart too), with the task as it is now."""
+        reply = dict(receipt["reply"])
+        reply["client_id"], reply["receipt_id"] = receipt["client_id"], receipt["receipt_id"]
+        if receipt.get("delivered_as"):
+            reply["delivered_as"] = receipt["delivered_as"]
+        if reply.get("run_id") and "task" not in reply:
+            task = self.store.work(reply["run_id"], assistant_name=self.settings.get()["assistant_name"])
+            if task is not None:
+                reply["task"] = task
+        reply["replayed"] = True
+        return reply
+
+    def _resolver(self, client_id: str | None) -> Any:
+        """For messages.deliver: a pending receipt learns where its message went."""
+        if not client_id:
+            return None
+
+        def resolved(delivered_as: str) -> None:
+            for _ in range(50):  # the reply may still be being written
+                if self.store.resolve_receipt(client_id, delivered_as):
+                    break
+                receipt = self.store.receipt(client_id)
+                if receipt is None or (receipt["state"] == "done" and receipt["delivered_as"] != "pending"):
+                    break
+                time.sleep(0.1)
+        def run(delivered_as: str) -> None:
+            threading.Thread(target=resolved, args=(delivered_as,), daemon=True).start()
+        return run
 
     def start_job(self, body: dict[str, Any], device_id: str | None = None) -> dict[str, Any]:
         """``POST /voice/work``: a new job from text typed in the app, with no call (the plugin-update
@@ -2108,7 +2241,8 @@ class VoiceService(SecureInputMixin):
         if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
             raise ServiceError(400, "client_id must be an id.")
         return self._once(client_id, lambda: self._with_staged(
-            device_id, ids, lambda staged: self._start_job(text, staged, choice=choice, new_chat=True)))
+            device_id, ids, lambda staged: self._start_job(text, staged, choice=choice, new_chat=True)),
+                          route="work", text=text)
 
     @staticmethod
     def _attachment_ids(body: dict[str, Any]) -> list[str]:
@@ -2181,7 +2315,8 @@ class VoiceService(SecureInputMixin):
         # Its Hermes session id, known the moment it started (the history page it continues on): a New
         # chat page becomes that session at once, so its next message continues it instead of starting another.
         session = self.store.session_for(key) if key else None
-        return {"ok": True, "run_id": run_id, "task_id": got["task_id"], "task": task, "session_id": session}
+        return {"ok": True, "run_id": run_id, "task_id": got["task_id"], "task": task, "session_id": session,
+                "delivered_as": "new_run"}
 
     def _claim_message(self, client_id: str) -> tuple[bool, threading.Event]:
         now = time.monotonic()
@@ -2246,7 +2381,8 @@ class VoiceService(SecureInputMixin):
             return self._text_worker
 
     def _task_message(self, run_id: str, text: str, interaction_id: str | None,
-                      choice_task_id: str | None, staged: list[A.Attachment] | None = None) -> dict[str, Any]:
+                      choice_task_id: str | None, staged: list[A.Attachment] | None = None,
+                      client_id: str | None = None) -> dict[str, Any]:
         if interaction_id:
             self.interaction(interaction_id)  # 404 for an unknown call
         if staged and choice_task_id and choice_task_id.startswith("choice_"):
@@ -2268,7 +2404,8 @@ class VoiceService(SecureInputMixin):
             task_id = next((t for t, r in worker.interaction.runs.items() if r.idem_key == key), None)
         if task_id is None or worker is self._text_worker:
             task_id = M.adopt_row(worker, row)
-        future = asyncio.run_coroutine_threadsafe(M.deliver(worker, task_id, text, staged=staged or None), worker.loop)
+        future = asyncio.run_coroutine_threadsafe(
+            M.deliver(worker, task_id, text, staged=staged or None, resolved=self._resolver(client_id)), worker.loop)
         try:
             got = future.result(M.START_WAIT_S + 10)
         except LookupError:
@@ -2294,7 +2431,8 @@ class VoiceService(SecureInputMixin):
         if call is not None:
             call.interaction.feed.publish("transcript", {"kind": "text", "role": "user", "source": "typed",
                                                       "text": text, "task_id": got["task_id"],
-                                                      "run_id": new_run, "at": time.time()})
+                                                      "run_id": new_run, "at": time.time(),
+                                                      **({"client_id": client_id} if client_id else {})})
             asyncio.run_coroutine_threadsafe(self._note_message(call, name_for, text), call.loop)
         self.publish_all(new_key)
         logger.info("speakeasy: a typed message went to a task as a %s", got["delivered_as"])
@@ -2760,7 +2898,9 @@ class VoiceService(SecureInputMixin):
         if not client_id:
             return False
         with self._message_lock:
-            return client_id in self._message_replies
+            if client_id in self._message_replies:
+                return True
+        return self.store.receipt(client_id) is not None
 
     # Cached history replies: the apps poll an open page every few seconds and the list every ~12 s,
     # and state.db can be many GB. A reply is reused while nothing it depends on changed (H.fingerprint
@@ -2931,6 +3071,7 @@ class VoiceService(SecureInputMixin):
             pairs = self._pair_voice_clips(sid, voiced)
             ids = {id(e) for e in voiced}
             entries = [self._voice_entry(e, pairs.get(str(e.get("id")))) if id(e) in ids else e for e in entries]
+        entries = self._bind_sent_rows(sid, entries)
         typed = self._typed_requests(list(dict.fromkeys(continued + keys)))
         if typed:
             # A message typed in the app with no call is never "From a call" (its task's brief may still
@@ -3061,12 +3202,13 @@ class VoiceService(SecureInputMixin):
                 return held
 
         def deliver(staged: list[A.Attachment] | None) -> dict[str, Any]:
-            got = (self._answer_question(meta, answers, text, staged) if answers
-                   else self._history_message(meta, text, staged))
+            got = (self._answer_question(meta, answers, text, staged, client_id=client_id) if answers
+                   else self._history_message(meta, text, staged, client_id=client_id))
             if voice:
                 self._note_voice_message(meta["id"], text)
             return got
-        got = self._once(client_id, lambda: self._with_staged(device_id, ids, deliver))
+        got = self._once(client_id, lambda: self._with_staged(device_id, ids, deliver), route="history",
+                         page=meta["id"], text=text)
         self._note_steered(client_id, got, meta["id"], text)
         return got
 
@@ -3114,6 +3256,29 @@ class VoiceService(SecureInputMixin):
             out["voice_duration"] = float(clip["duration"])
         return out
 
+    def _bind_sent_rows(self, session_id: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """User rows sent from the apps carry the exact send's client_id and receipt_id (SPK-80): each
+        row is bound once, for good, to the receipt of the send that wrote it (store.bind_message_rows),
+        so two sends with the same words stay two and a reload never moves an id. A voice message keeps
+        its clip's client id."""
+        users = [e for e in entries if e.get("kind") == "user" and not e.get("client_id") and e.get("id") is not None]
+        if not users:
+            return entries
+        try:
+            pairs = self.store.bind_message_rows(
+                session_id, [(str(e["id"]), H.said_key(e.get("text") or ""), e.get("at")) for e in users],
+                self._VOICE_CLIP_SLACK_S)
+        except Exception:  # noqa: BLE001 - a page without ids reads as before
+            logger.debug("speakeasy: sent rows not bound", exc_info=True)
+            return entries
+        if not pairs:
+            return entries
+        out = []
+        for e in entries:
+            found = pairs.get(str(e.get("id"))) if e.get("kind") == "user" and not e.get("client_id") else None
+            out.append({**e, "client_id": found[0], "receipt_id": found[1]} if found else e)
+        return out
+
     def _voice_said(self, session_id: str) -> set[str]:
         try:
             said = json.loads(self.store.get_meta("voice_said:" + session_id) or "[]")
@@ -3122,13 +3287,13 @@ class VoiceService(SecureInputMixin):
         return {h for h in said if isinstance(h, str)} if isinstance(said, list) else set()
 
     def _history_message(self, meta: dict[str, Any], text: str,
-                         staged: list[A.Attachment] | None = None) -> dict[str, Any]:
+                         staged: list[A.Attachment] | None = None, client_id: str | None = None) -> dict[str, Any]:
         sid = meta["id"]
         link = self._linked(sid)
         if self._speakeasy_owned(meta, link) and link is not None:
             for run_id in link.run_ids:
                 try:
-                    got = self._task_message(run_id, text, None, None, staged)
+                    got = self._task_message(run_id, text, None, None, staged, client_id=client_id)
                 except ServiceError as exc:
                     if exc.status in {404, 409} and exc.reason != "not_now":
                         continue  # a deleted/cancelled task: the next one in this session takes it
@@ -3139,10 +3304,10 @@ class VoiceService(SecureInputMixin):
             got = self._start_job(text, staged, session_id=sid)
             return {"ok": True, "session_id": sid, "via": "session_job", "run_id": got.get("run_id"),
                     "delivered_as": "follow_up", "task": got.get("task")}
-        return self._continue_linked(meta, text, staged)
+        return self._continue_linked(meta, text, staged, client_id=client_id)
 
     def _answer_question(self, meta: dict[str, Any], run_id: str, text: str,
-                         staged: list[A.Attachment] | None) -> dict[str, Any]:
+                         staged: list[A.Attachment] | None, client_id: str | None = None) -> dict[str, Any]:
         """A reply written for one decision card ("Reply…"): delivered to the task that asked, as its
         answer (a follow-up in that task's session, or a steer when its run still waits), even when
         another task of the conversation is newer. A task this conversation doesn't hold: refused."""
@@ -3152,7 +3317,7 @@ class VoiceService(SecureInputMixin):
             k for k, _, _ in self.store.keys_for_session(sid)}
         if key is None or key not in mine:
             raise ServiceError(404, "I couldn't find that question in this conversation.")
-        got = self._task_message(run_id, text, None, None, staged)
+        got = self._task_message(run_id, text, None, None, staged, client_id=client_id)
         return {"ok": True, "session_id": sid, "via": "answer", "run_id": got.get("run_id"),
                 "delivered_as": got.get("delivered_as") or "answer", "task": got.get("task")}
 
@@ -3196,7 +3361,7 @@ class VoiceService(SecureInputMixin):
         return [] if chat is not None and chat > since else keys
 
     def _continue_linked(self, meta: dict[str, Any], text: str,
-                         staged: list[A.Attachment] | None = None) -> dict[str, Any]:
+                         staged: list[A.Attachment] | None = None, client_id: str | None = None) -> dict[str, Any]:
         """A chat Speakeasy can't write into (its reply would go back to the chat): the newest linked
         task for it takes the message (steer, answer or follow-up in its own session) while that task's
         thread is the newest part of the conversation. Otherwise (the first message, or the chat went
@@ -3212,7 +3377,7 @@ class VoiceService(SecureInputMixin):
             if not run_id:
                 continue
             try:
-                got = self._task_message(run_id, text, None, None, staged)
+                got = self._task_message(run_id, text, None, None, staged, client_id=client_id)
             except ServiceError as exc:
                 if exc.status in {404, 409} and exc.reason != "not_now":
                     continue

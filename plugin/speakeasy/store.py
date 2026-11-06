@@ -28,6 +28,9 @@ from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_t
 from .text import TITLE_META, fix_product_names, outcome_headline, request_notes, stand_in_titles as _stand_ins, vague_title
 
 STALE_AFTER_S = 90
+# A task that ended this way never sends its held messages or reads its steers: both settle unused,
+# in the same write as its status (a failed turn still sends what was held, as before).
+UNUSED_ON = frozenset({RunState.CANCELLED.value, RunState.INTERRUPTED.value})
 MAX_REVIEWS = 3  # finished-image review cards carried onto the call panel
 SHARED_KINDS = frozenset({"screen", "picture", "file"})
 MAX_SHARED = 12  # things shared with one task kept on its card (a running task can be shown more): the
@@ -236,6 +239,12 @@ class StateStore:
         self.settle_listeners: list[Any] = []
         # Called (key, follow_up_id, state) when a follow-up receipt settles (landed / not_read).
         self.follow_up_listeners: list[Any] = []
+        # Called (key, queued client ids, steered client ids) after a stopped or interrupted task's
+        # held and steered messages were settled unused (in the same write as its status).
+        self.unused_listeners: list[Any] = []
+        # This process's own mark on a message receipt being sent: a receipt still "sending" under
+        # another mark was cut off by a restart (never sent again: it may already have gone).
+        self.boot = secrets.token_hex(6)
         with self._db:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("""CREATE TABLE IF NOT EXISTS admissions (
@@ -386,7 +395,26 @@ class StateStore:
                 client_id TEXT PRIMARY KEY, idem_key TEXT NOT NULL, page_session TEXT, text TEXT NOT NULL,
                 sent_at REAL NOT NULL, state TEXT NOT NULL, seen_at REAL, follow_up_run TEXT, updated REAL NOT NULL)""")
             self._db.execute("CREATE INDEX IF NOT EXISTS steered_messages_key ON steered_messages(idem_key, sent_at)")
-            # A send cut off by a reload: held again (at least once beats silently never).
+            # One row per typed message with a client_id (SPK-80): the durable idempotency record and
+            # its receipt. state: queued (held, see queued_messages) -> sending -> done. A failed send
+            # deletes its row (the same client_id may be tried again). delivered_as: steer | queued |
+            # follow_up | new_run | answer | linked | pending (not known yet). page_session: the history
+            # page that shows its user row; message_rows binds it to that row once, for good.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS message_receipts (
+                client_id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL, route TEXT NOT NULL, page_session TEXT,
+                said TEXT, state TEXT NOT NULL, delivered_as TEXT, reply_json TEXT, boot TEXT,
+                created REAL NOT NULL, updated REAL NOT NULL)""")
+            self._db.execute("CREATE INDEX IF NOT EXISTS message_receipts_page ON message_receipts(page_session)")
+            self._db.execute("""CREATE TABLE IF NOT EXISTS message_rows (
+                page TEXT NOT NULL, row_id TEXT NOT NULL, client_id TEXT NOT NULL UNIQUE,
+                PRIMARY KEY (page, row_id))""")
+            # A held send cut off by a reload: sent already (its receipt says so) -> sent, never again;
+            # cut off mid-send -> unused (it may have gone: shown, Steer now resends it); else held again.
+            self._db.execute("UPDATE queued_messages SET state='sent', reply_json=(SELECT reply_json FROM "
+                             "message_receipts r WHERE r.client_id=queued_messages.client_id) WHERE state='sending' "
+                             "AND client_id IN (SELECT client_id FROM message_receipts WHERE state='done')")
+            self._db.execute("UPDATE queued_messages SET state='unused', error='interrupted' WHERE state='sending' "
+                             "AND client_id IN (SELECT client_id FROM message_receipts WHERE state='sending')")
             self._db.execute("UPDATE queued_messages SET state='queued' WHERE state='sending'")
             # The Hermes profile (agents.py) a chat ("session:<id>") or a new chat's first task
             # ("task:<task id>") runs on. No row = Speakeasy's own profile.
@@ -1332,6 +1360,7 @@ class StateStore:
         now = time.time()
         snapshot = self._context_snapshot(key) if to in TERMINAL else None
         marks = ",".join("?" * len(allowed))
+        unused: tuple[list[str], list[str]] = ([], [])
         with self._lock, self._db:
             moved = self._db.execute(
                 f"UPDATE runs SET run_id=COALESCE(?,run_id),status=?,updated=? WHERE idem_key=? AND status IN ({marks})",
@@ -1354,6 +1383,8 @@ class StateStore:
                     mirror.status = to
                     if run_id is not None and hasattr(mirror, "run_id"):
                         mirror.run_id = run_id
+                if to in UNUSED_ON:
+                    unused = self._settle_unused(key, now)
             else:
                 row = self._db.execute("SELECT status FROM runs WHERE idem_key=?", (key,)).fetchone()
                 if row is not None and run_id is not None:
@@ -1366,6 +1397,12 @@ class StateStore:
                     logger.info("speakeasy: run status %s -> %s refused (not from %s)", row[0], to, ",".join(allowed))
                     if mirror is not None and row[0] in FINAL:
                         mirror.status = row[0]
+        if moved and (unused[0] or unused[1]):
+            for listener in list(self.unused_listeners):
+                try:
+                    listener(key, *unused)
+                except Exception:  # a listener never breaks a status write
+                    pass
         if moved and to in TERMINAL:
             for listener in list(self.settle_listeners):
                 try:
@@ -1508,11 +1545,13 @@ class StateStore:
         ahead = [r["client_id"] for r in self.queued_messages([row["watch_key"]])]
         return ahead.index(client_id) + 1 if client_id in ahead else None
 
-    def claim_queued(self, client_id: str) -> bool:
-        """queued -> sending, exactly once (a drain and a Steer now never both send it)."""
+    def claim_queued(self, client_id: str, unused: bool = False) -> bool:
+        """queued -> sending, exactly once (a drain and a Steer now never both send it). *unused*: a
+        held message its stopped task never sent may be claimed too (Steer now)."""
+        states = "('queued','unused')" if unused else "('queued')"
         with self._lock, self._db:
             return self._db.execute("UPDATE queued_messages SET state='sending', updated=? "
-                                    "WHERE client_id=? AND state='queued'", (time.time(), client_id)).rowcount == 1
+                                    f"WHERE client_id=? AND state IN {states}", (time.time(), client_id)).rowcount == 1
 
     def finish_queued(self, client_id: str, reply: dict[str, Any]) -> None:
         with self._lock, self._db:
@@ -1532,7 +1571,7 @@ class StateStore:
             row = self._db.execute("SELECT state FROM queued_messages WHERE client_id=?", (client_id,)).fetchone()
             if row is None:
                 return None
-            if row[0] != "queued":
+            if row[0] not in {"queued", "unused"}:
                 return row[0]
             self._db.execute("UPDATE queued_messages SET state='cancelled', updated=? WHERE client_id=?",
                              (time.time(), client_id))
@@ -1543,6 +1582,119 @@ class StateStore:
         with self._lock, self._db:
             self._db.execute("UPDATE queued_messages SET watch_key=?, updated=? WHERE watch_key=? AND state='queued'",
                              (new_key, time.time(), old_key))
+
+    def _settle_unused(self, key: str, now: float) -> tuple[list[str], list[str]]:
+        """A stopped or interrupted task (UNUSED_ON): its held messages and the steers it never read
+        are unused, in the caller's transaction (under the lock). Never sent on their own after that."""
+        queued = [r[0] for r in self._db.execute(
+            "SELECT client_id FROM queued_messages WHERE watch_key=? AND state='queued'", (key,)).fetchall()]
+        steered = [r[0] for r in self._db.execute(
+            "SELECT client_id FROM steered_messages WHERE idem_key=? AND state='sent'", (key,)).fetchall()]
+        if queued:
+            self._db.execute("UPDATE queued_messages SET state='unused', updated=? WHERE watch_key=? AND state='queued'",
+                             (now, key))
+        if steered:
+            self._db.execute("UPDATE steered_messages SET state='unused', updated=? WHERE idem_key=? AND state='sent'",
+                             (now, key))
+        return queued, steered
+
+    # -- message receipts (SPK-80: one per client_id, across restarts) ---------------------------
+    _RECEIPT_COLS = "client_id,receipt_id,route,page_session,said,state,delivered_as,reply_json,boot,created,updated"
+
+    def _receipt_dict(self, row: tuple[Any, ...]) -> dict[str, Any]:
+        out: dict[str, Any] = dict(zip(self._RECEIPT_COLS.split(","), row))
+        try:
+            out["reply"] = json.loads(out.pop("reply_json")) if out.get("reply_json") else None
+        except ValueError:
+            out["reply"] = None
+        out["stale"] = out["state"] == "sending" and out["boot"] != self.boot
+        return out
+
+    def receipt(self, client_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(f"SELECT {self._RECEIPT_COLS} FROM message_receipts WHERE client_id=?",
+                                   (client_id,)).fetchone()
+        return self._receipt_dict(row) if row else None
+
+    def begin_receipt(self, client_id: str, route: str, page_session: str | None = None,
+                      said: str | None = None, state: str = "sending") -> tuple[dict[str, Any], bool]:
+        """Claim a client_id for one send (*state* sending) or one held message (queued): (its row,
+        whether this call owns the send). A held one moves queued -> sending here, once."""
+        now = time.time()
+        with self._lock, self._db:
+            mine = self._db.execute(
+                f"INSERT OR IGNORE INTO message_receipts ({self._RECEIPT_COLS}) VALUES (?,?,?,?,?,?,NULL,NULL,?,?,?)",
+                (client_id, "rcpt_" + secrets.token_hex(8), route, page_session, said, state, self.boot,
+                 now, now)).rowcount == 1
+            if not mine and state == "sending":
+                mine = self._db.execute("UPDATE message_receipts SET state='sending', boot=?, updated=? "
+                                        "WHERE client_id=? AND state='queued'",
+                                        (self.boot, now, client_id)).rowcount == 1
+            row = self._db.execute(f"SELECT {self._RECEIPT_COLS} FROM message_receipts WHERE client_id=?",
+                                   (client_id,)).fetchone()
+        return self._receipt_dict(row), mine
+
+    def finish_receipt(self, client_id: str, reply: dict[str, Any], page_session: str | None = None) -> None:
+        with self._lock, self._db:
+            self._db.execute("UPDATE message_receipts SET state='done', delivered_as=?, reply_json=?, "
+                             "page_session=COALESCE(?,page_session), updated=? WHERE client_id=?",
+                             (reply.get("delivered_as"), json.dumps(reply), page_session, time.time(), client_id))
+
+    def resolve_receipt(self, client_id: str, delivered_as: str) -> bool:
+        """A send answered as pending learned where it went (steer / follow_up / new_run)."""
+        with self._lock, self._db:
+            row = self._db.execute("SELECT reply_json FROM message_receipts WHERE client_id=? AND state='done' "
+                                   "AND delivered_as='pending'", (client_id,)).fetchone()
+            if row is None:
+                return False
+            try:
+                reply = json.loads(row[0]) if row[0] else {}
+            except ValueError:
+                reply = {}
+            reply["delivered_as"] = delivered_as
+            self._db.execute("UPDATE message_receipts SET delivered_as=?, reply_json=?, updated=? WHERE client_id=?",
+                             (delivered_as, json.dumps(reply), time.time(), client_id))
+        return True
+
+    def drop_receipt(self, client_id: str, back_to: str | None = None) -> None:
+        """A send that failed: forgotten (the same client_id may be tried again), or a held one back
+        in the queue (*back_to* = queued)."""
+        with self._lock, self._db:
+            if back_to:
+                self._db.execute("UPDATE message_receipts SET state=?, updated=? WHERE client_id=? AND state!='done'",
+                                 (back_to, time.time(), client_id))
+            else:
+                self._db.execute("DELETE FROM message_receipts WHERE client_id=? AND state!='done'", (client_id,))
+
+    def bind_message_rows(self, page: str, rows: list[tuple[str, str, Any]],
+                          slack: float = 30.0) -> dict[str, tuple[str, str]]:
+        """Row id -> (client_id, receipt_id) for the user rows (row id, said key, written at) of one
+        history page. A row keeps the receipt it was first bound to; an unbound row takes the oldest
+        unbound receipt sent to this page with the same words sent no later than the row was written
+        (plus *slack*), one to one, so two sends with equal words stay two. None fits: no id."""
+        out: dict[str, tuple[str, str]] = {}
+        with self._lock, self._db:
+            bound = {r[0]: r[1] for r in self._db.execute(
+                "SELECT row_id, client_id FROM message_rows WHERE page=?", (page,)).fetchall()}
+            receipts = self._db.execute(
+                "SELECT client_id, receipt_id, said, created FROM message_receipts WHERE page_session=? "
+                "AND said IS NOT NULL AND state='done' ORDER BY created, rowid", (page,)).fetchall()
+            ids = {c: r for c, r, _, _ in receipts}
+            taken = set(bound.values())
+            for row_id, said, at in rows:
+                if row_id in bound:
+                    if bound[row_id] in ids:
+                        out[row_id] = (bound[row_id], ids[bound[row_id]])
+                    continue
+                limit = (float(at) if isinstance(at, (int, float)) else float("inf")) + slack
+                for cid, rid, rsaid, created in receipts:
+                    if cid not in taken and rsaid == said and created <= limit:
+                        self._db.execute("INSERT OR IGNORE INTO message_rows (page,row_id,client_id) VALUES (?,?,?)",
+                                         (page, row_id, cid))
+                        taken.add(cid)
+                        out[row_id] = (cid, rid)
+                        break
+        return out
 
     def set_failure(self, key: str, kind: str | None, hint: str | None = None) -> None:
         """Why the run failed, as a ``failures`` kind (the app and voice get Speakeasy's own words),

@@ -63,10 +63,13 @@ def carry(worker: "SidebandWorker", delegation_id: str, staged: list[Any] | None
 
 
 async def deliver(worker: "SidebandWorker", task_id: str, text: str,
-                  choice_task_id: str | None = None, staged: list[Any] | None = None) -> dict[str, Any]:
+                  choice_task_id: str | None = None, staged: list[Any] | None = None,
+                  resolved: Any = None) -> dict[str, Any]:
     """Give ``text`` to one task of this worker's call; runs on the worker's loop. Returns
     ``{delivered_as, task_id}`` (the task that got it: a follow-up job is a new task of the same
-    job). Never says anything to the voice; the caller sends one silent note."""
+    job). delivered_as: answer | steer | follow_up | new_run | pending (still being handed over:
+    *resolved*(delivered_as) is called, off the caller, once it is known). Never says anything to
+    the voice; the caller sends one silent note."""
     from .calls import TERMINAL
     if staged and choice_task_id:
         raise AttachmentsNotTaken("a spoken choice takes words only")
@@ -113,6 +116,9 @@ async def deliver(worker: "SidebandWorker", task_id: str, text: str,
         worker.follow_up(delegation_id, 0, f"User: {text}", router.Part("follow_up", text, task_id)))
     worker.dispatch_tasks.add(follow)
     follow.add_done_callback(worker.dispatch_tasks.discard)
+    # Where it went is said by the branch of follow_up that took it (worker.note_outcome), never
+    # guessed from no run showing up in time (SPK-80).
+    outcomes: dict[str, str] = worker.__dict__.setdefault("delivery_outcomes", {})
     deadline = time.monotonic() + START_WAIT_S
     started = None
     while time.monotonic() < deadline and not follow.done():
@@ -124,16 +130,43 @@ async def deliver(worker: "SidebandWorker", task_id: str, text: str,
         await asyncio.sleep(0.05)
     with worker.interaction.lock:
         started = worker.interaction.runs.get(delegation_id)
-    if follow.done() and not follow.cancelled() and follow.exception() is not None and started is None:
+    outcome = outcomes.get(delegation_id)
+    failed = follow.done() and not follow.cancelled() and follow.exception() is not None
+    if failed and started is None and outcome in (None, "steer"):
+        outcomes.pop(delegation_id, None)
         worker.silent_ids.discard(delegation_id)
         raise follow.exception()  # type: ignore[misc]
-    if started is None:
+    if outcome is None and follow.done():
+        # Every branch says where it went; one that didn't (a future one): a run it started is a
+        # follow-up, otherwise the running task took it.
+        outcome = "follow_up" if started is not None else "steer"
+    if outcome is None:
+        # Still being handed over (a just-admitted run refusing guidance, a thread opening): said as
+        # pending, and *resolved* hears where it went once follow_up decides.
+        def settled(_t: asyncio.Task) -> None:
+            worker.silent_ids.discard(delegation_id)
+            went = outcomes.pop(delegation_id, None)
+            if went is None:
+                with worker.interaction.lock:
+                    went = "follow_up" if delegation_id in worker.interaction.runs else "steer"
+            if resolved is not None:
+                try:
+                    resolved(went)
+                except Exception:  # noqa: BLE001 - a receipt never breaks delivery
+                    logger.debug("speakeasy: a pending receipt was not resolved", exc_info=True)
+        follow.add_done_callback(settled)
+        return {"delivered_as": "pending", "task_id": delegation_id if started is not None else task_id}
+    if outcome == "steer":
         # It went into the running task itself (steer, a task waiting to start, its chat thread).
-        follow.add_done_callback(lambda _t: worker.silent_ids.discard(delegation_id))
+        def done(_t: asyncio.Task) -> None:
+            worker.silent_ids.discard(delegation_id)
+            outcomes.pop(delegation_id, None)
+        follow.add_done_callback(done)
         return {"delivered_as": "steer", "task_id": task_id}
     # A follow-up job: from here on it is a task like any other (its result is said as usual).
     worker.silent_ids.discard(delegation_id)
-    return {"delivered_as": "answer" if answers else "follow_up", "task_id": delegation_id}
+    follow.add_done_callback(lambda _t: outcomes.pop(delegation_id, None))
+    return {"delivered_as": "answer" if answers else outcome, "task_id": delegation_id}
 
 
 def note_message(worker: "SidebandWorker", task_name: str, text: str) -> None:
