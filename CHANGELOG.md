@@ -2,6 +2,10 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Mac app (unreleased) — Shorter setup
+
+- **One screen before your first call.** Once the Mac is connected and your voice is signed in, setup is a single "You're ready to talk" screen: microphone, your name and your assistant's, where finished work goes, home control (when Hermes has Home Assistant), the Dock icon and the call shortcut, each already filled in, with a Start a call button. Connecting and voice sign-in only appear when they still need you, and sign-in moves on by itself once it's done. Task routing and the voice brief keep their defaults and stay in Settings.
+
 ## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
 
 - **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
