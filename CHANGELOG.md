@@ -21,6 +21,9 @@ Works with the current Mac and iPhone apps; no app update needed.
 - **Every file in one place.** A new **Files** row in the side panel (iPhone, iPad, and the Mac's History window) lists every file your agent sent you in a reply, from every chat: pictures as thumbnails, documents, recordings and videos as tiles, newest first, with the chat each one came from. Type chips (Images, Docs, Audio…) appear when you have more than one kind.
 - **Open, share, keep.** Tap or click a file to look at it in Quick Look (share, save to Files or AirDrop from there on iPhone); on the Mac, drag it straight to Finder or save it to Downloads. Hold or right-click for **Open chat** to jump to the conversation it came from.
 - **Only what Hermes would send you anyway.** The list comes from the files Hermes attached to its replies, and the plugin serves a file only when Hermes itself would deliver it; your settings, keys and other private files never show up. Files are fetched by an id, never by a path on your computer.
+## Plugin 0.3.37 (unreleased) — See your approval rules
+
+- **Approvals in Settings.** A new Approvals page (Mac, iPhone and iPad) shows how your Hermes handles risky commands, in plain words: whether it asks you every time, runs a quick safety check first or never asks; how long a question waits; the kinds of commands you've said Always to; anything you've blocked; what scheduled jobs do when nobody can answer; and whether memory and skill changes wait for your OK. It's read-only for now.
 
 ## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
 ## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing

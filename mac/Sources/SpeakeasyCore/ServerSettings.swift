@@ -905,6 +905,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var slashSkills: Bool = false
     /// Files your agent made (`GET /voice/files`, AgentFiles.swift): the Files row and page.
     public var files: Bool = false
+    /// The read-only Approvals page (`GET /voice/approvals`, ApprovalRules.swift).
+    public var approvalRules: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -921,7 +923,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
         case messageModes = "message_modes", questionState = "question_state", agents
-        case slashSkills = "slash_skills", files
+        case slashSkills = "slash_skills", files, approvalRules = "approval_rules"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -945,5 +947,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false
         files = (try? c.decodeIfPresent(Bool.self, forKey: .files)) ?? false
+        approvalRules = (try? c.decodeIfPresent(Bool.self, forKey: .approvalRules)) ?? false
     }
 }

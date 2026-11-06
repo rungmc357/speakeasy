@@ -504,6 +504,14 @@ public final class ServerClient: @unchecked Sendable {
     }
 
     /// Settings › Jobs: Speakeasy's default model and reasoning.
+    /// This Hermes' approval rules in plain words, read-only (servers with `approval_rules`).
+    public func approvalRules() async throws -> ApprovalRules {
+        guard let rules = ApprovalRules(json: try await json(ApprovalRules.path)) else {
+            throw HTTPError(status: 0, message: "Speakeasy couldn't read the approval rules.")
+        }
+        return rules
+    }
+
     public func jobModelDefaults() async throws -> JobModelDefaults {
         JobModelDefaults(settingsJSON: try await json("/voice/settings"))
     }

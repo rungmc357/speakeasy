@@ -158,6 +158,8 @@ CAPABILITIES["setup_check"] = True
 # A task can end on a question for the user (question cards; the answer goes back as a follow-up).
 # Like history and job_subagents, it is on only when the agent offers it (agent_slot.FEATURE_FLAGS).
 CAPABILITIES["questions"] = True
+# GET /voice/approvals: this profile's Hermes approval rules in plain words, read-only (approval_rules.py).
+CAPABILITIES["approval_rules"] = True
 
 
 
@@ -3772,6 +3774,11 @@ class VoiceService(SecureInputMixin):
     # -- settings / brief / status / onboarding ---------------------------------------------------
     def get_settings(self) -> dict[str, Any]:
         return {"settings": self.settings.get()}
+
+    def approval_rules(self) -> dict[str, Any]:
+        """``GET /voice/approvals``: how this Hermes handles risky commands, read-only."""
+        from . import approval_rules
+        return approval_rules.rules(self.home)
 
     def routing_choices(self) -> dict[str, Any]:
         from . import routing_choice
