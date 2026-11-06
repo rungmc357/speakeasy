@@ -150,7 +150,8 @@ Setup never restarts Hermes. Its exit code tells you where things stand:
   or two sentences. When it's fixed, run setup again.
 
 Do not paste pairing codes or links from setup's output into other chats. Each link works once and
-expires after 30 minutes. For a new one: `hermes voice pair --send <this chat>`.
+expires after 30 minutes, or 10 minutes once Cloudflare mode is on (the link and setup's output
+say which). For a new one: `hermes voice pair --send <this chat>`.
 
 ## 5. Tell the user how it connects
 

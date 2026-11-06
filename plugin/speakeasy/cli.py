@@ -231,7 +231,7 @@ def cmd_setup(args, home: Path, env=None) -> int:
     if not delivered:
         code = _store(home).new_pairing_code(ttl=H.link_ttl(home))
         out("Open this link on the Mac you'll talk from. It connects Speakeasy, or offers the download first:")
-        out(f"  {H.web_link(server, code)}")
+        out(f"  {H.pair_link(home, server, code)}")
         out(f"  Or type code {code} in Speakeasy › Connect (works once, for {H.link_ttl(home) // 60} minutes).")
     if not voice_ok:
         out("Voice isn't signed in yet; the app will show how to finish that.")
@@ -528,23 +528,23 @@ def _deliver_link(args, env, home: Path, settings: Settings, server: str) -> str
     """"opened" | "sent" | "": ``--send`` sends a link to that chat; ``--here`` opens it on this
     machine (the app, or the download page when it isn't installed). Without either, open here
     when the app is installed on this machine and the server is local; else offer a chat."""
-    from .handoff import app_link, chat_message, link_ttl, web_link
+    from .handoff import app_link, link_ttl, pair_link
     if getattr(args, "send", ""):
         code = _store(home).new_pairing_code(ttl=link_ttl(home))
-        return "sent" if _send_link(home, args.send, web_link(server, code), env.out) else ""
+        return "sent" if _send_link(home, args.send, pair_link(home, server, code), env.out) else ""
     here = getattr(args, "here", False)
     if here or (is_local_url(server) and not args.no_open and _app_installed()):
         local = f"http://127.0.0.1:{voice_port(home)}"
         code = _store(home).new_pairing_code(ttl=link_ttl(home))
         installed = _app_installed()
-        if _open(app_link(local, code) if installed else web_link(local, code)):
+        if _open(app_link(local, code) if installed else pair_link(home, local, code)):
             env.out("✓ Opened Speakeasy to pair. Finish setup there (about a minute)." if installed else
                     "✓ Opened the Speakeasy download page on this Mac. Install the app, then click Open Speakeasy there.")
             return "opened"
     target = "" if is_local_url(server) else _pick_chat(env, home, settings)  # loopback can't work elsewhere
     if target:
         code = _store(home).new_pairing_code(ttl=link_ttl(home))
-        if _send_link(home, target, web_link(server, code), env.out):
+        if _send_link(home, target, pair_link(home, server, code), env.out):
             return "sent"
     return ""
 
@@ -592,11 +592,11 @@ def _send_link(home: Path, target: str, link: str, out) -> bool:
 
 
 def cmd_pair(args, home: Path) -> int:
-    from .handoff import link_ttl, web_link
+    from .handoff import link_ttl, pair_link
     code = _store(home).new_pairing_code(ttl=link_ttl(home))
     server = (args.server or Settings(home).get()["server"]["advertised_url"]
               or f"http://127.0.0.1:{voice_port(home)}")
-    link = web_link(server, code)
+    link = pair_link(home, server, code)
     print(f"Pairing code: {code}  (single use, expires in {link_ttl(home) // 60} minutes)")
     print(f"Pairing link: {link}")
     if args.send:
