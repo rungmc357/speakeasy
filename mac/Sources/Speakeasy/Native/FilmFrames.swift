@@ -26,9 +26,9 @@ enum FilmFrames {
             FileHandle.standardError.write("film: task\n".data(using: .utf8)!)
             let set = ProcessInfo.processInfo.environment["SPEAKEASY_FILM_SET"]
             let site = set == "site"
-            cleanShots = site || set == "ux" || set == "typing" || set == "redesign" || set == "plugin-update"
+            cleanShots = site || set == "ux" || set == "typing" || set == "redesign" || set == "plugin-update" || set == "board-notice"
             stillMotion = set == "redesign"
-            let shots: [Shot] = set == "plugin-update" ? pluginUpdateBeats() : set == "redesign" ? redesignBeats() : set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
+            let shots: [Shot] = set == "board-notice" ? boardNoticeBeats() : set == "plugin-update" ? pluginUpdateBeats() : set == "redesign" ? redesignBeats() : set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
             for shot in shots {
                 let (name, state, open) = (shot.name, shot.state, shot.open)
                 let m = client.model
@@ -429,6 +429,19 @@ enum FilmFrames {
             Shot("plugin-update-04-didnt-take", s, nil) { m in board(m); m.pluginUpdate.preview(.didntTake(version: "0.9.1", runID: "run_upd")) },
             Shot("plugin-update-05-available-no-note-task-list", list, nil) { m in m.extraHeight = 0; m.pluginUpdate.preview(.available(version: "0.9.1", note: nil)) },
         ]
+    }
+
+    /// The board's "can't load your work" notice (`SPEAKEASY_FILM_SET=board-notice`) over the
+    /// work-only task list, with its Try again. Invented data.
+    static func boardNoticeBeats() -> [Shot] {
+        let now = Date()
+        var deck = task("k", "working", "Tidy the slides for Thursday's review", title: "Tidy the review deck",
+                        short: "Fixing the chart labels", age: 90, now: now, milestones: ["Opened the deck", "Fixing the chart labels"])
+        deck.info.startedAt = now - 3 * 60
+        var list = VoiceState(); list.now = now; list.workOnly = true
+        list.tasks = [deck]; list.work = deriveWork(list, now: now)
+        list.lastError = WorkPollGate.notice
+        return [Shot("board-notice-01-task-list", list, nil) { m in m.extraHeight = 0 }]
     }
 
     /// Typing to one task (`SPEAKEASY_FILM_SET=typing`; `typing-old` = an older plugin

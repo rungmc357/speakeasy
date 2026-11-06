@@ -11,10 +11,25 @@ import Foundation
 ///   reads the server after it honoured the clear.
 /// - Cancellation (a newer loop replacing this one, the board closing) is never an error, and a
 ///   passing failure is never a banner: only `failuresBeforeNotice` real failures in a row are.
+/// - The notice is plain words and goes away by itself: the next answer clears it
+///   (`VoiceAction.workNoticeCleared`), which never touches a call's own error.
 public struct WorkPollGate: Sendable {
     public static let failuresBeforeNotice = 3
     /// The banner's lead-in: the board couldn't load (its Try again reloads the board, never starts a call).
-    public static let noticePrefix = "Work unavailable: "
+    public static let noticePrefix = "Can't load your work right now. "
+    /// The whole notice when there's nothing more specific to say.
+    public static let notice = noticePrefix + "Speakeasy keeps trying."
+
+    /// True for the board's own notice (also after the iPhone rewords its HTTP code), never a call error.
+    public static func isNotice(_ text: String?) -> Bool { text?.hasPrefix(noticePrefix) == true }
+
+    /// The notice for this failure: plain words, never the system's error text. A server status code
+    /// rides along as "(HTTP 502)" so the iPhone can say what it means (`PlainError`); nothing else does.
+    public static func notice(for error: Error) -> String {
+        let text = error.localizedDescription
+        guard let range = text.range(of: #"HTTP\s+\d{3}"#, options: .regularExpression) else { return notice }
+        return notice + " (HTTP " + String(text[range].filter(\.isNumber)) + ")"
+    }
 
     /// What a request was sent under; checked against the gate when its answer arrives.
     public struct Ticket: Equatable, Sendable {
@@ -61,7 +76,7 @@ public struct WorkPollGate: Sendable {
         if let loop = ticket.generation, loop != generation { return nil }
         consecutiveFailures += 1
         guard consecutiveFailures == Self.failuresBeforeNotice else { return nil }
-        return Self.noticePrefix + error.localizedDescription
+        return Self.notice(for: error)
     }
 
     /// A cancelled task or URL request (Swift `CancellationError`, `URLError.cancelled`, NSURL -999).

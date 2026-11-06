@@ -59,6 +59,9 @@ public struct CapturedScreen: Sendable {
 public final class NativeVoiceClient: VoiceCallClient {
     public var onStatus: ((String) -> Void)?
     public var onError: ((String) -> Void)?
+    /// The board's "can't load your work" notice went away (the board loaded again): an app that
+    /// copied it from `onError` into its own banner drops it now. Never fired for a call error.
+    public var onWorkNoticeCleared: (() -> Void)?
     public var onClosed: (() -> Void)?
     /// Paused (true) or resumed (false): the conversation stays open either way.
     public var onPauseChanged: ((Bool) -> Void)?
@@ -532,6 +535,7 @@ public final class NativeVoiceClient: VoiceCallClient {
             finishCall(.incomplete)
         }
         if let error = new.lastError, error != old.lastError { onError?(error) }
+        if WorkPollGate.isNotice(old.lastError), new.lastError == nil { onWorkNoticeCleared?() }
         if old.connection != new.connection { onStatus?(present(new).primary + " · " + present(new).secondary) }
     }
 
@@ -1424,6 +1428,9 @@ public final class NativeVoiceClient: VoiceCallClient {
         // A new loop: whatever the replaced one still has in flight is dropped, and its
         // cancellation is not an error (it was the "Work unavailable: cancelled" banner).
         let loop = workPoll.startLoop()
+        // Reloading (Try again, back to the foreground): the old notice goes; if the board still
+        // can't load, the new loop says so again after its own failures.
+        if WorkPollGate.isNotice(model.state.lastError) { dispatch(.workNoticeCleared) }
         workOnlyTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let ticket = self?.workPoll.ticket(generation: loop) else { return }
@@ -1433,6 +1440,8 @@ public final class NativeVoiceClient: VoiceCallClient {
                     // Sent before a newer loop or before the user cleared tasks: may be older than the board.
                     guard self.workPoll.accepts(ticket) else { continue }
                     self.workPoll.succeeded(ticket)
+                    // Loading again: the "can't load your work" notice goes by itself (a call error stays).
+                    if WorkPollGate.isNotice(self.model.state.lastError) { self.dispatch(.workNoticeCleared) }
                     self.dispatch(.work(work))
                     if tasks != self.model.state.tasks { self.dispatch(.tasks(tasks)) }
                 } catch {
@@ -1804,6 +1813,9 @@ public final class NativeVoiceClient: VoiceCallClient {
         case .updatePlugin:
             dispatch(.reset)
             model.onPluginUpdate()
+        case .reloadBoard:
+            dispatch(.workNoticeCleared)
+            if !model.state.connection.isInCall { showWork(active: false) }
         }
     }
 
