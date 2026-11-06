@@ -209,6 +209,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.onStopTask = { [weak self] runID in self?.stopWork(runID: runID) }
         model.onAnswer = { [weak self] taskID, text in self?.answerQuestion(taskID: taskID, text: text) }
         model.onSetAside = { [weak self] runID in self?.setAside(runID) }
+        model.onDismissQuestion = { [weak self] runID in self?.dismissQuestion(runID) }
         model.onCardAction = { [weak self] taskID, card, action, done in
             self?.runCardAction(taskID: taskID, card: card, action: action, done: done)
         }
@@ -1579,6 +1580,14 @@ public final class NativeVoiceClient: VoiceCallClient {
             do { try await api.dismissReview(runID: runID, cards: cards) }
             catch { self?.dispatch(.error("Couldn't dismiss: \(error.localizedDescription)")) }
         }
+    }
+
+    /// A decision's ✕: already off Needs you here; tell the api so every device clears it (the agent
+    /// hears nothing). A plugin without question actions (404) keeps it hidden on this device only.
+    private func dismissQuestion(_ runID: String) {
+        surface.setNeedsResize()
+        guard let api, !previewMode else { return }
+        Task { try? await api.dismissQuestion(runID: runID) }
     }
 
     /// "Not needed": already hidden from Needs you; tell the api so the task, the run and the voice

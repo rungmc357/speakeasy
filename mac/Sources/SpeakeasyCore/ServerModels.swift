@@ -204,6 +204,10 @@ public struct WorkInfo: Equatable, Sendable {
     public var answered = false
     /// History pages (plugins from 0.3.34): whether THIS task's question is the one still waiting.
     public var questionOpen: Bool?
+    /// Its question closed without an answer (plugins with `question_actions`): `dismissed` (the ✕,
+    /// undoable for a few seconds) or `moved_on` (the conversation went on without it). It waits on
+    /// nobody; the thread keeps a quiet "Question · moved on" line.
+    public var questionClosed: String?
     /// An earlier call's task kept on this call's list only for its pending draft or review card
     /// (the server marks it); it's not an answer of this conversation.
     public var carried = false
@@ -311,6 +315,7 @@ public struct WorkInfo: Equatable, Sendable {
         seen = object["seen"] as? Bool ?? false
         answered = object["answered"] as? Bool ?? false
         questionOpen = object["question_open"] as? Bool
+        questionClosed = nonEmpty(object["question_closed"])
         carried = object["carried"] as? Bool ?? false
         followUps = FollowUp.list(json: object["follow_ups"])
         if status == "waiting_on_task", let waiting = object["waiting"] as? [String: Any] {

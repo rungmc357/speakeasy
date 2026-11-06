@@ -286,4 +286,67 @@ final class HistoryBrowsingTests: XCTestCase {
         let c = try XCTUnwrap(HistoryConversation(json: json))
         XCTAssertTrue(c.waitingQuestions.isEmpty, "answered on another device: no card, not twice")
     }
+
+    // MARK: Decision cards (dismiss, reply, moved on)
+
+    private func questionJob(_ run: String, _ q: String, open: Bool?, closed: String? = nil) -> String {
+        var extra = open.map { ", \"question_open\": \($0)" } ?? ""
+        if let closed { extra += ", \"question_closed\": \"\(closed)\", \"set_aside\": true" }
+        return """
+        {"run_id": "\(run)", "status": "completed", "title": "Garden task"\(extra),
+         "result": {"views": [{"kind": "question", "question": "\(q)", "options": [{"text": "Green"}, {"text": "Grey"}]}]}}
+        """
+    }
+
+    private func conversation(_ jobs: [String]) throws -> HistoryConversation {
+        let json = try JSONSerialization.jsonObject(with: Data("""
+        {"session": {"id": "s1", "title": "T", "source": "discord", "source_label": "Discord", "state": "needs_you",
+          "send_via": "linked", "entries": [], "jobs": [\(jobs.joined(separator: ","))]}}
+        """.utf8))
+        return try XCTUnwrap(HistoryConversation(json: json))
+    }
+
+    func testTwoOpenQuestionsAreTwoIndependentCards() throws {
+        let c = try conversation([questionJob("r2", "Paint the shed green or grey?", open: true),
+                                  questionJob("r1", "Order the cedar boards now?", open: true)])
+        XCTAssertEqual(c.waitingQuestions.map(\.runID), ["r2", "r1"])
+        let thread = HistoryThread(c)
+        XCTAssertEqual(thread.waiting.map(\.questionRunID), ["r2", "r1"], "each card answers and dismisses its own task")
+    }
+
+    func testDismissingOneLeavesTheOther() throws {
+        let c = try conversation([questionJob("r2", "Paint the shed green or grey?", open: false, closed: "dismissed"),
+                                  questionJob("r1", "Order the cedar boards now?", open: true)])
+        XCTAssertEqual(c.waitingQuestions.map(\.runID), ["r1"])
+    }
+
+    func testMovedOnQuestionIsAQuietLineNotACard() throws {
+        let c = try conversation([questionJob("r1", "Push the plugin and install it?", open: false, closed: "moved_on")])
+        XCTAssertTrue(c.waitingQuestions.isEmpty)
+        let job = try XCTUnwrap(c.jobs.first)
+        XCTAssertEqual(job.questionClosed, "moved_on")
+        XCTAssertEqual(TaskLineCopy.questionNote(job), "Question · moved on · Push the plugin and install it?")
+        var dismissed = job; dismissed.questionClosed = "dismissed"
+        XCTAssertEqual(TaskLineCopy.questionNote(dismissed), "Question · dismissed · Push the plugin and install it?")
+        XCTAssertTrue(TaskLineCopy.line(job).hasPrefix("Question · moved on"))
+    }
+
+    func testTheSameQuestionTwiceIsOneCard() throws {
+        let c = try conversation([questionJob("r2", "Paint the shed green or grey?", open: true),
+                                  questionJob("r1", "Paint the shed green or grey?", open: true)])
+        XCTAssertEqual(c.waitingQuestions.map(\.runID), ["r2"])
+    }
+
+    func testReplyCarriesTheQuestionItAnswers() throws {
+        let r = try XCTUnwrap(HistoryMessageRequest(sessionID: "s1", text: "Grey, but only the door", clientID: "c1", answers: "r1"))
+        XCTAssertEqual(r.body["answers"] as? String, "r1")
+        let plain = try XCTUnwrap(HistoryMessageRequest(sessionID: "s1", text: "Thanks", clientID: "c2"))
+        XCTAssertNil(plain.body["answers"])
+        guard case .message(let m)? = HistoryTarget.session("s1").outgoing("Grey", source: .typed, answers: "r1") else {
+            return XCTFail("a session message")
+        }
+        XCTAssertEqual(m.answers, "r1")
+        let reply = try XCTUnwrap(HistoryMessageReply(json: ["ok": true, "via": "answer", "run_id": "r1"]))
+        XCTAssertEqual(reply.via, .answer)
+    }
 }

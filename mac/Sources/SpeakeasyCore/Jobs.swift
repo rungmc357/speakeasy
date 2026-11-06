@@ -302,7 +302,8 @@ public enum JobBoard {
         // A question card waits on the user whether or not the run has wrapped up (a run that asks
         // and keeps going must not sit under a Running pill).
         guard t.info.isTerminal || t.info.status == "working" || t.info.status == "running",
-              t.info.decision != nil, !t.info.answered, !answered.contains(t.id), !dismissed.contains(t.id),
+              t.info.decision != nil, !t.info.answered, t.info.questionClosed == nil,
+              !answered.contains(t.id), !dismissed.contains(t.id),
               let at = t.info.updatedAt ?? t.info.updated else { return false }
         return now.timeIntervalSince(at) < decisionKeptFor
     }

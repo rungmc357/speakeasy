@@ -12,6 +12,8 @@ protocol HistoryBackend: AnyObject {
     /// New chat; returns the new task's run id (or a session id).
     func startChat(text: String, clientID: String, choice: ModelChoice?) async throws -> String?
     func answerApproval(sessionID: String, runID: String, choice: String) async throws
+    /// ✕ on a decision card: close (or, `undo`, reopen) one task's question everywhere; tells the agent nothing.
+    func dismissQuestion(runID: String, undo: Bool) async throws
     /// Servers with `model_choice`: the catalog, Use for this chat, Make default.
     func models() async throws -> ModelCatalog
     func setSessionModel(_ request: SessionModelRequest) async throws
@@ -29,6 +31,7 @@ enum HistorySessionAction: Equatable {
 
 extension HistoryBackend {
     func act(_ action: HistorySessionAction, sessionID: String) async throws {}
+    func dismissQuestion(runID: String, undo: Bool) async throws {}
 }
 
 @MainActor
@@ -44,6 +47,7 @@ final class LiveHistoryBackend: HistoryBackend {
     func answerApproval(sessionID: String, runID: String, choice: String) async throws {
         try await api.answerSessionApproval(sessionID: sessionID, runID: runID, choice: choice)
     }
+    func dismissQuestion(runID: String, undo: Bool) async throws { try await api.dismissQuestion(runID: runID, undo: undo) }
     func models() async throws -> ModelCatalog { try await api.models() }
     func setSessionModel(_ request: SessionModelRequest) async throws { try await api.setSessionModel(request) }
     func setDefaultModel(_ defaults: JobModelDefaults) async throws { try await api.setJobModelDefaults(defaults) }
@@ -77,6 +81,14 @@ final class HistoryStore: ObservableObject {
     @Published private(set) var startingChat = false
     @Published private(set) var answering: Set<String> = []
     @Published private(set) var answerError: String?
+    /// "Reply…" on a decision card: the composer answers that task's question (its run id, its words).
+    @Published private(set) var replyingTo: HistoryWaiting?
+    /// Questions dismissed here (✕): hidden at once, before the server's copy says so; also the whole
+    /// dismissal on plugins without question actions.
+    @Published private(set) var dismissedQuestions: Set<String> = []
+    /// The Undo toast after a ✕ (a few seconds).
+    @Published private(set) var undoQuestion: HistoryWaiting?
+    private var undoTimer: Task<Void, Never>?
     /// Bumped to move focus (⌘F, ⌘N, a transcript to review).
     @Published var focusSearch = 0
     @Published var focusComposer = 0
@@ -321,15 +333,19 @@ final class HistoryStore: ObservableObject {
     /// ↩ / Send: what's in the field. Words from a voice message under review go as `voice_message`.
     func send() {
         let source: HistoryMessageRequest.Source = voice.reviewing ? .voiceMessage : .typed
-        guard deliver(draft, source: source) else { return }
+        let answers = replyingTo.flatMap { r in conversations[target?.sessionID ?? ""].map { thread($0) }?
+            .waiting.contains(where: { $0.id == r.id }) == true ? r.questionRunID : nil }
+        guard deliver(draft, source: source, answers: answers) else { return }
         drafts[draftKey] = nil
+        replyingTo = nil
         voice.handle(.sent)
     }
 
     /// Send by id (a session) or start one (New chat). False when there was nothing to send.
+    /// `answers`: the run id of the task whose question this answers.
     @discardableResult
-    private func deliver(_ text: String, source: HistoryMessageRequest.Source) -> Bool {
-        guard let target, let outgoing = target.outgoing(text, source: source), let backend else { return false }
+    private func deliver(_ text: String, source: HistoryMessageRequest.Source, answers: String? = nil) -> Bool {
+        guard let target, let outgoing = target.outgoing(text, source: source, answers: answers), let backend else { return false }
         switch outgoing {
         case .message(let request):
             outbox.add(request, at: Date())
@@ -430,7 +446,10 @@ final class HistoryStore: ObservableObject {
     /// An approval / question button. A task's approval has its own answer route; a task's question
     /// is answered by a message to the session (the server hands it to the waiting task as the answer).
     func answer(_ waiting: HistoryWaiting, choice: String) {
-        guard waiting.runID != nil else { deliver(choice, source: .typed); return }
+        guard waiting.runID != nil else {
+            if replyingTo?.id == waiting.id { replyingTo = nil }
+            deliver(choice, source: .typed, answers: waiting.questionRunID); return
+        }
         guard let sessionID = target?.sessionID, let backend else { return }
         answering.insert(waiting.id); answerError = nil
         Task { [weak self] in
@@ -442,6 +461,51 @@ final class HistoryStore: ObservableObject {
             self?.answering.remove(waiting.id)
             self?.load(sessionID)
         }
+    }
+
+    /// "Reply…": the composer answers this question; focus moves there.
+    func reply(to waiting: HistoryWaiting) {
+        replyingTo = waiting
+        focusComposer += 1
+    }
+
+    func cancelReply() { replyingTo = nil }
+
+    /// ✕: the question leaves this page at once and every other device on the server's next word;
+    /// Undo is offered for a few seconds. The agent is told nothing.
+    func dismiss(_ waiting: HistoryWaiting) {
+        guard let runID = waiting.questionRunID else { return }
+        dismissedQuestions.insert(waiting.id)
+        if replyingTo?.id == waiting.id { replyingTo = nil }
+        undoQuestion = waiting
+        undoTimer?.cancel()
+        undoTimer = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            if self?.undoQuestion?.id == waiting.id { self?.undoQuestion = nil }
+        }
+        let sessionID = target?.sessionID
+        Task { [weak self] in
+            // A plugin without question actions (404): the card stays hidden on this device only.
+            try? await self?.backend?.dismissQuestion(runID: runID, undo: false)
+            if let sessionID { self?.load(sessionID) }
+        }
+    }
+
+    func undoDismiss() {
+        guard let waiting = undoQuestion, let runID = waiting.questionRunID else { return }
+        undoQuestion = nil; undoTimer?.cancel()
+        let sessionID = target?.sessionID
+        Task { [weak self] in
+            try? await self?.backend?.dismissQuestion(runID: runID, undo: true)
+            self?.dismissedQuestions.remove(waiting.id)
+            if let sessionID { self?.load(sessionID) }
+        }
+    }
+
+    /// What the page shows as waiting: the thread's cards minus the ones dismissed here.
+    func waiting(_ thread: HistoryThread) -> [HistoryWaiting] {
+        thread.waiting.filter { !dismissedQuestions.contains($0.id) }
     }
 
     // MARK: Model (servers with `model_choice`)

@@ -137,7 +137,7 @@ public enum TaskLineCopy {
     public static func line(_ job: WorkInfo, now: Date = Date(), calendar: Calendar = .current,
                             locale: Locale = .current) -> String {
         let name = (job.title ?? job.summary ?? job.request ?? "Task").trimmingCharacters(in: .whitespacesAndNewlines)
-        return [name, outcome(job, now: now, calendar: calendar, locale: locale)].joined(separator: " · ")
+        return [questionNote(job) ?? name, outcome(job, now: now, calendar: calendar, locale: locale)].joined(separator: " · ")
     }
 
     /// "Done 9:05 PM", "Didn't finish 9:05 PM", "Stopped Tue 9:05 PM" (just the word with no time).
@@ -151,6 +151,16 @@ public enum TaskLineCopy {
         }
         guard let when = job.finishedAt ?? job.updatedAt ?? job.updated ?? job.startedAt else { return word }
         return word + " " + time(when, now: now, calendar: calendar, locale: locale)
+    }
+
+    /// A question nobody answered, as its quiet line's words: "Question · moved on · Paint the shed
+    /// green or grey?" (or "· dismissed"); nil when the task's question was answered or never asked.
+    public static func questionNote(_ job: WorkInfo) -> String? {
+        guard let closed = job.questionClosed, let asked = job.decision?.question, !job.answered else { return nil }
+        let how = closed == "dismissed" ? "dismissed" : "moved on"
+        let words = asked.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let short = words.count > 70 ? String(words.prefix(69)).trimmingCharacters(in: .whitespaces) + "…" : words
+        return "Question · \(how) · \(short)"
     }
 
     /// "9:41 PM" today, "Tue 9:41 PM" this week, "Oct 3" before that.

@@ -109,6 +109,9 @@ CAPABILITIES["schedules"] = True
 # device-code login (codex_login.py). The plugin first looks for a working sign-in in every Codex
 # copy on the machine, and installs Codex when there is none; the app asks only when nothing works.
 CAPABILITIES["codex_login"] = True
+# Decision cards: POST /voice/tasks/{run_id}/question/{dismiss|undo}, history messages may name the
+# question they answer ("answers": run_id), and work carries question_closed (dismissed | moved_on).
+CAPABILITIES["question_actions"] = True
 
 
 
@@ -1405,6 +1408,7 @@ class VoiceService(SecureInputMixin):
             publish_state(self.store, interaction, name)
 
     def work_latest(self) -> dict[str, Any]:
+        self.sweep_questions()
         name = self.settings.get()["assistant_name"]
         return {"work": self.store.work(assistant_name=name), "away": self.store.away(),
                 "tasks": self.store.latest_tasks(MAX_TASKS)}
@@ -1966,25 +1970,121 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(exc.status, exc.message) from None
 
     QUESTION_KEPT_S = 24 * 3600  # as long as the board keeps an unanswered decision (JobBoard.decisionKeptFor)
+    QUESTION_GRACE_S = 5.0       # a message landing with the question itself isn't "moving on"
+    QUESTION_SWEEP_S = 15.0
 
     def _open_question(self, keys: list[str], now: float | None = None) -> str | None:
-        """The ONE task whose question a conversation still waits on (its idem key), else None. The single
-        rule every surface uses (the list's Needs you, the session page's card, the board): only the newest
-        task of the conversation can be waiting (anything after it, a reply or a follow-up, moved on), it
-        hasn't been set aside or dismissed, the same question wasn't answered on another task, and it's
-        under a day old."""
+        """The newest question a conversation still waits on (its idem key), else None."""
+        open_keys = self._open_questions(keys, now)
+        return open_keys[0] if open_keys else None
+
+    def _open_questions(self, keys: list[str], now: float | None = None) -> list[str]:
+        """The tasks whose question a conversation still waits on (idem keys, newest first). The single
+        rule every surface uses (the list's Needs you, the session page's cards, the board): each
+        thread of work (a Hermes session) can wait on its newest task's question only (a reply or a
+        follow-up after it moved on); two threads' questions are independent. A question isn't open once
+        answered, set aside, dismissed, superseded, asked and answered on another task, over a day old,
+        or when the conversation went on without it (a newer message in its session, or in the chat a
+        linked task continued). Closures found here are recorded (``moved_on``) and published, so the
+        board, notifications and Live Activity clear too."""
         rows = self.store.question_rows(list(dict.fromkeys(keys)))
         if not rows:
-            return None
-        newest = max(rows, key=lambda r: (r["created"], r["rowid"]))
-        answered = {r["question"] for r in rows if r["set_aside"] and r["question"]}
+            return []
         now = time.time() if now is None else now
-        if (newest["question"] and not newest["set_aside"] and not newest["dismissed"]
-                and newest["question"] not in answered
-                and newest["status"] in {"completed", "running", "working"}
-                and now - newest["created"] < self.QUESTION_KEPT_S):
-            return newest["key"]
-        return None
+        answered = {r["question"] for r in rows if r["set_aside"] and r["question"]}
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            groups.setdefault(r["session_id"] or r["key"], []).append(r)
+        out: list[dict[str, Any]] = []
+        closed: list[dict[str, Any]] = []
+        for group in groups.values():
+            newest = max(group, key=lambda r: (r["created"], r["rowid"]))
+            for r in group:
+                if not r["question"] or r["set_aside"] or r["closed"] or r["dismissed"]:
+                    continue
+                if r is not newest:
+                    closed.append(r)  # a newer task of the same thread moved on
+                    continue
+                if (r["question"] in answered or r["status"] not in {"completed", "running", "working"}
+                        or now - r["created"] >= self.QUESTION_KEPT_S):
+                    continue
+                if self._question_moved_on(r):
+                    closed.append(r)
+                    continue
+                out.append(r)
+        for r in closed:
+            if r["status"] in {"completed", "running", "working"} and now - r["created"] < self.QUESTION_KEPT_S:
+                self._close_question(r["key"], "moved_on")
+        out.sort(key=lambda r: (r["created"], r["rowid"]), reverse=True)
+        return [r["key"] for r in out]
+
+    def _question_moved_on(self, row: dict[str, Any]) -> bool:
+        """The conversation went on after this task asked: the user wrote in its own session again,
+        or the chat it continued (a Discord/Telegram thread) has newer turns from either side."""
+        after = row["settled"] + self.QUESTION_GRACE_S
+        sid = row["session_id"]
+        if sid and H.moved_on_after(self.rt.state_db, sid, after, replies=False):
+            return True
+        peers = [k for k, _, _ in self.store.keys_for_session(sid)] if sid else [row["key"]]
+        sources = {s for s in (self.store.linked_source(k) for k in [row["key"], *peers]) if s}
+        return any(H.moved_on_after(self.rt.state_db, s, after, replies=True) for s in sources)
+
+    def _close_question(self, key: str, reason: str) -> bool:
+        """Record a question closed unanswered and tell every client (decision_resolved clears the
+        card, the board's Needs you, a delivered notification and the Live Activity)."""
+        if not self.store.close_question(key, reason):
+            return False
+        row = self.store.run_row(key) or {}
+        events = getattr(self.rt, "history_events", None)
+        if events is not None:
+            for sid in {row.get("session_id"), self.store.linked_source(key)} - {None}:
+                events.publish("decision_resolved", {"run_id": row.get("run_id"), "session_id": sid})
+        try:
+            self._republish_all()
+        except Exception:
+            logger.debug("speakeasy: republish after a closed question failed", exc_info=True)
+        return True
+
+    def sweep_questions(self, force: bool = False) -> None:
+        """Close every open question whose conversation moved on (throttled; read paths call it, so
+        the board and the apps agree without a page being open)."""
+        now = time.monotonic()
+        last = self.__dict__.get("_question_sweep_at")
+        if not force and last is not None and now - last < self.QUESTION_SWEEP_S:
+            return
+        self.__dict__["_question_sweep_at"] = now
+        try:
+            seen: set[str] = set()
+            for key in self.store.open_question_candidates(time.time() - self.QUESTION_KEPT_S):
+                if key in seen:
+                    continue
+                sid = self.store.session_for(key)
+                group = [k for k, _, _ in self.store.keys_for_session(sid)] if sid else [key]
+                seen.update(group)
+                self._open_questions(group or [key])
+        except Exception:
+            logger.warning("speakeasy: question sweep failed", exc_info=True)
+
+    def question_action(self, run_id: str, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/tasks/{run_id}/question/{dismiss|undo}``: the ✕ on a decision card closes it on
+        every device without telling the agent anything; ``undo`` (the toast's Undo) puts it back."""
+        if not ID_RE.fullmatch(run_id) or not isinstance(body, dict) or body:
+            raise ServiceError(400, "body must be empty")
+        key = self.store.key_for_run(run_id)
+        if key is None:
+            raise ServiceError(404, "task not found")
+        if action == "dismiss":
+            if not self._close_question(key, "dismissed"):
+                raise ServiceError(409, "nothing is waiting on you there")
+            return {"run_id": run_id, "question": "dismissed"}
+        if not self.store.reopen_question(key):
+            raise ServiceError(409, "that question can't come back")
+        row = self.store.run_row(key) or {}
+        events = getattr(self.rt, "history_events", None)
+        if events is not None:
+            events.publish("history_changed", {"run_id": run_id, "session_id": row.get("session_id")})
+        self._republish_all()
+        return {"run_id": run_id, "question": "open"}
 
     # Cached history replies: the apps poll an open page every few seconds and the list every ~12 s,
     # and state.db can be many GB. A reply is reused while nothing it depends on changed (H.fingerprint
@@ -2022,6 +2122,7 @@ class VoiceService(SecureInputMixin):
 
     def history(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/history?cursor=&q=&source=&limit=``."""
+        self.sweep_questions()
         args = tuple(sorted((k, str(v)) for k, v in (query or {}).items()))
         stamp = H.fingerprint(self.rt.state_db)
         return self._cached(("list", args), None if stamp is None else (stamp, self.store.revision),
@@ -2115,7 +2216,7 @@ class VoiceService(SecureInputMixin):
         if said:
             entries = [{**e, "voice": True} if e.get("kind") == "user" and H.said_key(e.get("text") or "") in said
                        else e for e in entries]
-        open_key = self._open_question(keys)
+        open_keys = set(self._open_questions(keys))
         jobs = []
         for key in keys[:8]:
             work = self.store.work(idem_key=key, assistant_name=name, activity_detail=True)
@@ -2124,8 +2225,8 @@ class VoiceService(SecureInputMixin):
                     # One source of truth for which question still waits (_open_question): every other
                     # task's question reads as handled, so an answered card never shows again and the
                     # same question asked by two tasks shows once. (set_aside: what older apps read.)
-                    work["question_open"] = key == open_key
-                    if key != open_key:
+                    work["question_open"] = key in open_keys
+                    if key not in open_keys:
                         work["set_aside"] = True
                 jobs.append(work)
         running = any(j.get("status") in ACTIVE_RUN_STATES for j in jobs)
@@ -2134,7 +2235,7 @@ class VoiceService(SecureInputMixin):
         title = (meta.get("title") or "").strip() or (link.name if link else None)
         first_user = next((e["text"] for e in page["entries"] if e["kind"] == "user"), None)
         needs_you = (any(j.get("status") in {"waiting_for_approval", "resolving_approval"} for j in jobs)
-                     or open_key is not None)
+                     or bool(open_keys))
         return {"session": {
             "id": sid, "title": H.tidy_title(title) if title else (
                 H.tidy_title(H.preview_text(first_user, 60)) if first_user else "Untitled conversation"),
@@ -2163,7 +2264,7 @@ class VoiceService(SecureInputMixin):
         ``attachments``: ids this device staged, claimed all or nothing and given back if the send fails
         (exactly as on /voice/work[/{id}/message])."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "client_id", "source", "attachments", "model", "reasoning"}:
+                "text", "client_id", "source", "attachments", "model", "reasoning", "answers"}:
             raise ServiceError(400, "Send the message as text.")
         choice = self._body_choice(body)
         text, client_id = body.get("text"), body.get("client_id")
@@ -2187,9 +2288,13 @@ class VoiceService(SecureInputMixin):
         if choice is not None:
             self._save_chat_choice(meta["id"], choice)  # a message carrying a choice: Use for this chat
         voice = body.get("source") == "voice_message"
+        answers = body.get("answers")
+        if answers is not None and (not isinstance(answers, str) or not ID_RE.fullmatch(answers)):
+            raise ServiceError(400, "answers must be a task's run id.")
 
         def deliver(staged: list[A.Attachment] | None) -> dict[str, Any]:
-            got = self._history_message(meta, text, staged)
+            got = (self._answer_question(meta, answers, text, staged) if answers
+                   else self._history_message(meta, text, staged))
             if voice:
                 self._note_voice_message(meta["id"], text)
             return got
@@ -2237,6 +2342,21 @@ class VoiceService(SecureInputMixin):
             return {"ok": True, "session_id": sid, "via": "session_job", "run_id": got.get("run_id"),
                     "delivered_as": "follow_up", "task": got.get("task")}
         return self._continue_linked(meta, text, staged)
+
+    def _answer_question(self, meta: dict[str, Any], run_id: str, text: str,
+                         staged: list[A.Attachment] | None) -> dict[str, Any]:
+        """A reply written for one decision card ("Reply…"): delivered to the task that asked, as its
+        answer (a follow-up in that task's session, or a steer when its run still waits), even when
+        another task of the conversation is newer. A task this conversation doesn't hold: refused."""
+        sid = meta["id"]
+        key = self.store.key_for_run(run_id)
+        mine = set(self.store.history_links(sid)) | set(self._continuations(sid)) | {
+            k for k, _, _ in self.store.keys_for_session(sid)}
+        if key is None or key not in mine:
+            raise ServiceError(404, "I couldn't find that question in this conversation.")
+        got = self._task_message(run_id, text, None, None, staged)
+        return {"ok": True, "session_id": sid, "via": "answer", "run_id": got.get("run_id"),
+                "delivered_as": got.get("delivered_as") or "answer", "task": got.get("task")}
 
     def _continue_linked(self, meta: dict[str, Any], text: str,
                          staged: list[A.Attachment] | None = None) -> dict[str, Any]:

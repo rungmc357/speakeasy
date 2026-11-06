@@ -1334,6 +1334,24 @@ def message_time(state_db: Path, row_id: int | None) -> float | None:
         db.close()
 
 
+def moved_on_after(state_db: Path, session_id: str, after: float, *, replies: bool) -> bool:
+    """Whether a conversation went on after *after* (a question was asked then): a newer message with
+    words in it from the user, or with ``replies`` from either side (a chat's own later turns)."""
+    db = _open(state_db)
+    if db is None:
+        return False
+    roles = ("user", "assistant") if replies else ("user",)
+    try:
+        row = db.execute(
+            f"SELECT 1 FROM messages WHERE session_id=? AND timestamp>? AND role IN ({','.join('?' * len(roles))}) "
+            "AND length(trim(COALESCE(content,'')))>0 LIMIT 1", (session_id, float(after), *roles)).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
+    finally:
+        db.close()
+
+
 # -- continuing a chat Speakeasy can't write into ------------------------------------------------
 
 def linked_context(state_db: Path, session_id: str, title: str, label: str, text: str) -> str:

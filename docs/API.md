@@ -73,6 +73,7 @@ used in the tests (timestamps and IDs will differ).
 | PATCH | `/voice/schedules/{id}` | device | Change the schedule, prompt or name |
 | DELETE | `/voice/schedules/{id}` | device | Delete a scheduled job |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
+| POST | `/voice/tasks/{run_id}/question/dismiss`, `/undo` | device | Close a task's open question without answering (✕), or bring it back (Undo); the agent is told nothing |
 | GET | `/voice/titles` | device | Past tasks still under their stand-in title: what the app's Apple Intelligence sweep may rename |
 | POST | `/voice/titles` | device | Set one task's title (from the app's on-device titler); the job's name follows |
 | GET | `/voice/card-image/{run_id}/{1-8}` | device | Image bytes for an image card |
@@ -1033,6 +1034,12 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
   `work`, with its approval and question cards (`result.question`, `status:
   "waiting_for_approval"`), helpers and tool log. Answer them with the existing routes
   (`POST /voice/work/{run_id}/message`, `/card-action`, `/voice/interactions/{id}/approval`).
+  Each job with a question carries `question_open` (true only while it still waits on the user).
+  A question closes on its own when the conversation moves on (a newer message from the user in
+  that session, a newer turn in the chat a linked task continued, or a newer task in the same
+  thread): the job then carries `question_closed: "moved_on"` (or `"dismissed"` after the ✕) and
+  `set_aside: true`, and keeps `result.question` for a quiet "Question · moved on" line. Two tasks in
+  different threads keep independent questions. Capability `question_actions`.
 - `approvals`: approvals the session's Speakeasy tasks wait on right now
   (`[{run_id, task_id, description, choices}]`, `choices` from `once`, `session`, `deny`; never
   `always`). Answer with `POST /voice/history/{session_id}/approval`.
@@ -1052,6 +1059,8 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
 - `live: {now, so_far?}`: a running session without a running Speakeasy task (a Kanban worker, a
   chat mid-turn) gets a live line from its own steps, like a task card's (SPK-32).
 ### POST /voice/history/{session_id}/message
+
+Optional `answers`: a task's `run_id` — the message is that question's answer ("Reply…" on a decision card), delivered to the task that asked even when a newer task exists (`via: "answer"`); a task this conversation doesn't hold is `404`.
 
 Body `{"text": "...", "source": "typed" | "voice_message", "client_id": "<uuid>", "attachments"?: [...]}` (`text` trimmed,
 1–4,000 characters; `voice_message` is text the app transcribed on the device from a recorded voice

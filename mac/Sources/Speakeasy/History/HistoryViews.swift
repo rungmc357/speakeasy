@@ -571,7 +571,11 @@ struct HistorySessionView: View {
                             HistoryTaskCard(job: job).transition(.opacity)
                         }
                         if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
-                        ForEach(thread.waiting) { HistoryWaitingCard(waiting: $0, store: store) }
+                        ForEach(store.waiting(thread)) { HistoryWaitingCard(waiting: $0, store: store) }
+                        if let undo = store.undoQuestion {
+                            HistoryUndoToast(text: "Question dismissed", undo: store.undoDismiss)
+                                .id("undo-\(undo.id)").transition(.opacity)
+                        }
                         if let error = store.answerError {
                             Text(error).font(.system(size: 11.5)).foregroundStyle(Live.red)
                         }
@@ -1106,6 +1110,7 @@ struct HistoryTaskLine: View {
     }
 
     private var icon: String {
+        if TaskLineCopy.questionNote(job) != nil { return "questionmark.bubble" }
         switch job.status {
         case "failed": return "exclamationmark.triangle.fill"
         case "cancelled": return "stop.fill"
@@ -1113,6 +1118,7 @@ struct HistoryTaskLine: View {
         }
     }
     private var tint: Color {
+        if TaskLineCopy.questionNote(job) != nil { return .secondary }
         switch job.status {
         case "failed": return Live.red
         case "cancelled": return .secondary
@@ -1312,7 +1318,8 @@ struct HistoryWaitingCard: View {
     var body: some View {
         let busy = store.answering.contains(waiting.id)
         NeedsYouCard(symbol: waiting.kind == .approval ? "hand.raised.fill" : "questionmark.bubble.fill",
-                     title: waiting.kind == .approval ? "Wants your OK" : "Asked you") {
+                     title: waiting.kind == .approval ? "Wants your OK" : "Asked you",
+                     dismiss: waiting.questionRunID == nil ? nil : { withAnimation(.snappy) { store.dismiss(waiting) } }) {
             Text(waiting.text).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             if let command = waiting.command {
@@ -1332,8 +1339,16 @@ struct HistoryWaitingCard: View {
                 .disabled(busy)
                 .opacity(busy ? 0.6 : 1)
             }
-            Text(waiting.kind == .approval ? "Or type what to do instead." : "Or answer in your own words below.")
-                .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            if waiting.kind == .question && waiting.questionRunID != nil {
+                Button { store.reply(to: waiting) } label: {
+                    Label("Reply…", systemImage: "arrowshape.turn.up.left").font(.system(size: 11.5, weight: .semibold))
+                }
+                .buttonStyle(.plain).foregroundStyle(Live.brassText)
+                .accessibilityIdentifier("history-question-reply")
+            } else {
+                Text(waiting.kind == .approval ? "Or type what to do instead." : "Or answer in your own words below.")
+                    .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            }
         }
         .accessibilityIdentifier(waiting.kind == .approval ? "history-approval" : "history-question")
     }
@@ -1349,15 +1364,46 @@ struct HistoryWaitingCard: View {
     }
 }
 
+/// "Question dismissed · Undo", for a few seconds after a ✕.
+struct HistoryUndoToast: View {
+    var text: String
+    var undo: () -> Void
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            Text(text).font(.system(size: 12)).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Button("Undo", action: undo).buttonStyle(.plain)
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(Live.brassText)
+                .accessibilityIdentifier("history-question-undo")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Live.well))
+    }
+}
+
 struct NeedsYouCard<Content: View>: View {
     var symbol: String
     var title: String
+    /// The header's ✕ (a decision card's Dismiss); nil hides it.
+    var dismiss: (() -> Void)? = nil
     @ViewBuilder var content: () -> Content
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 6) {
                 Image(systemName: symbol).font(.system(size: 10.5, weight: .semibold))
                 Text(title.uppercased()).font(.system(size: 10.5, weight: .bold)).tracking(0.8)
+                if let dismiss {
+                    Spacer(minLength: 8)
+                    Button(action: dismiss) {
+                        Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                            .frame(width: 20, height: 20).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("Dismiss. Nothing is sent to the agent.")
+                    .accessibilityLabel("Dismiss")
+                    .accessibilityIdentifier("history-question-dismiss")
+                }
             }
             .foregroundStyle(Live.amber)
             content()
@@ -1457,6 +1503,18 @@ struct HistoryComposer: View {
         let empty = TaskMessageRequest.clean(store.draft) == nil
         let reviewing = store.voice.reviewing
         return VStack(alignment: .leading, spacing: 7) {
+            if let replying = store.replyingTo {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrowshape.turn.up.left.fill").font(.system(size: 9.5, weight: .bold))
+                    Text("Answering: \(replying.text)").font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    Spacer()
+                    Button { store.cancelReply() } label: { Image(systemName: "xmark").font(.system(size: 9.5, weight: .bold)) }
+                        .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("Stop answering")
+                }
+                .foregroundStyle(Live.brassText)
+                .padding(.horizontal, 6)
+                .accessibilityIdentifier("history-replying-to")
+            }
             if reviewing {
                 HStack(spacing: 6) {
                     Image(systemName: "mic.fill").font(.system(size: 9.5, weight: .bold))

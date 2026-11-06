@@ -371,6 +371,12 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await post("/voice/tasks/\(escape(runID))/set-aside", [:])
     }
 
+    /// ✕ on a decision card (servers with `question_actions`): close the task's question on every
+    /// device without telling the agent anything. `undo` (the toast's Undo) brings it back.
+    public func dismissQuestion(runID: String, undo: Bool = false) async throws {
+        _ = try await post("/voice/tasks/\(escape(runID))/question/\(undo ? "undo" : "dismiss")", [:])
+    }
+
     /// Clear finished tasks from the task list (running tasks are never cleared).
     public func dismissTasks(runIDs: [String]) async throws {
         _ = try await post("/voice/tasks/dismiss", ["run_ids": runIDs])

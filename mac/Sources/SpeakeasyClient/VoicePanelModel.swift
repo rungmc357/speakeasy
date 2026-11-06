@@ -187,6 +187,10 @@ public final class VoicePanelModel: ObservableObject {
     }
     /// "Not needed": set aside a task's question, decision or approval without answering it (run id).
     public var onSetAside: (String) -> Void = { _ in }
+    /// ✕ on a decision (a task's question): close it on every device without telling the agent (run id).
+    public var onDismissQuestion: (String) -> Void = { _ in }
+    /// Tasks whose question was dismissed here: off Needs you at once.
+    @Published public var dismissedQuestionTasks: Set<String> = []
     /// Tasks the user set aside here, hidden from Needs you right away (the api confirms).
     @Published public var setAsideTasks: Set<String> = []
     /// nil shows the task list; an id opens that task.
@@ -388,7 +392,7 @@ public final class VoicePanelModel: ObservableObject {
 
     /// Every task grouped into jobs, newest first.
     public var jobs: [Job] {
-        JobBoard.jobs(state.tasks, answered: Set(answers.keys), dismissed: dismissedViewTasks,
+        JobBoard.jobs(state.tasks, answered: Set(answers.keys), dismissed: dismissedViewTasks.union(dismissedQuestionTasks),
                       reviewing: Set(pinnedReviews.map(\.taskID)), setAside: setAsideTasks, now: state.now)
     }
     public var boardSections: JobBoard.Sections {
@@ -434,6 +438,7 @@ public final class VoicePanelModel: ObservableObject {
     public func dismissFromBoard(_ job: Job) -> Bool {
         switch job.stage {
         case .needsYou:
+            if dismissQuestion(job) { return true }
             if setAside(job) { return true }
             // An email draft to check: it leaves the board only through Send / Deny.
             return false
@@ -477,6 +482,11 @@ public final class VoicePanelModel: ObservableObject {
         var commit: () -> Void = {}
         var undo: () -> Void = {}
         switch job.stage {
+        case .needsYou where questionTarget(job) != nil:
+            guard let task = questionTarget(job), let run = task.info.runID else { return false }
+            dismissedQuestionTasks.insert(task.id)
+            commit = { [weak self] in self?.onDismissQuestion(run) }
+            undo = { [weak self] in self?.dismissedQuestionTasks.remove(task.id) }
         case .needsYou:
             guard let task = setAsideTarget(job), let run = task.info.runID else { return false }
             setAsideTasks.insert(task.id)
@@ -649,6 +659,23 @@ public final class VoicePanelModel: ObservableObject {
         guard job.stage == .needsYou(.decide) || job.stage == .needsYou(.approve) else { return nil }
         let task = job.decisionTask ?? job.tasks.last { $0.info.status == "waiting_for_approval" }
         return task?.info.runID == nil ? nil : task
+    }
+
+    /// The task whose question (not an approval) the job waits on: what the board's Dismiss closes.
+    public func questionTarget(_ job: Job) -> TaskItem? {
+        guard job.stage == .needsYou(.decide), let task = job.decisionTask, task.info.runID != nil,
+              task.info.status != "waiting_for_approval" else { return nil }
+        return task
+    }
+
+    /// Dismiss a decision: the question leaves Needs you on every device and the agent is told
+    /// nothing (unlike "Not needed", which tells a waiting run to wrap up). False: no question waits.
+    @discardableResult
+    public func dismissQuestion(_ job: Job) -> Bool {
+        guard let task = questionTarget(job), let run = task.info.runID else { return false }
+        dismissedQuestionTasks.insert(task.id)
+        onDismissQuestion(run)
+        return true
     }
 
     /// "Not needed": set aside what the job waits on without answering it (already handled, or not

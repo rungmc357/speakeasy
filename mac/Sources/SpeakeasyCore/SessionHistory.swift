@@ -338,7 +338,7 @@ public struct HistoryApproval: Equatable, Sendable, Identifiable {
 public struct HistoryConversation: Equatable, Sendable {
     /// `task`: a Speakeasy task's session. `sessionJob`: another Hermes API session (a job runs in it).
     /// `linked`: a chat (Discord, Telegram, terminal, Desktop): a Speakeasy task linked to it, never posted there.
-    public enum SendVia: String, Equatable, Sendable { case task, sessionJob = "session_job", linked }
+    public enum SendVia: String, Equatable, Sendable { case task, sessionJob = "session_job", linked, answer }
     public var id: String
     public var title: String
     public var source: String
@@ -396,12 +396,18 @@ public struct HistoryConversation: Equatable, Sendable {
         if automated && state == .needsYou { state = .running }
     }
 
-    /// The ONE job whose question (a decision card) waits on the user, as the plugin decides it
-    /// (`question_open`; answered anywhere, superseded or a repeat of an answered one → none). Plugins
-    /// before it: the newest unanswered question only, never two cards for the same question.
+    /// The jobs whose question (a decision card) waits on the user, as the plugin decides it
+    /// (`question_open`; answered, dismissed or moved on anywhere, superseded or a repeat of an
+    /// answered one → none). Two pieces of work can each wait on their own question (newest first).
+    /// Plugins before it: the newest unanswered question only, never two cards for the same question.
     public var waitingQuestions: [WorkInfo] {
-        let open = jobs.filter { $0.status == "completed" && $0.decision != nil && !$0.setAside && !$0.answered }
-        if let flagged = open.first(where: { $0.questionOpen == true }) { return [flagged] }
+        let open = jobs.filter { $0.status == "completed" && $0.decision != nil && !$0.setAside && !$0.answered
+            && $0.questionClosed == nil }
+        let flagged = open.filter { $0.questionOpen == true }
+        if !flagged.isEmpty {
+            var seen = Set<String>()   // the same question asked twice is one card
+            return flagged.filter { seen.insert($0.decision?.question ?? $0.runID ?? "").inserted }
+        }
         if open.contains(where: { $0.questionOpen == false }) {
             return []   // the plugin decided: none of these still waits
         }
@@ -428,19 +434,23 @@ public struct HistoryMessageRequest: Equatable, Sendable {
     public var attachments: [String]
     /// Servers with `model_choice`: a model / level for this message, kept for the chat (nil = as is).
     public var choice: ModelChoice?
+    /// Servers with `question_actions`: the run id of the task whose question this answers (a
+    /// decision card's button or its "Reply…"); delivered to that task even when a newer one exists.
+    public var answers: String?
 
     public init?(sessionID: String, text: String, source: Source = .typed, clientID: String = UUID().uuidString,
-                 attachments: [String] = [], choice: ModelChoice? = nil) {
+                 attachments: [String] = [], choice: ModelChoice? = nil, answers: String? = nil) {
         let clean = TaskMessageRequest.clean(text)
         guard clean != nil || !attachments.isEmpty else { return nil }
         self.sessionID = sessionID; self.text = clean ?? ""; self.source = source; self.clientID = clientID
-        self.attachments = attachments; self.choice = choice
+        self.attachments = attachments; self.choice = choice; self.answers = answers
     }
 
     public var path: String { HistoryConversation.path(sessionID) + "/message" }
     public var body: [String: Any] {
         var out: [String: Any] = ["text": text, "source": source.rawValue, "client_id": clientID]
         if !attachments.isEmpty { out["attachments"] = attachments }
+        if let answers, !answers.isEmpty { out["answers"] = answers }
         if let choice, !choice.isEmpty { out.merge(choice.body()) { _, new in new } }
         return out
     }
