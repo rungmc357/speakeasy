@@ -27,13 +27,16 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
     public var unread: Bool
     /// Archived in Hermes (listed only under the Archived filter).
     public var archived: Bool
+    /// Automated work nobody typed into (a Kanban board worker, a scheduled job): never unread or needs-you.
+    public var automated: Bool
 
     public init(id: String, title: String, source: String, sourceLabel: String, lastActivity: Date?,
                 preview: String = "", state: State = .idle, runIDs: [String] = [], match: String? = nil,
-                pinned: Bool = false, unread: Bool = false, archived: Bool = false) {
+                pinned: Bool = false, unread: Bool = false, archived: Bool = false, automated: Bool = false) {
         self.id = id; self.title = title; self.source = source; self.sourceLabel = sourceLabel
         self.lastActivity = lastActivity; self.preview = preview; self.state = state; self.runIDs = runIDs
-        self.match = match; self.pinned = pinned; self.unread = unread; self.archived = archived
+        self.match = match; self.pinned = pinned; self.unread = unread && !automated; self.archived = archived
+        self.automated = automated
     }
 
     public init?(json: Any?) {
@@ -46,7 +49,9 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
                   state: (o["state"] as? String).flatMap(State.init(rawValue:)) ?? .idle,
                   runIDs: (o["run_ids"] as? [Any] ?? []).compactMap { nonEmpty($0) },
                   match: nonEmpty(o["match"]), pinned: o["pinned"] as? Bool ?? false,
-                  unread: o["unread"] as? Bool ?? false, archived: o["archived"] as? Bool ?? false)
+                  unread: o["unread"] as? Bool ?? false, archived: o["archived"] as? Bool ?? false,
+                  automated: o["automated"] as? Bool ?? false)
+        if automated && state == .needsYou { state = .idle }
     }
 
     /// The deep link that opens this conversation in any Speakeasy app.
@@ -91,6 +96,7 @@ public enum HistorySources {
         case "cli", "tui", "terminal": return "terminal"
         case "gui", "local", "desktop": return "desktop"
         case "cron", "scheduled": return "scheduled"
+        case "kanban": return "kanban"
         case "api_server", "api": return "api"
         default: return nil
         }
@@ -122,6 +128,38 @@ public enum HistorySources {
     }
 }
 
+/// `GET /voice/history`'s `automated`: how many automated sessions (Kanban workers, scheduled jobs)
+/// there are, and whether this page hid them. Plugins before 0.3.37 don't send it.
+public struct HistoryAutomated: Equatable, Sendable {
+    public var count: Int
+    public var hidden: Bool
+    public init(count: Int, hidden: Bool) { self.count = count; self.hidden = hidden }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any] else { return nil }
+        self.init(count: (o["count"] as? NSNumber)?.intValue ?? 0, hidden: o["hidden"] as? Bool ?? false)
+    }
+}
+
+/// The one show/hide switch for automated work at the top of the conversation list, remembered on
+/// this device. Offered only when the server can hide them (`automated` in its reply) and there is
+/// something to hide, or while they're hidden (so it can be turned back).
+public enum HistoryAutomation {
+    public static let defaultsKey = "history.hideAutomated"
+    public static var hidden: Bool {
+        get { UserDefaults.standard.bool(forKey: defaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: defaultsKey) }
+    }
+    public static func offers(_ facet: HistoryAutomated?, hiding: Bool) -> Bool {
+        guard let facet else { return false }
+        return facet.count > 0 || hiding
+    }
+    /// The switch's words: what tapping it does.
+    public static func label(hiding: Bool) -> String { hiding ? "Show automated" : "Hide automated" }
+    public static let symbol = "gearshape.2"
+    /// What counts as automated, for the switch's help text.
+    public static let help = "Board workers and scheduled jobs"
+}
+
 /// `GET /voice/history`'s page.
 public struct HistoryPage: Equatable, Sendable {
     public var sessions: [HistorySession]
@@ -129,10 +167,13 @@ public struct HistoryPage: Equatable, Sendable {
     public var filters: [HistoryFilter]
     /// The `sources` facet; nil from plugins that don't send it.
     public var sources: [HistorySourceCount]?
+    /// The automated-work facet; nil from plugins that don't send it.
+    public var automated: HistoryAutomated?
 
     public init(sessions: [HistorySession], nextCursor: String? = nil, filters: [HistoryFilter] = [],
-                sources: [HistorySourceCount]? = nil) {
+                sources: [HistorySourceCount]? = nil, automated: HistoryAutomated? = nil) {
         self.sessions = sessions; self.nextCursor = nextCursor; self.filters = filters; self.sources = sources
+        self.automated = automated
     }
 
     public init(json: Any?) {
@@ -149,13 +190,15 @@ public struct HistoryPage: Equatable, Sendable {
                 return HistorySourceCount(source: id, count: (f["count"] as? NSNumber)?.intValue ?? 0)
             }
         }
+        automated = HistoryAutomated(json: o["automated"])
     }
 
     /// The query string for a page: search, source filter, cursor (all optional).
     public static func path(query: String = "", source: String? = nil, cursor: String? = nil, limit: Int? = nil,
-                            archived: Bool = false) -> String {
+                            archived: Bool = false, hideAutomated: Bool = false) -> String {
         var items: [URLQueryItem] = []
         if archived { items.append(URLQueryItem(name: "archived", value: "1")) }
+        if hideAutomated { items.append(URLQueryItem(name: "automated", value: "0")) }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !q.isEmpty { items.append(URLQueryItem(name: "q", value: String(q.prefix(200)))) }
         if let source, !source.isEmpty { items.append(URLQueryItem(name: "source", value: source)) }
@@ -214,10 +257,15 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
     public var voice: Bool
     /// `user`: the request came from a call; what was said on it, oldest first (one card, transcript on tap).
     public var call: [HistoryCallLine]?
+    /// `note`: the Kanban card a board worker was started with (a compact header, instructions folded away).
+    public var card: HistoryWorkerTask?
+    /// `assistant`: the worker's own update to the person (a tracker comment or its finish summary).
+    public var update = false
 
     public init(id: String, kind: Kind, at: Date? = nil, text: String = "", tools: [JobActivityItem] = [], voice: Bool = false,
-                call: [HistoryCallLine]? = nil) {
+                call: [HistoryCallLine]? = nil, card: HistoryWorkerTask? = nil, update: Bool = false) {
         self.id = id; self.kind = kind; self.at = at; self.text = text; self.tools = tools; self.voice = voice; self.call = call
+        self.card = card; self.update = update
     }
 
     public init?(json: Any?) {
@@ -228,7 +276,40 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
         let text = nonEmpty(o["text"]) ?? ""
         if kind == .tools ? tools.isEmpty : text.isEmpty { return nil }
         self.init(id: id, kind: kind, at: decodeDate(o["at"]), text: text, tools: tools, voice: (o["voice"] as? Bool) ?? false,
-                  call: ((o["call"] as? [String: Any])?["lines"] as? [Any]).map { $0.compactMap(HistoryCallLine.init(json:)) }.flatMap { $0.isEmpty ? nil : $0 })
+                  call: ((o["call"] as? [String: Any])?["lines"] as? [Any]).map { $0.compactMap(HistoryCallLine.init(json:)) }.flatMap { $0.isEmpty ? nil : $0 },
+                  card: kind == .note ? HistoryWorkerTask(json: o["task"]) : nil, update: o["update"] as? Bool ?? false)
+    }
+}
+
+/// A board worker's card (`task` on its first note): "SPK-43 · Keyboard sometimes covers content",
+/// a link to the issue, its one-line goal, and the full instructions for a collapsed disclosure.
+public struct HistoryWorkerTask: Equatable, Sendable {
+    public var title: String
+    public var issue: String?
+    public var url: URL?
+    public var goal: String?
+    public var instructions: String
+    public init(title: String, issue: String? = nil, url: URL? = nil, goal: String? = nil, instructions: String = "") {
+        self.title = title; self.issue = issue; self.url = url; self.goal = goal; self.instructions = instructions
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let title = nonEmpty(o["title"]) else { return nil }
+        let url = nonEmpty(o["url"]).flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
+        self.init(title: String(title.prefix(160)), issue: nonEmpty(o["issue"]), url: url,
+                  goal: nonEmpty(o["goal"]).map { String($0.prefix(240)) }, instructions: nonEmpty(o["instructions"]) ?? "")
+    }
+    /// "SPK-43 · Keyboard sometimes covers content".
+    public var heading: String { issue.map { "\($0) \u{00B7} \(title)" } ?? title }
+}
+
+/// A running session's live line without a running Speakeasy task (`live`: a board worker, a chat mid-turn).
+public struct HistoryLive: Equatable, Sendable {
+    public var now: String
+    public var soFar: String?
+    public init(now: String, soFar: String? = nil) { self.now = now; self.soFar = soFar }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let now = nonEmpty(o["now"]) else { return nil }
+        self.init(now: String(now.prefix(120)), soFar: nonEmpty(o["so_far"]).map { String($0.prefix(200)) })
     }
 }
 
@@ -278,6 +359,12 @@ public struct HistoryConversation: Equatable, Sendable {
     /// Archived in Hermes (the page offers Unarchive) / pinned on any device.
     public var archived = false
     public var pinned = false
+    /// Automated work (a board worker, a scheduled job): never needs-you.
+    public var automated = false
+    /// Its live line from its own steps while it runs with no Speakeasy task (plugins from 0.3.37).
+    public var live: HistoryLive?
+    /// A board worker's card (the first entry's), for the page's header.
+    public var card: HistoryWorkerTask? { entries.first(where: { $0.card != nil })?.card }
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
@@ -304,6 +391,9 @@ public struct HistoryConversation: Equatable, Sendable {
                   modelChoice: ModelChoice(json: o["model_choice"]))
         archived = o["archived"] as? Bool ?? false
         pinned = o["pinned"] as? Bool ?? false
+        automated = o["automated"] as? Bool ?? false
+        live = HistoryLive(json: o["live"])
+        if automated && state == .needsYou { state = .running }
     }
 
     /// The ONE job whose question (a decision card) waits on the user, as the plugin decides it

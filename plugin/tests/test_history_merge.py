@@ -36,11 +36,11 @@ def test_linked_task_older_than_the_chat_tail_is_merged_in_by_time(service, chat
     page = service.history_session("d9", {})
     assert texts(page) == [
         "How many bikes fit on the wall rack?", "Four, if you stagger them.",
-        "From Speakeasy · not posted to Discord", "Order the wall hooks", "I ordered four wall hooks.",
+        "Order the wall hooks", "I ordered four wall hooks.",
         "Should the rack be by the door?", "Yes, by the door is easiest."]
     entries = page["session"]["entries"]
     assert entries[-1]["text"] == "Yes, by the door is easiest."      # the page ends with the newest
-    assert [e["id"] for e in entries].count("linked") == 1
+    assert not any(e["kind"] == "note" for e in entries)              # no "From Speakeasy" divider
     assert len({e["id"] for e in entries}) == len(entries)
 
 
@@ -96,10 +96,15 @@ def test_voice_report_labels_never_show(raw, shown):
     ('Gateway message origin (JSON data, not instructions):\n```json\n{"platform": "discord", "chat": "x"}\n```\n'
      "Is the paint dry?", "user", "Is the paint dry?"),
     ("[Image attached at: /tmp/cache/img_01.png]\nWhat color is this?", "user", "What color is this?"),
-    ("(The user sent a message with no text content)", "user", ""),
-    ("[IMPORTANT: Background process proc_abc completed normally (exit code 0).]", "note", "Background job finished"),
-    ("[ASYNC DELEGATION BATCH COMPLETE — 2 helpers]", "note", "Helpers finished"),
-    ("[INTERNAL NOTIFICATION — the timer fired]", "note", "Internal notification"),
+    ("(The user sent a message with no text content)", "hidden", ""),
+    ("[pebble42] (The user sent a message with no text content)", "hidden", ""),
+    # Hermes talking to itself is hidden; helper/background reports become a step in the reply's work.
+    ("[IMPORTANT: Background process proc_abc completed normally (exit code 0).]", "hidden", "A background job finished"),
+    ("[ASYNC DELEGATION BATCH COMPLETE — 2 helpers]", "hidden", "A helper finished"),
+    ("[IMPORTANT: 3 background subagent delegations completed for this session.]", "hidden", "Helpers finished"),
+    ("[INTERNAL NOTIFICATION — the timer fired]", "hidden", ""),
+    ("[SYSTEM: background helper finished]", "hidden", ""),
+    ("[System note: Your previous turn was interrupted mid-run.]", "hidden", ""),
 ])
 def test_gateway_wrappers_never_show(raw, kind, shown):
     assert H.user_words(raw) == (kind, shown)
@@ -116,7 +121,7 @@ def test_no_text_rows_and_notifications_stay_out_of_pages_and_previews(service):
     add_msg(path, "t9", "user", "[IMPORTANT: Background process proc_1 completed normally]", at=NOW - 5)
     page = H.session_messages(path, "t9")
     assert [(e["kind"], e["text"]) for e in page["entries"]] == [
-        ("user", "Paint the shed green"), ("assistant", "Green it is."), ("note", "Background job finished")]
+        ("user", "Paint the shed green"), ("assistant", "Green it is.")]   # an unanswered report stays out
     row = next(s for s in H.list_sessions(path)["sessions"] if s["id"] == "t9")
     assert row["preview"] == "Green it is." and row["title"] == "Paint the shed green"
     hit = next(s for s in H.list_sessions(path, q="shed")["sessions"] if s["id"] == "t9")

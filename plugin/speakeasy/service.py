@@ -2039,6 +2039,7 @@ class VoiceService(SecureInputMixin):
                                    speakeasy_ids=self.store.speakeasy_sessions, folded=self.store.folded_sessions,
                                    marks=self.store.session_marks,
                                    archived=str(query.get("archived") or "") in {"1", "true"},
+                                   automated=str(query.get("automated") or "") not in {"0", "false", "hide"},
                                    include_archived=(None if query.get("include_archived") in (None, "")
                                                      else str(query.get("include_archived")) in {"1", "true"}))
         except H.HistoryError as exc:
@@ -2107,9 +2108,7 @@ class VoiceService(SecureInputMixin):
             upper = H.message_time(self.rt.state_db, before) if before is not None else None
             if before is not None and upper is None:
                 more = []  # can't place this page's span: linked entries stay on the newest page
-            entries = H.merge_linked(entries, more, lower=lower, upper=upper,
-                                     note="From Speakeasy · not posted to " + H.source_label(
-                                         meta["source"], None, None, False))
+            entries = H.merge_linked(entries, more, lower=lower, upper=upper)
         if continued and before is None:
             keys = list(reversed(continued)) + keys
         said = self._voice_said(sid)
@@ -2130,6 +2129,8 @@ class VoiceService(SecureInputMixin):
                         work["set_aside"] = True
                 jobs.append(work)
         running = any(j.get("status") in ACTIVE_RUN_STATES for j in jobs)
+        # No Speakeasy task carrying the live line (a Kanban worker, a chat mid-turn): its own steps do.
+        live = H.session_live(self.rt.state_db, sid, entries) if not running and before is None else None
         title = (meta.get("title") or "").strip() or (link.name if link else None)
         first_user = next((e["text"] for e in page["entries"] if e["kind"] == "user"), None)
         needs_you = (any(j.get("status") in {"waiting_for_approval", "resolving_approval"} for j in jobs)
@@ -2139,7 +2140,9 @@ class VoiceService(SecureInputMixin):
                 H.tidy_title(H.preview_text(first_user, 60)) if first_user else "Untitled conversation"),
             "source": "speakeasy" if own else meta["source"],
             "source_label": H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), own),
-            "state": "needs_you" if needs_you else ("running" if running else "idle"),
+            "state": "needs_you" if needs_you else ("running" if running or live else "idle"),
+            **({"live": live} if live else {}),
+            **({"automated": True} if meta["source"] in H.AUTOMATED_SOURCES and not own else {}),
             "send_via": "task" if own and link else ("session_job" if meta["source"] == "api_server" else "linked"),
             **({"archived": True} if meta.get("archived") else {}),
             **({"pinned": True} if (self.store.session_marks().get(sid) or {}).get("pinned") else {}),

@@ -72,7 +72,8 @@ final class DemoHistoryBackend: HistoryBackend {
 
     func page(_ query: HistoryQuery) async throws -> HistoryPage {
         var all = sessions
-        if let source = query.source { all = all.filter { $0.source == source } }
+        if let source = query.source { all = all.filter { HistorySources.filterID(for: $0.source) == source || $0.source == source } }
+        else if query.hideAutomated { all = all.filter { !$0.automated } }
         let q = query.q.lowercased()
         if !q.isEmpty {
             all = all.compactMap { s in
@@ -85,8 +86,13 @@ final class DemoHistoryBackend: HistoryBackend {
         let slice = Array(all.dropFirst(start).prefix(query.limit))
         let next = start + slice.count < all.count ? String(start + slice.count) : nil
         let counts = Dictionary(grouping: sessions.compactMap { HistorySources.filterID(for: $0.source) }, by: { $0 }).mapValues(\.count)
+        let automated = sessions.filter(\.automated).count
         return HistoryPage(sessions: slice, nextCursor: next, filters: HistoryList.defaultFilters,
-                           sources: HistoryList.defaultFilters.compactMap { f in counts[f.id].map { HistorySourceCount(source: f.id, count: $0) } })
+                           sources: HistoryList.defaultFilters.compactMap { f in
+                               guard !(query.hideAutomated && ["kanban", "scheduled"].contains(f.id)) else { return nil }
+                               return counts[f.id].map { HistorySourceCount(source: f.id, count: $0) }
+                           },
+                           automated: HistoryAutomated(count: automated, hidden: query.hideAutomated))
     }
 
     func conversation(_ sessionID: String) async throws -> HistoryConversation {
@@ -155,16 +161,47 @@ enum DemoHistory {
         var convs: [String: HistoryConversation] = [:]
         func add(_ id: String, _ title: String, _ source: String, _ label: String, _ last: Double, _ preview: String,
                  state: String = "idle", entries: [[String: Any]] = [], jobs: [[String: Any]] = [], approvals: [[String: Any]] = [],
-                 pinned: Bool = false, unread: Bool = false, more: Bool = false) {
-            let row: [String: Any] = ["id": id, "title": title, "source": source, "source_label": label, "last_activity": last,
+                 pinned: Bool = false, unread: Bool = false, more: Bool = false, extra: [String: Any] = [:]) {
+            var row: [String: Any] = ["id": id, "title": title, "source": source, "source_label": label, "last_activity": last,
                                       "preview": preview, "state": state, "pinned": pinned, "unread": unread,
                                       "run_ids": jobs.compactMap { $0["run_id"] as? String }]
+            if source == "kanban" || source == "cron" { row["automated"] = true }
             sessions.append(HistorySession(json: row)!)
             var full = row
             full["entries"] = entries; full["jobs"] = jobs; full["approvals"] = approvals; full["has_more"] = more
             full["send_via"] = source == "speakeasy" ? "task" : "linked"
+            full.merge(extra) { $1 }
             convs[id] = HistoryConversation(json: ["session": full])
         }
+
+        // A Kanban board worker, running: its card as the header, its own updates as messages.
+        let k0 = ago(26)
+        add("s_board", "LAN-12: Lantern wick burns too fast", "kanban", "Kanban", ago(0.2),
+            "Running the flame tests after the wick change.", state: "running", entries: [
+                ["kind": "note", "id": "m1", "at": k0, "text": "LAN-12 \u{00B7} Lantern wick burns too fast", "task": [
+                    "title": "Lantern wick burns too fast", "issue": "LAN-12",
+                    "url": "https://tracker.example/acme/issue/LAN-12/lantern-wick-burns-too-fast",
+                    "goal": "The demo lantern's wick is gone in ten minutes; make it last an hour at the same flame size.",
+                    "instructions": "Tracker issue LAN-12: Lantern wick burns too fast\n\nThe demo lantern's wick is gone in ten minutes. Make it last an hour. Keep the flame the same size.\n\nIntegration bases: from main.\n\n--- Team board at dispatch ---\n- LAN-9 Glass cleaning (in progress)\n- LAN-14 Handle squeaks (queued)"]],
+                bot("m2", k0 + 30, "Starting: making the wick last an hour without a smaller flame.").merging(["update": true]) { $1 },
+                tools("t1", [call(1, "read", "Read wick.py", "read_file", k0 + 40, 0.4),
+                             call(2, "search", "Searched the files for “burn_rate”", "search_files", k0 + 50, 0.9),
+                             call(3, "run", "Ran the flame tests", "terminal", k0 + 70, 48, result: "2 failed, 14 passed")]),
+                bot("m3", ago(14), "Found it: the burn rate is per second, but the wick length is in minutes, so it burns 60 times too fast. Fixing the units now.").merging(["update": true]) { $1 },
+                tools("t2", [call(4, "edit", "Edited wick.py", "patch", ago(12), 0.6),
+                             call(5, "edit", "Edited test_wick.py", "patch", ago(11), 0.5),
+                             call(6, "run", "Ran the flame tests", "terminal", ago(1), nil)]),
+            ], extra: ["live": ["now": "Running the flame tests after the units fix", "so_far": "Read the code, found the units mix-up, edited 2 files"]])
+        add("s_board_done", "LAN-9: Glass fogs up when lit", "kanban", "Kanban", ago(70),
+            "Done: the vent now opens before the flame heats the glass. 9 tests pass.", entries: [
+                ["kind": "note", "id": "m1", "at": ago(110), "text": "LAN-9 \u{00B7} Glass fogs up when lit", "task": [
+                    "title": "Glass fogs up when lit", "issue": "LAN-9", "instructions": "Tracker issue LAN-9: Glass fogs up when lit."]],
+                bot("m2", ago(70), "Done: the vent now opens before the flame heats the glass. 9 tests pass.").merging(["update": true]) { $1 },
+            ])
+        add("s_digest", "Morning digest", "cron", "Scheduled", ago(150), "Three things need you today.", entries: [
+                ["kind": "note", "id": "m1", "at": ago(151), "text": "Scheduled run"],
+                bot("m2", ago(150), "Three things need you today: the staging upload, the pricing question and a calendar clash at 3 PM."),
+            ])
 
         let t0 = ago(9)
         add("s_flaky", "Fix the flaky checkout test", "speakeasy", "Speakeasy", ago(0.5), "Rerunning the checkout test 50 times",
@@ -428,6 +465,21 @@ enum HistoryShots {
                 c.window?.setContentSize(NSSize(width: 1040, height: 720))
                 store.open("s_long")
             }
+            await shot("16-board-worker") {
+                store.setHideAutomated(false)
+                c.window?.setContentSize(NSSize(width: 1040, height: 720))
+                store.open("s_board")
+            }
+            await shot("17-board-worker-instructions") {
+                store.openSections = ["s_board_done|m1|instructions"]
+                store.open("s_board_done")
+            }
+            await shot("18-automated-hidden") {
+                store.setHideAutomated(true)
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                store.open("s_flaky")
+            }
+            store.setHideAutomated(false)
             exit(0)
         }
     }
