@@ -34,4 +34,22 @@ final class DecisionButtonsTests: XCTestCase {
     func testASingleOptionNeedsNoOtherOptions() {
         XCTAssertEqual(decision(["Ship it"]).boardButtons(optionsShowing: false), DecisionButtons(pick: "Ship it", more: nil))
     }
+
+    // MARK: Which job's options are already on screen
+
+    private func item(_ id: String) -> TaskItem {
+        TaskItem(json: ["task_id": id, "run_id": "run_\(id)", "status": "done", "title": "Weekly report"])!
+    }
+
+    /// A question card pinned beside the board shows that job's options: the board names it so its
+    /// card leaves out "Other options". Only a job deciding on that very task counts.
+    func testPinnedQuestionNamesTheJobDecidingOnIt() {
+        let deciding = Job(id: "j1", name: "Weekly report", tasks: [item("a"), item("b")], stage: .needsYou(.decide),
+                           decisionTaskID: "b")
+        let running = Job(id: "j2", name: "Checkout test", tasks: [item("c")], stage: .running)
+        XCTAssertEqual(JobBoard.jobDeciding(taskID: "b", in: [running, deciding]), "j1")
+        XCTAssertNil(JobBoard.jobDeciding(taskID: "a", in: [running, deciding]), "an earlier task of the job isn't its question")
+        XCTAssertNil(JobBoard.jobDeciding(taskID: "c", in: [running, deciding]))
+        XCTAssertNil(JobBoard.jobDeciding(taskID: nil, in: [running, deciding]))
+    }
 }

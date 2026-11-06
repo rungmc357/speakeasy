@@ -256,6 +256,13 @@ public final class VoicePanelModel: ObservableObject {
         return (task.id, task.info.views)
     }
 
+    /// The job whose decision the pinned question card is showing, options and all (nil when the
+    /// pinned card isn't a question). A board beside it leaves out its "Other options".
+    public var pinnedQuestionJobID: String? {
+        guard let pinned = pinnedViews, pinned.views.first?.kind == "question" else { return nil }
+        return JobBoard.jobDeciding(taskID: pinned.taskID, in: jobs)
+    }
+
     // MARK: Image review cards
     /// Dismiss a review card (run id); its images stay inside the task.
     public var onDismissReview: (String) -> Void = { _ in }

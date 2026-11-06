@@ -233,6 +233,16 @@ public enum JobBoard {
     /// How long an unanswered decision stays on the board.
     public static let decisionKeptFor: TimeInterval = 24 * 3600
 
+    /// The job whose decision a question card for `taskID` shows (its options on screen), or nil.
+    /// Its board card then leaves out the way to options that are already showing.
+    public static func jobDeciding(taskID: String?, in jobs: [Job]) -> String? {
+        guard let taskID else { return nil }
+        return jobs.first { j in
+            if case .needsYou(.decide) = j.stage { return j.decisionTaskID == taskID }
+            return false
+        }?.id
+    }
+
     /// Groups tasks into jobs, newest job first.
     /// - answered: task ids whose question was answered here.
     /// - dismissed: task ids whose cards the user closed.
