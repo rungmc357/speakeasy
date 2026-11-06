@@ -100,3 +100,52 @@ def test_regular_runs_are_not_touched(tmp_path):
     with store._lock, store._db:
         store._db.execute("UPDATE runs SET updated=? WHERE idem_key='k5'", (time.time() - 5 * 3600,))
     assert recovery.sweep(store, db, lambda: (), {}) == []
+
+
+def unconfirmed_run(store, key, run_id, session_id, age_s):
+    store.reserve_run(key, "call1", key, 1)
+    store.progress(key, "request", "fix the bug")
+    store.update_run(key, run_id, "running")
+    store.set_session(key, session_id)
+    store.update_run(key, None, "ambiguous")  # the stream dropped before the run's final event
+    with store._lock, store._db:
+        store._db.execute("UPDATE runs SET updated=?, created=? WHERE idem_key=?",
+                          (time.time() - age_s, time.time() - age_s - 60, key))
+
+
+def test_an_unconfirmed_run_settles_from_its_session_once_it_goes_quiet(tmp_path):
+    """The stream dropped mid-task and the run finished in its session minutes later, but the board
+    showed it Stopped for hours and the x couldn't clear it."""
+    db = tmp_path / "state.db"
+    hermes_db(db, [("s6", None, [("user", "rename the files", None), ("assistant", "", '[{"id": "x"}]'),
+                                ("tool", "{}", None), ("assistant", "Renamed all twelve files.", None)])])
+    store = StateStore(tmp_path / "se.sqlite3")
+    unconfirmed_run(store, "k6", "run_six", "s6", age_s=60)
+    assert recovery.sweep(store, db, lambda: (), {}) == []  # still quiet for under five minutes: leave it
+    unconfirmed_run(store, "k6", "run_six", "s6", age_s=10 * 60)
+    assert recovery.sweep(store, db, lambda: (), {}) == [("k6", "completed")]
+    assert status(store, "k6") == "completed"
+    assert "twelve files" in store.work(idem_key="k6")["result"]["full"]
+    assert recovery.sweep(store, db, lambda: (), {}) == []
+
+
+def test_an_unconfirmed_run_without_an_answer_is_closed_and_a_superseded_one_at_once(tmp_path):
+    db = tmp_path / "state.db"
+    hermes_db(db, [("s7", None, [("user", "go", None), ("assistant", "", '[{"id": "x"}]')]),
+                   ("s8", None, [("user", "first", None), ("assistant", "Later reply.", None)])])
+    store = StateStore(tmp_path / "se.sqlite3")
+    unconfirmed_run(store, "recent", "run_r", "s7", age_s=30 * 60)
+    unconfirmed_run(store, "old", "run_o", "s7x", age_s=4 * 3600)
+    unconfirmed_run(store, "first", "run_f", "s8", age_s=10 * 60)
+    store.reserve_run("second", "call1", "second", 1)  # a follow-up in the same session owns its reply
+    store.set_session("second", "s8")
+    out = dict(recovery.sweep(store, db, lambda: (), {}))
+    assert out == {"old": "interrupted", "first": "interrupted"}
+    assert status(store, "recent") == "ambiguous"
+    assert recovery.UNCONFIRMED_NOTE in [e["text"] for e in store.work(idem_key="old")["events"]]
+
+
+def test_an_unconfirmed_run_can_be_dismissed(tmp_path):
+    store = StateStore(tmp_path / "se.sqlite3")
+    unconfirmed_run(store, "k9", "run_nine", "s9", age_s=60)
+    assert store.dismiss(["run_nine"]) == ["run_nine"]

@@ -655,6 +655,21 @@ def thread_session(state_db: Path, platform: str, thread_id: str) -> str | None:
     return row[0] if row else None
 
 
+def session_last_at(state_db: Path, session_id: str) -> float | None:
+    """When the session last wrote a message (None if unknown)."""
+    try:
+        db = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return None
+    try:
+        row = db.execute("SELECT MAX(timestamp) FROM messages WHERE session_id=?", (session_id,)).fetchone()
+    except sqlite3.Error:
+        row = None
+    finally:
+        db.close()
+    return float(row[0]) if row and isinstance(row[0], (int, float)) else None
+
+
 def session_answer(state_db: Path, session_id: str, since: float | None = None) -> str | None:
     """The finished reply of a session's turn: its newest message is a plain assistant message
     (written at or after ``since`` when given: a task sent into an existing thread must not settle

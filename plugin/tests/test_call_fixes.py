@@ -228,7 +228,14 @@ def test_generic_plans_are_not_shown(st):
                                                                   "Add your input"])
     assert st.work(idem_key="k1")["plan"] == []
     _run(st, "k2", "s_other2", "running", "Fix the setup", plan=["Find the issue", "Fix and test", "Ship it"])
-    assert st.work(idem_key="k2")["plan"] == ["Find the issue", "Fix and test", "Ship it"]
+    assert st.work(idem_key="k2")["plan"] == []  # stock steps that fit any task: worse than none
+    _run(st, "k3", "s_other3", "running", "Fix the setup", plan=["Find why setup misses the app",
+                                                                  "Point setup at the app", "Try setup again"])
+    assert st.work(idem_key="k3")["plan"][0] == "Find why setup misses the app"
+    # Four stock steps planned for a bug report: nothing in them says what the bug is.
+    _run(st, "k4", "s_other4", "running", "Fix the flaky checkout test",
+         plan=["Find the cause", "Trace the stuck state", "Fix and test", "Your review"])
+    assert st.work(idem_key="k4")["plan"] == []
 
 
 def test_unrelated_requests_in_one_chat_thread_are_separate_jobs(st):

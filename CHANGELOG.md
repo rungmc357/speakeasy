@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.35 — Lost-track jobs settle, better job names and steps
+
+- **A job that lost its connection mid-run no longer sits "Stopped" forever.** If the live link to a job drops before it reports back, Speakeasy now picks up its final answer from the job's session once it goes quiet (or marks it interrupted if none arrives) and the answer shows up as usual. Such a job can also be dismissed right away. On iPhone and Mac the x and swipe work on it once the apps update.
+- **Jobs get a real name.** A quick follow-up like "any luck?" no longer names the whole job ("Check the earlier task"); the job takes the name of the first request in it that says what the work is.
+- **Steps name the actual work.** A job's progress steps now say what they're about ("Find why the checkout test fails") instead of stock lines like "Find the cause" and "Fix and test". A plan made only of stock lines isn't shown.
+
 ## Plugin 0.3.34 · Mac 0.3.19 · iPhone build 65 — Your whole Hermes, in one app
 
 - **Pick the model for each chat.** A chip above the message field on a session page or New chat shows which model and reasoning level the next message runs on; tap it to use another one for this chat, make it your default, or go back to the default. Set Speakeasy's default in Settings › Jobs. On a call, "use the smart model for this" (or "the fast model") picks for that job. The list is your Hermes' own (signed-in providers only), and nothing about where your words go changes.
