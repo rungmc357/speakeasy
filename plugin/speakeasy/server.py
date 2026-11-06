@@ -473,6 +473,47 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             feed.closed()
 
+    def _send_file(self, path: Any, mime: str, size: int) -> None:
+        """One file the agent made, streamed; a single ``Range: bytes=a-b`` is honoured (video seeking)."""
+        start, end, status = 0, size - 1, 200
+        wanted = re.fullmatch(r"bytes=(\d*)-(\d*)", (self.headers.get("Range") or "").strip())
+        if wanted and (wanted.group(1) or wanted.group(2)) and size > 0:
+            if wanted.group(1):
+                start = int(wanted.group(1))
+                end = min(int(wanted.group(2)), size - 1) if wanted.group(2) else size - 1
+            else:
+                start = max(0, size - int(wanted.group(2)))
+            if start > end or start >= size:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            status = 206
+        from urllib.parse import quote
+        self.send_response(status)
+        self.send_header("Content-Type", mime)
+        self.send_header("Cache-Control", "private, max-age=300")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Disposition", f"inline; filename*=UTF-8''{quote(path.name)}")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.end_headers()
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                left = end - start + 1
+                while left > 0:
+                    chunk = fh.read(min(256 * 1024, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     # -- routes -------------------------------------------------------------------------------
     def do_GET(self) -> None:
         path = self.route
@@ -505,6 +546,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+                return
+            file_one = re.fullmatch(r"/voice/files/([a-z2-7]{26})(/thumb)?", path)
+            if file_one:
+                if file_one.group(2):
+                    data, mime = self.service.file_thumb(file_one.group(1))
+                    self.send_response(200)
+                    self.send_header("Content-Type", mime)
+                    self.send_header("Cache-Control", "private, max-age=3600")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self._send_file(*self.service.file_open(file_one.group(1)))
                 return
             events = re.fullmatch(rf"/voice/interactions/{_ID}/events", path)
             if events:
@@ -544,6 +598,8 @@ class Handler(BaseHTTPRequestHandler):
                 from urllib.parse import parse_qs
                 provider = (parse_qs(urlsplit(self.path).query).get("provider") or [""])[0]
                 self._reply(200, self.service.routing_models(provider))
+            elif path == "/voice/files":
+                self._reply(200, self.service.files_list(self._query()))
             elif path == "/voice/models":
                 self._reply(200, self.service.models(self._query()))
             elif work:

@@ -26,6 +26,7 @@ from . import attachments as A
 from . import delivery as D
 from . import duck as duck_mod
 from . import settings as S
+from . import files as F
 from . import history as H
 from . import messages as M
 from . import models as MD
@@ -88,6 +89,9 @@ CAPABILITIES["input_text"] = True
 # GET /voice/history (+ /{session_id}, POST /{session_id}/message): every Hermes session and task,
 # readable and writable by id from the app, with or without a call (history.py).
 CAPABILITIES["history"] = True
+# GET /voice/files (+ /{id}, /{id}/thumb): every file Hermes handed over in a reply, across all chats,
+# by opaque id; only what Hermes itself would deliver as an attachment (files.py).
+CAPABILITIES["files"] = True
 # POST /voice/attachments (+ DELETE /voice/attachments/{id}): pictures and files staged on a device,
 # then sent with a typed message or new job by id (``attachments`` on /voice/work[/{id}/message]).
 CAPABILITIES["attachments"] = True
@@ -359,6 +363,45 @@ class VoiceService(SecureInputMixin):
 
     def openai_key(self) -> str:
         return openai_api_key(self.home)
+
+    @property
+    def files(self) -> "F.FileIndex":
+        index = self.__dict__.get("_files")
+        if index is None:
+            with self.__dict__.setdefault("_files_lock", threading.Lock()):
+                index = self.__dict__.get("_files")
+                if index is None:
+                    index = self.__dict__["_files"] = F.FileIndex(self.rt.state_db, self.home, self.dir / "files.key")
+        return index
+
+    def files_list(self, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/files?kind=&q=&session_id=&cursor=&limit=``: newest first, no paths."""
+        try:
+            limit = int(query.get("limit") or F.PAGE)
+        except ValueError:
+            raise ServiceError(400, "limit must be a number") from None
+        try:
+            return self.files.listing(kind=str(query.get("kind") or ""), q=str(query.get("q") or ""),
+                                      session_id=str(query.get("session_id") or ""),
+                                      cursor=query.get("cursor") or None, limit=limit)
+        except F.FilesError as exc:
+            raise ServiceError(exc.status, exc.message) from None
+
+    def file_open(self, file_id: str) -> tuple[Path, str, int]:
+        try:
+            return self.files.locate(file_id)
+        except F.FilesError as exc:
+            raise ServiceError(exc.status, exc.message) from None
+        except OSError:
+            raise ServiceError(404, "file not found") from None
+
+    def file_thumb(self, file_id: str) -> tuple[bytes, str]:
+        try:
+            return self.files.thumbnail(file_id)
+        except F.FilesError as exc:
+            raise ServiceError(exc.status, exc.message) from None
+        except OSError:
+            raise ServiceError(404, "file not found") from None
 
     def image_roots(self) -> tuple[Path, ...]:
         return default_image_roots(self.home, self.settings.get()["image_roots"])
