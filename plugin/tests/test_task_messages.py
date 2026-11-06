@@ -235,6 +235,64 @@ def test_spoken_follow_up_is_announced_and_a_correction_moves_it(server, service
     assert any("Moved it to" in n for n in notes(worker))
 
 
+def added_notes(worker):
+    return [n for n in notes(worker) if "was added to the existing task" in n]
+
+
+def test_more_for_the_same_task_is_announced_only_once(server, service, hermes):
+    hermes.hold = True
+    _, worker = start_call(server, service)
+    a = one_task(server, worker, "Update the pricing page copy", delegation="call_a")
+    one_task(server, worker, "Fix the dashboard chart colors", delegation="call_b")
+    ids = {t["run_id"]: t["task_id"] for t in tasks(server)}
+    service.rt.route_call = lambda messages: route_to(ids[a["run_id"]], "more")
+    say(worker, "call_f1", "also add a FAQ section")
+    wait_for(lambda: len(added_notes(worker)) >= 1)
+    say(worker, "call_f2", "and a contact link at the bottom")
+    wait_for(lambda: len(added_notes(worker)) >= 2)
+    say(worker, "call_f3", "also add a testimonials section")
+    wait_for(lambda: len(added_notes(worker)) >= 3)
+    said = [n for n in added_notes(worker) if "Adding that to" in n]
+    assert len(said) == 1, added_notes(worker)          # named once, then quietly
+    assert "Adding that to" in added_notes(worker)[0]
+
+
+def test_follow_up_with_only_one_task_open_is_not_announced(server, service, hermes):
+    hermes.hold = True
+    _, worker = start_call(server, service)
+    a = one_task(server, worker, "Update the pricing page copy", delegation="call_a")
+    ids = {t["run_id"]: t["task_id"] for t in tasks(server)}
+    service.rt.route_call = lambda messages: route_to(ids[a["run_id"]], "more")
+    say(worker, "call_f1", "also add a FAQ section")
+    wait_for(lambda: added_notes(worker))
+    assert not any("Adding that to" in n for n in added_notes(worker))
+
+
+def test_route_announcement_rules():
+    class Task:
+        def __init__(self, task_id):
+            self.task_id = task_id
+
+    class Worker:
+        def __init__(self, open_ids):
+            self.open_ids = open_ids
+            self.route_said = {}
+
+        def open_tasks(self):
+            return [Task(t) for t in self.open_ids]
+
+    w = Worker(["t1", "t2", "choice_x"])
+    assert M.should_say_route(w, "t1") is True
+    assert M.should_say_route(w, "t1") is False            # already said for this task
+    assert M.should_say_route(w, "t2") is True             # a different task is named
+    assert M.should_say_route(w, "t2", obvious=True) is False
+    w.route_said["t1"] -= M.ROUTE_SAID_WINDOW_S + 1
+    assert M.should_say_route(w, "t1") is True             # said again after a while
+    assert M.should_say_route(Worker(["t1", "choice_x"]), "t1") is False  # nowhere else it could go
+    assert "Adding that to" in __import__("speakeasy.prompt.builder", fromlist=["x"]).adding_to_note("Pricing", say=True)
+    assert "Adding that to" not in __import__("speakeasy.prompt.builder", fromlist=["x"]).adding_to_note("Pricing", say=False)
+
+
 def test_wrong_task_with_no_name_asks_which_one(server, service, hermes):
     hermes.hold = True
     _, worker = start_call(server, service)
