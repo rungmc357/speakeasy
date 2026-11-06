@@ -41,6 +41,7 @@ from . import receipts
 from . import skills as skills_mod
 from . import corrections as corrections_mod
 from . import vocabulary as vocabulary_mod
+from . import transcript as transcript_mod
 from . import session_titles
 from . import quick as quick_mod
 from . import views as views_mod
@@ -55,7 +56,7 @@ from .prompt import builder as P
 from . import text as text_mod
 from .store import fold_tasks
 from .plain_errors import STREAM_ENDED_EARLY, TASK_START_FAILED, THREAD_WAIT_LOST
-from .text import (ID_RE, MAX_TRANSCRIPT, TERMINAL, clean_transcript, delivery_text, derive_tool_status,
+from .text import (ID_RE, TERMINAL, clean_transcript, delivery_text, derive_tool_status,
                    interim_progress, live_images_in, notice_text, safe_user_text, short_title, home_title, split_result,
                    thread_commentary, vetted_live_ref)
 
@@ -1081,7 +1082,9 @@ class SidebandWorker:
     def __init__(self, rt: Runtime, interaction: Interaction):
         self.rt, self.store, self.agent, self.interaction = rt, rt.store, rt.agent, interaction
         self.notices = rt.notices
-        self.fragments: deque[dict[str, Any]] = deque(maxlen=512)
+        # The newest transcript pieces for the live checks, and the whole call joined into turns
+        # (transcript.py): a task's context is whole turns of the whole call, not the last 512 pieces.
+        self.fragments: transcript_mod.Fragments = transcript_mod.Fragments()
         self.absorbed: list[tuple[str, float]] = []  # words folded into an earlier task by settle()
         self.recent_requests: list[tuple[str, float]] = []  # requests started this call, for echo checks
         self.recent_answers: dict[tuple[str, str], tuple[str, float]] = {}  # tapped answers, for double sends
@@ -1341,15 +1344,7 @@ class SidebandWorker:
 
     def turns(self) -> list[dict[str, str]]:
         """This call's whole transcript as cleaned speaker turns."""
-        out: list[dict[str, Any]] = []
-        for fragment in self.fragments:
-            role = fragment["speaker"]
-            if out and out[-1]["role"] == role:
-                out[-1]["text"] += fragment["text"]
-            else:
-                out.append({"role": role, "text": fragment["text"], "at": fragment["at"]})
-        turns = [{"role": t["role"], "text": clean_transcript(t["text"]).strip(), "at": t["at"]}
-                 for t in out if clean_transcript(t["text"]).strip()]
+        turns = transcript_mod.spoken_turns(self.fragments)
         typed = getattr(self, "typed", None)
         if typed:
             # Typed to a task during the call: a user turn of kind "text", never spoken.
@@ -1777,27 +1772,25 @@ class SidebandWorker:
         except Exception as exc:
             logger.warning("speakeasy: could not stop the corrected task (%s)", type(exc).__name__)
 
-    def context(self, offset_ms: int) -> str:
-        selected = [f for f in self.fragments if (f["end_ms"] or f["start_ms"]) <= offset_ms]
-        lines: list[str] = []
-        current = None
-        for fragment in selected:
-            if fragment["speaker"] != current:
-                current = fragment["speaker"]
-                lines.append(f"\n{current.title()}: ")
-            lines[-1] += fragment["text"]
-        cleaned: list[str] = []
-        for line in lines:
-            label, _, body = line.partition(": ")
-            body = clean_transcript(body)
-            if body:
-                cleaned.append(f"{label}: {body}")
-        text = "".join(cleaned).strip()
+    def context(self, offset_ms: int, budget: int = transcript_mod.TASK_CONTEXT_CHARS) -> str:
+        """The call up to ``offset_ms`` as whole ``User:``/``Assistant:`` turns, the whole call up to
+        ``budget`` characters: the oldest turns are dropped whole (with a note saying so), so the
+        context never starts mid-sentence. A resumed call's turns from before the pause come first,
+        in whatever budget the turns since resuming leave."""
+        lines = [transcript_mod.label(t) for t in transcript_mod.spoken_turns(self.fragments, offset_ms)]
+        kept, dropped = transcript_mod.whole_turns(lines, budget)
         earlier = self.interaction.history if self.interaction.resumed_from else []
-        if earlier and text:
-            before = "\n".join(f"{t['role'].title()}: {t['text']}" for t in earlier[-40:])
-            text = f"Earlier in this call, before it was paused:\n{before}\n\nAfter resuming:\n{text}"
-        return text[-MAX_TRANSCRIPT:]
+        if earlier and kept:
+            room = budget - sum(len(line) + 1 for line in kept)
+            older = [transcript_mod.label(t) for t in earlier if t.get("text")]
+            before, gone = transcript_mod.whole_turns(older, room) if room > 200 else ([], len(older))
+            if before:
+                note = transcript_mod.dropped_note(gone)
+                return ("Earlier in this call, before it was paused:\n" + (note + "\n" if note else "")
+                        + "\n".join(before) + "\n\nAfter resuming:\n" + "\n".join(kept))
+            dropped += gone
+        note = transcript_mod.dropped_note(dropped) if kept else ""
+        return (note + "\n" if note else "") + "\n".join(kept)
 
     async def quiet(self, key: str, delegation_id: str | None, content: str) -> None:
         """Background the voice should know but never answer out loud (work started, where a task
@@ -2474,6 +2467,33 @@ class SidebandWorker:
                                          round(now - started, 1)))
         return tasks
 
+    def call_so_far(self, task_id: str, limit: int = 8) -> list[str]:
+        """One plain line per other task this call started, oldest first: its name, where it stands,
+        and its one-line answer or open question. A new task's brief carries them so it knows what
+        runs beside it and what was already answered (``P.call_so_far_block``)."""
+        with self.interaction.lock:
+            carried = set(getattr(self.interaction, "carried_keys", ()) or ())
+            runs = [(r.delegation_id, r.idem_key, r.status) for r in self.interaction.runs.values()
+                    if r.delegation_id != task_id and r.status != "rejected" and r.idem_key not in carried]
+        choices = getattr(self, "choice_tasks", {})
+        lines = []
+        for other, key, status in runs:
+            if other in choices:
+                continue  # a spoken pick shown as a card: the transcript already has it
+            work = self.store.work(idem_key=key) or {}
+            name = notice_text(work.get("title") or self.store.request_text(key), 90)
+            if not name:
+                continue
+            result = work.get("result") or {}
+            asked = result.get("question") if isinstance(result, dict) else None
+            question = asked.get("question") if isinstance(asked, dict) else asked if isinstance(asked, str) else None
+            line = P.call_task_line(name, status, notice_text(question, 160) if question else None,
+                                    notice_text(result.get("headline") or result.get("spoken"), 160)
+                                    if isinstance(result, dict) and status == "completed" else None,
+                                    notice_text(work.get("now_line") or work.get("short_status"), 120))
+            lines.append(line)
+        return lines[-limit:]
+
     async def dispatch(self, delegation_id: str, revision: int, context: str, marked: Any = None) -> None:
         """Every handoff ends visibly. The voice already said "on it", and the app shows "Waiting for
         <name>" until a task row appears; an exception here used to vanish into the background task,
@@ -3116,7 +3136,8 @@ class SidebandWorker:
         earlier = "\n".join(line for line in context.splitlines()[:-1] if line.startswith(("User: ", "Assistant: ")))
         try:
             decision = await asyncio.to_thread(self.rt.route, last_request, self.open_tasks(), marked, chats,
-                                               earlier[-1200:], replied_task_id=self.replied_task,
+                                               transcript_mod.tail_text(earlier, transcript_mod.ROUTER_CONTEXT_CHARS),
+                                               replied_task_id=self.replied_task,
                                                **({"focus": focus} if focus else {}))
         except Exception as exc:  # routing is a nicety: without it the request still becomes new work
             logger.warning("speakeasy: routing failed, starting as new work (%s)", type(exc).__name__)
@@ -4492,7 +4513,7 @@ class SidebandWorker:
             self.publish()
         prompt = P.build_task_prompt(self.names, revision, context, focus, label, shared=self.shared_prompt(
             items, bool(images), session_id if continuing else None, shared.capture is not None), room=room,
-            typed=self.VOICELESS,
+            typed=self.VOICELESS, others=[] if self.VOICELESS else self.call_so_far(task_id),
             skill=await asyncio.to_thread(skills_mod.invocation, request, idem) if request else "",
             names_hint=P.task_vocabulary_line(self.names, self.vocabulary()))
         try:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..text import clean_transcript, notice_text
+from ..transcript import tail_text
 
 PROMPT_DIR = Path(__file__).parent
 # ~12,000 tokens at ~4 chars/token.
@@ -568,11 +569,39 @@ def status_rule(names: Names) -> str:
 
 # The header over a typed task's messages (history.py tells it apart from a call's transcript).
 TYPED_MESSAGES = "Recent messages typed in the Speakeasy app"
+CALL_SO_FAR = "This call so far"
+
+_STANDING = {"completed": "done", "failed": "didn't finish", "cancelled": "stopped", "canceled": "stopped",
+             "cancel_requested": "stopping", "waiting_for_approval": "waiting for an approval",
+             "waiting_on_task": "waiting for another task to finish"}
+
+
+def call_task_line(name: str, status: str, question: str | None = None, answer: str | None = None,
+                   now: str | None = None) -> str:
+    """One other task of this call, in plain words: "- Weather in the park: done. It'll rain after 3.\""""
+    if question and status not in {"failed", "cancelled", "canceled"}:
+        return f"- {name}: asked the user: {question}"
+    standing = _STANDING.get(status, "still running")
+    line = f"- {name}: {standing}"
+    if answer and status == "completed":
+        line += f". {answer}"
+    elif now and standing == "still running":
+        line += f" ({now})"
+    return line
+
+
+def call_so_far_block(lines: list[str]) -> str:
+    """The other tasks this call started, so a new task knows what runs beside it and what was
+    already answered (and doesn't redo it)."""
+    if not lines:
+        return ""
+    return (f"{CALL_SO_FAR} (other tasks from this call, each in its own session; don't redo them, and use "
+            "their answers when the request points back at one):\n" + "\n".join(lines))
 
 
 def build_task_prompt(names: Names, revision: int, context: str, focus: str | None = None,
                       delivery_label: str = "", shared: str = "", room: str = "", typed: bool = False,
-                      skill: str = "", names_hint: str = "") -> str:
+                      skill: str = "", names_hint: str = "", others: list[str] | None = None) -> str:
     """Prompt for a voice task running in its own Hermes session, beside other tasks.
 
     The session is private to this task (and its follow-ups), so it names the job and carries the
@@ -581,12 +610,14 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
     room transcript, labeled as background, just before the call transcript that holds the request.
     ``typed``: the task came from the app with no call (a message typed or recorded on a page), so
     the brief says so and its messages are not labeled a voice transcript (the history would show it
-    as "From a call").
+    as "From a call"). ``others``: one line per other task of this call (``call_task_line``), shown
+    as a short "This call so far" block just before the transcript.
     ``skill``: the skill block Hermes builds for a typed ``/skill …`` request (skills.invocation), placed
     before the transcript so the person's words stay its last "User:" line (what history shows)."""
     where = (f"your final answer is still shown in the Speakeasy app and posted to {delivery_label}"
              if delivery_label else "your final answer is still shown in the Speakeasy app")
     heard = task_room_block(names, room) if room.strip() else ""
+    so_far = call_so_far_block(others or [])
     return (
         render("You are {assistant_name}, handling one task {user_name} "
                + ("sent you as a message in the Speakeasy app, with no call. " if typed else
@@ -613,6 +644,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         + status_rule(names) + "\n\n"
         + (heard + "\n\n" if heard else "")
         + (skill.strip() + "\n\n" if skill and skill.strip() else "")
+        + (so_far + "\n\n" if so_far else "")
         + (f"{TYPED_MESSAGES} (revision {revision}):\n{context}" if typed else
            f"Recent timestamped voice transcript (revision {revision}):\n{context}")
     )
@@ -763,7 +795,7 @@ def continuation_message(names: Names, request: str, summary: str, room: str = "
 
 def thread_task_message(names: Names, request: str, summary: str, context: str) -> str:
     """The first message in a new chat thread opened for a voice task."""
-    recent = context.strip()[-3000:]
+    recent = tail_text(context.strip(), 3000)
     return (render("[Voice request from {user_name}, relayed by Speakeasy] ", names) + request
             + (f"\n\nRecent voice conversation for context:\n{recent}" if recent else "") + "\n\n"
             + render("Begin your reply with exactly one line: \"Voice: ", names) + summary + render(
