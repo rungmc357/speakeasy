@@ -4,7 +4,16 @@ import Foundation
 @MainActor
 public final class DemoBoardBackend: BoardBackend {
     private let now: Date
-    public init(now: Date = Date()) { self.now = now }
+    /// Card session → a session that exists in the app's own demo history, so a tap opens a page.
+    private let links: [String: String]
+    public init(now: Date = Date(), links: [String: String] = [:]) { self.now = now; self.links = links }
+
+    /// The Mac History window's demo sessions.
+    public static let macLinks = ["demo-garden-rsvp": "s_deploy", "demo-garden-calendar": "s_pricing",
+                                  "demo-garden-color": "s_flaky", "demo-garden-photos": "s_dash"]
+    /// The iPhone/iPad demo sessions.
+    public static let phoneLinks = ["demo-garden-rsvp": "lantern", "demo-garden-calendar": "bench",
+                                    "demo-garden-color": "garden", "demo-garden-photos": "kiln", "demo-bake-orders": "recipes"]
 
     public static let boardList: [KanbanBoardSummary] = [
         KanbanBoardSummary(slug: "garden-site", name: "Garden club website", ready: 3, running: 2, blocked: 1, done: 4),
@@ -17,6 +26,16 @@ public final class DemoBoardBackend: BoardBackend {
     }
 
     public func board(_ slug: String) async throws -> KanbanBoardPage {
+        var page = try page(slug)
+        for i in page.columns.indices {
+            for j in page.columns[i].cards.indices {
+                if let id = page.columns[i].cards[j].sessionID, let to = links[id] { page.columns[i].cards[j].sessionID = to }
+            }
+        }
+        return page
+    }
+
+    private func page(_ slug: String) throws -> KanbanBoardPage {
         let ago = { (minutes: Double) in self.now.addingTimeInterval(-minutes * 60) }
         switch slug {
         case "garden-site":

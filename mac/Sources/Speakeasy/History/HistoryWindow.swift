@@ -262,7 +262,7 @@ enum HistoryShots {
         c.store.scheduleDictation.recorder = SilentRecorder()
         c.store.schedules.backend = DemoScheduleBackend()
         c.store.schedulesSupported = true
-        c.store.board.backend = DemoBoardBackend()
+        c.store.board.backend = DemoBoardBackend(links: DemoBoardBackend.macLinks)
         c.store.boardsSupported = true
         if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
             NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
