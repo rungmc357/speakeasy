@@ -150,7 +150,7 @@ def test_only_the_provider_line_of_a_failed_reply_is_read():
 
 def test_start_failures_name_speakeasys_link_to_hermes():
     assert failures.start_failure_kind(HermesError(401, "Hermes HTTP 401")) == "hermes_key"
-    assert failures.start_failure_kind(HermesError(502, "Hermes unavailable: URLError")) == "hermes_unreachable"
+    assert failures.start_failure_kind(HermesError(502, "Hermes unavailable right now. Try again in a moment.")) == "hermes_unreachable"
     assert failures.start_failure_kind(HermesError(502, "Hermes HTTP 500")) is None
     assert failures.start_failure_kind(urllib.error.HTTPError("u", 401, "no", {}, None)) == "hermes_key"
     assert failures.start_failure_kind(urllib.error.URLError("refused")) == "hermes_unreachable"

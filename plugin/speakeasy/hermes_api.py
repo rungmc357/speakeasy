@@ -13,6 +13,7 @@ from typing import Any, Callable, Sequence
 
 from . import attachments as A
 from .secure_input import scrub_bytes
+from .plain_errors import HERMES_STREAM_FAILED, HERMES_UNAVAILABLE
 from .text import ID_RE, TERMINAL
 
 logger = logging.getLogger(__name__)
@@ -216,7 +217,8 @@ class HermesAPI:
             # half a minute to admit): not "unreachable", and never advice to restart it.
             raise HermesError(504, "Hermes timed out answering") from None
         except (urllib.error.URLError, OSError) as exc:
-            raise HermesError(502, f"Hermes unavailable: {type(exc).__name__}") from None
+            logger.info("speakeasy: Hermes API unavailable (%s)", type(exc).__name__)
+            raise HermesError(502, HERMES_UNAVAILABLE) from None
         except ValueError:
             raise HermesError(502, "Hermes returned invalid JSON") from None
 
@@ -316,7 +318,8 @@ class HermesAPI:
                             terminal = terminal or event.get("event") in {f"run.{s}" for s in TERMINAL}
                 return terminal
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise HermesError(502, f"Hermes event stream failed: {type(exc).__name__}") from None
+            logger.info("speakeasy: Hermes event stream failed (%s)", type(exc).__name__)
+            raise HermesError(502, HERMES_STREAM_FAILED) from None
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         if not ID_RE.fullmatch(run_id):

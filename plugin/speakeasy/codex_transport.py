@@ -173,7 +173,8 @@ def login_status(binary: Path | None, runner: Callable[..., Any] = subprocess.ru
         else:
             result = (ok, "Signed in to Codex with ChatGPT." if ok else "Codex is not signed in on this computer. Run `codex login` here. Hermes' own ChatGPT/Codex sign-in is separate and doesn't carry over.")
     except (OSError, subprocess.SubprocessError) as exc:
-        result = (False, f"Could not run Codex ({type(exc).__name__}).")
+        logger.warning("speakeasy: could not run codex login status (%s)", type(exc).__name__)
+        result = (False, "Couldn't run Codex on your Hermes computer. Try again in a moment.")
     _LOGIN_CACHE[str(binary)] = (time.monotonic(), result)
     return result
 

@@ -204,6 +204,6 @@ def test_a_failing_settings_or_brief_write_answers_with_a_json_500(server, servi
     monkeypatch.setattr(service, "patch_settings", boom)
     monkeypatch.setattr(service, "put_brief", boom)
     status, body = http(server.base_url, "PATCH", "/voice/settings", {"assistant_name": "Nova"}, server.token)
-    assert status == 500 and body == {"error": "internal error (RuntimeError)"}
+    assert status == 500 and body == {"error": "Your Hermes hit a problem with that. Try again."}
     status, body = http(server.base_url, "PUT", "/voice/brief", {"text": "x"}, server.token)
     assert status == 500 and "disk full" not in json.dumps(body)

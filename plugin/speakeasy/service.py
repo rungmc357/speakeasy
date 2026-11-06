@@ -61,6 +61,7 @@ from .secure_service import SecureInputMixin
 from .store import StateStore
 from .suggest import SuggestError, suggest
 from .threads import ThreadRunner, capability, sync_routes
+from .plain_errors import CONFIG_LEFT_UNCHANGED, TYPED_SEND_FAILED, VOICE_START_FAILED
 from .text import ID_RE, MAX_CARDS, MAX_ROOM_CHARS, TERMINAL, notice_text, safe_room_text, split_result, vague_title
 
 logger = logging.getLogger(__name__)
@@ -771,7 +772,7 @@ class VoiceService(SecureInputMixin):
                 logger.warning("speakeasy: voice start failed: %s", exc)
                 raise ServiceError(502, str(exc), reason=getattr(exc, "reason", None)) from None
             logger.warning("speakeasy: voice start failed (%s)", type(exc).__name__)
-            raise ServiceError(502, f"Voice session creation failed: {type(exc).__name__}") from None
+            raise ServiceError(502, VOICE_START_FAILED) from None
         if not isinstance(live_id, str) or not live_id or not isinstance(answer, str) or not answer:
             if transport is not None and hasattr(transport, "stop"):
                 transport.stop()
@@ -1426,7 +1427,7 @@ class VoiceService(SecureInputMixin):
         except Exception as caught:
             exc = caught
         logger.warning("speakeasy: typed turn failed (%s)", type(exc).__name__)
-        raise ServiceError(502, f"typed message failed ({type(exc).__name__})", reason="transport_error") from None
+        raise ServiceError(502, TYPED_SEND_FAILED, reason="transport_error") from None
 
     def focus(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """Vision Pro: the task the user is facing or holding (or none). Unnamed requests go there."""
@@ -3822,7 +3823,8 @@ class VoiceService(SecureInputMixin):
         except routing_choice.RoutingChoiceError as exc:
             raise ServiceError(400, str(exc)) from None
         except hermes_config.ConfigWriteRefused as exc:
-            raise ServiceError(409, f"Hermes config left unchanged: {exc}") from None
+            logger.warning("speakeasy: routing choice left config.yaml unchanged: %s", exc)
+            raise ServiceError(409, CONFIG_LEFT_UNCHANGED) from None
 
     def patch_settings(self, body: dict[str, Any]) -> dict[str, Any]:
         if isinstance(body, dict) and isinstance(body.get("jobs"), dict):

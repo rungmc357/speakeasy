@@ -23,6 +23,7 @@ from .profiles import home_id, profile_name
 from .service import VoiceService
 from .calls import ServiceError, Interaction, publish_state
 from .secure_input import scrub_bytes
+from .plain_errors import INTERNAL_ERROR
 from .text import MAX_ROOM_CHARS
 
 logger = logging.getLogger(__name__)
@@ -684,7 +685,7 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(exc.status, self._error(exc))
         except Exception as exc:
             logger.exception("speakeasy: GET %s failed", path)
-            self._reply(500, {"error": f"internal error ({type(exc).__name__})"})
+            self._reply(500, {"error": INTERNAL_ERROR})
 
     def do_POST(self) -> None:
         path = self.route
@@ -875,7 +876,7 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(exc.status, self._error(exc))
         except Exception as exc:
             logger.exception("speakeasy: POST %s failed", path)
-            self._reply(500, {"error": f"internal error ({type(exc).__name__})"})
+            self._reply(500, {"error": INTERNAL_ERROR})
 
     def do_DELETE(self) -> None:
         path = self.route
@@ -905,7 +906,7 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(exc.status, self._error(exc))
         except Exception as exc:
             logger.exception("speakeasy: DELETE %s failed", path)
-            self._reply(500, {"error": f"internal error ({type(exc).__name__})"})
+            self._reply(500, {"error": INTERNAL_ERROR})
 
     def do_PATCH(self) -> None:
         try:
@@ -921,7 +922,7 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(exc.status, self._error(exc))
         except Exception as exc:  # a JSON 500, not a dropped connection the app reads as offline
             logger.exception("speakeasy: PATCH %s failed", self.route)
-            self._reply(500, {"error": f"internal error ({type(exc).__name__})"})
+            self._reply(500, {"error": INTERNAL_ERROR})
 
     def do_PUT(self) -> None:
         try:
@@ -940,7 +941,7 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(exc.status, self._error(exc))
         except Exception as exc:
             logger.exception("speakeasy: PUT %s failed", self.route)
-            self._reply(500, {"error": f"internal error ({type(exc).__name__})"})
+            self._reply(500, {"error": INTERNAL_ERROR})
 
 
 class SpeakeasyServer:
