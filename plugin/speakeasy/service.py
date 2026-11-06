@@ -1736,11 +1736,8 @@ class VoiceService(SecureInputMixin):
 
     def _hermes_reasoning(self) -> str | None:
         """The effort Hermes' own config runs at (agent.reasoning_effort), for "Default" labels."""
-        try:
-            import yaml  # type: ignore
-            data = yaml.safe_load((self.home / "config.yaml").read_text(encoding="utf-8")) or {}
-        except Exception:
-            return None
+        # Hermes' own config reader: Hermes 0.23+ installs no longer ship PyYAML.
+        data = S.hermes_config(self.home)
         value = (data.get("agent") or {}).get("reasoning_effort") if isinstance(data, dict) else None
         if value is False:
             return "none"

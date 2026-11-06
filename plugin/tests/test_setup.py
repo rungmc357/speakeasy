@@ -309,7 +309,7 @@ def test_rerunning_setup_is_harmless(home):
 
 def test_setup_turns_voice_on_for_the_real_gateway_loader(home):
     """What setup writes must make Hermes' own plugin-platform check say 'configured'."""
-    import yaml
+    from fakes import yaml
     import speakeasy
     run_setup(Fake(), yes=True)
     cfg = yaml.safe_load((home / "config.yaml").read_text())
@@ -347,7 +347,7 @@ def _rich_config():
 
 
 def test_setup_keeps_every_existing_setting(home):
-    import yaml
+    from fakes import yaml
     (home / "config.yaml").write_text(yaml.safe_dump(_rich_config()))
     assert run_setup(Fake(), yes=True)[0] == 0
     saved = yaml.safe_load((home / "config.yaml").read_text())
@@ -369,7 +369,7 @@ def test_setup_never_overwrites_an_unreadable_config(home):
 
 
 def test_update_refuses_a_change_that_removes_settings(tmp_path):
-    import yaml
+    from fakes import yaml
     from speakeasy import hermes_config
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(_rich_config()))
@@ -382,7 +382,7 @@ def test_update_refuses_a_change_that_removes_settings(tmp_path):
 
 
 def test_update_without_a_change_does_not_write(tmp_path):
-    import yaml
+    from fakes import yaml
     from speakeasy import hermes_config
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(_rich_config()))

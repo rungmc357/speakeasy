@@ -278,3 +278,14 @@ def test_store_migrates_and_keeps_choices(home, service):
     assert again.model_choice("session:abc") is None
     assert json.dumps(MD.run_fields({"model": "a/b", "reasoning": "none"})) == json.dumps(
         {"provider": "a", "model": "b", "model_options": {"reasoning": {"enabled": False}}})
+
+
+@pytest.mark.parametrize("written, shown", [("high", "high"), ("false", "none"), ("bogus", None)])
+def test_hermes_default_reasoning_reads_config_without_pyyaml(service, monkeypatch, written, shown):
+    """Hermes 0.23+ installs ship no PyYAML; the "Default" level still comes from Hermes' config."""
+    import sys
+    cfg = service.home / "config.yaml"
+    old = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    cfg.write_text(old + f"agent:\n  reasoning_effort: {written}\n", encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "yaml", None)  # `import yaml` now raises ImportError
+    assert service._hermes_reasoning() == shown
