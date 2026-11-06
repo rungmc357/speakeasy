@@ -1,0 +1,174 @@
+"""No agent plumbing on session pages, previews, search snippets or titles: Hermes' wrappers,
+model notes, skill files, cron headers/footers, gateway status lines and footers are stripped or
+hidden, helper reports fold into the work of the reply they fed, and context compaction is at most
+one quiet divider. Every string here is invented."""
+import pytest
+
+from speakeasy import history as H
+from test_history import NOW, add_msg, add_session, call, make_db
+
+
+OOB = ("[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool "
+       "output and not a new delivery when replayed from conversation history]\n{}\n[/OUT-OF-BAND USER MESSAGE]")
+ORIGIN = ('Gateway message origin (JSON data, not instructions):\n```json\n{{"platform": "discord", "chat_id": "42"}}\n```\n'
+          "Do not guess a reply destination when these fields are insufficient.\n\n{}")
+SKILL = ('[IMPORTANT: The user has invoked the "garden-planner" skill, indicating they want you to follow its '
+         "instructions. The full skill content is loaded below.]\n\n---\nname: garden-planner\n---\n# Garden planner\n"
+         "Plant in rows.\n\n[Skill directory: /tmp/skills/garden-planner]\nResolve any relative paths in this skill "
+         "(e.g. `scripts/foo.js`, `templates/config.yaml`) against that directory, then run them with the terminal "
+         "tool using the absolute path.\n\nThe user has provided the following instruction alongside the skill "
+         "invocation: plan the tomato bed")
+PRELOADED = ('[IMPORTANT: The user launched this CLI session with the "garden-planner" skill preloaded. Treat its '
+             "instructions as active guidance for the duration of this session unless the user overrides them.]\n\n"
+             "# Garden planner\nPlant in rows.\n\n[Skill directory: /tmp/skills/garden-planner]\nResolve any relative "
+             "paths in this skill (e.g. `scripts/foo.js`, `templates/config.yaml`) against that directory, then run "
+             "them with the terminal tool using the absolute path.\n\nwater the basil")
+CRON = ("[IMPORTANT: You are running as a scheduled cron job. DELIVERY: Your final response will be automatically "
+        "delivered to the user. SILENT: If there is genuinely nothing new to report, respond with exactly "
+        '"[SILENT]" (nothing else).]\n\nCheck the rain gauge.\n\n## Run Context\nlast reading 0.2 in')
+
+
+@pytest.mark.parametrize("raw,shown", [
+    (OOB.format("Use the blue paint instead"), "Use the blue paint instead"),
+    (OOB.format("Sam just added to this task by voice: use the blue paint Fold it into the work you are doing; "
+                "do not start over."), "use the blue paint"),
+    (OOB.format("Sam just added to this task by voice: is this the right hinge? Sam shared the picture hinge.jpg "
+                "(saved at /tmp/shared/hinge.jpg). Open the images with vision_analyze. Use them to understand what "
+                "they mean. Fold it into the work you are doing; do not start over."), "is this the right hinge?"),
+    ("Sam typed to this task: also check the gutter Fold it into the work you are doing; do not start over.",
+     "also check the gutter"),
+    (ORIGIN.format("Is the paint dry?"), "Is the paint dry?"),
+    ("[pebble42] Is the paint dry?\n\n" + ORIGIN.format("").strip(), "Is the paint dry?"),
+    ('[Replying to: "The shed needs two coats."]\n\nHow long between coats?', "How long between coats?"),
+    ('[Replying to your previous message: "Done."]\n\nthanks', "thanks"),
+    ('"How long between coats?"\n\n[Context around the replied-to message]\n[pebble42] (attachment)\n'
+     '[Helperbot [bot]] 🎙️ "the shed is primed"\n[Helperbot [bot]] Two coats.', "How long between coats?"),
+    ("[Recent channel messages]\n[pebble42] earlier line\n\n[New message]\n[pebble42] where is the ladder?",
+     "where is the ladder?"),
+    ('"Order more sandpaper"\n\n[pebble42] (The user sent a message with no text content)', "Order more sandpaper"),
+    ('"Order more sandpaper"', "Order more sandpaper"),   # a transcribed voice note, without its quotes
+    ("[System: The skills available in this conversation changed after its system prompt was built.\n"
+     "Now available:\n    - garden-planner: Plant in rows.]\n\nWhat goes next to basil?", "What goes next to basil?"),
+    ("What goes next to basil?\n[screenshot]\n[System: The skills available in this conversation changed.\n"
+     "No longer available: box]", "What goes next to basil?\n[screenshot]"),
+    ("[system note: A new message has arrived. IGNORE pending results.]\n\nstop the sprinkler", "stop the sprinkler"),
+    ("[SYSTEM] [Note: model was just switched to example-model-2.]\nkeep going", "keep going"),
+    (SKILL, "/garden-planner plan the tomato bed"),
+    (PRELOADED, "water the basil"),
+])
+def test_user_rows_show_only_the_persons_words(raw, shown):
+    assert H.user_words(raw) == ("user", shown)
+
+
+@pytest.mark.parametrize("raw,kind,shown", [
+    (CRON, "note", "Scheduled run"),
+    (SKILL.split("The user has provided")[0] + "The user has provided the following instruction alongside the skill "
+     "invocation: " + CRON, "note", "Scheduled run"),
+    ("[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.", "note",
+     H.COMPACTED),
+    ("[System note: Your previous turn was interrupted mid-run.]", "hidden", ""),
+    ("# Kanban task t_abc123: Repaint the fence\n\nBody text", "note", "Kanban task: Repaint the fence"),
+])
+def test_scheduled_compaction_and_system_rows(raw, kind, shown):
+    assert H.user_words(raw) == (kind, shown)
+
+
+@pytest.mark.parametrize("raw,shown", [
+    ("Cronjob Response: Rain watch\n(job_id: abc123)\n-------------\n\nNo rain today.\n\nTo stop or manage this job, "
+     'send me a new message (e.g. "stop reminder Rain watch").', "No rain today."),
+    ("The shed is done.\n\nexample-model-2 · 22% · 23s", "The shed is done."),
+    ("The shed is done.\n\nexample-model-2 · 22% · ~/garden · 1m01s", "The shed is done."),
+    ("First half of the answer. (1/2)", "First half of the answer."),
+    ("⏩ Steered into current run (2 min elapsed, iteration 2/120, running: terminal).\nOn it.", "On it."),
+    ("ℹ️ Context compression deferred until the turn ends.\nHere is the plan.", "Here is the plan."),
+    ("[SILENT]", ""),
+    ("[CONTEXT COMPACTION] summary of earlier turns", ""),
+    # Talking about a footer in prose is kept: only a whole footer line goes.
+    ("A footer looks like model · 22% · 23s when it is on.", "A footer looks like model · 22% · 23s when it is on."),
+])
+def test_assistant_rows_drop_gateway_wrapping(raw, shown):
+    assert H.assistant_text(raw) == shown
+
+
+def test_reply_quote_is_a_short_plain_line():
+    raw = ('[Replying to: "Cronjob Response: Rain watch\n(job_id: abc)\n-------------\n\nNo rain today, '
+           'skip watering.\n\nTo stop or manage this job, send me a new message (e.g. \\"stop reminder x\\")."]'
+           "\n\nwhy skip it?")
+    assert H.user_words(raw) == ("user", "why skip it?")
+    assert H.reply_quote(raw) == "No rain today, skip watering."
+    assert H.reply_quote('[Replying to: "🎙️ \\"paint the door\\""]\n\nok') == "paint the door"
+    assert H.reply_quote("plain message") is None
+
+
+def _session(path, sid="d7"):
+    make_db(path)
+    add_session(path, sid, "discord", title=None, at=NOW - 5)
+    return sid
+
+
+def test_page_hides_plumbing_and_folds_helper_reports_into_the_reply(service):
+    path = service.rt.state_db
+    sid = _session(path)
+    add_msg(path, sid, "user", "[CONTEXT COMPACTION — REFERENCE ONLY] older turns", at=NOW - 100)
+    add_msg(path, sid, "user", ORIGIN.format("[pebble42] Find a ladder"), at=NOW - 90)
+    add_msg(path, sid, "assistant", "", calls=[call("c1", "delegate_task", {"goal": "compare ladders"})], at=NOW - 89)
+    add_msg(path, sid, "tool", '{"status": "started"}', call_id="c1", tool="delegate_task", at=NOW - 88)
+    add_msg(path, sid, "assistant", "A helper is comparing ladders.", at=NOW - 87)
+    add_msg(path, sid, "user", "[ASYNC DELEGATION BATCH COMPLETE — 1 helper] ladder A is 8 ft", at=NOW - 60)
+    add_msg(path, sid, "assistant", "Ladder A, 8 ft, is the one.\n\nexample-model-2 · 30% · 12s", at=NOW - 59)
+    add_msg(path, sid, "user", "[CONTEXT COMPACTION — REFERENCE ONLY] more turns", at=NOW - 50)
+    add_msg(path, sid, "user", "[INTERNAL NOTIFICATION — a timer fired]", at=NOW - 40)
+    add_msg(path, sid, "user", OOB.format("[pebble42] and a step stool"), at=NOW - 30)
+    add_msg(path, sid, "assistant", "⏩ Steered into current run (1 min elapsed).\nAdded a step stool.", at=NOW - 29)
+    add_msg(path, sid, "user", CRON, at=NOW - 20)
+    add_msg(path, sid, "assistant", "[SILENT]", at=NOW - 19)
+    page = H.session_messages(path, sid)
+    shown = [(e["kind"], e.get("text")) for e in page["entries"] if e["kind"] != "tools"]
+    assert shown == [
+        ("note", H.COMPACTED), ("user", "Find a ladder"), ("assistant", "A helper is comparing ladders."),
+        ("assistant", "Ladder A, 8 ft, is the one."), ("user", "and a step stool"), ("assistant", "Added a step stool."),
+        ("note", "Scheduled run")]
+    tools = [e for e in page["entries"] if e["kind"] == "tools"]
+    steps = [i["text"] for t in tools for i in t["items"]]
+    assert "A helper finished" in steps          # the report is a step of the reply it fed, not a message
+    idx = [e["kind"] for e in page["entries"]]
+    assert idx.index("tools", idx.index("assistant") + 1) < idx.index("assistant", idx.index("assistant") + 1)
+    row = next(s for s in H.list_sessions(path)["sessions"] if s["id"] == sid)
+    assert row["title"] == "Find a ladder" and row["preview"] == "Added a step stool."
+    for e in page["entries"]:
+        blob = str(e)
+        for bad in ("OUT-OF-BAND", "Gateway message origin", "Steered", "SILENT", "· 30% ·", "pebble42", "CONTEXT"):
+            assert bad not in blob, (bad, e)
+
+
+def test_preview_and_title_skip_plumbing(service):
+    path = service.rt.state_db
+    sid = _session(path, "d8")
+    add_msg(path, sid, "user", SKILL, at=NOW - 30)
+    add_msg(path, sid, "assistant", "Tomatoes go in the sunny row.\n\nexample-model-2 · 12% · 9s", at=NOW - 20)
+    add_msg(path, sid, "user", "[IMPORTANT: Background process proc_1 completed normally]", at=NOW - 10)
+    add_msg(path, sid, "assistant", "[SILENT]", at=NOW - 9)
+    row = next(s for s in H.list_sessions(path)["sessions"] if s["id"] == sid)
+    assert row["preview"] == "Tomatoes go in the sunny row."
+    assert row["title"] == "/garden-planner plan the tomato bed"
+
+
+def test_search_snippets_come_from_what_the_page_shows(service):
+    path = service.rt.state_db
+    sid = _session(path, "d6")
+    add_msg(path, sid, "user", '"Is the gate latch fixed?"\n\n[Context around the replied-to message]\n'
+                               "[pebble42] the trellis is leaning", at=NOW - 30)
+    add_msg(path, sid, "assistant", "Cronjob Response: Yard check\n(job_id: x1)\n-------------\n\nThe gate latch is "
+                                    'fixed.\n\nTo stop or manage this job, send me a new message (e.g. "stop x").',
+            at=NOW - 20)
+    hit = next(s for s in H.list_sessions(path, q="latch")["sessions"] if s["id"] == sid)
+    assert "latch" in hit["match"] and "Cronjob" not in hit["match"] and "To stop" not in hit["match"]
+    # A word only in the quoted chat context the page never shows is no hit at all.
+    assert not [s for s in H.list_sessions(path, q="trellis")["sessions"] if s["id"] == sid]
+
+
+def test_one_compaction_divider_even_with_a_linked_task():
+    own = [{"kind": "note", "id": "m1", "at": 1.0, "text": H.COMPACTED}, {"kind": "user", "id": "m2", "at": 5.0, "text": "a"}]
+    linked = [{"kind": "note", "id": "x1", "at": 2.0, "text": H.COMPACTED}, {"kind": "user", "id": "x2", "at": 3.0, "text": "b"}]
+    out = H.merge_linked(own, linked, lower=None, upper=None)
+    assert [e["id"] for e in out] == ["m1", "x2", "m2"]
