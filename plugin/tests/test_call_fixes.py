@@ -132,6 +132,9 @@ def test_status_question_is_answered_from_the_job(server, service, hermes):
     say(worker, "call_2", "What is it testing", 30)
     answer = wait_for(lambda: spoken(worker))[-1]
     assert "pricing page" in answer and "Ran the full test suite" in answer and "plans.json" in answer
+    # It starts from what the task's card says right now, the same words the app shows.
+    card = service.store.work(idem_key=key)
+    assert f'Its card in the app says: "{card["short_status"]}.' in answer
     assert len(tasks(server)) == before
     voice(worker, "It's running the tests.", 40)
     say(worker, "call_3", "For what", 50)
@@ -228,9 +231,13 @@ def test_generic_plans_are_not_shown(st):
                                                                   "Add your input"])
     assert st.work(idem_key="k1")["plan"] == [] and "started_with" not in st.work(idem_key="k1")
     _run(st, "k2", "s_other2", "running", "Fix the setup", plan=["Find the issue", "Fix and test", "Ship it"])
+    # Stock steps that fit any task: not shown, not even as "Started with".
+    assert st.work(idem_key="k2")["plan"] == [] and "started_with" not in st.work(idem_key="k2")
     # A concrete plan is only ever "Started with": never a list of steps to tick off.
-    assert st.work(idem_key="k2")["plan"] == []
-    assert st.work(idem_key="k2")["started_with"] == "Find the issue; Fix and test; Ship it"
+    _run(st, "k3", "s_other3", "running", "Fix the setup", plan=["Find why setup misses the app",
+                                                                  "Point setup at the app", "Try setup again"])
+    assert st.work(idem_key="k3")["plan"] == []
+    assert st.work(idem_key="k3")["started_with"].startswith("Find why setup misses the app")
     # Four stock steps planned for a bug report: not even "Started with".
     _run(st, "k4", "s_other4", "running", "Fix the flaky checkout test",
          plan=["Find the cause", "Trace the stuck state", "Fix and test", "Your review"])

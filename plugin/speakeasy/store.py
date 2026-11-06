@@ -1725,9 +1725,12 @@ class StateStore:
             work["quiet_s"] = live["quiet_s"]
         now = time.time()
         authored_fresh = (status_source == "authored" and authored_at is not None
-                          and now - authored_at < live_status.IDLE_AFTER_S and live["source"] != "idle")
+                          and now - authored_at < live_status.IDLE_AFTER_S)
         if authored_fresh:
-            return  # the task's own words, just written, win over a summary of its steps
+            # The task's own words, just written, win over a summary of its steps, and over "No new
+            # steps" / "No steps reported yet": writing a status is a step (the voice reads this too).
+            work.pop("quiet_s", None)
+            return
         work["short_status"] = live["now"]
         work["detail"] = live.get("so_far") or work.get("detail")
         work["status_source"] = "tool"

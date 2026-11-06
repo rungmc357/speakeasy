@@ -1,29 +1,34 @@
-"""The call pulse: a spoken line about every PULSE_EVERY_S while work runs and the call is quiet,
-written from the task's real tool calls (activity.py). Invented data only."""
+"""The call pulse: while work runs and the call is quiet, a short spoken line about it. The line is the
+task card's own (store.work: the live line from live_status.py and its "So far" recap, or the task's own
+STATUS and detail) and is said only when the card changed. Invented data only."""
 from __future__ import annotations
 
 import asyncio
-import time
+import json
 
 import pytest
 
 from fakes import ModuleClock, http
 from speakeasy import activity as A
-from speakeasy import calls, router
+from speakeasy import calls
+from speakeasy import live_status as LS
+from speakeasy import store as store_mod
 from speakeasy.calls import BackendRun
-from speakeasy.prompt import builder as P
 from test_routing import _progress_worker, spoken, start_call
 
 WALL = 1_800_000_000.0
 
 
 class Clock:
-    """Monotonic for calls.py; activity items are stamped on the wall clock (WALL + same offset)."""
+    """Monotonic for calls.py; activity items, the store and the live line run on the wall clock
+    (WALL + the same offset)."""
 
     def __init__(self, monkeypatch):
         self.t = 1000.0
-        # calls.py's own clock only: patching time.monotonic itself froze every other test's loops.
+        # calls.py's and store.py's own clocks only: patching time.monotonic itself froze every other
+        # test's loops.
         monkeypatch.setattr(calls, "time", ModuleClock(lambda: self.t, lambda: WALL + self.t))
+        monkeypatch.setattr(store_mod, "time", ModuleClock(lambda: self.t, lambda: WALL + self.t))
 
     def wall(self) -> float:
         return WALL + self.t
@@ -34,12 +39,22 @@ def clock(monkeypatch):
     return Clock(monkeypatch)
 
 
-def setup(service, clock, writer=None, key="idem_p1"):
-    worker = _progress_worker(service, writer if writer is not None else (lambda r, s, t: None))
+def setup(service, clock, key="idem_p1", delegation="t_p1", request="Find why the checkout test fails",
+          title=None, model=None):
+    """A running task with a real store row (the card the pulse reads), on a fake call. `model`: the
+    side model's reply for the card's live line (None: the deterministic line from its steps)."""
+    service.store.live_summarizer = LS.Summarizer(model, clock=clock.wall, spawn=lambda fn: fn())
+    worker = _progress_worker(service)
     worker.connected_at = clock.t
-    backend = BackendRun("t_p1", 1, key, status="running")
+    service.store.reserve_run(key, "int_x", "call_" + key, 1)
+    service.store.progress(key, "request", request)
+    if title:
+        service.store.set_title(key, title)
+    service.store.update_run(key, "run_" + key, "running")
+    backend = BackendRun(delegation, 1, key, status="running")
     backend.started = clock.t
     worker.interaction.runs[backend.delegation_id] = backend
+    worker.interaction.latest_delegation_id = delegation  # the last thing talked about: no name needed
     return worker, backend
 
 
@@ -55,13 +70,24 @@ def tick(worker):
     return asyncio.run(worker.pulse_tick())
 
 
-def test_pulse_fires_at_45s_with_new_tool_activity_and_feeds_the_wording_model(service, clock):
-    seen = []
+def card(service, backend):
+    return service.store.work(idem_key=backend.idem_key)
 
-    def writer(request, steps, told):
-        seen.append(list(steps))
-        return "I've gone through the checkout logs and I'm rerunning the test now."
-    worker, backend = setup(service, clock, writer)
+
+def run_quiet(worker, clock, seconds, step=calls.PULSE_TICK_S):
+    """Tick the pulse for `seconds` of call time; (seconds into the run, line) for each line said."""
+    start, said = clock.t, []
+    while clock.t < start + seconds:
+        clock.t += step
+        if tick(worker):
+            said.append((clock.t - start, spoken(worker)[-1]))
+    return said
+
+
+# -- what is said: the card's line and recap ------------------------------------------------------
+
+def test_the_spoken_line_is_the_cards_live_line_and_recap(service, clock):
+    worker, backend = setup(service, clock)
     clock.t += 10
     tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c1")
     tool(service, backend, clock, "search_files", "timeout", "c2")
@@ -70,50 +96,103 @@ def test_pulse_fires_at_45s_with_new_tool_activity_and_feeds_the_wording_model(s
     clock.t = worker.connected_at + calls.PULSE_EVERY_S - 1
     assert tick(worker) is False and spoken(worker) == []          # not yet
     clock.t = worker.connected_at + calls.PULSE_EVERY_S + 1
+    work = card(service, backend)
     assert tick(worker) is True
-    assert spoken(worker) == ["I've gone through the checkout logs and I'm rerunning the test now."]
-    steps = seen[0]
-    # The tool calls themselves, in plain words with the tool and its argument, and what runs now.
-    assert any(s.startswith("Read checkout.log (read_file") for s in steps)
-    assert steps[-1].startswith("Right now (") and "Ran the tests (terminal: pytest" in steps[-1]
+    said = spoken(worker)[0]
+    # Word for word what the card shows: its line, then its "So far" recap.
+    assert said == calls.spoken_card(work["now_line"], work["so_far"])
+    assert said.startswith(work["now_line"] + ".") and "So far: " in said
+    assert "pytest" not in said and "/srv" not in said
 
 
-def test_wording_model_failure_falls_back_to_the_plain_sentences(service, clock):
-    def broken(request, steps, told):
-        raise TimeoutError
-    worker, backend = setup(service, clock, broken)
-    tool(service, backend, clock, "web_search", "hotel prices near the port", "c1")
-    tool(service, backend, clock, "web_extract", "https://www.example.com/hotels", "c2")
+def test_the_side_models_card_line_is_what_is_said(service, clock):
+    reply = json.dumps({"now": "Rerunning the checkout test to confirm the timeout",
+                        "so_far": "Found the slow payment step in the logs"})
+    worker, backend = setup(service, clock, model=lambda messages: reply)
+    tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c1")
+    tool(service, backend, clock, "terminal", "pytest -q tests/test_checkout.py", "c2", done=False)
+    card(service, backend)  # the app drew the card: the side model's words are in
     clock.t += calls.PULSE_EVERY_S + 1
-    assert tick(worker) is True
-    line = spoken(worker)[0]
-    assert "example.com" in line and len(line.split()) <= 20
-
-
-def test_nothing_new_says_the_tool_running_now_with_its_time(service, clock):
-    worker, backend = setup(service, clock)
-    tool(service, backend, clock, "terminal", "pytest -q", "c1", done=False)
-    clock.t += calls.PULSE_EVERY_S + 1
+    assert card(service, backend)["now_line"] == "Rerunning the checkout test to confirm the timeout"
     assert tick(worker)
-    clock.t += calls.PULSE_IDLE_EVERY_S + 1  # nothing new: it waits longer, then the running tool and how long
-    assert tick(worker)
-    second = spoken(worker)[1]
-    assert "running the tests" in second and "minutes in" in second
-    assert not second.lower().startswith("still on it")
+    assert spoken(worker) == ["Rerunning the checkout test to confirm the timeout. "
+                              "So far: found the slow payment step in the logs."]
 
 
-def test_nothing_running_and_nothing_new_is_at_most_the_task_name(service, clock):
+def test_a_tasks_own_status_is_said_as_the_card_shows_it(service, clock):
+    """The task wrote STATUS/DETAIL: the card shows those words, and so does the voice."""
+    worker, backend = setup(service, clock)
+    clock.t += calls.PROGRESS_AFTER_S + 1
+    asyncio.run(worker._handle_hermes_event(backend, {
+        "event": "message.interim", "text": "STATUS: Checking the router\nDETAIL: Found the router bug"}))
+    work = card(service, backend)
+    assert (work["short_status"], work["detail"]) == ("Checking the router", "Found the router bug")
+    assert spoken(worker) == ["Checking the router. Found the router bug."]
+    # The pulse that comes next has nothing new to say: the card hasn't changed.
+    clock.t += calls.PULSE_EVERY_S + 1
+    assert tick(worker) is False and len(spoken(worker)) == 1
+
+
+def test_no_card_line_yet_says_nothing(service, clock):
+    """Started under a minute ago with no step reported: the card only has the handoff line."""
     worker, backend = setup(service, clock)
     clock.t += calls.PULSE_EVERY_S + 1
+    assert card(service, backend).get("now_line") is None
     assert tick(worker) is False and spoken(worker) == []
-    assert P.pulse_fallback([], None, 0, "Pricing check", 0) == "Still going on pricing check."
-    assert P.pulse_fallback([], None, 0, None, 0) is None
+
+
+def test_unchanged_card_stays_quiet_then_the_quiet_spell_is_said_with_back_off(service, clock):
+    worker, backend = setup(service, clock)
+    tool(service, backend, clock, "read_file", "cart.py", "c1")
+    said = run_quiet(worker, clock, 110)  # same card line ("Reading cart.py") all along
+    assert [line for _, line in said] == ["Reading cart.py."]
+    # Two minutes with no step: the card says so ("No new steps · 2 min"), and so does the voice,
+    # then only as the clock moves on, each time waiting longer.
+    said = run_quiet(worker, clock, 900)
+    lines, times = [line for _, line in said], [t for t, _ in said]
+    assert lines[0] == "No new steps for about two minutes."
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    assert gaps and gaps[0] >= calls.PULSE_IDLE_EVERY_S and all(b >= a for a, b in zip(gaps, gaps[1:]))
+    assert all(g <= calls.PULSE_STALE_MAX_S + calls.PULSE_TICK_S for g in gaps)
+    assert len({calls._said_key(x) for x in lines}) == len(lines)  # never the same words twice
+
+
+def test_a_long_wait_on_one_step_follows_the_card(service, clock):
+    worker, backend = setup(service, clock)
+    tool(service, backend, clock, "terminal", "make build", "c1", done=False)
+    said = run_quiet(worker, clock, 900)
+    lines, times = [line for _, line in said], [t for t, _ in said]
+    assert lines[0] == "Building the project." and times[0] == calls.PULSE_EVERY_S
+    assert all(line.startswith("Still waiting on the build, about ") for line in lines[1:])
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    assert all(b >= a for a, b in zip(gaps[1:], gaps[2:])) and gaps[-1] >= 2 * calls.PULSE_IDLE_EVERY_S
+    assert len(set(lines)) == len(lines)
+    # The build finishes and the next step changes the card: back to the normal spacing.
+    clock.t = worker.connected_at + 2000
+    A.observe(service.store, backend.idem_key, {"event": "tool.completed", "tool": "terminal", "preview": "ok",
+                                                "tool_call_id": "c1"}, now=clock.wall())
+    tool(service, backend, clock, "read_file", "build.log", "c2")
+    assert tick(worker) is True and backend.pulse_idle == 0
+    assert spoken(worker)[-1].startswith("Reading build.log.")
+
+
+def test_recap_is_only_said_when_it_changed(service, clock):
+    worker, backend = setup(service, clock)
+    tool(service, backend, clock, "read_file", "cart.py", "c1")
+    clock.t += calls.PULSE_EVERY_S + 1
+    assert tick(worker) and spoken(worker)[-1] == "Reading cart.py."  # "So far: read a file" adds nothing
+    tool(service, backend, clock, "patch", "cart.py", "c2")
+    clock.t += calls.PULSE_EVERY_S + 1
+    assert tick(worker) and "So far: read a file, edited cart.py." in spoken(worker)[-1]
+    tool(service, backend, clock, "read_file", "totals.py", "c3")
+    clock.t += calls.PULSE_EVERY_S + 1
+    assert tick(worker) and spoken(worker)[-1] == "Reading totals.py."  # same recap: not again
 
 
 @pytest.mark.parametrize("why", ["muted_app", "muted_relay", "user_speaking", "assistant_speaking", "approval",
                                  "no_task", "paused", "setting_off", "talking_only", "disconnected"])
 def test_pulse_stays_quiet(service, clock, why):
-    worker, backend = setup(service, clock, lambda r, s, t: "I read two files.")
+    worker, backend = setup(service, clock)
     tool(service, backend, clock, "read_file", "a.py", "c1")
     clock.t += calls.PULSE_EVERY_S + 1
     if why == "muted_app":
@@ -141,7 +220,7 @@ def test_pulse_stays_quiet(service, clock, why):
 
 
 def test_pulse_counts_from_when_the_assistant_last_spoke(service, clock):
-    worker, backend = setup(service, clock, lambda r, s, t: "I read a file.")
+    worker, backend = setup(service, clock)
     tool(service, backend, clock, "read_file", "a.py", "c1")
     clock.t += 40
     worker.fragments.append({"speaker": "assistant", "text": "Sure, one sec.", "at": clock.t})
@@ -151,30 +230,8 @@ def test_pulse_counts_from_when_the_assistant_last_spoke(service, clock):
     assert tick(worker) is True
 
 
-def test_back_off_when_nothing_new(service, clock):
+def test_no_double_speak_with_a_status_the_task_wrote(service, clock):
     worker, backend = setup(service, clock)
-    tool(service, backend, clock, "terminal", "make build", "c1", done=False)
-    times = []
-    end = clock.t + 900
-    while clock.t < end:
-        clock.t += calls.PULSE_TICK_S
-        if tick(worker):
-            times.append(clock.t)
-    gaps = [b - a for a, b in zip(times, times[1:])]
-    # The first update (the build starting is new); then, with nothing new, longer and longer waits.
-    assert gaps[0] >= calls.PULSE_IDLE_EVERY_S
-    assert all(b >= a for a, b in zip(gaps, gaps[1:])) and gaps[-1] >= 2 * calls.PULSE_IDLE_EVERY_S
-    assert all(g <= calls.PULSE_STALE_MAX_S + calls.PULSE_TICK_S for g in gaps)
-    lines = spoken(worker)
-    assert len({calls._said_key(x) for x in lines}) == len(lines)  # never the same words twice
-    # New activity resets it to the normal spacing.
-    tool(service, backend, clock, "read_file", "build.log", "c2")
-    clock.t = times[-1] + calls.PULSE_EVERY_S + 1
-    assert tick(worker) is True and backend.pulse_idle == 0
-
-
-def test_no_double_speak_with_commentary_progress(service, clock):
-    worker, backend = setup(service, clock, lambda r, s, t: f"Update about {s[-1][:20]}")
     tool(service, backend, clock, "read_file", "a.py", "c1")
     clock.t += calls.PULSE_EVERY_S + 1
     assert tick(worker)
@@ -182,20 +239,20 @@ def test_no_double_speak_with_commentary_progress(service, clock):
     event = {"event": "message.interim", "text": "STATUS: Checking the cart code\nDETAIL: Found the failing assertion in cart.py"}
     asyncio.run(worker._handle_hermes_event(backend, event))
     assert len(spoken(worker)) == 1
-    # ...and once the commentary update speaks, the pulse waits a full interval after it.
+    # ...and once the next status speaks, the pulse waits a full interval after it.
     clock.t += calls.PROGRESS_EVERY_S
     asyncio.run(worker._handle_hermes_event(backend, {"event": "message.interim",
                                                       "text": "STATUS: Fixing the cart code\nDETAIL: Patched cart.py and rerunning"}))
-    assert len(spoken(worker)) == 2
+    assert spoken(worker)[-1] == "Fixing the cart code. Patched cart.py and rerunning."
     clock.t += 10
     assert tick(worker) is False and len(spoken(worker)) == 2
 
 
 def test_two_tasks_rotate_and_never_back_to_back(service, clock):
-    worker, a = setup(service, clock, lambda r, s, t: f"{r or 'task'}: {len(s)} steps", key="idem_pa")
-    b = BackendRun("t_p2", 1, "idem_pb", status="running")
-    b.started = a.started
+    worker, a = setup(service, clock, key="idem_pa", title="Fix the cart totals")
+    _, b = setup(service, clock, key="idem_pb", delegation="t_p2", title="Compare flight prices")
     worker.interaction.runs[b.delegation_id] = b
+    b.started = a.started
     said = []
     for minute in range(6):
         tool(service, a, clock, "read_file", f"a{minute}.py", f"a{minute}")
@@ -203,10 +260,14 @@ def test_two_tasks_rotate_and_never_back_to_back(service, clock):
         for _ in range(12):
             clock.t += calls.PULSE_TICK_S
             if tick(worker):
-                said.append((clock.t, worker.sent[-1][1]))
-    stamps = [t for t, _ in said]
+                said.append((clock.t, worker.sent[-1][1], worker.sent[-1][2]))
+    stamps = [t for t, _, _ in said]
     assert all(y - x >= calls.PULSE_EVERY_S for x, y in zip(stamps, stamps[1:]))
-    assert {d for _, d in said} == {"t_p1", "t_p2"}  # both get heard
+    assert {d for _, d, _ in said} == {"t_p1", "t_p2"}  # both get heard
+    # Two jobs running: each line says which one it's about, and stays under the cap.
+    for _, d, line in said:
+        assert line.startswith("Fix the cart totals: " if d == "t_p1" else "Compare flight prices: ")
+        assert len(line.split()) <= calls.PULSE_MAX_WORDS
 
 
 def test_muted_still_speaks_results(server, service, hermes):
@@ -222,87 +283,50 @@ def test_muted_still_speaks_results(server, service, hermes):
     wait_for(lambda: any("24 degrees" in c for c in spoken(worker)))
 
 
-def test_muted_progress_from_commentary_is_held_but_heads_up_is_not(service, clock):
-    worker, backend = setup(service, clock, lambda r, s, t: s[-1])
+def test_muted_status_is_held_but_heads_up_is_not(service, clock):
+    worker, backend = setup(service, clock)
     worker.interaction.mic_muted = True
     clock.t += calls.PROGRESS_AFTER_S + 1
     asyncio.run(worker._handle_hermes_event(backend, {"event": "message.interim",
                                                       "text": "STATUS: Reading config files\nDETAIL: Reading the config files now"}))
     assert spoken(worker) == []
-    worker.interaction.mic_muted = False  # unmuted, the same kind of update is said
+    asyncio.run(worker._handle_hermes_event(backend, {"event": "message.interim",
+                                                      "text": "STATUS: Fixing the broken helper\nDETAIL: The helper failed to start"}))
+    assert spoken(worker) == ["Fixing the broken helper. The helper failed to start."]
+    worker.interaction.mic_muted = False  # unmuted, a normal status is said once the spacing allows
+    clock.t += calls.PROGRESS_EVERY_S + 1
     asyncio.run(worker._handle_hermes_event(backend, {"event": "message.interim",
                                                       "text": "STATUS: Checking the router\nDETAIL: Found the router bug"}))
-    assert spoken(worker) == ["Found the router bug"]
-
-
-def test_pulse_steps_marks_what_was_already_said():
-    items = [{"n": 1, "text": "Read a.py", "tool": "read_file", "args": "a.py", "status": "done"},
-             {"n": 2, "text": "Ran the tests", "tool": "terminal", "args": "pytest", "status": "running"}]
-    steps = P.pulse_steps(items, {1}, [], items[1], 130)
-    assert steps[0].startswith("Earlier: Read a.py")
-    assert "Nothing new since the last update." in steps
-    assert steps[-1].startswith("Right now (about two minutes in): Ran the tests")
-
-
-def test_progress_prompt_takes_tool_calls():
-    assert "tool calls" in router._PROGRESS_PROMPT and "Right now" in router._PROGRESS_PROMPT
+    assert spoken(worker)[-1] == "Checking the router. Found the router bug."
 
 
 def test_the_pulse_runs_on_its_own_during_a_live_call(server, service, hermes, monkeypatch):
     """End to end on a live call: nobody narrates, the task only makes tool calls, and the call
-    still hears from it (timings shrunk; the rule is the same)."""
+    still hears from it, in the card's words (timings shrunk; the rule is the same)."""
     from fakes import wait_for
     for name, value in (("PULSE_TICK_S", 0.05), ("PULSE_EVERY_S", 0.4), ("PROGRESS_AFTER_S", 0.1),
                         ("PULSE_QUIET_S", 0.05)):
         monkeypatch.setattr(calls, name, value)  # the default interval setting (45 s) means PULSE_EVERY_S
-    seen = []
-    service.rt.progress_call = lambda request, steps, told: seen.append(steps) or "I'm looking up the forecast."
     hermes.hold = True
     hermes.live_events = [{"event": "tool.started", "tool": "web_search", "preview": "lisbon forecast tomorrow"}]
     _, worker = start_call(server, service)
     worker.delegate("call_w", "What's the weather in Lisbon tomorrow")
-    wait_for(lambda: "I'm looking up the forecast." in spoken(worker), timeout=10)
-    assert any("web_search" in step for step in seen[0])
+    wait_for(lambda: any("lisbon forecast" in line.lower() for line in spoken(worker)), timeout=10)
+    line = next(line for line in spoken(worker) if "lisbon forecast" in line.lower())
+    key = next(r.idem_key for r in worker.interaction.runs.values())
+    assert line.startswith(service.store.work(idem_key=key)["now_line"])
 
 
-@pytest.mark.parametrize("raw,said", [
-    ("Ran X=Shop.app + 5 commands", "Ran a command"),
-    ("Ran timeout 580 python poll_status.py 50 18", "Ran a command"),
-    ("Ran the tests", "Ran the tests"),
-    ("Read CartView.swift", "Read CartView.swift"),
-    ("Used x", None),
-])
-def test_fallback_never_reads_out_a_command(raw, said):
-    assert P.speakable(raw) == said
-
-
-def test_fallback_folds_repeats_and_names_the_running_step():
-    line = P.pulse_fallback(["Searched the code", "Searched the code"], "Ran the tests", 70, None, 0)
-    assert line == "Quick update: searched the code; now running the tests."
-    assert P.pulse_fallback([], "Built the project", 130, None, 0) == "Still building the project, about two minutes in."
-
-
-# -- with the mic open: an early first line, no silent back-off, at most PULSE_MAX_WORDS -------------
-
-def run_quiet(worker, clock, seconds, step=calls.PULSE_TICK_S):
-    """Tick the pulse for `seconds` of call time; (seconds into the run, line) for each line said."""
-    start, said = clock.t, []
-    while clock.t < start + seconds:
-        clock.t += step
-        if tick(worker):
-            said.append((clock.t - start, spoken(worker)[-1]))
-    return said
-
+# -- the open mic -----------------------------------------------------------------------------------
 
 def test_open_mic_first_line_lands_12_to_20s_in(service, clock):
-    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the checkout logs.")
+    worker, backend = setup(service, clock)
     worker.interaction.mic_muted = False  # the app said the mic is on
     tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c1", done=False)
     said = run_quiet(worker, clock, 30, step=1.0)  # every second: nothing slips in before 12 s
     assert said and calls.PULSE_FIRST_OPEN_S <= said[0][0] <= 20
-    assert said[0][1] == "I'm reading the checkout logs."
-    # On the pulse loop's own tick it is the first tick past PULSE_FIRST_OPEN_S.
-    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the checkout logs.", key="idem_p2")
+    assert said[0][1] == "Reading checkout.log."  # a one-step recap ("read a file") only restates it
+    worker, backend = setup(service, clock, key="idem_p2")
     worker.interaction.mic_muted = False
     tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c2", done=False)
     first = run_quiet(worker, clock, 30)[0][0]
@@ -311,213 +335,47 @@ def test_open_mic_first_line_lands_12_to_20s_in(service, clock):
 
 @pytest.mark.parametrize("mic", [None, True])
 def test_never_reported_or_muted_keeps_the_45s_first_line(service, clock, mic):
-    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the checkout logs.")
+    worker, backend = setup(service, clock)
     worker.interaction.mic_muted = mic
     tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c1", done=False)
-    said = run_quiet(worker, clock, 60, step=1.0)
+    said = run_quiet(worker, clock, 59, step=1.0)
     if mic is None:
         assert [t for t, _ in said] == [calls.PULSE_EVERY_S]
     else:
         assert said == []
 
 
-@pytest.mark.parametrize("wording", ["raises", "echoes_told", "echoes_steps", "rambles"])
-def test_open_mic_quiet_task_backs_off_and_never_repeats(service, clock, wording):
-    def writer(request, steps, told):
-        if wording == "raises":
-            raise TimeoutError
-        if wording == "echoes_told":
-            return told[-1] if told else "I'm reading the build log."
-        if wording == "echoes_steps":
-            return steps[-1]
-        return ("I'm still working through the build for the checkout service and it is taking a while because "
-                "the dependency cache was cold so every package is being fetched and compiled again from scratch.")
-    worker, backend = setup(service, clock, writer)
-    worker.interaction.mic_muted = False
-    tool(service, backend, clock, "terminal", "make build", "c1", done=False)  # one step, then nothing for 5 min
-    said = run_quiet(worker, clock, 600)
-    times, lines = [t for t, _ in said], [line for _, line in said]
-    assert times[0] <= 20
-    gaps = [b - a for a, b in zip(times, times[1:])]
-    # Nothing new after the first line: it backs off instead of talking every interval.
-    assert gaps and gaps[0] >= calls.PULSE_IDLE_EVERY_S and all(b >= a for a, b in zip(gaps, gaps[1:]))
-    assert len(lines) <= 5
-    assert all(len(line.split()) <= calls.PULSE_MAX_WORDS for line in lines)
-    assert len({calls._said_key(x) for x in lines}) == len(lines)  # no two the same, openers aside
-    # With nothing new, a later line is the running step and the task's age.
-    later = lines[2:]
-    assert all("building the project" in line.lower() and " in" in line for line in later)
-
-
-def test_muted_and_never_reported_keep_mains_timing_and_back_off(service, clock):
-    """Never reported: 45 s for the first line, then (nothing new) 90 s, 180 s... Muted: silent."""
-    worker, backend = setup(service, clock)
-    tool(service, backend, clock, "terminal", "make build", "c1", done=False)
-    assert worker.interaction.mic_muted is None and not worker.mic_open()
-    times = [t for t, _ in run_quiet(worker, clock, 600)]
-    assert times == [45, 135, 315]
-    worker, backend = setup(service, clock, key="idem_p2")
-    worker.interaction.mic_muted = True
-    tool(service, backend, clock, "terminal", "make build", "c2", done=False)
-    assert run_quiet(worker, clock, 600) == []
-    worker.interaction.mic_muted = False
-    worker.muted = True  # type: ignore[attr-defined]  # the relay's own mute wins over the app's open mic
-    assert not worker.mic_open() and run_quiet(worker, clock, 120) == []
-
-
-def test_open_mic_line_is_capped_at_22_words():
-    long = ("I've read the checkout logs, found that the payment step times out after thirty seconds, "
-            "and I'm now rerunning the integration tests to confirm the fix. More after that.")
-    assert len(calls.cap_words(long).split()) <= calls.PULSE_MAX_WORDS
-    assert calls.cap_words("Reading the logs.") == "Reading the logs."
-    shapes = calls.anchored_lines("Reading the logs", 185)
-    assert len(set(shapes)) == len(calls._ANCHORED_SHAPES) and all("about 3 minutes" in s.lower() for s in shapes)
-    # "Meanwhile, same line." is the same news: the next unsaid wording is the step and its age.
-    assert calls.unrepeated("Same line.", ["Same line."], "reading the logs", 185).startswith("About 3 minutes")
-
-
-def test_open_mic_model_that_repeats_itself_never_repeats_aloud(service, clock):
-    """A wording model stuck on one sentence, on a task that keeps doing things for ten minutes: the
-    open mic still never hears the same words twice, and never "Meanwhile, meanwhile"."""
-    worker, backend = setup(service, clock, lambda r, s, t: t[-1] if t else "I'm reading the build log.")
-    worker.interaction.mic_muted = False
-    tool(service, backend, clock, "terminal", "make build", "c0", done=False)
-    said = []
-    for minute in range(10):
-        tool(service, backend, clock, "read_file", f"src/part{minute}.py", f"c{minute + 1}")
-        said += run_quiet(worker, clock, 60)
-    lines = [line for _, line in said]
-    assert len(lines) >= 600 // 120 and len({calls._said_key(x) for x in lines}) == len(lines)
-    assert not any(line.lower().count("meanwhile") > 1 for line in lines)
-
-
 def test_open_mic_first_line_that_was_held_back_still_lands_early(service, clock):
-    """The first open-mic line is worded, then dropped at the last check because someone started
-    talking. Nothing was said, so the task keeps its early first line: it is not pushed out to
-    PULSE_EVERY_S after a line that never went out."""
-    calls_made = []
-
-    def writer(request, steps, told):
-        calls_made.append(clock.t)
-        if len(calls_made) == 1:
-            worker.user_pending = True  # the user starts talking while the line is being worded
-        return "I'm reading the checkout logs."
-
-    worker, backend = setup(service, clock, writer)
+    """The first open-mic line is dropped at the last check because someone started talking. Nothing
+    was said, so the task keeps its early first line: not pushed out to PULSE_EVERY_S."""
+    worker, backend = setup(service, clock)
     worker.interaction.mic_muted = False
     tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c1", done=False)
+    real = worker.card_update
+    tries = []
+
+    def card_update(*a, **kw):
+        tries.append(clock.t)
+        if len(tries) == 1:
+            worker.user_pending = True  # the user starts talking while the line is being made
+        return real(*a, **kw)
+    worker.card_update = card_update  # type: ignore[method-assign]
     start, said = clock.t, []
     while clock.t < start + 45 and not said:
         clock.t += calls.PULSE_TICK_S
         if tick(worker):
             said.append(clock.t - start)
         worker.user_pending = False  # ...and has stopped by the next tick
-    assert len(calls_made) >= 2, "the first attempt was dropped and retried"
+    assert len(tries) >= 2, "the first attempt was dropped and retried"
     assert said and said[0] <= 25
 
 
-def test_open_mic_named_lines_keep_the_age_and_never_repeat(service, clock):
-    """Two jobs running, so every line starts with the job's name. A long name plus a long step must
-    still leave room for the age (which moves on between lines), so a job's stale lines never come
-    out identical and never lose the age to the word cap."""
-    worker, a = setup(service, clock, lambda r, s, t: t[-1] if t else "I'm working on it.", key="idem_pa")
-    b = BackendRun("t_p2", 1, "idem_pb", status="running")
-    b.started = a.started
-    worker.interaction.runs[b.delegation_id] = b
-    for key, title in (("idem_pa", "Rebuild the checkout service for the spring catalogue launch"),
-                       ("idem_pb", "Compare the winter flight options for the family trip")):
-        service.store.reserve_run(key, "int_1", "call_" + key[-4:], 0)
-        service.store.set_title(key, title)
-    worker.interaction.mic_muted = False
-    tool(service, a, clock, "terminal", "make build of the checkout service and all of its payment plugins", "c1",
-         done=False)
-    tool(service, b, clock, "web_search", "winter flights for four people leaving from the nearest airport", "c2",
-         done=False)
-    said = run_quiet(worker, clock, 900)
-    by_task: dict[str, list[str]] = {}
-    for kind, say_id, line in worker.sent:
-        if kind == "session.commentary.append":
-            by_task.setdefault(say_id, []).append(line)
-    assert len(said) == sum(map(len, by_task.values()))
-    assert set(by_task) == {"t_p1", "t_p2"}
-    for lines in by_task.values():
-        assert all(len(line.split()) <= calls.PULSE_MAX_WORDS for line in lines)
-        anchored = [line for line in lines if line.rstrip(".\u2026").endswith(" in") or ", still" in line]
-        assert len(anchored) >= 2 and all("minute" in line.lower() for line in anchored)
-        assert len(set(lines)) == len(lines)
-
-
-def test_anchored_lines_leave_room_for_a_name():
-    step = "running the integration tests for the payment and checkout services against the staging database"
-    for reserve in (0, 8, 15):
-        for line in calls.anchored_lines(step, 400, reserve):
-            assert "about 7 minutes" in line.lower()  # the age is never what gets cut
-            if reserve <= 8:
-                assert len(line.split()) + reserve <= calls.PULSE_MAX_WORDS
-
-
-# -- follow-up: the interval setting, the review nits, and the cases the first round didn't cover ----
-
-def test_age_phrase_rounds_half_up():
-    assert calls._age_phrase(150) == "about 3 minutes"  # round() would say 2 (banker's rounding)
-    assert calls._age_phrase(149) == "about 2 minutes"
-    assert calls._age_phrase(210) == "about 4 minutes"
-
-
-@pytest.mark.parametrize("text,keep,out", [
-    ("Reading the logs", (), "reading the logs"),
-    ("Stripe webhook", (), "Stripe webhook"),
-    ("GitHub actions", (), "GitHub actions"),
-    ("API keys", (), "API keys"),
-    ("I'm reading", (), "I'm reading"),
-    ("Dana's deck", ("dana",), "Dana's deck"),
-    ("Monday plan", (), "Monday plan"),
-])
-def test_lead_lower_keeps_names(text, keep, out):
-    assert calls._lead_lower(text, frozenset(keep)) == out
-
-
-def test_proper_nouns_come_from_mid_sentence_capitals():
-    names = calls.proper_nouns("Can you ask Dana about the Q3 deck. Then email Priya")
-    assert {"dana", "q3", "priya"} <= names and "can" not in names and "then" not in names
-    lines = calls.anchored_lines("Acme invoices", 200, keep=calls.proper_nouns("check the Acme invoices"))
-    assert any("Still on Acme invoices" in line or "still Acme invoices" in line for line in lines)
-    assert not any("acme" in line for line in lines)
-
-
-def test_unrepeated_all_said_says_nothing():
-    """Every candidate already said: nothing (a repeat is worse than silence), whatever the order."""
-    step, age = "reading the logs", 185
-    candidates = ["Same line."] + [f"{o}, same line." for o in calls._PULSE_OPENERS] + calls.anchored_lines(step, age)
-    # Said in this order in time, newest first in the list: the oldest is the last one.
-    said = [(1000.0 - i, line) for i, line in enumerate(candidates)]
-    assert calls.unrepeated("Same line.", said, step, age) == ""
-    assert calls.unrepeated("Same line.", list(reversed(candidates)), step, age) == ""
-
-
-def test_interval_setting_validates_and_defaults(service):
-    from speakeasy.settings import SettingsError
-    assert service.settings.get()["speech"]["interval_seconds"] == 45
-    for value in (30, 60, 90, 120):
-        assert service.settings.patch({"speech": {"interval_seconds": value}})["speech"]["interval_seconds"] == value
-    for bad in (10, 50, "60", True, None, 600):
-        with pytest.raises(SettingsError):
-            service.settings.patch({"speech": {"interval_seconds": bad}})
-
-
-def test_settings_api_takes_the_interval(server, service):
-    status, body = http(server.base_url, "PATCH", "/voice/settings", {"speech": {"interval_seconds": 90}}, server.token)
-    assert status == 200 and service.settings.get()["speech"]["interval_seconds"] == 90
-    status, _ = http(server.base_url, "PATCH", "/voice/settings", {"speech": {"interval_seconds": 75}}, server.token)
-    assert status == 400
-
-
 @pytest.mark.parametrize("every", [30, 90, 120])
-def test_open_mic_cadence_follows_the_interval_setting(service, clock, every):
+def test_cadence_follows_the_interval_setting(service, clock, every):
     service.settings.patch({"speech": {"interval_seconds": every}})
-    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the build log.")
+    worker, backend = setup(service, clock)
     worker.interaction.mic_muted = False
-    tool(service, backend, clock, "terminal", "make build", "c1", done=False)
+    tool(service, backend, clock, "terminal", "make build", "c1")
     times, n = [], 0
     start = clock.t
     while clock.t < start + 600:  # the task does something new every few seconds
@@ -531,17 +389,9 @@ def test_open_mic_cadence_follows_the_interval_setting(service, clock, every):
     assert gaps and all(every <= g <= every + calls.PULSE_TICK_S for g in gaps)
 
 
-def test_never_reported_call_follows_the_interval_too(service, clock):
-    service.settings.patch({"speech": {"interval_seconds": 120}})
-    worker, backend = setup(service, clock)
-    tool(service, backend, clock, "terminal", "make build", "c1", done=False)
-    times = [t for t, _ in run_quiet(worker, clock, 400)]
-    assert times[0] == 120 and all(b - a >= 120 for a, b in zip(times, times[1:]))
-
-
 def test_toggling_mute_mid_call(service, clock):
     """Open, then muted (silent), then open again: lines resume at the interval, never in a burst."""
-    worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the build log.")
+    worker, backend = setup(service, clock)
     worker.interaction.mic_muted = False
     tool(service, backend, clock, "terminal", "make build", "c1", done=False)
     assert run_quiet(worker, clock, 60)
@@ -564,7 +414,6 @@ def test_set_mic_endpoint_and_resumed_head_reports(server, service):
     service.interactions["int_head"] = head
     service.set_mic("int_head", {"muted": False})
     assert head.mic_muted is False and old.mic_muted is None
-    from test_routing import _progress_worker
     worker = _progress_worker(service)
     worker.interaction = old
     assert worker.mic_open()
@@ -574,39 +423,71 @@ def test_set_mic_endpoint_and_resumed_head_reports(server, service):
         service.set_mic("int_head", {"muted": None})
 
 
-def test_two_tasks_at_once_on_an_open_mic(service, clock):
-    """Two tasks running: each gets its early first line, the call never stacks two lines inside
-    the interval, and neither task repeats itself."""
-    worker, a = setup(service, clock, lambda r, s, t: t[-1] if t else "I'm working on it.", key="idem_ta")
-    b = BackendRun("t_p2", 1, "idem_tb", status="running")
-    b.started = a.started
-    worker.interaction.runs[b.delegation_id] = b
-    worker.interaction.mic_muted = False
-    tool(service, a, clock, "terminal", "make build", "c1", done=False)
-    tool(service, b, clock, "web_search", "flights to lisbon", "c2", done=False)
-    said = run_quiet(worker, clock, 400)
-    by_task: dict[str, list[str]] = {}
-    for kind, say_id, line in worker.sent:
-        if kind == "session.commentary.append":
-            by_task.setdefault(say_id, []).append(line)
-    assert set(by_task) == {"t_p1", "t_p2"}
-    assert all(len(set(lines)) == len(lines) for lines in by_task.values())
-    times = [t for t, _ in said]
-    assert all(y - x >= calls.PULSE_FIRST_OPEN_S for x, y in zip(times, times[1:]))
+# -- the pieces -------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("line,recap,so_far,said", [
+    ("Editing store.py and router.py", "Read the code, edited 3 files", True,
+     "Editing store.py and router.py. So far: read the code, edited 3 files."),
+    ("Waiting on the tests \u00b7 4 min", None, True, "Still waiting on the tests, about four minutes now."),
+    ("No new steps \u00b7 3 min", None, True, "No new steps for about three minutes."),
+    ("No steps reported yet \u00b7 1 min", None, True, "Nothing reported yet, about a minute in."),
+    ("Waiting on the build \u00b7 1 h 05 min", None, True, "Still waiting on the build, over an hour now."),
+    ("Checking the router", "Found the router bug", False, "Checking the router. Found the router bug."),
+    ("Reading cart.py", "Reading cart.py", True, "Reading cart.py."),
+    ("", "Read a file", True, None),
+])
+def test_spoken_card(line, recap, so_far, said):
+    assert calls.spoken_card(line, recap, so_far=so_far) == said
 
 
-def test_progress_update_never_repeats_the_same_words(service, clock):
-    """The quick recap (progress_tick) with a wording model that keeps saying the same thing while
-    the task keeps doing things: said once, then silent until the words change."""
-    worker, backend = setup(service, clock, lambda r, s, t: "Quick update: still comparing the two quotes.")
-    tool(service, backend, clock, "web_search", "quote a", "c1")
-    said = []
-    for n in range(20):
-        clock.t += calls.PULSE_TICK_S * 3
-        tool(service, backend, clock, "read_file", f"quote{n}.pdf", f"r{n}")
-        tick(worker)
-    said = spoken(worker)
-    assert len({calls._said_key(x) for x in said}) == len(said)
+def test_a_long_recap_is_dropped_rather_than_cut():
+    line = "Rerunning the integration tests for the payment service"
+    recap = "Found the slow step in the checkout logs, patched the retry, rebuilt the service and reran the tests"
+    assert calls.spoken_card(line, recap) == line + "."
+    assert len(calls.spoken_card(line, recap, limit=5).split()) <= 5
+
+
+def test_card_key_ignores_the_clock_only():
+    assert calls.card_key("Waiting on the tests \u00b7 4 min") == calls.card_key("Waiting on the tests \u00b7 9 min")
+    assert calls.card_key("Reading cart.py") != calls.card_key("Reading totals.py")
+    assert calls.card_timed("No new steps \u00b7 2 min") and not calls.card_timed("Reading cart.py")
+
+
+def test_line_cap_is_22_words():
+    long = ("I've read the checkout logs, found that the payment step times out after thirty seconds, "
+            "and I'm now rerunning the integration tests to confirm the fix. More after that.")
+    assert len(calls.cap_words(long).split()) <= calls.PULSE_MAX_WORDS
+    assert calls.cap_words("Reading the logs.") == "Reading the logs."
+
+
+@pytest.mark.parametrize("text,keep,out", [
+    ("Reading the logs", (), "reading the logs"),
+    ("Stripe webhook", (), "Stripe webhook"),
+    ("GitHub actions", (), "GitHub actions"),
+    ("API keys", (), "API keys"),
+    ("I'm reading", (), "I'm reading"),
+    ("Dana's deck", ("dana",), "Dana's deck"),
+    ("Monday plan", (), "Monday plan"),
+])
+def test_lead_lower_keeps_names(text, keep, out):
+    assert calls._lead_lower(text, frozenset(keep)) == out
+
+
+def test_interval_setting_validates_and_defaults(service):
+    from speakeasy.settings import SettingsError
+    assert service.settings.get()["speech"]["interval_seconds"] == 45
+    for value in (30, 60, 90, 120):
+        assert service.settings.patch({"speech": {"interval_seconds": value}})["speech"]["interval_seconds"] == value
+    for bad in (10, 50, "60", True, None, 600):
+        with pytest.raises(SettingsError):
+            service.settings.patch({"speech": {"interval_seconds": bad}})
+
+
+def test_settings_api_takes_the_interval(server, service):
+    status, body = http(server.base_url, "PATCH", "/voice/settings", {"speech": {"interval_seconds": 90}}, server.token)
+    assert status == 200 and service.settings.get()["speech"]["interval_seconds"] == 90
+    status, _ = http(server.base_url, "PATCH", "/voice/settings", {"speech": {"interval_seconds": 75}}, server.token)
+    assert status == 400
 
 
 def test_stale_wait_doubles_up_to_the_cap():
@@ -614,3 +495,15 @@ def test_stale_wait_doubles_up_to_the_cap():
     assert calls.stale_wait(45, 1) == 2 * calls.PULSE_IDLE_EVERY_S
     assert calls.stale_wait(45, 9) == calls.PULSE_STALE_MAX_S
     assert calls.stale_wait(120, 0) == 120
+
+
+def test_a_thread_tasks_own_words_are_said_not_the_plumbing(service, clock):
+    """A task continued in a chat thread has no run id: its card is "Working in the thread" with its own
+    words under it. The voice says those words, never "Working in the thread"."""
+    worker, backend = setup(service, clock, key="idem_th")
+    with service.store._lock, service.store._db:
+        service.store._db.execute("UPDATE runs SET run_id=NULL WHERE idem_key=?", ("idem_th",))
+    clock.t += calls.PROGRESS_AFTER_S + 1
+    service.store.thread_progress("idem_th", "Found two cheaper flights on Tuesday")
+    assert asyncio.run(worker.maybe_speak_progress(backend, "Found two cheaper flights on Tuesday"))
+    assert spoken(worker) == ["Found two cheaper flights on Tuesday."]

@@ -109,7 +109,6 @@ def test_shared_things_reach_only_hermes(home, hermes, monkeypatch, caplog):
                         "delivery": {"target": "telegram:555", "channels": []}})
     svc.hermes.image_support = {"images": True, "vision": "native"}
     svc.rt.quick_call = lambda request, today: record("quick", request, today) or "The Otters won 5 to 2."
-    svc.rt.progress_call = lambda request, steps, told: record("progress", request, steps, told) or None
     svc.rt.home = type("Home", (), {"enabled": True, "respond": staticmethod(home_respond)})()
     monkeypatch.setattr(jev, "route", jev_route)
     monkeypatch.setattr(jev, "placement", lambda *a, **kw: record("jev_place", a, kw) or None)

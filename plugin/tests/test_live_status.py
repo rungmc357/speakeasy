@@ -21,7 +21,8 @@ def test_plan_mismatch_the_line_follows_the_work_not_the_plan(tmp_path):
     # The plan said "Find the cause / Trace the stuck state / ..."; the task is editing and testing.
     store = StateStore(tmp_path / "s.sqlite3", tmp_path)
     store.reserve_run("k1", "vi_x", "call_k1", 1)
-    store.set_plan("k1", ["Find the cause", "Trace the stuck state", "Fix and test", "Your review"])
+    store.set_plan("k1", ["Find why the cart is stuck", "Trace the stuck cart state", "Fix the cart and test",
+                          "Your review"])
     store.update_run("k1", "run_0001", "running")
     import time
     now = time.time()
@@ -32,8 +33,8 @@ def test_plan_mismatch_the_line_follows_the_work_not_the_plan(tmp_path):
     work = store.work(idem_key="k1")
     assert work["now_line"] == "Editing store.py and router.py"
     assert work["short_status"] == "Editing store.py and router.py"     # not the handoff guess
-    assert "Trace the stuck state" not in work["short_status"] and work["plan"] == []
-    assert work["step_index"] is None and work["started_with"].startswith("Find the cause")
+    assert "Trace the stuck" not in work["short_status"] and work["plan"] == []
+    assert work["step_index"] is None and work["started_with"].startswith("Find why the cart is stuck")
     assert work["so_far"] == "Read a file, edited store.py and router.py"
 
 

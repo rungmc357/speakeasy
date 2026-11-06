@@ -80,18 +80,16 @@ def test_both_transports_route_commentary_to_speech():
     assert '"type": kind' in live  # session.commentary.append goes out as-is: the live API speaks it
 
 
-def _progress_worker(service, writer=None):
+def _progress_worker(service):
     from speakeasy.calls import Interaction
     from fakes import FakeLiveWorker
-    if writer is not None:
-        service.rt.progress_call = writer
     return FakeLiveWorker(service.rt, Interaction("int_x", "sess_x"))
 
 
-def _step(worker, backend, clock, at, detail):
+def _step(worker, backend, clock, at, status, detail):
     import asyncio
     clock[0] = backend.started + at
-    event = {"event": "message.interim", "text": f"STATUS: Working step {int(at)}\nDETAIL: {detail}"}
+    event = {"event": "message.interim", "text": f"STATUS: {status}\nDETAIL: {detail}"}
     asyncio.run(worker._handle_hermes_event(backend, event))
 
 
@@ -107,71 +105,61 @@ def _run_with_clock(fn):
         calls.time = real
 
 
-def test_progress_says_what_the_task_is_actually_doing(service):
-    """Live report: updates were 'still on it, I'm checking the repo'. The spoken line is written from
-    the agent's recent concrete steps, and the writer is told what was already said."""
+def _task(service, key, delegation):
     from speakeasy.calls import BackendRun
-    seen = []
+    service.store.reserve_run(key, "int_x", "call_" + key, 1)
+    service.store.update_run(key, "run_" + key, "running")
+    return BackendRun(delegation, 1, key, status="running")
 
-    def writer(request, steps, told):
-        seen.append((request, list(steps), list(told)))
-        return f"I found {steps[-1].lower()}"
-    worker = _progress_worker(service, writer)
-    backend = BackendRun("t1", 1, "idem_1", status="running")
+
+def test_progress_says_what_the_task_card_says(service):
+    """A status the task writes is what its card shows, and what the voice says: the same words."""
+    worker = _progress_worker(service)
+    backend = _task(service, "idem_1", "t1")
 
     def go(clock):
-        _step(worker, backend, clock, 10, "Cloned the speakeasy repo")
-        _step(worker, backend, clock, 50, "Three failing tests in test_routing.py")
+        _step(worker, backend, clock, 10, "Cloning the shop repo", "Cloned the shop repo")
+        _step(worker, backend, clock, 50, "Checking the failing tests", "Three failing tests in test_cart.py")
     _run_with_clock(go)
-    assert spoken(worker) == ["I found three failing tests in test_routing.py"]
-    assert seen[0][1] == ["Cloned the speakeasy repo", "Three failing tests in test_routing.py"]
+    work = service.store.work(idem_key="idem_1")
+    assert (work["short_status"], work["detail"]) == ("Checking the failing tests", "Three failing tests in test_cart.py")
+    assert spoken(worker) == ["Checking the failing tests. Three failing tests in test_cart.py."]
 
 
-def test_updates_are_capped_across_the_call_and_need_new_work(service):
+def test_updates_are_capped_across_the_call_and_need_a_changed_card(service):
     import asyncio
     from speakeasy import calls
-    from speakeasy.calls import BackendRun
-    n = [0]
-
-    def writer(request, steps, told):
-        n[0] += 1
-        return f"Update {n[0]} about {steps[-1]}"
-    worker = _progress_worker(service, writer)
-    a = BackendRun("t1", 1, "idem_a", status="running")
-    b = BackendRun("t2", 1, "idem_b", status="running")
+    worker = _progress_worker(service)
+    a = _task(service, "idem_a", "t1")
+    b = _task(service, "idem_b", "t2")
     b.started = a.started
 
     def go(clock):
         for at in range(0, 181, 5):  # two chatty tasks, a status line every 5 s each, for 3 minutes
-            _step(worker, a, clock, at, f"Task A reading file number {at}")
-            _step(worker, b, clock, at, f"Task B checking source number {at}")
+            _step(worker, a, clock, at, f"Reading file number {at}", f"Task A read file number {at}")
+            _step(worker, b, clock, at, f"Checking source number {at}", f"Task B checked source number {at}")
     _run_with_clock(go)
     said = spoken(worker)
     assert 1 <= len(said) <= 180 // calls.PROGRESS_EVERY_S + 1
-    # nothing new since the last update: quiet even once the cap allows it
+    # The card hasn't changed since the last update: quiet even once the cap allows it.
     worker.sent.clear()
-    a.told_count = a.activity_count
 
     def later(clock):
         clock[0] = a.started + 999
-        asyncio.run(worker.maybe_speak_progress(a, "x"))
+        for task in (a, b):
+            if task.told:  # said its card already, and the card is the same
+                assert asyncio.run(worker.maybe_speak_progress(task, "x")) is False
     _run_with_clock(later)
     assert spoken(worker) == []
 
 
-def test_without_the_wording_model_it_still_names_the_step(service):
+def test_a_status_with_no_card_says_nothing(service):
+    """No store row (nothing on any card): nothing is said."""
     from speakeasy.calls import BackendRun
-    worker = _progress_worker(service, lambda r, s, t: None)
-    backend = BackendRun("t1", 1, "idem_1", status="running")
-    _run_with_clock(lambda clock: _step(worker, backend, clock, 50, "Comparing prices on three hotel sites"))
-    assert spoken(worker) == ["Quick update: comparing prices on three hotel sites."]
-
-
-def test_the_wording_model_never_gets_away_with_still_on_it():
-    assert router.clean_progress('{"say": "Still on it."}') is None
-    assert router.clean_progress('{"say": "Still checking the repo."}') is None
-    assert router.clean_progress('{"say": "I found the bug in the router; fixing it now."}') == \
-        "I found the bug in the router; fixing it now."
+    worker = _progress_worker(service)
+    backend = BackendRun("t1", 1, "idem_none", status="running")
+    _run_with_clock(lambda clock: _step(worker, backend, clock, 50, "Comparing hotel prices", "Three sites so far"))
+    assert spoken(worker) == []
 
 
 
