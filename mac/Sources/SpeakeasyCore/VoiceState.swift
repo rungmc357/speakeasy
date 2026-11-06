@@ -23,6 +23,89 @@ public enum ConnectionPhase: Equatable, Sendable {
     public var isOpen: Bool { isInCall || self == .paused }
 }
 
+/// Why a call is pausing or paused.
+public enum PauseReason: Equatable, Sendable {
+    case user
+    /// The call went quiet for this many minutes and paused itself.
+    case quiet(minutes: Int)
+}
+
+/// One connection attempt: the watchdog's attempt number (its own budget; the room and resume
+/// fallbacks don't use it up), when it counts as stalled, the session the server already admitted
+/// for it, the paused call it resumes, and which reconnect of a dropped call it is (0 = none).
+public struct ConnectAttempt: Equatable, Sendable {
+    public var attempt: Int
+    public var deadline: Date
+    public var admittedID: String?
+    public var resumeFrom: String?
+    public var reconnect: Int
+    public init(attempt: Int = 1, deadline: Date, admittedID: String? = nil, resumeFrom: String? = nil, reconnect: Int = 0) {
+        self.attempt = attempt; self.deadline = deadline; self.admittedID = admittedID
+        self.resumeFrom = resumeFrom; self.reconnect = reconnect
+    }
+}
+
+/// The call's connection, with the data each phase needs, so retry counts, pause reasons and the
+/// resumed call can't drift from the phase they belong to. `VoiceState.connection` is its coarse
+/// view (what most screens read).
+public enum CallPhase: Equatable, Sendable {
+    case idle
+    case connecting(ConnectAttempt)
+    case live(id: String?)
+    /// The server holds the call; its voice session is closing.
+    case pausing(id: String?, reason: PauseReason)
+    case paused(id: String?, reason: PauseReason)
+    /// A live call dropped by itself: reconnect `attempt` (1…`CallReconnect.maxAttempts`) starts at `deadline`.
+    case reconnecting(attempt: Int, deadline: Date, resumeFrom: String?)
+    case ending(id: String?, deadline: Date?)
+    case ended(Finalization)
+    case failed(String)
+
+    public var coarse: ConnectionPhase {
+        switch self {
+        case .idle: return .idle
+        case .connecting, .reconnecting: return .connecting
+        case .live: return .live
+        case .pausing, .ending: return .ending
+        case .paused: return .paused
+        case .ended(let fin): return .ended(fin)
+        case .failed(let message): return .failed(message)
+        }
+    }
+
+    /// The session this phase talks to, when it has one.
+    var sessionID: String?? {
+        switch self {
+        case .connecting(let c): return .some(c.admittedID)
+        case .live(let id), .pausing(let id, _), .paused(let id, _), .ending(let id, _): return .some(id)
+        case .reconnecting: return .some(nil)
+        case .idle, .ended, .failed: return nil
+        }
+    }
+
+    /// Which reconnect of a dropped call this is (0 = not reconnecting).
+    public var reconnectAttempt: Int {
+        switch self {
+        case .reconnecting(let n, _, _): return n
+        case .connecting(let c): return c.reconnect
+        default: return 0
+        }
+    }
+}
+
+/// Reconnecting a live call that dropped by itself (the network went, the voice channel closed).
+public enum CallReconnect {
+    public static let maxAttempts = 3
+    /// Seconds before attempt 1, 2, 3.
+    public static func delay(attempt: Int) -> TimeInterval { [1.0, 2.5, 5.0][max(0, min(attempt - 1, 2))] }
+    /// A connection attempt that hasn't gone live by then is stuck.
+    public static let connectStallAfter: TimeInterval = 12
+    /// Watchdog attempts per connection before the call fails.
+    public static let connectAttempts = 2
+    public static let gaveUp = "Lost the connection to your Hermes and couldn't get it back."
+    static func isMicRefusal(_ message: String) -> Bool { message.hasPrefix("Microphone access is off") }
+}
+
 public enum MicState: Equatable, Sendable { case live, muted }
 
 public enum SpeechState: Equatable, Sendable {
@@ -98,12 +181,105 @@ public struct TranscriptTurn: Equatable, Sendable, Identifiable {
 }
 
 public struct VoiceState: Equatable, Sendable {
-    public var connection: ConnectionPhase = .idle
+    /// The connection and its data (the one source of truth; `connection`, `pausing`, `resumeFrom`,
+    /// `interactionID` and `quietPausedMinutes` are views of it).
+    public var phase: CallPhase = .idle
+    /// The session of a call that has none open now (ended, failed): its last one.
+    private var lastInteractionID: String?
+    /// Reconnect a live call that dropped by itself (iPhone) instead of ending it.
+    public var reconnectsDroppedCalls = false
+    /// Sessions the server admitted for attempts this call gave up on (a stalled connect): the
+    /// client closes each one (`POST …/end {"abandon": true}`) and removes it from here.
+    public var sessionsToClose: [String] = []
+
+    public var connection: ConnectionPhase {
+        get { phase.coarse }
+        set { phase = phaseFor(newValue) }
+    }
+
+    private func phaseFor(_ coarse: ConnectionPhase) -> CallPhase {
+        guard coarse != phase.coarse else { return phase }
+        let id = interactionID
+        switch coarse {
+        case .idle: return .idle
+        case .connecting:
+            return .connecting(ConnectAttempt(deadline: now.addingTimeInterval(CallReconnect.connectStallAfter), admittedID: id))
+        case .live: return .live(id: id)
+        case .ending: return .ending(id: id, deadline: nil)
+        case .paused: return .paused(id: id, reason: .user)
+        case .ended(let fin): return .ended(fin)
+        case .failed(let message): return .failed(message)
+        }
+    }
+
+    public var interactionID: String? {
+        get { phase.sessionID ?? lastInteractionID }
+        set {
+            lastInteractionID = newValue
+            switch phase {
+            case .connecting(var c): c.admittedID = newValue; phase = .connecting(c)
+            case .live: phase = .live(id: newValue)
+            case .pausing(_, let r): phase = .pausing(id: newValue, reason: r)
+            case .paused(_, let r): phase = .paused(id: newValue, reason: r)
+            case .ending(_, let d): phase = .ending(id: newValue, deadline: d)
+            default: break
+            }
+        }
+    }
+
+    /// Closing the session to pause (not end) the call.
+    public var pausing: Bool {
+        get { if case .pausing = phase { return true }; return false }
+        set {
+            switch phase {
+            case .ending(let id, _) where newValue: phase = .pausing(id: id, reason: .user)
+            case .pausing(let id, _) where !newValue: phase = .ending(id: id, deadline: nil)
+            default: break
+            }
+        }
+    }
+
+    /// The paused call the current connection is resuming.
+    public var resumeFrom: String? {
+        get {
+            switch phase {
+            case .connecting(let c): return c.resumeFrom
+            case .reconnecting(_, _, let from): return from
+            default: return nil
+            }
+        }
+        set {
+            switch phase {
+            case .connecting(var c): c.resumeFrom = newValue; phase = .connecting(c)
+            case .reconnecting(let n, let d, _): phase = .reconnecting(attempt: n, deadline: d, resumeFrom: newValue)
+            default: if interactionID == nil { interactionID = newValue }
+            }
+        }
+    }
+
+    /// The call paused itself after this many quiet minutes (not the user's Pause): the paused call
+    /// says "Paused after N min of quiet · your jobs keep running". Nil otherwise; cleared on Resume.
+    public var quietPausedMinutes: Int? {
+        get {
+            switch phase {
+            case .pausing(_, .quiet(let m)), .paused(_, .quiet(let m)): return m
+            default: return nil
+            }
+        }
+        set {
+            let reason: PauseReason = newValue.map { .quiet(minutes: $0) } ?? .user
+            switch phase {
+            case .pausing(let id, _): phase = .pausing(id: id, reason: reason)
+            case .paused(let id, _): phase = .paused(id: id, reason: reason)
+            default: break
+            }
+        }
+    }
+
     public var mic: MicState = .live
     public var speech: SpeechState = .idle
     public var work: WorkPhase = .none
     public var exchange = Exchange()
-    public var interactionID: String?
     public var runID: String?
     public var workInfo: WorkInfo?
     public var approval: ApprovalInfo?
@@ -120,10 +296,6 @@ public struct VoiceState: Equatable, Sendable {
     public var dismissedReviews: Set<String> = []
     /// The latest "show me" action from the server (the client acts on it once per seq).
     public var showRequest: ShowRequest?
-    /// Closing the session to pause (not end) the call.
-    public var pausing = false
-    /// The paused call the current connection is resuming.
-    public var resumeFrom: String?
     /// The whole call so far, oldest first (kept across Pause/Resume).
     public var transcript: [TranscriptTurn] = []
     /// Typed turns on screen whose other copy may still arrive: the sender's local echo and the
@@ -144,9 +316,6 @@ public struct VoiceState: Equatable, Sendable {
     public var now: Date = Date(timeIntervalSince1970: 0)
     /// Display name of the assistant (from the server's `assistant_name`); never a persona baked in.
     public var assistantName: String = VoiceState.defaultAssistantName
-    /// The call paused itself after this many quiet minutes (not the user's Pause): the paused call
-    /// says "Paused after N min of quiet · your jobs keep running". Nil otherwise; cleared on Resume.
-    public var quietPausedMinutes: Int?
     /// Quiet time before a live call auto-pauses (server `idle_pause_minutes`; 0 disables).
     public var idleTimeout: TimeInterval = VoiceState.defaultIdleTimeout
     /// Hint shown on the idle panel (the user's call shortcut, e.g. "⌃⌥Space").
@@ -171,6 +340,8 @@ public struct VoiceState: Equatable, Sendable {
         s.assistantName = assistantName
         s.idleTimeout = idleTimeout
         s.callShortcutHint = callShortcutHint
+        s.reconnectsDroppedCalls = reconnectsDroppedCalls
+        s.sessionsToClose = sessionsToClose
         // What the user cleared stays cleared: a new call or reopening the board must not let a
         // list fetched before the server had the clear bring it back (the server keeps it too).
         s.dismissedRunIDs = dismissedRunIDs
@@ -181,6 +352,8 @@ public struct VoiceState: Equatable, Sendable {
     /// A live call with no speech from either side for this long closes its paid voice
     /// session (pause, so Resume keeps the conversation and tasks keep running).
     public static let defaultIdleTimeout: TimeInterval = 15 * 60
+    /// How long End waits for the server to confirm the call's final usage.
+    public static let endConfirmWithin: TimeInterval = 8
     public static let speechQuietGap: TimeInterval = 6
     /// the user's words arriving this soon after his previous words are the tail
     /// of the same sentence, even if the assistant has already started replying.
@@ -199,7 +372,7 @@ public struct VoiceState: Equatable, Sendable {
     /// Local capture track state; muted keeps the call (and billing) open.
     public var localAudioEnabled: Bool { mic == .live }
     public var activeTasks: [TaskItem] { tasks.filter(\.isActive) }
-    public var canPause: Bool { connection == .live && interactionID != nil && !pausing }
+    public var canPause: Bool { if case .live(let id?) = phase { return !id.isEmpty }; return false }
     /// Quiet for `idleTimeout` on a live call. Not while the assistant is talking or an approval waits on the user.
     public func idleExpired(at now: Date) -> Bool {
         guard connection == .live, !pausing, approval == nil, let last = lastActivityAt else { return false }
@@ -211,6 +384,14 @@ public struct VoiceState: Equatable, Sendable {
 
 public enum VoiceEvent: Equatable, Sendable {
     case startRequested
+    /// The connect watchdog fired (`failure` is what the call says if it gives up).
+    case connectStalled(failure: String)
+    /// The server refused this attempt's room text or resume; the same attempt goes again without it.
+    case connectFallback(dropResume: Bool)
+    /// A dropped call's reconnect `attempt` is due.
+    case reconnectDue(attempt: Int)
+    /// "Stop" on the reconnect banner.
+    case reconnectCancelled
     case workOnlyOpened
     case sessionAdmitted(interactionID: String)
     case sessionStarted
@@ -269,7 +450,43 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
     case .startRequested:
         s = s.fresh()
         s.now = now
-        s.connection = .connecting
+        s.phase = .connecting(ConnectAttempt(deadline: now.addingTimeInterval(CallReconnect.connectStallAfter)))
+
+    case .connectStalled(let failure):
+        // The watchdog: a fresh attempt (the client closes the session the stalled one had admitted
+        // first), or the call fails once the attempts are used up.
+        guard case .connecting(var c) = s.phase else { break }
+        if let admitted = c.admittedID { s.sessionsToClose.append(admitted) }
+        if c.attempt < CallReconnect.connectAttempts {
+            c.attempt += 1
+            c.deadline = now.addingTimeInterval(CallReconnect.connectStallAfter)
+            c.admittedID = nil
+            s.phase = .connecting(c)
+        } else {
+            failCall(&s, failure)
+        }
+
+    case .connectFallback(let dropResume):
+        // The server refused this attempt's room text or resume: try again at once without it. The
+        // watchdog's attempt count is its own; a fallback doesn't use it up.
+        guard case .connecting(var c) = s.phase else { break }
+        c.deadline = now.addingTimeInterval(CallReconnect.connectStallAfter)
+        c.admittedID = nil
+        if dropResume { c.resumeFrom = nil }
+        s.phase = .connecting(c)
+
+    case .reconnectDue(let attempt):
+        guard case .reconnecting(let n, _, let from) = s.phase, n == attempt else { break }
+        s.phase = .connecting(ConnectAttempt(deadline: now.addingTimeInterval(CallReconnect.connectStallAfter),
+                                             resumeFrom: from, reconnect: n))
+        s.speech = .idle
+        s.exchange.replyStarted = true
+        s.lastInputAt = nil
+        s.sharing.resumed()
+
+    case .reconnectCancelled:
+        if case .reconnecting = s.phase { s.phase = .ended(.incomplete) }
+        else if case .connecting(let c) = s.phase, c.reconnect > 0, c.admittedID == nil { s.phase = .ended(.incomplete) }
 
     case .workOnlyOpened:
         // Already showing the board (back to the foreground, a second open): keep it as it is,
@@ -281,7 +498,7 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         }
 
     case .sessionAdmitted(let id):
-        s.interactionID = id
+        s.interactionID = id   // into the connecting attempt (or kept as the call's last session)
         s.sharing.admitted()
 
     case .earlyListening(let on):
@@ -295,24 +512,19 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         if s.earlyListening { s.earlyHeard = text; s.lastActivityAt = now }
 
     case .pauseRequested:
-        if s.canPause { s.pausing = true; s.connection = .ending; s.speech = .idle; s.quietPausedMinutes = nil }
+        if s.canPause { s.phase = .pausing(id: s.interactionID, reason: .user); s.speech = .idle }
 
     case .quietPauseRequested(let minutes):
-        if s.canPause { s.pausing = true; s.connection = .ending; s.speech = .idle; s.quietPausedMinutes = max(1, minutes) }
+        if s.canPause { s.phase = .pausing(id: s.interactionID, reason: .quiet(minutes: max(1, minutes))); s.speech = .idle }
 
     case .pauseFailed(let message):
-        if s.pausing && s.connection == .ending { s.connection = .live }
-        s.pausing = false
-        s.quietPausedMinutes = nil
+        if case .pausing(let id, _) = s.phase { s.phase = .live(id: id) }
         s.lastError = message
 
     case .resumeRequested:
-        guard s.connection == .paused else { break }
+        guard case .paused(let id, _) = s.phase else { break }
         // Keep the conversation, tasks and mic choice; open a new session.
-        s.quietPausedMinutes = nil
-        s.resumeFrom = s.interactionID
-        s.interactionID = nil
-        s.connection = .connecting
+        s.phase = .connecting(ConnectAttempt(deadline: now.addingTimeInterval(CallReconnect.connectStallAfter), resumeFrom: id))
         s.speech = .idle
         s.lastError = nil
         s.exchange.replyStarted = true   // next words start a fresh visible exchange
@@ -343,7 +555,7 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s.dismissedReviews.formUnion(cards.map { "\(runID)|\($0)" })
 
     case .sessionStarted:
-        if s.connection == .connecting { s.connection = .live }
+        if case .connecting(let c) = s.phase { s.phase = .live(id: c.admittedID ?? s.interactionID) }
         s.lastActivityAt = now
 
     case .inputDelta(let text):
@@ -425,43 +637,56 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s.delegationAt = now
 
     case .sessionClosed:
-        if !isEnded(s.connection) && s.connection != .paused { s.connection = .ended(.complete) }
+        closed(&s, .complete)
         s.speech = .idle
 
     case .serverClosed(let fin, let error):
-        if !isEnded(s.connection) && s.connection != .paused { s.connection = .ended(fin) }
-        if let error, !s.pausing { s.lastError = error }
+        let pausing = s.pausing
+        closed(&s, fin)
+        if let error, !pausing { s.lastError = error }
         s.speech = .idle
 
     case .endRequested:
-        switch s.connection {
-        case .connecting where s.interactionID == nil:
-            s.connection = .ended(.complete)   // nothing admitted, nothing billed
-        case .connecting, .live:
-            s.connection = .ending
-        case .ending where s.pausing:
-            s.pausing = false   // End while pausing: the close already in flight ends the call
+        switch s.phase {
+        case .connecting(let c) where c.admittedID == nil:
+            s.phase = .ended(.complete)   // nothing admitted, nothing billed
+        case .connecting(let c):
+            s.phase = .ending(id: c.admittedID, deadline: now.addingTimeInterval(VoiceState.endConfirmWithin))
+        case .live(let id):
+            s.phase = .ending(id: id, deadline: now.addingTimeInterval(VoiceState.endConfirmWithin))
+        case .pausing(let id, _):
+            // End while pausing: the close already in flight ends the call.
+            s.phase = .ending(id: id, deadline: now.addingTimeInterval(VoiceState.endConfirmWithin))
         case .paused:
-            s.connection = .ended(.complete)   // voice session already closed; nothing billed
+            s.phase = .ended(.complete)   // voice session already closed; nothing billed
+        case .reconnecting:
+            s.phase = .ended(.incomplete)   // the dropped session's usage was never confirmed
         default: break
         }
 
     case .endTimedOut:
-        if s.connection == .ending { s.connection = .ended(.incomplete) }
+        switch s.phase {
+        case .ending: s.phase = .ended(.incomplete)
+        case .pausing(let id, let reason): s.phase = .paused(id: id, reason: reason)
+        default: break
+        }
 
     case .transportLost:
-        switch s.connection {
+        switch s.phase {
+        case .live(let id) where s.reconnectsDroppedCalls && id != nil:
+            s.phase = .reconnecting(attempt: 1, deadline: now.addingTimeInterval(CallReconnect.delay(attempt: 1)), resumeFrom: id)
+            s.speech = .idle
+        case .connecting(let c) where c.reconnect > 0:
+            nextReconnect(&s, after: c, failure: CallReconnect.gaveUp)
         case .live, .connecting:
-            s.connection = .ended(.incomplete)
+            s.phase = .ended(.incomplete)
             s.lastError = "Voice connection lost; final usage confirmation unavailable"
             s.speech = .idle
-        default: break   // .ending: wait for api finalization or the deadline
+        default: break   // .ending / .pausing: wait for api finalization or the deadline
         }
 
     case .failed(let message):
-        if !isEnded(s.connection) { s.connection = .failed(message) }
-        s.lastError = message
-        s.speech = .idle
+        failCall(&s, message)
 
     case .error(let message):
         s.lastError = message
@@ -484,6 +709,9 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s.workInfo = info
 
     case .interaction(let snapshot):
+        // Another session's snapshot (one a stalled or dropped attempt left behind, still in flight)
+        // never touches this call: its "confirmed" would end the call that replaced it.
+        if let other = snapshot.interactionID, let current = s.interactionID, other != current { break }
         if let run = snapshot.runID, !s.supersededRunIDs.contains(run), run != s.runID {
             if let old = s.runID { s.supersededRunIDs.insert(old) }
             s.runID = run
@@ -500,11 +728,13 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
             own.interactionID = current
             s.sharing.reconcile(own, now: now)
         }
-        switch snapshot.finalization {
-        case "confirmed", "complete":
-            if s.connection.isInCall && s.connection != .connecting { s.connection = .ended(.complete) }
-        case "incomplete":
-            if s.connection == .ending { s.connection = .ended(.incomplete) }
+        switch (snapshot.finalization, s.phase) {
+        case ("confirmed", .pausing(let id, let r)), ("complete", .pausing(let id, let r)), ("incomplete", .pausing(let id, let r)):
+            s.phase = .paused(id: id, reason: r)
+        case ("confirmed", .live), ("complete", .live), ("confirmed", .ending), ("complete", .ending):
+            s.phase = .ended(.complete)
+        case ("incomplete", .ending):
+            s.phase = .ended(.incomplete)
         default: break
         }
 
@@ -529,11 +759,7 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s = s.fresh()
         s.now = now
     }
-    // A pausing call that closes (cleanly or not) is paused, not ended: the
-    // api holds its transcript and tasks for Resume.
-    if s.pausing, case .ended = s.connection {
-        s.connection = .paused
-        s.pausing = false
+    if case .paused = s.phase, !isPaused(state.phase) {
         s.speech = .idle
         if s.lastError == "Voice connection lost; final usage confirmation unavailable" { s.lastError = nil }
     }
@@ -545,11 +771,53 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
     return s
 }
 
-private func isEnded(_ phase: ConnectionPhase) -> Bool {
-    if case .ended = phase { return true }
-    if case .failed = phase { return true }
-    return false
+private func isPaused(_ phase: CallPhase) -> Bool { if case .paused = phase { return true }; return false }
+
+/// The voice session closed. A pausing call that closes (cleanly or not) is paused, not ended: the
+/// api holds its transcript and tasks for Resume. A dropped call waiting to reconnect, a paused or
+/// a finished call stay as they are.
+private func closed(_ s: inout VoiceState, _ fin: Finalization) {
+    switch s.phase {
+    case .pausing(let id, let reason): s.phase = .paused(id: id, reason: reason)
+    case .paused, .reconnecting, .ended, .failed: break
+    case .connecting(let c) where c.reconnect > 0: nextReconnect(&s, after: c, failure: CallReconnect.gaveUp)
+    default: s.phase = .ended(fin)
+    }
 }
+
+/// The call can't go on as it is: a dropped live call (iPhone) or a failed reconnect tries again,
+/// up to `CallReconnect.maxAttempts`; anything else fails. A mic refusal never retries.
+private func failCall(_ s: inout VoiceState, _ message: String) {
+    let mic = CallReconnect.isMicRefusal(message)
+    switch s.phase {
+    case .live(let id) where s.reconnectsDroppedCalls && id != nil && !mic:
+        s.phase = .reconnecting(attempt: 1, deadline: s.now.addingTimeInterval(CallReconnect.delay(attempt: 1)), resumeFrom: id)
+        s.speech = .idle
+        return
+    case .connecting(let c) where c.reconnect > 0 && !mic:
+        nextReconnect(&s, after: c, failure: message)
+        return
+    case .ended, .failed: break
+    default: s.phase = .failed(message)
+    }
+    s.lastError = message
+    s.speech = .idle
+}
+
+/// Reconnect `c.reconnect` didn't get the call back: the next one, or give up after the last.
+private func nextReconnect(_ s: inout VoiceState, after c: ConnectAttempt, failure: String) {
+    s.speech = .idle
+    if c.reconnect < CallReconnect.maxAttempts {
+        let n = c.reconnect + 1
+        // Its session (when one was admitted) is the one the next attempt resumes.
+        s.phase = .reconnecting(attempt: n, deadline: s.now.addingTimeInterval(CallReconnect.delay(attempt: n)),
+                                resumeFrom: c.admittedID ?? c.resumeFrom)
+    } else {
+        s.phase = .failed(failure)
+        s.lastError = failure
+    }
+}
+
 
 /// A task of this call that finished with a written answer becomes one text reply in the
 /// transcript (shown only in the expanded view). The voice is untouched: it still speaks the short

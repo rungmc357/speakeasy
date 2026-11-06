@@ -12,6 +12,7 @@ import concurrent.futures
 import contextlib
 import re
 import dataclasses
+import enum
 import functools
 import hashlib
 import json
@@ -232,6 +233,40 @@ CONTINUITY_POLL_S = 5
 # CAP_STRETCH times the cap, so a long task's answer is still spoken; at the cap it is paused
 # (resumable: Resume picks up with the transcript and tasks), never dropped as an error.
 CAP_STRETCH = 2.0
+# A task that has been admitting this long without a Hermes run id is not keeping a call up: its
+# admission is retried or failed long before (a memory-only stuck "admitting" used to hold every
+# call at the stretch ceilings).
+ADMITTING_KEEPS_CALL_S = 180
+
+
+class CallState(str, enum.Enum):
+    """One call's life, computed from its fields in one place (Interaction.call_state)."""
+    CONNECTING = "connecting"
+    LIVE = "live"
+    PAUSED = "paused"      # resumable; see pause_reason
+    RESUMED = "resumed"    # a later call continues it (successor)
+    ENDED = "ended"        # closed, or paused so long it is bookkept as ended
+
+
+PAUSE_REASONS = ("user", "idle", "cap")
+
+
+def run_may_be_working(run: "BackendRun", stored_status: str | None, now: float | None = None) -> bool:
+    """A call's task may still be producing an answer, judged on the reconciled state: the in-memory
+    status, corrected by the stored one. A run whose stream dropped (``ambiguous``) may well still be
+    working in Hermes until recovery settles it; a run memory still thinks active whose stored row
+    already finished (or a stuck admission with no run id) is not."""
+    stored = stored_status or run.status
+    if stored in TERMINAL or stored == "rejected":
+        return False
+    if run.status == "ambiguous" or stored == "ambiguous":
+        return True
+    if run.status not in ACTIVE_RUN_STATES:
+        return False
+    if run.status == "admitting" and not run.run_id:
+        now = time.monotonic() if now is None else now
+        return now - run.started < ADMITTING_KEEPS_CALL_S
+    return True
 # Spoken progress: only for tasks running this long, at most once per PROGRESS_EVERY_S across the
 # whole call (two tasks don't take turns talking), and only when the task has done something new
 # since the last update. No forced silence: it's a conversation, just without filler updates.
@@ -605,6 +640,11 @@ class Interaction:
     limit_paused: bool = False  # paused at the call's length cap (voice.max_call_minutes), not by the user
     mic_muted: bool | None = None  # the app's mic is off (POST .../mic), None = never said; only the pulse cares
     pause_bookkept: bool = False
+    # Why the call is paused: "user", "idle" (idle_paused_minutes of quiet) or "cap" (its length
+    # cap); None while not paused. Set only through Service.pause, with paused/limit_paused/idle_paused_minutes.
+    pause_reason: str | None = None
+    # The app gave up on this call before it went live (a stalled connection retried elsewhere).
+    abandoned: bool = False
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)
     resumed_from: str | None = None
     device_id: str = ""
@@ -637,6 +677,17 @@ class Interaction:
     # after HOLD_OUTCOME_S. Set by the worker (hold_request, end_hold), never mutated in place.
     hold: dict[str, Any] | None = None
 
+    @property
+    def call_state(self) -> CallState:
+        """Caller holds the lock (or accepts a racy read)."""
+        if self.successor is not None:
+            return CallState.RESUMED
+        if self.paused:
+            return CallState.ENDED if self.pause_bookkept else CallState.PAUSED
+        if self.call_closed or self.abandoned:
+            return CallState.ENDED
+        return CallState.CONNECTING if self.status == "connecting" else CallState.LIVE
+
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
             latest = self.runs.get(self.latest_delegation_id or "")
@@ -662,6 +713,8 @@ class Interaction:
                 **({"idle_paused_minutes": self.idle_paused_minutes}
                    if self.paused and self.idle_paused_minutes else {}),
                 **({"limit_paused": True} if self.paused and self.limit_paused else {}),
+                "call_state": self.call_state.value,
+                **({"pause_reason": self.pause_reason} if self.paused and self.pause_reason else {}),
                 "resumed_from": self.resumed_from,
                 **self.attachments.snapshot(),  # screen, captures, attachments
                 "hold": self.hold,
@@ -739,6 +792,24 @@ async def in_own_thread(fn: Callable[..., Any], *args: Any) -> Any:
 
     threading.Thread(target=run, daemon=True, name="speakeasy-task-wait").start()
     return await future
+
+
+def call_work_running(store: Any, interaction: Interaction, now: float | None = None) -> bool:
+    """Any task of the call may still be working (run_may_be_working), from the stored status where
+    there is one. Never holds the call's lock while reading the store."""
+    with interaction.lock:
+        runs = list(interaction.runs.values())
+    for run in runs:
+        stored = None
+        if store is not None:
+            try:
+                row = store.run_row(run.idem_key)
+            except Exception:
+                row = None
+            stored = row.get("status") if row else None
+        if run_may_be_working(run, stored, now):
+            return True
+    return False
 
 
 def publish_state(store: Any, interaction: Interaction, assistant_name: str = "Hermes") -> None:
@@ -981,6 +1052,7 @@ class SidebandWorker:
         # Requests that went on as work this call: (words, when, delegation id, the request), newest last.
         self.started: list[tuple[str, float, str, str]] = []
         self.last_handoff_at = float("-inf")     # when the newest handoff (or tapped answer) arrived
+        self.cap_stretched = False               # the length cap was passed with work running (logged once)
         self.drops: list[tuple[str, float, str, str]] = []  # (reason, when, request, context) not started
         self.ack_checked = float("-inf")         # the user turn whose "on it" was last checked
         self.force_work: set[str] = set()        # handoffs started because the voice promised the work
@@ -1319,9 +1391,9 @@ class SidebandWorker:
         self.interaction.last_activity = time.monotonic()
 
     def work_running(self) -> bool:
-        """A task of this call (or one it took on) is still running: an answer is on its way."""
-        with self.interaction.lock:
-            return any(r.status in ACTIVE_RUN_STATES for r in self.interaction.runs.values())
+        """A task of this call (or one it took on) may still be running: an answer is on its way.
+        Reads the reconciled run state (call_work_running), not memory's status alone."""
+        return call_work_running(self.store, self.interaction)
 
     def cap_reached(self, elapsed: float, cap: float) -> bool:
         """The call is at its length cap (voice.max_call_minutes): True once it is over, except while
@@ -1329,8 +1401,8 @@ class SidebandWorker:
         if elapsed < cap:
             return False
         if elapsed < cap * CAP_STRETCH and self.work_running():
-            if not getattr(self, "_cap_stretched", False):
-                self._cap_stretched = True
+            if not self.cap_stretched:
+                self.cap_stretched = True
                 logger.info("speakeasy: call reached its length cap with work running; kept on until it lands")
             return False
         return True

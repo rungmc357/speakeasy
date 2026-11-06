@@ -100,7 +100,12 @@ public final class NativeVoiceClient: VoiceCallClient {
     private var engine: CallTransport?
     private var startTask: Task<Void, Never>?
     private var streamTask: Task<Void, Never>?
-    private var pollTask: Task<Void, Never>?
+    /// One task per loop, so starting one never cancels another: the paused call's task list, the
+    /// end's finalization check, the event-stream fallback, and a dropped call's reconnect timer.
+    private var pausedPollTask: Task<Void, Never>?
+    private var finalizePollTask: Task<Void, Never>?
+    private var eventsPollTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
     private var workOnlyTask: Task<Void, Never>?
     /// Which `/voice/work/latest` answers may still touch the board (see `WorkPollGate`).
     private var workPoll = WorkPollGate()
@@ -116,9 +121,8 @@ public final class NativeVoiceClient: VoiceCallClient {
     /// Where the current connection attempt is (for the stall report).
     private var connectStage = "starting"
     private var connectWatchdog: DispatchWorkItem?
-    private var connectAttempts = 0
     /// A call that hasn't gone live by then is stuck; retry once, then say so.
-    static let connectStallAfter: TimeInterval = 12
+    static let connectStallAfter: TimeInterval = CallReconnect.connectStallAfter
     /// iPhone: the call has no mic because the app isn't in front (an Action Button / Siri start
     /// that landed in the background, or iOS took the input away). Reconnecting from the
     /// background can't fix that, since iOS hands the mic only to the app in front; it's fixed
@@ -270,13 +274,19 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     // MARK: Reducer plumbing
 
+    /// iPhone: a live call that drops by itself is brought back (up to `CallReconnect.maxAttempts`,
+    /// resuming the same conversation) instead of ending. The Mac ends it, as before.
+    public var reconnectsDroppedCalls = false
+
     public func dispatch(_ event: VoiceEvent) {
+        if model.state.reconnectsDroppedCalls != reconnectsDroppedCalls { model.state.reconnectsDroppedCalls = reconnectsDroppedCalls }
         let before = model.state
         let after = reduce(before, event, now: Date())
         model.state = after
         if after.interactionID != nil, after.interactionID != before.interactionID { postFocus() }
         postMicIfChanged()
         if after.connection != .connecting, connectWatchdog != nil { connectWatchdog?.cancel(); connectWatchdog = nil }
+        closeAbandonedSessions()
         applySideEffects(from: before, to: after)
         watchMic(event, from: before, to: after)
         scheduleUploadsIfNeeded()
@@ -363,9 +373,9 @@ public final class NativeVoiceClient: VoiceCallClient {
     /// Still "connecting" long after it should be live. Before, it sat there showing "Listening"
     /// with nothing reaching the call. Now: retry once without the listener, then fail visibly.
     private func connectStalled(_ api: ServerClient) {
-        guard model.state.connection == .connecting else { return }
+        guard case .connecting(let attempt) = model.state.phase else { return }
         let stage = connectStage
-        reportMic("connect stalled (attempt \(connectAttempts)) at: \(stage); \(micReportDetail())")
+        reportMic("connect stalled (attempt \(attempt.attempt)) at: \(stage); \(micReportDetail())")
         // A call from listening mode keeps what the user already said for the retried call
         // (which connects without the listener) instead of answering from the room over it.
         if roomCall != nil, let heard = earlyCapture?.heardSoFar, !cleanTranscript(heard).isEmpty {
@@ -375,18 +385,35 @@ public final class NativeVoiceClient: VoiceCallClient {
         stopEarlyCapture()
         startTask?.cancel(); startTask = nil
         streamTask?.cancel(); streamTask = nil
+        eventsPollTask?.cancel(); eventsPollTask = nil
         engine?.close(); engine = nil
-        if connectAttempts < 2 {
-            skipEarlyCapture = true
-            onStatus?("Reconnecting…")
-            connect(api)
-        } else {
+        #if os(macOS)
+        let failure = "Couldn't connect to \(model.state.assistantName). Click Try again."
+        #else
+        let failure = "Couldn't connect to \(model.state.assistantName). Tap to try again."
+        #endif
+        // The reducer queues the session the server already admitted for this attempt (if any) in
+        // sessionsToClose; dispatch closes it before the retry, so it isn't left open (and billed).
+        dispatch(.connectStalled(failure: failure))
+        guard case .connecting(let next) = model.state.phase, next.attempt > attempt.attempt else {
             connectWatchdog?.cancel(); connectWatchdog = nil
-                        #if os(macOS)
-            dispatch(.failed("Couldn't connect to \(model.state.assistantName). Click Try again."))
-            #else
-            dispatch(.failed("Couldn't connect to \(model.state.assistantName). Tap to try again."))
-            #endif
+            return
+        }
+        skipEarlyCapture = true
+        onStatus?("Reconnecting…")
+        connect(api)
+    }
+
+    /// Close a session this device gave up on (a stalled connection attempt). Best effort: an older
+    /// plugin ignores `abandon` and the session ends when its audio never arrives.
+    private func closeAbandonedSessions() {
+        guard !model.state.sessionsToClose.isEmpty else { return }
+        let ids = model.state.sessionsToClose
+        model.state.sessionsToClose = []
+        guard let api, !previewMode else { return }
+        for id in ids {
+            reportMic("closing the stalled attempt's session")
+            Task { try? await api.abandonSession(interactionID: id) }
         }
     }
 
@@ -487,6 +514,7 @@ public final class NativeVoiceClient: VoiceCallClient {
             surface.setNeedsResize()
         }
         if new.connection == .paused, old.connection != .paused { callPaused() }
+        if case .reconnecting(let attempt, let deadline, _) = new.phase, old.phase != new.phase { reconnectDropped(attempt, at: deadline) }
         if old.exchange != new.exchange { surface.setNeedsResize() }
         if new.connection == .live, old.connection != .live, roomCall != nil {
             roomCall?.noteLive(at: Date())
@@ -625,7 +653,6 @@ public final class NativeVoiceClient: VoiceCallClient {
         codexStopRequested = false
         appliedMic = nil; appliedRemote = nil
         micCheck = NativeVoiceClient.freshMicCheck(); micRepairPending = false; skipEarlyCapture = false
-        connectAttempts = 0
         stopWaitingForApp()
         dwell = StatusDwell(minimumDwell: 1.5)
         model.workExpanded = false
@@ -673,7 +700,6 @@ public final class NativeVoiceClient: VoiceCallClient {
         dispatch(.sharing(.declared(screenDeclaration())))
         refreshAttachmentSupport(api)
         connectStage = "starting"
-        connectAttempts += 1
         armConnectWatchdog(api)
         if skipEarlyCapture { stopEarlyCapture() } else { startEarlyCapture() }
         connectionUsedEarlyCapture = earlyCapture != nil
@@ -741,10 +767,10 @@ public final class NativeVoiceClient: VoiceCallClient {
                     guard let request = api.relaySocketRequest(relay) else { throw RelayCallEngine.EngineError.badURL }
                     engine.close()
                     let relayEngine = RelayCallEngine()
+                    self.engine = relayEngine
                     self.wire(relayEngine)
                     if early != nil { relayEngine.holdAudio() }
                     relayEngine.setMicEnabled(early == nil && self.model.state.localAudioEnabled)
-                    self.engine = relayEngine
                     call = relayEngine
                     self.connectStage = "admitted; opening the relay"
                     try relayEngine.start(request: request)
@@ -775,6 +801,7 @@ public final class NativeVoiceClient: VoiceCallClient {
                    self.model.state.connection == .connecting {
                     call.close()
                     self.dropRoomContext("Couldn't use what listening mode heard; carried on without it")
+                    self.dispatch(.connectFallback(dropResume: false))
                     self.connect(api)
                     return
                 }
@@ -783,7 +810,7 @@ public final class NativeVoiceClient: VoiceCallClient {
                 if self.model.state.resumeFrom != nil, let http = error as? ServerClient.HTTPError,
                    http.status == 404 || http.status == 409, self.model.state.connection == .connecting {
                     call.close()
-                    self.model.state.resumeFrom = nil
+                    self.dispatch(.connectFallback(dropResume: true))
                     self.dispatch(.error("Couldn't resume the paused call; started a new one"))
                     self.connect(api)
                     return
@@ -795,8 +822,10 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// Same callbacks for either transport.
     private func wire(_ transport: CallTransport) {
-        transport.onMessage = { [weak self] data in
-            guard let self else { return }
+        // A connection this call has dropped (a stalled or reconnected attempt, a paused call's)
+        // can still deliver a last message or failure; only the current one speaks for the call.
+        transport.onMessage = { [weak self, weak transport] data in
+            guard let self, let transport, self.engine === transport else { return }
             for event in parseDataChannelMessage(data) {
                 if case .sessionClosed = event, self.voiceProvider == "codex" {
                     self.finishCodexCall()
@@ -805,11 +834,15 @@ public final class NativeVoiceClient: VoiceCallClient {
                 }
             }
         }
-        transport.onChannelClosed = { [weak self] in self?.channelClosed() }
+        transport.onChannelClosed = { [weak self, weak transport] in
+            guard let self, let transport, self.engine === transport else { return }
+            self.channelClosed()
+        }
         transport.onChannelOpen = { [weak self] in self?.connectStage = "channel open; waiting for the call to start" }
         transport.onAudioFormatChanged = { [weak self] in self?.audioDevicesChanged() }
-        transport.onConnectionFailed = { [weak self] in
-            guard let self, self.model.state.connection == .live || self.model.state.connection == .connecting else { return }
+        transport.onConnectionFailed = { [weak self, weak transport] in
+            guard let self, let transport, self.engine === transport,
+                  self.model.state.connection == .live || self.model.state.connection == .connecting else { return }
             self.dispatch(.transportLost)
         }
     }
@@ -863,7 +896,8 @@ public final class NativeVoiceClient: VoiceCallClient {
         startTask?.cancel(); startTask = nil
         engine?.close(); engine = nil
         streamTask?.cancel(); streamTask = nil
-        pollTask?.cancel(); pollTask = nil
+        eventsPollTask?.cancel(); eventsPollTask = nil
+        finalizePollTask?.cancel(); finalizePollTask = nil
         if reconnectAfterPause {
             // Audio device switch: reopen straight away on the new device.
             reconnectAfterPause = false
@@ -872,6 +906,39 @@ public final class NativeVoiceClient: VoiceCallClient {
         }
         startPausedTaskPolling()
         onPauseChanged?(true)
+    }
+
+    // MARK: Reconnecting a dropped call (iPhone)
+
+    /// The live call dropped by itself (or a reconnect didn't take): drop what's left of the
+    /// connection, then try again at `deadline`, resuming the same conversation (a fresh call when
+    /// the server no longer holds it). The reducer counts the attempts and gives up after the last.
+    private func reconnectDropped(_ attempt: Int, at deadline: Date) {
+        connectWatchdog?.cancel(); connectWatchdog = nil
+        stopEarlyCapture()
+        endDeadline?.cancel(); endDeadline = nil
+        startTask?.cancel(); startTask = nil
+        engine?.close(); engine = nil
+        streamTask?.cancel(); streamTask = nil
+        eventsPollTask?.cancel(); eventsPollTask = nil
+        finalizePollTask?.cancel(); finalizePollTask = nil
+        reportMic("call dropped; reconnect \(attempt) of \(CallReconnect.maxAttempts)")
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            let wait = max(0, deadline.timeIntervalSinceNow)
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.dispatch(.reconnectDue(attempt: attempt))
+            guard case .connecting(let c) = self.model.state.phase, c.reconnect == attempt, let api = self.api else { return }
+            self.appliedMic = nil; self.appliedRemote = nil
+            self.connect(api)
+        }
+    }
+
+    /// "Stop" on the reconnect banner: no more attempts; the call ends.
+    public func cancelReconnect() {
+        reconnectTask?.cancel(); reconnectTask = nil
+        dispatch(.reconnectCancelled)
     }
 
     // MARK: Audio device changes (macOS)
@@ -903,11 +970,10 @@ public final class NativeVoiceClient: VoiceCallClient {
     /// `unmuted`: listening mode was just turned off to talk, so the call comes back with the mic on.
     private func resume(unmuted: Bool = false) {
         guard model.state.connection == .paused, let api else { return }
-        pollTask?.cancel(); pollTask = nil
+        pausedPollTask?.cancel(); pausedPollTask = nil
         appliedMic = nil; appliedRemote = nil
         dispatch(.resumeRequested)
         if unmuted { dispatch(.setMic(.live)) }
-        connectAttempts = 0
         surface.show()
         startTicker()
         startLevelMeter()
@@ -919,8 +985,8 @@ public final class NativeVoiceClient: VoiceCallClient {
     /// polling the tasks' work rows (no voice session is open, nothing billed).
     private func startPausedTaskPolling() {
         guard let api else { return }
-        pollTask?.cancel()
-        pollTask = Task { [weak self] in
+        pausedPollTask?.cancel()
+        pausedPollTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard let self, self.model.state.connection == .paused else { return }
@@ -949,7 +1015,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         endDeadline?.cancel()
         let deadline = DispatchWorkItem { [weak self] in self?.dispatch(.endTimedOut) }
         endDeadline = deadline
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: deadline)
+        DispatchQueue.main.asyncAfter(deadline: .now() + VoiceState.endConfirmWithin, execute: deadline)
         if engine?.send(json: ["type": "session.close"]) != true {
             engine?.close()
             startFinalizationPolling()
@@ -990,10 +1056,15 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     private func startFinalizationPolling() {
         guard let api, let id = model.state.interactionID else { return }
-        pollTask?.cancel()
-        pollTask = Task { [weak self] in
+        finalizePollTask?.cancel()
+        finalizePollTask = Task { [weak self] in
             while !Task.isCancelled {
-                if let snapshot = try? await api.interaction(id) { self?.dispatch(.interaction(snapshot)) }
+                if let snapshot = try? await api.interaction(id) {
+                    // An older server's snapshot doesn't name its call: it is this one's.
+                    var own = snapshot
+                    if own.interactionID == nil { own.interactionID = id }
+                    self?.dispatch(.interaction(own))
+                }
                 guard let self, self.model.state.connection == .ending else { return }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
@@ -1131,7 +1202,10 @@ public final class NativeVoiceClient: VoiceCallClient {
         startTask?.cancel(); startTask = nil
         engine?.close(); engine = nil
         streamTask?.cancel(); streamTask = nil
-        pollTask?.cancel(); pollTask = nil
+        eventsPollTask?.cancel(); eventsPollTask = nil
+        finalizePollTask?.cancel(); finalizePollTask = nil
+        pausedPollTask?.cancel(); pausedPollTask = nil
+        reconnectTask?.cancel(); reconnectTask = nil
         let delay: TimeInterval = finalization == .complete ? 1.0 : 2.4
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !self.model.state.connection.isOpen else { return }
@@ -1269,6 +1343,9 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     // MARK: Server events (SSE with polling fallback)
 
+    /// How long the polling fallback runs before the event stream is tried again.
+    static let streamRetryAfter: TimeInterval = 30
+
     private func startServerEvents(_ api: ServerClient, interactionID: String) {
         streamTask?.cancel()
         streamTask = Task { [weak self] in
@@ -1277,21 +1354,22 @@ public final class NativeVoiceClient: VoiceCallClient {
             while !Task.isCancelled {
                 let outcome = await api.streamEvents(interactionID: interactionID, parser: &parser) { event in
                     await MainActor.run {
-                        guard let self else { return }
+                        // A stream left over from a session this call no longer uses says nothing to it.
+                        guard let self, self.model.state.interactionID == interactionID else { return }
                         for voiceEvent in parseServerStreamEvent(event) { self.dispatch(voiceEvent) }
                     }
                 }
                 guard let self, !Task.isCancelled else { return }
                 switch outcome {
                 case .unsupported:
-                    self.startPollingFallback(api, interactionID: interactionID)
+                    self.startPollingFallback(api, interactionID: interactionID, retryStream: false)
                     return
                 case .ended:
                     attempt = 0
                     if !self.model.state.connection.isInCall { return }
                 case .failed:
                     attempt += 1
-                    if attempt >= 4 { self.startPollingFallback(api, interactionID: interactionID); return }
+                    if attempt >= 4 { self.startPollingFallback(api, interactionID: interactionID, retryStream: true); return }
                 }
                 let delay = sseReconnectDelay(attempt: attempt, serverRetryMilliseconds: parser.retryMilliseconds)
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
@@ -1299,14 +1377,23 @@ public final class NativeVoiceClient: VoiceCallClient {
         }
     }
 
-    /// Server without `/events`: poll instead. Capture requests come from the snapshot here.
-    private func startPollingFallback(_ api: ServerClient, interactionID: String) {
-        pollTask?.cancel()
-        pollTask = Task { [weak self] in
+    /// Server without `/events` (or a stream that keeps failing): poll instead. Capture requests come
+    /// from the snapshot here. A stream that failed is tried again every `streamRetryAfter`; polling
+    /// stops once it is back.
+    private func startPollingFallback(_ api: ServerClient, interactionID: String, retryStream: Bool) {
+        eventsPollTask?.cancel()
+        let started = Date()
+        eventsPollTask = Task { [weak self] in
             var lastWork = Date.distantPast
             while !Task.isCancelled {
-                guard let self, self.model.state.connection.isInCall else { return }
-                if let snapshot = try? await api.interaction(interactionID) {
+                guard let self, self.model.state.connection.isInCall,
+                      self.model.state.interactionID == interactionID else { return }
+                if retryStream, Date().timeIntervalSince(started) >= Self.streamRetryAfter {
+                    self.startServerEvents(api, interactionID: interactionID)
+                    return
+                }
+                if var snapshot = try? await api.interaction(interactionID) {
+                    if snapshot.interactionID == nil { snapshot.interactionID = interactionID }
                     for event in interactionEvents(snapshot) { self.dispatch(event) }
                 }
                 if let run = self.model.state.runID, Date().timeIntervalSince(lastWork) > 2 {
