@@ -47,6 +47,24 @@ def test_a_spoken_choice_becomes_a_card_and_a_tap_answers_the_voice(server, serv
     assert _choice_task(server) is None                         # answered: never its own item
 
 
+def test_a_choice_card_is_never_seen_without_its_question(server, service, hermes):
+    """The board can be fetched between any two store writes: after every write the card must
+    either be absent or carry its question (a half-saved card read as a blank finished task)."""
+    _, worker = start_call(server, service)
+    store, seen = worker.store, []
+    for name in ("reserve_run", "set_title", "update_run", "set_result", "record_finished_run"):
+        original = getattr(store, name)
+
+        def spy(*args, _original=original, **kwargs):
+            out = _original(*args, **kwargs)
+            seen.extend(t for t in store.latest_tasks() if t["task_id"].startswith("choice_"))
+            return out
+        setattr(store, name, spy)
+    said(worker, "Coffee or tea?")
+    wait_for(lambda: _choice_task(server), timeout=5)
+    assert seen and all((t.get("result") or {}).get("question") for t in seen)
+
+
 def test_the_same_choice_is_offered_once_and_answering_out_loud_clears_it(server, service, hermes):
     _, worker = start_call(server, service)
     said(worker, "Coffee or tea?")

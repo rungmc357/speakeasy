@@ -1586,18 +1586,17 @@ class SidebandWorker:
         self.choice_tasks[delegation_id] = question
         listed = "\n".join(f"{i + 1}. {o}" for i, o in enumerate(options))
         try:
-            self.store.reserve_run(idem, self.interaction.interaction_id, delegation_id, 0)
             # The pick belongs to the task it's about (the one in view, else the newest real task on
             # the call): it shows inside that task's job, never as its own "Decide on …" item.
             about = self._choice_parent()
-            if about:
-                self.store.link_job(idem, about)
-                self.store.set_parent(idem, about)
             # A short question names its card as asked; a long one gets a clean cut, never an ellipsis.
             whole = notice_text(question, 200) or ""
-            self.store.set_title(idem, (whole if len(whole) <= 60 else short_title(question)) or "A quick choice")
-            self.store.transition(idem, "completed", result={"spoken": question, "full": f"**{question}**\n{listed}",
-                                                             "question": view, "views": [view]})
+            # One write: a board fetched mid-way must never show the card without its question.
+            self.store.record_finished_run(
+                idem, self.interaction.interaction_id, delegation_id,
+                (whole if len(whole) <= 60 else short_title(question)) or "A quick choice",
+                {"spoken": question, "full": f"**{question}**\n{listed}", "question": view, "views": [view]},
+                about=about)
         except Exception:
             logger.warning("speakeasy: could not record the spoken choice card")
             return None
