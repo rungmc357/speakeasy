@@ -4912,14 +4912,6 @@ class SidebandWorker:
                 local = LOCAL_RUN_PREFIX + hashlib.sha256(idem.encode()).hexdigest()[:32]
                 with self.interaction.lock:
                     backend.run_id = local
-            # The row first (memory follows once the result is stored, below): a checked move, so a
-            # second final event, or one after the task was settled another way, changes nothing.
-            if not self.store.transition(idem, status, run_id=local) and self.store.run_status(idem) is not None:
-                stored = self.store.run_status(idem)
-                if stored in RS.FINAL:
-                    with self.interaction.lock:
-                        backend.status, backend.approval = stored, None
-                return
             output, error = event.get("output"), event.get("error")
             if status == "failed" and (line := failures.provider_line(output)):
                 # The session chat stream (and its run status) carry no error field: a failed turn's
@@ -4927,7 +4919,15 @@ class SidebandWorker:
                 output, error = None, error or line
             result = split_result(output, self.rt.image_roots())
             drafts = (result or {}).pop("_email_drafts", None) or []
-            self.store.set_result(idem, result)
+            # Status and answer in one checked write (memory follows below): a second final event,
+            # or one after the task was settled another way, changes nothing.
+            if not self.store.transition(idem, status, run_id=local, result=result) \
+                    and self.store.run_status(idem) is not None:
+                stored = self.store.run_status(idem)
+                if stored in RS.FINAL:
+                    with self.interaction.lock:
+                        backend.status, backend.approval = stored, None
+                return
             failed_as = None  # a failures.py kind
             if status == "failed":
                 # Hermes' error line maps to Speakeasy's own sentence; with neither a known reason nor

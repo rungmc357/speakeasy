@@ -63,9 +63,8 @@ def sweep(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]
         # Checked moves from the status read above, the result written only when this sweep moved
         # the row: an answer that arrived meanwhile is never overwritten.
         if answer is not None:
-            if store.transition(key, "completed", expect={task["status"]}, orphaned=True):
-                result = split_result(P.without_voice_header(answer), image_roots())
-                store.set_result(key, result)
+            result = split_result(P.without_voice_header(answer), image_roots())
+            if store.transition(key, "completed", expect={task["status"]}, orphaned=True, result=result):
                 store.progress(key, "result", (result or {}).get("full") or "Done")
                 settled.append((key, "completed"))
         elif (not session_id and age > NO_SESSION_AFTER_S) or age > NO_ANSWER_AFTER_S:
@@ -96,9 +95,8 @@ def _settle_unconfirmed(store: Any, state_db: Path, image_roots: Callable[[], tu
         answer = (T.session_answer(state_db, session_id, since=task.get("created"))
                   if session_id and not task.get("superseded") else None)
         if answer is not None:
-            if store.transition(key, "completed", expect={"ambiguous"}, orphaned=True):
-                result = split_result(P.without_voice_header(answer), image_roots())
-                store.set_result(key, result)
+            result = split_result(P.without_voice_header(answer), image_roots())
+            if store.transition(key, "completed", expect={"ambiguous"}, orphaned=True, result=result):
                 store.progress(key, "result", (result or {}).get("full") or "Done")
                 settled.append((key, "completed"))
         elif task.get("superseded") or now - last > NO_ANSWER_AFTER_S:
@@ -149,11 +147,10 @@ def sweep_orphans(store: Any, hermes: Any, live: set[str], image_roots: Callable
             reply = {}
         final = reply.get("status") if isinstance(reply, dict) else None
         if final in RS.TERMINAL:
-            if store.transition(key, final, expect={status}, orphaned=True):
-                output = reply.get("output") if isinstance(reply.get("output"), str) else None
-                result = split_result(P.without_voice_header(output), image_roots()) if output else None
-                if result:
-                    store.set_result(key, result)
+            output = reply.get("output") if isinstance(reply.get("output"), str) else None
+            result = split_result(P.without_voice_header(output), image_roots()) if output else None
+            if store.transition(key, final, expect={status}, orphaned=True,
+                                **({"result": result} if result else {})):
                 store.progress(key, "result", (result or {}).get("full") or {
                     "completed": "Work complete", "cancelled": "Work stopped",
                     "failed": "Work failed", "interrupted": "Work interrupted"}[final])

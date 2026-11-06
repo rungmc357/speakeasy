@@ -119,10 +119,10 @@ def test_cancelled_deleted_and_unknown_tasks_are_refused_in_one_sentence(server,
     key = service.store.key_for_run(task["run_id"])
     status, body = send(server, "run_nope", "hello")
     assert status == 404 and body["error"] == "I couldn't find that task."
-    service.store.update_run(key, None, "cancelled")
+    service.store.transition(key, "cancelled", expect={"completed"})
     status, body = send(server, task["run_id"], "hello")
     assert status == 409 and "cancelled" in body["error"] and body["error"].count(".") <= 2
-    service.store.update_run(key, None, "completed")
+    service.store.transition(key, "completed", expect={"cancelled"})
     service.store.dismiss_key(key)
     status, body = send(server, task["run_id"], "hello")
     assert status == 409 and "deleted" in body["error"]

@@ -202,7 +202,7 @@ def test_failure_kind_survives_a_restart_and_old_databases_upgrade(tmp_path):
     store.close()
     again = StateStore(path, hermes_home=tmp_path)
     assert again.work(idem_key="k1")["failure"]["label"] == "Out of credits"
-    again.update_run("k1", None, "completed")  # only a failed run shows a failure
+    again.transition("k1", "completed", expect={"failed"})  # only a failed run shows a failure
     assert "failure" not in again.work(idem_key="k1")
 
 

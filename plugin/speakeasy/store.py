@@ -133,6 +133,7 @@ PLUMBING = re.compile(r"^(?:Continuing in |Sent into |You added: |Moved to anoth
                       r"Taken back|Queued|Waiting for |Started in |Answer will land)")
 NOT_STARTED = RS.NOT_STARTED
 logger = logging.getLogger(__name__)
+_UNSET: Any = object()  # transition(): no result given
 _PLAN_STOP = set("""a an the and or to of in on for with at by from is are be it its this that your my our me you we
 it's do does get go up out as""".split())
 # Words of a plan step that say nothing about the actual work ("Recall prior points", "Continue the
@@ -1114,7 +1115,7 @@ class StateStore:
         return row[0] if row else None
 
     def transition(self, key: str, to: str, expect: Iterable[str] | None = None, *, run_id: str | None = None,
-                   mirror: Any = None, orphaned: bool = False) -> bool:
+                   mirror: Any = None, orphaned: bool = False, result: Any = _UNSET) -> bool:
         """Move a run to *to* only from one of the *expect* states (default: every state *to* may be
         entered from, runstate.ALLOWED_FROM) — a compare-and-set, like ``transition_draft``.
 
@@ -1123,7 +1124,9 @@ class StateStore:
         change was refused, so memory never drifts from the row. A move to a final state stamps a
         run id, fires the settle listeners and settles the task's activity and helpers (one
         ``run.<outcome>`` event): every path that ends a task — its own events, Stop, the sweeps —
-        stops the card spinning the same way."""
+        stops the card spinning the same way. *result*: the answer, stored in the same write, so
+        no reader ever sees a finished task without it (and a refused write never replaces it).
+        *orphaned*: settled by a sweep; helpers stop too (nothing follows them any more)."""
         to = RunState(to).value
         allowed = sorted(RS.allowed_from(to) if expect is None else {RunState(s).value for s in expect})
         if not allowed:
@@ -1135,6 +1138,9 @@ class StateStore:
                 f"UPDATE runs SET run_id=COALESCE(?,run_id),status=?,updated=? WHERE idem_key=? AND status IN ({marks})",
                 (run_id, to, now, key, *allowed)).rowcount == 1
             if moved:
+                if result is not _UNSET:
+                    self._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?",
+                                     (json.dumps(result) if result else None, key))
                 if to in FINAL:
                     # Every finished task needs a run id so "Clear done" and the x can clear it.
                     self._db.execute("UPDATE runs SET run_id=? WHERE idem_key=? AND run_id IS NULL",
