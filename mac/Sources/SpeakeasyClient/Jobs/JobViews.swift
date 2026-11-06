@@ -23,11 +23,18 @@ private struct JobRenderersKey: EnvironmentKey { static let defaultValue = JobRe
 private struct JobTextScaleKey: EnvironmentKey { static let defaultValue: CGFloat = 1 }
 private struct JobHostDrawsStepsKey: EnvironmentKey { static let defaultValue = false }
 private struct JobHostShowsNowKey: EnvironmentKey { static let defaultValue = false }
+private struct JobShownBesideKey: EnvironmentKey { static let defaultValue: String? = nil }
 
 public extension EnvironmentValues {
     var jobRenderers: JobRenderers {
         get { self[JobRenderersKey.self] }
         set { self[JobRenderersKey.self] = newValue }
+    }
+    /// The job whose page is open beside the board (a wide layout: iPhone Duo open, iPad). Its board
+    /// card leaves out "See options": the options are already on screen.
+    var jobShownBeside: String? {
+        get { self[JobShownBesideKey.self] }
+        set { self[JobShownBesideKey.self] = newValue }
     }
     /// Text and control size for the job views: 1 on the Mac panel, larger for touch.
     var jobTextScale: CGFloat {
@@ -169,12 +176,17 @@ public struct TileButton: View {
     @Environment(\.jobTextScale) private var s
     var title: String
     var primary = false
+    /// A recommended answer can run to two lines ("Ship it and install it tonight").
+    var lines = 1
     var action: () -> Void
-    public init(title: String, primary: Bool = false, action: @escaping () -> Void) { self.title = title; self.primary = primary; self.action = action }
+    public init(title: String, primary: Bool = false, lines: Int = 1, action: @escaping () -> Void) {
+        self.title = title; self.primary = primary; self.lines = lines; self.action = action
+    }
     @State private var hover = false
     public var body: some View {
         Button(action: action) {
-            Text(title).font(.system(size: 11.5 * s, weight: .semibold)).lineLimit(1)
+            Text(title).font(.system(size: 11.5 * s, weight: .semibold)).lineLimit(lines)
+                .multilineTextAlignment(.center).padding(.horizontal, 10)
                 .frame(maxWidth: .infinity).frame(minHeight: (JobLook.touch ? 28 : 26) * s)
                 .foregroundStyle(primary ? JobStyle.onBlue : Color.primary)
                 .background(RoundedRectangle(cornerRadius: JobLook.touch ? 100 : 8, style: .continuous)
@@ -529,6 +541,7 @@ public struct DoneChip: View {
 
 public struct JobTile: View {
     @Environment(\.jobTextScale) private var s
+    @Environment(\.jobShownBeside) private var shownBeside
     var job: Job
     @ObservedObject var model: VoicePanelModel
     var focused: Bool
@@ -579,7 +592,12 @@ public struct JobTile: View {
         switch job.stage {
         case .needsYou(.decide):
             if let d = job.decision {
-                if let rec = d.recommendedOption {
+                let buttons = d.boardButtons(optionsShowing: shownBeside == job.id)
+                if buttons.pick != nil {
+                    // The recommendation is the button: the line above says what's being decided.
+                    Text(d.question).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let rec = d.recommendedOption {
                     // The question is one click away; the tile leads with what to do.
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         if JobLook.touch {
@@ -598,8 +616,18 @@ public struct JobTile: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 6) {
-                    if d.approvable { TileButton(title: "Approve", primary: true) { model.approve(job) } }
-                    TileButton(title: "See options") { model.onOpenJob(job.id) }
+                    if let pick = buttons.pick {
+                        TileButton(title: pick, primary: true, lines: 2) { model.approve(job) }
+                            .help("Answer: \(pick)")
+                            .layoutPriority(1)
+                            .accessibilityIdentifier("tile-pick")
+                    }
+                    if let more = buttons.more {
+                        // Beside the pick it's the quieter way in, sized to its words.
+                        TileButton(title: more) { model.onOpenJob(job.id) }
+                            .fixedSize(horizontal: buttons.pick != nil, vertical: false)
+                            .accessibilityIdentifier("tile-more-options")
+                    }
                     if model.setAsideTarget(job) != nil { NotNeededButton { model.setAside(job) } }
                 }
                 .padding(.top, 3)

@@ -92,6 +92,29 @@ public struct Decision: Equatable, Sendable {
     }
 
     public var recommendedOption: DecisionOption? { recommended.map { options[$0] } }
+
+    /// The buttons a board card shows for this decision. `optionsShowing`: the job's page (with its
+    /// options) is already on screen beside the board (iPhone Duo open, iPad), so a button that only
+    /// opens the options would just look like it confirms something.
+    public func boardButtons(optionsShowing: Bool) -> DecisionButtons {
+        // One tap answers with the recommendation only when the plugin allowed it (never inferred).
+        let pick = approvable ? recommendedOption?.text : nil
+        let more: String?
+        if optionsShowing { more = nil }
+        else if pick != nil { more = options.count > 1 ? "Other options" : nil }
+        else { more = "See options" }
+        return DecisionButtons(pick: pick, more: more)
+    }
+}
+
+/// A board card's decision buttons: the recommended answer in its own words ("Ship it") and a
+/// quieter way to the rest.
+public struct DecisionButtons: Equatable, Sendable {
+    /// The one-tap button: the recommended option's text. nil when one tap isn't allowed.
+    public var pick: String?
+    /// "Other options" beside the pick, "See options" on its own; nil when the options already show.
+    public var more: String?
+    public init(pick: String?, more: String?) { self.pick = pick; self.more = more }
 }
 
 public extension WorkInfo {
