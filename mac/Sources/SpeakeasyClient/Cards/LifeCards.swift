@@ -41,6 +41,7 @@ func eventColor(_ name: String?) -> Color {
 
 struct DayCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
             CardHeader(icon: "calendar", title: card["title"].string ?? card["date"].string ?? "Today")
@@ -48,7 +49,8 @@ struct DayCard: View {
             if events.isEmpty {
                 Text("Nothing scheduled.").font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            ForEach(Array(events.prefix(12).enumerated()), id: \.offset) { _, e in EventRow(event: e) }
+            ForEach(Array(events.prefix(fit.rows(12)).enumerated()), id: \.offset) { _, e in EventRow(event: e) }
+            MoreRows(total: min(events.count, 12), shown: fit.rows(12))
             let free = card["free"].strings
             if !free.isEmpty {
                 HStack(spacing: 5) {
@@ -62,14 +64,18 @@ struct DayCard: View {
 
 struct AgendaCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
             CardHeader(icon: "calendar", title: card["title"].string ?? "Upcoming")
-            ForEach(Array(card["days"].array.prefix(7).enumerated()), id: \.offset) { i, day in
+            // Compact: the first day only.
+            let days = card["days"].array
+            ForEach(Array(days.prefix(fit == .compact ? 1 : 7).enumerated()), id: \.offset) { i, day in
                 if i > 0 { Divider().opacity(0.4) }
                 Text(day["date"].string ?? "").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                ForEach(Array(day["events"].array.prefix(6).enumerated()), id: \.offset) { _, e in EventRow(event: e) }
+                ForEach(Array(day["events"].array.prefix(fit.rows(6)).enumerated()), id: \.offset) { _, e in EventRow(event: e) }
             }
+            if fit == .compact { MoreRows(total: min(days.count, 7), shown: 1) }
         }
     }
 }
@@ -155,10 +161,11 @@ struct PlaceCard: View {
 
 struct PlacesCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
             CardHeader(icon: "mappin.and.ellipse", title: card["title"].string ?? "Places")
-            ForEach(Array(card["items"].array.prefix(6).enumerated()), id: \.offset) { i, p in
+            ForEach(Array(card["items"].array.prefix(fit.rows(6)).enumerated()), id: \.offset) { i, p in
                 if i > 0 { Divider().opacity(0.4) }
                 HStack(spacing: 10) {
                     if let photo = p["photo_url"].url { CardImage(url: photo, size: 40, corner: 8, fill: true).frame(width: 40) }
@@ -177,6 +184,7 @@ struct PlacesCard: View {
                     openable(p["url"].url ?? mapsURL(p["name"].string, lat: p["lat"].double, lon: p["lon"].double))
                 }
             }
+            MoreRows(total: min(card["items"].array.count, 6), shown: fit.rows(6))
         }
     }
 }
@@ -380,6 +388,7 @@ public extension EnvironmentValues {
 struct DraftCard: View {
     let card: ViewCard
     @Environment(\.draftActions) private var actions
+    @Environment(\.cardFit) private var fit
     var body: some View {
         let status = card["status"].string ?? "draft"
         let icon: String = {
@@ -396,7 +405,9 @@ struct DraftCard: View {
                     .foregroundStyle(status == "sent" ? Color.green : Color.orange)
             }
             if let subject = card["subject"].string { Text(subject).font(.system(size: 12.5, weight: .semibold)) }
+            // Compact: the first lines of the message; the whole text is in the full card.
             Text(card["body"].string ?? "").font(.system(size: 12.5)).textSelection(.enabled)
+                .lineLimit(fit == .compact ? 3 : nil)
                 .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor.opacity(0.10)))
             if status != "sent", let id = card["draft_id"].string, actions.onSend != nil {
@@ -414,11 +425,12 @@ struct DraftCard: View {
 
 struct InboxCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         let items: [JSONValue] = card.kind == "message" ? [card.data] : card["items"].array
         CardBox {
             CardHeader(icon: "tray.full.fill", title: card["title"].string ?? (card.kind == "message" ? (card["channel"].string ?? "Message") : "Inbox"))
-            ForEach(Array(items.prefix(6).enumerated()), id: \.offset) { i, m in
+            ForEach(Array(items.prefix(fit.rows(6)).enumerated()), id: \.offset) { i, m in
                 if i > 0 { Divider().opacity(0.4) }
                 HStack(alignment: .top, spacing: 8) {
                     Circle().fill(m["unread"].bool == true ? Color.accentColor : Color.clear).frame(width: 6, height: 6).padding(.top, 5)
@@ -433,6 +445,7 @@ struct InboxCard: View {
                     }
                 }
             }
+            MoreRows(total: min(items.count, 6), shown: fit.rows(6))
         }
     }
 }
