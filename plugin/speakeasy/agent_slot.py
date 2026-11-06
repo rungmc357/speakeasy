@@ -25,7 +25,7 @@ DEFAULT_NAME = "Hermes"
 FEATURE_FLAGS: dict[str, tuple[str, ...]] = {
     "history": ("history",),
     "subagents": ("job_subagents",),
-    "questions": ("questions",),
+    "questions": ("questions", "question_actions"),  # question_actions: decision-card dismiss/undo (SPK-68)
 }
 FLAGS_OF_FEATURES = frozenset(flag for flags in FEATURE_FLAGS.values() for flag in flags)
 
