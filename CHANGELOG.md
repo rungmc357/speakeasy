@@ -2,63 +2,37 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Mac · iPhone (next build) · Plugin 0.3.37 — Questions that don't hang around
+## Plugin 0.3.37 — Steer or queue, honest task cards, clean session chats
 
-- **Old questions clear themselves.** When the conversation moves on (you write something else, the chat gets a newer reply, or a newer task takes over), a task's open question stops waiting on you: it leaves the bottom of the page, Needs you, notifications and the Live Activity, and stays in the thread as a quiet "Question · moved on" line.
-- **Dismiss.** Every decision card has a ✕ that clears it on every device, with Undo for a few seconds. Dismissing tells the agent nothing.
-- **Reply in your own words.** "Reply…" on a decision card opens the message box for that question; what you type or say is delivered to the task as its answer.
-- **Two questions, two cards.** Questions from two separate pieces of work stay independent: answering or dismissing one leaves the other.
+This plugin update works with the current iPhone and Mac apps. Items marked *(apps)* show once the Mac app and the next iPhone build arrive.
 
-## Mac · iPhone (next build) — Finished tasks stay where they were asked
+**Talking to a running task**
+- **Steer or queue.** A message to a task that's still working goes in right away (steer, the default) or waits and is sent as its next turn when it's done (queue). Held messages survive a reload, can be cancelled or sent now, and a steered message shows whether the task has read it yet ("Seen", "Waiting for the current step to finish"). *(apps: the Steer now / When it's done choice)*
+- **One ask, one task.** Something you add seconds after a task starts joins that task instead of starting a twin, including an alternative ("or using the menu bar"), a change ("set it to 75") or pushback; only an ask about something clearly different starts its own. Pictures sent during a call no longer fail with "couldn't reach Hermes" when Hermes is just slow to read them.
+- **"Adding that to…" once.** The voice says where an addition went once per task, and not at all when it can only have gone one place. A message you type to a task during a call is delivered silently.
+- **Retry keeps your photos.** Retrying a failed task (or typing "try again") sends the same pictures and files again.
 
-- **No pile of Done cards.** On a session page, a finished task is one quiet line in the conversation, right after the reply to the message that asked for it ("✓ Fixed the login redirect · Done 9:41 PM"); tap it to jump to that reply, or to open the task's own chat when it ran in another one.
-- **Only live work at the bottom.** Running tasks and anything that needs you stay just above the composer; when a task finishes it moves back to its place in the conversation.
-- **Asked twice, shown once.** Tasks with the same name or the same ask fold into one line.
-- **Earlier tasks in one row.** When the page doesn't reach back far enough to show where a task was asked, a single collapsed "N tasks finished in this chat" row at the top lists them.
+**Task cards and spoken updates**
+- **A live line instead of a plan.** A running task says what it actually did in the last couple of minutes ("Editing store.py and router.py") with a short "So far" recap, written from its real steps. Guessed plans and step counts are gone; a long wait says what it's waiting on ("Waiting on the tests · 4 min") and a quiet task says so.
+- **Spoken updates say what the card says**, only when the card changed, backing off when nothing is new, and never the same line twice. An answer you already opened in the app is never read out afterwards.
+- **Titles and headlines name the subject.** Generic titles ("Check work status") are rewritten, a finished task's headline is the outcome ("The export works again"), not how the reply opened, and every task says what you asked.
+- **The model shown is the one that ran.** The model chip and a task's model name what your Hermes actually served, not just what the config file says.
+- **A safety-filter refusal says so.** When the model's safety filter refuses a request, the task says that and suggests trying again or switching model, instead of blaming a firewall. *(apps: Try again and Switch model buttons)*
+- **Closing offers aren't choices.** "Want me to hold, or walk you through it?" at the end of an answer is just talk, not a decision card.
 
-## Plugin 0.3.37 + Mac · iPhone (next build) — Board workers in the conversation list
+**Calls with lots going on**
+- Long and many tasks no longer slow down Stop, follow-ups or spoken updates on a call.
+- A quiet call with a task still running isn't paused for being idle, and a call at its length limit with work running is kept on for a while, then paused so you can resume it, never ended as an error.
 
-- **Show or hide automated work.** One switch at the top of the conversation list shows or hides sessions nobody typed into: Kanban board workers and scheduled jobs. Each device remembers your choice; Kanban workers also get their own source filter.
-- **Never "unread".** Automated sessions never get the unread dot or Needs you.
-- **A board worker opens on its card.** Instead of the long instructions it was started with, a worker's chat starts with a compact header (issue number, title, a link to the issue and its one-line goal); the full instructions sit behind a collapsed Instructions row. The worker's own updates read as messages, a live line on top says what it's doing now and what it has done so far, and bookkeeping steps stay out of its work.
-## Mac · iPhone (next build) — When things happened
-
-- **Day dividers and quiet times.** A session page marks each new day ("Today", "Yesterday", "Tuesday") and shows a small time where the conversation picks up after a pause of 15 minutes or more, instead of a time under every message.
-- **Any message's time.** Tap a bubble on iPhone or iPad (hover on the Mac) to see exactly when it was sent.
-- **Started, done, how long.** A task's page says when it started, when it finished and how long it took ("Started 8:52 PM · Done 9:05 PM · Took 13 min"), or how long it has been running so far.
-- **When the steps ran.** A folded group of steps shows when it started and how long it took ("9:02 PM · 6 s").
-- **Done cards say when.** Finished task cards and lines read "Done 9:05 PM" (or "Didn't finish" / "Stopped" with the time). The session list's previews are unchanged.
-
-## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
-
-- **Setup check.** Tapping Start a call before setup is finished opens a Setup check instead of dialing into an error: each thing a call needs (Speakeasy on your Hermes, a restart after an update, Hermes' connection for Speakeasy, your voice sign-in) shows as ready or not, with one button to fix it: sign in to ChatGPT right there, turn Grok voice on, copy /restart, or copy a short request to paste into your chat with Hermes. Nothing on it asks you to open a terminal, and the list comes from your Hermes, so new checks arrive with plugin updates.
-- **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
-- **Honest waits.** One long step says what it's waiting on and for how long ("Waiting on the tests · 4 min"); a task that has gone quiet says so ("No new steps · 3 min"); the handoff line stops posing as "now" after a minute with nothing reported.
-- **Spoken updates say what the card says.** During a call, a progress update is now the task card's own line and "So far" recap, read out, instead of a separate summary that could tell a different story. It speaks only when the card has changed; a long wait or a quiet spell is said again only every few minutes, and "how's it going?" answers start from the card too.
-- **No spoken "Sent."** A message or picture you type to a task during a call is delivered silently; the voice only speaks about it if you ask.
-- **One ask, one task.** Pictures sent during a call no longer fail with "couldn't reach Hermes" when Hermes is just slow to read them in (it's asked again for the same task, with more time), and something you add seconds after a task starts goes into that task instead of starting a twin that answers a second time. That now covers more than a repeat: an alternative (“or using the menu bar”), a change (“set it to 75”) or pushback said within about 20 seconds joins the task that just started; only an ask about something clearly different starts its own.
-- **No choice card for a closing offer.** "Want me to hold, or walk you through it?" at the end of an answer is just talk now, not a card and a "Decide on…" task in Done.
-- **Titles name the subject.** Titles made only of generic words ("Check work status", "Decide on holding") or pointing at "the earlier task" are rejected and written again.
-- **Session pages show the conversation, not the agent's plumbing.** Hermes' notes to itself no longer appear: background-job, helper and internal notices are hidden (a helper's report shows up as one step in the work of the reply it fed), system notes and skill files are gone (a /skill command reads "/name what you asked"), scheduled runs show as one quiet "Scheduled run" line, and context compaction is at most one "Earlier messages were summarized" divider per page.
-- **Your words only.** Steer wrappers, Discord origin blocks, the replied-to message and the chat lines around it (a reply carries a small "Replying to …" quote instead), voice-note quote marks and empty-attachment placeholders are stripped from your messages.
-- **Clean answers.** The model/usage footer ("model · 22% · 23s"), "(1/2)" split markers, "Steered into current run" and "Context compression deferred" lines, cron "Cronjob Response" headers and "To stop or manage this job" footers, and "[SILENT]" replies no longer show.
-- **No "not posted to Discord" note.** What you send to a Discord or Telegram chat from Speakeasy sits in time order with the rest, without a label.
-- The same cleanup applies to previews, titles and search results; a search that only matches hidden plumbing no longer finds the chat.
-- **Titles name the subject.** Titles made only of generic words ("Check work status", "Decide on holding") or pointing at "the earlier task" are rejected and written again. Tasks already on your list with names like that are renamed the next time the list loads.
-- **The headline is what happened.** A finished task's headline is the outcome ("Nothing goes into build 66 from this"), never how the voice opened its reply ("Okay, I'm dropping it."); older answers get theirs when they're read.
-- **Every task says what you asked**, even long ones whose early steps have scrolled off.
-- **Picks fold into their task.** A quick pick the voice offers ("Hold it, or ship it now?") shows inside the task it's about, and once answered it doesn't stay on the list as its own "Set aside" item; the task keeps what you picked. Two copies of the same ask started moments apart show as one.
-## Plugin 0.3.37 — Voice messages transcribed by Hermes, clean session chats
-- **"Adding that to…" once.** When you add to a task during a call, the voice says where it went once, not at the start of every sentence, and says nothing about it when it can only have gone one place (one task open, or the one you picked or are looking at).
-- **Retry keeps your photos.** When a task you sent pictures or files with fails, Retry (or typing "try again") sends the same pictures and files again, so the new try isn't left with only your words.
-- **Board.** The apps can show your Hermes Kanban boards as Ready, Running, Blocked and Done columns (read-only): how long each card has been running or when it finished, a "Needs you" mark on blocked ones, and a tap opens the chat the card ran in.
-- **The conversation list shows when a chat last moved.** A chat that just got a message and a reply now shows that time and moves to the top, instead of keeping the time of the turn before it and sorting under newer conversations.
-- **A continued chat previews its newest reply.** After you send something to a Telegram or Discord chat from Speakeasy, the chat's line in the list shows the reply Speakeasy got, not the chat's older last message.
-
-- **Voice messages are transcribed by your Hermes, the same way a voice note sent in Telegram is.** When you stop recording, the app sends the recording to your Hermes, which turns it into text with the speech-to-text you have set up. You still see the words appear as you talk, but the text that lands in the box is Hermes'. On-device recognition could drop the start of a message, or everything before a pause; Hermes hears the whole clip. If your Hermes can't transcribe, the app keeps the on-device words. The recording is deleted as soon as it's transcribed, and neither the audio nor the words are logged. On iPhone and Mac this works once the apps update.
-- **Session chats show only what people actually said.** Text Hermes writes for the model no longer shows up as a message: context-compaction summaries (now a short "Earlier messages were summarized" note), Discord and Telegram routing headers, the full skill file behind a /skill command (you see "/skill-name your words"), scheduled-job and Kanban prompts (shown as a short note), reply wrappers, message ids and saved image paths.
-- **Agent text renders properly.** Bold, headings, bullets and links display as formatting instead of raw asterisks and # marks, including while a reply is still streaming in (iPhone and Mac, once the apps update).
-- **A follow-up's bubble shows only your words.** Sending a follow-up into a running task no longer shows the note that wraps it or a shared picture's saved path, and a typed follow-up with a picture is no longer labeled as voice.
+**Session pages and the conversation list**
+- **Only what people said.** Hermes' notes to itself stay out of session pages, previews, titles and search: background and helper notices, system notes, skill files (a /skill command reads "/name what you asked"), compaction summaries (one "Earlier messages were summarized" divider), Discord and Telegram routing headers, reply wrappers, model/usage footers, split markers and "[SILENT]" replies. A reply keeps a small "Replying to …" quote.
+- **Voice messages transcribed by your Hermes**, like a voice note in Telegram: the whole clip, with the speech-to-text you set up; the recording is deleted once transcribed and neither audio nor words are logged. *(apps)*
+- **The list shows when a chat last moved**, and a chat you continued from Speakeasy previews the reply it got.
+- **Board workers and scheduled jobs out of the way.** Kanban board workers and scheduled runs can be hidden from the list, never show as unread, and a worker's chat opens on a compact card header instead of its long instructions. *(apps: the switch)*
+- **Board.** Your Hermes Kanban boards as Ready, Running, Blocked and Done columns, read-only. *(apps)*
+- **Decision cards that don't hang around.** A question the conversation moved past stops waiting on you and stays as a quiet "Question · moved on" line; cards can be dismissed everywhere or answered in your own words. *(apps: ✕ and Reply…)*
+- **Setup check.** Starting a call before setup is finished lists what's ready and what isn't, each with one fix (sign in, turn voice on, copy /restart). *(apps)*
+- Works on Hermes 0.23 (which ships without PyYAML).
 
 ## Plugin 0.3.36 — Easier setup, and session pages end with the latest message
 
