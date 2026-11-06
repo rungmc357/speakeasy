@@ -190,7 +190,9 @@ struct BoardColumnsRow: View {
             .contentMargins(.leading, Self.inset, for: .scrollContent)
             .contentMargins(.trailing, layout.trailingMargin, for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $leading)
+            // Leading anchor: without one, SwiftUI may scroll only as far as needed to show that column,
+            // and the next one along is usually already in view, so the arrow wouldn't move (iPad did this).
+            .scrollPosition(id: $leading, anchor: .leading)
             .scrollDisabled(!layout.scrolls)
             .mask(fadeMask(leading: first.lowerBound > 0, trailing: first.upperBound < KanbanBoardLayout.count))
             .overlay(alignment: .leading) {
