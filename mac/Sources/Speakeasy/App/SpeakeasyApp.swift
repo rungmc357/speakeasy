@@ -97,6 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let rest = Array(args.dropFirst(i + 2))
             SetupCheckSnapshot.render(to: args[i + 1], appearance: rest.first ?? "dark", state: rest.count > 1 ? rest[1] : "fix"); return
         }
+        if let i = args.firstIndex(of: "--privacy-shots"), i + 1 < args.count {
+            WhoHearsWhatSnapshot.run(dir: args[i + 1]); return
+        }
         if let i = args.firstIndex(of: "--onboarding-snapshot"), i + 1 < args.count {
             OnboardingSnapshot.render(to: args[i + 1], step: i + 2 < args.count && !args[i + 2].hasPrefix("--") ? args[i + 2] : nil); return
         }

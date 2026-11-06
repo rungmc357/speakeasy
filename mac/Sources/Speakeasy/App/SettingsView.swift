@@ -339,6 +339,7 @@ private struct VoiceSettings: View {
 
     var body: some View {
         ServerForm(draft: $draft) {
+            Section { WhoHearsWhatRow(provider: draft.resolvedProvider) }
             TextField("Assistant name", text: Binding(get: { draft.assistantName ?? "" },
                                                       set: { draft.assistantName = $0.isEmpty ? nil : $0 }),
                       prompt: Text(VoiceState.defaultAssistantName))
@@ -1072,6 +1073,7 @@ private struct AboutSettings: View {
                 .help("Once a week, looks for a new version. Nothing is installed until you click Install Update.")
                 .onChange(of: autoCheck) { _, on in AppUpdater.shared.automaticallyChecks = on }
             Text("Talk to your own Hermes agent by voice.").foregroundStyle(.secondary)
+            WhoHearsWhatRow(link: true)
             Text("MIT License").font(.callout)
             Text("Uses WebRTC (BSD license).").font(.caption).foregroundStyle(.secondary)
         }

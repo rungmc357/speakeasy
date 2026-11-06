@@ -401,6 +401,24 @@ private struct VoiceSignInStep: View {
 
 // MARK: Ready: everything else on one screen, then the first call
 
+// MARK: Who hears what (the layout `--privacy-shots` renders)
+
+/// The privacy step's layout (also rendered by `--privacy-shots`).
+struct PrivacyStepLayout: View {
+    var copy: WhoHearsWhat
+    var back: () -> Void
+    var next: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(WhoHearsWhat.title).font(.title2.weight(.semibold)).padding(.bottom, 4)
+            ScrollView { WhoHearsWhatBody(copy: copy).frame(maxWidth: .infinity, alignment: .leading) }
+            Text(WhoHearsWhat.footnote).font(.callout).foregroundStyle(.secondary)
+            StepButtons(back: back, primary: WhoHearsWhat.button, action: next)
+        }
+    }
+}
+
+
 private struct ReadyStep: View {
     @ObservedObject var flow: OnboardingFlow
     @EnvironmentObject var app: AppModel
