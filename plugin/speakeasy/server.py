@@ -269,6 +269,31 @@ class Handler(BaseHTTPRequestHandler):
             if not read:
                 self._drain(length)
 
+    def _voice_message(self, target: str, target_id: str) -> None:
+        """``POST /voice/history/{id}/voice-message`` and ``/voice/work/{id}/voice-message``: a voice
+        message's audio as the raw body, the message's fields as headers. Authenticated and checked
+        before any of the body is read; never logged."""
+        read = False
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            length = -1
+        try:
+            device_id = self._auth()
+            if self.headers.get("Transfer-Encoding") or length < 0:
+                raise ServiceError(400, "Content-Length is required")
+            upload = self.service.check_voice_message(self.headers, length)
+            data = self._raw_body(length)
+            read = True
+            self._reply(200, self.service.voice_message(target, target_id, upload, data, device_id))
+        except ServiceError as exc:
+            try:
+                self._reply(exc.status, self._error(exc))
+            except OSError:
+                return
+            if not read:
+                self._drain(length)
+
     def _stage(self) -> None:
         """``POST /voice/attachments``: a picture or file a paired device stages for a typed message
         or new job. Same rules as the call upload: authenticated and size-checked before any of the
@@ -626,6 +651,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/transcribe":  # a voice message's audio: same raw-body rules
                 self._transcribe()
+                return
+            voice_note = (re.fullmatch(rf"/voice/history/{_SESSION}/voice-message", path)
+                          or re.fullmatch(rf"/voice/work/{_ID}/voice-message", path))
+            if voice_note:  # the recording itself is the message: same raw-body rules
+                self._voice_message("session" if path.startswith("/voice/history/") else "task",
+                                    unquote(voice_note.group(1)))
                 return
             device_id = self._auth()
             secret = re.fullmatch(r"/voice/secrets/(sec_[A-Za-z0-9_-]{16,40})", path)

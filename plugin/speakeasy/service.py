@@ -102,6 +102,10 @@ CAPABILITIES["call_no_limit"] = True
 # POST /voice/transcribe: a recorded voice message's audio, transcribed by Hermes the way a Telegram
 # voice note is (transcribe.py). Clients without it fall back to on-device transcription.
 CAPABILITIES["transcribe"] = True
+# POST /voice/history/{id}/voice-message + /voice/work/{id}/voice-message: the recording itself is the
+# message, handed to Hermes like a Telegram voice note (transcribed on arrival); the reply carries the
+# transcript for the bubble. Clients without it record, transcribe, then send the words as text.
+CAPABILITIES["voice_notes"] = True
 # POST /voice/push + GET /voice/push/events/{id}: notifications while the app is closed (push.py).
 CAPABILITIES["push"] = True
 # GET /voice/models, model/reasoning on POST /voice/work + history messages, PUT /voice/history/{id}/model,
@@ -1556,8 +1560,8 @@ class VoiceService(SecureInputMixin):
         text = text.strip()
         if len(text) > M.MAX_TEXT:
             raise ServiceError(400, f"The message is too long (at most {M.MAX_TEXT} characters).")
-        if source != "typed":
-            raise ServiceError(400, "source must be typed.")
+        if source not in {"typed", "voice_message"}:
+            raise ServiceError(400, "source must be typed or voice_message.")
         for name, value in (("client_id", client_id), ("interaction_id", interaction_id),
                             ("choice_task_id", choice_task_id)):
             if value is not None and (not isinstance(value, str) or not ID_RE.fullmatch(value)):
@@ -2565,7 +2569,8 @@ class VoiceService(SecureInputMixin):
             keys = list(reversed(continued)) + keys
         said = self._voice_said(sid)
         if said:
-            entries = [{**e, "voice": True} if e.get("kind") == "user" and H.said_key(e.get("text") or "") in said
+            clips = self._voice_clips(sid)
+            entries = [self._voice_entry(e, clips) if e.get("kind") == "user" and H.said_key(e.get("text") or "") in said
                        else e for e in entries]
         open_keys = set(self._open_questions(keys))
         jobs = []
@@ -2684,6 +2689,20 @@ class VoiceService(SecureInputMixin):
             self.store.set_meta(key, json.dumps(said))
         except Exception:  # noqa: BLE001 - a missing mark only shows the message as typed
             logger.debug("speakeasy: couldn't note a voice message", exc_info=True)
+
+    @staticmethod
+    def _voice_entry(entry: dict[str, Any], clips: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        """A user row that was a voice message: ``voice`` plus its words as the person said them (a
+        voice note reaches the agent as one quoted line, or the gateway's note when its words aren't
+        known: then no text), and the sending device's clip id and length when known."""
+        text = entry.get("text") or ""
+        clip = clips.get(H.said_key(text)) or {}
+        out = {**entry, "voice": True, "text": T.note_words(text)}
+        if isinstance(clip.get("clip"), str) and ID_RE.fullmatch(clip["clip"]):
+            out["voice_clip"] = clip["clip"]
+        if isinstance(clip.get("duration"), (int, float)) and clip["duration"] > 0:
+            out["voice_duration"] = float(clip["duration"])
+        return out
 
     def _voice_said(self, session_id: str) -> set[str]:
         try:
@@ -3021,6 +3040,105 @@ class VoiceService(SecureInputMixin):
         if self.transcriber is None:
             self.transcriber = T.hermes_transcriber()
         return T.transcribe(data, suffix, self.transcriber, self.dir / "voice-memos")
+
+    # -- voice notes: the recording is the message --------------------------------------------------
+    VOICE_NOTE_MAX_S = 600.0
+
+    def check_voice_message(self, headers: Any, length: int) -> dict[str, Any]:
+        """``POST /voice/{history/{id}|work/{id}}/voice-message``, before its body is read: audio of a
+        known type within the cap, plus the message's own fields as headers (``X-Speakeasy-Client-Id``,
+        ``-Mode``, ``-Duration`` seconds, ``-Answers`` a task's run id, ``-Attachments`` staged ids)."""
+        suffix = T.check(headers.get("Content-Type"), length)
+        client_id = (headers.get("X-Speakeasy-Client-Id") or "").strip() or None
+        if client_id is not None and not ID_RE.fullmatch(client_id):
+            raise ServiceError(400, "X-Speakeasy-Client-Id must be an id.")
+        try:
+            duration = float(headers.get("X-Speakeasy-Duration") or 0)
+        except ValueError:
+            raise ServiceError(400, "X-Speakeasy-Duration must be seconds.") from None
+        if not 0 <= duration <= self.VOICE_NOTE_MAX_S:
+            raise ServiceError(400, "X-Speakeasy-Duration must be seconds.")
+        fields: dict[str, Any] = {"source": "voice_message"}
+        if client_id:
+            fields["client_id"] = client_id
+        for header, name in (("X-Speakeasy-Mode", "mode"), ("X-Speakeasy-Answers", "answers")):
+            value = (headers.get(header) or "").strip()
+            if value:
+                fields[name] = value
+        ids = [i.strip() for i in (headers.get("X-Speakeasy-Attachments") or "").split(",") if i.strip()]
+        if ids:
+            fields["attachments"] = ids
+        return {"suffix": suffix, "size": length, "duration": round(duration, 1), "fields": fields}
+
+    def voice_message(self, target: str, target_id: str, upload: dict[str, Any], data: bytes,
+                      device_id: str | None = None) -> dict[str, Any]:
+        """The recording itself as the message (``target`` "session" or "task"): kept in Hermes' audio
+        cache, transcribed by Hermes on arrival and delivered as the text the gateway gives the agent
+        for a Telegram voice note, then sent exactly as a typed message would be (steer, answer,
+        queue, follow-up). Idempotent on the client id: a retry is never transcribed or sent twice.
+        The reply adds ``voice {transcript, duration}`` (transcript null when it couldn't be read)."""
+        if len(data) != upload["size"]:
+            raise ServiceError(400, "upload ended early")
+        fields = dict(upload["fields"])
+        if target == "session":
+            if not H.valid_session_id(target_id) or H.session_meta(self.rt.state_db, target_id) is None:
+                raise ServiceError(404, "I couldn't find that conversation.")
+        elif not ID_RE.fullmatch(target_id or ""):
+            raise ServiceError(404, "I couldn't find that task.")
+        if target == "task":
+            fields.pop("answers", None)  # a task's own message route has no "answers"
+        note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
+        body = {**fields, "text": note}
+        got = (self.history_message(target_id, body, device_id) if target == "session"
+               else self.task_message(target_id, body, device_id))
+        if target == "session":
+            self._note_voice_clip(target_id, note, fields.get("client_id"), upload["duration"])
+        return {**got, "voice": {"transcript": transcript, "duration": upload["duration"]}}
+
+    def _voice_note(self, client_id: str | None, suffix: str, data: bytes) -> tuple[str, str | None]:
+        """The agent's text for one clip, made once per client id (a retry reuses it, so the message
+        it sends is the same one and ``_once`` hands back the first reply)."""
+        cache = self.__dict__.setdefault("_voice_notes", {})
+        now = time.monotonic()
+        for key in [k for k, (at, *_rest) in cache.items() if now - at > self.MESSAGE_REPLAY_S]:
+            cache.pop(key, None)
+        if client_id and client_id in cache:
+            return cache[client_id][1], cache[client_id][2]
+        if self.transcriber is None:
+            self.transcriber = T.hermes_transcriber()
+        path = T.keep_clip(data, suffix, self.dir / "voice-notes")
+        note, transcript = T.voice_note(path, self.transcriber)
+        if client_id:
+            cache[client_id] = (now, note, transcript)
+        return note, transcript
+
+    _VOICE_CLIPS_KEEP = 60
+
+    def _note_voice_clip(self, session_id: str, note: str, client_id: str | None, duration: float) -> None:
+        """Which of this page's voice messages came from which clip on the sending device (its client
+        id) and how long it was, so the bubble can play it and show its length after a reload. Keyed
+        by the words' short hash; the words themselves are never kept."""
+        key = "voice_clips:" + session_id
+        try:
+            clips = json.loads(self.store.get_meta(key) or "{}")
+        except ValueError:
+            clips = {}
+        if not isinstance(clips, dict):
+            clips = {}
+        clips.pop(H.said_key(note), None)
+        clips[H.said_key(note)] = {"clip": client_id, "duration": duration}
+        clips = dict(list(clips.items())[-self._VOICE_CLIPS_KEEP:])
+        try:
+            self.store.set_meta(key, json.dumps(clips))
+        except Exception:  # noqa: BLE001 - a missing mark only loses the clip's length on reload
+            logger.debug("speakeasy: couldn't note a voice clip", exc_info=True)
+
+    def _voice_clips(self, session_id: str) -> dict[str, dict[str, Any]]:
+        try:
+            clips = json.loads(self.store.get_meta("voice_clips:" + session_id) or "{}")
+        except (ValueError, TypeError):
+            return {}
+        return clips if isinstance(clips, dict) else {}
 
     def check_stage(self, device_id: str, headers: Any, length: int) -> dict[str, Any]:
         """``POST /voice/attachments``, before its body is read: a picture (JPEG or PNG, the phone

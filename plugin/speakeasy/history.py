@@ -438,7 +438,10 @@ def _one_line(text: str, limit: int = PREVIEW_CHARS) -> str:
 def said_key(text: str) -> str:
     """A short hash of a message's words (case and spacing ignored): how the page knows which of
     its messages were voice messages without keeping the words twice."""
-    norm = " ".join((text or "").lower().split())[:400]
+    norm = " ".join((text or "").lower().split())
+    if len(norm) >= 2 and norm[0] == norm[-1] == '"':
+        norm = norm[1:-1].strip()  # a voice note reaches the agent quoted; the page shows it unquoted
+    norm = norm[:400]
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
 
 
