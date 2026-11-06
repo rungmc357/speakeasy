@@ -202,7 +202,7 @@ def test_a_typed_fix_on_the_tasks_page_is_a_correction(server, service, hermes):
     assert status == 200, body
     steer = wait_for(lambda: hermes.steers[steers_before:])[0][1]
     assert steer.startswith('Correction from the user, who typed: "mac pro". "Man Pros" was a mishearing of "Mac Pro".')
-    assert any(n.startswith("Background, not a request: the task was corrected") for n in _notes(worker))
+    wait_for(lambda: any(n.startswith("Background, not a request: the task was corrected") for n in _notes(worker)))
     assert not any(n.startswith("Corrected:") for n in _notes(worker))  # typed: delivered silently
     assert service.store.title(run.idem_key) == "Plan the second Mac Pro"
     # Typed again: taken as already done (typed words are never spoken over), never sent twice or queued.
