@@ -7,8 +7,16 @@ import pytest
 
 from fakes import FakeHermesServer, FakeLiveWorker, FakeTransport, make_home, http  # noqa: F401
 from speakeasy import duck as _duck
+from speakeasy import router as _router
 
 _REAL_DEFAULT_BACKEND = _duck.default_backend
+_REAL_RESULT_HEADLINE = _router.result_headline
+
+
+@pytest.fixture
+def real_result_headline():
+    """The unpatched side-model headline call, for tests that fake the model it calls."""
+    return _REAL_RESULT_HEADLINE
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +28,7 @@ def no_real_routing_model(monkeypatch):
     monkeypatch.setattr(router, "routing_model", lambda config=None: "Hermes auxiliary default (auto)")
     monkeypatch.setattr(router, "_title_llm", lambda messages, timeout: None)
     monkeypatch.setattr(router, "_hermes_title", lambda text, timeout: None)
+    monkeypatch.setattr(router, "result_headline", lambda request, report, timeout=10.0: None)
 
 
 @pytest.fixture(autouse=True)

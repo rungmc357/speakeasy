@@ -50,7 +50,7 @@ from .secure_service import SecureInputMixin
 from .store import StateStore
 from .suggest import SuggestError, suggest
 from .threads import ThreadRunner, capability, sync_routes
-from .text import ID_RE, MAX_CARDS, MAX_ROOM_CHARS, TERMINAL, notice_text, safe_room_text, split_result
+from .text import ID_RE, MAX_CARDS, MAX_ROOM_CHARS, TERMINAL, notice_text, safe_room_text, split_result, vague_title
 
 logger = logging.getLogger(__name__)
 # How long POST .../input-text waits for the call to take a typed turn before answering 504.
@@ -1406,8 +1406,12 @@ class VoiceService(SecureInputMixin):
 
     def work_latest(self) -> dict[str, Any]:
         name = self.settings.get()["assistant_name"]
-        return {"work": self.store.work(assistant_name=name), "away": self.store.away(),
-                "tasks": self.store.latest_tasks(MAX_TASKS)}
+        tasks = self.store.latest_tasks(MAX_TASKS)
+        if any(t.get("status") in TERMINAL and vague_title(t.get("title")) for t in tasks):
+            # A finished task on the list still has a name that says nothing ("Check work status"):
+            # rename it now (in the background), not at the next ten-minute sweep.
+            self._sweep_titles_soon()
+        return {"work": self.store.work(assistant_name=name), "away": self.store.away(), "tasks": tasks}
 
     # -- card actions (docs/API.md "Card actions") -------------------------------------------------
     def card_action(self, run_id: str | None, body: dict[str, Any], interaction_id: str | None = None) -> dict[str, Any]:

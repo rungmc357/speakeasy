@@ -508,7 +508,15 @@ The newest task (`work`), the task list (`tasks`, newest last, finished ones hid
 dismissal) and the recap of results that finished while no call was open (`away`). Each task has
 `task_id`, `run_id`, `status` (`admitting`, `working`, `waiting_for_approval`, `waiting_on_task`,
 `completed`, `failed`, `cancelled`, `interrupted`, `ambiguous`), live `short_status`/`detail`, `events`,
-`result` (`spoken`, `full`, optional `label`, optional `cards`, optional `summary_points`) and `email_drafts`.
+`result` (`spoken`, `full`, optional `label`, optional `cards`, optional `summary_points`, optional
+`headline`), `request` (what the user asked, always present when known, even once its `request`
+event has scrolled out of `events`) and `email_drafts`.
+
+**Headline**: `result.headline` is the outcome as one short fact ("Nothing goes into build 66 from
+this"), taken from the reply's first sentence that says what happened (never an opener like "Okay,
+I'm dropping it." and never a question) and refined by the side model when it's available. Absent
+on a result that asks a question. Answered or set-aside spoken picks and finished twins of the same
+ask (same words, started within three minutes) are left out of the task list.
 
 **Job progress** (capability `job_progress`; all optional, null when unknown):
 `started_at` (unix seconds the task was admitted), `finished_at` (unix seconds it ended, null while

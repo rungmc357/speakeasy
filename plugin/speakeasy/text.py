@@ -744,6 +744,8 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         result["_email_drafts"] = drafts
     if label:
         result["label"] = label
+    if not question and (headline := outcome_headline(spoken if spoken != fallback_spoken else None, full)):
+        result["headline"] = headline  # what came of it, never the voice's opener; the side model may refine it
     return result
 
 
@@ -966,6 +968,86 @@ TITLE_META = re.compile(
     r"respond|reply|answer(?:ing)? (?:the|a) |voice (?:task|request)|quick (?:question|choice)|[a-z]+'s (?:request|question))"
     r"|\b(?:previous|earlier|prior|other) (?:discussion|conversation|topic|stuff|items)\b|\bremaining items\b"
     r"|\b(?:voice|speakeasy) (?:task|request)\b|\bthis conversation\b")
+
+
+# Words that name no subject: a title made only of these ("Check work status", "Decide on holding",
+# "Review the update") can't be recognized a day later.
+TITLE_VAGUE = set("""check checking confirm confirming decide deciding review reviewing look looking continue
+continuing update updating follow up work status progress task tasks thing things stuff it this that these those
+the a an on of about for to in with and or my our your earlier previous last latest holding hold wait waiting
+see get got do done make handle sort out going how what is are""".split())
+TITLE_REFERENCE_RE = re.compile(r"(?i)\b(?:the|that|this)\s+(?:earlier|previous|last|other|same)\s+(?:task|one|thing|job)\b")
+
+
+def vague_title(title: str | None) -> str | None:
+    """Why a title can't be recognized a day later (it points at another task, or names no
+    subject), else None."""
+    text = " ".join(str(title or "").split())
+    if not text:
+        return None
+    if TITLE_REFERENCE_RE.search(text):
+        return "it points at another task instead of naming it; say what that task was about"
+    if len([w for w in re.findall(r"[A-Za-z0-9']+", text.lower()) if w not in TITLE_VAGUE]) < 2:
+        return "it doesn't name the subject; say which project or thing and what was asked"
+    return None
+
+
+# -- outcome headlines -------------------------------------------------------------------------------
+# A finished task's one-line headline is what came of it, never how the voice opened its reply:
+# "Okay, I'm dropping it." or "Sure thing." says nothing a day later.
+_HEADLINE_LEAD = re.compile(
+    r"(?i)^(?:(?:okay|ok|alright|all right|sure(?: thing)?|got it|you got it|on it|right|yes|yeah|yep|so|well|"
+    r"great|perfect|cool|understood|absolutely|of course|no problem|will do|good news|quick update|update|heads up"
+    r"|done|all done|here you go)\b[\s,.!:;—–-]*)+")
+_HEADLINE_PROMISE = re.compile(
+    r"(?i)^(?:i'?m|i am|i'?ll|i will|i'?ve got|let me|let's|going to|gonna|i can|i'd|i would|here'?s|here is|"
+    r"here are|on it|working on|looking into|checking|starting)\b")
+HEADLINE_WORDS = 16
+
+
+def is_opener(sentence: str | None) -> bool:
+    """A sentence that only acknowledges or promises ("Okay, I'm dropping it.", "Sure thing.",
+    "Let me check."), not a fact about what happened."""
+    rest = _HEADLINE_LEAD.sub("", " ".join(str(sentence or "").split())).strip(" .!,;:-")
+    if len(re.findall(r"[A-Za-z0-9]+", rest)) < 2:
+        return True
+    return bool(_HEADLINE_PROMISE.match(rest)) and len(rest.split()) <= 7
+
+
+def clean_headline(raw: Any) -> str | None:
+    """A model-written outcome headline, or None when it's an opener, a question or too long."""
+    text = safe_user_text(raw, 200)
+    if not text:
+        return None
+    text = " ".join(text.split()).strip(" \"'“”")
+    if text.endswith("?") or is_opener(text) or len(text.split()) > HEADLINE_WORDS:
+        return None
+    text = _HEADLINE_LEAD.sub("", text).strip()
+    return (text[0].upper() + text[1:]).rstrip(" ,;:") if text else None
+
+
+def _first_outcome(text: str | None) -> str | None:
+    for _, sentence in _sentences(str(text or "")):
+        if sentence.endswith("?") or is_opener(sentence):
+            continue
+        line = _HEADLINE_LEAD.sub("", sentence).strip(" —–-")
+        if line:
+            return line[0].upper() + line[1:]
+    return None
+
+
+def outcome_headline(spoken: str | None, full: str | None = None) -> str | None:
+    """The first sentence of a reply that says what came of the work: openers ("Okay, I'm dropping
+    it."), questions and one-word replies are skipped, and a leading "Okay," is dropped. The written
+    answer's sentence wins when it says the spoken one and more. None when every sentence is one of
+    those (the side model's headline, or the task title, stands instead)."""
+    said, written = _first_outcome(spoken), _first_outcome(full)
+    line = said or written
+    if said and written and written.lower().startswith(said.rstrip(".!").lower()) and len(written) <= 140:
+        line = written
+    if line and len(line) > 140:
+        line = line[:139].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+    return line
 
 
 NAMES_LINE = "Names to leave out of the title: "

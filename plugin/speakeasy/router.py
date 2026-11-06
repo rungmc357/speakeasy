@@ -835,20 +835,13 @@ _TITLE_PROMPT = (
     "Bad: {\"title\": \"Check the weather for tomorrow in\"} (cut off)\n\n"
     "Reply with JSON only: {\"title\": \"...\"}"
 )
-# Words that name no subject: a title made only of these ("Check work status", "Decide on holding",
-# "Review the update") can't be recognized a day later.
-TITLE_VAGUE = set("""check checking confirm confirming decide deciding review reviewing look looking continue
-continuing update updating follow up work status progress task tasks thing things stuff it this that these those
-the a an on of about for to in with and or my our your earlier previous last latest holding hold wait waiting
-see get got do done make handle sort out going how what is are""".split())
-TITLE_REFERENCE_RE = re.compile(r"(?i)\b(?:the|that|this)\s+(?:earlier|previous|last|other|same)\s+(?:task|one|thing|job)\b")
 _TITLE_TRANSCRIPT_TAIL = {"to", "the", "a", "an", "of", "for", "in", "at", "with", "from", "and", "or", "but", "my",
                           "our", "your", "is", "are", "be", "going", "gonna", "about", "by", "into", "on", "that"}
 
 
 def clean_task_title(raw: str | None, request: str = "") -> tuple[str | None, str]:
     """The titler's reply as a task title, or (None, why) when it isn't a usable one."""
-    from .text import TITLE_META, fix_product_names, has_name, is_fragment, names_in, _title_content
+    from .text import TITLE_META, fix_product_names, has_name, is_fragment, names_in, vague_title, _title_content
     text = str(raw or "").strip()
     match = re.search(r"\{.*\}", text, re.S)
     if match:
@@ -869,10 +862,8 @@ def clean_task_title(raw: str | None, request: str = "") -> tuple[str | None, st
         return None, "it ends mid-phrase"
     if TITLE_META.search(text):
         return None, "it describes the conversation, not the task"
-    if TITLE_REFERENCE_RE.search(text):
-        return None, "it points at another task instead of naming it; say what that task was about"
-    if len([w for w in re.findall(r"[A-Za-z0-9']+", text.lower()) if w not in TITLE_VAGUE]) < 2:
-        return None, "it doesn't name the subject; say which project or thing and what was asked"
+    if vague := vague_title(text):
+        return None, vague
     named = has_name(text, names_in(request))
     if named:
         return None, f"it uses the name {named}; leave the user's and the assistant's names out"
@@ -1169,6 +1160,46 @@ def result_shape(request: str, report: str, timeout: float = 12.0) -> dict[str, 
         logger.info("speakeasy: result shape unavailable (%s)", type(exc).__name__)
         return None
     return clean_shape(raw)
+
+
+_HEADLINE_PROMPT = (
+    "You write the one-line headline a task list shows for a finished task an AI agent did for its user: "
+    "what came of it, as a short fact naming the subject, under 12 words, read cold a day later "
+    "(\"Build 66 fix dropped; nothing shipped\", \"Kitchen lights set to 30% at sunset\", "
+    "\"Oolong picks: three teas under $20\"). Use only what the reply says. Never an acknowledgment or opener "
+    "(\"Okay\", \"Got it\", \"Sure thing\", \"I'm dropping it\"), never what the agent is about to do, never a "
+    "question, no names of people. Reply with JSON only: {\"headline\": \"...\"}"
+)
+
+
+def result_headline(request: str, report: str, timeout: float = 10.0) -> str | None:
+    """A finished task's outcome as a short fact (the board's and task card's headline) from the
+    request and the reply. Same model as the titles; None when unavailable or unusable."""
+    from .text import clean_headline
+    text = str(report or "").strip()
+    if not text:
+        return None
+    try:
+        from agent.auxiliary_client import call_llm  # type: ignore
+    except Exception:
+        return None
+    try:
+        with _profile_scope():
+            response = call_llm(task="title_generation",
+                                messages=[{"role": "system", "content": _HEADLINE_PROMPT},
+                                          {"role": "user", "content": f"Request: {str(request or '')[:400]}\n\nReply:\n{text[:3000]}"}],
+                                max_tokens=120, temperature=None, timeout=timeout,
+                                reasoning_config={"enabled": False})
+        raw = (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.info("speakeasy: result headline unavailable (%s)", type(exc).__name__)
+        return None
+    match = re.search(r"\{.*\}", raw, re.S)
+    try:
+        data = json.loads(match.group(0)) if match else {}
+    except ValueError:
+        return None
+    return clean_headline(data.get("headline")) if isinstance(data, dict) else None
 
 
 _PROGRESS_PROMPT = (

@@ -23,6 +23,13 @@ def _choice_task(server):
     return next((t for t in tasks if t["task_id"].startswith("choice_")), None)
 
 
+def _set_aside(service, task_id):
+    """A pick that was answered or set aside: off the list (it folds into its task), and settled
+    as set aside in the store."""
+    key = service.store.key_for_task(task_id)
+    return bool(key and (service.store.work(idem_key=key) or {}).get("set_aside"))
+
+
 def test_a_spoken_choice_becomes_a_card_and_a_tap_answers_the_voice(server, service, hermes):
     session, worker = start_call(server, service)
     said(worker, "Do you want the quick summary ")
@@ -36,7 +43,8 @@ def test_a_spoken_choice_becomes_a_card_and_a_tap_answers_the_voice(server, serv
     assert status == 200 and body["sent"]
     assert any("The full report" in str(x) and "commentary" in str(x) for x in worker.sent)
     assert not hermes.calls                                     # the voice carries on; no task follows it up
-    wait_for(lambda: _choice_task(server).get("set_aside"), timeout=5)
+    wait_for(lambda: _set_aside(service, task["task_id"]), timeout=5)
+    assert _choice_task(server) is None                         # answered: never its own item
 
 
 def test_the_same_choice_is_offered_once_and_answering_out_loud_clears_it(server, service, hermes):
@@ -48,7 +56,8 @@ def test_the_same_choice_is_offered_once_and_answering_out_loud_clears_it(server
     tasks = http(server.base_url, "GET", "/voice/work/latest", token=server.token)[1]["tasks"]
     assert len([t for t in tasks if t["task_id"].startswith("choice_")]) == 1
     worker.delegate("call_tea", "Tea please, and find me a good oolong")
-    wait_for(lambda: _choice_task(server).get("set_aside"), timeout=5)
+    wait_for(lambda: _set_aside(service, task["task_id"]), timeout=5)
+    assert _choice_task(server) is None
     assert task["task_id"] != "call_tea"
 
 
@@ -66,7 +75,8 @@ def test_a_dropped_connection_takes_the_choice_card_with_it(server, service, her
     task = wait_for(lambda: _choice_task(server), timeout=5)
     assert not task.get("set_aside")
     worker.call_closed()   # what every transport's finally block does on a drop
-    wait_for(lambda: _choice_task(server).get("set_aside"), timeout=5)
+    wait_for(lambda: _set_aside(service, task["task_id"]), timeout=5)
+    assert _choice_task(server) is None
     assert not hermes.calls
 
 
