@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.37 · Mac · iPhone (next build) — Files your agent made
+
+- **Every file in one place.** A new **Files** row in the side panel (iPhone, iPad, and the Mac's History window) lists every file your agent sent you in a reply, from every chat: pictures as thumbnails, documents, recordings and videos as tiles, newest first, with the chat each one came from. Type chips (Images, Docs, Audio…) appear when you have more than one kind.
+- **Open, share, keep.** Tap or click a file to look at it in Quick Look (share, save to Files or AirDrop from there on iPhone); on the Mac, drag it straight to Finder or save it to Downloads. Hold or right-click for **Open chat** to jump to the conversation it came from.
+- **Only what Hermes would send you anyway.** The list comes from the files Hermes attached to its replies, and the plugin serves a file only when Hermes itself would deliver it; your settings, keys and other private files never show up. Files are fetched by an id, never by a path on your computer.
+
 ## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
 
 - **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
