@@ -16,7 +16,7 @@ struct EventRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(event["title"].string ?? "").font(.system(size: 12, weight: .medium)).lineLimit(2)
                 Text(event["all_day"].bool == true ? "All day"
-                     : [[event["start"].string, event["end"].string].compactMap { $0 }.joined(separator: " – "),
+                     : [EventTimes.span(start: event["start"].string, end: event["end"].string),
                         event["place"].string].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · "))
                     .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
             }
