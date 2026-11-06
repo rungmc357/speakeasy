@@ -346,12 +346,18 @@ async def _take_back(worker: "SidebandWorker", routed: dict[str, Any]) -> None:
 
 # -- headless worker: messages to tasks whose call is gone ----------------------------------------
 
+# The voiceless worker's interaction id starts with this (its tasks came from text in the app).
+TYPED_INTERACTION = "vi_typed"
+
+
 def make_text_worker(rt: Any) -> "SidebandWorker":
     """A worker with no voice for messages to tasks with no live call: it runs follow-ups and steers
     exactly like a call's worker and tracks their runs, but never speaks."""
     from .calls import Interaction, SidebandWorker
 
     class TextWorker(SidebandWorker):
+        VOICELESS = True
+
         def start(self) -> None:
             ready = threading.Event()
 
@@ -373,7 +379,7 @@ def make_text_worker(rt: Any) -> "SidebandWorker":
             if self.loop is not None and not self.loop.is_closed():
                 self.loop.call_soon_threadsafe(self.loop.stop)
 
-    interaction = Interaction(interaction_id="vi_typed" + secrets.token_hex(12), live_session_id="typed",
+    interaction = Interaction(interaction_id=TYPED_INTERACTION + secrets.token_hex(12), live_session_id="typed",
                               status="closed", finalization="confirmed", call_closed=True)
     worker = TextWorker(rt, interaction)
     worker.start()

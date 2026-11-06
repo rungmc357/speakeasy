@@ -952,6 +952,8 @@ class SidebandWorker:
     # this" note still gets a spoken reply: "Mm-hmm." Quiet notes are held and ride along with the
     # next message the voice is meant to answer.
     HOLD_QUIET_NOTES = False
+    # No voice at all (messages.make_text_worker): its tasks came from text typed in the app.
+    VOICELESS = False
     """Base worker. Subclasses read provider events in ``run()`` and write in ``_send()``."""
 
     def __init__(self, rt: Runtime, interaction: Interaction):
@@ -4209,7 +4211,8 @@ class SidebandWorker:
             self.store.add_shared(idem, items)
             self.publish()
         prompt = P.build_task_prompt(self.names, revision, context, focus, label, shared=self.shared_prompt(
-            items, bool(images), session_id if continuing else None, shared.capture is not None), room=room)
+            items, bool(images), session_id if continuing else None, shared.capture is not None), room=room,
+            typed=self.VOICELESS)
         try:
             choice = await self.model_choice(task_id, idem, session_id, request)
             run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,

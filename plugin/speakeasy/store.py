@@ -649,6 +649,15 @@ class StateStore:
         names = ("delegation_id", "revision", "run_id", "status", "dismissed", "session_id", "interaction_id")
         return dict(zip(names, row), idem_key=key)
 
+    def newest_created(self, keys: list[str]) -> float | None:
+        """When the newest of these tasks was created, or None."""
+        if not keys:
+            return None
+        with self._lock:
+            row = self._db.execute(f"SELECT max(created) FROM runs WHERE idem_key IN ({','.join('?' * len(keys))})",
+                                   tuple(keys)).fetchone()
+        return float(row[0]) if row and isinstance(row[0], (int, float)) else None
+
     def newest_in_job(self, key: str) -> str | None:
         """The newest task still shown of the same job (a follow-up replaces its parent's row), or None."""
         with self._lock:

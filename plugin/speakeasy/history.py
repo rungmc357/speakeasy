@@ -95,7 +95,10 @@ _HIDDEN_RES = (
     (re.compile(r"^\s*\[Cron delivery", re.I), None),
 )
 # A Speakeasy task prompt: the person's words are the last "User:" line of its transcript.
-_SPEAKEASY_BRIEF = re.compile(r"Recent timestamped voice transcript|handling one task .{0,80} gave you by voice", re.S)
+# A Speakeasy task's brief: a call's ("gave you by voice", over the call transcript) or a message
+# typed in the app ("sent you as a message in the Speakeasy app", over the typed messages).
+_SPEAKEASY_BRIEF = re.compile(r"Recent timestamped voice transcript|Recent messages typed in the Speakeasy app|"
+                              r"handling one task .{0,80} (?:gave you by voice|sent you as a message in the Speakeasy app)", re.S)
 _USER_LINE = re.compile(r"^(?:\[[^\]]{1,40}\]\s*)?(?:User|You)\s*:\s*(.+)$", re.M)
 _ADDED = re.compile(r"^\S+ (?:just added to this task(?: by voice| by typing)?|typed to this task):?\s*(.+?)"
                     r"(?:\s*Fold it into the work.*)?$", re.S)
@@ -442,6 +445,7 @@ def said_key(text: str) -> str:
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
 
 
+_LINKED_HEAD = "The user is continuing the conversation"
 _CALL_TRANSCRIPT = re.compile(r"Recent timestamped voice transcript[^\n]*:\n", re.I)
 _CALL_LINE = re.compile(r"^(?:\[[^\]]{1,40}\]\s*)?(User|You|Assistant)\s*:\s*(.+)$")
 CALL_LINES = 40
@@ -454,8 +458,8 @@ def call_transcript(content: str) -> list[dict[str, str]] | None:
     if not isinstance(content, str) or not _SPEAKEASY_BRIEF.search(content[:2000]):
         return None
     m = _CALL_TRANSCRIPT.search(content)
-    if not m:
-        return None
+    if not m or content[m.end():m.end() + 200].lstrip().startswith(_LINKED_HEAD):
+        return None   # a message typed on a chat's page (older briefs carried the voice header too)
     lines: list[dict[str, str]] = []
     for raw in content[m.end():].splitlines():
         got = _CALL_LINE.match(raw.strip())
@@ -526,6 +530,7 @@ KANBAN_UPDATES = {"kanban_comment": "body", "kanban_complete": "summary", "kanba
                   "kanban_request_review": "summary"}
 # A tracker CLI update in a shell command: `linear comment|status|waiting ABC-12 "words"` (the CLI may
 # sit in a shell variable: `$L comment ABC-12 "words"`). The command stays a step of the work too.
+_SHELL_EXPANSION = re.compile(r"\$\(|`[^`]*`|\$\{?[A-Za-z_]\w*\}?")
 _TRACKER_UPDATE = re.compile(r"""(?:\blinear(?:\.py)?["']?|\$\{?[A-Za-z_]\w{0,20}\}?)\s+(?:comment|status|waiting)\s+[A-Z][A-Z0-9]{1,9}-\d{1,6}\s+"""
                              r"""(?:"((?:[^"\\]|\\.){4,4000})"|'([^']{4,4000})')""")
 
@@ -599,6 +604,8 @@ def tracker_update(name: str, args: Any) -> str | None:
         if m:
             text = m.group(1) if m.group(1) is not None else m.group(2)
             text = text.replace('\\"', '"').replace("\\n", "\n").strip()
+            if m.group(1) is not None and _SHELL_EXPANSION.search(text):
+                return None   # the shell filled part of it in ("Checked at $(date)"): not the words posted
             return text or None
     return None
 
@@ -1064,7 +1071,8 @@ def session_messages(state_db: Path, session_id: str, *, before: int | None = No
     if db is None:
         raise HistoryError(404, "I couldn't find that conversation.")
     try:
-        if not db.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
+        found = db.execute("SELECT source FROM sessions WHERE id=?", (session_id,)).fetchone()
+        if not found:
             raise HistoryError(404, "I couldn't find that conversation.")
         chain = _chain(db, session_id)
         marks = ",".join("?" * len(chain))
@@ -1082,11 +1090,13 @@ def session_messages(state_db: Path, session_id: str, *, before: int | None = No
         db.close()
     more = len(rows) > limit
     rows = list(reversed(rows[:limit]))
-    return {"entries": build_entries(rows), "has_more": more,
+    return {"entries": build_entries(rows, worker=found[0] == "kanban"), "has_more": more,
             "before": rows[0]["id"] if more and rows else None}
 
 
-def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
+def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, Any]]:
+    """*worker*: a Kanban worker's session, whose tracker updates (comments, status lines) are its
+    words to the person and show as messages; anywhere else they stay steps of the work."""
     entries: list[dict[str, Any]] = []
     tracker: A.JobActivity | None = None
     group_id: int | None = None
@@ -1157,7 +1167,9 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
                     args = raw
                 from .threads import _arg_preview
                 cid = call.get("id") or call.get("call_id")
-                said = tracker_update(name, args)
+                # A tracker update is the worker's own words to the person only in a Kanban worker's
+                # session; in a chat it is a step of the work, never a reply (SPK-104).
+                said = tracker_update(name, args) if worker or card_seen else None
                 if said and said not in updates_seen:
                     updates_seen.add(said)
                     flush()
@@ -1386,13 +1398,35 @@ def moved_on_after(state_db: Path, session_id: str, after: float, *, replies: bo
         db.close()
 
 
+def last_words_at(state_db: Path, session_ids: Sequence[str]) -> float | None:
+    """The newest message with words in it (either role) across these conversations, each followed to
+    its newest compression segment, or None when none has one."""
+    db = _open(state_db)
+    if db is None:
+        return None
+    try:
+        ids = {s for s in session_ids if s}
+        tips = _tips(db, ids) if ids else {}
+        every = sorted(ids | set(tips.values()))
+        if not every:
+            return None
+        row = db.execute(
+            f"SELECT max(timestamp) FROM messages WHERE session_id IN ({','.join('?' * len(every))}) "
+            "AND role IN ('user','assistant') AND length(trim(COALESCE(content,'')))>0", tuple(every)).fetchone()
+        return float(row[0]) if row and isinstance(row[0], (int, float)) else None
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
+
+
 # -- continuing a chat Speakeasy can't write into ------------------------------------------------
 
 def linked_context(state_db: Path, session_id: str, title: str, label: str, text: str) -> str:
     """What a linked task sees: where the conversation lives, its recent messages, then the request."""
     from .continuity import recent_exchange
     recent = recent_exchange(state_db, session_id)
-    head = (f"The user is continuing the conversation \"{title}\" ({label}, Hermes session {session_id}) from the "
+    head = (f"{_LINKED_HEAD} \"{title}\" ({label}, Hermes session {session_id}) from the "
             "Speakeasy app. Work here; your answer is shown in Speakeasy only, never posted to that chat. "
             "Look up more of that session's history if you need it.")
     return head + ("\n\nIts recent messages:\n" + recent if recent else "") + f"\n\nUser: {text}"

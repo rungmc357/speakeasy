@@ -518,3 +518,103 @@ def test_a_failed_history_send_gives_the_attachments_back(server, service, state
     with pytest.raises(Exception):
         service.history_message("d1", {"text": "x", "attachments": [a]}, device)
     assert a in service.staged._items[device]
+
+
+# -- SPK-104: a message on a chat's page answers the chat as it is now ---------------------------
+
+def _linked_task_done(server, service, hermes, state, text="Order them please"):
+    """d1 continued once from Speakeasy; its linked task finished with a question of its own."""
+    _, body = post(server, "/voice/history/d1/message", {"text": text})
+    key = service.store.key_for_run(body["run_id"])
+    linked_sid = wait_for(lambda: service.store.session_for(key))
+    add_session(state, linked_sid, "api_server", at=NOW - 60)
+    add_msg(state, linked_sid, "assistant", "The bracket order is ready. Should I place it?", at=NOW - 60)
+    wait_for(lambda: service.store.work(body["run_id"])["status"] == "completed")
+    return key, linked_sid
+
+
+def test_a_chat_that_went_on_gets_the_message_not_its_old_linked_task(server, service, hermes, state):
+    key, linked_sid = _linked_task_done(server, service, hermes, state)
+    # The Discord thread itself went on after the linked task's last reply.
+    later = time.time() + 1
+    add_msg(state, "d1", "user", "Switch to the oak shelf instead", at=later)
+    add_msg(state, "d1", "assistant", "Oak shelf it is: two brackets at 16 in.", at=later + 1)
+    before = len(hermes.calls)
+    status, body = post(server, "/voice/history/d1/message", {"text": "cool"})
+    assert status == 200 and body["via"] == "linked" and body["delivered_as"] == "linked", body
+    call = wait_for(lambda: hermes.calls[before:])[-1]
+    assert call["session_id"] not in {linked_sid, "d1"}        # a fresh linked task, not the old thread
+    sent = json.dumps(call["input"])
+    assert "Oak shelf it is" in sent and "cool" in sent         # seeded with the chat as it is now
+    assert "Should I place it?" not in sent
+    new_key = service.store.key_for_run(body["run_id"])
+    assert service.store.history_links("d1") == [key, new_key]  # still the chat's: folds into its row
+
+
+def test_queue_on_a_chat_that_went_on_never_waits_on_its_old_linked_task(server, service, hermes, state):
+    hermes.hold = True
+    _, body = post(server, "/voice/history/d1/message", {"text": "Order them please"})
+    key = service.store.key_for_run(body["run_id"])
+    wait_for(lambda: service.store.session_for(key))
+    meta = H.session_meta(service.rt.state_db, "d1")
+    assert service._session_running_key(meta) == key           # its thread is the newest: wait on it
+    add_msg(state, "d1", "user", "Switch to the oak shelf instead", at=time.time() + 5)
+    assert service._session_running_key(meta) is None          # the chat went on: not that task's
+
+
+def test_a_typed_message_on_a_chat_page_is_never_from_a_call(server, service, hermes, state):
+    status, body = post(server, "/voice/history/d1/message", {"text": "Make them brass"})
+    assert status == 200
+    sent = json.dumps(wait_for(lambda: hermes.calls)[-1]["input"])
+    assert "typed in the Speakeasy app" in sent and "voice transcript" not in sent
+    assert "gave you by voice" not in sent
+    key = service.store.key_for_run(body["run_id"])
+    linked_sid = wait_for(lambda: service.store.session_for(key))
+    add_session(state, linked_sid, "api_server", at=NOW - 1)
+    add_msg(state, linked_sid, "user", _text(hermes.calls[-1]["input"]), at=NOW - 2)   # the brief Hermes got
+    add_msg(state, linked_sid, "assistant", "Brass brackets ordered.", at=NOW - 1)
+    _, page = get(server, "/voice/history/d1")
+    mine = [e for e in page["session"]["entries"] if e["kind"] == "user" and e["text"] == "Make them brass"]
+    assert len(mine) == 1 and "call" not in mine[0]
+
+
+def _text(payload):
+    from test_staged_attachments import text_of
+    return text_of(payload)
+
+
+def test_an_older_typed_brief_with_the_call_header_is_not_from_a_call(server, service, hermes, state):
+    """Tasks typed before the fix carried the voice header: the page still shows them as typed."""
+    _, body = post(server, "/voice/history/d1/message", {"text": "Make them brass"})
+    key = service.store.key_for_run(body["run_id"])
+    linked_sid = wait_for(lambda: service.store.session_for(key))
+    add_session(state, linked_sid, "api_server", at=NOW - 1)
+    old = ("You are Hermes, handling one task Sam gave you by voice from Speakeasy on their Mac. " + "x" * 3000
+           + "\n\nRecent timestamped voice transcript (revision 0):\nUser: Make them brass")
+    add_msg(state, linked_sid, "user", old, at=NOW - 2)
+    add_msg(state, linked_sid, "assistant", "Brass brackets ordered.", at=NOW - 1)
+    _, page = get(server, "/voice/history/d1")
+    mine = [e for e in page["session"]["entries"] if e["kind"] == "user" and e["text"] == "Make them brass"]
+    assert len(mine) == 1 and "call" not in mine[0]
+    # A real call's brief still shows as one.
+    call_brief = old.replace("User: Make them brass", "User: Find a quiet cafe\nAssistant: On it.")
+    assert H.call_transcript(call_brief)
+    linked = old.replace("User: Make them brass", "The user is continuing the conversation \"Shelf\" (Discord)"
+                         "\n\nIts recent messages:\nUser: hi\n\nUser: Make them brass")
+    assert H.call_transcript(linked) is None
+
+
+def test_a_tracker_comment_in_a_chat_is_a_step_not_a_reply(state):
+    cmd = 'L="tracker"; $L comment LAN-7 "Checked at $(date +%H:%M): the shop API returns 0 orders."'
+    add_session(state, "d9", "discord", title="Lantern shop", at=NOW - 10)
+    add_msg(state, "d9", "user", "any orders yet?", at=NOW - 30)
+    add_msg(state, "d9", "assistant", "", calls=[call("k1", "terminal", {"command": cmd})], at=NOW - 25)
+    add_msg(state, "d9", "tool", '{"output": "ok", "exit_code": 0}', call_id="k1", tool="terminal", at=NOW - 24)
+    add_msg(state, "d9", "assistant", "No orders yet.", at=NOW - 20)
+    entries = H.session_messages(state, "d9")["entries"]
+    said = [e["text"] for e in entries if e["kind"] == "assistant"]
+    assert said == ["No orders yet."]
+    assert any(e["kind"] == "tools" for e in entries)            # still a step of the work
+    # In a Kanban worker's session the words are its update, but never a shell-filled one.
+    assert H.tracker_update("terminal", {"command": cmd}) is None
+    assert H.tracker_update("terminal", {"command": "$L comment LAN-7 'Costs $5 at `cost`.'"}) == "Costs $5 at `cost`."

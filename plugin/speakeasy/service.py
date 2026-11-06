@@ -2567,6 +2567,12 @@ class VoiceService(SecureInputMixin):
         if said:
             entries = [{**e, "voice": True} if e.get("kind") == "user" and H.said_key(e.get("text") or "") in said
                        else e for e in entries]
+        typed = self._typed_requests(list(dict.fromkeys(continued + keys)))
+        if typed:
+            # A message typed in the app with no call is never "From a call" (its task's brief may still
+            # carry the call header: tasks started before 0.3.38 did).
+            entries = [{k: v for k, v in e.items() if k != "call"}
+                       if e.get("call") and H.said_key(e.get("text") or "") in typed else e for e in entries]
         open_keys = set(self._open_questions(keys))
         jobs = []
         for key in keys[:8]:
@@ -2671,6 +2677,18 @@ class VoiceService(SecureInputMixin):
 
     _VOICE_SAID_KEEP = 60
 
+    def _typed_requests(self, keys: list[str]) -> set[str]:
+        """said_key of what each of these tasks was asked, for the ones started from text in the app
+        with no call (the voiceless worker's)."""
+        out: set[str] = set()
+        for key in keys[:60]:
+            row = self.store.run_row(key)
+            if row and str(row.get("interaction_id") or "").startswith(M.TYPED_INTERACTION):
+                text = self.store.request_text(key)
+                if text:
+                    out.add(H.said_key(text))
+        return out
+
     def _note_voice_message(self, session_id: str, text: str) -> None:
         """Remember that these words went to this session as a voice message, so its page shows them
         as one (waveform + transcript) after a reload. Only a short hash is kept, never the words."""
@@ -2741,20 +2759,44 @@ class VoiceService(SecureInputMixin):
         """The task a message to this session would wait on: its newest Speakeasy task still running."""
         sid = meta["id"]
         link = self._linked(sid)
-        keys = list(reversed(self._continuations(sid))) + (list(link.keys) if link else [])
+        conts = self._continuations(sid) if self._speakeasy_owned(meta, link) else self._live_continuations(sid)
+        keys = list(reversed(conts)) + (list(link.keys) if link else [])
         for key in keys:
             row = self.store.run_row(key)
             if row is not None and not row["dismissed"] and row["status"] in QUEUE_BEHIND:
                 return key
         return None
 
+    def _live_continuations(self, session_id: str) -> list[str]:
+        """The linked tasks a message on this chat's page may continue (oldest first): all of them
+        while what was said to it from Speakeasy is the newest thing in the conversation, none once
+        the chat itself went on (newer messages in Discord, Telegram…). A message then belongs to the
+        chat as it is now, not to an old linked task with its own stale thread (SPK-104)."""
+        keys = self._continuations(session_id)
+        if not keys:
+            return []
+        linked = [s for s in dict.fromkeys(self.store.session_for(k) for k in keys) if s]
+        since = H.last_words_at(self.rt.state_db, linked)
+        started = self.store.newest_created(keys)   # a task just started: no messages yet
+        since = max((t for t in (since, started) if t is not None), default=None)
+        if since is None:
+            return keys
+        chat = H.last_words_at(self.rt.state_db, [session_id])
+        return [] if chat is not None and chat > since else keys
+
     def _continue_linked(self, meta: dict[str, Any], text: str,
                          staged: list[A.Attachment] | None = None) -> dict[str, Any]:
         """A chat Speakeasy can't write into (its reply would go back to the chat): the newest linked
-        task for it takes the message (steer, answer or follow-up in its own session); the first
-        message starts one, seeded with the chat's recent messages."""
+        task for it takes the message (steer, answer or follow-up in its own session) while that task's
+        thread is the newest part of the conversation. Otherwise (the first message, or the chat went
+        on since) a new linked task starts, seeded with the chat's recent messages, so the reply
+        answers the chat as it is now."""
         sid = meta["id"]
-        for key in reversed(self._continuations(sid)):
+        live = self._live_continuations(sid)
+        if not live and self._continuations(sid):
+            logger.info("speakeasy: a %s chat went on since its linked task; the message starts a fresh one",
+                        meta["source"])
+        for key in reversed(live):
             run_id = self.store.openable_run_id(key) or (self.store.run_row(key) or {}).get("run_id")
             if not run_id:
                 continue
@@ -2768,7 +2810,7 @@ class VoiceService(SecureInputMixin):
                     "delivered_as": got.get("delivered_as"), "task": got.get("task")}
         # No linked task can take it any more (cleared from the board, cancelled, never got a run id):
         # it still continues the SAME linked session, never a new one (that was a second row per reply).
-        linked_sid = next((s for s in (self.store.session_for(k) for k in reversed(self._continuations(sid))) if s), None)
+        linked_sid = next((s for s in (self.store.session_for(k) for k in reversed(live)) if s), None)
         if linked_sid:
             got = self._start_job(text, staged, session_id=linked_sid, link_to=sid)
             logger.info("speakeasy: a message to a %s session continued its linked session", meta["source"])

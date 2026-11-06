@@ -561,19 +561,29 @@ def status_rule(names: Names) -> str:
         "ready to copy.", names)
 
 
+# The header over a typed task's messages (history.py tells it apart from a call's transcript).
+TYPED_MESSAGES = "Recent messages typed in the Speakeasy app"
+
+
 def build_task_prompt(names: Names, revision: int, context: str, focus: str | None = None,
-                      delivery_label: str = "", shared: str = "", room: str = "") -> str:
+                      delivery_label: str = "", shared: str = "", room: str = "", typed: bool = False) -> str:
     """Prompt for a voice task running in its own Hermes session, beside other tasks.
 
     The session is private to this task (and its follow-ups), so it names the job and carries the
     call transcript for context. ``shared`` is the block naming what the user shared with this
     request (``shared_block``), never the bytes. A call started from listening mode also carries the
-    room transcript, labeled as background, just before the call transcript that holds the request."""
+    room transcript, labeled as background, just before the call transcript that holds the request.
+    ``typed``: the task came from the app with no call (a message typed or recorded on a page), so
+    the brief says so and its messages are not labeled a voice transcript (the history would show it
+    as "From a call")."""
     where = (f"your final answer is still shown in the Speakeasy app and posted to {delivery_label}"
              if delivery_label else "your final answer is still shown in the Speakeasy app")
     heard = task_room_block(names, room) if room.strip() else ""
     return (
-        render("You are {assistant_name}, handling one task {user_name} gave you by voice from Speakeasy on their Mac. "
+        render("You are {assistant_name}, handling one task {user_name} "
+               + ("sent you as a message in the Speakeasy app, with no call. " if typed else
+                  "gave you by voice from Speakeasy on their Mac. "), names)
+        + render(
                "This session belongs to this task alone; other tasks from the same call run in their own sessions at "
                "the same time. Use your normal tools, memory, skills and session-history lookup when the user refers "
                "to another project or conversation. Do the work yourself in this session, start to finish, even if it "
@@ -593,7 +603,8 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         + (shared + " " if shared else "")
         + status_rule(names) + "\n\n"
         + (heard + "\n\n" if heard else "")
-        + f"Recent timestamped voice transcript (revision {revision}):\n{context}"
+        + (f"{TYPED_MESSAGES} (revision {revision}):\n{context}" if typed else
+           f"Recent timestamped voice transcript (revision {revision}):\n{context}")
     )
 
 
