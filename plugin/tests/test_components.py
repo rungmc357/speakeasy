@@ -140,7 +140,7 @@ def test_cli_setup_before_restart_prepares_profile(tmp_path, monkeypatch):
     values = read_profile_env(tmp_path)
     assert len(values["API_SERVER_KEY"]) >= 32 and values["API_SERVER_HOST"] == "127.0.0.1"
     assert stat.S_IMODE(os.stat(tmp_path / ".env").st_mode) == 0o600
-    import yaml
+    from fakes import yaml
     config = yaml.safe_load((tmp_path / "config.yaml").read_text())
     assert config["gateway"]["platforms"]["voice"]["enabled"] is True and "speakeasy" in config["plugins"]["enabled"]
     assert (tmp_path / "speakeasy" / "settings.json").exists()

@@ -105,7 +105,7 @@ def test_which_requests_get_the_update_instructions(text, expected):
 # -- the install scanner ------------------------------------------------------------------------------
 
 def _plugin_guard():
-    agent = Path.home() / ".hermes" / "hermes-agent"
+    from fakes import HERMES_SRC as agent  # the Hermes checkout under test (HERMES_AGENT_SRC)
     if not (agent / "tools" / "plugin_guard.py").exists():
         pytest.skip("no Hermes checkout to scan with")
     sys.path.insert(0, str(agent))

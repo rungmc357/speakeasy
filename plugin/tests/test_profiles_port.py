@@ -2,7 +2,7 @@
 moves to a free port when another profile holds its own, and says which profile it set up."""
 from __future__ import annotations
 
-import yaml
+from fakes import yaml
 import pytest
 
 from speakeasy import cli, profiles as P, setup_flow as F

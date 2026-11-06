@@ -336,3 +336,14 @@ def test_a_session_recorded_model_only_fills_in_never_replaces_a_runtime(service
     assert store.served_model("idem_t", {"provider": "xai", "model": "grok-5"})
     assert not store.served_model("idem_t", {"provider": "", "model": "other"}, bare=True)
     assert store.run_model("idem_t")["served"] == {"provider": "xai", "model": "grok-5"}
+
+
+@pytest.mark.parametrize("written, shown", [("high", "high"), ("false", "none"), ("bogus", None)])
+def test_hermes_default_reasoning_reads_config_without_pyyaml(service, monkeypatch, written, shown):
+    """Hermes 0.23+ installs ship no PyYAML; the "Default" level still comes from Hermes' config."""
+    import sys
+    cfg = service.home / "config.yaml"
+    old = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    cfg.write_text(old + f"agent:\n  reasoning_effort: {written}\n", encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "yaml", None)  # `import yaml` now raises ImportError
+    assert service._hermes_reasoning() == shown

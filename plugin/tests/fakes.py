@@ -23,6 +23,11 @@ for p in (str(PLUGIN_ROOT), str(HERMES_SRC)):
 
 from speakeasy.calls import SidebandWorker  # noqa: E402
 
+try:  # PyYAML when installed; Hermes 0.23+ installs ship only Hermes' own YAML module
+    import yaml  # noqa: E402
+except ImportError:
+    import hermes_yaml as yaml  # type: ignore[no-redef]  # noqa: E402
+
 class ModuleClock:
     """A stand-in for one module's ``time``: its own monotonic/time, everything else real.
 

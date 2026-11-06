@@ -16,12 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from fakes import http, wait_for
+from fakes import HERMES_SRC, http, wait_for
 from speakeasy import secure_input as S
 
 FAKE_KEY = "FAKE-owm-test-key-9f3c2a7e51"          # obviously fake, never a real credential
 FAKE_PASSWORD = "fake-mac-password-for-tests-only"
-HERMES_AGENT = Path.home() / ".hermes" / "hermes-agent"
+HERMES_AGENT = HERMES_SRC  # the Hermes checkout under test (HERMES_AGENT_SRC)
 
 
 @pytest.fixture

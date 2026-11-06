@@ -7,7 +7,7 @@ import types
 from pathlib import Path
 
 import pytest
-import yaml
+from fakes import yaml
 
 from speakeasy import routing_choice, router
 from fakes import http
