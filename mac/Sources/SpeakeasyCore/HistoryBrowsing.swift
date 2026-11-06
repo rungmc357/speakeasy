@@ -435,8 +435,9 @@ public struct HistoryOutbox: Equatable, Sendable {
         messages.first { m in
             guard m.role == .user, m.delivery == nil, !used.contains(m.id),
                   m.at.map({ $0 >= item.at.addingTimeInterval(-60) }) ?? true else { return false }
-            if item.voiceNote != nil {   // a voice note: by its clip, or by what Hermes heard
-                if m.voiceClip == item.id { return true }
+            if item.voiceNote != nil {   // a voice note: by its clip (the message's client id)
+                if let clip = m.voiceClip { return clip == item.id }   // another recording, even with the same words
+                // A server that doesn't name the clip: by what Hermes heard.
                 guard let words = item.transcript, !words.isEmpty else { return false }
                 return m.text.trimmingCharacters(in: .whitespacesAndNewlines) == words
             }

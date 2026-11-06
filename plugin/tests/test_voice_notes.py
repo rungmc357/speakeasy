@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -76,7 +77,7 @@ def test_the_recording_is_the_message_and_the_agent_sees_a_voice_note(server, se
     # Exactly what the gateway gives the agent for a Telegram voice note: the transcript as one quoted line.
     assert f'"{words["text"]}"' in _said(call)
     # The page shows it as a voice message with the person's words (no quotes), its clip and length.
-    add_msg(state, "api_voice", "user", f'"{words["text"]}"', at=NOW - 2)
+    add_msg(state, "api_voice", "user", f'"{words["text"]}"', at=time.time())
     _, page = get(server, "/voice/history/api_voice")
     mine = [e for e in page["session"]["entries"] if e["kind"] == "user" and e.get("voice")]
     assert len(mine) == 1, page["session"]["entries"]
@@ -84,6 +85,72 @@ def test_the_recording_is_the_message_and_the_agent_sees_a_voice_note(server, se
     assert mine[0]["voice_clip"] == "vm-one" and mine[0]["voice_duration"] == 31.4
     # Only short hashes are kept, never the words.
     assert "cedar" not in (service.store.get_meta("voice_clips:api_voice") or "")
+
+
+def _voice_rows(server, sid):
+    _, page = get(server, f"/voice/history/{sid}")
+    return [e for e in page["session"]["entries"] if e["kind"] == "user" and e.get("voice")]
+
+
+def test_two_recordings_with_the_same_words_keep_their_own_clips_after_a_reload(server, service, hermes, state, heard):
+    """Each voice row is tied to its own recording (client id + length), not to its words: two clips
+    that Hermes wrote down identically stay two clips, in order, on every reload."""
+    seen, words = heard
+    words["text"] = "Yes, go ahead"
+    add_session(state, "api_twice", "api_server", at=NOW - 5)
+    assert send(server, "/voice/history/api_twice/voice-message", Client_Id="vm-first", Duration="2.5")[0] == 200
+    add_msg(state, "api_twice", "user", '"Yes, go ahead"', at=time.time())
+    add_msg(state, "api_twice", "assistant", "Started on the first one.", at=time.time())
+    assert [(e["voice_clip"], e["voice_duration"]) for e in _voice_rows(server, "api_twice")] == [("vm-first", 2.5)]
+    add_msg(state, "api_twice", "user", "Also check the shelf depth", at=time.time())
+    add_msg(state, "api_twice", "assistant", "It fits a 12 inch board. Go ahead with the second one?", at=time.time())
+    assert send(server, "/voice/history/api_twice/voice-message", Client_Id="vm-second", Duration="7")[0] == 200
+    add_msg(state, "api_twice", "user", '"Yes, go ahead"', at=time.time())
+    add_msg(state, "api_twice", "assistant", "Started on the second one.", at=time.time())
+    for _ in range(3):   # the same on every reload
+        rows = _voice_rows(server, "api_twice")
+        assert [e["text"] for e in rows] == ["Yes, go ahead", "Yes, go ahead"]
+        assert [(e["voice_clip"], e["voice_duration"]) for e in rows] == [("vm-first", 2.5), ("vm-second", 7.0)]
+        assert [e["client_id"] for e in rows] == ["vm-first", "vm-second"]   # SPK-80: rows carry the client id
+    assert len(seen) == 2
+
+
+def test_a_second_recording_sent_before_the_first_row_is_written_never_swaps(server, service, hermes, state, heard):
+    """Two quick notes with the same words: the first message row can show up after both were sent.
+    The older row still gets the older recording, and the newer one waits for its own row."""
+    seen, words = heard
+    words["text"] = "Sounds good"
+    add_session(state, "api_quick", "api_server", at=NOW - 5)
+    for cid, length in (("vm-quick-a", "1.5"), ("vm-quick-b", "3")):
+        assert send(server, "/voice/history/api_quick/voice-message", Client_Id=cid, Duration=length)[0] == 200
+    add_msg(state, "api_quick", "user", '"Sounds good"', at=time.time())
+    add_msg(state, "api_quick", "assistant", "On it.", at=time.time())
+    assert [e["voice_clip"] for e in _voice_rows(server, "api_quick")] == ["vm-quick-a"]
+    add_msg(state, "api_quick", "user", "And book the van", at=time.time())
+    add_msg(state, "api_quick", "user", '"Sounds good"', at=time.time())
+    for _ in range(2):
+        rows = _voice_rows(server, "api_quick")
+        assert [(e["voice_clip"], e["voice_duration"]) for e in rows] == [("vm-quick-a", 1.5), ("vm-quick-b", 3.0)]
+
+
+def test_a_row_written_before_a_clip_was_sent_never_takes_it(service):
+    service._note_voice_clip("api_early", '"Thanks"', "vm-late", 2.0, time.time())
+    assert service._pair_voice_clips("api_early", [{"id": "m1", "kind": "user", "text": '"Thanks"',
+                                                    "at": time.time() - 3600}]) == {}
+
+
+def test_a_retry_keeps_one_clip_record(server, service, hermes, state, heard):
+    add_session(state, "api_once", "api_server", at=NOW - 5)
+    for _ in range(2):
+        assert send(server, "/voice/history/api_once/voice-message", Client_Id="vm-once", Duration="4")[0] == 200
+    assert [c["clip"] for c in service._voice_clips("api_once")] == ["vm-once"]
+
+
+def test_clip_marks_from_the_earlier_build_still_read(service):
+    from speakeasy import history as H
+    service.store.set_meta("voice_clips:api_old", json.dumps({H.said_key('"Water the plants"'): {"clip": "vm-old", "duration": 6}}))
+    pairs = service._pair_voice_clips("api_old", [{"id": "m1", "kind": "user", "text": '"Water the plants"', "at": NOW}])
+    assert pairs["m1"]["clip"] == "vm-old"
 
 
 def test_a_pause_in_the_middle_keeps_both_halves(server, service, hermes, state, heard):

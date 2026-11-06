@@ -283,7 +283,8 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
         self.init(id: id, kind: kind, at: decodeDate(o["at"]), text: text, tools: tools, voice: voice,
                   call: ((o["call"] as? [String: Any])?["lines"] as? [Any]).map { $0.compactMap(HistoryCallLine.init(json:)) }.flatMap { $0.isEmpty ? nil : $0 },
                   card: kind == .note ? HistoryWorkerTask(json: o["task"]) : nil, update: o["update"] as? Bool ?? false)
-        voiceClip = nonEmpty(o["voice_clip"])
+        // The recording behind a voice row is named by the sending device's client id (SPK-80's id).
+        voiceClip = nonEmpty(o["voice_clip"]) ?? (voice ? nonEmpty(o["client_id"]) : nil)
         voiceDuration = (o["voice_duration"] as? NSNumber)?.doubleValue
     }
 }

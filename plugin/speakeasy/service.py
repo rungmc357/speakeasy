@@ -2569,9 +2569,10 @@ class VoiceService(SecureInputMixin):
             keys = list(reversed(continued)) + keys
         said = self._voice_said(sid)
         if said:
-            clips = self._voice_clips(sid)
-            entries = [self._voice_entry(e, clips) if e.get("kind") == "user" and H.said_key(e.get("text") or "") in said
-                       else e for e in entries]
+            voiced = [e for e in entries if e.get("kind") == "user" and H.said_key(e.get("text") or "") in said]
+            pairs = self._pair_voice_clips(sid, voiced)
+            ids = {id(e) for e in voiced}
+            entries = [self._voice_entry(e, pairs.get(str(e.get("id")))) if id(e) in ids else e for e in entries]
         open_keys = set(self._open_questions(keys))
         jobs = []
         for key in keys[:8]:
@@ -2691,15 +2692,17 @@ class VoiceService(SecureInputMixin):
             logger.debug("speakeasy: couldn't note a voice message", exc_info=True)
 
     @staticmethod
-    def _voice_entry(entry: dict[str, Any], clips: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def _voice_entry(entry: dict[str, Any], clip: dict[str, Any] | None) -> dict[str, Any]:
         """A user row that was a voice message: ``voice`` plus its words as the person said them (a
         voice note reaches the agent as one quoted line, or the gateway's note when its words aren't
-        known: then no text), and the sending device's clip id and length when known."""
+        known: then no text), and — when this row has its own clip record — the sending device's
+        client id (``client_id``, and ``voice_clip`` for the bubble's player) and the clip's length."""
         text = entry.get("text") or ""
-        clip = clips.get(H.said_key(text)) or {}
+        clip = clip or {}
         out = {**entry, "voice": True, "text": T.note_words(text)}
         if isinstance(clip.get("clip"), str) and ID_RE.fullmatch(clip["clip"]):
             out["voice_clip"] = clip["clip"]
+            out.setdefault("client_id", clip["clip"])
         if isinstance(clip.get("duration"), (int, float)) and clip["duration"] > 0:
             out["voice_duration"] = float(clip["duration"])
         return out
@@ -3089,10 +3092,11 @@ class VoiceService(SecureInputMixin):
             fields.pop("answers", None)  # a task's own message route has no "answers"
         note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
         body = {**fields, "text": note}
+        sent_at = time.time()   # before delivery: Hermes writes the message row after this
         got = (self.history_message(target_id, body, device_id) if target == "session"
                else self.task_message(target_id, body, device_id))
         if target == "session":
-            self._note_voice_clip(target_id, note, fields.get("client_id"), upload["duration"])
+            self._note_voice_clip(target_id, note, fields.get("client_id"), upload["duration"], sent_at)
         return {**got, "voice": {"transcript": transcript, "duration": upload["duration"]}}
 
     def _voice_note(self, client_id: str | None, suffix: str, data: bytes) -> tuple[str, str | None]:
@@ -3113,32 +3117,74 @@ class VoiceService(SecureInputMixin):
         return note, transcript
 
     _VOICE_CLIPS_KEEP = 60
+    _voice_clips_lock = threading.Lock()   # noting a clip and binding clips to rows: read-modify-write
 
-    def _note_voice_clip(self, session_id: str, note: str, client_id: str | None, duration: float) -> None:
-        """Which of this page's voice messages came from which clip on the sending device (its client
-        id) and how long it was, so the bubble can play it and show its length after a reload. Keyed
-        by the words' short hash; the words themselves are never kept."""
-        key = "voice_clips:" + session_id
+    # A voice row is paired with a clip sent at most this long after the row's own time (clock slack).
+    _VOICE_CLIP_SLACK_S = 30.0
+
+    def _note_voice_clip(self, session_id: str, note: str, client_id: str | None, duration: float,
+                         sent_at: float) -> None:
+        """One record per clip sent to this page: the sending device's client id (the message's id,
+        SPK-80's convention), its length, when it was sent and its words' short hash (the words are
+        never kept), so after a reload each voice row gets its OWN clip — two recordings whose words
+        came out the same stay two recordings. A retry under the same client id keeps one record."""
+        if not client_id:
+            return
+        with self._voice_clips_lock:
+            clips = self._voice_clips(session_id)
+            if any(c.get("clip") == client_id for c in clips):
+                return   # a retry: the first record (and any row it is bound to) stays
+            clips.append({"clip": client_id, "duration": duration, "at": sent_at, "said": H.said_key(note)})
+            self._save_voice_clips(session_id, clips)
+
+    def _save_voice_clips(self, session_id: str, clips: list[dict[str, Any]]) -> None:
         try:
-            clips = json.loads(self.store.get_meta(key) or "{}")
-        except ValueError:
-            clips = {}
-        if not isinstance(clips, dict):
-            clips = {}
-        clips.pop(H.said_key(note), None)
-        clips[H.said_key(note)] = {"clip": client_id, "duration": duration}
-        clips = dict(list(clips.items())[-self._VOICE_CLIPS_KEEP:])
-        try:
-            self.store.set_meta(key, json.dumps(clips))
+            self.store.set_meta("voice_clips:" + session_id, json.dumps(clips[-self._VOICE_CLIPS_KEEP:]))
         except Exception:  # noqa: BLE001 - a missing mark only loses the clip's length on reload
             logger.debug("speakeasy: couldn't note a voice clip", exc_info=True)
 
-    def _voice_clips(self, session_id: str) -> dict[str, dict[str, Any]]:
+    def _voice_clips(self, session_id: str) -> list[dict[str, Any]]:
+        """This page's clip records, oldest first. (An earlier build kept ``{said hash: clip}``; those
+        read as records with no send time.)"""
         try:
-            clips = json.loads(self.store.get_meta("voice_clips:" + session_id) or "{}")
+            raw = json.loads(self.store.get_meta("voice_clips:" + session_id) or "[]")
         except (ValueError, TypeError):
-            return {}
-        return clips if isinstance(clips, dict) else {}
+            return []
+        if isinstance(raw, dict):
+            raw = [{**v, "said": k, "at": 0.0} for k, v in raw.items() if isinstance(v, dict)]
+        if not isinstance(raw, list):
+            return []
+        return [c for c in raw if isinstance(c, dict) and isinstance(c.get("said"), str)]
+
+    def _pair_voice_clips(self, session_id: str, entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Entry id -> its clip record, one to one. A clip is bound to its message row the first time
+        that row shows up (oldest unbound row with the same words takes the oldest unbound clip sent
+        before it was written, clock slack allowed — Hermes writes the row after the send) and keeps
+        that row id for good, so every reload and every page shows the same recording on the same
+        message, two recordings with equal words stay two, and a row never takes a clip sent after
+        it. No fitting clip: no clip (never a guess that could be another recording)."""
+        out: dict[str, dict[str, Any]] = {}
+        with self._voice_clips_lock:
+            clips = self._voice_clips(session_id)
+            by_row = {c["row"]: c for c in clips if isinstance(c.get("row"), str)}
+            fresh = False
+            for e in entries:
+                eid = str(e.get("id"))
+                if eid in by_row:
+                    out[eid] = by_row[eid]
+                    continue
+                said = H.said_key(e.get("text") or "")
+                at = float(e["at"]) if isinstance(e.get("at"), (int, float)) else float("inf")
+                for c in clips:
+                    if (not isinstance(c.get("row"), str) and c["said"] == said
+                            and float(c.get("at") or 0) <= at + self._VOICE_CLIP_SLACK_S):
+                        c["row"] = eid
+                        out[eid] = c
+                        fresh = True
+                        break
+            if fresh:
+                self._save_voice_clips(session_id, clips)
+        return out
 
     def check_stage(self, device_id: str, headers: Any, length: int) -> dict[str, Any]:
         """``POST /voice/attachments``, before its body is read: a picture (JPEG or PNG, the phone
