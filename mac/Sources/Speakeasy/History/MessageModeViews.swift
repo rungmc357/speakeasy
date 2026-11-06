@@ -1,32 +1,56 @@
 import SwiftUI
 import SpeakeasyCore
 
-// Steer or queue on the Mac (docs/API.md "Steer or queue"): while the open session works, a small
-// choice above the field (Steer now / When it's done); ↩ sends with it, ⌘↩ with the other. Held
-// messages show at the end of the thread as pending bubbles with Steer now and Cancel.
+// Steer or queue on the Mac (docs/API.md "Steer or queue"): nothing sits above the field while
+// typing. ↩ / Send with nothing running is a plain send; while the open session's task runs it opens
+// a small pop-up at the Send button with Steer now (↩) and Queue for after, and nothing is sent until
+// one is picked (Esc or a click outside closes it, the words stay in the field). Held messages show
+// at the end of the thread as pending bubbles with Steer now and Cancel.
 
-/// The composer's choice, only while a run is active.
-struct HistoryMessageModeBar: View {
+/// The pop-up's two choices, anchored to Send.
+struct HistorySendModeChoices: View {
     @ObservedObject var store: HistoryStore
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text("WHILE IT WORKS").font(.system(size: 9.5, weight: .bold)).tracking(0.7).foregroundStyle(.tertiary)
-            Picker("Send", selection: $store.messageMode.selected) {
-                ForEach(MessageMode.allCases, id: \.self) { mode in
-                    Text(mode.label).tag(mode).help(mode.hint)
-                }
-            }
-            .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
-            .accessibilityIdentifier("history-message-mode")
-            Text("⌘↩ \(store.messageMode.selected.other.label.lowercased())")
-                .font(.system(size: 10.5)).foregroundStyle(.tertiary)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 2) {
+            row(.steer).keyboardShortcut(.defaultAction)
+            row(.queue)
         }
-        .padding(.horizontal, 6)
-        // ⌘↩: the other choice for this one message.
-        .background(Button("") { store.send(alternate: true) }
-            .keyboardShortcut(.return, modifiers: .command).opacity(0).allowsHitTesting(false))
+        .padding(6)
+        .frame(width: 260)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("history-send-choice")
+    }
+
+    private func row(_ mode: MessageMode) -> some View {
+        Button { store.send(picked: mode) } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Image(systemName: mode == .steer ? "arrow.turn.down.right" : "clock")
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Live.brassText).frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(mode.label).font(.system(size: 13, weight: .semibold)).foregroundStyle(.primary)
+                        if mode == .steer { Text("↩").font(.system(size: 11)).foregroundStyle(.tertiary) }
+                    }
+                    Text(mode.hint).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HistoryChoiceRowStyle())
+        .help(mode.hint)
+        .accessibilityIdentifier(mode == .steer ? "history-send-steer" : "history-send-queue")
+    }
+}
+
+private struct HistoryChoiceRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(configuration.isPressed ? 0.1 : 0.0001)))
     }
 }
 

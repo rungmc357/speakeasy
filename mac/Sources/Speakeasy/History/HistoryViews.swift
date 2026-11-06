@@ -1540,7 +1540,6 @@ struct HistoryComposer: View {
                 .foregroundStyle(Live.brassText)
                 .padding(.horizontal, 6)
             }
-            if store.offersMessageModes && !inline { HistoryMessageModeBar(store: store) }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(placeholder, text: Binding(get: { store.draft }, set: { store.draft = $0 }), axis: .vertical)
                     .textFieldStyle(.plain).font(.system(size: 13.5)).lineLimit(1...8)
@@ -1564,10 +1563,15 @@ struct HistoryComposer: View {
                     .disabled(!enabled)
                     .accessibilityIdentifier("history-mic")
                 }
-                circle("arrow.up", help: store.offersMessageModes ? "\(store.messageMode.sendLabel(offered: true)) (↩)" : "Send (↩)", fill: empty ? Color.primary.opacity(0.06) : Live.brass,
+                circle("arrow.up", help: store.asksSendMode ? "Send (↩): steer now or queue for after" : "Send (↩)", fill: empty ? Color.primary.opacity(0.06) : Live.brass,
                        ink: empty ? Color.secondary : JobLook.brassInk) { store.send() }
                     .disabled(empty || !enabled)
                     .accessibilityIdentifier("history-send")
+                    .popover(isPresented: Binding(get: { store.choosingSendMode && !inline },
+                                                  set: { if !$0 { store.choosingSendMode = false } }),
+                             arrowEdge: .top) {
+                        HistorySendModeChoices(store: store)
+                    }
             }
         }
     }

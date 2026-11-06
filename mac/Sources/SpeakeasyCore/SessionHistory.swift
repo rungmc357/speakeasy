@@ -407,7 +407,7 @@ public struct HistoryConversation: Equatable, Sendable {
         steered = (o["steered"] as? [Any] ?? []).compactMap(SteeredMessage.init(json:))
     }
 
-    /// The composer offers Steer now / When it's done: the server can, and a run is active.
+    /// Send asks Steer now / Queue for after: the server can, and a run is active.
     public var offersMessageModes: Bool { messageModes && isWorking }
 
     /// The jobs whose question (a decision card) waits on the user, as the plugin decides it

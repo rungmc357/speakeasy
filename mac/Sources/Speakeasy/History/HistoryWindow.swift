@@ -553,6 +553,39 @@ enum HistoryShots {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 if let c = store.conversations["s_porch"], let w = store.thread(c).waiting.first { store.dismiss(w) }
             }
+            // Steer or queue: nothing above the field while typing on a running task, and the
+            // pop-up's two choices at Send (drawn on their own: popovers are separate windows).
+            await shot("22-running-typing-no-row") {
+                store.drafts = [:]
+                backend.conversations["s_flaky"]?.messageModes = true
+                store.open("s_flaky")
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                store.draft = "Also check the refund spec"
+            }
+            if only == nil || only == "23-send-pop-up" {
+                snapshotView(HistorySendModeChoices(store: store), size: NSSize(width: 272, height: 128),
+                             appearance: c.window?.effectiveAppearance, to: "\(dir)/23-send-pop-up.png")
+                print("history shot 23-send-pop-up")
+            }
+            if only == nil || only == "24-send-check" {
+                // Smoke check of the Send flow on a running task: Send asks, a pick sends with it.
+                backend.conversations["s_flaky"]?.messageModes = true
+                store.open("s_flaky")
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                store.draft = "Also check the refund spec"
+                let before = backend.sent.count
+                store.send()
+                let asked = store.choosingSendMode && backend.sent.count == before && store.draft == "Also check the refund spec"
+                store.choosingSendMode = false   // a click outside
+                let kept = store.draft == "Also check the refund spec" && backend.sent.count == before
+                store.send(); store.send(picked: .queue)
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                let queued = backend.sent.last?.mode == .queue && store.draft.isEmpty && !store.choosingSendMode
+                store.draft = "Then a dimmer"; store.send(); store.send(picked: .steer)
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                let steered = backend.sent.last?.mode == .steer
+                print("history send check asked=\(asked) cancelKeeps=\(kept) queued=\(queued) steered=\(steered)")
+            }
             exit(0)
         }
     }

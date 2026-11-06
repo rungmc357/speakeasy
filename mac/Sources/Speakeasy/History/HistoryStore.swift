@@ -78,7 +78,9 @@ final class LiveHistoryBackend: HistoryBackend {
 final class HistoryStore: ObservableObject {
     @Published private(set) var list = HistoryList(hideAutomated: HistoryAutomation.hidden)
     /// nil: nothing open yet.
-    @Published private(set) var target: HistoryTarget?
+    @Published private(set) var target: HistoryTarget? {
+        didSet { if oldValue != target { choosingSendMode = false } }
+    }
     @Published private(set) var conversations: [String: HistoryConversation] = [:]
     @Published private(set) var detailErrors: [String: String] = [:]
     @Published private(set) var outbox = HistoryOutbox()
@@ -361,8 +363,10 @@ final class HistoryStore: ObservableObject {
 
     // MARK: Steer or queue (servers with `message_modes`, only while a run is active)
 
-    /// The composer's Steer now / When it's done choice (kept while the app runs).
-    @Published var messageMode = MessageModeChoice()
+    /// Send (↩ or the button) while the open session's task runs: the Steer now / Queue for after
+    /// pop-up at the Send button is open. Nothing is sent until a pick; Esc or a click outside
+    /// closes it and the words stay in the field. Nothing is remembered between sends.
+    @Published var choosingSendMode = false
     /// Messages this Mac steered into a running task: tagged "Steered" in the thread.
     @Published private(set) var steered = SteeredMarks()
     @Published private(set) var queuedBusy: Set<String> = []
@@ -376,11 +380,14 @@ final class HistoryStore: ObservableObject {
         return SteeredMessage(clientID: "local", text: text, at: at, state: .sent)
     }
 
-    /// The open session works and its server can hold a message for later: the choice shows.
+    /// The open session works and its server can hold a message for later: Send asks first.
     var offersMessageModes: Bool {
         guard let id = target?.sessionID else { return false }
         return conversations[id]?.offersMessageModes ?? false
     }
+
+    /// Send opens the Steer now / Queue for after pop-up (not for an answer to a question).
+    var asksSendMode: Bool { offersMessageModes && replyingTo == nil }
 
     func cancelQueued(_ clientID: String) { actOnQueued(clientID) { try await $0.cancelQueued(sessionID: $1, clientID: clientID) } }
 
@@ -403,13 +410,29 @@ final class HistoryStore: ObservableObject {
     }
 
     /// ↩ / Send: what's in the field. Words from a voice message under review go as `voice_message`.
-    /// `alternate` (⌘↩): the other of Steer now / When it's done, while a run is active.
-    func send(alternate: Bool = false) {
+    /// While the open session's task runs, this only opens the Steer now / Queue for after pop-up;
+    /// `send(picked:)` sends.
+    func send() {
+        if asksSendMode {
+            guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            choosingSendMode = true
+            return
+        }
+        sendNow(mode: nil)
+    }
+
+    /// A pick in the pop-up. The mode only rides on the request while a run is still active (it
+    /// may have finished while the pop-up was open: then a plain send).
+    func send(picked: MessageMode) {
+        choosingSendMode = false
+        sendNow(mode: offersMessageModes ? picked : nil)
+    }
+
+    private func sendNow(mode: MessageMode?) {
         let source: HistoryMessageRequest.Source = voice.reviewing ? .voiceMessage : .typed
         let answers = replyingTo.flatMap { r in conversations[target?.sessionID ?? ""].map { thread($0) }?
             .waiting.contains(where: { $0.id == r.id }) == true ? r.questionRunID : nil }
-        guard deliver(draft, source: source, answers: answers,
-                      mode: messageMode.mode(offered: offersMessageModes, alternate: alternate)) else { return }
+        guard deliver(draft, source: source, answers: answers, mode: answers == nil ? mode : nil) else { return }
         drafts[draftKey] = nil
         replyingTo = nil
         voice.handle(.sent)

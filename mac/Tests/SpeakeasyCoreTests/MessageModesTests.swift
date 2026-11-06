@@ -13,8 +13,15 @@ final class MessageModesTests: XCTestCase {
         XCTAssertEqual(choice.mode(offered: true), .queue)
         XCTAssertEqual(choice.mode(offered: true, alternate: true), .steer)
         XCTAssertEqual(choice.mode(offered: true, hasAttachments: true), .steer)  // files can't wait
-        XCTAssertEqual(choice.sendLabel(offered: true), "Send when it's done")
+        XCTAssertEqual(choice.sendLabel(offered: true), "Queue for after")
         XCTAssertEqual(choice.sendLabel(offered: false), "Send")
+    }
+
+    func testThePopUpWords() {
+        XCTAssertEqual(MessageMode.steer.label, "Steer now")
+        XCTAssertEqual(MessageMode.queue.label, "Queue for after")
+        XCTAssertEqual(MessageMode.steer.hint, "Adds this to the running task.")
+        XCTAssertEqual(MessageMode.queue.hint, "Sends it when the task is done.")
     }
 
     func testRequestsCarryModeOnlyWhenSet() {

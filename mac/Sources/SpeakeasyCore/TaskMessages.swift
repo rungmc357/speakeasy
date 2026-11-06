@@ -31,11 +31,11 @@ public enum MessageMode: String, Equatable, Sendable, CaseIterable {
     case queue
 
     public var other: MessageMode { self == .steer ? .queue : .steer }
-    /// The choice's short label (the composer's toggle).
-    public var label: String { self == .steer ? "Steer now" : "When it's done" }
-    /// One line on what it does (the toggle's accessibility hint / tooltip).
+    /// The choice's short label (the pop-up at Send while a task runs).
+    public var label: String { self == .steer ? "Steer now" : "Queue for after" }
+    /// One line on what it does (under the label in the pop-up; tooltip / accessibility hint).
     public var hint: String {
-        self == .steer ? "Goes into the task now." : "Sends next, when this finishes."
+        self == .steer ? "Adds this to the running task." : "Sends it when the task is done."
     }
 }
 
