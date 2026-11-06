@@ -125,7 +125,8 @@ public struct HistoryList: Equatable, Sendable {
     public mutating func apply(_ page: HistoryPage, for request: HistoryQuery) -> Bool {
         guard request.generation == generation else { return false }
         loading = false; error = nil
-        var index = Dictionary(uniqueKeysWithValues: sessions.enumerated().map { ($1.id, $0) })
+        // Never `uniqueKeysWithValues`: a row listed twice (a page that repeats a session) would trap.
+        var index = Dictionary(sessions.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
         for s in page.sessions {
             if let i = index[s.id] { sessions[i] = s } else { index[s.id] = sessions.count; sessions.append(s) }
         }
@@ -145,7 +146,8 @@ public struct HistoryList: Equatable, Sendable {
         let fresh = Set(page.sessions.map(\.id))
         let covered = sessions.prefix(max(page.sessions.count, 0))
         let rest = sessions.dropFirst(covered.count).filter { !fresh.contains($0.id) }
-        sessions = page.sessions + rest
+        var seen = Set<String>()
+        sessions = (page.sessions + rest).filter { seen.insert($0.id).inserted }   // each session once
         if let facet = page.sources { sources = facet }
     }
 

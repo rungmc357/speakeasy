@@ -28,6 +28,19 @@ final class HistoryBrowsingTests: XCTestCase {
         XCTAssertNil(list.loadMore(), "no cursor: the end")
     }
 
+    func testARepeatedRowNeverTrapsAndShowsOnce() throws {
+        var list = HistoryList()
+        let q1 = list.reset()
+        // A page that lists the same session twice, then a live refresh that repeats one, then the next page.
+        list.apply(HistoryPage(sessions: [row("a"), row("a", "A2"), row("b")], nextCursor: "c1"), for: q1)
+        XCTAssertEqual(list.sessions.map(\.id), ["a", "b"])
+        list.merge(HistoryPage(sessions: [row("b"), row("b"), row("a")], nextCursor: "c1"), for: q1)
+        XCTAssertEqual(list.sessions.map(\.id), ["b", "a"])
+        let q2 = try XCTUnwrap(list.loadMore())
+        list.apply(HistoryPage(sessions: [row("c"), row("a")], nextCursor: nil), for: q2)
+        XCTAssertEqual(list.sessions.map(\.id), ["b", "a", "c"])
+    }
+
     func testPagingErrorStopsAutoPagingUntilRetry() throws {
         var list = HistoryList()
         let q = list.reset()
