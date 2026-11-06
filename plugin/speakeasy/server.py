@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlsplit
 
 from . import __version__
 from . import attachments as A
+from .profiles import home_id, profile_name
 from .service import VoiceService
 from .calls import ServiceError, Interaction, publish_state
 from .text import MAX_ROOM_CHARS
@@ -395,9 +396,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.local:  # off this machine (tailnet, tunnel): nothing beyond "it's up"
                     self._reply(200, {"ok": True, "platform": "voice"})
                     return
-                from .profiles import home_id, profile_name  # setup checks it found its own profile's server
                 self._reply(200, {"ok": True, "platform": "voice", "version": __version__,
                                   "provider": self.service.settings.get()["voice"]["provider"],
+                                  # setup checks it found its own profile's server (profiles.py)
                                   "home_id": home_id(self.service.home), "profile": profile_name(self.service.home)})
                 return
             push_event = re.fullmatch(r"/voice/push/events/([A-Za-z0-9_-]{16,64})", path)
