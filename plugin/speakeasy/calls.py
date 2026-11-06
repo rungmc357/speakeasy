@@ -28,7 +28,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from . import channels, continuity, failures, liveness, router, threads
+from . import channels, continuity, failures, liveness, recap, router, threads
 from . import runstate as RS
 from . import messages as messages_mod
 from .devices import client_label
@@ -800,6 +800,23 @@ def interaction_tasks(store: Any, interaction: Interaction, assistant_name: str 
     return fold_tasks(earlier + tasks + store.carried_draft_tasks(exclude))
 
 
+_FOLLOWING = re.compile(r"\s*\(following up: .*$", re.S)
+
+
+def _first_ask(request: str | None) -> str:
+    """A task's own ask without the "(following up: ...)" note a follow-up run carries."""
+    return _FOLLOWING.sub("", request or "").strip()
+
+
+def _prior_call_end(store: Any) -> float | None:
+    """When the previous call ended (store meta), or None."""
+    try:
+        raw = store.get_meta("last_call_end")
+        return float(raw) if raw is not None else None
+    except Exception:
+        return None
+
+
 async def in_own_thread(fn: Callable[..., Any], *args: Any) -> Any:
     """``asyncio.to_thread`` for a call that blocks for a task's whole run (an event stream, a thread
     turn being waited on): on a thread of its own. On the loop's shared executor (min(32, cpus + 4)
@@ -1119,6 +1136,11 @@ class SidebandWorker:
         self.choice_answered: set[str] = set()
         self.offered_choices: set[frozenset[str]] = set()
         self.replied_task: str | None = None     # the task the voice last spoke an answer from
+        # Repeat status asks (recap.py): when this call opened, when the call before it ended, and the
+        # earlier tasks whose answer was just repeated with an offer of a fresh check (key -> monotonic).
+        self.opened_wall = time.time()
+        self.prior_call_end = _prior_call_end(rt.store)
+        self.recap_offered: dict[str, float] = {}
         self.wants_show: set[str] = set()        # delegation ids the user wants to SEE (routing said show)
         self.screen_notes: dict[str, str] = {}   # delegation id -> what was on screen (its own line)
         self.show_seq = 0
@@ -3175,6 +3197,8 @@ class SidebandWorker:
                 return
         if not released and await self.wait_for_screen(delegation_id, revision, context, marked, last_request):
             return
+        if not marked and not showing and await self.reuse_earlier(delegation_id, revision, context, last_request):
+            return  # "where are we on X?" again: the task that already knows answers (recap.py)
         if not marked and not showing and await self.quick_answer(delegation_id, revision, last_request):
             return
         focus = None
@@ -3318,6 +3342,92 @@ class SidebandWorker:
             if line and (not out or out[-1] != line):
                 out.append(line)
         return out[-5:]
+
+    # -- repeat status / recap asks (recap.py) ------------------------------------------------
+    async def reuse_earlier(self, delegation_id: str, revision: int, context: str, request: str) -> bool:
+        """\"Where are we on X?\" when a task on X ran in the last couple of hours: answered from the
+        task that already knows instead of a fresh investigation. Finished minutes ago (or after the
+        user hung up): the voice says its answer now and offers a fresh check. Older, or a fresh check
+        asked for: the ask continues in that task's own session. Still running here: its live status.
+        False: nothing on that subject (or nothing usable), so routing goes on as before."""
+        now_m = time.monotonic()
+        offered = [k for k, at in sorted(self.recap_offered.items(), key=lambda kv: kv[1])
+                   if now_m - at < recap.FRESH_S]
+        yes = bool(offered) and recap.accepts_offer(request)
+        if not (yes or recap.recap_ask(request) or (offered and recap.wants_fresh(request))):
+            return False
+        try:
+            earlier = await asyncio.to_thread(self.store.recent_subject_tasks, recap.LATE_LOOKBACK_S)
+        except Exception as exc:  # a lookup must never break a request
+            logger.warning("speakeasy: recent-task lookup failed (%s)", type(exc).__name__)
+            return False
+        now = time.time()
+        if yes:  # "yeah, check again": the fresh check offered with the last repeated answer
+            found = next((e for e in earlier if e.key == offered[-1]), None)
+            if found is not None:
+                request = f"Check again now, fresh: {_first_ask(found.request)}"
+        else:
+            found = recap.pick(request, earlier, now)
+            if found is None and offered and recap.wants_fresh(request) and not recap.recap_ask(request):
+                found = next((e for e in earlier if e.key == offered[-1]), None)  # "check again"
+        if found is None:
+            return False
+        with self.interaction.lock:
+            in_call = next((tid for tid, r in self.interaction.runs.items()
+                            if r.idem_key == found.key and r.status != "rejected"), None)
+        what = (recap.CONTINUE if yes else
+                recap.plan(request, found, now, in_call=in_call is not None,
+                           prior_call_end=self.prior_call_end, call_opened=self.opened_wall))
+        if what is None:
+            return False
+        age_min = int((now - (found.settled_at or found.created)) // 60)
+        logger.info("speakeasy: repeat ask about a task from %d min ago (%s): %s", age_min, found.status, what)
+        if what == recap.STATUS and in_call:
+            await self.answer_status(delegation_id, in_call)
+            return True
+        if what == recap.ANSWER:
+            late = recap.late(found, self.prior_call_end, self.opened_wall)
+            self.handoff_at.pop(delegation_id, None)
+            if in_call:
+                self.replied_task = in_call
+            self.recap_offered[found.key] = now_m
+            name = found.title or notice_text(_first_ask(found.request), 80) or "that"
+            await self.append("session.commentary.append", delegation_id,
+                              P.repeat_answer(name, found.result, age_min, late, request=request))
+            return True
+        self.recap_offered.pop(found.key, None)
+        if in_call:
+            part = router.Part("follow_up", request, in_call)
+            await messages_mod.announce_routed(self, delegation_id, revision, context, part)
+            await self.follow_up(delegation_id, revision, context, part)
+            return True
+        return await self.continue_earlier(delegation_id, revision, context, request, found)
+
+    async def continue_earlier(self, delegation_id: str, revision: int, context: str, request: str,
+                               found: Any) -> bool:
+        """Run a repeat ask in the session of an earlier call's task (``found``: recap.Earlier), the
+        way a follow-up to a finished task does: the session already has the work, so the run picks up
+        from it. A task that continued a chat runs in that chat's session again. False when the
+        task has no session to continue (routing then goes on as before)."""
+        key = found.key
+        earlier = notice_text(_first_ask(found.request), 200) or "an earlier request"
+        placed = self.store.continued_for(key)
+        if placed is not None:
+            conv = await asyncio.to_thread(continuity.conversation_by_session, self.rt.state_db, placed["session_id"])
+            if conv is not None:
+                if not self.carries(delegation_id):
+                    self.forgo_capture(delegation_id)
+                self.store.link_job(self._idem(delegation_id, revision), key)
+                await self.start_continuity_task(delegation_id, revision, context, request, conv, parent=key)
+                return True
+        session = self.store.session_for(key)
+        if not session:
+            return False
+        self.store.link_job(self._idem(delegation_id, revision), key)  # whatever it starts is this job
+        focus = P.follow_up_focus(request, earlier, notice_text(found.result, 300) or None, found.status)
+        await self.start_task(delegation_id, revision, context, f"{request} (following up: {earlier})",
+                              focus=focus, session_id=session, parent=key)
+        return True
 
     async def home_control(self, delegation_id: str, revision: int, request: str) -> bool:
         """A request that is only device commands, done straight through Home Assistant (opt-in).

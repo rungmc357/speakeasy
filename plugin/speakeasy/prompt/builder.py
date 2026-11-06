@@ -105,6 +105,22 @@ def truthfulness(names: Names) -> str:
 
 # -- the voice session ------------------------------------------------------------------
 
+def repeat_answer(name: str, result: str, minutes_ago: int, late: bool, request: str | None = None) -> str:
+    """What the voice says to a repeat "where are we on X?" when a task on that subject finished
+    minutes ago (or came in after the user hung up): the answer it already has, now, with one offer
+    of a fresh check. No new work starts."""
+    m = max(int(minutes_ago), 1)
+    when = ("It finished after they hung up on the last call, so they never heard it."
+            if late else f"It finished {m} min ago.")
+    opener = ("\"Your <what it was about, in two or three words> answer came in after you hung up: ...\"" if late else
+              f"\"Same as {m} minute{'s' if m != 1 else ''} ago: ...\"")
+    asked = f" They asked: \"{notice_text(request, 200)}\"." if request else ""
+    return (f"They asked again about \"{name}\", which a task already answered.{asked} {when} Its answer: "
+            f"\"{notice_text(result, 400)}\" Answer now from that answer, in one or two short sentences in your "
+            f"own words, starting like {opener}, then offer once to check again fresh. Don't start new work and "
+            f"don't hand anything off unless they say yes to a fresh check.")[:1600]
+
+
 def failed_note(task: dict[str, Any]) -> str | None:
     """Why a failed task (a work or away item) failed, for the voice's background notes: Speakeasy's
     own sentence from its ``failure`` kind, never provider text and never a file path."""
@@ -137,7 +153,10 @@ def away_block(away: list[dict[str, Any]], names: Names) -> str:
     if done:
         parts.append(f"Settled since the last call; {names.user} has most likely already seen these in the app or "
                      f"their chat:\n" + "\n".join(done)
-                     + f"\nDon't bring these up. Use them only if {names.user} asks about that work or what happened.")
+                     + f"\nDon't bring these up. Use them only if {names.user} asks about that work or what happened. "
+                       f"When {names.user} asks about one of these subjects, answer from it straight away and say it "
+                       f"came in after they hung up (\"That answer came in after you hung up: ...\"); don't start "
+                       f"that work again unless they ask for a fresh check.")
     if needs:
         parts.append("Still waiting on them:\n" + "\n".join(needs)
                      + f"\nRespond to whatever {names.user} opens with first. If it fits naturally, mention in one "
