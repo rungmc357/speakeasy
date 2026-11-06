@@ -517,6 +517,15 @@ struct HistorySessionView: View {
                             Text("Showing the newest messages. Older ones stay in Hermes.")
                                 .font(.system(size: 11)).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
                         }
+                        // Tasks: finished ones sit where they were asked, as one quiet line; only what's
+                        // still going (or needs you) stays at the end, above the composer.
+                        let layout = Self.layout(c, thread)
+                        if layout.showsFinishedRow {
+                            HistoryFinishedRow(jobs: layout.finished, key: "\(c.id)|finished", store: store) { open($0, c, thread, proxy) }
+                        }
+                        ForEach(layout.top, id: \.lineID) { job in
+                            HistoryTaskLine(job: job, now: store.now, openable: Self.opensElsewhere(job, c)) { open(job, c, thread, proxy) }
+                        }
                         let messages = thread.messages
                         let via = ChatLabel.platform(source: c.source, label: c.sourceLabel)
                         ForEach(Array(messages.enumerated()), id: \.element.id) { i, m in
@@ -526,12 +535,13 @@ struct HistorySessionView: View {
                                                lastInGroup: next?.role != m.role || next.map { ChatLabel.fromChat($0.id) } != ChatLabel.fromChat(m.id))
                                 .padding(.top, i > 0 && messages[i - 1].role == m.role && m.role != .note ? -12 : 0)
                                 .id(m.id)
+                            ForEach(layout.after[m.id] ?? [], id: \.lineID) { job in
+                                HistoryTaskLine(job: job, now: store.now, openable: Self.opensElsewhere(job, c)) { open(job, c, thread, proxy) }
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            }
                         }
-                        // A task waiting on an approval or a question shows as that card only (no twin above it).
-                        let asking = Set(c.approvals.map(\.runID) + c.waitingQuestions.compactMap(\.runID))
-                        let cards = c.jobs.filter { !(asking.contains($0.runID ?? "") && $0.status != "running") }
-                        ForEach(Array(cards.suffix(4).enumerated()), id: \.offset) { _, job in
-                            HistoryTaskCard(job: job)
+                        ForEach(layout.pinned, id: \.lineID) { job in
+                            HistoryTaskCard(job: job).transition(.opacity)
                         }
                         if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
                         ForEach(thread.waiting) { HistoryWaitingCard(waiting: $0, store: store) }
@@ -557,6 +567,31 @@ struct HistorySessionView: View {
             }
             HistoryComposer(store: store, placeholder: "Message “\(TaskMessageCopy.shortName(c.title, limit: 34))”", enabled: true)
         }
+        .animation(.snappy(duration: 0.3), value: c.jobs.map { "\($0.runID ?? "")\($0.status)" })
+    }
+
+    static func layout(_ c: HistoryConversation, _ thread: HistoryThread) -> SessionTaskLayout {
+        // A task waiting on an approval or a question shows as that card only (no twin above it).
+        let asking = Set(c.approvals.map(\.runID) + c.waitingQuestions.compactMap(\.runID))
+        return SessionTaskLayout(jobs: c.jobs, messages: thread.messages.map {
+            .init(id: $0.id, isUser: $0.role == .user, at: $0.at, text: $0.text)
+        }, hasMore: c.hasMore, asking: asking)
+    }
+
+    /// The task ran in its own session (a chat continued from Discord, Telegram…): its line opens that.
+    static func opensElsewhere(_ job: WorkInfo, _ c: HistoryConversation) -> Bool {
+        guard let sid = job.sessionID else { return false }
+        return sid != c.id
+    }
+
+    /// A task line: its own session when it has one, else the reply it produced on this page.
+    private func open(_ job: WorkInfo, _ c: HistoryConversation, _ thread: HistoryThread, _ proxy: ScrollViewProxy) {
+        if Self.opensElsewhere(job, c), let sid = job.sessionID { store.open(sid); return }
+        let layout = Self.layout(c, thread)
+        guard let anchor = layout.after.first(where: { $0.value.contains { $0.runID == job.runID } })?.key,
+              let i = thread.messages.firstIndex(where: { $0.id == anchor }) else { return }
+        let reply = thread.messages[(i + 1)...].first { $0.role == .assistant }?.id ?? anchor
+        withAnimation(.snappy) { proxy.scrollTo(reply, anchor: .top) }
     }
 
     private func header(_ c: HistoryConversation, _ thread: HistoryThread) -> some View {
@@ -897,6 +932,92 @@ struct HistoryToolCalls: View {
 
 /// One of the session's tasks, updated in place by the live feed: what it's doing now, a real
 /// progress bar (only with a step count), the outcome. The phone's session page draws the same card.
+extension WorkInfo {
+    /// A stable row id for a task line/card.
+    var lineID: String { runID ?? (title ?? "") + (startedAt.map { "\($0.timeIntervalSince1970)" } ?? "") }
+}
+
+/// A finished task in the thread where it was asked: one quiet line, "✓ Fixed the login redirect · 9:41 PM ›".
+struct HistoryTaskLine: View {
+    let job: WorkInfo
+    let now: Date
+    var openable: Bool
+    var action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 10.5, weight: .bold)).foregroundStyle(tint).accessibilityHidden(true)
+                Text(TaskLineCopy.line(job, now: now)).font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Color.primary.opacity(hover ? 0.75 : 0.5)).lineLimit(1).truncationMode(.middle)
+                if openable {
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color.primary.opacity(0.3)).accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, 10).frame(height: 24)
+            .background(Capsule().fill(Color.primary.opacity(hover ? 0.07 : 0.04)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .frame(maxWidth: .infinity)
+        .help(openable ? "Open this task" : "Show the reply")
+        .accessibilityLabel(TaskLineCopy.line(job, now: now))
+        .accessibilityIdentifier("history-task-line")
+    }
+
+    private var icon: String {
+        switch job.status {
+        case "failed": return "exclamationmark.triangle.fill"
+        case "cancelled": return "stop.fill"
+        default: return "checkmark"
+        }
+    }
+    private var tint: Color {
+        switch job.status {
+        case "failed": return Live.red
+        case "cancelled": return .secondary
+        default: return Live.green
+        }
+    }
+}
+
+/// The chat's finished tasks that aren't on this page: one collapsed row, opened on tap.
+struct HistoryFinishedRow: View {
+    let jobs: [WorkInfo]
+    let key: String
+    @ObservedObject var store: HistoryStore
+    var open: (WorkInfo) -> Void
+
+    var body: some View {
+        let isOpen = store.openSections.contains(key)
+        VStack(spacing: 6) {
+            Button {
+                withAnimation(.snappy) { if isOpen { store.openSections.remove(key) } else { store.openSections.insert(key) } }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(TaskLineCopy.finishedRow(jobs.count)).font(.system(size: 11.5, weight: .semibold))
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                        .rotationEffect(.degrees(isOpen ? 90 : 0))
+                }
+                .foregroundStyle(Color.primary.opacity(0.5))
+                .padding(.horizontal, 10).frame(height: 24)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("history-finished-row")
+            if isOpen {
+                ForEach(jobs, id: \.lineID) { job in
+                    HistoryTaskLine(job: job, now: store.now, openable: job.sessionID != nil && store.target != .session(job.sessionID!)) { open(job) }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 struct HistoryTaskCard: View {
     let job: WorkInfo
     private var running: Bool { !["completed", "failed", "cancelled"].contains(job.status) }

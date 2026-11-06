@@ -2,6 +2,13 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Mac · iPhone (next build) — Finished tasks stay where they were asked
+
+- **No pile of Done cards.** On a session page, a finished task is one quiet line in the conversation, right after the reply to the message that asked for it ("✓ Fixed the login redirect · 9:41 PM"); tap it to jump to that reply, or to open the task's own chat when it ran in another one.
+- **Only live work at the bottom.** Running tasks and anything that needs you stay just above the composer; when a task finishes it moves back to its place in the conversation.
+- **Asked twice, shown once.** Tasks with the same name or the same ask fold into one line.
+- **Earlier tasks in one row.** When the page doesn't reach back far enough to show where a task was asked, a single collapsed "N tasks finished in this chat" row at the top lists them.
+
 ## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
 
 - **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
