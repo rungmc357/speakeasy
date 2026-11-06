@@ -24,6 +24,11 @@ REASONS: dict[str, tuple[str, str]] = {
     "rate_limit": ("Rate-limited",
                    "Hermes's model provider is rate-limiting it. Wait a minute and try again, or run "
                    "hermes model on the Hermes machine to switch providers."),
+    # The provider's safety filter refused this request (Hermes' content_policy_blocked). Often a false
+    # positive on ordinary work; the fix is a retry or another model, never the key, credits or a firewall.
+    "content_refused": ("Refused by the model's safety filter",
+                        "The model's safety filter refused this request. Try again, or switch model for "
+                        "this chat."),
     "model_not_found": ("Model unavailable",
                         "Hermes's model provider doesn't offer the model Hermes is set to use. Run "
                         "hermes model on the Hermes machine to pick another."),
@@ -45,6 +50,8 @@ SPOKEN: dict[str, str] = {
             "the steps are in the app.",
     "rate_limit": "Hermes's model provider is rate-limiting it. Wait a minute and try again, or switch "
                   "providers; the steps are in the app.",
+    "content_refused": "The model's safety filter refused that request. You can try again, or switch this "
+                       "chat to another model in the app.",
     "model_not_found": "Hermes's model provider doesn't offer the model Hermes is set to use, so it needs "
                        "a different model; the steps are in the app.",
     "hermes_key": "Hermes rejected Speakeasy's key. Restarting Hermes usually fixes it; if not, Speakeasy "
@@ -77,14 +84,33 @@ _AUTH_RE = re.compile(
 _USAGE_LIMIT_RE = re.compile(r"usage limit|quota|limit exceeded")
 _TRANSIENT_RE = re.compile(r"try again|retry|resets? (?:at|in|after)|available in|wait|requests remaining"
                            r"|periodic|window|per minute|per second")
+# A provider's safety filter refusing this prompt: Hermes' own verdict (``content_policy_blocked: ...`` on
+# the run's error) and the provider phrases Hermes matches (agent/error_classifier.py
+# _CONTENT_POLICY_BLOCKED_PATTERNS, Anthropic stop_reason=refusal). Checked before every other shape: a
+# refusal often says "your request was blocked", which is not a firewall.
+_CONTENT_REFUSAL_RE = re.compile(
+    r"content_policy_blocked|content[ _]policy[ _]block|safety filter refused|declined to respond"
+    r"|provider refusal category|stop_reason[\"':= ]{0,4}refusal|content_filter|responsibleaipolicyviolation"
+    r"|flagged for possible cybersecurity risk|violates (?:our|openai's) usage policies|your request was flagged by"
+    r"|prompt was flagged by our safety|responses cannot be generated due to safety|data_inspection_failed"
+    r"|data may contain inappropriate content|content exists risk|new_sensitive")
 # A 403 from a CDN/WAF or relay in front of the provider is not the user's key (Hermes'
-# _UPSTREAM_BLOCKED_PATTERNS): no reason Speakeasy can act on.
-_BLOCK_PAGE_RE = re.compile(r"cloudflare|just a moment|attention required|request was blocked|request blocked"
-                            r"|you have been blocked|enable javascript and cookies|cdn-cgi/challenge-platform"
-                            r"|cf-browser-verification|__cf_chl|cf-error-details")
+# _UPSTREAM_BLOCKED_PATTERNS): no reason Speakeasy can act on, so it is never called "auth".
+_UPSTREAM_BLOCK_RE = re.compile(r"cloudflare|just a moment|attention required|request was blocked|request blocked"
+                                r"|you have been blocked|enable javascript and cookies|cdn-cgi/challenge-platform"
+                                r"|cf-browser-verification|__cf_chl|cf-error-details")
+# Saying "a firewall blocked it" needs proof of a real HTML challenge or block page (or the <title> Hermes
+# keeps from one). Plain words like "request was blocked" are what a provider's safety refusal says too.
+_BLOCK_PAGE_RE = re.compile(r"<!doctype html|<html|attention required! \| cloudflare|just a moment\.\.\."
+                            r"|used cloudflare to restrict access|sorry, you have been blocked"
+                            r"|enable javascript and cookies|cdn-cgi/challenge-platform|cf-browser-verification"
+                            r"|challenge-error-text|__cf_chl|cf-error-details|cloudflare ray id")
 # Hermes' fixed lead-ins for the provider's error line in a failed turn's reply (agent/turn_failure_copy.py,
 # conversation_loop._billing_terminal_label). Only text after them is read, never the rest of a reply.
 _PROVIDER_LINE_RE = re.compile(r"(?:Provider said|Billing or credits exhausted):[^\n]*")
+# Hermes' fixed opening for a safety-filter refusal (agent/turn_failure_copy.content_policy_copy): the
+# provider line after it could read like anything on its own ("Your request was blocked").
+_REFUSAL_COPY_RE = re.compile(r"safety filter refused this request")
 
 
 def failure_kind(error: Any) -> str | None:
@@ -94,6 +120,8 @@ def failure_kind(error: Any) -> str | None:
     if not isinstance(error, str) or not error.strip():
         return None
     text = error.lower()
+    if _CONTENT_REFUSAL_RE.search(text):
+        return "content_refused"
     match = _STATUS_RE.search(text)
     status = int(match.group(1)) if match else None
     transient = bool(_TRANSIENT_RE.search(text))
@@ -110,7 +138,7 @@ def failure_kind(error: Any) -> str | None:
         # relay block page never reached the provider; any other 403 is the key or sign-in.
         if _BILLING_RE.search(text):
             return "billing"
-        return None if _BLOCK_PAGE_RE.search(text) else "auth"
+        return None if _UPSTREAM_BLOCK_RE.search(text) else "auth"
     if status == 401:
         return "auth"
     # Any other status (400, 404, …) or none: the words decide.
@@ -131,7 +159,11 @@ def provider_line(reply: Any) -> str | None:
     if not isinstance(reply, str):
         return None
     match = _PROVIDER_LINE_RE.search(reply)
-    return match.group(0) if match else None
+    if not match:
+        return None
+    if _REFUSAL_COPY_RE.search(reply[:match.start()]):
+        return "content_policy_blocked: " + match.group(0)
+    return match.group(0)
 
 
 def start_failure_kind(exc: BaseException) -> str | None:
