@@ -354,6 +354,12 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await post("/voice/interactions/\(escape(interactionID))/end", [:])
     }
 
+    /// Close a session this device gave up on before it went live (a stalled connection attempt):
+    /// the plugin stops its voice session so it isn't left open beside the retried one.
+    public func abandonSession(interactionID: String) async throws {
+        _ = try await post("/voice/interactions/\(escape(interactionID))/end", ["abandon": true])
+    }
+
     public func work(runID: String?) async throws -> WorkInfo? {
         let object = try await json(runID.map { "/voice/work/\(escape($0))" } ?? "/voice/work/latest")
         return WorkInfo(json: object["work"])
