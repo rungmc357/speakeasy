@@ -852,7 +852,7 @@ final class HistoryStore: ObservableObject {
             .waiting.contains(where: { $0.id == r.id }) == true ? r.questionRunID : nil }
         let note = VoiceNoteRequest(target: .session(session), audio: clip.audio, mimeType: VoiceMemoAudio.mimeType,
                                     duration: clip.duration,
-                                    mode: answers == nil ? messageMode.mode(offered: offersMessageModes, alternate: false) : nil,
+                                    mode: nil,  // SPK-108: no remembered Steer/Queue choice; the server steers a running task
                                     answers: answers)
         VoiceClipStore.save(note.clientID, audio: clip.audio,
                             meta: .init(duration: clip.duration, levels: VoiceClipStore.bars(clip.levels)))
