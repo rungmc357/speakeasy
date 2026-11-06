@@ -263,12 +263,8 @@ struct HistorySidebar: View {
     @ViewBuilder private var listBody: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                if !store.list.pinned.isEmpty {
-                    Section {
-                        ForEach(store.list.pinned) { s in row(s) }
-                    } header: { sectionHeader("Pinned") }
-                }
-                ForEach(store.list.grouped(now: store.now), id: \.0.id) { group, sessions in
+                // No Pinned section: Geo removed pinning (SPK-124); a pinned chat sorts by time.
+                ForEach(store.list.grouped(now: store.now, pins: false), id: \.0.id) { group, sessions in
                     Section {
                         ForEach(sessions) { s in row(s) }
                     } header: { sectionHeader(store.list.archived ? "Archived · " + group.rawValue : group.rawValue) }
@@ -367,10 +363,6 @@ struct HistoryRow: View {
                             Image(systemName: "archivebox").font(.system(size: 9)).foregroundStyle(.tertiary)
                                 .accessibilityLabel("Archived")
                         }
-                        if session.pinned {
-                            Image(systemName: "pin.fill").font(.system(size: 8.5)).foregroundStyle(.tertiary)
-                                .accessibilityLabel("Pinned")
-                        }
                         Text(HistoryLook.short(session.lastActivity, now: now)).font(.system(size: 10.5).monospacedDigit())
                             .foregroundStyle(.tertiary).fixedSize()
                     }
@@ -447,7 +439,6 @@ struct HistoryRowMenu: View {
 
     var body: some View {
         Button("Rename…") { HistoryRename.ask(session.title) { store.act(.rename($0), on: session.id) } }
-        Button(session.pinned ? "Unpin" : "Pin") { store.act(.pin(!session.pinned), on: session.id) }
         if session.unread { Button("Mark as Read") { store.act(.read, on: session.id) } }
         Divider()
         Button("Copy Link") {

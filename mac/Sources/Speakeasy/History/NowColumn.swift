@@ -196,7 +196,7 @@ struct MacNowCard: View {
 
     private var tint: Color {
         switch item.kind {
-        case .question, .newAnswer: return .accentColor
+        case .question, .newAnswer: return JobLook.brass
         case .stopped: return .orange
         default: return .secondary
         }

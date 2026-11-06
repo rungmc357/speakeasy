@@ -193,8 +193,9 @@ public struct HistoryList: Equatable, Sendable {
         sessions.insert(session, at: 0)
     }
 
-    public func grouped(now: Date, calendar: Calendar = .current) -> [(HistoryGroup, [HistorySession])] {
-        HistoryGroup.grouped(archived ? sessions : sessions.filter { !$0.pinned && !$0.archived }, now: now, calendar: calendar)
+    public func grouped(now: Date, calendar: Calendar = .current, pins: Bool = true) -> [(HistoryGroup, [HistorySession])] {
+        // `pins: false` (SPK-124: Home has no pins): a pinned session sorts with the rest by time.
+        HistoryGroup.grouped(archived ? sessions : sessions.filter { !(pins && $0.pinned) && !$0.archived }, now: now, calendar: calendar)
     }
 
     /// A search's archived matches (the server includes them when searching): listed below the rest,
