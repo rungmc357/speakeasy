@@ -358,6 +358,8 @@ class StateStore:
                     if not _question_text(result):
                         self._db.execute("UPDATE runs SET question_state=NULL, question_state_at=NULL WHERE idem_key=?",
                                          (key,))
+            if "question_answer" not in {row[1] for row in self._db.execute("PRAGMA table_info(runs)")}:
+                self._db.execute("ALTER TABLE runs ADD COLUMN question_answer TEXT")  # its answer's words, when known
             # A chosen model/reasoning (models.py): scope "session:<hermes session id>" (Use for this chat)
             # or "task:<idem key>" (one task: a voice preset, a new chat's first job).
             self._db.execute("""CREATE TABLE IF NOT EXISTS model_choices (
@@ -1021,13 +1023,13 @@ class StateStore:
         self._closed(closed)
         return bool(cursor.rowcount)
 
-    def mark_answered(self, key: str) -> bool:
+    def mark_answered(self, key: str, answer: str | None = None) -> bool:
         """The user answered this task's question (a tapped option, a typed or spoken reply): it waits on
         nobody any more, on every device (the board, the panel's Needs you, the session page). True when
-        it had an open question."""
-        return bool(self.close_question(key, "answered"))
+        it had an open question. *answer*: the words, so every device shows which option was taken."""
+        return bool(self.close_question(key, "answered", answer=answer))
 
-    def close_question(self, key: str, reason: str) -> list[str]:
+    def close_question(self, key: str, reason: str, answer: str | None = None) -> list[str]:
         """The one way a question closes (``reason`` in QUESTION_CLOSES). Returns the idem keys whose
         question closed (this task's, plus the same question asked again by another task of the
         conversation for an answer, a set-aside or a dismiss); empty when it wasn't open.
@@ -1038,6 +1040,10 @@ class StateStore:
             raise ValueError(reason)
         with self._lock, self._db:
             closed = self._close_locked(key, reason, time.time())
+            if closed and reason == "answered" and isinstance(answer, str) and answer.strip():
+                for k in closed:
+                    self._db.execute("UPDATE runs SET question_answer=? WHERE idem_key=?",
+                                     (" ".join(answer.split())[:500], k))
         self._closed(closed)
         return closed
 
@@ -1129,6 +1135,12 @@ class StateStore:
             row = self._db.execute("SELECT question_state, result_json, answered, set_aside, question_closed "
                                    "FROM runs WHERE idem_key=?", (key,)).fetchone()
         return _question_state(*row) if row else None
+
+    def question_answer(self, key: str) -> str | None:
+        """The words the user answered this task's question with, when the server saw them."""
+        with self._lock:
+            row = self._db.execute("SELECT question_answer FROM runs WHERE idem_key=?", (key,)).fetchone()
+        return row[0] if row and row[0] else None
 
     def question_closed(self, key: str) -> str | None:
         """How this task's question closed unanswered (dismissed / moved_on / expired / superseded),
@@ -2051,6 +2063,10 @@ class StateStore:
             # Its question's one state (open / answered / set_aside / dismissed / moved_on / expired /
             # superseded): apps show the card from this alone (the fields below are for older apps).
             work["question_state"] = state
+            if state == "answered":
+                answer = self.question_answer(key)
+                if answer:
+                    work["question_answer"] = answer  # which option was taken, on every device
         closed = state if state in {"dismissed", "moved_on", "expired", "superseded"} else None
         answered = answered or state == "answered"
         if closed and not answered and not set_aside:

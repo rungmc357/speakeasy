@@ -178,3 +178,11 @@ def test_answer_refuses_bad_bodies_unknown_tasks_and_tasks_that_ask_nothing(serv
 
 def test_capability_is_advertised(service):
     assert service.status()["capabilities"]["question_state"] is True
+
+
+def test_every_device_sees_which_option_was_taken(server, service, hermes, state):
+    run_id, key = _linked_question(server, service, hermes, state)
+    hermes.responder = plain
+    assert post(server, f"/voice/tasks/{run_id}/question/answer", {"text": "Grey"})[0] == 200
+    work = service.store.work(run_id)
+    assert work["question_state"] == "answered" and work["question_answer"] == "Grey"

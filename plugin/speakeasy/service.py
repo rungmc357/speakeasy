@@ -2488,7 +2488,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(409, "That question was already answered.", reason="answered")
         got = self.task_message(run_id, {"text": body.get("text"), "source": "typed",
                                          **({"client_id": client_id} if client_id else {})})
-        self.store.close_question(key, "answered")
+        self.store.close_question(key, "answered", answer=body.get("text"))
         self._republish_all()
         return {**got, "question": "answered"}
 

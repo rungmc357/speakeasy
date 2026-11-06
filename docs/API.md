@@ -74,6 +74,7 @@ used in the tests (timestamps and IDs will differ).
 | DELETE | `/voice/schedules/{id}` | device | Delete a scheduled job |
 | POST | `/voice/tasks/dismiss` | device | Hide finished tasks |
 | POST | `/voice/tasks/{run_id}/question/dismiss`, `/undo` | device | Close a task's open question without answering (✕), or bring it back (Undo); the agent is told nothing |
+| POST | `/voice/tasks/{run_id}/question/answer` | device | Answer a task's question by run id (`{text, client_id?}`), with or without a call; 409 once answered |
 | GET | `/voice/titles` | device | Past tasks still under their stand-in title: what the app's Apple Intelligence sweep may rename |
 | POST | `/voice/titles` | device | Set one task's title (from the app's on-device titler); the job's name follows |
 | GET | `/voice/card-image/{run_id}/{1-8}` | device | Image bytes for an image card |
@@ -1105,6 +1106,15 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
   thread): the job then carries `question_closed: "moved_on"` (or `"dismissed"` after the ✕) and
   `set_aside: true`, and keeps `result.question` for a quiet "Question · moved on" line. Two tasks in
   different threads keep independent questions. Capability `question_actions`.
+- Question state (capability `question_state`): every task that asks carries `question_state`, one
+  of `open`, `answered`, `set_aside`, `dismissed`, `moved_on`, `expired` (a day old, or its task
+  failed), `superseded` (a newer task of the same thread, or a follow-up replaced its row), plus
+  `question_answer` (the words) once answered. Only `open` waits on the user; show the card from this
+  field alone. Every close, however it happens, publishes `decision_resolved` on the history feed and
+  withdraws the Needs you notification (the extension's text then says it was handled; no new wake
+  goes out for it). The server sweeps stale questions on its own about every 15 s, so nothing needs
+  a page open. `POST /voice/tasks/{run_id}/question/answer` answers with no call open (the answer
+  goes to the task as a typed message does; a retry with the same `client_id` gets the first reply).
 - `approvals`: approvals the session's Speakeasy tasks wait on right now
   (`[{run_id, task_id, description, choices}]`, `choices` from `once`, `session`, `deny`; never
   `always`). Answer with `POST /voice/history/{session_id}/approval`.

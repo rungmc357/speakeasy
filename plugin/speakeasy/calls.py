@@ -1750,7 +1750,7 @@ class SidebandWorker:
         answers[key] = (delegation_id, now)
         answered = getattr(self, "question_answered", None)
         if callable(answered):
-            answered(task_id)
+            answered(task_id, text)
         self.delegations.add(delegation_id)
         self.last_handoff_at = time.monotonic()
         self.touch()
@@ -1772,14 +1772,14 @@ class SidebandWorker:
         follow.add_done_callback(_log_follow_up_failure)
         return delegation_id
 
-    def question_answered(self, task_id: str) -> None:
+    def question_answered(self, task_id: str, answer: str | None = None) -> None:
         """The task's question was answered: recorded in the store (the one truth every device's board,
         panel and session page read), and every client told at once (decision_resolved)."""
         with self.interaction.lock:
             run = self.interaction.runs.get(task_id)
             key, run_id = (run.idem_key, run.run_id) if run else (None, None)
         # Store.close_question tells every device (decision_resolved) and withdraws the push.
-        if key and self.store.mark_answered(key):
+        if key and self.store.mark_answered(key, answer):
             self.publish()
 
     def picked_request(self, task_id: str, text: str) -> str:
