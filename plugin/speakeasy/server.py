@@ -527,6 +527,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/voice/work/latest": self.service.work_latest,
                 "/voice/titles": self.service.pending_thread_titles,
                 "/voice/settings": self.service.get_settings,
+                "/voice/approvals": self.service.approval_rules,
                 "/voice/brief": self.service.get_brief,
                 "/voice/status": self.service.status,
                 "/voice/destinations": self.service.destinations,

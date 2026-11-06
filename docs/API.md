@@ -79,6 +79,7 @@ used in the tests (timestamps and IDs will differ).
 | GET | `/voice/shared-image/{run_id}/{n}` | device | An image the user shared with a task |
 | POST | `/voice/drafts/{draft_id}` | device | Approve / deny / revise an email draft |
 | GET, PATCH | `/voice/settings` | device | Server settings |
+| GET | `/voice/approvals` | device | This Hermes' approval rules in plain words (read-only) |
 | GET, PUT | `/voice/brief` | device | The voice brief |
 | POST | `/voice/brief/rewrite` | device | Ask Hermes to rewrite the brief |
 | GET | `/voice/brief/tune` | device | Brief edits proposed from recent calls (state, edits, product issues) |
@@ -1227,6 +1228,42 @@ forms as the preview. `400` for an unreadable schedule or nothing to change.
 ### DELETE /voice/schedules/{id}
 
 `200 {"ok": true, "id"}`. Apps confirm first.
+
+## GET /voice/approvals
+
+Capability `approval_rules` (plugin 0.3.37). Read-only: how this profile's Hermes handles risky
+commands, from its `config.yaml` merged over Hermes' defaults the way Hermes reads it
+(`approvals.mode`, `approvals.timeout`, `approvals.smart_policy`, `command_allowlist`,
+`approvals.deny`, `approvals.cron_mode`, `approvals.unattended_mode`, `memory.write_approval`,
+`skills.write_approval`). Nothing is written. Every string is already plain words, so the apps show
+the sections as they come and the wording improves with a plugin update. Hermes' rule names are
+folded into kinds (the several "recursive delete" variants are one "Deleting folders and everything
+in them" row); user deny rules are shown as the pattern itself in `code`.
+
+```json
+{"approvals": {"profile": "default", "mode": "smart", "read_only": true,
+  "sections": [
+    {"id": "mode", "title": "Risky commands", "rows": [
+      {"id": "mode", "title": "Quick safety check first", "detail": "A second model looks at each risky command…"},
+      {"id": "timeout", "title": "Waits for your answer", "value": "5 minutes", "detail": "If nobody answers in time, the command is blocked."}]},
+    {"id": "always_allowed", "title": "Always allowed", "rows": [{"id": "allow_0", "title": "Running scripts and code snippets"}],
+     "empty": "Nothing yet. …", "footer": "These run without asking because you answered Always once. …"},
+    {"id": "always_blocked", "title": "Always blocked", "rows": [{"id": "deny_0", "title": "Commands matching", "code": "git push --force*"}],
+     "footer": "A few commands are always blocked, whatever the setting: …"},
+    {"id": "nobody_there", "title": "When nobody can answer", "rows": [
+      {"id": "cron_mode", "title": "Scheduled jobs", "value": "Blocked"},
+      {"id": "unattended_mode", "title": "Webhooks and other automatic runs", "value": "Blocked"}], "footer": "…"},
+    {"id": "writes", "title": "Memory and skills", "rows": [
+      {"id": "memory", "title": "Changes to memory", "value": "Saved without asking"},
+      {"id": "skills", "title": "Changes to skills", "value": "Waits for your OK"}]}],
+  "note": "You can't change these from Speakeasy yet. In a Hermes chat, /approvals switches how risky commands are handled."}}
+```
+
+A row has `id` and `title`, and optionally `value` (short, shown at the trailing edge), `detail`
+(a sentence under the title) and `code` (a pattern, shown in a fixed-width font). A section has
+`id`, `title`, `rows`, and optionally `empty` (shown when `rows` is empty) and `footer`. `mode` is
+`manual`, `smart` or `off`; the timeout row is left out when `mode` is `off`, and the extra
+safety-check instructions row appears only in `smart` mode with an `approvals.smart_policy` set.
 
 ## POST /voice/tasks/dismiss
 

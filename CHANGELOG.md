@@ -2,6 +2,10 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.37 (unreleased) — See your approval rules
+
+- **Approvals in Settings.** A new Approvals page (Mac, iPhone and iPad) shows how your Hermes handles risky commands, in plain words: whether it asks you every time, runs a quick safety check first or never asks; how long a question waits; the kinds of commands you've said Always to; anything you've blocked; what scheduled jobs do when nobody can answer; and whether memory and skill changes wait for your OK. It's read-only for now.
+
 ## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
 
 - **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.

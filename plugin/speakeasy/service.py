@@ -109,6 +109,8 @@ CAPABILITIES["schedules"] = True
 # device-code login (codex_login.py). The plugin first looks for a working sign-in in every Codex
 # copy on the machine, and installs Codex when there is none; the app asks only when nothing works.
 CAPABILITIES["codex_login"] = True
+# GET /voice/approvals: this profile's Hermes approval rules in plain words, read-only (approval_rules.py).
+CAPABILITIES["approval_rules"] = True
 
 
 
@@ -2813,6 +2815,11 @@ class VoiceService(SecureInputMixin):
     # -- settings / brief / status / onboarding ---------------------------------------------------
     def get_settings(self) -> dict[str, Any]:
         return {"settings": self.settings.get()}
+
+    def approval_rules(self) -> dict[str, Any]:
+        """``GET /voice/approvals``: how this Hermes handles risky commands, read-only."""
+        from . import approval_rules
+        return approval_rules.rules(self.home)
 
     def routing_choices(self) -> dict[str, Any]:
         from . import routing_choice
