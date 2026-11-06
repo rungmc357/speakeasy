@@ -101,9 +101,10 @@ def add_env_if_missing(home: Path, values: dict[str, str]) -> list[str]:
     return added
 
 
-def enable_voice_platform(home: Path, port: int) -> bool:
+def enable_voice_platform(home: Path, port: int, move_port: bool = False) -> bool:
     """Turn on gateway.platforms.voice in this profile's config.yaml. Returns True if changed.
-    Only adds settings; refuses (config untouched) if the file can't be read."""
+    Only adds settings (``move_port`` also replaces the voice port, when another profile holds
+    it); refuses (config untouched) if the file can't be read."""
     from . import hermes_config
 
     def turn_on(data: dict) -> bool:
@@ -119,7 +120,7 @@ def enable_voice_platform(home: Path, port: int) -> bool:
         changed = not voice.get("enabled")
         voice["enabled"] = True
         extra = voice.setdefault("extra", {})
-        if isinstance(extra, dict) and "port" not in extra:
+        if isinstance(extra, dict) and ("port" not in extra or (move_port and extra["port"] != port)):
             extra["port"] = port
             changed = True
         plugins = data.setdefault("plugins", {})
@@ -162,7 +163,7 @@ def _open(url: str) -> bool:
 
 # -- commands -------------------------------------------------------------------------------------
 
-def _prepare_profile(home: Path, port: int, out) -> None:
+def _prepare_profile(home: Path, port: int, out, move_port: bool = False) -> None:
     """Step 1: what Speakeasy needs in this profile. Never overwrites an existing value."""
     added = add_env_if_missing(home, {
         "API_SERVER_KEY": secrets.token_urlsafe(32),
@@ -173,7 +174,7 @@ def _prepare_profile(home: Path, port: int, out) -> None:
         out(f"  Note: API_SERVER_HOST is {host}; Speakeasy only talks to it over loopback.")
     if added:
         out("✓ Turned on Hermes' local API (Speakeasy uses it to hand work to your agent)")
-    enable_voice_platform(home, port)
+    enable_voice_platform(home, port, move_port)
     Settings(home).ensure()  # settings.json (0600) with defaults
     out("✓ Speakeasy is enabled in this Hermes profile")
 
@@ -183,27 +184,40 @@ def cmd_setup(args, home: Path, env=None) -> int:
     from . import setup_flow as F
     env = env or F.Env()
     out = env.out
+    from . import profiles as P
     assume = True if getattr(args, "yes", False) else None
-    port = voice_port(home)
+    whois = env.whois(home)
+    # Another profile's server on our port must never be mistaken for ours (profiles.py).
+    was = P.configured_port(home) or P.DEFAULT_PORT
+    port, holder = P.choose_port(home, identity=whois, free=env.is_port_free())
     local = f"http://127.0.0.1:{port}"
+    me = P.profile_name(home)
     out("Setting up Speakeasy…")
     from .hermes_config import ConfigWriteRefused
     try:
-        _prepare_profile(home, port, out)
+        _prepare_profile(home, port, out, move_port=bool(holder))
     except ConfigWriteRefused as exc:
         out(f"✗ Left your Hermes config.yaml untouched: {exc}")
         out("  Fix or restore config.yaml (hermes config check), then run setup again.")
         return 1
 
     settings = Settings(home)
+    if holder:
+        held = "another program" if holder == "another program" else f"the Hermes profile '{holder}'"
+        out(f"• Port {was} is already used by {held}, so this profile ('{me}') uses port {port} instead."
+            if port != was else f"✗ Port {was} is used by {held} and no free port was found nearby.")
     voice_ok = F.voice_sign_in(env, home, settings, api_key=getattr(args, "api_key", False), assume=assume)
-    up = F.voice_server_running(env, local)
+    owner = P.whose(home, whois(local), port, P.claimed_ports(home))
+    up = owner == "ours"
+    if owner not in {"ours", "none"}:
+        out(f"✗ The voice server on port {port} belongs to {owner}, not this profile ('{me}'): "
+            "not pairing with it.")
     server = _advertise(args, env, settings, port) or local
     server = _cloudflare(env, home, settings, tailnet=not is_local_url(server),
                          here=getattr(args, "here", False)) or server
 
     if up:
-        out("✓ Voice server is running")
+        out(f"✓ Voice server is running (Hermes profile '{me}', port {port})")
         out("✓ Your agent will write a short voice brief in the background: what the voice should know about "
             "you and what it can hand off. You can read and edit it in the app.")
     _print_routing_model(out)
@@ -288,6 +302,17 @@ CLOUDFLARE_AUTO = [
 ]
 LOCAL_ONLY_NOT_SENT = ("✗ No pairing link sent yet: without Tailscale or Cloudflare it would only work on this "
                        "computer. Turn on Cloudflare mode (the box above), then run setup again.")
+def cloudflare_auto(home: Path, port: int) -> list[str]:
+    """CLOUDFLARE_AUTO for this profile: a second profile's tunnel needs its own home and ports."""
+    from . import profiles as P
+    if port == DEFAULT_PORT and P.profile_name(home) == "default":
+        return list(CLOUDFLARE_AUTO)
+    lines = list(CLOUDFLARE_AUTO)
+    lines[1] = (f"  1. python3 speakeasy-cloudflare.py quick --hermes-home {home} --port {port} "
+                f"--metrics-port {port + 2}")
+    return lines
+
+
 CLOUDFLARE_CONNECTED = "✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale."
 CLOUDFLARE_BACKUP = "✓ Cloudflare is on too, as a backup: your devices use Tailscale first."
 # What the agent tells the user after setting up Cloudflare mode for them (docs/AGENT_SETUP.md says the same).
@@ -307,7 +332,7 @@ def _cloudflare(env, home: Path, settings: Settings, *, tailnet: bool, here: boo
     s = settings.get()["server"]
     if not s["tunnel"]:
         if not tailnet and not here:
-            F.banner(env, CLOUDFLARE_AUTO)
+            F.banner(env, cloudflare_auto(home, voice_port(home)))
         return ""
     if s["tunnel_hostname"]:
         url = f"https://{s['tunnel_hostname']}"

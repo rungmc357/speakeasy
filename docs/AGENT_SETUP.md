@@ -128,6 +128,12 @@ link in chat is enough on its own.
   `✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale.` and the pairing
   link carries the Cloudflare address. With neither, it prints a box telling you to run
   `python3 speakeasy-cloudflare.py quick` (step 2) and set up again: do that, don't ask.
+- **More than one Hermes profile on this machine:** each profile gets its own voice port. If
+  another profile already uses the port, setup moves this one to a free port, says so (`Port 8795
+  is already used by the Hermes profile '…'`), and never pairs against the other profile's server.
+  `✓ Voice server is running (Hermes profile '…', port …)` names the profile it set up: check it's
+  the one you meant. For Cloudflare mode in a second profile, run the exact command setup prints
+  (it carries that profile's `--hermes-home` and ports).
 
 ## 4. Read the result and tell the user the one thing to do
 

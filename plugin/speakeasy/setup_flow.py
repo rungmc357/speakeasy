@@ -50,6 +50,24 @@ class Env:
     sleep: Callable[[float], None] = time.sleep
     which: Callable[[str], str | None] = shutil.which
     clock: Callable[[], float] = time.monotonic
+    identity: Callable[[str], dict | None] | None = None   # the local /health answer (profiles.py)
+    port_free: Callable[[int], bool] | None = None
+
+    def whois(self, home: Path) -> Callable[[str], dict | None]:
+        """Who answers on a local URL. Tests that fake only ``health`` get "this profile" for a yes."""
+        from . import profiles
+        if self.identity is not None:
+            return self.identity
+        if self.health is not None:
+            me = {"platform": "voice", "home_id": profiles.home_id(home), "profile": profiles.profile_name(home)}
+            return lambda url: dict(me) if self.health(url) else None
+        return profiles.health_identity
+
+    def is_port_free(self) -> Callable[[int], bool]:
+        from . import profiles
+        if self.port_free is not None:
+            return self.port_free
+        return (lambda port: True) if self.health is not None else profiles.port_free  # faked health: faked ports
 
     def confirm(self, question: str, default: bool = True, assume: bool | None = None) -> bool:
         if assume is not None:
