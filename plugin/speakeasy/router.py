@@ -1499,7 +1499,11 @@ _META_UNDO = re.compile(
     r"(?i)\b(?:(?:don'?t|do\s+not)\s+(?:add|send|start|dispatch|kick\s+off|hand\s+off|run)\s+(?:it|that|this|anything)(?:\s+(?:yet|off|in))?"
     r"|(?:i\s+)?didn'?t\s+(?:mean\s+(?:to|for\s+you\s+to)\s+send|want\s+(?:you\s+)?to\s+(?:send|add|start))"
     r"|(?:before|until)\s+(?:i(?:'m|\s+am)?\s+(?:finish(?:ed)?|done)|you\s+send(?:\s+(?:it|that|incomplete\s+\w+))?)"
-    r"|incomplete\s+(?:context|thought|request)|(?:un-?send|pull\s+back|take\s+back)\s+(?:it|that|this))\b")
+    r"|incomplete\s+(?:context|thought|request)|(?:un-?send|pull\s+back|take\s+back)\s+(?:it|that|this)"
+    # Not meant for the voice at all: \"I wasn't talking to you\", \"that wasn't for you\".
+    r"|(?:i\s+)?(?:was(?:n'?t|\s+not)|am\s+not|'?m\s+not)\s+(?:even\s+)?talking\s+to\s+you"
+    r"|(?:that|this|it)\s+(?:was(?:n'?t|\s+not)|is(?:n'?t|\s+not)|'?s\s+not)\s+(?:meant\s+)?for\s+you"
+    r"|i\s+was\s+(?:just\s+)?talking\s+to\s+(?:someone|somebody|my\s+\w+|\w+\s+else))\b")
 _META_CONFUSED_ANY = re.compile(
     r"(?i)\b(?:what\s+do\s+you\s+mean|what\s+(?:\w+\s+){0,3}(?:are\s+you|you'?re)\s+(?:talking|referring)\s+(?:about|to)"
     r"|(?:don'?t|do\s+not)\s+(?:know|understand|get|follow)\s+what\s+(?:\w+\s+){0,3}(?:you'?re|you\s+are)\s+(?:talking|referring)\s+(?:about|to)"

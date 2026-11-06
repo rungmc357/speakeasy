@@ -191,7 +191,7 @@ def resume_block(tasks: list[dict[str, Any]], names: Names) -> str:
     lines = [
         "# Resumed call",
         f"{names.user_cap} paused this call and has just resumed it. The conversation so far is in your history. "
-        "Do not greet them or introduce yourself again; pick up exactly where you left off. "
+        "Do not greet them or introduce yourself again; carry on from exactly where the conversation stopped. "
         "If you were in the middle of an answer that still matters, finish it briefly; otherwise wait for them.",
     ]
     open_tasks = []
@@ -1015,6 +1015,9 @@ def status_answer(name: str, status: str | None, steps: list[str], age_s: float,
             "Earlier steps, newest last: " + "; ".join(concrete[-3:]) + "." if concrete else "")
     if live and status not in {"completed", "failed", "interrupted", "cancelled"}:
         facts += " What it has been doing most recently, oldest first: " + "; ".join(live[-5:]) + "."
+    if status not in {"completed", "failed", "interrupted", "cancelled", "waiting_for_approval"}:
+        facts += (" It is still in progress: relay each step in the tense it is written (\"submitting\" means not "
+                  "submitted yet), and never say it is done, submitted, sent, pushed, shipped or live.")
     if queued_behind and status not in {"completed", "failed", "interrupted", "cancelled"}:
         facts = f"It hasn't started: it's queued behind \"{notice_text(queued_behind, 80)}\" in the same chat. " + facts
     job = []
@@ -1058,6 +1061,60 @@ def spoken_name(title: str | None, limit: int = 60) -> str:
     return text.strip(" .,:;-")
 
 
+_SUBJECT_VERBS = frozenset("""
+    add analyze audit check clean confirm continue create debug decide explain figure find fix get
+    investigate look make prepare pull put read rebuild redo refresh remove rename research rewrite send
+    summarize tidy try update upgrade write compare buy submit diagnose handle why what how whether
+""".split())
+_SUBJECT_SPLIT = re.compile(r"(?i)\b(?:for|on|about|of|in|into|from|with|behind|regarding)\s+")
+# Words that are a verb opening a title ("Plan the trip") or a noun in a subject ("build sixty-seven"):
+# a verb only before a determiner, so a subject passed in again stays as it is.
+_DUAL_VERBS = frozenset("""
+    build plan test review list order file release run search work map cut sort show start set turn track help
+    draft schedule push ship merge book move change post upload install deploy publish finish
+""".split())
+_DETERMINERS = frozenset("""
+    the a an my our your his her their this that these those all some any every remaining next new why what how
+    whether which where when up out
+""".split())
+_GENERIC_HEAD = frozenset("""
+    the a an my our all any some remaining rest open next new other work tasks task items things stuff list notes
+    plan plans status steps changes issues bugs details info information options ideas
+""".split())
+_SUBJECT_STOP = re.compile(r"(?i)\s+(?:keeps?|is|are|was|were|isn't|aren't|won't|doesn't|don't|fails?|failing|"
+                           r"breaks?|broke|stopped|stops|still|then|after|before|so|because|and|but|when|while)\b.*$")
+
+
+def spoken_subject(title: str | None, words: int = 4) -> str:
+    """What a task is about, in a few words to say aloud ("build sixty-seven", "the pricing page
+    copy"), never the task's title read out ("Adding that to Plan remaining work for build
+    sixty-seven"). A title is "<subject>: <ask>" or "<verb> <thing> [for/on/about <subject>]"."""
+    text = re.sub(r"\s+", " ", re.sub(r"[\"\u201c\u201d]", "", title or "")).strip(" .,:;-")
+    if not text:
+        return ""
+    head, sep, _ = text.partition(":")
+    if sep and 0 < len(head.split()) <= words + 1:
+        text = head
+    else:
+        parts = text.split()
+        while len(parts) > 1 and (parts[0].lower().strip(",") in _SUBJECT_VERBS or (
+                parts[0].lower() in _DUAL_VERBS and parts[1].lower() in _DETERMINERS)):
+            parts = parts[1:]
+        text = _SUBJECT_SPLIT.sub("", " ".join(parts), count=1) if _SUBJECT_SPLIT.match(" ".join(parts)) \
+            else " ".join(parts)  # "Look into playback stutter" -> "playback stutter"
+        text = _SUBJECT_STOP.sub("", text) or text
+        pieces = [p.strip() for p in _SUBJECT_SPLIT.split(text, maxsplit=1)]
+        if len(text.split()) > words and len(pieces) == 2 and pieces[1]:
+            # "remaining work for build sixty-seven": the thing after a generic head is the subject;
+            # otherwise the head is ("playback stutter on the TV" -> "playback stutter").
+            generic = set(pieces[0].lower().split()) <= _GENERIC_HEAD
+            text = pieces[1] if generic or not pieces[0] else pieces[0]
+    text = " ".join(text.split()[:words])
+    while _NAME_TAIL.search(text):
+        text = _NAME_TAIL.sub("", text)
+    return text.strip(" .,:;-")
+
+
 def named_pulse(line: str | None, name: str, needs: bool) -> str | None:
     """A pulse line that says which job it is about when more than one could be meant (or this one
     wasn't the last thing talked about), unless it already names it."""
@@ -1065,7 +1122,92 @@ def named_pulse(line: str | None, name: str, needs: bool) -> str | None:
         return line
     if _words_of(name) and len(_words_of(name) & _words_of(line)) >= max(1, len(_words_of(name)) // 2):
         return line
+    name = name[:1].upper() + name[1:]
     return f"{name}: {line[0].lower() + line[1:] if line[:2].istitle() else line}"
+
+
+# A line that says the work is finished: "is submitted", "has been pushed", "it's live", "all done".
+_DONE_CLAIM = re.compile(
+    r"(?i)(?:\b(?:is|are|was|were|has\s+been|have\s+been|got|now)|['\u2019]s)\s+(?:all\s+|now\s+|been\s+)?"
+    r"(?:submitted|shipped|pushed|sent|published|released|deployed|uploaded|merged|posted|live|done|finished)\b"
+    r"|\b(?:it'?s\s+live|all\s+done|went\s+(?:out|live|through))\b")
+
+
+def claims_done(text: str | None) -> bool:
+    """The line says the work is finished ("the build is submitted", "it's live", "all done")."""
+    return bool(_DONE_CLAIM.search(text or ""))
+
+
+# Openers that say work is being resumed. Speakeasy's own spoken lines never need one: a task's
+# update is news about that task, and "picking up where I left off" on a brand-new task is false.
+_RESUME_LEAD = re.compile(
+    r"(?i)^\s*(?:(?:okay|ok|so|alright|right)[,.]?\s+)?(?:(?:i'?m|we'?re)\s+)?"
+    r"(?:picking\s+(?:it\s+|things\s+)?(?:back\s+)?up(?:\s+where\s+(?:i|we)\s+left\s+off)?"
+    r"|(?:coming|getting|going)\s+back\s+to|back\s+(?:on|to)|returning\s+to|resuming"
+    r"|(?:continuing|carrying\s+on)\s+(?:where\s+(?:i|we)\s+left\s+off|from\s+before))"
+    r"[^.:;,!?\u2014]*[.:;,!?\u2014]?\s*")
+
+
+def without_resume_lead(text: str | None) -> str | None:
+    """`text` without a resume opener ("Picking up where I left off on playback: checking the
+    queue." -> "Checking the queue."). None when the opener was all it said."""
+    if not text:
+        return text
+    rest = _RESUME_LEAD.sub("", text, count=1).strip()
+    if rest == text.strip():
+        return text
+    return (rest[:1].upper() + rest[1:]) if rest else None
+
+
+def in_progress_line(text: str | None, line: str | None) -> str | None:
+    """A spoken update for a task that is still running never says it's done. A done-claim ("the
+    build is submitted") falls back to the card's own progress line ("Submitting build 50."), or
+    to nothing when that says done too: only a task's final result may say that."""
+    if not text or not claims_done(text):
+        return text
+    plain = " ".join(str(line or "").split()).strip()
+    if plain and not claims_done(plain):
+        return plain if plain.endswith((".", "!", "?", "\u2026")) else plain + "."
+    return None
+
+
+_PROGRESSIVE = {"submitting": "submitted", "shipping": "shipped", "pushing": "pushed", "sending": "sent",
+                "publishing": "published", "releasing": "released", "deploying": "deployed",
+                "uploading": "uploaded", "merging": "merged", "posting": "posted", "booking": "booked",
+                "ordering": "ordered", "buying": "bought", "filing": "filed", "installing": "installed",
+                "finishing": "finished", "applying": "applied", "saving": "saved"}
+
+
+def overclaimed(said: str | None, progress: str | None) -> str | None:
+    """The voice called a running task's step done ("it's submitted") while the task's own progress
+    says it is still doing it ("submitting build 50"): the verb it overclaimed, else None."""
+    said_l, prog_l = (said or "").lower(), (progress or "").lower()
+    for doing, done in _PROGRESSIVE.items():
+        if not (re.search(rf"\b{doing}\b", prog_l) and re.search(rf"\b{done}\b", said_l)):
+            continue
+        if re.search(rf"\b(?:not|isn'?t|hasn'?t|haven'?t|aren'?t|wasn'?t|before|until|once|when|if|after)\s+"
+                     rf"(?:\S+\s+){{0,3}}{done}\b", said_l):
+            continue  # "it isn't submitted yet", "once it's submitted"
+        return done
+    return None
+
+
+def overclaim_correction(verb: str, progress: str) -> str:
+    """Spoken right after the voice called a running step done: the truth, in one line (the part of
+    the task's progress that says it's still doing it)."""
+    doing = next((k for k, v in _PROGRESSIVE.items() if v == verb), "")
+    parts = [p for p in re.split(r"(?<=[.!?;])\s+", " ".join((progress or "").split())) if p.strip(" .")]
+    plain = next((p for p in parts if doing and re.search(rf"(?i)\b{doing}\b", p)), parts[0] if parts else "")
+    plain = plain.strip(" .;")
+    plain = plain[:1].lower() + plain[1:] if plain[:2].istitle() else plain
+    return f"Correction: it isn't {verb} yet. I'm still {plain}." if plain else f"Correction: it isn't {verb} yet."
+
+
+def retracted_result_note(request: str, spoken: str | None) -> str:
+    """A task the user took back (it wasn't meant for the voice) finished anyway: background only."""
+    return (f"Background, do not say this: the request \"{request}\" was taken back by the user (it wasn't meant "
+            f"for you), but its task ended anyway: {notice_text(spoken, 300) or 'no answer'}. Don't read it out, "
+            "announce it or say any work was done; use it only if they ask about it.")[:2000]
 
 
 def hold_note(names: "Names") -> str:
@@ -1103,8 +1245,10 @@ def late_result(asked: str, spoken: str) -> str:
 
 def status_note(detail: str) -> str:
     """A silent status note for the voice model: context for "how's it going?", never a cue to talk."""
-    return ("Background status, do not say anything now; only use it if asked how the task is going: "
-            + re.sub(r"\s+", " ", detail or "").strip()[:300])
+    return ("Background status of a task that is still in progress (not finished), do not say anything now; only "
+            "use it if asked how the task is going, and then in the tense it is written (\"submitting\" is not "
+            "\"submitted\"; it isn't done, sent or live until its result says so): "
+            + re.sub(r"\s+", " ", without_resume_lead(detail or "") or "").strip()[:300])
 
 
 def home_question(question: str) -> str:
@@ -1452,8 +1596,8 @@ def continuing_in_note(where: str) -> str:
     """Silent background for continuing an earlier Hermes conversation. The conversation's name is an
     auto-generated title: never read it aloud."""
     return (f"Background, do not read this aloud: this continues an earlier conversation ({where}), and its answer "
-            "lands there too. If you acknowledge it, say you're picking up where you left off, naming the topic in "
-            "two or three words of your own; never read the conversation's name, and don't mention threads or sessions. "
+            "lands there too. If you acknowledge it, a few words of your own about the subject are enough; never read "
+            "the conversation's name, and don't mention threads or sessions. "
             "If asked where it went, say it continues that earlier conversation.")
 
 
@@ -1615,18 +1759,19 @@ def typed_note(task: str, text: str, muted: bool) -> str:
 def adding_to_note(task: str, say: bool = True) -> str:
     """The router attached what was just said to an existing task. ``say``: the voice names where it
     went, once; otherwise it's obvious or already said, and it isn't said again."""
-    name = notice_text(task, 80) or "that task"
-    head = f"What they just said was added to the existing task \"{name}\"."
+    name = spoken_subject(task) or "that"
+    head = f"What they just said was added to the task already working on {name}."
     if say:
-        return (head + f" Say where it went once, briefly (\"Adding that to {name}.\"), unless you already "
-                "said so in this reply; never say it twice in one reply. Keep the rest short.")
+        return (head + f" Say where it went once, briefly, naming the subject in a few words (\"Adding that to "
+                f"{name}.\"), never the task's title, unless you already said so in this reply; never say it twice "
+                "in one reply. Keep the rest short.")
     return (head + " Where it went is obvious or you already said it: don't announce where it went or name "
             "the task again. A couple of words at most, or nothing.")
 
 
 def moved_note(task: str) -> str:
-    name = notice_text(task, 80) or "that task"
-    return (f"The user said it went to the wrong task; it was moved to \"{name}\" (not started twice). "
+    name = spoken_subject(task) or "the other one"
+    return (f"The user said it went to the wrong task; it was moved to the task on {name} (not started twice). "
             f"Say \"Moved it to {name}.\" and nothing more.")
 
 

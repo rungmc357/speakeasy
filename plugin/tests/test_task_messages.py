@@ -236,7 +236,7 @@ def test_spoken_follow_up_is_announced_and_a_correction_moves_it(server, service
 
 
 def added_notes(worker):
-    return [n for n in notes(worker) if "was added to the existing task" in n]
+    return [n for n in notes(worker) if "was added to the task already working on" in n]
 
 
 def test_more_for_the_same_task_is_announced_only_once(server, service, hermes):

@@ -266,7 +266,7 @@ def test_two_tasks_rotate_and_never_back_to_back(service, clock):
     assert {d for _, d, _ in said} == {"t_p1", "t_p2"}  # both get heard
     # Two jobs running: each line says which one it's about, and stays under the cap.
     for _, d, line in said:
-        assert line.startswith("Fix the cart totals: " if d == "t_p1" else "Compare flight prices: ")
+        assert line.startswith("The cart totals: " if d == "t_p1" else "Flight prices: ")  # subject, never the title
         assert len(line.split()) <= calls.PULSE_MAX_WORDS
 
 
