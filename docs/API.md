@@ -1178,6 +1178,47 @@ this session) waits on, through the worker holding it (the open call's, or the v
 way the voice does. `200 {"ok": true, "choice": "once"}`; `400` bad choice or not offered, `404` not a
 task of this session, `409` nothing waiting, `502` Hermes refused.
 
+## Files
+
+Capability `files` (plugin 0.3.37). Every file your agent handed you in a reply (pictures, documents,
+audio, video), across all chats, so you can find it later without scrolling. Hermes announces such
+files as `MEDIA:<path>` tags in its replies; the plugin reads those from `<HERMES_HOME>/state.db`
+(read-only, assistant messages only) and lists each file once, newest mention first. A file is listed
+and served only when Hermes itself would deliver it as an attachment (Hermes' own extractor and
+delivery check: credential stores, `~/.ssh`, system paths and the like are refused) and is a file type
+Hermes delivers; on a Hermes without that check, only files inside Hermes' own media caches count.
+Clients never see or send a path: every file is an opaque 26-character id, stable across restarts,
+and each download re-checks the file.
+
+### GET /voice/files
+
+Query: `kind` (one of the `kinds` ids), `q` (matches the file name or its chat's title), `session_id`
+(only one chat's files), `cursor` (from `next`), `limit` (default 60, at most 200).
+
+```json
+{"files": [{"id": "k3v5…", "name": "porch-paint-chart.png", "kind": "image", "mime": "image/png",
+            "bytes": 48213, "at": 1767312000.5, "session_id": "20260105_101500_ab12cd",
+            "chat": "Porch repaint", "source": "Discord · #build"}],
+ "kinds": [{"id": "image", "label": "Images", "count": 12}, {"id": "document", "label": "Docs", "count": 3}],
+ "total": 15, "next": "60", "loading": false}
+```
+
+`kind` is `image`, `video`, `audio`, `document` or `other`; `kinds` lists only the kinds this person
+has. `session_id` is the visible chat the file came from (a helper's file belongs to the chat that
+started the helper), ready for `GET /voice/history/{session_id}`. The first request after the plugin
+loads scans the newest replies in the background; until that's done the reply has `loading: true`
+(and whatever is ready), so ask again in a second or two.
+
+### GET /voice/files/{id}
+
+The file's bytes with its `Content-Type`, a `Content-Disposition` file name, and `Accept-Ranges`: one
+`Range: bytes=a-b` gives `206` (video seeking). `404` unknown, deleted or no longer deliverable; `413`
+bigger than 200 MB.
+
+### GET /voice/files/{id}/thumb
+
+A small JPEG (at most 360 px) of an image file for grids; `404` for other kinds.
+
 ## Models
 
 With capability `model_choice`, each chat can run on its own model and reasoning level. The list is

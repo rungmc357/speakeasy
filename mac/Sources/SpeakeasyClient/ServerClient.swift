@@ -315,6 +315,13 @@ public final class ServerClient: @unchecked Sendable {
         return try JSONDecoder().decode(PairResponse.self, from: data)
     }
 
+    /// A GET whose body isn't JSON (files, thumbnails): the bytes and the response, any status.
+    public func raw(_ path: String, timeout: TimeInterval = 30) async throws -> (Data, HTTPURLResponse) {
+        let (data, response) = try await session.data(for: request(path, timeout: timeout))
+        guard let http = response as? HTTPURLResponse else { throw HTTPError(status: 502, message: "No reply") }
+        return (data, http)
+    }
+
     public func json(_ path: String, method: String = "GET", body: Data? = nil,
               headers: [String: String] = [:]) async throws -> [String: Any] {
         let (data, response) = try await session.data(for: request(path, method: method, body: body, headers: headers))

@@ -160,6 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.wireHermesTranscription(caps?.transcribe ?? false)
                     self.history.store.boardsSupported = caps?.boards ?? false
                     self.history.store.skillsSupported = caps?.slashSkills ?? false
+                    self.history.store.filesSupported = caps?.files ?? false
                 }
             }
             .store(in: &bag)
@@ -602,6 +603,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if store.board.backend == nil { store.board.backend = LiveBoardBackend { [weak self] in self?.native.api } }
         store.boardsSupported = app.status?.capabilities?.boards ?? false
         store.skillsSupported = app.status?.capabilities?.slashSkills ?? false
+        if store.files.backend == nil { store.files.backend = LiveAgentFilesBackend { [weak self] in self?.native.api } }
+        store.filesSupported = app.status?.capabilities?.files ?? false
         store.setCallLive(native.model.state.connection.isInCall)
         history.show()
         if let session { store.open(session) }

@@ -903,6 +903,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     /// Typing "/" lists the user's Hermes skills (`GET /voice/skills`, SlashSkills.swift); a sent
     /// "/skill words" runs that skill.
     public var slashSkills: Bool = false
+    /// Files your agent made (`GET /voice/files`, AgentFiles.swift): the Files row and page.
+    public var files: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -919,7 +921,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
         case messageModes = "message_modes", questionState = "question_state", agents
-        case slashSkills = "slash_skills"
+        case slashSkills = "slash_skills", files
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -942,5 +944,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false
+        files = (try? c.decodeIfPresent(Bool.self, forKey: .files)) ?? false
     }
 }

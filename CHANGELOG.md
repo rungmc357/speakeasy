@@ -16,6 +16,11 @@ Works with the current Mac and iPhone apps; no app update needed.
 ## Plugin 0.3.37 (unreleased) — Skills in the message box
 
 - **Type / for your skills.** Typing `/` in a message box lists your Hermes skills with a one-line description; keep typing to narrow it, tap one to put it in the box, add what you want and send. It runs that skill exactly like `/skill` in Telegram or Discord, and the chat shows just what you typed.
+## Plugin 0.3.37 · Mac · iPhone (next build) — Files your agent made
+
+- **Every file in one place.** A new **Files** row in the side panel (iPhone, iPad, and the Mac's History window) lists every file your agent sent you in a reply, from every chat: pictures as thumbnails, documents, recordings and videos as tiles, newest first, with the chat each one came from. Type chips (Images, Docs, Audio…) appear when you have more than one kind.
+- **Open, share, keep.** Tap or click a file to look at it in Quick Look (share, save to Files or AirDrop from there on iPhone); on the Mac, drag it straight to Finder or save it to Downloads. Hold or right-click for **Open chat** to jump to the conversation it came from.
+- **Only what Hermes would send you anyway.** The list comes from the files Hermes attached to its replies, and the plugin serves a file only when Hermes itself would deliver it; your settings, keys and other private files never show up. Files are fetched by an id, never by a path on your computer.
 
 ## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
 ## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing

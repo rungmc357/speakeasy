@@ -140,11 +140,17 @@ final class HistoryStore: ObservableObject {
     let schedules = SchedulesModel()
     let scheduleDictation = ScheduleDictation()
     @Published var schedulesSupported = false
-    @Published private(set) var showingSchedules = false { didSet { if showingSchedules { showingBoard = false } } }
+    @Published private(set) var showingSchedules = false { didSet { if showingSchedules { showingBoard = false; showingFiles = false } } }
     /// Board (Hermes Kanban boards, read-only; servers with `boards`): the sidebar row and its pane.
     let board = BoardModel()
     @Published var boardsSupported = false
-    @Published private(set) var showingBoard = false { didSet { if !showingBoard { board.stopRefreshing() } } }
+    @Published private(set) var showingBoard = false {
+        didSet { if showingBoard { showingFiles = false } else { board.stopRefreshing() } }
+    }
+    /// Files your agent made (servers with `files`): the sidebar row and its pane.
+    let files = AgentFilesModel()
+    @Published var filesSupported = false
+    @Published private(set) var showingFiles = false { didSet { if showingFiles { showingBoard = false } } }
     @Published var now = Date()
 
     var backend: HistoryBackend?
@@ -312,6 +318,7 @@ final class HistoryStore: ObservableObject {
     func open(_ sessionID: String) {
         showingSchedules = false
         showingBoard = false
+        showingFiles = false
         guard target != .session(sessionID) else { return }
         cancelVoice()
         target = .session(sessionID)
@@ -323,6 +330,7 @@ final class HistoryStore: ObservableObject {
     func newChat() {
         showingSchedules = false
         showingBoard = false
+        showingFiles = false
         cancelVoice()
         target = .newChat
         newChatError = nil
@@ -336,6 +344,7 @@ final class HistoryStore: ObservableObject {
     func openSchedules(_ id: String? = nil) {
         guard schedulesSupported else { return }
         cancelVoice()
+        showingFiles = false
         showingSchedules = true
         schedules.selected = id
         Task { await schedules.reload() }
@@ -348,6 +357,23 @@ final class HistoryStore: ObservableObject {
         showingSchedules = false
         showingBoard = true
         board.startRefreshing()
+    }
+
+    /// The Files pane: every file the agent handed over in a reply, across all chats.
+    func openFiles() {
+        guard filesSupported else { return }
+        cancelVoice()
+        showingSchedules = false
+        showingFiles = true
+        Task { await files.reload() }
+    }
+
+    /// A file's "Open chat": the conversation it came from.
+    func openChat(of file: AgentFile) {
+        guard !file.sessionID.isEmpty else { return }
+        showingFiles = false
+        if target == .session(file.sessionID) { return }
+        open(file.sessionID)
     }
 
     func load(_ sessionID: String) {
