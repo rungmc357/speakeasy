@@ -236,6 +236,17 @@ RESTART_NOTE = (f"Hermes needs a restart, once, to turn Speakeasy on: {RESTART_C
                 f"finish, then comes back in a few seconds. {RESTART_TERMINAL} Later updates load without a restart.")
 
 
+# The gateway was never started (CLI-only Hermes): there's nothing to restart, it needs a start.
+GATEWAY_START_NOTE = ("The Hermes gateway isn't running, so nothing serves Speakeasy yet. Start it once: "
+                      "`hermes gateway install` runs it in the background and keeps it running "
+                      "(or run `hermes gateway` in a terminal and leave it open).")
+
+
+def not_up_note(home: Path) -> str:
+    """What the user does when the voice server doesn't answer: restart a running gateway, or start one."""
+    return RESTART_NOTE if gateway_running(home) else GATEWAY_START_NOTE
+
+
 # -- 4. tailscale ---------------------------------------------------------------------------------
 
 TAILSCALE_HTTPS_FIX = ("Enable HTTPS in the Tailscale admin console: https://login.tailscale.com/admin/dns "

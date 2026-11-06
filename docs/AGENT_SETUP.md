@@ -28,6 +28,11 @@ iOS app), follow the same steps with these differences:
 
 ## 1. Install the plugin
 
+First check `hermes --version`. Speakeasy needs Hermes **0.22.0 or newer**; an older Hermes skips
+the plugin, so `hermes voice` is then an unknown command (`invalid choice: 'voice'`), and
+`hermes plugins show speakeasy` says `requires hermes >=0.22.0`. If it's older, run
+`hermes update` first and ask the user to send `/restart` in this chat, then continue.
+
     hermes plugins install rungmc357/speakeasy/plugin/speakeasy --enable
 
 If it's already installed, update it instead: `hermes plugins update speakeasy`. Then check

@@ -227,13 +227,15 @@ def cmd_setup(args, home: Path, env=None) -> int:
 
     target = getattr(args, "send", "") or ""
     if not up:
-        out(f"• {F.RESTART_NOTE}")
+        restarting = F.gateway_running(home)
+        out(f"• {F.not_up_note(home)}")
         if target and valid_delivery_target(target) and target != "none":
             H.save_pending(home, target)
-            out(f"  Once Hermes is back, the pairing link arrives in {_chat_name(target)} by itself.")
+            out(f"  Once Hermes is {'back' if restarting else 'running'}, the pairing link arrives in "
+                f"{_chat_name(target)} by itself.")
         else:
             out("  Then run `hermes voice pair` for the pairing link.")
-        out(f"  No Speakeasy on your Mac yet? Download it: {H.DOWNLOAD_PAGE}")
+        out(f"  No Speakeasy on your iPhone, iPad or Mac yet? Get it: {H.DOWNLOAD_PAGE}")
         return 2 if voice_ok else 1
 
     H.clear_pending(home)
@@ -244,13 +246,45 @@ def cmd_setup(args, home: Path, env=None) -> int:
     delivered = _deliver_link(args, env, home, settings, server)
     if not delivered:
         code = _store(home).new_pairing_code(ttl=H.link_ttl(home))
-        out("Open this link on the Mac you'll talk from. It connects Speakeasy, or offers the download first:")
-        out(f"  {H.pair_link(home, server, code)}")
+        link = H.pair_link(home, server, code)
+        out("Open this link on the iPhone, iPad or Mac you'll talk from. It connects Speakeasy, or offers "
+            "the download first:")
+        out(f"  {link}")
+        _print_qr(link, out, phone=not is_local_url(server))
         out(f"  Or type code {code} in Speakeasy › Connect (works once, for {H.link_ttl(home) // 60} minutes).")
     if not voice_ok:
         out("Voice isn't signed in yet; the app will show how to finish that.")
         return 1
     return 0
+
+
+def qr_text(data: str) -> str:
+    """A terminal QR code for ``data`` (Hermes ships the ``qrcode`` package), "" when unavailable."""
+    try:
+        import io
+        import qrcode  # type: ignore[import-untyped]
+    except ImportError:
+        return ""
+    try:
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=1, border=1)
+        qr.add_data(data)
+        qr.make(fit=True)
+        buf = io.StringIO()
+        qr.print_ascii(out=buf, invert=True)
+        return buf.getvalue().rstrip("\n")
+    except Exception:
+        return ""
+
+
+def _print_qr(link: str, out, *, phone: bool) -> None:
+    """At a terminal with no chat to send to, a phone camera scans this instead of typing the link."""
+    if not phone:
+        return  # a loopback address only works on this computer: nothing for a phone to scan
+    art = qr_text(link)
+    if art:
+        out("  Or scan this with the iPhone or iPad camera:")
+        for line in art.splitlines():
+            out("  " + line)
 
 
 def _chat_name(target: str) -> str:
@@ -611,7 +645,8 @@ def _send_link(home: Path, target: str, link: str, out) -> bool:
         return False
     from .handoff import chat_message, link_ttl
     ok = HermesSendNotifier(home).send(target, chat_message(link, link_ttl(home) // 60))
-    out(f"✓ Sent the pairing link to {_chat_name(target)}. Open it on your Mac." if ok
+    out(f"✓ Sent the pairing link to {_chat_name(target)}. Open it on the iPhone, iPad or Mac you'll talk from."
+        if ok
         else "✗ Couldn't send the pairing link.")
     return ok
 
@@ -626,6 +661,7 @@ def cmd_pair(args, home: Path) -> int:
     print(f"Pairing link: {link}")
     if args.send:
         return 0 if _send_link(home, args.send, link, print) else 1
+    _print_qr(link, print, phone=not is_local_url(server))
     return 0
 
 
