@@ -78,6 +78,69 @@ _OUT_OF_BAND = re.compile(r"^\s*\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*|\s*\[/OUT-
 # What Speakeasy adds after the words when something was shared: "Geo shared the picture x.jpg
 # (saved at /path). Open the images with vision_analyze. Use them to understand what they mean."
 _SHARED_TAIL = re.compile(r"\s*\S+ shared (?:the |a |an )?(?:picture|file|screenshot|photo)\b.*$", re.S)
+# Hermes' context-compaction handoff, written for the model. It is stored as its own assistant row
+# or appended after a user's words; either way it never belongs in a chat the user reads.
+_COMPACTION = re.compile(r"\[CONTEXT COMPACTION\b|_compressed_summary|^\s*\[PRIOR CONTEXT\b")
+# The routing header the gateway puts on a relayed chat message (Discord, Telegram...), wherever it sits.
+_GATEWAY_ORIGIN = re.compile(r"\s*Gateway message origin \(JSON data[^\n]*\n\s*\{[^\n]*\}\s*"
+                             r"(?:Do not guess a reply destination[^\n]*)?\s*")
+_QUOTED = re.compile(r'^\s*"(.+)"\s*$', re.S)
+# A /skill command: Hermes sends the whole skill file with the user's words at the end.
+_SKILL_INVOKED = re.compile(r'^\s*\[IMPORTANT: The user has invoked the (?:"([^"\n]{1,80})" skill|([^,\]\n]{1,120}) skill bundle)')
+_SKILL_WORDS = re.compile(r"(?:The user has provided the following instruction alongside the skill invocation: |"
+                          r"\nUser instruction: )(.*?)(?:\n\n\[Runtime note:.*)?$", re.S)
+
+
+def _skill_command(content: str) -> str | None:
+    """What the user typed for a /skill command ("/name words"), from the message Hermes built."""
+    m = _SKILL_INVOKED.match(content)
+    if not m:
+        return None
+    name = (m.group(1) or m.group(2) or "").strip()
+    words = _SKILL_WORDS.search(content[-20000:])
+    said = words.group(1).strip() if words else ""
+    if _CRON_PROMPT.match(said):
+        return ""
+    return f"/{name} {said}".strip() if name else said
+
+
+# Prompts Hermes writes for runs nobody typed: a scheduled job, a Kanban card, a preloaded skill.
+_CRON_PROMPT = re.compile(r"^\s*\[IMPORTANT: You are running as a scheduled cron job")
+_KANBAN_PROMPT = re.compile(r"^\s*# Kanban task \S+: ([^\n]{1,160})")
+_PRELOADED = re.compile(r'^\s*\[IMPORTANT: The user launched this \w+ session with the "([^"\n]{1,80})" skill')
+# A chat reply: '[Replying to: "<quoted>"]\n\n<words>', sometimes with the surrounding chat after it
+# and the person's words under "[New message]\n[name] ".
+_REPLYING = re.compile(r'^\s*\[Replying to(?: your previous message)?: "')
+_NEW_MESSAGE = re.compile(r"\n\[New message\]\n(?:\[[^\]\n]{1,60}\]\s*)?")
+# Discord's per-turn reply pointer, then the sender tag: "[Triggering message id: `…` — …]\n\n[rungmc] words".
+_TRIGGERING = re.compile(r"^\s*(?:\[Note: model was just switched [^\]\n]*\]\s*)?(?:\[Triggering message id:[^\]\n]*\]\s*"
+                         r"(?:\[[\w.\- ]{1,40}\]\s+)?)?")
+# A picture's saved path the gateway appends: "[Image attached at: /path]".
+_ATTACHED_AT = re.compile(r"\s*\[(?:Image|File|Audio) attached at: [^\]\n]*\]")
+_VOICE_FILE = re.compile(r"^\s*Listen to this voice message and respond to it\.\s*MEDIA:")
+
+
+def _replied_words(content: str) -> str | None:
+    if not _REPLYING.match(content):
+        return None
+    new = list(_NEW_MESSAGE.finditer(content))
+    if new:
+        return content[new[-1].end():].strip()
+    end = content.find('"]\n\n')
+    body = content[end + 4:] if end >= 0 else ""
+    ctx = body.find("[Context around the replied-to message]")
+    return (body[:ctx] if ctx >= 0 else body).strip()
+
+
+def is_compaction(text: str) -> bool:
+    """A context-compaction handoff (model-facing summary of earlier turns)."""
+    return bool(_COMPACTION.search(text or ""))
+
+
+def _before_compaction(text: str) -> str:
+    """A user's words with any compaction handoff Hermes appended after them removed."""
+    m = _COMPACTION.search(text or "")
+    return text[:m.start()].rstrip() if m else text
 
 
 # -- what a message shows: never Speakeasy's own plumbing ----------------------------------------
@@ -131,7 +194,7 @@ _MD_LINK = re.compile(r"!?\[([^\]\n]{1,200})\]\([^)\s]{1,500}\)")
 def assistant_text(text: str) -> str:
     """An assistant message as shown: no machine blocks (question/views JSON), no "Voice: …" echo line,
     a progress note (STATUS:/DETAIL:) as its plain words."""
-    if not isinstance(text, str):
+    if not isinstance(text, str) or is_compaction(text):
         return ""
     out = _MACHINE_BLOCK.sub("", text)
     status, detail = _STATUS.search(out), _DETAIL.search(out)
@@ -235,6 +298,39 @@ def user_words(content: str) -> tuple[str, str]:
         if pattern.search(content[:4000]):
             return "note", label
     content = strip_gateway(content)
+    content = _TRIGGERING.sub("", content, count=1)
+    skill = _skill_command(content)
+    if skill is not None:
+        return ("user", skill) if skill else ("note", "Scheduled run")
+    if _CRON_PROMPT.match(content):
+        return "note", "Scheduled run"
+    kanban = _KANBAN_PROMPT.match(content)
+    if kanban:
+        return "note", f"Kanban task: {kanban.group(1).strip()}"
+    preloaded = _PRELOADED.match(content)
+    if preloaded:
+        words = _SKILL_WORDS.search(content[-20000:])
+        said = words.group(1).strip() if words else ""
+        return ("user", said) if said else ("note", f"Started with the {preloaded.group(1)} skill")
+    replied = _replied_words(content)
+    if replied is not None:
+        if not replied:
+            return "note", "Replied to a message"
+        content = replied
+    content = _ATTACHED_AT.sub("", content).strip() or content
+    if _VOICE_FILE.match(content):
+        return "note", "Voice message"
+    oob = re.search(r"\[OUT-OF-BAND USER MESSAGE", content)
+    if oob and oob.start() > 0 and content[:oob.start()].strip():
+        content = content[:oob.start()].rstrip()  # a request with a later follow-up merged into the same row
+    if _OUT_OF_BAND.search(content[:200]) or _GATEWAY_ORIGIN.search(content):
+        inner = _GATEWAY_ORIGIN.sub("\n", _OUT_OF_BAND.sub("", content)).strip()
+        if not _ADDED.match(inner):
+            quoted = _QUOTED.match(inner)
+            content = quoted.group(1).strip() if quoted and '"' not in quoted.group(1) else inner
+    words = _before_compaction(content)
+    if words is not content and words.strip() and not any(p.search(words[:4000]) for p, _ in _SYSTEM_RES):
+        content = words  # the user's words, then Hermes' handoff appended to the same row
     for pattern, label in _SYSTEM_RES:
         if pattern.search(content[:4000]):
             return "note", label
@@ -740,6 +836,9 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
             if text.strip():
                 entries.append({"kind": kind, "id": f"m{row['id']}", "at": at,
                                 "text": redact_text(text) if kind == "user" else text})
+        elif role == "assistant" and is_compaction(content):
+            flush()
+            entries.append({"kind": "note", "id": f"m{row['id']}", "at": at, "text": "Earlier messages were summarized"})
         elif role == "assistant" and assistant_text(content):
             flush()
             entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(assistant_text(content))})

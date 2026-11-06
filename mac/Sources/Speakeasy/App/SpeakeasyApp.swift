@@ -152,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.supported = caps?.history ?? false
                     self.history.store.modelsSupported = caps?.modelChoice ?? false
                     self.history.store.schedulesSupported = caps?.schedules ?? false
+                    self.wireHermesTranscription(caps?.transcribe ?? false)
                 }
             }
             .store(in: &bag)
@@ -557,6 +558,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Voice messages (History composer, new schedule by voice) go to Hermes to transcribe when the
+    /// server can: the whole clip, the way a Telegram voice note is. Otherwise on-device only.
+    private func wireHermesTranscription(_ supported: Bool) {
+        var hermes: (@MainActor (Data) async throws -> String)?
+        if supported {
+            hermes = { [weak self] (clip: Data) async throws -> String in
+                guard let api = self?.native.api else { throw URLError(.notConnectedToInternet) }
+                return try await api.transcribeVoice(clip, mimeType: VoiceMemoAudio.mimeType)
+            }
+        }
+        (history.store.recorder as? VoiceMessageRecorder)?.hermes = hermes
+        (history.store.scheduleDictation.recorder as? VoiceMessageRecorder)?.hermes = hermes
+    }
+
     @objc private func resetPanelPosition() { native.panel.resetPlacement() }
 
     @objc private func quit() {
@@ -573,6 +588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.supported = app.status?.capabilities?.history ?? false
         store.modelsSupported = app.status?.capabilities?.modelChoice ?? false
         store.schedulesSupported = app.status?.capabilities?.schedules ?? false
+        wireHermesTranscription(app.status?.capabilities?.transcribe ?? false)
         store.setCallLive(native.model.state.connection.isInCall)
         history.show()
         if let session { store.open(session) }

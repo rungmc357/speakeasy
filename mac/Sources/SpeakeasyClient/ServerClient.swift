@@ -607,6 +607,21 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await json(StagedAttachmentRoute.remove(id), method: "DELETE")
     }
 
+    /// A recorded voice message's audio, transcribed by Hermes the way a Telegram voice note is
+    /// (servers with `transcribe`, plugin 0.3.36+). Returns the text. Errors are `HTTPError`s with
+    /// the plugin's reason: 413 too_large, 415 unsupported, 502 failed, 503 unavailable/busy.
+    public func transcribeVoice(_ audio: Data, mimeType: String = "audio/mp4") async throws -> String {
+        let timeout: TimeInterval = audio.count > 2_000_000 ? 180 : 90
+        let req = request(VoiceTranscribeRoute.path, method: "POST", headers: ["Content-Type": mimeType], timeout: timeout)
+        let (data, response) = try await sessionFor(timeout).upload(for: req, from: audio)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else { throw HTTPError(status: status, body: data, fallback: "Transcribe HTTP \(status)") }
+        guard let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let text = body["text"] as? String else {
+            throw HTTPError(status: 502, message: "Server returned no transcript")
+        }
+        return text
+    }
+
     /// The ✕ on a pending picture or file. 404 = already gone; 409 reason `sent` = it went with a request.
     public func removeAttachment(interactionID: String, attachmentID: String) async throws {
         _ = try await json(SharingRoute.attachment(interactionID, attachmentID), method: "DELETE")

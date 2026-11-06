@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlsplit
 
 from . import __version__
 from . import attachments as A
+from . import transcribe as T
 from .profiles import home_id, profile_name
 from .service import VoiceService
 from .calls import ServiceError, Interaction, publish_state
@@ -241,6 +242,30 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(exc.status, self._error(exc))
             except OSError:
                 return  # the app already hung up
+            if not read:
+                self._drain(length)
+
+    def _transcribe(self) -> None:
+        """``POST /voice/transcribe``: a voice message's audio as the raw body, transcribed by Hermes.
+        Authenticated and size/type-checked before any of the body is read; never logged."""
+        read = False
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            length = -1
+        try:
+            self._auth()
+            if self.headers.get("Transfer-Encoding") or length < 0:
+                raise ServiceError(400, "Content-Length is required")
+            suffix = T.check(self.headers.get("Content-Type"), length)
+            data = self._raw_body(length)
+            read = True
+            self._reply(200, self.service.transcribe_voice(suffix, data))
+        except ServiceError as exc:
+            try:
+                self._reply(exc.status, self._error(exc))
+            except OSError:
+                return
             if not read:
                 self._drain(length)
 
@@ -592,6 +617,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/attachments":  # the same, staged on a device for a typed message
                 self._stage()
+                return
+            if path == "/voice/transcribe":  # a voice message's audio: same raw-body rules
+                self._transcribe()
                 return
             device_id = self._auth()
             secret = re.fullmatch(r"/voice/secrets/(sec_[A-Za-z0-9_-]{16,40})", path)

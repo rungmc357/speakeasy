@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from . import __version__
 from . import attachments as A
+from . import transcribe as T
 from . import delivery as D
 from . import duck as duck_mod
 from . import settings as S
@@ -97,6 +98,9 @@ CAPABILITIES["secret_input"] = True
 CAPABILITIES["tool_log"] = True  # activity items carry tool/started_at/ended_at; GET /voice/work/{id} adds args/result
 # voice.max_call_minutes 0 = no limit (older plugins refuse 0: clients offer "No limit" only with this).
 CAPABILITIES["call_no_limit"] = True
+# POST /voice/transcribe: a recorded voice message's audio, transcribed by Hermes the way a Telegram
+# voice note is (transcribe.py). Clients without it fall back to on-device transcription.
+CAPABILITIES["transcribe"] = True
 # POST /voice/push + GET /voice/push/events/{id}: notifications while the app is closed (push.py).
 CAPABILITIES["push"] = True
 # GET /voice/models, model/reasoning on POST /voice/work + history messages, PUT /voice/history/{id}/model,
@@ -2457,6 +2461,15 @@ class VoiceService(SecureInputMixin):
         return {"id": attachment_id, "removed": True}
 
     # -- pictures and files staged on a device (iPhone/iPad composer) ------------------------------
+    # Hermes' transcription (resolved on first use; tests set their own).
+    transcriber: Any = None
+
+    def transcribe_voice(self, suffix: str, data: bytes) -> dict[str, Any]:
+        """``POST /voice/transcribe`` after its checked body arrived: the clip's text, never logged."""
+        if self.transcriber is None:
+            self.transcriber = T.hermes_transcriber()
+        return T.transcribe(data, suffix, self.transcriber, self.dir / "voice-memos")
+
     def check_stage(self, device_id: str, headers: Any, length: int) -> dict[str, Any]:
         """``POST /voice/attachments``, before its body is read: a picture (JPEG or PNG, the phone
         re-encodes) or a file (PDF or text), within its cap and this device's room."""
