@@ -215,12 +215,15 @@ THREAD_OPEN_WAIT_S = 20
 # (monotonic). The recovery sweep skips them; a wait orphaned by a hang-up ages out.
 LIVE_THREAD_WAITS: dict[str, float] = {}
 CONTINUITY_POLL_S = 5
+# A call that reaches voice.max_call_minutes while one of its tasks still runs is kept on, up to
+# CAP_STRETCH times the cap, so a long task's answer is still spoken; at the cap it is paused
+# (resumable: Resume picks up with the transcript and tasks), never dropped as an error.
+CAP_STRETCH = 2.0
 # Spoken progress: only for tasks running this long, at most once per PROGRESS_EVERY_S across the
 # whole call (two tasks don't take turns talking), and only when the task has done something new
 # since the last update. No forced silence: it's a conversation, just without filler updates.
 PROGRESS_AFTER_S = 45.0
 PROGRESS_EVERY_S = 45.0
-ACTIVITY_KEEP = 10
 # Silent status notes to the voice model (so it can answer "how's it going?"): at most this often.
 # Every note used to go straight in, and the voice answered each one out loud ("Still on it")
 # every few seconds on a long task.
@@ -233,24 +236,26 @@ STATUS_NOTE_EVERY_S = 60.0
 PULSE_EVERY_S = PROGRESS_EVERY_S
 PULSE_IDLE_EVERY_S = 90.0
 PULSE_IDLE_AFTER = 3
+# Nothing new on a task: its next line waits PULSE_IDLE_EVERY_S, then twice that after each further line
+# with nothing new, up to PULSE_STALE_MAX_S (open mic or not). Updates on real progress keep the normal
+# spacing. A line already said on the task (word for word) is never said again: silence beats a repeat.
+PULSE_STALE_MAX_S = 300.0
 PULSE_TICK_S = 5.0
 PULSE_QUIET_S = 6.0
 # With the mic open (the app reported muted=false) the user is listening in, so a task's first line
-# lands PULSE_FIRST_OPEN_S into it instead of PULSE_EVERY_S, and there is no PULSE_IDLE_EVERY_S
-# back-off: where a muted call would go quiet, the open mic hears the running step tied to the task's
-# age ("Still on reading the logs, about 3 minutes in"), never word for word a recent line, and every
-# open-mic line is at most PULSE_MAX_WORDS long. Muted or never reported keeps the rule above exactly.
+# lands PULSE_FIRST_OPEN_S into it instead of PULSE_EVERY_S. Every line is at most PULSE_MAX_WORDS long.
 PULSE_FIRST_OPEN_S = 12.0
 PULSE_MAX_WORDS = 22
-# Openers for an open-mic line whose wording came out identical to one already said; once those are
-# used up too, the anchored shapes (the step plus the task's age, which moves on between lines). An
-# open-mic line is compared with the last PULSE_SAID_KEEP of them (BackendRun.pulse_said), so a
-# wording model that keeps saying the same thing never gets the same words out twice in a long run.
+# A spoken update is the task card's own line (store.work: the live line from live_status.py, or the
+# task's own STATUS when it just wrote one) and the recap under it, never a separate summary: what
+# the user hears is what the card says. It is said only when the card's line changed since the last
+# update on that task; a timed line ("Waiting on the tests · 4 min") whose only change is the clock
+# is said again only after the back-off (stale_wait). No line is said twice on a task: the last
+# PULSE_SAID_KEEP lines (BackendRun.pulse_said) are compared word for word.
 PULSE_SAID_KEEP = 20
-_PULSE_OPENERS = ("Meanwhile", "Right now", "Continuing")
-_OPENER_LEAD = re.compile(r"(?i)^(?:(?:quick update|meanwhile|right now|continuing)\s*[:,]\s*)+")
-_ANCHORED_SHAPES = ("Still on {step}, {age} in.", "{Age} in, still {step}.", "{Step}, still going, {age} in.")
-_ANCHORED_STEP_WORDS = 12
+RECAP_MIN_WORDS = 4
+THREAD_WORKING = "Working in the thread"  # store.thread_progress's card line
+_OPENER_LEAD = re.compile(r"(?i)^(?:(?:quick update|since the last update|so far|meanwhile|right now|continuing)\s*[:,]\s*)+")
 # Never talk over a thought in progress: a result, a task's question or a pulse waits until the user has
 # paused USER_PAUSE_S (UNFINISHED_PAUSE_S when their last words trailed off, "...because he"), or
 # until a "wait, I wasn't done" hold (HOLD_S) ends; never longer than RESULT_HOLD_MAX_S in all.
@@ -278,14 +283,14 @@ def cap_words(line: str, limit: int = PULSE_MAX_WORDS) -> str:
 
 
 def _said_key(line: str) -> str:
-    return " ".join(re.sub(r"[^\w\s]", " ", line.lower()).split())
+    """Words to compare spoken lines by: "Meanwhile, X" and "Quick update: X" are the same news as X."""
+    return " ".join(re.sub(r"[^\w\s]", " ", _OPENER_LEAD.sub("", line.strip()).lower()).split())
 
 
 _I_WORD = re.compile(r"^I(?:\b|['\u2019])")
 _FIRST_WORD = re.compile(r"[A-Za-z][\w.-]*")
-# Names that keep their capital mid-sentence ("still on Stripe webhook", never "still on stripe
-# webhook"), lowercased. Words the task's own request or title capitalizes mid-sentence are added
-# per line (proper_nouns), so this only has to cover the common ones that may open a request.
+# Names that keep their capital mid-sentence ("still waiting on Stripe", never "still waiting on
+# stripe"), lowercased.
 _PROPER_NOUNS = frozenset("""
     airtable amazon android apple asana aws azure bluesky chatgpt chrome claude cloudflare codex discord
     docker dropbox facebook figma firebase firefox gemini github gitlab gmail google grok hermes
@@ -297,22 +302,10 @@ _PROPER_NOUNS = frozenset("""
 """.split())
 
 
-def proper_nouns(*texts: str | None) -> frozenset[str]:
-    """Words these texts capitalize where a sentence doesn't start ("ask Dana about the Q3 deck"
-    gives Dana, Q3): they are names, and keep their capital when a line opens with them."""
-    out: set[str] = set()
-    for text in texts:
-        for sentence in re.split(r"(?<=[.!?:;\n])\s+", str(text or "")):
-            for word in re.findall(r"[A-Za-z][\w-]*", sentence)[1:]:
-                if word[:1].isupper():
-                    out.add(word.lower())
-    return frozenset(out)
-
-
 def _lead_lower(text: str, keep: frozenset[str] = frozenset()) -> str:
     """`text` with its first letter lowercased for use mid-sentence, unless that first word is "I"
     ("I'm", "I've"), an acronym or a mixed-case name ("API", "GitHub"), or a known name (_PROPER_NOUNS,
-    or `keep`, see proper_nouns), which keep their capital."""
+    or `keep`), which keep their capital."""
     if not text or _I_WORD.match(text) or not text[:2].istitle():
         return text
     first = _FIRST_WORD.match(text)
@@ -322,63 +315,71 @@ def _lead_lower(text: str, keep: frozenset[str] = frozenset()) -> str:
     return text[:1].lower() + text[1:]
 
 
-def _age_phrase(age: float) -> str:
-    if age < 45:
-        return "under a minute"
-    if age < 90:
+_CARD_TIMED = re.compile(r"^(?P<line>.+?)\s*\u00b7\s*(?:(?P<h>\d+) h\s*)?(?P<m>\d+) min$")
+_NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
+                 10: "ten"}
+
+
+def card_key(line: str | None) -> str:
+    """A card line to compare by: without its clock (" · 4 min") or punctuation, so "Waiting on the
+    tests · 4 min" and "· 6 min" are the same line, and "Editing store.py" vs "Running the tests" not."""
+    text = " ".join(str(line or "").split())
+    m = _CARD_TIMED.match(text)
+    return _said_key(m.group("line") if m else text)
+
+
+def card_timed(line: str | None) -> bool:
+    """The card line is a wait or a quiet spell with its length (\"No new steps · 3 min\")."""
+    return bool(_CARD_TIMED.match(" ".join(str(line or "").split())))
+
+
+def _spoken_minutes(hours: int, minutes: int) -> str:
+    total = hours * 60 + minutes
+    if total >= 120:
+        return f"over {_NUMBER_WORDS.get(total // 60, str(total // 60))} hours"
+    if total >= 60:
+        return "over an hour"
+    if total <= 1:
         return "about a minute"
-    return f"about {int(age / 60 + 0.5)} minutes"  # half up: 150 s is about 3, never banker's 2
+    return f"about {_NUMBER_WORDS.get(total, str(total))} minutes"
 
 
-def anchored_lines(step: str, age: float, reserve: int = 0, keep: frozenset[str] = frozenset(),
-                   every: float | None = None) -> list[str]:
-    """The running step tied to how long the task has run ("Still on reading the logs, about 3
-    minutes in"), in every shape, starting from the one this pulse slot rotates to. `reserve` words
-    are kept free for what goes in front of the line later (the job's name when several are running),
-    so the step is shortened to fit and the age, the part that moves on between lines, is never the
-    part the word cap cuts off. `keep`: names that keep their capital (see _lead_lower); `every`:
-    the call's spoken-update interval, which sets how often the shape turns (PULSE_EVERY_S)."""
-    step = re.sub(r"(?i)^quick update:\s*", "", " ".join(str(step or "").split())).rstrip(" .\u2026!?,;:")
-    words = step.split() or ["it"]
-    phrase = _age_phrase(age)
-    lines = []
-    for shape in _ANCHORED_SHAPES:
-        fixed = len(shape.format(step="", Step="", age=phrase, Age=phrase).split())
-        room = max(3, min(_ANCHORED_STEP_WORDS, PULSE_MAX_WORDS - reserve - fixed))
-        short = " ".join(words[:room])
-        lines.append(cap_words(shape.format(step=_lead_lower(short, keep), Step=short[:1].upper() + short[1:],
-                                            age=phrase, Age=phrase[:1].upper() + phrase[1:])))
-    turn = int(max(age, 0.0) // (every or PULSE_EVERY_S)) % len(lines)
-    return lines[turn:] + lines[:turn]
+def spoken_card(line: str | None, recap: str | None = None, *, so_far: bool = True,
+                limit: int = PULSE_MAX_WORDS) -> str | None:
+    """The task card's line said aloud, in the card's own words: a timed line gets its clock in words
+    ("Waiting on the tests · 4 min" -> "Still waiting on the tests, about four minutes now."), and the
+    recap under it follows ("So far: read the code and ran the tests.", or the task's own detail as is
+    when ``so_far`` is False) when it fits in ``limit`` words. None when the card has no line."""
+    text = " ".join(str(line or "").split()).strip(" .")
+    if not text:
+        return None
+    m = _CARD_TIMED.match(text)
+    if m:
+        what = m.group("line").strip(" .,;:")
+        age = _spoken_minutes(int(m.group("h") or 0), int(m.group("m")))
+        if re.fullmatch(r"(?i)no new steps", what):
+            said = f"No new steps for {age}."
+        elif re.fullmatch(r"(?i)no steps reported yet", what):
+            said = f"Nothing reported yet, {age} in."
+        else:
+            said = f"Still {_lead_lower(what)}, {age} now."
+    else:
+        said = text if text.endswith(("!", "?", "\u2026")) else text + "."
+    extra = " ".join(str(recap or "").split()).strip(" .")
+    if so_far and len(extra.split()) < RECAP_MIN_WORDS:
+        extra = ""  # "So far: read a file" only restates the line: not worth the words
+    if extra and card_key(extra) != card_key(text):
+        extra = ("So far: " + _lead_lower(extra)) if so_far else extra[:1].upper() + extra[1:]
+        both = f"{said} {extra}" + ("" if extra.endswith(("!", "?", "\u2026")) else ".")
+        if len(both.split()) <= limit:
+            return both
+    return cap_words(said, limit)
 
 
-def unrepeated(line: str | None, told: list[str] | list[tuple[float, str]], step: str, age: float,
-               dress: Callable[[str], str] = cap_words, reserve: int = 0,
-               keep: frozenset[str] = frozenset(), every: float | None = None) -> str:
-    """An open-mic pulse line that is not word for word one already spoken on this task (`told`,
-    oldest first, or ``(when, line)`` pairs in any order, which are put in time order):
-    `line`, else `line` re-worded behind an opener, else the anchored lines on `step` (see
-    anchored_lines). Every candidate goes through `dress` (naming the job, the word cap) before it is
-    compared, since that is what was said; `reserve` is how many words `dress` may put in front (see
-    anchored_lines). Never None: should all of them have been said, the one said
-    longest ago comes back, because an old line beats silence."""
-    if told and not isinstance(told[0], str):
-        told = [t for _, t in sorted(told, key=lambda pair: pair[0])]
-    said = [_said_key(t) for t in told]
-    candidates: list[str] = []
-    if line:
-        candidates.append(line)
-        body = _OPENER_LEAD.sub("", line.strip()) or line.strip()  # never "Meanwhile, meanwhile, …"
-        body = _lead_lower(body, keep)
-        if not body.endswith((".", "!", "?", "\u2026")):
-            body += "."
-        candidates += [f"{opener}, {body}" for opener in _PULSE_OPENERS]
-    candidates = [dress(c) for c in candidates + anchored_lines(step, age, reserve, keep, every)]
-    for candidate in candidates:
-        if _said_key(candidate) not in said:
-            return candidate
-    # Everything was said within the last few lines: the one said longest ago.
-    return min(candidates, key=lambda c: max(i for i, key in enumerate(said) if key == _said_key(c)))
+def stale_wait(every: float, idle: int) -> float:
+    """Seconds before a task with nothing new is spoken about again, after `idle` such lines in a row:
+    PULSE_IDLE_EVERY_S (or the user's longer interval), doubling, at most PULSE_STALE_MAX_S."""
+    return min(max(PULSE_IDLE_EVERY_S, every) * (2 ** max(0, min(int(idle), 6))), max(PULSE_STALE_MAX_S, every))
 
 
 class ServiceError(Exception):
@@ -410,7 +411,6 @@ class Runtime:
     status_call: Callable[[str], str | None] | None = None
     plan_call: Callable[[str], list[str] | None] | None = None
     shape_call: Callable[[str, str], dict[str, Any] | None] | None = None
-    progress_call: Callable[..., str | None] | None = None
     # Instant home control (home_control.HomeControl); None or turned off = every request goes to Hermes.
     home: Any = None
     # Quick answers (quick.answer); None = the real one. Tests swap in a fake.
@@ -430,6 +430,9 @@ class Runtime:
     # The model/reasoning a run starts with (task_id, idem key, session id, request) -> Hermes'
     # per-request overrides (models.run_fields), or None for its own config. None = never chosen.
     choose_model: Callable[[str, str, str | None, str | None], dict[str, Any] | None] | None = None
+    # Pauses a call (interaction id) the way Pause does, resumable, for a call that reached its length
+    # cap (Service.pause with limit=True). None = the transport just ends the call, as before.
+    pause_call: Callable[[str], Any] | None = None
 
     @property
     def names(self) -> P.Names:
@@ -536,14 +539,13 @@ class BackendRun:
     started: float = dataclasses.field(default_factory=time.monotonic)
     spoken_at: float = 0.0          # last spoken progress line for this task (monotonic)
     noted_at: float = 0.0           # last silent status note to the voice model (monotonic)
-    activity: list[str] = dataclasses.field(default_factory=list)  # recent concrete steps, newest last
-    activity_count: int = 0         # steps seen so far
-    told_count: int = 0             # steps already covered by a spoken update
     told: list[str] = dataclasses.field(default_factory=list)      # updates already spoken
-    pulse_told: set[int] = dataclasses.field(default_factory=set)  # activity.py items an update covered
     pulse_idle: int = 0             # pulse updates in a row with nothing new to say
-    # Every update spoken on this task (pulse or progress) as (monotonic time, line), the open mic's
-    # no-repeat memory: in time order, so "the one said longest ago" really is.
+    # The task card's line and recap (card_key) as of the last spoken update: an update is said only
+    # when the card's line has changed since (see PULSE_SAID_KEEP).
+    card_said: str = ""
+    recap_said: str = ""
+    # Every update spoken on this task (pulse or progress) as (monotonic time, line): never said twice.
     pulse_said: list[tuple[float, str]] = dataclasses.field(default_factory=list)
     # Same-project fence (fence.py): the projects this task names or touched, whether it is known to
     # edit them, and, for a task held behind another, the blocker and whether the user said go anyway.
@@ -577,6 +579,7 @@ class Interaction:
     progress_spoken_at: float = 0.0  # last spoken progress update on this call, any task (monotonic)
     paused: bool = False
     idle_paused_minutes: int | None = None  # paused for quiet after this many minutes (not by the user)
+    limit_paused: bool = False  # paused at the call's length cap (voice.max_call_minutes), not by the user
     mic_muted: bool | None = None  # the app's mic is off (POST .../mic), None = never said; only the pulse cares
     pause_bookkept: bool = False
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)
@@ -635,6 +638,7 @@ class Interaction:
                 # Paused for quiet (idle_pause_minutes), not by the user: "Paused after N min of quiet".
                 **({"idle_paused_minutes": self.idle_paused_minutes}
                    if self.paused and self.idle_paused_minutes else {}),
+                **({"limit_paused": True} if self.paused and self.limit_paused else {}),
                 "resumed_from": self.resumed_from,
                 **self.attachments.snapshot(),  # screen, captures, attachments
                 "hold": self.hold,
@@ -680,6 +684,38 @@ def interaction_tasks(store: Any, interaction: Interaction, assistant_name: str 
     exclude |= {t["task_id"] for t in earlier}
     # A draft from an earlier call still waiting for Send / Deny / Revise stays on screen.
     return earlier + tasks + store.carried_draft_tasks(exclude)
+
+
+async def in_own_thread(fn: Callable[..., Any], *args: Any) -> Any:
+    """``asyncio.to_thread`` for a call that blocks for a task's whole run (an event stream, a thread
+    turn being waited on): on a thread of its own. On the loop's shared executor (min(32, cpus + 4)
+    threads) a handful of long tasks took every thread, and every short call queued behind them:
+    Stop, a follow-up, the voice's spoken lines (Codex sends them through a thread), store reads."""
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[Any] = loop.create_future()
+
+    def settle(ok: bool, value: Any) -> None:
+        if future.done():
+            return
+        if ok:
+            future.set_result(value)
+        else:
+            future.set_exception(value)
+
+    def run() -> None:
+        try:
+            value = fn(*args)
+        except BaseException as exc:  # handed to the awaiting coroutine
+            ok, value = False, exc
+        else:
+            ok = True
+        try:
+            loop.call_soon_threadsafe(settle, ok, value)
+        except RuntimeError:
+            pass  # the call's loop closed while this waited: nobody is listening any more
+
+    threading.Thread(target=run, daemon=True, name="speakeasy-task-wait").start()
+    return await future
 
 
 def publish_state(store: Any, interaction: Interaction, assistant_name: str = "Hermes") -> None:
@@ -1246,6 +1282,37 @@ class SidebandWorker:
 
     def touch(self) -> None:
         self.interaction.last_activity = time.monotonic()
+
+    def work_running(self) -> bool:
+        """A task of this call (or one it took on) is still running: an answer is on its way."""
+        with self.interaction.lock:
+            return any(r.status in ACTIVE_RUN_STATES for r in self.interaction.runs.values())
+
+    def cap_reached(self, elapsed: float, cap: float) -> bool:
+        """The call is at its length cap (voice.max_call_minutes): True once it is over, except while
+        a task still runs (up to CAP_STRETCH x the cap), so the answer being waited on is still heard."""
+        if elapsed < cap:
+            return False
+        if elapsed < cap * CAP_STRETCH and self.work_running():
+            if not getattr(self, "_cap_stretched", False):
+                self._cap_stretched = True
+                logger.info("speakeasy: call reached its length cap with work running; kept on until it lands")
+            return False
+        return True
+
+    async def pause_at_cap(self) -> bool:
+        """Pause (resumable) a call at its length cap instead of ending it with an error. False when
+        this runtime can't pause calls (the caller ends it as before)."""
+        pause = self.rt.pause_call
+        if pause is None:
+            return False
+        try:
+            await asyncio.to_thread(pause, self.interaction.interaction_id)
+        except Exception:
+            logger.warning("speakeasy: pausing a call at its length cap failed", exc_info=True)
+            return False
+        logger.info("speakeasy: call paused at its length cap (resumable)")
+        return True
 
     def push(self, kind: str, key: str, title: str | None, body: str | None = None, run_id: str | None = None) -> None:
         """Wake a closed phone (push.py decides which, if any). Never raises into the task path."""
@@ -1943,21 +2010,67 @@ class SidebandWorker:
             backend.noted_at = now
         await self.quiet("status:" + str(backend.say_id), backend.say_id, P.status_note(detail))
 
-    def record_activity(self, backend: BackendRun, detail: str | None) -> None:
-        """Remember what the task is concretely doing, so spoken updates can say it."""
-        text = " ".join(str(detail or "").split())[:240]
-        if not text:
-            return
+    def card_line(self, key: str) -> tuple[str, str | None, bool] | None:
+        """What the task's card says right now (store.work, the same data every app draws): its line,
+        the recap under it, and whether that recap is the "So far" one (False: the task's own detail
+        under a STATUS it wrote). None when the card has nothing of its own yet (only the handoff guess)."""
+        try:
+            work = self.store.work(idem_key=key) or {}
+        except Exception:
+            logger.debug("speakeasy: task card unavailable for a spoken update", exc_info=True)
+            return None
+        line = work.get("short_status")
+        if not isinstance(line, str) or not line.strip():
+            return None
+        source, detail = work.get("status_source"), work.get("detail")
+        if source == "authored":
+            return line, detail, False
+        if work.get("now_line"):
+            return line, work.get("so_far"), True
+        if source == "system" and line == THREAD_WORKING and isinstance(detail, str) and detail.strip():
+            return detail, None, False  # a thread task's own words; "Working in the thread" is plumbing
+        if source == "tool":
+            return line, detail, False
+        return None  # the handoff guess: the voice said that when it handed the task over
+
+    def card_update(self, backend: BackendRun, card: tuple[str, str | None, bool]) -> str | None:
+        """The spoken line for `card`: its line, plus its recap when that changed since the last update
+        (named after the job when more than one could be meant). None when it would repeat, word for
+        word, a line already said on this task."""
+        line, recap, so_far = card
         with self.interaction.lock:
-            if backend.activity and backend.activity[-1] == text:
-                return
-            backend.activity = (backend.activity + [text])[-ACTIVITY_KEEP:]
-            backend.activity_count += 1
+            said = {_said_key(t) for _, t in backend.pulse_said} | {_said_key(t) for t in backend.told}
+            recap_said = backend.recap_said
+        fresh_recap = recap if recap and card_key(recap) != recap_said else None
+        name = self.spoken_task_name(backend.idem_key)
+        needs = bool(name) and self.pulse_needs_name(backend)
+        reserve = len(name.split()) + 1 if needs else 0
+        text = spoken_card(line, fresh_recap, so_far=so_far, limit=PULSE_MAX_WORDS - reserve)
+        text = cap_words(P.named_pulse(text, name, needs) or text) if text else None
+        if not text or _said_key(text) in said:
+            return None
+        return text
+
+    def remember_update(self, backend: BackendRun, card: tuple[str, str | None, bool], text: str, now: float,
+                        stale: bool) -> None:
+        line, recap, _ = card
+        with self.interaction.lock:
+            backend.card_said = card_key(line)
+            if recap:
+                backend.recap_said = card_key(recap)
+            backend.told = (backend.told + [text])[-5:]
+            backend.pulse_said = (backend.pulse_said + [(now, text)])[-PULSE_SAID_KEEP:]
+            backend.pulse_idle = backend.pulse_idle + 1 if stale else 0
+
+    @staticmethod
+    def card_changed(backend: BackendRun, card: tuple[str, str | None, bool]) -> bool:
+        line, recap, _ = card
+        return card_key(line) != backend.card_said or bool(recap and card_key(recap) != backend.recap_said)
 
     async def maybe_speak_progress(self, backend: BackendRun, milestone: str) -> bool:
-        """A long task that has done something new gets one brief spoken update naming what it is
-        actually doing, at most once per PROGRESS_EVERY_S (the user's interval, see update_every)
-        across the call."""
+        """When the task writes a status of its own, a long task's card changes: say the card's new line
+        (and recap), at most once per PROGRESS_EVERY_S (the user's interval, see update_every) across
+        the call, and only when the card says something it hasn't said aloud yet."""
         if not self.rt.settings()["speech"]["progress"]:
             return False
         now = time.monotonic()
@@ -1969,33 +2082,21 @@ class SidebandWorker:
         with self.interaction.lock:
             last_any = self.interaction.progress_spoken_at
             if (now - backend.started < PROGRESS_AFTER_S or backend.status not in {"running", "working"}
-                    or (last_any and now - last_any < self.update_every(PROGRESS_EVERY_S) and not urgent)
-                    or backend.activity_count <= backend.told_count):
+                    or (last_any and now - last_any < self.update_every(PROGRESS_EVERY_S) and not urgent)):
                 return False
-            self.interaction.progress_spoken_at = now  # claim the slot before the (slow) wording call
-            backend.spoken_at = now
-            new_steps = backend.activity[-min(ACTIVITY_KEEP, backend.activity_count - backend.told_count):]
-            covered = backend.activity_count
-            told = list(backend.told[-3:])
-        request = self.store.request_text(backend.idem_key) or ""
-        writer = self.rt.progress_call or router.progress_update
-        try:
-            line = await asyncio.to_thread(writer, request, new_steps, told)
-        except Exception as exc:
-            logger.info("speakeasy: progress wording unavailable (%s)", type(exc).__name__)
-            line = None
-        line = line or P.progress_fallback(new_steps, milestone)
+            self.interaction.progress_spoken_at = now  # claim the slot before reading the card
+        card = await asyncio.to_thread(self.card_line, backend.idem_key)
+        line = None
+        if card is not None and self.card_changed(backend, card):
+            line = await asyncio.to_thread(self.card_update, backend, card)
         if not line or not self.call_connected():
             with self.interaction.lock:
-                self.interaction.progress_spoken_at = last_any
+                if self.interaction.progress_spoken_at == now:
+                    self.interaction.progress_spoken_at = last_any
             return False
-        items, _ = activity_mod.speech_steps(self.store, backend.idem_key)
+        self.remember_update(backend, card, line, now, stale=False)
         with self.interaction.lock:
-            backend.told_count = covered
-            backend.told = (backend.told + [line])[-5:]
-            backend.pulse_said = (backend.pulse_said + [(now, line)])[-PULSE_SAID_KEEP:]
-            backend.pulse_told.update(i["n"] for i in items)
-            backend.pulse_idle = 0
+            backend.spoken_at = now
         await self.append("session.commentary.append", backend.say_id, line)
         return True
 
@@ -2019,17 +2120,6 @@ class SidebandWorker:
         Never reported counts as not open: that call keeps the muted-era pulse timing."""
         head = self.interaction.head()
         return not self.muted_now() and (self.interaction.mic_muted is False or head.mic_muted is False)
-
-    def pulse_step(self, backend: BackendRun, items: list[dict[str, Any]], current: dict[str, Any] | None) -> str:
-        """What an anchored open-mic line says the task is on: the tool running now, else its latest
-        step, as doing-words ("running the tests"); else the task's name; else "it"."""
-        for item in ([current] if current else []) + list(reversed(items)):
-            plain = P.speakable(item.get("text"))
-            now = P.doing(plain) if plain else None
-            if now:
-                return now
-        name = self.spoken_task_name(backend.idem_key)
-        return _lead_lower(name, proper_nouns(self.store.request_text(backend.idem_key), name)) if name else "it"
 
     def someone_speaking(self, now: float) -> bool:
         """Either side is mid-turn: a transcript arrived in the last PULSE_QUIET_S, or the provider
@@ -2130,9 +2220,9 @@ class SidebandWorker:
 
     async def pulse_tick(self) -> bool:
         """One look: if the call has been quiet PULSE_EVERY_S (the user's interval, see update_every)
-        since the assistant last spoke and work
-        is running, say one short line about it. True when it spoke. With the mic open a task's first
-        line comes after PULSE_FIRST_OPEN_S and there is no back-off (see PULSE_FIRST_OPEN_S)."""
+        since the assistant last spoke and a running task's card changed since its last update, say
+        the card's line (see PULSE_SAID_KEEP). True when it spoke. With the mic open a task's first
+        line comes after PULSE_FIRST_OPEN_S. A card whose only change is its clock waits stale_wait."""
         if not self.rt.settings()["speech"]["progress"] or not self.call_connected():
             return False
         if self.muted_now() or self.interaction.paused or self.interaction.talking_only:
@@ -2155,75 +2245,40 @@ class SidebandWorker:
             return False  # a question or decision is up: that is what the call is waiting on
         picks = []
         for r in running:
-            items, current = await asyncio.to_thread(activity_mod.speech_steps, self.store, r.idem_key)
-            fresh = [i for i in items if i["n"] not in r.pulse_told and i is not current]
-            notes = r.activity[-min(ACTIVITY_KEEP, r.activity_count - r.told_count):] \
-                if r.activity_count > r.told_count else []
-            new = bool(fresh or notes or (current is not None and current["n"] not in r.pulse_told))
-            if open_mic:  # a task's first line early, then every `every` (the user's setting), news or not
-                wait = every if r.spoken_at else PULSE_FIRST_OPEN_S
+            card = await asyncio.to_thread(self.card_line, r.idem_key)
+            if card is None:
+                continue  # nothing on the card but the handoff guess: nothing to say yet
+            new = self.card_changed(r, card)
+            if open_mic and not r.spoken_at and new:  # a task's first line early on an open mic
+                wait = PULSE_FIRST_OPEN_S
+            elif new:
+                wait = every
+            elif card_timed(card[0]):  # only the clock moved on a wait or a quiet spell: back off
+                wait = stale_wait(every, r.pulse_idle)
             else:
-                wait = max(PULSE_IDLE_EVERY_S, every) if not new and r.pulse_idle >= PULSE_IDLE_AFTER else every
+                continue  # the card says what was said last time: nothing to say
             if now - max(r.spoken_at, last) < wait:
                 continue
-            picks.append((not new, r.spoken_at, r, items, current, fresh, notes))
+            picks.append((not new, r.spoken_at, r, card))
         if not picks:
             return False
         picks.sort(key=lambda p: (p[0], p[1]))  # something new first, then whoever was told least recently
-        stale, _, backend, items, current, fresh, notes = picks[0]
+        stale, _, backend, card = picks[0]
         with self.interaction.lock:
             claimed = self.interaction.progress_spoken_at
             self.interaction.progress_spoken_at = now  # also holds back commentary-driven updates
-            claimed_task = backend.spoken_at
-            backend.spoken_at = now
-            covered = backend.activity_count
-            told = list(backend.told[-3:])
-            told_all = list(backend.pulse_said) + [(float("-inf"), t) for t in backend.told
-                                                   if t not in {said for _, said in backend.pulse_said}]
-            idle = backend.pulse_idle
-        running_s = time.time() - float(current.get("started_at") or current.get("at") or time.time()) if current else 0.0
-        steps = P.pulse_steps(items, backend.pulse_told, notes, current, running_s)
-        request = self.store.request_text(backend.idem_key) or ""
-        writer = self.rt.progress_call or router.progress_update
-        if open_mic and stale and idle >= PULSE_IDLE_AFTER:
-            line = None  # where a muted call backs off, the open mic hears the step and the task's age
-        else:
-            try:
-                line = await asyncio.to_thread(writer, request, steps, told)
-            except Exception as exc:
-                logger.info("speakeasy: pulse wording unavailable (%s)", type(exc).__name__)
-                line = None
-            line = line or P.pulse_fallback([i["text"] for i in fresh] + notes,
-                                            current.get("text") if current else None,
-                                            running_s, self.store.title(backend.idem_key), idle)
-        name, needs = self.spoken_task_name(backend.idem_key), self.pulse_needs_name(backend)
-        if open_mic:
-            # Never word for word a recent line, never over the cap, and never nothing.
-            line = unrepeated(line, told_all, self.pulse_step(backend, items, current), now - backend.started,
-                              lambda c: cap_words(P.named_pulse(c, name, needs) or c),
-                              reserve=len(name.split()) if needs and name else 0,
-                              keep=proper_nouns(request, name, self.store.title(backend.idem_key)), every=every)
-        else:
-            line = P.named_pulse(line, name, needs)
+        line = await asyncio.to_thread(self.card_update, backend, card)
         late = time.monotonic()
         if (not line or not self.call_connected() or self.muted_now() or self.someone_speaking(late)
                 or self.last_spoke_at() > now or backend.status not in {"running", "working"}):
             with self.interaction.lock:
                 if self.interaction.progress_spoken_at == now:
                     self.interaction.progress_spoken_at = claimed
-                # Nothing was said, so on an open mic the task keeps its early first line (and its
-                # spacing) instead of waiting PULSE_EVERY_S from a line that never went out. Muted and
-                # never-reported calls keep main's behaviour here exactly.
-                if open_mic and backend.spoken_at == now:
-                    backend.spoken_at = claimed_task
             return False
+        self.remember_update(backend, card, line, now, stale)
         with self.interaction.lock:
-            backend.told_count = covered
-            backend.told = (backend.told + [line])[-5:]
-            backend.pulse_told.update(i["n"] for i in items)
-            backend.pulse_idle = idle + 1 if stale else 0
-            backend.pulse_said = (backend.pulse_said + [(now, line)])[-PULSE_SAID_KEEP:]
-        logger.info("speakeasy: call pulse (%s)", "nothing new" if stale else "new activity")
+            backend.spoken_at = now
+        logger.info("speakeasy: call pulse (%s)", "same card, later" if stale else "card changed")
         await self.append("session.commentary.append", backend.say_id, line)
         return True
 
@@ -2961,14 +3016,14 @@ class SidebandWorker:
         behind the task itself (that made status questions wait up to eight minutes)."""
         with self.interaction.lock:
             run = self.interaction.runs.get(task_id)
-            steps = list(run.activity) if run else []
             status = run.status if run else None
             started = run.started if run else time.monotonic()
             key = run.idem_key if run else None
         name = (self.store.title(key) if key else None) or notice_text(self.store.request_text(key) if key else "", 80)
         work = self.store.work(idem_key=key) if key else None
-        if not steps and work:
-            steps = [e.get("text", "") for e in (work.get("events") or []) if e.get("kind") in {"milestone", "tool"}][-4:]
+        steps = [e.get("text", "") for e in ((work or {}).get("events") or [])
+                 if e.get("kind") in {"milestone", "tool"}][-4:]
+        card = self.card_line(key) if key and status not in TERMINAL else None
         result = notice_text(((work or {}).get("result") or {}).get("spoken"), 300) if status == "completed" else None
         live: list[str] = []
         session = (work or {}).get("session_id") or ((work or {}).get("job") or {}).get("id")
@@ -2985,7 +3040,8 @@ class SidebandWorker:
                           P.status_answer(name or "that task", status, steps, time.monotonic() - started, result,
                                           live, request=request, tools=[i.get("text", "") for i in tools if
                                                                         not str(i.get("text", "")).startswith("Found: ")],
-                                          findings=findings, queued_behind=queued, confused=confused))
+                                          findings=findings, queued_behind=queued, confused=confused,
+                                          card=spoken_card(card[0], card[1], so_far=card[2], limit=60) if card else None))
 
     def live_steps(self, session_id: str) -> list[str]:
         """What the task's Hermes session has done lately, in plain words, newest last: the voice's
@@ -4065,7 +4121,7 @@ class SidebandWorker:
                 backend.run_id, backend.status = run_id, "running"
             self.publish()
             loop = asyncio.get_running_loop()
-            terminal_seen = await asyncio.to_thread(
+            terminal_seen = await in_own_thread(
                 self.hermes.events, run_id,
                 lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
             if not terminal_seen:
@@ -4235,8 +4291,15 @@ class SidebandWorker:
                 elif name.startswith("run.") and name != "run.started":
                     final["status"] = name.split(".", 1)[1]
                     final["error"] = payload.get("error")
+                if name.startswith("run.") and isinstance(payload.get("runtime"), dict):
+                    # A continued chat runs on that chat's own model (its /model override, a fallback),
+                    # not the default: keep what Hermes says served it, as a new task's run.* events do.
+                    try:
+                        self.store.served_model(idem, payload["runtime"])
+                    except Exception:
+                        logger.debug("speakeasy: served model not recorded", exc_info=True)
 
-            terminal = await asyncio.to_thread(continuity.stream_session_chat, self.hermes.base, self.rt.hermes_key(),
+            terminal = await in_own_thread(continuity.stream_session_chat, self.hermes.base, self.rt.hermes_key(),
                                                conv, content, on_event)
             status = final.get("status") or ("completed" if terminal and final.get("text") else "ambiguous")
             output = P.without_voice_header(final.get("text", ""))
@@ -4341,7 +4404,7 @@ class SidebandWorker:
         LIVE_THREAD_WAITS[idem] = time.monotonic()  # being waited on: the stuck-task sweep leaves it
         vouch = self.vouch_for_thread(backend, conv.platform, str(thread_id))
         try:
-            answer = await asyncio.to_thread(runner.wait_turn, conv.platform, str(thread_id), after, on_activity)
+            answer = await in_own_thread(runner.wait_turn, conv.platform, str(thread_id), after, on_activity)
         finally:
             vouch.set()
             await asyncio.to_thread(tools.stop)
@@ -4385,7 +4448,7 @@ class SidebandWorker:
                 backend.run_id = run_id
             self.publish()
             loop = asyncio.get_running_loop()
-            terminal_seen = await asyncio.to_thread(
+            terminal_seen = await in_own_thread(
                 self.hermes.events, run_id,
                 lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
             if not terminal_seen:
@@ -4467,9 +4530,9 @@ class SidebandWorker:
         vouch = self.vouch_for_thread(backend, opened.platform, str(opened.thread_id))
         try:
             try:
-                answer = await asyncio.to_thread(self.rt.threads.wait, opened, on_session, on_title, on_activity)
+                answer = await in_own_thread(self.rt.threads.wait, opened, on_session, on_title, on_activity)
             except TypeError:  # an older runner without progress
-                answer = await asyncio.to_thread(self.rt.threads.wait, opened, on_session, on_title)
+                answer = await in_own_thread(self.rt.threads.wait, opened, on_session, on_title)
         except Exception as exc:
             answer, backend.error = None, type(exc).__name__
         finally:
@@ -4483,12 +4546,27 @@ class SidebandWorker:
                 backend.status = "ambiguous"
             self.publish()
             return
+        self.note_session_model(idem, threads.thread_session(state_db, opened.platform, str(opened.thread_id)))
         await self.handle_hermes_event(backend, {"event": "run.completed", "output": P.without_voice_header(answer),
                                                  "continued": True,
                                                  "thread_target": f"{channel.target}:{opened.thread_id}"
                                                  if channel.target.count(":") == 1 else None,
                                                  "pointer_target": None if channel.target == self.notices.target()
                                                  else f"{opened.platform}:{opened.thread_id}"})
+
+    def note_session_model(self, idem: str, session_id: str | None) -> None:
+        """A thread task has no run events: the model Hermes recorded on its session is what served it
+        (never the configured default, which a gateway's /model or a fallback may not have used)."""
+        if not session_id:
+            return
+        try:
+            from . import history as history_mod
+            meta = history_mod.session_meta(self.rt.state_db, session_id) or {}
+            model = meta.get("model")
+            if isinstance(model, str) and model.strip():
+                self.store.served_model(idem, {"provider": "", "model": model.strip()}, bare=True)
+        except Exception:
+            logger.debug("speakeasy: a thread task's model not recorded", exc_info=True)
 
     async def thread_activity(self, backend: BackendRun, kind: str, text: str, event: dict[str, Any]) -> None:
         """One step a thread task reported: keep its card live and the voice's picture of it current."""
@@ -4510,7 +4588,6 @@ class SidebandWorker:
                 self.store.user_progress(backend.idem_key, *progress)
             self.store.thread_progress(backend.idem_key, detail)
             self.store.progress(backend.idem_key, "milestone", detail)
-            self.record_activity(backend, detail)
             self.publish()
             if not await self.maybe_speak_progress(backend, detail):
                 await self.maybe_note_status(backend, detail)
@@ -4671,7 +4748,6 @@ class SidebandWorker:
                 if progress:
                     self.store.user_progress(idem, *progress)
                     self.store.progress(idem, "milestone", progress[1])
-                    self.record_activity(backend, progress[1])
                     if not await self.maybe_speak_progress(backend, progress[0]):
                         await self.maybe_note_status(backend, progress[1])
             elif backend.status != "ambiguous":
@@ -4682,7 +4758,6 @@ class SidebandWorker:
                         backend.edits = backend.edits or edits
                 derived = derive_tool_status(event.get("tool"), event.get("preview"))
                 if derived:
-                    self.record_activity(backend, derived[1])
                     self.store.tool_progress(idem, *derived)
         elif kind == "approval.request":
             request_id = event.get("request_id")
@@ -4787,7 +4862,14 @@ class SidebandWorker:
             if self.call_connected():
                 # Never over a thought in progress: the answer (or its question) waits for a pause.
                 await self.wait_for_pause()
-            if status == "completed":
+            if status == "completed" and self.store.is_seen(idem):
+                # They already opened this answer in the app while the voice was busy: reading it out
+                # now would repeat what they've read. The voice knows it, and says it only if asked.
+                await self.append("session.thinking.append", delegation_id, P.result_already_seen_note(
+                    notice_text(self.store.request_text(idem), 140) or "an earlier request",
+                    result["spoken"] if result else "Done."))
+                self.replied_task = backend.delegation_id
+            elif status == "completed":
                 spoken = result["spoken"] if result else "Done."
                 notes = list(P.result_notes(self.store.title(idem) or self.store.request_text(idem),
                                             result.get("full") if result else None, spoken))

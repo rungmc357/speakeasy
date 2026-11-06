@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..text import clean_transcript, notice_text, safe_user_text
+from ..text import clean_transcript, notice_text
 
 PROMPT_DIR = Path(__file__).parent
 # ~12,000 tokens at ~4 chars/token.
@@ -178,6 +178,13 @@ def open_work_block(tasks: list[dict[str, Any]], names: Names) -> str:
     return text
 
 
+def result_already_seen_note(request: str, spoken: str) -> str:
+    """A finished task whose answer the user already opened in the app: background, never read out."""
+    return (f"Background, do not say this now: the task \"{request}\" finished and the user already read its "
+            f"answer in the app: {notice_text(spoken, 300)}. Don't read it out or announce it; use it only if "
+            "they ask about it.")
+
+
 def resume_block(tasks: list[dict[str, Any]], names: Names) -> str:
     """Instructions for a call resumed after Pause: continue, don't restart."""
     lines = [
@@ -193,6 +200,10 @@ def resume_block(tasks: list[dict[str, Any]], names: Names) -> str:
         status = task.get("status")
         if task.get("set_aside"):
             open_tasks.append(f"- {request}: set aside by {names.user} (closed; don't ask its question again)")
+        elif status == "completed" and task.get("seen"):
+            spoken = notice_text((task.get("result") or {}).get("spoken"), 300)
+            open_tasks.append(f"- {request}: finished, and {names.user} already read it in the app (don't read it "
+                              "out; use it only if asked)" + (f": {spoken}" if spoken else ""))
         elif status in {"completed", "failed", "cancelled", "interrupted", "ambiguous"}:
             spoken = notice_text((task.get("result") or {}).get("spoken"), 300)
             outcome = "finished" + (f": {spoken}" if spoken else "") if status == "completed" else f"stopped ({status})"
@@ -783,132 +794,6 @@ def where_note(place: str) -> str:
             "where it went unless asked where it went or where to find it; then answer in a few words.")
 
 
-def progress_fallback(steps: list[str], milestone: str) -> str | None:
-    """Without the wording model: say the latest concrete step, never a bare "still on it"."""
-    latest = re.sub(r"\s+", " ", (steps[-1] if steps else milestone) or "").strip().rstrip(".")
-    words = latest.split(" ")
-    if len(words) < 3:
-        return None  # too thin to be worth interrupting the quiet for
-    if len(words) > 16:
-        latest = " ".join(words[:16]) + "…"
-    return f"Quick update: {latest[0].lower() + latest[1:] if latest[:2].istitle() else latest}."
-
-
-# -- the call pulse (calls.SidebandWorker.pulse_tick) ------------------------------------------------
-
-_DOING = {"ran": "running", "read": "reading", "searched": "searching", "edited": "editing", "wrote": "writing",
-          "opened": "opening", "looked": "looking", "checked": "checking", "built": "building",
-          "installed": "installing", "used": "using", "fetched": "fetching", "made": "making",
-          "clicked": "clicking", "typed": "typing", "pressed": "pressing", "scrolled": "scrolling",
-          "went": "going", "updated": "updating", "recorded": "recording", "pulled": "pulling",
-          "staged": "staging", "committed": "committing", "switched": "switching", "stashed": "stashing",
-          "handed": "handing", "asked": "asking", "sent": "sending", "thinking": "thinking"}
-_NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
-
-
-def doing(text: str) -> str | None:
-    """An activity sentence ("Ran the tests") as what it is doing now ("running the tests"); None
-    when its verb isn't one we know (never guess)."""
-    words = re.sub(r"\s+", " ", text or "").strip().rstrip(".").split(" ")
-    verb = _DOING.get(words[0].lower()) if words and words[0] else None
-    if verb is None:
-        return None
-    if words[0].lower() == "handed":
-        return "waiting on a helper"
-    rest = " ".join(words[1:])
-    if words[0].lower() == "thinking":
-        return "thinking it over"
-    return f"{verb} {rest}".strip()
-
-
-def spoken_duration(seconds: float) -> str:
-    """'about a minute in', 'about three minutes in'."""
-    minutes = int(round(max(seconds, 0) / 60))
-    if minutes <= 1:
-        return "about a minute in" if seconds >= 40 else "just started"
-    return f"about {_NUMBER_WORDS.get(minutes, str(minutes))} minutes in"
-
-
-def _step_line(item: dict[str, Any]) -> str:
-    line = item.get("text") or ""
-    tool, args, result = item.get("tool"), item.get("args"), item.get("result")
-    if tool:
-        line += f" ({tool}" + (f": {' '.join(str(args).split())[:120]}" if args else "") + ")"
-    elif item.get("detail"):
-        line += f" ({' '.join(str(item['detail']).split())[:120]})"
-    if result:
-        line += f" -> {' '.join(str(result).split())[:160]}"
-    if item.get("status") == "failed":
-        line += " [failed]"
-    return line[:400]
-
-
-def pulse_steps(items: list[dict[str, Any]], told: set[int], notes: list[str], running: dict[str, Any] | None,
-                running_s: float) -> list[str]:
-    """What the pulse's wording model sees, oldest first: the task's recent tool calls (sentence,
-    tool, argument and result snippets, all already redacted by activity.py), marked "Earlier:" when an
-    earlier update covered them, then its own new notes, then the tool running now."""
-    out = [("Earlier: " if item.get("n") in told else "") + _step_line(item)
-           for item in items if item is not running]
-    out += [n for n in notes if n]
-    if not any(not s.startswith("Earlier: ") for s in out):
-        out.append("Nothing new since the last update.")
-    if running:
-        out.append(f"Right now ({spoken_duration(running_s)}): {_step_line(running)}")
-    return out[-14:]
-
-
-_PLAIN_RUNS = {"ran the tests", "ran a script", "ran a command", "built the project", "installed packages"}
-
-
-def speakable(text: str | None) -> str | None:
-    """An activity sentence fit to say aloud: a command's own words ("Ran X=App + 5 commands",
-    "Ran timeout 580 python poll.py") become "Ran a command"; a bare tool name ("Used x") is dropped."""
-    text = re.sub(r"\s+", " ", text or "").strip().rstrip(".")
-    if not text:
-        return None
-    low = text.lower()
-    if low.startswith("ran ") and low not in _PLAIN_RUNS and (
-            re.search(r"[=_/+\\$|<>~]|\d{2,}|\bcommands?\b|\.\w{1,4}\b", text) or len(text.split()) > 4):
-        return "Ran a command"
-    if re.fullmatch(r"(?i)used \S+", text) and (len(text) < 9 or "_" in text):
-        return None
-    words = text.split(" ")
-    return " ".join(words[:12]) + ("…" if len(words) > 12 else "")
-
-
-def pulse_fallback(new: list[str], running: str | None, running_s: float, title: str | None, n: int) -> str | None:
-    """Without the wording model: the newest real steps, else the tool running now, else at most
-    "Still going: <task>". Varied by ``n`` (how many pulses this task has had)."""
-    def low(text: str) -> str:
-        text = re.sub(r"\s+", " ", text).strip().rstrip(".")
-        return text[0].lower() + text[1:] if text[:2].istitle() else text
-    running = speakable(running)
-    now = doing(running) if running else None
-    plain: list[str] = []
-    for step in (speakable(s) for s in new):
-        if step and (not plain or plain[-1] != step):
-            plain.append(step)
-    new = plain[-2:]  # consecutive repeats already folded ("searched the code" once)
-    if new:
-        said = ", then ".join(low(s) for s in new)
-        if len(said.split()) > 14:
-            said = " ".join(said.split()[:14]) + "…"
-        frame = ("Quick update: {}.", "Since the last update: {}.", "So far: {}.")[n % 3]
-        line = frame.format(said)
-        if now and low(running or "") not in said:
-            line = line[:-1] + f"; now {now}."
-        return line
-    if now:
-        return (f"Still {now}, {spoken_duration(running_s)}.", f"It's {now}, {spoken_duration(running_s)}.",
-                f"Still {now}.")[n % 3]
-    name = notice_text(title, 60) if title else None
-    if not name:
-        return None
-    name = name[0].lower() + name[1:] if name[:2].istitle() else name
-    return (f"Still going on {name}.", f"Still at it: {name}.", f"Still on {name}.")[n % 3]
-
-
 DIDNT_CATCH = ("I heard only a fragment and did not start anything. Say, in a few words of your own, that you didn't "
                "catch that, and let them finish. Don't guess what they meant.")
 
@@ -937,9 +822,11 @@ def tool_step(name: str) -> str:
 def status_answer(name: str, status: str | None, steps: list[str], age_s: float, result: str | None,
                   live: list[str] | None = None, request: str | None = None, tools: list[str] | None = None,
                   findings: list[str] | None = None, queued_behind: str | None = None,
-                  confused: bool = False) -> str:
+                  confused: bool = False, card: str | None = None) -> str:
     """What the voice says to "what's the status?", built from what the task has reported and, when it
-    has said little, from what its session has actually been doing."""
+    has said little, from what its session has actually been doing. ``card``: what the task's card
+    says right now (its live line and recap, calls.spoken_card); the answer leads with it, so the
+    voice and the app tell the same story."""
     concrete = [re.sub(r"\s+", " ", s).strip().rstrip(".") for s in steps if s and not _PLUMBING.search(s)]
     minutes = int(age_s // 60)
     running = f"{minutes} min" if minutes else "under a minute"
@@ -953,6 +840,9 @@ def status_answer(name: str, status: str | None, steps: list[str], age_s: float,
         facts = f"Running for {running}. Latest steps, newest last: " + "; ".join(concrete[-3:]) + "."
     else:
         facts = f"Running for {running}; no concrete step reported yet."
+    if card and status not in {"completed", "failed", "interrupted", "cancelled", "waiting_for_approval"}:
+        facts = f"Running for {running}. Its card in the app says: \"{notice_text(card, 300)}\" Start from that. " + (
+            "Earlier steps, newest last: " + "; ".join(concrete[-3:]) + "." if concrete else "")
     if live and status not in {"completed", "failed", "interrupted", "cancelled"}:
         facts += " What it has been doing most recently, oldest first: " + "; ".join(live[-5:]) + "."
     if queued_behind and status not in {"completed", "failed", "interrupted", "cancelled"}:

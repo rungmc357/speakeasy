@@ -222,6 +222,12 @@ public final class ServerClient: @unchecked Sendable {
     }
 
     /// Dismiss a finished task's image review card (all its images, or the listed card numbers).
+    /// `POST /voice/tasks/{run_id}/seen`: the user opened (or dismissed) this answer. It leaves New
+    /// answers on every device and the voice won't read it out later. Older plugins answer 404.
+    func markAnswerSeen(runID: String) async throws {
+        _ = try await data("/voice/tasks/\(escape(runID))/seen", method: "POST", body: Data("{}".utf8))
+    }
+
     func dismissReview(runID: String, cards: [Int]? = nil) async throws {
         _ = try await data("/voice/reviews/\(escape(runID))/dismiss", method: "POST", body: try reviewDismissBody(cards: cards))
     }

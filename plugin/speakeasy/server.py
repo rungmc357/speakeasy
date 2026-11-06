@@ -682,6 +682,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/routing":
                 self._reply(200, self.service.choose_routing(self._body()))
                 return
+            seen = re.fullmatch(rf"/voice/tasks/{_ID}/seen", path)
+            if seen:
+                self._reply(200, self.service.answer_seen(seen.group(1), self._body()))
+                return
             aside = re.fullmatch(rf"/voice/tasks/{_ID}/set-aside", path)
             if aside:
                 self._reply(200, self.service.set_aside(aside.group(1), self._body()))
