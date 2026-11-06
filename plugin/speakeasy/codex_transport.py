@@ -128,7 +128,7 @@ def login_status(binary: Path | None, runner: Callable[..., Any] = subprocess.ru
             # and fails outright when that key is revoked. Say which one this is.
             result = (True, "Codex is signed in with an OpenAI API key, not a ChatGPT account.")
         else:
-            result = (ok, "Signed in to Codex with ChatGPT." if ok else "Codex is not signed in. Run `codex login`.")
+            result = (ok, "Signed in to Codex with ChatGPT." if ok else "Codex is not signed in on this computer. Run `codex login` here. Hermes' own ChatGPT/Codex sign-in is separate and doesn't carry over.")
     except (OSError, subprocess.SubprocessError) as exc:
         result = (False, f"Could not run Codex ({type(exc).__name__}).")
     _LOGIN_CACHE[str(binary)] = (time.monotonic(), result)
