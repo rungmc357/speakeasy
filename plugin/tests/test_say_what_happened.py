@@ -86,8 +86,8 @@ def test_status_answers_for_a_running_task_keep_the_tense():
 
 def test_the_voice_prompt_says_progress_is_not_a_result():
     rules = P.rules_text(P.Names.from_settings({}))
-    assert "in the tense they're written" in rules
-    assert "Only a task's final result may say it's done" in rules
+    assert "keep their tense" in rules
+    assert "only a final result may say done" in rules
 
 
 # -- 2. no fake "picking up where we left off" -------------------------------------------------------
@@ -111,7 +111,7 @@ def test_resume_openers_are_stripped_from_spoken_lines():
 
 def test_the_prompt_allows_a_resume_phrase_only_when_really_returning():
     rules = P.rules_text(P.Names.from_settings({}))
-    assert "at most once per call" in rules and "never on a task's first update" in rules
+    assert "once per call at most, never on a first update" in rules
     assert "picking up where you left off" not in P.continuing_in_note("your earlier chat")
     assert "left off" not in P.resume_block([], P.Names.from_settings({}))
 
