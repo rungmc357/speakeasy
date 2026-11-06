@@ -160,6 +160,7 @@ struct HistorySidebar: View {
         HStack(spacing: 8) {
             // Only sources the person has sessions from; no menu at all when everything is from one place.
             if store.list.showsSourcePicker { sourceMenu }
+            if store.list.offersAutomatedSwitch { automatedSwitch }
             Spacer()
             if !store.list.activeQuery.isEmpty, !store.list.loading {
                 let q = store.list.activeQuery
@@ -167,6 +168,25 @@ struct HistorySidebar: View {
                     .font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
             }
         }
+    }
+
+    /// One switch: show or hide automated work (board workers, scheduled jobs). On = they're hidden.
+    private var automatedSwitch: some View {
+        let hiding = store.list.hideAutomated
+        return Button { store.setHideAutomated(!hiding) } label: {
+            HStack(spacing: 5) {
+                Image(systemName: hiding ? "eye.slash" : HistoryAutomation.symbol).font(.system(size: 10, weight: .semibold))
+                Text(hiding ? "Automated hidden" : "Hide automated").font(.system(size: 11.5, weight: .medium))
+            }
+            .foregroundStyle(hiding ? Live.brassText : Color.secondary)
+            .padding(.horizontal, 9).frame(height: 22)
+            .background(Capsule().fill(hiding ? Live.brass.opacity(0.16) : Color.primary.opacity(0.05)))
+        }
+        .buttonStyle(.plain).fixedSize()
+        .help(hiding ? "Show board workers and scheduled jobs again" : "Hide board workers and scheduled jobs")
+        .accessibilityLabel(hiding ? "Show automated work" : "Hide automated work")
+        .accessibilityAddTraits(hiding ? .isSelected : [])
+        .accessibilityIdentifier("history-automated-switch")
     }
 
     private var sourceMenu: some View {
@@ -611,11 +631,14 @@ struct HistorySessionView: View {
             }
             .font(.system(size: 10.5, weight: .bold))
             .foregroundStyle(Live.tint(mood))
-            Text(c.title).font(.system(size: 24, weight: .bold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            Text(c.card?.heading ?? c.title).font(.system(size: 24, weight: .bold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            if let live = c.live, !c.jobs.contains(where: { !["completed", "failed", "cancelled"].contains($0.status) }) {
+                HistoryLiveLine(live: live).padding(.top, 2)
+            }
             Text([users > 0 ? "\(users) message\(users == 1 ? "" : "s")" : nil,
                   calls > 0 ? "\(calls) tool call\(calls == 1 ? "" : "s")" : nil,
                   thread.helpers.isEmpty ? nil : "\(thread.helpers.count) helper\(thread.helpers.count == 1 ? "" : "s")",
-                  c.isSpeakeasy ? nil : "replies show here, not in \(c.sourceLabel.components(separatedBy: " · ").first ?? c.sourceLabel)"]
+                  c.isSpeakeasy || c.automated ? nil : "replies show here, not in \(c.sourceLabel.components(separatedBy: " · ").first ?? c.sourceLabel)"]
                 .compactMap { $0 }.joined(separator: " · "))
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.primary.opacity(0.6))
             if let badge = c.model, store.modelsSupported, store.picker?.headerShows(badge) ?? true { ModelWorkedLine(badge: badge) }
@@ -626,6 +649,83 @@ struct HistorySessionView: View {
 
 private extension HistoryConversation {
     var isSpeakeasy: Bool { source == "speakeasy" }
+}
+
+/// A board worker's card as the top of its chat: the issue and its one-line goal, a link to the
+/// issue, and the instructions it was started with behind a collapsed row.
+struct HistoryWorkerCard: View {
+    let card: HistoryWorkerTask
+    let key: String
+    @ObservedObject var store: HistoryStore
+    private var open: Bool { store.openSections.contains(key) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: HistoryList.symbol(for: "kanban")).font(.system(size: 10, weight: .semibold))
+                Text("BOARD TASK").tracking(0.8)
+                if let issue = card.issue { Text("·"); Text(issue).tracking(0.4) }
+                Spacer(minLength: 0)
+                if let url = card.url {
+                    Link(destination: url) {
+                        Label("Open issue", systemImage: "arrow.up.right.square").font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(Live.brassText)
+                    .accessibilityIdentifier("history-worker-issue-link")
+                }
+            }
+            .font(.system(size: 10.5, weight: .bold)).foregroundStyle(.secondary)
+            // The page's own title already reads "LAN-12 · <title>": the card adds the goal, not the title again.
+            if let goal = card.goal {
+                Text(goal).font(.system(size: 12.5)).foregroundStyle(Color.primary.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
+            }
+            if !card.instructions.isEmpty {
+                Button {
+                    withAnimation(.snappy) {
+                        if open { store.openSections.remove(key) } else { store.openSections.insert(key) }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).rotationEffect(.degrees(open ? 90 : 0))
+                        Text("Instructions").font(.system(size: 11.5, weight: .semibold))
+                    }
+                    .foregroundStyle(.secondary).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("history-worker-instructions")
+                if open {
+                    ScrollView {
+                        Text(card.instructions).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.primary.opacity(0.7))
+                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 260)
+                }
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(ChatInk.paper))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Live.hairline, lineWidth: 0.5))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("history-worker-card")
+    }
+}
+
+/// What a running session is doing now and what it has done so far (no Speakeasy task card to carry it).
+struct HistoryLiveLine: View {
+    let live: HistoryLive
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                LiveSpinner(size: 11)
+                Text(live.now).font(.system(size: 13, weight: .semibold)).foregroundStyle(Live.brassText).lineLimit(2)
+            }
+            if let soFar = live.soFar {
+                Text("So far: " + soFar).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(3)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("history-live-line")
+    }
 }
 
 /// Labels for a chat from another app (Discord, Telegram…): its own turns say where they happened;
@@ -683,6 +783,8 @@ struct HistoryMessageView: View {
         switch message.role {
         case .user: user
         case .assistant: assistant
+        case .note where message.card != nil:
+            HistoryWorkerCard(card: message.card!, key: "\(sessionID)|\(message.id)|instructions", store: store)
         case .note:
             Text(message.text).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                 .padding(.horizontal, 10).padding(.vertical, 3)

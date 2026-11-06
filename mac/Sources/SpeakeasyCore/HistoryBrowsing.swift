@@ -17,12 +17,16 @@ public struct HistoryQuery: Equatable, Sendable {
     public var generation: Int
     /// Only archived conversations (the Archived filter).
     public var archived = false
+    /// Leave out automated work (Kanban workers, scheduled jobs): the list's show/hide switch.
+    public var hideAutomated = false
 
     public init(cursor: String? = nil, q: String = "", source: String? = nil, limit: Int = HistoryList.pageSize, generation: Int = 0) {
         self.cursor = cursor; self.q = q; self.source = source; self.limit = limit; self.generation = generation
     }
 
-    public var path: String { HistoryPage.path(query: q, source: source, cursor: cursor, limit: limit, archived: archived) }
+    public var path: String {
+        HistoryPage.path(query: q, source: source, cursor: cursor, limit: limit, archived: archived, hideAutomated: hideAutomated)
+    }
 }
 
 /// The sidebar list: sessions loaded so far, the cursor, the search and the filter. Changing the
@@ -44,8 +48,20 @@ public struct HistoryList: Equatable, Sendable {
     public private(set) var generation = 0
     /// Showing archived conversations (with Unarchive) instead of the live list.
     public private(set) var archived = false
+    /// Automated work left out (the switch, remembered per device by the app).
+    public private(set) var hideAutomated = false
+    /// The server's automated-work facet (nil from plugins before 0.3.37: no switch).
+    public private(set) var automated: HistoryAutomated?
 
-    public init() {}
+    public init(hideAutomated: Bool = false) { self.hideAutomated = hideAutomated }
+
+    public mutating func setHideAutomated(_ on: Bool) -> HistoryQuery? {
+        guard on != hideAutomated else { return nil }
+        hideAutomated = on
+        return reset()
+    }
+    /// Offer the switch: the server can hide them and there is something to hide (or they're hidden).
+    public var offersAutomatedSwitch: Bool { !archived && HistoryAutomation.offers(automated, hiding: hideAutomated) }
 
     public mutating func setArchived(_ on: Bool) -> HistoryQuery? {
         guard on != archived else { return nil }
@@ -116,6 +132,7 @@ public struct HistoryList: Equatable, Sendable {
         loading = true
         var q = HistoryQuery(cursor: nextCursor, q: activeQuery, source: source, limit: Self.pageSize, generation: generation)
         q.archived = archived
+        q.hideAutomated = hideAutomated
         return q
     }
 
@@ -133,6 +150,7 @@ public struct HistoryList: Equatable, Sendable {
         reachedEnd = page.nextCursor == nil || page.sessions.isEmpty
         if !page.filters.isEmpty { filters = page.filters }
         if let facet = page.sources { sources = facet }
+        if let facet = page.automated { automated = facet }
         seenSources.formUnion(HistorySources.seen(in: page.sessions))
         return true
     }
@@ -147,6 +165,7 @@ public struct HistoryList: Equatable, Sendable {
         let rest = sessions.dropFirst(covered.count).filter { !fresh.contains($0.id) }
         sessions = page.sessions + rest
         if let facet = page.sources { sources = facet }
+        if let facet = page.automated { automated = facet }
     }
 
     @discardableResult
@@ -182,7 +201,7 @@ public struct HistoryList: Equatable, Sendable {
         HistoryFilter(id: "speakeasy", label: "Speakeasy"), HistoryFilter(id: "discord", label: "Discord"),
         HistoryFilter(id: "telegram", label: "Telegram"), HistoryFilter(id: "slack", label: "Slack"),
         HistoryFilter(id: "terminal", label: "Terminal"), HistoryFilter(id: "desktop", label: "Desktop"),
-        HistoryFilter(id: "scheduled", label: "Scheduled"),
+        HistoryFilter(id: "scheduled", label: "Scheduled"), HistoryFilter(id: "kanban", label: "Kanban"),
     ]
 
     /// The SF Symbol for where a session came from.
@@ -192,6 +211,7 @@ public struct HistoryList: Equatable, Sendable {
         case "discord", "slack", "telegram", "whatsapp", "signal", "matrix": return "bubble.left.and.bubble.right"
         case "cli", "terminal": return "terminal"
         case "cron", "scheduled": return "clock.arrow.circlepath"
+        case "kanban": return "square.grid.3x2"
         case "email": return "envelope"
         case "gui", "desktop": return "macwindow"
         default: return "circle.grid.2x2"
@@ -248,6 +268,8 @@ public struct HistoryThreadMessage: Equatable, Sendable, Identifiable {
     public var delivery: Delivery?
     /// Set on a local message: retry with the same client id.
     public var clientID: String?
+    /// `note`: a board worker's card, drawn as a compact header (the instructions folded away).
+    public var card: HistoryWorkerTask? = nil
 
     public init(id: String, role: Role, text: String, at: Date? = nil, voice: Bool = false, tools: [JobActivityItem] = [],
                 delivery: Delivery? = nil, clientID: String? = nil, call: [HistoryCallLine]? = nil) {
@@ -294,7 +316,9 @@ public struct HistoryThread: Equatable, Sendable {
             case .tools:
                 pending += e.tools; pendingAt = pendingAt ?? e.at
             case .note:
-                out.append(HistoryThreadMessage(id: e.id, role: .note, text: e.text, at: e.at))
+                var note = HistoryThreadMessage(id: e.id, role: .note, text: e.text, at: e.at)
+                note.card = e.card
+                out.append(note)
             case .assistant:
                 out.append(HistoryThreadMessage(id: e.id, role: .assistant, text: e.text, at: e.at, tools: pending))
                 pending = []; pendingAt = nil
