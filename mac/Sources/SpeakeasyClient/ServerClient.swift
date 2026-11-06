@@ -431,6 +431,23 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await json("/voice/settings", method: "PATCH", body: try JSONSerialization.data(withJSONObject: defaults.patchBody))
     }
 
+    /// A New chat: `startJob`, plus the Hermes session it runs in (plugins from 0.3.34 reply with
+    /// `session_id` at once; nil from older ones, which the caller then looks up by run id).
+    public func startChatSession(text: String, attachments: [String] = [], clientID: String = UUID().uuidString,
+                                 choice: ModelChoice? = nil) async throws -> (runID: String?, sessionID: String?) {
+        let clean = TaskMessageRequest.clean(text)
+        guard clean != nil || !attachments.isEmpty else { throw HTTPError(status: 400, message: "The job is empty.") }
+        var body: [String: Any] = ["text": clean ?? "", "source": "typed", "client_id": clientID]
+        if !attachments.isEmpty { body["attachments"] = attachments }
+        if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
+        let reply = try await post("/voice/work", body)
+        guard reply["ok"] as? Bool == true else {
+            throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't start that job.")
+        }
+        let session = (reply["session_id"] as? String) ?? ((reply["task"] as? [String: Any])?["session_id"] as? String)
+        return (reply["run_id"] as? String, session)
+    }
+
     // MARK: History (servers with `history`; docs/API.md "History")
 
     /// One page of every Hermes session, newest first.
@@ -485,6 +502,20 @@ public final class ServerClient: @unchecked Sendable {
     /// call_ended / call_paused / not_connected, 502 transport_error, 504 timeout).
     public func inputText(interactionID: String, text: String) async throws -> Bool {
         TypedText.taken(try await post(TypedText.path(interactionID: interactionID), TypedText.body(text)))
+    }
+
+    /// Stop one task by id, with or without a call (plugins with `task_stop`): a panel row's Stop.
+    public func stopTask(runID: String) async throws {
+        _ = try await post("/voice/work/\(escape(runID))/stop", [String: Any]())
+    }
+
+    /// Stop the newest of a session's tasks that is still running (409 = that one wasn't; try the next).
+    public func stopSession(runIDs: [String]) async throws {
+        var last: Error?
+        for run in runIDs.reversed() {
+            do { try await stopTask(runID: run); return } catch let e as HTTPError where e.status == 409 { last = e }
+        }
+        if let last { throw last }
     }
 
     public func cancelBackend(interactionID: String, runID: String) async throws {
@@ -592,6 +623,54 @@ public final class ServerClient: @unchecked Sendable {
     }
 
     // MARK: - Event stream
+
+    // MARK: History actions and live changes (plugins from 0.3.34)
+
+    /// Rename a conversation (Hermes' own title: its other apps show it too).
+    public func renameSession(_ sessionID: String, title: String) async throws {
+        _ = try await post(HistoryConversation.path(sessionID) + "/rename", ["title": title])
+    }
+    /// Pin or unpin (shared by every device).
+    public func pinSession(_ sessionID: String, pinned: Bool) async throws {
+        _ = try await post(HistoryConversation.path(sessionID) + "/pin", ["pinned": pinned])
+    }
+    /// Archive or unarchive (Hermes' own archive: hidden in its other apps too).
+    public func archiveSession(_ sessionID: String, archived: Bool) async throws {
+        _ = try await post(HistoryConversation.path(sessionID) + "/archive", ["archived": archived])
+    }
+    /// Mark as read on every device.
+    public func markSessionRead(_ sessionID: String) async throws {
+        _ = try await post(HistoryConversation.path(sessionID) + "/read", [:])
+    }
+
+    /// Reads `GET /voice/history/events` (session_updated, session_archived, decision_resolved,
+    /// history_changed, reset) until it ends. `.unsupported` on older plugins: keep polling.
+    public func streamHistoryEvents(parser: inout SSEParser, onEvent: (SSEEvent) async -> Void) async -> StreamOutcome {
+        var headers = ["Accept": "text/event-stream"]
+        if let last = parser.lastEventID { headers["Last-Event-ID"] = last }
+        var req = request("/voice/history/events", headers: headers, timeout: 3600)
+        req.timeoutInterval = 3600
+        do {
+            let (bytes, response) = try await session.bytes(for: req)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 404 || status == 405 || status == 501 { return .unsupported }
+            guard (200..<300).contains(status) else { return .failed(HTTPError(status: status, message: "History stream HTTP \(status)")) }
+            var line = Data()
+            for try await byte in bytes {
+                line.append(byte)
+                if byte == 0x0A {
+                    let events = parser.append(String(decoding: line, as: UTF8.self))
+                    line.removeAll(keepingCapacity: true)
+                    for event in events { await onEvent(event) }
+                }
+                if Task.isCancelled { return .ended }
+            }
+            return .ended
+        } catch {
+            if Task.isCancelled { return .ended }
+            return .failed(error)
+        }
+    }
 
     public enum StreamOutcome { case ended, unsupported, failed(Error) }
 

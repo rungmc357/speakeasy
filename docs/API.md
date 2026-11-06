@@ -40,6 +40,7 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/interactions/{id}/pause` | device | Pause the call (resumable) |
 | POST | `/voice/interactions/{id}/approval` | device | Answer a Hermes tool approval |
 | POST | `/voice/interactions/{id}/cancel-backend` | device | Stop a task's Hermes run |
+| POST | `/voice/work/{run_id}/stop` | device | Stop one task by id, with or without a call (`capabilities.task_stop`) |
 | POST | `/voice/interactions/{id}/skip-tour` | device | End the first-call tour |
 | POST | `/voice/interactions/{id}/early-request` | device | Words heard while the call connected: the first request (or, in a call from listening mode, "answer from the room") |
 | POST | `/voice/interactions/{id}/answer` | device | Answer a task's question card (or a spoken-choice card) |
@@ -456,6 +457,13 @@ the call's voice can answer the same approval ("approve", "no") under the same r
 
 Body `{}`. The Skip tour button: tells the live call to drop the first-call tour and carry on
 normally. Returns `{"interaction_id", "tour": "skipped"}`.
+
+## POST /voice/work/{run_id}/stop
+
+Stops one task by its run id whether or not a call is open (a panel row's Stop): the plugin finds the
+call or the voiceless worker holding it and stops it the way `cancel-backend` does. Body `{}`.
+`202` with the same reply as `cancel-backend`; `409` when that task isn't running; `404` for a bad id.
+Servers with `capabilities.task_stop`.
 
 ## POST /voice/interactions/{id}/cancel-backend
 
@@ -1651,7 +1659,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. When
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules`, `task_stop` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 `200`

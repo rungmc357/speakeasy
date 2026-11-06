@@ -405,6 +405,8 @@ class Runtime:
     call_log: Any = None
     # Lowers the Mac's volume while the call is speaking (duck.Ducker); None = never.
     duck: Ducker | None = None
+    # The device-wide history event feed (service.HistoryEvents); None = nobody listening.
+    history_events: Any = None
     # Speakeasy's copies of shared files (attachments.SharedFolder), and the call that deletes copies
     # nothing uses any more (no task records them, no live call holds them). None = not kept.
     shared: Any = None
@@ -1622,6 +1624,9 @@ class SidebandWorker:
             return previous[0]
         delegation_id = "answer_" + secrets.token_hex(8)
         answers[key] = (delegation_id, now)
+        answered = getattr(self, "question_answered", None)
+        if callable(answered):
+            answered(task_id)
         self.delegations.add(delegation_id)
         self.last_handoff_at = time.monotonic()
         self.touch()
@@ -1642,6 +1647,18 @@ class SidebandWorker:
         follow.add_done_callback(tasks.discard)
         follow.add_done_callback(_log_follow_up_failure)
         return delegation_id
+
+    def question_answered(self, task_id: str) -> None:
+        """The task's question was answered: recorded in the store (the one truth every device's board,
+        panel and session page read), and every client told at once (decision_resolved)."""
+        with self.interaction.lock:
+            run = self.interaction.runs.get(task_id)
+            key, run_id = (run.idem_key, run.run_id) if run else (None, None)
+        if key and self.store.mark_answered(key):
+            events = getattr(self.rt, "history_events", None)
+            if events is not None:
+                events.publish("decision_resolved", {"run_id": run_id, "session_id": self.store.session_for(key)})
+            self.publish()
 
     def picked_request(self, task_id: str, text: str) -> str:
         """A tapped answer carries the question it answers ("Fix and ship: Fix the onboarding gaps for

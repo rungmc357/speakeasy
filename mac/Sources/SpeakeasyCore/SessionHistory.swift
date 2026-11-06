@@ -21,12 +21,19 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
     public var runIDs: [String]
     /// A snippet of the matching message (searches only).
     public var match: String?
+    /// Pinned on any device (the plugin's mark): listed first, in the Pinned section.
+    public var pinned: Bool
+    /// Something new since it was last read on any device.
+    public var unread: Bool
+    /// Archived in Hermes (listed only under the Archived filter).
+    public var archived: Bool
 
     public init(id: String, title: String, source: String, sourceLabel: String, lastActivity: Date?,
-                preview: String = "", state: State = .idle, runIDs: [String] = [], match: String? = nil) {
+                preview: String = "", state: State = .idle, runIDs: [String] = [], match: String? = nil,
+                pinned: Bool = false, unread: Bool = false, archived: Bool = false) {
         self.id = id; self.title = title; self.source = source; self.sourceLabel = sourceLabel
         self.lastActivity = lastActivity; self.preview = preview; self.state = state; self.runIDs = runIDs
-        self.match = match
+        self.match = match; self.pinned = pinned; self.unread = unread; self.archived = archived
     }
 
     public init?(json: Any?) {
@@ -38,7 +45,22 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
                   preview: String((nonEmpty(o["preview"]) ?? "").prefix(200)),
                   state: (o["state"] as? String).flatMap(State.init(rawValue:)) ?? .idle,
                   runIDs: (o["run_ids"] as? [Any] ?? []).compactMap { nonEmpty($0) },
-                  match: nonEmpty(o["match"]))
+                  match: nonEmpty(o["match"]), pinned: o["pinned"] as? Bool ?? false,
+                  unread: o["unread"] as? Bool ?? false, archived: o["archived"] as? Bool ?? false)
+    }
+
+    /// The deep link that opens this conversation in any Speakeasy app.
+    public var link: URL? { HistorySession.link(id) }
+    public static func link(_ id: String) -> URL? {
+        var c = URLComponents()
+        c.scheme = "speakeasy"; c.host = "session"; c.path = "/" + id
+        return c.url
+    }
+    /// The session id in a `speakeasy://session/<id>` link.
+    public static func sessionID(fromLink url: URL) -> String? {
+        guard url.scheme == "speakeasy", url.host == "session" else { return nil }
+        let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return id.isEmpty ? nil : id
     }
 
     public var isSpeakeasy: Bool { source == "speakeasy" }
@@ -130,8 +152,10 @@ public struct HistoryPage: Equatable, Sendable {
     }
 
     /// The query string for a page: search, source filter, cursor (all optional).
-    public static func path(query: String = "", source: String? = nil, cursor: String? = nil, limit: Int? = nil) -> String {
+    public static func path(query: String = "", source: String? = nil, cursor: String? = nil, limit: Int? = nil,
+                            archived: Bool = false) -> String {
         var items: [URLQueryItem] = []
+        if archived { items.append(URLQueryItem(name: "archived", value: "1")) }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !q.isEmpty { items.append(URLQueryItem(name: "q", value: String(q.prefix(200)))) }
         if let source, !source.isEmpty { items.append(URLQueryItem(name: "source", value: source)) }
@@ -158,6 +182,12 @@ public enum HistoryGroup: String, CaseIterable, Sendable, Identifiable {
             return .yesterday
         }
         return .earlier
+    }
+
+    /// Pinned rows (newest pin first, as the server lists them), then the rest in their groups.
+    public static func sectioned(_ sessions: [HistorySession], now: Date = Date(),
+                                 calendar: Calendar = .current) -> (pinned: [HistorySession], groups: [(HistoryGroup, [HistorySession])]) {
+        (sessions.filter(\.pinned), grouped(sessions.filter { !$0.pinned }, now: now, calendar: calendar))
     }
 
     /// Sessions in their groups, newest first inside each; empty groups left out.
@@ -239,6 +269,9 @@ public struct HistoryConversation: Equatable, Sendable {
     public var model: ModelBadge?
     public var nextModel: ModelBadge?
     public var modelChoice: ModelChoice?
+    /// Archived in Hermes (the page offers Unarchive) / pinned on any device.
+    public var archived = false
+    public var pinned = false
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
@@ -263,11 +296,21 @@ public struct HistoryConversation: Equatable, Sendable {
                   approvals: (o["approvals"] as? [Any] ?? []).compactMap(HistoryApproval.init(json:)),
                   model: ModelBadge(json: o["model"]), nextModel: ModelBadge(json: o["next_model"]),
                   modelChoice: ModelChoice(json: o["model_choice"]))
+        archived = o["archived"] as? Bool ?? false
+        pinned = o["pinned"] as? Bool ?? false
     }
 
-    /// Jobs whose question (a decision card) waits on the user; approvals are in `approvals`.
+    /// The ONE job whose question (a decision card) waits on the user, as the plugin decides it
+    /// (`question_open`; answered anywhere, superseded or a repeat of an answered one → none). Plugins
+    /// before it: the newest unanswered question only, never two cards for the same question.
     public var waitingQuestions: [WorkInfo] {
-        jobs.filter { $0.status == "completed" && $0.decision != nil && !$0.setAside }
+        let open = jobs.filter { $0.status == "completed" && $0.decision != nil && !$0.setAside && !$0.answered }
+        if let flagged = open.first(where: { $0.questionOpen == true }) { return [flagged] }
+        if open.contains(where: { $0.questionOpen == false }) {
+            return []   // the plugin decided: none of these still waits
+        }
+        // Older plugins: one card at most (jobs are newest first), never the same question twice.
+        return open.first.map { [$0] } ?? []
     }
     public var isWorking: Bool { state == .running }
 

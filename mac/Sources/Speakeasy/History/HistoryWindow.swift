@@ -154,9 +154,11 @@ enum DemoHistory {
         var sessions: [HistorySession] = []
         var convs: [String: HistoryConversation] = [:]
         func add(_ id: String, _ title: String, _ source: String, _ label: String, _ last: Double, _ preview: String,
-                 state: String = "idle", entries: [[String: Any]] = [], jobs: [[String: Any]] = [], approvals: [[String: Any]] = []) {
+                 state: String = "idle", entries: [[String: Any]] = [], jobs: [[String: Any]] = [], approvals: [[String: Any]] = [],
+                 pinned: Bool = false, unread: Bool = false) {
             let row: [String: Any] = ["id": id, "title": title, "source": source, "source_label": label, "last_activity": last,
-                                      "preview": preview, "state": state]
+                                      "preview": preview, "state": state, "pinned": pinned, "unread": unread,
+                                      "run_ids": jobs.compactMap { $0["run_id"] as? String }]
             sessions.append(HistorySession(json: row)!)
             var full = row
             full["entries"] = entries; full["jobs"] = jobs; full["approvals"] = approvals
@@ -185,7 +187,8 @@ enum DemoHistory {
                              call(7, "run", "Ran the test 50 times", "terminal", ago(4), nil,
                                   args: "npx playwright test checkout.spec.ts --repeat-each=50")]),
                 bot("m4", ago(1), "Changed the test to wait for the mock. Running it 50 times now: 31 passes so far, no failures."),
-            ], jobs: [["run_id": "run_0012", "status": "working", "title": "Fix the flaky checkout test", "subagents": [
+            ], jobs: [["run_id": "run_0012", "status": "running", "title": "Fix the flaky checkout test",
+                       "short_status": "Rerunning the checkout test: 31 of 50", "step_index": 3, "step_count": 4, "subagents": [
                 ["id": "h1", "title": "Check the other payment tests", "status": "done", "goal": "Look for the same fixed wait in the other payment specs",
                  "started_at": ago(5), "ended_at": ago(3.5), "summary": "Two more specs wait 500 ms for the mock: refund.spec.ts and saved-card.spec.ts."],
                 ["id": "h2", "title": "Find when the wait was added", "status": "running", "started_at": ago(4), "now": "Reading git blame for checkout.spec.ts"]]]])
@@ -219,13 +222,13 @@ enum DemoHistory {
                 tools("t1", [call(1, "run", "Timed every query on the page", "terminal", ago(255), 42),
                              call(2, "edit", "Added an index on orders.created_at", "patch", ago(245), 0.8),
                              call(3, "run", "Checked the load time", "terminal", ago(236), 38, result: "p50 0.8 s (was 6.1 s)")]),
-                bot("m2", ago(232), "The dashboard loads in 0.8 seconds now, down from 6. One query was scanning every order; it has an index on created_at now."),
-            ])
+                bot("m2", ago(232), "The dashboard loads in 0.8 seconds now, down from 6. One query was scanning every order; it has an index on created_at now.\n\n```sql\nCREATE INDEX orders_created_at_idx ON orders (created_at);\n```"),
+            ], pinned: true)
         add("s_tickets", "This week's support tickets", "cli", "Terminal", daysAgo(1, 17, 52),
             "Half the billing tickets are the same card-declined message.", entries: [
                 user("m1", daysAgo(1, 17, 40), "Summarize this week's support tickets by cause."),
                 bot("m2", daysAgo(1, 17, 52), "77 tickets. Billing (40): half are the same card-declined message. Login (22): mostly the new SSO redirect. Exports (15): CSV timeouts on big accounts."),
-            ])
+            ], unread: true)
         add("s_onboard", "Onboarding email sequence", "speakeasy", "Speakeasy", daysAgo(1, 11, 40), "Drafted all five; email 3 invites the team.",
             entries: [user("m1", daysAgo(1, 11, 5), "Write the onboarding email sequence."),
                       bot("m2", daysAgo(1, 11, 40), "Drafted all five; email 3 invites the team. They're in onboarding/.")])
@@ -378,6 +381,11 @@ enum HistoryShots {
                 snapshotView(ModelPopover(store: store, state: state) {}, size: NSSize(width: 320, height: 430),
                              appearance: c.window?.effectiveAppearance, to: "\(dir)/11-model-popover.png")
                 print("history shot 11-model-popover")
+            }
+            await shot("9-code-block-pinned") {
+                store.setCallLive(false)
+                c.window?.setContentSize(NSSize(width: 1040, height: 720))
+                store.open("s_dash")
             }
             exit(0)
         }

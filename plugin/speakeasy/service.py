@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import concurrent.futures
+import copy
 import datetime as _dt
 import hashlib
 import json
@@ -77,6 +78,7 @@ IMAGE_SUPPORT_EVERY_S = 3600  # re-check whether Hermes reads images (its model 
 EARLY_CONNECT_WAIT_S = 8  # words heard while connecting wait this long for the call's event channel
 CAPABILITIES["job_subagents"] = True  # helpers a task started (delegate_task) on its work object (subagents.py)
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
+CAPABILITIES["task_stop"] = True  # POST /voice/work/{run_id}/stop: stop one task by id, with or without a call
 CAPABILITIES["start_jobs"] = True  # POST /voice/work: a new job from typed text, no call needed (the app's Update button)
 CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the pair response): every address of this Hermes
 # POST /voice/interactions/{id}/input-text: a turn typed to the call itself (same as the top-level
@@ -143,6 +145,83 @@ def _merge_rooms(kept: str, heard: str) -> str:
         lines.pop(0)
     return "\n".join(lines)
 
+def _submodule(name: str) -> Any:
+    """One of this plugin's modules, imported lazily. Retried briefly: while Hermes re-imports the
+    plugin's files underneath the running server (reloader.py), the import machinery can raise
+    KeyError for a sibling module mid-swap. Seen live 16:26-16:28 as GET /voice/status 500s, which
+    the apps then showed as "can't reach your Hermes" while Tailscale was up."""
+    import importlib
+    for attempt in range(4):
+        try:
+            return importlib.import_module(f".{name}", __package__)
+        except KeyError:
+            if attempt == 3:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    raise ImportError(name)
+
+
+class HistoryEvents:
+    """One device-wide event feed for the history: ``session_updated`` / ``session_archived`` /
+    ``decision_resolved`` from the actions that cause them, and ``history_changed`` when the shared
+    watcher sees anything else move (a reply landing, a task finishing, a title set in another Hermes
+    app). The watcher runs only while a stream is open, and once for all of them."""
+
+    POLL_S = 1.5
+    KEEP = 200
+
+    def __init__(self, stamp: Callable[[], Any]) -> None:
+        self._stamp = stamp
+        self.cond = threading.Condition()
+        self.seq = 0
+        self.events: collections.deque[tuple[int, str, dict[str, Any]]] = collections.deque(maxlen=self.KEEP)
+        self.listeners = 0
+        self._watcher: threading.Thread | None = None
+        self._last: Any = None
+
+    def publish(self, kind: str, payload: dict[str, Any]) -> None:
+        with self.cond:
+            self.seq += 1
+            self.events.append((self.seq, kind, {**payload, "at": round(time.time(), 3)}))
+            self.cond.notify_all()
+
+    def since(self, cursor: int) -> list[tuple[int, str, dict[str, Any]]] | None:
+        """Events after *cursor*, or None when some were dropped (the client reloads)."""
+        if self.events and cursor < self.events[0][0] - 1:
+            return None
+        return [e for e in self.events if e[0] > cursor]
+
+    def opened(self) -> None:
+        with self.cond:
+            self.listeners += 1
+            if self._watcher is None or not self._watcher.is_alive():
+                self._watcher = threading.Thread(target=self._watch, daemon=True, name="speakeasy-history-watch")
+                self._watcher.start()
+
+    def closed(self) -> None:
+        with self.cond:
+            self.listeners = max(0, self.listeners - 1)
+
+    def _watch(self) -> None:
+        try:
+            self._last = self._stamp()
+        except Exception:
+            self._last = None
+        while True:
+            time.sleep(self.POLL_S)
+            with self.cond:
+                if self.listeners <= 0:
+                    self._watcher = None
+                    return
+            try:
+                now = self._stamp()
+            except Exception:
+                continue
+            if now != self._last:
+                self._last = now
+                self.publish("history_changed", {})
+
+
 class VoiceService(SecureInputMixin):
     def __init__(self, hermes_home: Path, *, hermes: Any = None, notifier: Any = None,
                  codex_factory: Callable[..., Any] | None = None, openai_negotiate: Callable[..., Any] | None = None,
@@ -203,6 +282,10 @@ class VoiceService(SecureInputMixin):
         self._message_replies: dict[str, tuple[float, threading.Event, dict[str, Any] | None]] = {}
         self._message_lock = threading.Lock()
         self._text_worker: Any = None
+        # Device-wide live changes to the history (GET /voice/history/events): every client's list,
+        # session page, board, widgets and Live Activity refresh within ~1-2 s of a change anywhere.
+        self.history_events = HistoryEvents(self._history_stamp)
+        self.rt.history_events = self.history_events
         self._suggest_run = suggest_run or self._brief_run
         self.brief = BriefManager(self.home, brief_run or self._brief_run, self.settings.get,
                                   error_fn=lambda: getattr(self.hermes, "last_error", "") or "")
@@ -890,6 +973,9 @@ class VoiceService(SecureInputMixin):
         raise ServiceError(409, "run does not belong to this interaction")
 
     def publish_all(self, key: str | None = None) -> None:
+        events = getattr(self, "history_events", None)
+        if events is not None and key:
+            events.publish("session_updated", {"session_id": self.store.session_for(key)})
         with self.lock:
             live = list(self.interactions.values())
         name = self.settings.get()["assistant_name"]
@@ -1126,6 +1212,29 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "exact run_id is required")
         with interaction.lock:
             backend = self._run(interaction, run_id)
+        return self._cancel(interaction, backend, interaction_id)
+
+    def stop_task(self, run_id: str) -> dict[str, Any]:
+        """``POST /voice/work/{run_id}/stop``: stop one running task by id, with or without a call (a
+        panel row's Stop). Finds the call or voiceless worker holding it and stops it as a call's Stop does."""
+        if not ID_RE.fullmatch(run_id or ""):
+            raise ServiceError(404, "I couldn't find that task.")
+        key = self.store.key_for_run(run_id) or self.store.key_for_task(run_id)
+        with self.lock:
+            holders = list(self.interactions.values())
+        text = self._text_worker
+        if text is not None and getattr(text, "interaction", None) is not None:
+            holders.append(text.interaction)
+        for interaction in holders:
+            with interaction.lock:
+                found = next((r for r in interaction.runs.values()
+                              if r.run_id and (r.run_id == run_id or (key is not None and r.idem_key == key))), None)
+            if found is not None:
+                return self._cancel(interaction, found, interaction.interaction_id)
+        raise ServiceError(409, "That task isn't running here, so there's nothing to stop.")
+
+    def _cancel(self, interaction: Interaction, backend: Any, interaction_id: str | None) -> dict[str, Any]:
+        with interaction.lock:
             if backend.status in TERMINAL or backend.status in {"ambiguous", "cancel_requested"}:
                 raise ServiceError(409, "no active backend run")
             backend.status = "cancel_requested"
@@ -1468,7 +1577,10 @@ class VoiceService(SecureInputMixin):
         if key:
             self.publish_all(key)
         logger.info("speakeasy: a typed job started with no call")
-        return {"ok": True, "run_id": run_id, "task_id": got["task_id"], "task": task}
+        # Its Hermes session id, known the moment it started (the history page it continues on): a New
+        # chat page becomes that session at once, so its next message continues it instead of starting another.
+        session = self.store.session_for(key) if key else None
+        return {"ok": True, "run_id": run_id, "task_id": got["task_id"], "task": task, "session_id": session}
 
     def _claim_message(self, client_id: str) -> tuple[bool, threading.Event]:
         now = time.monotonic()
@@ -1764,13 +1876,21 @@ class VoiceService(SecureInputMixin):
         needs_you = any(st in {"waiting_for_approval", "resolving_approval"} for st in statuses)
         work = self.store.work(idem_key=keys[0][0], assistant_name=self.settings.get()["assistant_name"]) or {}
         title = (work.get("job") or {}).get("name") or work.get("title")
-        needs_you = needs_you or (work.get("status") == "completed" and M._waiting_question(work))
+        needs_you = needs_you or self._open_question([k for k, _, _ in keys] + self._continuations(session_id)) is not None
         run_ids = [rid for rid in (r or self.store.openable_run_id(k) for k, r, _ in keys[:5]) if rid]
         return H.Linked(keys=[k for k, _, _ in keys], name=title, running=running, needs_you=needs_you, run_ids=run_ids)
 
     def _continuations(self, session_id: str) -> list[str]:
-        """Linked tasks that continued this chat from a history page (idem keys, oldest first)."""
-        return self.store.history_links(session_id)
+        """Linked tasks that continued this chat from a history page (idem keys, oldest first), with every
+        later task in their sessions (a 2nd+ message's follow-up runs in the linked task's session)."""
+        keys = self.store.history_links(session_id)
+        out: list[str] = []
+        for key in keys:
+            out.append(key)
+            linked = self.store.session_for(key)
+            if linked:
+                out += [k for k, _, _ in reversed(self.store.keys_for_session(linked)) if k not in keys]
+        return list(dict.fromkeys(out))
 
     def _linked_with_continuations(self, session_id: str) -> H.Linked | None:
         """For the list: a chat continued from Speakeasy shows its linked tasks' state (running,
@@ -1783,7 +1903,8 @@ class VoiceService(SecureInputMixin):
             return None
         statuses = [(self.store.run_row(k) or {}).get("status") for k in keys[-4:]]
         return H.Linked(keys=[], name=None, running=any(st in ACTIVE_RUN_STATES for st in statuses),
-                        needs_you=any(st in {"waiting_for_approval", "resolving_approval"} for st in statuses),
+                        needs_you=any(st in {"waiting_for_approval", "resolving_approval"} for st in statuses)
+                        or self._open_question(keys) is not None,
                         run_ids=[])
 
     # -- schedules: Hermes cron jobs (docs/API.md "Schedules") --------------------------------------
@@ -1807,8 +1928,69 @@ class VoiceService(SecureInputMixin):
         except ScheduleError as exc:
             raise ServiceError(exc.status, exc.message) from None
 
+    QUESTION_KEPT_S = 24 * 3600  # as long as the board keeps an unanswered decision (JobBoard.decisionKeptFor)
+
+    def _open_question(self, keys: list[str], now: float | None = None) -> str | None:
+        """The ONE task whose question a conversation still waits on (its idem key), else None. The single
+        rule every surface uses (the list's Needs you, the session page's card, the board): only the newest
+        task of the conversation can be waiting (anything after it, a reply or a follow-up, moved on), it
+        hasn't been set aside or dismissed, the same question wasn't answered on another task, and it's
+        under a day old."""
+        rows = self.store.question_rows(list(dict.fromkeys(keys)))
+        if not rows:
+            return None
+        newest = max(rows, key=lambda r: (r["created"], r["rowid"]))
+        answered = {r["question"] for r in rows if r["set_aside"] and r["question"]}
+        now = time.time() if now is None else now
+        if (newest["question"] and not newest["set_aside"] and not newest["dismissed"]
+                and newest["question"] not in answered
+                and newest["status"] in {"completed", "running", "working"}
+                and now - newest["created"] < self.QUESTION_KEPT_S):
+            return newest["key"]
+        return None
+
+    # Cached history replies: the apps poll an open page every few seconds and the list every ~12 s,
+    # and state.db can be many GB. A reply is reused while nothing it depends on changed (H.fingerprint
+    # of state.db + this store's revision), and the list at most LIST_CACHE_S (titles/archive set in
+    # other Hermes apps don't add message rows).
+    LIST_CACHE_S = 20.0
+    SESSION_CACHE_S = 120.0
+    _HISTORY_CACHE_MAX = 64
+
+    def _cached(self, key: tuple[Any, ...], stamp: Any, ttl: float, build: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        cache = self.__dict__.setdefault("_history_cache", {})
+        lock = self.__dict__.setdefault("_history_cache_lock", threading.Lock())
+        now = time.monotonic()
+        if stamp is not None:
+            with lock:
+                hit = cache.get(key)
+            if hit is not None and hit[0] == stamp and now - hit[1] < ttl:
+                return copy.deepcopy(hit[2])
+        reply = build()
+        if stamp is not None:
+            with lock:
+                cache[key] = (stamp, now, copy.deepcopy(reply))
+                while len(cache) > self._HISTORY_CACHE_MAX:
+                    cache.pop(next(iter(cache)))
+        return reply
+
+    def _history_stamp(self) -> tuple[Any, ...]:
+        """What the history watcher compares (one shared poll for every open stream, every
+        HistoryEvents.POLL_S): Speakeasy's own store revision and state.db's newest message/session."""
+        return (self.store.revision, H.fingerprint(self.rt.state_db))
+
+    def forget_history_cache(self) -> None:
+        with self.__dict__.setdefault("_history_cache_lock", threading.Lock()):
+            self.__dict__.setdefault("_history_cache", {}).clear()
+
     def history(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/history?cursor=&q=&source=&limit=``."""
+        args = tuple(sorted((k, str(v)) for k, v in (query or {}).items()))
+        stamp = H.fingerprint(self.rt.state_db)
+        return self._cached(("list", args), None if stamp is None else (stamp, self.store.revision),
+                            self.LIST_CACHE_S, lambda: self._history(query))
+
+    def _history(self, query: dict[str, str]) -> dict[str, Any]:
         try:
             limit = int(query.get("limit") or H.PAGE)
         except ValueError:
@@ -1817,7 +1999,11 @@ class VoiceService(SecureInputMixin):
         try:
             return H.list_sessions(self.rt.state_db, cursor=query.get("cursor") or None, q=q, source=query.get("source") or "",
                                    limit=limit, linked=self._linked_with_continuations,
-                                   speakeasy_ids=self.store.speakeasy_sessions)
+                                   speakeasy_ids=self.store.speakeasy_sessions, folded=self.store.folded_sessions,
+                                   marks=self.store.session_marks,
+                                   archived=str(query.get("archived") or "") in {"1", "true"},
+                                   include_archived=(None if query.get("include_archived") in (None, "")
+                                                     else str(query.get("include_archived")) in {"1", "true"}))
         except H.HistoryError as exc:
             raise ServiceError(exc.status, exc.message) from None
 
@@ -1826,6 +2012,27 @@ class VoiceService(SecureInputMixin):
         approval/question cards and helpers) and messages sent from the app that are still on their way."""
         if not H.valid_session_id(session_id):
             raise ServiceError(404, "I couldn't find that conversation.")
+        linked = [s for s in (self.store.session_for(k) for k in self._continuations(session_id)) if s]
+        stamp = H.fingerprint(self.rt.state_db, [session_id, *linked])
+        return self._cached(("session", session_id, str((query or {}).get("before") or "")),
+                            None if stamp is None else (stamp, self.store.revision, self._approvals_stamp()),
+                            self.SESSION_CACHE_S, lambda: self._history_session(session_id, query))
+
+    def _approvals_stamp(self) -> tuple[Any, ...]:
+        """Approvals live in the workers (an open call's or the voiceless one): which are waiting now."""
+        with self.lock:
+            workers = [i.worker for i in self.interactions.values() if i.worker is not None]
+        if self._text_worker is not None:
+            workers.append(self._text_worker)
+        out = []
+        for worker in workers:
+            try:
+                out += [(task_id, run.run_id) for task_id, run in worker.pending_approvals()]
+            except Exception:
+                return (time.monotonic(),)  # can't tell: never reuse
+        return tuple(sorted(out))
+
+    def _history_session(self, session_id: str, query: dict[str, str]) -> dict[str, Any]:
         meta = H.session_meta(self.rt.state_db, session_id)
         if meta is None:
             raise ServiceError(404, "I couldn't find that conversation.")
@@ -1861,21 +2068,33 @@ class VoiceService(SecureInputMixin):
                         more = []
                     entries += [{**e, "id": f"{linked_sid[-6:]}-{e['id']}"} for e in more]
             keys = list(reversed(continued)) + keys
+        open_key = self._open_question(keys)
         jobs = []
         for key in keys[:8]:
             work = self.store.work(idem_key=key, assistant_name=name, activity_detail=True)
             if work is not None:
+                if (work.get("result") or {}).get("question"):
+                    # One source of truth for which question still waits (_open_question): every other
+                    # task's question reads as handled, so an answered card never shows again and the
+                    # same question asked by two tasks shows once. (set_aside: what older apps read.)
+                    work["question_open"] = key == open_key
+                    if key != open_key:
+                        work["set_aside"] = True
                 jobs.append(work)
         running = any(j.get("status") in ACTIVE_RUN_STATES for j in jobs)
         title = (meta.get("title") or "").strip() or (link.name if link else None)
         first_user = next((e["text"] for e in page["entries"] if e["kind"] == "user"), None)
-        needs_you = any(j.get("status") in {"waiting_for_approval", "resolving_approval"} for j in jobs)
+        needs_you = (any(j.get("status") in {"waiting_for_approval", "resolving_approval"} for j in jobs)
+                     or open_key is not None)
         return {"session": {
-            "id": sid, "title": title or (H._one_line(first_user, 60) if first_user else "Untitled conversation"),
+            "id": sid, "title": H.tidy_title(title) if title else (
+                H.tidy_title(H.preview_text(first_user, 60)) if first_user else "Untitled conversation"),
             "source": "speakeasy" if own else meta["source"],
             "source_label": H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), own),
             "state": "needs_you" if needs_you else ("running" if running else "idle"),
             "send_via": "task" if own and link else ("session_job" if meta["source"] == "api_server" else "linked"),
+            **({"archived": True} if meta.get("archived") else {}),
+            **({"pinned": True} if (self.store.session_marks().get(sid) or {}).get("pinned") else {}),
             "entries": entries, "has_more": page["has_more"], "before": page["before"],
             "jobs": jobs, "approvals": self._session_approvals(keys), **self._session_models(sid, meta, jobs)}}
 
@@ -1957,6 +2176,14 @@ class VoiceService(SecureInputMixin):
                 raise
             return {"ok": True, "session_id": sid, "via": "linked", "run_id": got.get("run_id"),
                     "delivered_as": got.get("delivered_as"), "task": got.get("task")}
+        # No linked task can take it any more (cleared from the board, cancelled, never got a run id):
+        # it still continues the SAME linked session, never a new one (that was a second row per reply).
+        linked_sid = next((s for s in (self.store.session_for(k) for k in reversed(self._continuations(sid))) if s), None)
+        if linked_sid:
+            got = self._start_job(text, staged, session_id=linked_sid, link_to=sid)
+            logger.info("speakeasy: a message to a %s session continued its linked session", meta["source"])
+            return {"ok": True, "session_id": sid, "via": "linked", "run_id": got.get("run_id"),
+                    "delivered_as": "follow_up", "task": got.get("task")}
         label = H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), False)
         title = (meta.get("title") or "").strip() or "this conversation"
         context = H.linked_context(self.rt.state_db, sid, title, label, text)
@@ -1964,6 +2191,66 @@ class VoiceService(SecureInputMixin):
         logger.info("speakeasy: a message to a %s session started a linked task", meta["source"])
         return {"ok": True, "session_id": sid, "via": "linked", "run_id": got.get("run_id"),
                 "delivered_as": "linked", "task": got.get("task")}
+
+    # -- session actions from the panel's context menu (rename, pin, archive, read) -------------------
+    def history_action(self, session_id: str, action: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/history/{id}/{rename|pin|archive|read}``. Rename and archive go through Hermes' own
+        ``PATCH /api/sessions/{id}`` (so Hermes' other apps show the same title and hide the same
+        conversations); pin and read are Speakeasy's marks, shared by every device. Every change is
+        published on ``/voice/history/events`` at once."""
+        if not isinstance(body, dict):
+            raise ServiceError(400, "Send a JSON object.")
+        if not H.valid_session_id(session_id) or H.session_meta(self.rt.state_db, session_id) is None:
+            raise ServiceError(404, "I couldn't find that conversation.")
+        allowed = {"rename": {"title"}, "pin": {"pinned"}, "archive": {"archived"}, "read": {"at"}}[action]
+        if not set(body) <= allowed:
+            raise ServiceError(400, f"{action} takes only: {', '.join(sorted(allowed))}")
+        event: dict[str, Any] = {"session_id": session_id}
+        if action == "rename":
+            title = body.get("title")
+            if not isinstance(title, str) or not title.strip() or len(title) > 100:
+                raise ServiceError(400, "A title is 1 to 100 characters.")
+            title = " ".join(title.split())
+            self._hermes_patch(session_id, {"title": title})
+            event.update(title=title)
+            kind = "session_updated"
+        elif action == "archive":
+            archived = body.get("archived", True)
+            if not isinstance(archived, bool):
+                raise ServiceError(400, "archived is true or false.")
+            self._hermes_patch(session_id, {"archived": archived})
+            event.update(archived=archived)
+            kind = "session_archived"
+        elif action == "pin":
+            pinned = body.get("pinned", True)
+            if not isinstance(pinned, bool):
+                raise ServiceError(400, "pinned is true or false.")
+            self.store.set_pinned(session_id, pinned)
+            event.update(pinned=pinned)
+            kind = "session_updated"
+        else:
+            at = body.get("at")
+            if at is not None and not isinstance(at, (int, float)):
+                raise ServiceError(400, "at is a time in seconds.")
+            self.store.set_read(session_id, None if at is None else min(float(at), time.time()))
+            event.update(unread=False)
+            kind = "session_updated"
+        self.forget_history_cache()
+        self.history_events.publish(kind, event)
+        return {"ok": True, **event}
+
+    def _hermes_patch(self, session_id: str, fields: dict[str, Any]) -> None:
+        patch = getattr(self.rt.hermes, "patch_session", None)
+        if patch is None:
+            raise ServiceError(501, "This Hermes can't rename or archive conversations.")
+        try:
+            patch(session_id, fields)
+        except HermesError as exc:
+            if exc.status == 400 and "title" in fields:
+                raise ServiceError(400, "Another conversation already has that title.") from None
+            if exc.status == 404:
+                raise ServiceError(404, "Hermes doesn't have that conversation.") from None
+            raise ServiceError(502, "Hermes didn't take that change. Try again.") from None
 
     def _session_approvals(self, keys: list[str]) -> list[dict[str, Any]]:
         """Approvals the session's Speakeasy tasks wait on, from whichever worker holds them (an open
@@ -2580,8 +2867,7 @@ class VoiceService(SecureInputMixin):
         if self._codex_login is not None:
             ok, msg = self._codex_login(binary)
         else:
-            from .codex_transport import login_status
-            ok, msg = login_status(binary)
+            ok, msg = _submodule("codex_transport").login_status(binary)
         return binary is not None, ok, msg
 
     @staticmethod

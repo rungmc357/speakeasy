@@ -43,6 +43,16 @@ def job_name(title: str | None) -> str | None:
     return name[:40] or None
 
 
+def _question_text(result_json: str | None) -> str | None:
+    """The question a task's stored result asks (whitespace-normalized), else None."""
+    try:
+        q = ((json.loads(result_json) or {}).get("question") or {}) if result_json else {}
+    except (ValueError, AttributeError):
+        return None
+    text = q.get("question") if isinstance(q, dict) else None
+    return " ".join(text.split()) if isinstance(text, str) and text.strip() else None
+
+
 def _placed_session(continued: str | None) -> str | None:
     """The session id a task's placement names (the conversation it continued), if any."""
     try:
@@ -199,6 +209,8 @@ class StateStore:
             columns = {row[1] for row in self._db.execute("PRAGMA table_info(runs)")}
             if "waiting" not in columns:
                 self._db.execute("ALTER TABLE runs ADD COLUMN waiting TEXT")
+            if "answered" not in columns:  # when the user answered this task's question (any device)
+                self._db.execute("ALTER TABLE runs ADD COLUMN answered REAL")
             if "own_title" not in columns:  # the task's name from its words or the titler, never a thread title
                 self._db.execute("ALTER TABLE runs ADD COLUMN own_title TEXT")
             self._db.execute("CREATE INDEX IF NOT EXISTS runs_session ON runs(session_id)")
@@ -208,6 +220,10 @@ class StateStore:
             self._db.execute("""CREATE TABLE IF NOT EXISTS history_links (
                 idem_key TEXT PRIMARY KEY, source_session TEXT NOT NULL, created REAL NOT NULL)""")
             self._db.execute("CREATE INDEX IF NOT EXISTS history_links_source ON history_links(source_session)")
+            # Per-conversation marks every device shares (history pages): pinned (when), read up to
+            # (a last-activity time), so the list's Pinned section and unread dots agree everywhere.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS session_marks (
+                session_id TEXT PRIMARY KEY, pinned REAL, read_at REAL, updated REAL NOT NULL)""")
             if "timings" not in columns:  # added after the first release
                 self._db.execute("ALTER TABLE runs ADD COLUMN timings TEXT")
             if "failure" not in columns:  # why a run failed: a failures.py kind, never provider text
@@ -428,6 +444,66 @@ class StateStore:
         with self._lock:
             row = self._db.execute("SELECT source_session FROM history_links WHERE idem_key=?", (key,)).fetchone()
         return row[0] if row else None
+
+    @property
+    def revision(self) -> int:
+        """Changes this store has made so far (every write goes through this one connection): a cached
+        history reply built at an older revision is stale."""
+        with self._lock:
+            return self._db.total_changes
+
+    def session_marks(self) -> dict[str, dict[str, float | None]]:
+        """{session id: {pinned, read_at}} for every conversation with a mark."""
+        with self._lock:
+            rows = self._db.execute("SELECT session_id, pinned, read_at FROM session_marks").fetchall()
+        return {r[0]: {"pinned": r[1], "read_at": r[2]} for r in rows}
+
+    def set_pinned(self, session_id: str, pinned: bool) -> None:
+        now = time.time()
+        with self._lock, self._db:
+            self._db.execute("INSERT INTO session_marks (session_id, pinned, updated) VALUES (?,?,?) "
+                             "ON CONFLICT(session_id) DO UPDATE SET pinned=excluded.pinned, updated=excluded.updated",
+                             (session_id, now if pinned else None, now))
+
+    def set_read(self, session_id: str, at: float | None = None) -> None:
+        """Read up to *at* (default now): its unread dot clears on every device."""
+        now = time.time()
+        with self._lock, self._db:
+            self._db.execute("INSERT INTO session_marks (session_id, read_at, updated) VALUES (?,?,?) "
+                             "ON CONFLICT(session_id) DO UPDATE SET read_at=max(coalesce(read_at,0), excluded.read_at), "
+                             "updated=excluded.updated", (session_id, now if at is None else at, now))
+
+    def folded_sessions(self) -> dict[str, str]:
+        """{Hermes session a linked task ran in: the chat it continues}. The history lists the chat once:
+        its linked tasks' sessions (and their follow-ups, which run in the same session) fold into it."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT r.session_id, h.source_session FROM history_links h JOIN runs r ON r.idem_key = h.idem_key "
+                "WHERE r.session_id IS NOT NULL").fetchall()
+        return {r[0]: r[1] for r in rows if r[0] and r[1] and r[0] != r[1]}
+
+    def question_rows(self, keys: list[str]) -> list[dict[str, Any]]:
+        """For deciding which question (if any) a session still waits on: each task's status, when it
+        was created, whether its question was set aside, and its question's text (None without one)."""
+        if not keys:
+            return []
+        marks = ",".join("?" * len(keys))
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT idem_key, status, COALESCE(created, updated), set_aside, dismissed, result_json, rowid, answered "
+                f"FROM runs WHERE idem_key IN ({marks})", tuple(keys)).fetchall()
+        out = []
+        for key, status, created, aside, dismissed, result, rowid, answered in rows:
+            aside = aside or answered
+            try:
+                question = ((json.loads(result) or {}).get("question") or {}) if result else {}
+            except (ValueError, AttributeError):
+                question = {}
+            text = question.get("question") if isinstance(question, dict) else None
+            out.append({"key": key, "status": status, "created": float(created or 0), "rowid": rowid,
+                        "set_aside": bool(aside), "dismissed": bool(dismissed),
+                        "question": " ".join(text.split()) if isinstance(text, str) and text.strip() else None})
+        return out
 
     def speakeasy_sessions(self) -> set[str]:
         """The Hermes sessions Speakeasy's tasks ran in."""
@@ -737,11 +813,42 @@ class StateStore:
         task (finished, or waiting for approval) has anything to set aside."""
         settled = sorted(SETTLED | {"rejected"})
         marks = ",".join("?" * len(settled))
+        now = time.time()
         with self._lock, self._db:
             cursor = self._db.execute(
                 f"UPDATE runs SET set_aside=COALESCE(set_aside, ?) WHERE idem_key=? AND status IN ({marks})",
-                (time.time(), key, *settled))
+                (now, key, *settled))
+            if cursor.rowcount:
+                self._close_same_question(key, "set_aside", now)
         return bool(cursor.rowcount)
+
+    def mark_answered(self, key: str) -> bool:
+        """The user answered this task's question (a tapped option, a typed or spoken reply): it waits on
+        nobody any more, on every device (the board, the panel's Needs you, the session page). True when
+        it had an open question."""
+        now = time.time()
+        with self._lock, self._db:
+            row = self._db.execute("SELECT result_json, answered FROM runs WHERE idem_key=?", (key,)).fetchone()
+            if not row or not _question_text(row[0]) or row[1]:
+                return False
+            self._db.execute("UPDATE runs SET answered=? WHERE idem_key=?", (now, key))
+            self._close_same_question(key, "answered", now)
+        return True
+
+    def _close_same_question(self, key: str, column: str, now: float) -> None:
+        """The same question asked again by another task of this conversation (a joined turn, a retry)
+        is the same decision: closed once, closed everywhere (never a second card). Lock held."""
+        row = self._db.execute("SELECT session_id, interaction_id, result_json FROM runs WHERE idem_key=?",
+                               (key,)).fetchone()
+        asked = _question_text(row[2]) if row else None
+        if not asked:
+            return
+        for other, result in self._db.execute(
+                f"SELECT idem_key, result_json FROM runs WHERE idem_key != ? AND {column} IS NULL AND "
+                "result_json IS NOT NULL AND ((? IS NOT NULL AND session_id = ?) OR interaction_id = ?)",
+                (key, row[0], row[0], row[1])).fetchall():
+            if _question_text(result) == asked:
+                self._db.execute(f"UPDATE runs SET {column}=? WHERE idem_key=?", (now, other))
 
     def mark_seen(self, key: str) -> None:
         """Nothing in this task's answer the user needs to read (a home command that went through):
@@ -1381,7 +1488,7 @@ class StateStore:
         (``GET /voice/work/{run_id}``); otherwise the stream's smaller summary."""
         cols = """idem_key,run_id,status,updated,short_status,detail,progress_updated,
                   status_source,result_json,title,dismissed,summary,continued,settled_at,failure,shared,session_id,set_aside,seen,waiting,
-                  created,failure_hint"""
+                  created,failure_hint,answered"""
         with self._lock:
             if idem_key:
                 row = self._db.execute(f"SELECT {cols} FROM runs WHERE idem_key=?", (idem_key,)).fetchone()
@@ -1397,7 +1504,7 @@ class StateStore:
                 return None
             (key, actual_run_id, status, updated, short_status, detail, progress_updated,
              status_source, result_json, title, dismissed, summary, continued, settled_at, failure, shared,
-             session_id, set_aside, seen, waiting, created, failure_hint) = row
+             session_id, set_aside, seen, waiting, created, failure_hint, answered) = row
             events = self._db.execute(
                 "SELECT kind,text,created FROM work_events WHERE idem_key=? ORDER BY seq DESC LIMIT 30", (key,)).fetchall()
             if not created:  # saved before tasks kept their start time: the first thing recorded
@@ -1455,6 +1562,9 @@ class StateStore:
         if set_aside:
             # Its question was set aside: nothing waits on the user any more (only sent when true).
             work["set_aside"] = True
+        if answered:
+            # Its question was answered (on any device): nothing waits on the user (only sent when true).
+            work["answered"] = True
         if seen:
             # Nothing to read (a home command that went through): not a new answer (only sent when true).
             work["seen"] = True

@@ -72,6 +72,25 @@ def test_stop_task(server, service, hermes):
     wait_for(lambda: [t for t in tasks(server) if t["status"] == "cancelled"])
 
 
+def test_stop_task_by_id_with_or_without_a_call(server, service, hermes):
+    """A panel row's Stop: POST /voice/work/{run_id}/stop finds the call or voiceless worker holding it."""
+    hermes.hold = True
+    _, worker = start_call(server, service)
+    worker.delegate("call_long2", "Research every hotel in Kyoto")
+    task = wait_for(lambda: [t for t in tasks(server) if t.get("run_id")])[0]
+    status, body = http(server.base_url, "POST", f"/voice/work/{task['run_id']}/stop", {}, server.token)
+    assert status == 202, body
+    wait_for(lambda: [t for t in tasks(server) if t["status"] == "cancelled"])
+    again = http(server.base_url, "POST", f"/voice/work/{task['run_id']}/stop", {}, server.token)
+    assert again[0] == 409
+    typed = http(server.base_url, "POST", "/voice/work", {"text": "Find a quiet café near the office"}, server.token)[1]
+    status, body = http(server.base_url, "POST", f"/voice/work/{typed['run_id']}/stop", {}, server.token)
+    assert status == 202, body
+    assert http(server.base_url, "POST", "/voice/work/run_nope123/stop", {}, server.token)[0] in {404, 409}
+    caps = http(server.base_url, "GET", "/voice/status", token=server.token)[1]["capabilities"]
+    assert caps["task_stop"] is True
+
+
 def test_dismiss_finished_tasks(server, service, hermes):
     _, worker = start_call(server, service)
     worker.delegate("call_x", "Check my calendar tomorrow")

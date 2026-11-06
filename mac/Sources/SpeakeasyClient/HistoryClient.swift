@@ -24,3 +24,57 @@ extension ServerClient {
         return (reply["session_id"] as? String) ?? (reply["run_id"] as? String)
     }
 }
+
+/// The device-wide history feed (`GET /voice/history/events`, plugins from 0.3.34): every list,
+/// session page, board and widget refreshes within ~1-2 s of a change made anywhere (another device,
+/// Hermes' other apps, a task finishing). Reconnects with backoff; on older plugins it stops and the
+/// caller keeps polling. `onChange` gets the event name and its session id (nil: reload everything).
+@MainActor
+public final class HistoryLiveFeed {
+    public private(set) var supported = true
+    public private(set) var connected = false
+    private var task: Task<Void, Never>?
+    private let api: () -> ServerClient?
+    private let onChange: @MainActor (String, String?) -> Void
+    /// Every event with its whole payload (`run_id` on `decision_resolved`): the phone clears the
+    /// answered question's notification and refreshes its Live Activity and widgets from it.
+    public var onEvent: (@MainActor (String, [String: Any]) -> Void)?
+
+    public init(api: @escaping () -> ServerClient?, onChange: @escaping @MainActor (String, String?) -> Void) {
+        self.api = api; self.onChange = onChange
+    }
+
+    public func start() {
+        guard task == nil, supported else { return }
+        task = Task { [weak self] in
+            var parser = SSEParser()
+            var backoff: UInt64 = 1
+            while !Task.isCancelled {
+                guard let self, let api = self.api() else { try? await Task.sleep(nanoseconds: 5_000_000_000); continue }
+                let outcome = await api.streamHistoryEvents(parser: &parser) { [weak self] event in
+                    let payload = ((try? JSONSerialization.jsonObject(with: Data(event.data.utf8))) as? [String: Any]) ?? [:]
+                    await self?.deliver(event.name, payload)
+                }
+                if self.connected { backoff = 1 }
+                self.connected = false
+                if case .unsupported = outcome { self.supported = false; return }
+                try? await Task.sleep(nanoseconds: backoff * 1_000_000_000)
+                backoff = min(backoff * 2, 30)
+            }
+        }
+    }
+
+    private func deliver(_ name: String, _ payload: [String: Any]) {
+        connected = true
+        onEvent?(name, payload)
+        onChange(name, payload["session_id"] as? String)
+    }
+
+    /// Events after which every surface showing task state (board, Live Activity, widgets,
+    /// delivered notifications) should re-read it: a question answered anywhere, a session changed.
+    public static func touchesTasks(_ name: String) -> Bool {
+        name == "decision_resolved" || name == "session_updated" || name == "history_changed"
+    }
+
+    public func stop() { task?.cancel(); task = nil; connected = false }
+}

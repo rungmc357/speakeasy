@@ -235,4 +235,55 @@ final class HistoryBrowsingTests: XCTestCase {
         d.handle(.permissions(granted: false, onDevice: true))
         XCTAssertEqual(d.problem?.contains("System Settings"), true)
     }
+
+    // MARK: Pins, archive, live merges (deep pass)
+
+    private func s(_ id: String, pinned: Bool = false, archived: Bool = false, minutes: Double = 1) -> HistorySession {
+        HistorySession(id: id, title: id, source: "cli", sourceLabel: "Terminal",
+                       lastActivity: Date().addingTimeInterval(-minutes * 60), pinned: pinned, archived: archived)
+    }
+
+    func testPinnedRowsLeadAndArchivedMatchesFollowASearch() {
+        var list = HistoryList()
+        let q = list.reset()
+        list.apply(HistoryPage(sessions: [s("p", pinned: true), s("a"), s("old", archived: true)]), for: q)
+        XCTAssertEqual(list.pinned.map(\.id), ["p"])
+        XCTAssertEqual(list.grouped(now: Date()).flatMap(\.1).map(\.id), ["a"], "no pinned or archived rows in the day groups")
+        XCTAssertEqual(list.archivedMatches.map(\.id), ["old"])
+        let arch = list.setArchived(true)!
+        XCTAssertTrue(arch.path.contains("archived=1"))
+        list.apply(HistoryPage(sessions: [s("old", archived: true)]), for: arch)
+        XCTAssertTrue(list.archivedMatches.isEmpty && list.pinned.isEmpty)
+        XCTAssertEqual(list.grouped(now: Date()).flatMap(\.1).map(\.id), ["old"])
+    }
+
+    func testALiveMergeUpdatesInPlaceAndDropsArchived() {
+        var list = HistoryList()
+        let q = list.reset()
+        list.apply(HistoryPage(sessions: [s("a"), s("b"), s("c")], nextCursor: "x"), for: q)
+        var fresh = HistoryQuery(limit: HistoryList.pageSize, generation: list.generation)
+        fresh.q = ""
+        list.merge(HistoryPage(sessions: [s("c"), s("a")]), for: fresh)
+        XCTAssertEqual(list.sessions.map(\.id), ["c", "a"], "c moved to the top; b (archived elsewhere) left")
+    }
+
+    func testDeepLinks() {
+        let url = HistorySession.link("20261105_155402_4c4275de")!
+        XCTAssertEqual(url.absoluteString, "speakeasy://session/20261105_155402_4c4275de")
+        XCTAssertEqual(HistorySession.sessionID(fromLink: url), "20261105_155402_4c4275de")
+    }
+
+    func testOnlyTheFlaggedQuestionWaits() throws {
+        let json = try JSONSerialization.jsonObject(with: Data("""
+        {"session": {"id": "s1", "title": "T", "source": "api_server", "source_label": "Speakeasy", "state": "idle",
+          "send_via": "task", "entries": [],
+          "jobs": [
+            {"run_id": "r2", "status": "completed", "question_open": false, "set_aside": true,
+             "result": {"views": [{"kind": "question", "question": "Ship?", "options": [{"text": "Yes"}, {"text": "No"}]}]}},
+            {"run_id": "r1", "status": "completed", "question_open": false,
+             "result": {"views": [{"kind": "question", "question": "Ship?", "options": [{"text": "Yes"}, {"text": "No"}]}]}}]}}
+        """.utf8))
+        let c = try XCTUnwrap(HistoryConversation(json: json))
+        XCTAssertTrue(c.waitingQuestions.isEmpty, "answered on another device: no card, not twice")
+    }
 }

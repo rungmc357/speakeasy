@@ -135,6 +135,30 @@ class FakeHermes(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         with self.state.lock:
+            db_path = self.state.state_db
+            if db_path is not None:
+                # Like Hermes: the PATCH writes its state.db (title, archived, pinned), which every
+                # Hermes app (and Speakeasy's history) reads.
+                import sqlite3
+                db = sqlite3.connect(db_path)
+                try:
+                    if db.execute("SELECT 1 FROM sessions WHERE id=?", (parts[2],)).fetchone() is None:
+                        self._json(404, {"error": {"code": "session_not_found"}})
+                        return
+                    title = body.get("title")
+                    if title and db.execute("SELECT 1 FROM sessions WHERE title=? AND id!=?", (title, parts[2])).fetchone():
+                        self._json(400, {"error": {"code": "invalid_title"}})
+                        return
+                    for col in ("title", "archived", "pinned"):
+                        if col in body:
+                            db.execute(f"UPDATE sessions SET {col}=? WHERE id=?",
+                                       (body[col] if col == "title" else int(bool(body[col])), parts[2]))
+                    db.commit()
+                finally:
+                    db.close()
+                self.state.session_patches.append((parts[2], dict(body)))
+                self._json(200, {"object": "hermes.session", "session": {"id": parts[2], **body}})
+                return
             if parts[2] not in self.state.session_titles:
                 self._json(404, {"error": {"code": "session_not_found"}})
                 return
@@ -246,6 +270,8 @@ class FakeHermesServer:
         self.counter = 0
         self.session_titles: dict[str, str | None] = {}  # session rows the runs created: id -> title
         self.title_patches: list[tuple[str, str | None]] = []
+        self.state_db: Any = None  # set: PATCH /api/sessions writes this state.db, as Hermes does
+        self.session_patches: list[tuple[str, dict[str, Any]]] = []
         self.create_sessions = True
         self.auto_title: str | None = "Handle voice task from Speakeasy"
         self.hold = False

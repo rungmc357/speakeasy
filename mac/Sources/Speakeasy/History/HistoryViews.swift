@@ -100,7 +100,27 @@ struct HistorySidebar: View {
             Rectangle().fill(Live.hairline).frame(height: 1)
             if !store.supported { updateNote } else { listBody }
         }
+        .overlay(alignment: .bottom) { undoToast }
         .onChange(of: store.focusSearch) { _, _ in searchFocused = true }
+    }
+
+    /// "Archived <title> · Undo" after an archive (6 s), or why a change didn't go through.
+    @ViewBuilder private var undoToast: some View {
+        if let undo = store.undoArchive {
+            HStack(spacing: 10) {
+                Text("Archived “\(undo.title)”").font(.system(size: 11.5)).lineLimit(1).truncationMode(.middle)
+                Button("Undo") { store.undoLastArchive() }.buttonStyle(.plain)
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Live.brassText)
+                    .accessibilityIdentifier("history-undo-archive")
+            }
+            .padding(.horizontal, 12).frame(height: 30)
+            .background(Capsule().fill(.regularMaterial))
+            .padding(.bottom, 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if let error = store.actionError {
+            Text(error).font(.system(size: 11)).foregroundStyle(Live.red).padding(8)
+                .background(Capsule().fill(.regularMaterial)).padding(.bottom, 12)
+        }
     }
 
     private var header: some View {
@@ -151,12 +171,18 @@ struct HistorySidebar: View {
 
     private var sourceMenu: some View {
             Menu {
-                Button { store.setSource(nil) } label: { Label("All sources", systemImage: store.list.source == nil ? "checkmark" : "") }
+                Button { store.setArchived(false); store.setSource(nil) } label: {
+                    Label("All sources", systemImage: store.list.source == nil && !store.list.archived ? "checkmark" : "")
+                }
                 Divider()
                 ForEach(store.list.shownFilters) { s in
-                    Button { store.setSource(s.id) } label: {
-                        Label(s.label, systemImage: store.list.source == s.id ? "checkmark" : "")
+                    Button { store.setArchived(false); store.setSource(s.id) } label: {
+                        Label(s.label, systemImage: store.list.source == s.id && !store.list.archived ? "checkmark" : "")
                     }
+                }
+                Divider()
+                Button { store.setArchived(!store.list.archived) } label: {
+                    Label("Archived", systemImage: store.list.archived ? "checkmark" : "archivebox")
                 }
             } label: {
                 HStack(spacing: 5) {
@@ -175,6 +201,7 @@ struct HistorySidebar: View {
     }
 
     private var sourceName: String {
+        if store.list.archived { return "Archived" }
         guard let id = store.list.source else { return "All sources" }
         return store.list.filterChoices.first { $0.id == id }?.label ?? id.capitalized
     }
@@ -182,26 +209,41 @@ struct HistorySidebar: View {
     @ViewBuilder private var listBody: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                if !store.list.pinned.isEmpty {
+                    Section {
+                        ForEach(store.list.pinned) { s in row(s) }
+                    } header: { sectionHeader("Pinned") }
+                }
                 ForEach(store.list.grouped(now: store.now), id: \.0.id) { group, sessions in
                     Section {
-                        ForEach(sessions) { s in
-                            HistoryRow(session: s, selected: !store.showingSchedules && store.target == .session(s.id), now: store.now,
-                                       query: store.list.activeQuery.isEmpty ? nil : store.list.activeQuery) { store.open(s.id) }
-                                .onAppear { if s.id == store.list.sessions.last?.id { store.loadMore() } }
-                        }
-                    } header: {
-                        Text(group.rawValue.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.9)
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 5)
-                            .background(HistoryLook.sidebar.opacity(0.97))
-                    }
+                        ForEach(sessions) { s in row(s) }
+                    } header: { sectionHeader(store.list.archived ? "Archived · " + group.rawValue : group.rawValue) }
+                }
+                if !store.list.archivedMatches.isEmpty {
+                    Section {
+                        ForEach(store.list.archivedMatches) { s in row(s) }
+                    } header: { sectionHeader("Archived") }
                 }
                 footer.padding(.vertical, 12)
             }
             .padding(.bottom, 8)
         }
         .scrollIndicators(.automatic)
+    }
+
+    private func row(_ s: HistorySession) -> some View {
+        HistoryRow(session: s, selected: !store.showingSchedules && store.target == .session(s.id), now: store.now,
+                   query: store.list.activeQuery.isEmpty ? nil : store.list.activeQuery) { store.open(s.id) }
+            .onAppear { if s.id == store.list.sessions.last?.id { store.loadMore() } }
+            .contextMenu { HistoryRowMenu(session: s, store: store) }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.9)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 5)
+            .background(HistoryLook.sidebar.opacity(0.97))
     }
 
     @ViewBuilder private var footer: some View {
@@ -267,6 +309,14 @@ struct HistoryRow: View {
                             .foregroundStyle(Color.primary.opacity(selected ? 1 : 0.92))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .layoutPriority(1)
+                        if session.archived {
+                            Image(systemName: "archivebox").font(.system(size: 9)).foregroundStyle(.tertiary)
+                                .accessibilityLabel("Archived")
+                        }
+                        if session.pinned {
+                            Image(systemName: "pin.fill").font(.system(size: 8.5)).foregroundStyle(.tertiary)
+                                .accessibilityLabel("Pinned")
+                        }
                         Text(HistoryLook.short(session.lastActivity, now: now)).font(.system(size: 10.5).monospacedDigit())
                             .foregroundStyle(.tertiary).fixedSize()
                     }
@@ -307,7 +357,11 @@ struct HistoryRow: View {
         switch session.state {
         case .running: LiveDot(color: Live.brass, size: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
         case .needsYou: Circle().fill(Live.amber).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
-        case .idle: EmptyView()
+        case .idle:
+            if session.unread {
+                Circle().fill(Color.accentColor).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
+                    .accessibilityLabel("Unread")
+            }
         }
     }
 
@@ -326,6 +380,53 @@ struct HistoryRow: View {
             from = r.upperBound
         }
         return s
+    }
+}
+
+/// Right-click on a row: the same actions as the phone's long-press menu.
+struct HistoryRowMenu: View {
+    let session: HistorySession
+    @ObservedObject var store: HistoryStore
+
+    var body: some View {
+        Button("Rename…") { HistoryRename.ask(session.title) { store.act(.rename($0), on: session.id) } }
+        Button(session.pinned ? "Unpin" : "Pin") { store.act(.pin(!session.pinned), on: session.id) }
+        if session.unread { Button("Mark as Read") { store.act(.read, on: session.id) } }
+        Divider()
+        Button("Copy Link") {
+            if let url = session.link {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(url.absoluteString, forType: .string)
+            }
+        }
+        if session.state == .running, !session.runIDs.isEmpty {
+            Button("Stop", role: .destructive) { store.act(.stop(session.runIDs), on: session.id) }
+        }
+        Divider()
+        if session.archived {
+            Button("Unarchive") { store.act(.archive(false), on: session.id) }
+        } else {
+            Button("Archive") { store.act(.archive(true), on: session.id) }
+        }
+    }
+}
+
+/// The rename sheet as a plain alert with a field (AppKit: works from a context menu).
+enum HistoryRename {
+    @MainActor static func ask(_ current: String, done: @escaping (String) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "Rename conversation"
+        alert.informativeText = "The new name shows in every Hermes app."
+        let field = NSTextField(string: current)
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty, text != current { done(String(text.prefix(100))) }
+        }
     }
 }
 
@@ -418,6 +519,12 @@ struct HistorySessionView: View {
                         }
                         ForEach(thread.messages) { m in
                             HistoryMessageView(message: m, sessionID: c.id, store: store).id(m.id)
+                        }
+                        // A task waiting on an approval or a question shows as that card only (no twin above it).
+                        let asking = Set(c.approvals.map(\.runID) + c.waitingQuestions.compactMap(\.runID))
+                        let cards = c.jobs.filter { !(asking.contains($0.runID ?? "") && $0.status != "running") }
+                        ForEach(Array(cards.suffix(4).enumerated()), id: \.offset) { _, job in
+                            HistoryTaskCard(job: job)
                         }
                         if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
                         ForEach(thread.waiting) { HistoryWaitingCard(waiting: $0, store: store) }
@@ -541,8 +648,15 @@ struct HistoryMessageView: View {
                     Circle().fill(Live.brass.opacity(0.18)).frame(width: 22, height: 22)
                         .overlay(Image(systemName: "sparkle").font(.system(size: 9.5, weight: .bold)).foregroundStyle(Live.brass))
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(markdown(message.text)).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.9))
-                            .lineSpacing(3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        ForEach(Array(MessageBlock.split(message.text).enumerated()), id: \.offset) { _, block in
+                            switch block {
+                            case .text(let prose):
+                                Text(markdown(prose)).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.9))
+                                    .lineSpacing(3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            case .code(let code, let language):
+                                HistoryCodeBlock(code: code, language: language)
+                            }
+                        }
                         if let t = HistoryLook.long(message.at, now: store.now) {
                             Text(t).font(.system(size: 10.5)).foregroundStyle(.tertiary)
                         }
@@ -556,6 +670,36 @@ struct HistoryMessageView: View {
 
     private func markdown(_ s: String) -> AttributedString {
         (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+    }
+}
+
+/// A fenced code block in an answer: monospaced, unwrapped (scrolls sideways), language + Copy.
+struct HistoryCodeBlock: View {
+    let code: String
+    let language: String?
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(language ?? "code").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer()
+                Button(copied ? "Copied" : "Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                }
+                .buttonStyle(.plain).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Live.brassText)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            Divider().overlay(Live.hairline)
+            ScrollView(.horizontal, showsIndicators: true) {
+                Text(code).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).fixedSize().padding(10)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Live.card))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Live.hairline, lineWidth: 0.5))
     }
 }
 
@@ -617,6 +761,69 @@ struct HistoryToolCalls: View {
 
     private func toggle(_ k: String) {
         if store.openSections.contains(k) { store.openSections.remove(k) } else { store.openSections.insert(k) }
+    }
+}
+
+/// One of the session's tasks, updated in place by the live feed: what it's doing now, a real
+/// progress bar (only with a step count), the outcome. The phone's session page draws the same card.
+struct HistoryTaskCard: View {
+    let job: WorkInfo
+    private var running: Bool { !["completed", "failed", "cancelled"].contains(job.status) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: icon).font(.system(size: 11, weight: .bold)).foregroundStyle(tint).accessibilityHidden(true)
+                Text(job.title ?? job.summary ?? "Task").font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                Spacer(minLength: 6)
+                Text(word).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint)
+            }
+            if running, let now = job.shortStatus ?? job.activity.last?.text, !now.isEmpty {
+                HStack(spacing: 6) {
+                    LiveDot(color: Live.brass, size: 6)
+                    Text(now).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            if running, let i = job.stepIndex, let n = job.stepCount, n > 0 {
+                ProgressView(value: Double(min(i, n)), total: Double(n)).tint(Live.brass)
+                Text("Step \(min(i, n)) of \(n)").font(.system(size: 10.5).monospacedDigit()).foregroundStyle(.tertiary)
+            }
+            if job.status == "failed", let why = job.failureReason ?? job.failure?.text {
+                Text(why).font(.system(size: 12)).foregroundStyle(Live.red).lineLimit(3)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Live.card))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(tint.opacity(running ? 0.4 : 0.15), lineWidth: 0.75))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("history-task-card")
+    }
+
+    private var word: String {
+        switch job.status {
+        case "completed": return "Done"
+        case "failed": return "Didn't finish"
+        case "cancelled": return "Stopped"
+        case "waiting_for_approval": return "Needs your OK"
+        default: return "Working"
+        }
+    }
+    private var icon: String {
+        switch job.status {
+        case "completed": return "checkmark.circle.fill"
+        case "failed": return "exclamationmark.triangle.fill"
+        case "cancelled": return "stop.circle.fill"
+        case "waiting_for_approval": return "hand.raised.fill"
+        default: return "sparkles"
+        }
+    }
+    private var tint: Color {
+        switch job.status {
+        case "completed": return Live.green
+        case "failed", "waiting_for_approval": return Live.red
+        case "cancelled": return .secondary
+        default: return Live.brass
+        }
     }
 }
 

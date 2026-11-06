@@ -1240,6 +1240,12 @@ public final class NativeVoiceClient: VoiceCallClient {
         }
     }
 
+    /// Re-read the tasks now (a question answered on another device, a session changed): the board,
+    /// Live Activity and widgets follow the model, so they clear within the feed's ~1 s.
+    public func refreshTasks() {
+        Task { [weak self] in await self?.refreshDraftSources() }
+    }
+
     public func hideIfIdle() {
         if !model.state.connection.isOpen && !model.state.workOnly && !previewMode { hideNow() }
     }

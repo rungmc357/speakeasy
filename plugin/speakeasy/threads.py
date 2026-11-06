@@ -364,16 +364,32 @@ _PRIMARY_ARGS = ("command", "path", "file_path", "query", "url", "pattern", "goa
 TOOL_RESULT_CHARS = 2000
 
 
+_HERMES_DISPLAY: list[Any] = []
+
+
+def _hermes_display() -> Any:
+    """Hermes' ``agent.display`` module, or None outside the gateway. Tried once: a failed import isn't
+    cached by Python, and retrying it per tool call made a long history page take seconds."""
+    if not _HERMES_DISPLAY:
+        try:
+            import agent.display as display  # type: ignore[import-not-found]
+        except Exception:
+            display = None
+        _HERMES_DISPLAY.append(display)
+    return _HERMES_DISPLAY[0]
+
+
 def _arg_preview(tool: str, args: Any) -> str:
     """The one-line argument summary Hermes' run stream sends with ``tool.started``: Hermes' own
     ``build_tool_preview`` when it is importable (in the gateway), else the primary argument."""
     if not isinstance(args, dict):
         return ""
-    try:
-        from agent.display import build_tool_preview  # type: ignore[import-not-found]
-        return build_tool_preview(tool, args) or ""
-    except Exception:
-        pass
+    display = _hermes_display()
+    if display is not None:
+        try:
+            return display.build_tool_preview(tool, args) or ""
+        except Exception:
+            pass
     for name in _PRIMARY_ARGS:
         value = args.get(name)
         if isinstance(value, str) and value.strip():
@@ -387,11 +403,12 @@ def _arg_preview(tool: str, args: Any) -> str:
 def _tool_failed(tool: str, content: str) -> bool:
     """Whether a tool result reports a failure: Hermes' own check when importable, else only an
     explicit ``success: false`` or a non-empty ``error`` in a JSON result (never guessed from text)."""
-    try:
-        from agent.display import _detect_tool_failure  # type: ignore[import-not-found]
-        return bool(_detect_tool_failure(tool, content)[0])
-    except Exception:
-        pass
+    display = _hermes_display()
+    if display is not None:
+        try:
+            return bool(display._detect_tool_failure(tool, content)[0])
+        except Exception:
+            pass
     try:
         parsed = json.loads(content)
     except (TypeError, ValueError):
