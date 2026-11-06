@@ -156,6 +156,10 @@ class StateStore:
         self.hermes_home = hermes_home  # where Hermes' errors.log lives, named when a failure has no known reason
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.Lock()
+        # Called (key, status) after a task's status became terminal (the queued-message drain).
+        self.settle_listeners: list[Any] = []
+        # Called (key, follow_up_id, state) when a follow-up receipt settles (landed / not_read).
+        self.follow_up_listeners: list[Any] = []
         with self._db:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("""CREATE TABLE IF NOT EXISTS admissions (
@@ -264,6 +268,25 @@ class StateStore:
             # or "task:<idem key>" (one task: a voice preset, a new chat's first job).
             self._db.execute("""CREATE TABLE IF NOT EXISTS model_choices (
                 scope TEXT PRIMARY KEY, model TEXT, reasoning TEXT, updated REAL NOT NULL)""")
+            # A message sent "when it's done" (mode queue): held here, across reloads, until the task it
+            # waits on (watch_key) completes or fails, then sent as the next turn of the same session.
+            # kind/target: how it was sent (task = a run id, session = a history page id). state:
+            # queued -> sending -> sent | cancelled. page_session: the session page that lists it.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS queued_messages (
+                client_id TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL, page_session TEXT,
+                watch_key TEXT NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL, created REAL NOT NULL,
+                updated REAL NOT NULL, reply_json TEXT, error TEXT)""")
+            self._db.execute("CREATE INDEX IF NOT EXISTS queued_messages_watch ON queued_messages(watch_key, state)")
+            # A typed message steered into a running task (mode steer), so its page can say what became of
+            # it: sent (Hermes took it) -> seen (in the task's transcript: its next model call has it) |
+            # follow_up (the turn ended before reading it: sent again as the next turn) | unused (stopped).
+            # Matched to its follow_ups receipt by task and words (receipts.py does the looking).
+            self._db.execute("""CREATE TABLE IF NOT EXISTS steered_messages (
+                client_id TEXT PRIMARY KEY, idem_key TEXT NOT NULL, page_session TEXT, text TEXT NOT NULL,
+                sent_at REAL NOT NULL, state TEXT NOT NULL, seen_at REAL, follow_up_run TEXT, updated REAL NOT NULL)""")
+            self._db.execute("CREATE INDEX IF NOT EXISTS steered_messages_key ON steered_messages(idem_key, sent_at)")
+            # A send cut off by a reload: held again (at least once beats silently never).
+            self._db.execute("UPDATE queued_messages SET state='queued' WHERE state='sending'")
             # Finished tasks that never had a Hermes run id (quick answers, home control) could not be
             # cleared: "Clear done" and the x address tasks by run id. Give them their local id.
             settled = sorted(TERMINAL | {"rejected"})
@@ -944,6 +967,104 @@ class StateStore:
                                  (local_run_id(key), key))
             if status in SETTLED:
                 self._db.execute("UPDATE runs SET settled_at=? WHERE idem_key=?", (now, key))
+        if status in TERMINAL:
+            for listener in list(self.settle_listeners):
+                try:
+                    listener(key, status)
+                except Exception:  # a listener never breaks a status write
+                    pass
+
+    # -- queued messages ("Send when it's done") ---------------------------------------------------
+    _QUEUED_COLS = "client_id,kind,target,page_session,watch_key,text,state,created,updated,reply_json,error"
+
+    def _queued_dict(self, row: tuple[Any, ...]) -> dict[str, Any]:
+        out: dict[str, Any] = dict(zip(self._QUEUED_COLS.split(","), row))
+        out["reply"] = json.loads(out.pop("reply_json")) if out.get("reply_json") else None
+        return out
+
+    def queue_message(self, client_id: str, kind: str, target: str, page_session: str | None,
+                      watch_key: str, text: str) -> tuple[dict[str, Any], bool]:
+        """Hold one message (idempotent on client_id): (its row, whether this call added it)."""
+        now = time.time()
+        with self._lock, self._db:
+            added = self._db.execute(
+                f"INSERT OR IGNORE INTO queued_messages ({self._QUEUED_COLS}) VALUES (?,?,?,?,?,?,'queued',?,?,NULL,NULL)",
+                (client_id, kind, target, page_session, watch_key, text, now, now)).rowcount == 1
+            row = self._db.execute(f"SELECT {self._QUEUED_COLS} FROM queued_messages WHERE client_id=?",
+                                   (client_id,)).fetchone()
+        return self._queued_dict(row), added
+
+    def queued_message(self, client_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute(f"SELECT {self._QUEUED_COLS} FROM queued_messages WHERE client_id=?",
+                                   (client_id,)).fetchone()
+        return self._queued_dict(row) if row else None
+
+    def queued_messages(self, watch_keys: list[str] | None = None, page_session: str | None = None,
+                        states: tuple[str, ...] = ("queued",)) -> list[dict[str, Any]]:
+        """Held messages, oldest first: those waiting on any of *watch_keys* or listed on *page_session*
+        (both None: every one)."""
+        where, args = [f"state IN ({','.join('?' * len(states))})"], list(states)
+        if watch_keys is not None or page_session is not None:
+            keys = list(watch_keys or [])
+            any_of = []
+            if keys:
+                any_of.append(f"watch_key IN ({','.join('?' * len(keys))})")
+                args += keys
+            if page_session is not None:
+                any_of.append("page_session=?")
+                args.append(page_session)
+            if not any_of:
+                return []
+            where.append("(" + " OR ".join(any_of) + ")")
+        with self._lock:
+            rows = self._db.execute(f"SELECT {self._QUEUED_COLS} FROM queued_messages WHERE {' AND '.join(where)} "
+                                    "ORDER BY created, rowid", args).fetchall()
+        return [self._queued_dict(r) for r in rows]
+
+    def queue_position(self, client_id: str) -> int | None:
+        """1 = sent next, among the messages waiting on the same task; None once it's no longer held."""
+        row = self.queued_message(client_id)
+        if row is None or row["state"] != "queued":
+            return None
+        ahead = [r["client_id"] for r in self.queued_messages([row["watch_key"]])]
+        return ahead.index(client_id) + 1 if client_id in ahead else None
+
+    def claim_queued(self, client_id: str) -> bool:
+        """queued -> sending, exactly once (a drain and a Steer now never both send it)."""
+        with self._lock, self._db:
+            return self._db.execute("UPDATE queued_messages SET state='sending', updated=? "
+                                    "WHERE client_id=? AND state='queued'", (time.time(), client_id)).rowcount == 1
+
+    def finish_queued(self, client_id: str, reply: dict[str, Any]) -> None:
+        with self._lock, self._db:
+            self._db.execute("UPDATE queued_messages SET state='sent', reply_json=?, error=NULL, updated=? "
+                             "WHERE client_id=?", (json.dumps(reply), time.time(), client_id))
+
+    def release_queued(self, client_id: str, error: str) -> None:
+        """A send that failed: back in the queue (tried again on the next settle or idle check)."""
+        with self._lock, self._db:
+            self._db.execute("UPDATE queued_messages SET state='queued', error=?, updated=? "
+                             "WHERE client_id=? AND state='sending'", (error, time.time(), client_id))
+
+    def cancel_queued(self, client_id: str) -> str | None:
+        """Cancel a held message: its state after (cancelled), or what it already was (sending/sent);
+        None when there is no such message."""
+        with self._lock, self._db:
+            row = self._db.execute("SELECT state FROM queued_messages WHERE client_id=?", (client_id,)).fetchone()
+            if row is None:
+                return None
+            if row[0] != "queued":
+                return row[0]
+            self._db.execute("UPDATE queued_messages SET state='cancelled', updated=? WHERE client_id=?",
+                             (time.time(), client_id))
+            return "cancelled"
+
+    def rewatch_queued(self, old_key: str, new_key: str) -> None:
+        """The task the rest of a queue waits on became *new_key* (the turn the first one started)."""
+        with self._lock, self._db:
+            self._db.execute("UPDATE queued_messages SET watch_key=?, updated=? WHERE watch_key=? AND state='queued'",
+                             (new_key, time.time(), old_key))
 
     def set_failure(self, key: str, kind: str | None, hint: str | None = None) -> None:
         """Why the run failed, as a ``failures`` kind (the app and voice get Speakeasy's own words),
@@ -1088,7 +1209,78 @@ class StateStore:
             if cur.rowcount:
                 self._db.execute("UPDATE runs SET updated=? WHERE idem_key=(SELECT idem_key FROM follow_ups "
                                  "WHERE follow_up_id=?)", (time.time(), follow_up_id))
+            row = self._db.execute("SELECT idem_key FROM follow_ups WHERE follow_up_id=?", (follow_up_id,)).fetchone()
+        if cur.rowcount and row:
+            for listener in list(self.follow_up_listeners):
+                try:
+                    listener(row[0], follow_up_id, state)
+                except Exception:  # a listener never breaks a receipt
+                    pass
         return cur.rowcount > 0
+
+    def follow_up_receipt(self, key: str, words: str, since: float) -> dict[str, Any] | None:
+        """The receipt for words typed to this task at or after *since* (the steer's own), if any."""
+        want = notice_text(words, 200) or ""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT follow_up_id, state, settled FROM follow_ups WHERE idem_key=? AND words=? AND created>=? "
+                "ORDER BY created LIMIT 1", (key, want, since - 5)).fetchone()
+        return {"id": row[0], "state": row[1], "settled": row[2]} if row else None
+
+    # -- messages steered into a running task (Steer now) --------------------------------------
+    _STEERED_COLS = "client_id,idem_key,page_session,text,sent_at,state,seen_at,follow_up_run,updated"
+
+    def add_steered(self, client_id: str, key: str, page_session: str | None, text: str) -> None:
+        now = time.time()
+        with self._lock, self._db:
+            self._db.execute(f"INSERT OR IGNORE INTO steered_messages ({self._STEERED_COLS}) "
+                             "VALUES (?,?,?,?,?,'sent',NULL,NULL,?)", (client_id, key, page_session, text, now, now))
+
+    def steered_messages(self, keys: list[str] | None = None, page_session: str | None = None,
+                         states: tuple[str, ...] | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        where, args = [], []
+        if keys is not None or page_session is not None:
+            any_of = []
+            if keys:
+                any_of.append(f"idem_key IN ({','.join('?' * len(keys))})")
+                args += list(keys)
+            if page_session is not None:
+                any_of.append("page_session=?")
+                args.append(page_session)
+            if not any_of:
+                return []
+            where.append("(" + " OR ".join(any_of) + ")")
+        if states:
+            where.append(f"state IN ({','.join('?' * len(states))})")
+            args += list(states)
+        sql = f"SELECT {self._STEERED_COLS} FROM steered_messages"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY sent_at DESC LIMIT ?", (*args, limit)).fetchall()
+        return [dict(zip(self._STEERED_COLS.split(","), r)) for r in reversed(rows)]
+
+    def settle_steered(self, client_id: str, state: str, seen_at: float | None = None,
+                       follow_up_run: str | None = None) -> bool:
+        """sent -> seen | follow_up | unused, once."""
+        with self._lock, self._db:
+            return self._db.execute(
+                "UPDATE steered_messages SET state=?, seen_at=COALESCE(?,seen_at), follow_up_run=?, updated=? "
+                "WHERE client_id=? AND state='sent'", (state, seen_at, follow_up_run, time.time(), client_id)).rowcount == 1
+
+    def adjusting(self, key: str, status: str) -> bool:
+        """The task's live line, briefly, after it read a steered message: 'Adjusting: …'. A system status,
+        so the run's next own status replaces it; never on a finished task."""
+        safe = safe_user_text(status, 80)
+        if not safe:
+            return False
+        now = time.time()
+        with self._lock, self._db:
+            return self._db.execute(
+                """UPDATE runs SET short_status=?,progress_updated=?,updated=?,status_source='system'
+                   WHERE idem_key=? AND status NOT IN
+                   ('completed','failed','cancelled','interrupted','ambiguous','rejected')""",
+                (safe, now, now, key)).rowcount > 0
 
     def follow_ups(self, key: str) -> list[dict[str, Any]]:
         with self._lock:

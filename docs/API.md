@@ -889,10 +889,67 @@ Body `{"text": "...", "source": "typed", "client_id": "<uuid>", "interaction_id"
   most a few words ("Sent."), nothing while the user is muted.
 
 `200 {"ok": true, "run_id": "run_0002", "delivered_as": "steer" | "answer" | "follow_up", "task": {...}}`
+(`"queued"` too with `mode: "queue"`, see "Steer or queue")
 (`task` is the updated task, as in `/voice/work/{run_id}`). Errors carry one plain sentence in
 `error`, fit to show: `400` empty or too long, `404 "I couldn't find that task."`, `409` the task
 was cancelled or deleted ("That task was cancelled, so it can't take messages. Start a new one
 instead."), `502` Hermes didn't take it ("I couldn't get that to the task. Try again.").
+
+### Steer or queue
+
+Capability `message_modes`. Both message routes (`POST /voice/work/{run_id}/message`
+and `POST /voice/history/{session_id}/message`) take `"mode": "steer" | "queue"`. Without it a message
+is a steer, so older apps see no change.
+
+- `steer` (the default): exactly as above. Into the running turn now (`delivered_as: "steer"`), the
+  answer if the task waits on the user, a follow-up once it has finished.
+- `queue` ("Send when it's done"): when the task is running (or a session page has a running task),
+  the message is **held** by Speakeasy and `delivered_as` is `"queued"`; nothing reaches Hermes yet.
+  When that task **completes or fails**, the oldest held message is sent as the next turn in the same
+  session (the path a steer to a finished task takes: a follow-up, or the answer to its question). The
+  next one waits for the turn that one started, so a queue goes out one turn at a time, in order, each
+  exactly once. A task that was **stopped** keeps its queue: it stays listed, and the user can
+  Steer now or Cancel. When nothing is running, `queue` just sends the message (the reply says how).
+  Held messages live in the Speakeasy store and survive a plugin reload or a Hermes restart (the next
+  idle check sends any whose task finished meanwhile). Hermes' own busy-input `queue` mode belongs to
+  its gateway socket sessions; `/v1/runs` only steers, so Speakeasy holds the message itself.
+- Pictures and files can't be held: `queue` with `attachments` while a task runs is `409`
+  (`reason: "not_now"`). Apps offer only "Steer now" while something is attached.
+- `client_id` is the held message's id (one is made when absent). Sending the same `client_id` again,
+  at any time, returns the same held message, never a second one.
+
+Queued reply: `200 {"ok": true, "delivered_as": "queued", "client_id": "...", "run_id": "<the task it
+waits on>", "queue_position": 1, "queue_state": "queued" | "sending" | "sent" | "cancelled"}`
+(`queue_position` 1 = sent next; `null` once it is no longer held; after it was sent the reply adds
+`sent_as` and `sent_run_id`). History replies also carry `session_id`.
+
+Held messages are listed, oldest first, as `"queued": [{"client_id", "text", "at", "position",
+"error"?}]` on the session page (`GET /voice/history/{session_id}` → `session.queued`) and on the task
+(`GET /voice/work/{run_id}` → `work.queued`). `error` appears when a send was tried and failed; it is
+tried again. Apps show them as pending bubbles at the bottom: "Queued · sends when this finishes".
+
+- `DELETE /voice/history/{session_id}/queued/{client_id}` (or `/voice/work/{run_id}/queued/{client_id}`):
+  cancel it. `200 {"ok": true, "client_id", "cancelled": true}` (again for a retry); `404` unknown;
+  `409` already sent (`reason: "sent"`).
+- `POST /voice/history/{session_id}/queued/{client_id}/steer` (or `/voice/work/{run_id}/queued/{client_id}/steer`):
+  send it now, as a steer. `200` with the steer reply (`delivered_as: "steer"`, or `"follow_up"` if
+  the task has finished) plus `client_id`; a retry after it was sent gets the same reply; `404`
+  unknown or cancelled; `409` it is being sent this moment.
+
+**What became of a steered message.** Every typed message that went into a running task
+(`delivered_as: "steer"`, with a `client_id`) is followed until it is read or can't be:
+`"steered": [{"client_id", "text", "at", "state", "label", "seen_at"?, "run_id"?}]` on the session
+page (`session.steered`) and the task (`work.steered`), oldest first, and a `message_updated`
+`{session_id, client_id, state}` event on `GET /voice/history/events` whenever one changes.
+
+| `state` | `label` (fit to show) | when |
+|---|---|---|
+| `sent` | Sent to the running task | Hermes took it (`/v1/runs/{id}/steer` accepted) |
+| `waiting` | Waiting for the current step to finish | still unread 60 s later, the task still running (a long tool call) |
+| `seen` | Seen by <assistant name> (+ `seen_at`) | its text is in a user row of the task's transcript: the agent's next model call has it (receipts.py). The task's live line then reads `Adjusting: <first words>` until its next own status |
+| `follow_up` | It finished first · sent as a follow-up (+ `run_id`) | the turn completed or failed without reading it (`pending_steer` handed back, or no receipt): sent again, once, as the next turn |
+| `unused` | The task stopped before reading this | the user stopped the task first; not resent |
+
 
 ### POST /voice/work
 

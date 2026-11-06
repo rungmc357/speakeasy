@@ -528,6 +528,10 @@ struct HistorySessionView: View {
                         }
                         if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
                         ForEach(thread.waiting) { HistoryWaitingCard(waiting: $0, store: store) }
+                        ForEach(c.queued) { HistoryQueuedBubble(message: $0, store: store) }
+                        if let error = store.queuedError {
+                            Text(error).font(.system(size: 11.5)).foregroundStyle(Live.red)
+                        }
                         if let error = store.answerError {
                             Text(error).font(.system(size: 11.5)).foregroundStyle(Live.red)
                         }
@@ -632,6 +636,10 @@ struct HistoryMessageView: View {
             default:
                 if message.voice { Image(systemName: "mic.fill").font(.system(size: 8.5)); Text("Voice message") }
                 if message.delivery == .sent { Image(systemName: "checkmark").font(.system(size: 8.5, weight: .bold)); Text("Sent") }
+                if let receipt = store.steerReceipt(message.text, at: message.at, session: sessionID) {
+                    Image(systemName: receipt.symbol).font(.system(size: 8.5, weight: .bold))
+                    Text(receipt.tag()).foregroundStyle(receipt.state == .seen ? AnyShapeStyle(Live.brassText) : AnyShapeStyle(.tertiary))
+                }
                 if let t = HistoryLook.long(message.at, now: store.now) { Text(t) }
             }
         }
@@ -1069,6 +1077,7 @@ struct HistoryComposer: View {
                 .foregroundStyle(Live.brassText)
                 .padding(.horizontal, 6)
             }
+            if store.offersMessageModes && !inline { HistoryMessageModeBar(store: store) }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(placeholder, text: Binding(get: { store.draft }, set: { store.draft = $0 }), axis: .vertical)
                     .textFieldStyle(.plain).font(.system(size: 13.5)).lineLimit(1...8)
@@ -1092,7 +1101,7 @@ struct HistoryComposer: View {
                     .disabled(!enabled)
                     .accessibilityIdentifier("history-mic")
                 }
-                circle("arrow.up", help: "Send (↩)", fill: empty ? Color.primary.opacity(0.06) : Live.brass,
+                circle("arrow.up", help: store.offersMessageModes ? "\(store.messageMode.sendLabel(offered: true)) (↩)" : "Send (↩)", fill: empty ? Color.primary.opacity(0.06) : Live.brass,
                        ink: empty ? Color.secondary : JobLook.brassInk) { store.send() }
                     .disabled(empty || !enabled)
                     .accessibilityIdentifier("history-send")

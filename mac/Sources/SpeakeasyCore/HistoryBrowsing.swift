@@ -348,6 +348,9 @@ public struct HistoryOutbox: Equatable, Sendable {
         if let i = items.firstIndex(where: { $0.id == clientID }) { items[i].delivery = delivery }
     }
     public func item(_ clientID: String) -> Item? { items.first { $0.id == clientID } }
+    /// A message the server now holds for later (`delivered_as: queued`): the page's `queued` list
+    /// shows it from here on, not the outbox.
+    public mutating func remove(_ clientID: String) { items.removeAll { $0.id == clientID } }
     public func pending(in session: String) -> Bool { items.contains { $0.request.sessionID == session } }
 
     public func merged(into messages: [HistoryThreadMessage], session: String) -> [HistoryThreadMessage] {

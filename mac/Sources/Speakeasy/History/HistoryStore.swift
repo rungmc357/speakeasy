@@ -18,6 +18,9 @@ protocol HistoryBackend: AnyObject {
     func setDefaultModel(_ defaults: JobModelDefaults) async throws
     /// Rename / pin / archive / mark read (plugins from 0.3.34).
     func act(_ action: HistorySessionAction, sessionID: String) async throws
+    /// A message held for when the task finishes: cancel it, or send it now (servers with `message_modes`).
+    func cancelQueued(sessionID: String, clientID: String) async throws
+    func steerQueued(sessionID: String, clientID: String) async throws
 }
 
 /// What the row's context menu (and swipes) do to a conversation.
@@ -29,6 +32,8 @@ enum HistorySessionAction: Equatable {
 
 extension HistoryBackend {
     func act(_ action: HistorySessionAction, sessionID: String) async throws {}
+    func cancelQueued(sessionID: String, clientID: String) async throws {}
+    func steerQueued(sessionID: String, clientID: String) async throws {}
 }
 
 @MainActor
@@ -47,6 +52,12 @@ final class LiveHistoryBackend: HistoryBackend {
     func models() async throws -> ModelCatalog { try await api.models() }
     func setSessionModel(_ request: SessionModelRequest) async throws { try await api.setSessionModel(request) }
     func setDefaultModel(_ defaults: JobModelDefaults) async throws { try await api.setJobModelDefaults(defaults) }
+    func cancelQueued(sessionID: String, clientID: String) async throws {
+        try await api.cancelQueued(sessionID: sessionID, clientID: clientID)
+    }
+    func steerQueued(sessionID: String, clientID: String) async throws {
+        _ = try await api.steerQueued(sessionID: sessionID, clientID: clientID)
+    }
     func act(_ action: HistorySessionAction, sessionID: String) async throws {
         switch action {
         case .rename(let title): try await api.renameSession(sessionID, title: title)
@@ -313,20 +324,65 @@ final class HistoryStore: ObservableObject {
         set { drafts[draftKey] = newValue }
     }
 
+    // MARK: Steer or queue (servers with `message_modes`, only while a run is active)
+
+    /// The composer's Steer now / When it's done choice (kept while the app runs).
+    @Published var messageMode = MessageModeChoice()
+    /// Messages this Mac steered into a running task: tagged "Steered" in the thread.
+    @Published private(set) var steered = SteeredMarks()
+    @Published private(set) var queuedBusy: Set<String> = []
+    @Published var queuedError: String?
+
+    /// What became of a steered message: the server's receipt, or (just sent, or an older server)
+    /// "Sent to the running task".
+    func steerReceipt(_ text: String, at: Date?, session: String) -> SteeredMessage? {
+        if let r = conversations[session]?.steered.receipt(for: text, at: at) { return r }
+        guard !steered.isEmpty, steered.contains(text, at: at) else { return nil }
+        return SteeredMessage(clientID: "local", text: text, at: at, state: .sent)
+    }
+
+    /// The open session works and its server can hold a message for later: the choice shows.
+    var offersMessageModes: Bool {
+        guard let id = target?.sessionID else { return false }
+        return conversations[id]?.offersMessageModes ?? false
+    }
+
+    func cancelQueued(_ clientID: String) { actOnQueued(clientID) { try await $0.cancelQueued(sessionID: $1, clientID: clientID) } }
+
+    func steerQueued(_ clientID: String) {
+        let text = target?.sessionID.flatMap { conversations[$0] }?.queued.first { $0.clientID == clientID }?.text
+        actOnQueued(clientID) { backend, id in
+            try await backend.steerQueued(sessionID: id, clientID: clientID)
+            if let text { self.steered.record(text) }
+        }
+    }
+
+    private func actOnQueued(_ clientID: String, _ body: @escaping (HistoryBackend, String) async throws -> Void) {
+        guard let backend, let id = target?.sessionID, !queuedBusy.contains(clientID) else { return }
+        queuedBusy.insert(clientID); queuedError = nil
+        Task { [weak self] in
+            do { try await body(backend, id) } catch { self?.queuedError = Self.message(error) }
+            self?.queuedBusy.remove(clientID)
+            self?.load(id)
+        }
+    }
+
     /// ↩ / Send: what's in the field. Words from a voice message under review go as `voice_message`.
-    func send() {
+    /// `alternate` (⌘↩): the other of Steer now / When it's done, while a run is active.
+    func send(alternate: Bool = false) {
         let source: HistoryMessageRequest.Source = voice.reviewing ? .voiceMessage : .typed
-        guard deliver(draft, source: source) else { return }
+        guard deliver(draft, source: source, mode: messageMode.mode(offered: offersMessageModes, alternate: alternate)) else { return }
         drafts[draftKey] = nil
         voice.handle(.sent)
     }
 
     /// Send by id (a session) or start one (New chat). False when there was nothing to send.
     @discardableResult
-    private func deliver(_ text: String, source: HistoryMessageRequest.Source) -> Bool {
+    private func deliver(_ text: String, source: HistoryMessageRequest.Source, mode: MessageMode? = nil) -> Bool {
         guard let target, let outgoing = target.outgoing(text, source: source), let backend else { return false }
         switch outgoing {
-        case .message(let request):
+        case .message(var request):
+            request.mode = mode
             outbox.add(request, at: Date())
             transmit(request, backend)
         case .newChat(let text, let clientID):
@@ -404,8 +460,13 @@ final class HistoryStore: ObservableObject {
     private func transmit(_ request: HistoryMessageRequest, _ backend: HistoryBackend) {
         Task { [weak self] in
             do {
-                _ = try await backend.send(request)
-                self?.outbox.mark(request.clientID, .sent)
+                let reply = try await backend.send(request)
+                if reply.deliveredAs == .queued {
+                    self?.outbox.remove(request.clientID)   // the page's queued list shows it now
+                } else {
+                    if reply.deliveredAs == .steer && request.mode != nil { self?.steered.record(request.text) }
+                    self?.outbox.mark(request.clientID, .sent)
+                }
                 self?.bump(request.sessionID, text: request.text)
                 self?.load(request.sessionID)
             } catch {
