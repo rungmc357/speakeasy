@@ -31,6 +31,11 @@ CHECK_INTERVAL_S = 3600
 RETRY_INTERVAL_S = 3600
 FIRST_WRITE_DELAY_S = 10.0
 FIRST_WRITE_GIVE_UP_S = 600.0
+# After a write failed because Hermes has no AI model yet: how often to look for one, then write
+# the brief once (a fresh install whose user runs `hermes model` a few minutes later).
+MODEL_POLL_S = 30.0
+NO_MODEL_ERROR = ("Hermes has no AI model yet, so it couldn't write the brief. The brief is written by itself "
+                  "once Hermes has one (hermes model on the Hermes computer).")
 REQUIRED_SECTIONS = ("User", "Assistant persona", "Capability map", "Answer preferences", "Current context")
 _SECRET_PATTERNS = [
     re.compile(p) for p in (
@@ -129,7 +134,10 @@ def input_hash(hermes_home: Path) -> str:
 def explain_run_failure(status: str, error: str) -> str:
     """A short reason the user can act on. Hermes' run errors are written for people and hold no
     secrets; they are trimmed, and anything that looks like a credential is cut."""
+    from .agent_model import says_no_model
     lowered = error.lower()
+    if says_no_model(error):
+        return NO_MODEL_ERROR
     if "credential" in lowered or "authentication" in lowered or "not logged in" in lowered or "auth" in lowered:
         return ("Your Hermes isn't signed in to its model provider, so it couldn't write the brief. "
                 "Fix that with `hermes model`, then press Rewrite.")
@@ -143,13 +151,15 @@ def explain_run_failure(status: str, error: str) -> str:
 class BriefManager:
     def __init__(self, hermes_home: Path, run_fn: Callable[[str, str], tuple[str, str]] | None,
                  settings_fn: Callable[[], dict[str, Any]], clock: Callable[[], float] = time.time,
-                 error_fn: Callable[[], str] | None = None):
+                 error_fn: Callable[[], str] | None = None, model_check: Any = None):
         self.home = Path(hermes_home)
         self.dir = self.home / "speakeasy"
         self.path = self.dir / "voice-brief.md"
         self.state_path = self.dir / "brief-state.json"
         self.run_fn, self.settings_fn, self.clock = run_fn, settings_fn, clock
         self.error_fn = error_fn
+        self.model_check = model_check  # agent_model.ModelCheck: does Hermes have an AI model
+        self._model_waiter: threading.Thread | None = None
         self._lock = threading.Lock()
         self._writing = False
         self._stop = threading.Event()
@@ -185,6 +195,9 @@ class BriefManager:
         else:
             label = "none"
         return {"state": label, "updated_at": state.get("updated_at"), "edited": bool(state.get("edited")),
+                # The last write failed only because Hermes has no AI model yet; it's retried by
+                # itself once one exists (waits_for_model on the Setup check's brief row).
+                "waits_for_model": bool(not text and state.get("error") and state.get("no_model")),
                 "auto_refresh": bool(self.settings_fn()["brief"]["auto_refresh"]) and not state.get("edited"),
                 "error": state.get("error"), "words": len(text.split()) if text else 0}
 
@@ -240,18 +253,56 @@ class BriefManager:
                 f"{digest}:{now}".encode()).hexdigest()[:24])
             if status != "completed":
                 raise BriefInvalid(explain_run_failure(status, self.last_run_error()))
+            self._saw_model("ok")
             clean = validate(output)
             with self._lock:
                 _write_private(self.path, clean)
-                self._save_state(edited=False, updated_at=now, input_hash=digest, last_attempt=now, error=None)
+                self._save_state(edited=False, updated_at=now, input_hash=digest, last_attempt=now, error=None,
+                                 no_model=False)
         except Exception as exc:
             message = str(exc) if isinstance(exc, BriefInvalid) else f"brief write failed ({type(exc).__name__})"
+            no_model = message == NO_MODEL_ERROR
             logger.warning("speakeasy: %s", message)
             with self._lock:
-                self._save_state(last_attempt=now, error=message[:200])
+                self._save_state(last_attempt=now, error=message[:200], no_model=no_model)
+            if no_model:
+                self._saw_model("missing")
+                self._wait_for_model()
         finally:
             with self._lock:
                 self._writing = False
+
+    def _saw_model(self, value: str) -> None:
+        if self.model_check is not None:
+            self.model_check.saw(value)
+
+    def _wait_for_model(self) -> None:
+        """The write failed because Hermes has no AI model: look for one every MODEL_POLL_S and
+        write the brief once it's there (instead of waiting for the hourly retry, or forever when
+        the first write was the only one). Stops when the answer can't be told (older Hermes)."""
+        if self.model_check is None or self.run_fn is None:
+            return
+        with self._lock:
+            if self._model_waiter is not None and self._model_waiter.is_alive():
+                return
+
+            def wait() -> None:
+                while not self._stop.wait(MODEL_POLL_S):
+                    try:
+                        if self.text() or not self._state().get("no_model"):
+                            return  # written or fixed some other way (Rewrite, an edit)
+                        found = self.model_check.state(wait=True)
+                        if found == "ok":
+                            self.rewrite(force=False, background=False)
+                            return
+                        if found != "missing":
+                            return  # can't tell: the hourly retry still runs
+                    except Exception as exc:  # never kill the gateway thread
+                        logger.warning("speakeasy: brief model wait failed: %s", type(exc).__name__)
+                        return
+
+            self._model_waiter = threading.Thread(target=wait, daemon=True, name="speakeasy-brief-model-wait")
+            self._model_waiter.start()
 
     def last_run_error(self) -> str:
         try:

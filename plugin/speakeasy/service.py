@@ -132,6 +132,9 @@ STEER_UNREAD_GRACE_S = 8    # a finished task with no receipt for it this long a
 # GET /voice/setup-check (+ POST /voice/setup-check/{id}): every requirement a first call needs as
 # ready / not-ready rows with one fix each, which the apps show instead of dialing into a failure.
 CAPABILITIES["setup_check"] = True
+# /voice/status carries ``agent_model`` (ok | missing | unknown: does Hermes have an AI model to run
+# turns with, agent_model.py) and the Setup check an ``agent_model`` row when it's missing.
+CAPABILITIES["agent_model"] = True
 
 
 
@@ -277,8 +280,13 @@ class VoiceService(SecureInputMixin):
                  grok_connect: Callable[..., Any] | None = None,
                  grok_signin: Callable[[], tuple[bool, bool, str]] | None = None,
                  codex_install: Callable[[], bool] | None = None, codex_login_popen: Callable[..., Any] | None = None,
-                 codex_candidates: Callable[[], list[Path]] | None = None):
+                 codex_candidates: Callable[[], list[Path]] | None = None,
+                 agent_model: Callable[[], str] | None = None):
         self.home = Path(hermes_home)
+        from .agent_model import UNKNOWN, ModelCheck, resolve
+        # Only the gateway's service asks Hermes' own provider resolver (its HERMES_HOME is this
+        # profile's); a CLI or test service says "unknown" unless given a resolver.
+        self.model_check = ModelCheck(agent_model or (resolve if start_threads else (lambda: UNKNOWN)))
         self.dir = self.home / "speakeasy"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.settings = Settings(self.home)
@@ -341,7 +349,8 @@ class VoiceService(SecureInputMixin):
         self.rt.history_events = self.history_events
         self._suggest_run = suggest_run or self._brief_run
         self.brief = BriefManager(self.home, brief_run or self._brief_run, self.settings.get,
-                                  error_fn=lambda: getattr(self.hermes, "last_error", "") or "")
+                                  error_fn=lambda: getattr(self.hermes, "last_error", "") or "",
+                                  model_check=self.model_check)
         from .tune import CallLog, TuneManager, merge_calls
         self.call_log = CallLog(self.dir)
         self.rt.call_log = self.call_log
@@ -3681,6 +3690,8 @@ class VoiceService(SecureInputMixin):
             # switch for api_key), never while a working ChatGPT sign-in exists (codex_login).
             "codex_sign_in": codex_kind,
             "api_key_set": api_key_set, "brief_state": self.brief.status()["state"],
+            # Hermes can run a turn (has an AI provider): ok | missing | unknown (agent_model.py).
+            "agent_model": self.model_check.state(),
             "hermes_api_ok": self.hermes.health(), "hermes_api_key_set": bool(self.hermes_key()),
             "delivery_target": s["delivery"]["target"], **self.thread_status(),
             "continuity_enabled": s["continuity"]["enabled"], "devices": len(self.devices.devices()),

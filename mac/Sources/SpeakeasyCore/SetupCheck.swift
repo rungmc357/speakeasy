@@ -129,6 +129,7 @@ public extension ServerStatus {
     /// nil-safe for older plugins: they fall back to the checklist.
     var needsSetupCheck: Bool {
         if hermesAPIOK == false { return true }
+        if agentModelMissing { return true }  // the call would connect, but nothing it hands off could run
         if let voiceReady { return !voiceReady }
         return !readyForCalls
     }

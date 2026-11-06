@@ -123,4 +123,16 @@ public final class SetupCheckModel: ObservableObject {
         default: return row
         }
     }, version: "0.3.37")
+
+    /// Invented rows for a Hermes with no AI model yet (`-demoNoModel`): everything else is ready.
+    nonisolated public static let demoNoModelCheck = SetupCheck(ready: false, rows: [
+        .init(id: "plugin", ok: true, title: "Speakeasy 0.3.37 is on your Hermes"),
+        .init(id: "restart", ok: true, title: "Hermes is running the current Speakeasy"),
+        .init(id: "hermes_api", ok: true, title: "Speakeasy can reach Hermes"),
+        .init(id: "agent_model", ok: false, title: AgentModelCopy.title, detail: AgentModelCopy.detail,
+              fix: .init(kind: .copy, label: AgentModelCopy.copyButton, payload: AgentModelCopy.command)),
+        .init(id: "voice", ok: true, title: "Voice: ChatGPT is signed in"),
+        .init(id: "brief", ok: false, blocking: false, title: "No voice brief yet",
+              detail: "Optional. Hermes writes it by itself once it has an AI model."),
+    ], version: "0.3.37")
 }

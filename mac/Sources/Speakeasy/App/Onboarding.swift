@@ -569,6 +569,9 @@ private struct BriefStep: View {
     }
 
     private var briefLine: String {
+        if app.status?.agentModelMissing == true, app.brief?.state != "ready", app.brief?.state != "edited" {
+            return "Waiting for your Hermes to have an AI model. It's written by itself then."
+        }
         switch app.brief?.state {
         case "writing", "pending": return "Writing… calls work meanwhile."
         case "ready", "edited": return "Ready."

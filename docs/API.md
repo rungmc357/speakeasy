@@ -1704,6 +1704,10 @@ POST `/voice/brief/rewrite` (body `{}`) asks Hermes to write a new brief in the 
 returns `202` with the status (`state: "writing"`) and the current `brief`. 409 if the Hermes API
 is not configured. Poll GET or `/voice/status` → `brief_state`.
 
+When a write fails because Hermes has no AI model yet, the status says `waits_for_model: true` and
+the plugin writes the brief by itself once Hermes has one (it looks every 30 s), on top of the
+hourly retry for other failures.
+
 
 ### Tune from my calls
 
@@ -1816,7 +1820,7 @@ Speakeasy stores, speaks, pushes or returns it.
 
 ## GET /voice/status
 
-Readiness. `voice_ready` is true when the chosen provider can start a call. When Codex is missing or signed out, `codex_message` says what to do. Grok voice (beta): `grok_beta` (the setting), `grok_signed_in` (Hermes holds an xAI sign-in), `grok_api_key_set` (`XAI_API_KEY` fallback), `grok_ready` and `grok_message` (what to do, e.g. run `hermes auth add xai-oauth`); with provider `grok`, onboarding's `codex_message` carries the Grok message. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only). `room_listening` (plugin 0.2.51+) is true when the server takes listening mode's `room` with `POST /voice/sessions`; missing on older plugins, which reject unknown session fields. `room_on_resume` is true when it also takes `room` with `resume_from`, which listening mode during a call needs (the app checks it before pausing the call for listening). `input_text` is true when the server takes a typed turn on a live call (`POST /voice/interactions/{id}/input-text`); missing on older plugins, which answer that route with 404, so apps show their composer only when it's true.
+Readiness. `voice_ready` is true when the chosen provider can start a call. `agent_model` (capability `agent_model`) says whether Hermes can run a turn at all: `ok`, `missing` (Hermes' own provider resolver finds no AI provider, e.g. a fresh install whose setup wizard was skipped; every task would fail, so the Setup check adds a blocking `agent_model` row that copies `hermes model`) or `unknown` (can't tell, e.g. an older Hermes; apps show nothing). When Codex is missing or signed out, `codex_message` says what to do. Grok voice (beta): `grok_beta` (the setting), `grok_signed_in` (Hermes holds an xAI sign-in), `grok_api_key_set` (`XAI_API_KEY` fallback), `grok_ready` and `grok_message` (what to do, e.g. run `hermes auth add xai-oauth`); with provider `grok`, onboarding's `codex_message` carries the Grok message. `threads_supported` reports whether this Hermes can open a new thread per task (its webhook platform must be on; `threads_reason` says why not). `routing_model` names the model task routing uses (`auxiliary.speakeasy_router`), `routing_hint` how to change it. `advertised_url` / `tailscale_name` are the address setup advertised (empty = local only). `room_listening` (plugin 0.2.51+) is true when the server takes listening mode's `room` with `POST /voice/sessions`; missing on older plugins, which reject unknown session fields. `room_on_resume` is true when it also takes `room` with `resume_from`, which listening mode during a call needs (the app checks it before pausing the call for listening). `input_text` is true when the server takes a typed turn on a live call (`POST /voice/interactions/{id}/input-text`); missing on older plugins, which answer that route with 404, so apps show their composer only when it's true.
 `attachments` says whether runs can carry images (`images`) and how Hermes reads them (`vision`:
 `native` the main model sees them, `described` an auxiliary vision model describes them, `none`, or
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
@@ -1838,6 +1842,7 @@ hide the matching controls and keep the old behaviour.
   "codex_message": "Signed in to Codex.",
   "api_key_set": true,
   "brief_state": "none",
+  "agent_model": "ok",
   "hermes_api_ok": true,
   "hermes_api_key_set": true,
   "delivery_target": "none",

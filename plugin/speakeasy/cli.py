@@ -224,10 +224,16 @@ def cmd_setup(args, home: Path, env=None) -> int:
     server = _cloudflare(env, home, settings, tailnet=not is_local_url(server),
                          here=getattr(args, "here", False)) or server
 
+    from . import agent_model as M
+    no_model = env.model_state() == M.MISSING
+    if no_model:
+        # Every turn (the brief, the first call's tasks) fails until Hermes has a provider.
+        out(f"✗ {M.SETUP_LINE}")
     if up:
         out(f"✓ Voice server is running (Hermes profile '{me}', port {port})")
-        out("✓ Your agent will write a short voice brief in the background: what the voice should know about "
-            "you and what it can hand off. You can read and edit it in the app.")
+        if not no_model:
+            out("✓ Your agent will write a short voice brief in the background: what the voice should know "
+                "about you and what it can hand off. You can read and edit it in the app.")
     _print_routing_model(out)
     _print_home_offer(home, settings, out)
     _sync_thread_routes(home, settings, out)
@@ -263,7 +269,7 @@ def cmd_setup(args, home: Path, env=None) -> int:
     if not voice_ok:
         out("Voice isn't signed in yet; the app will show how to finish that.")
         return 1
-    return 0
+    return 1 if no_model else 0
 
 
 def qr_text(data: str) -> str:
@@ -726,8 +732,9 @@ def cmd_routing(home: Path, args) -> int:
 
 
 def cmd_status(home: Path) -> int:
+    from .agent_model import resolve
     from .service import VoiceService
-    service = VoiceService(home, start_threads=False)
+    service = VoiceService(home, start_threads=False, agent_model=resolve)
     try:
         status = service.status()
     finally:
