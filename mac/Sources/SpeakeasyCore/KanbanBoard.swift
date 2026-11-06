@@ -183,6 +183,67 @@ public struct KanbanBoardPage: Equatable, Sendable {
     public var isEmpty: Bool { columns.allSatisfy { $0.cards.isEmpty } }
 }
 
+/// How the four columns sit in a pane of a given width (Mac History › Board, iPad). When all four fit
+/// at the minimum width they share the pane. When they don't, the row scrolls sideways a whole column
+/// at a time: as many full columns as fit plus a clear peek of the next one, so the edge always shows
+/// there's more, and the board opens scrolled so the column with a card that needs you is in view.
+public struct KanbanBoardLayout: Equatable, Sendable {
+    public static let count = KanbanCard.Column.allCases.count
+
+    /// Each column's width.
+    public var columnWidth: CGFloat
+    /// Whole columns in view at once (all four when nothing scrolls).
+    public var visible: Int
+    public var scrolls: Bool { visible < Self.count }
+    /// The highest leading column the row can scroll to.
+    public var lastLeading: Int { Self.count - visible }
+
+    /// - width: the pane; `inset`: the margin on each side; `peek`: how much of the next column shows.
+    public init(width: CGFloat, minColumn: CGFloat, spacing: CGFloat, inset: CGFloat, peek: CGFloat) {
+        let n = CGFloat(Self.count)
+        let all = (width - 2 * inset - (n - 1) * spacing) / n
+        if all >= minColumn {
+            columnWidth = all; visible = Self.count; return
+        }
+        // k full columns from the leading margin, then a gap and `peek` of the next one at the edge.
+        let room = width - inset - peek
+        let k = max(1, min(Self.count - 1, Int(((room) / (minColumn + spacing)).rounded(.down))))
+        visible = k
+        columnWidth = max(minColumn * 0.75, (room - CGFloat(k) * spacing) / CGFloat(k))
+    }
+
+    /// Columns fully in view when `leading` is the first one.
+    public func inView(leading: Int) -> Range<Int> {
+        let start = min(max(0, leading), lastLeading)
+        return start..<(start + visible)
+    }
+
+    /// The column to open on: the start, unless that hides the column with a card that needs you —
+    /// then just far enough along that it's the last full column in view.
+    public func openingLeading(for page: KanbanBoardPage?) -> Int {
+        guard scrolls, let target = page?.attentionIndex else { return 0 }
+        return min(lastLeading, max(0, target - visible + 1))
+    }
+
+    /// The "needs you" column when it's out of view: which way it is, so the edge can point to it.
+    public func offscreenAttention(leading: Int, page: KanbanBoardPage?) -> Edge? {
+        guard scrolls, let target = page?.attentionIndex else { return nil }
+        let shown = inView(leading: leading)
+        if shown.contains(target) { return nil }
+        return target < shown.lowerBound ? .leading : .trailing
+    }
+
+    public enum Edge: Sendable { case leading, trailing }
+}
+
+extension KanbanBoardPage {
+    /// Where the column with a card that needs you sits (Blocked), when there is one.
+    public var attentionIndex: Int? {
+        guard needsYouCount > 0 else { return nil }
+        return columns.firstIndex { $0.key == .blocked }
+    }
+}
+
 public enum BoardFormat {
     /// "under a minute", "25 min", "1 hr 5 min", "3 hr", "2 days".
     public static func span(from start: Date, to end: Date) -> String {

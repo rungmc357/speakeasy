@@ -131,20 +131,8 @@ struct BoardPane: View {
 
     @ViewBuilder private var content: some View {
         if let page = board.page {
-            GeometryReader { geo in
-                // Four columns fit the pane; below ~150 pt each they scroll sideways instead.
-                let width = max(150, (geo.size.width - 56 - 3 * 12) / 4)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 12) {
-                        ForEach(page.columns) { column in
-                            BoardColumnView(store: store, column: column, now: board.now).frame(width: width)
-                        }
-                    }
-                    .padding(.horizontal, 28).padding(.bottom, 20)
-                    .frame(minHeight: geo.size.height, alignment: .top)
-                }
-            }
-            .accessibilityIdentifier("board-columns")
+            BoardColumnsRow(store: store, board: board, page: page)
+                .accessibilityIdentifier("board-columns")
         } else if let error = board.error {
             VStack(spacing: 8) {
                 Text(error).font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -164,6 +152,117 @@ struct BoardPane: View {
             HStack(spacing: 8) { LiveSpinner(size: 12); Text("Loading…").font(.system(size: 12)).foregroundStyle(.secondary) }
                 .frame(maxWidth: .infinity).padding(.top, 40)
         }
+    }
+}
+
+/// The four columns. They share the pane when they fit; on a narrower window the row scrolls a column
+/// at a time with the next one peeking in, the cut-off edge fades, an arrow at that edge shows the next
+/// column, and the board opens scrolled so a card that needs you is in view. When that column is
+/// scrolled away, the arrow on its side becomes a red "1 needs you" button that brings it back.
+struct BoardColumnsRow: View {
+    @ObservedObject var store: HistoryStore
+    @ObservedObject var board: BoardModel
+    let page: KanbanBoardPage
+    @State private var leading: Int?
+
+    static let inset: CGFloat = 28, spacing: CGFloat = 12, minColumn: CGFloat = 150, peek: CGFloat = 44
+    /// `--history-shots` only: scroll back to Ready.
+    static let scrollToStartForShot = Notification.Name("speakeasy.board.scrollToStartForShot")
+
+    var body: some View {
+        GeometryReader { geo in
+            let layout = KanbanBoardLayout(width: geo.size.width, minColumn: Self.minColumn, spacing: Self.spacing,
+                                           inset: Self.inset, peek: Self.peek)
+            let first = layout.inView(leading: leading ?? 0)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: Self.spacing) {
+                    ForEach(0..<page.columns.count, id: \.self) { i in
+                        BoardColumnView(store: store, column: page.columns[i], now: board.now)
+                            .frame(width: layout.columnWidth)
+                            .id(i)
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.bottom, 20)
+                .frame(minHeight: geo.size.height, alignment: .top)
+            }
+            .contentMargins(.horizontal, Self.inset, for: .scrollContent)
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $leading)
+            .scrollDisabled(!layout.scrolls)
+            .mask(fadeMask(leading: first.lowerBound > 0, trailing: first.upperBound < KanbanBoardLayout.count))
+            .overlay(alignment: .leading) {
+                if layout.scrolls, first.lowerBound > 0 {
+                    edgeButton(.leading, layout: layout, from: first.lowerBound)
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if layout.scrolls, first.upperBound < KanbanBoardLayout.count {
+                    edgeButton(.trailing, layout: layout, from: first.lowerBound)
+                }
+            }
+            .onAppear { open(layout, force: true) }
+            .onChange(of: layout.visible) { _, _ in open(layout, force: true) }
+            .onChange(of: page.slug) { _, _ in open(layout, force: true) }
+            .onChange(of: page.attentionIndex) { _, _ in open(layout, force: false) }
+            .onReceive(NotificationCenter.default.publisher(for: Self.scrollToStartForShot)) { _ in leading = 0 }
+        }
+    }
+
+    /// Scroll to where the board should open (a card that needs you in view) — always for a new board
+    /// or window width, otherwise only when that card would be out of view.
+    private func open(_ layout: KanbanBoardLayout, force: Bool) {
+        let target = layout.openingLeading(for: page)
+        if !force, layout.offscreenAttention(leading: leading ?? 0, page: page) == nil { return }
+        // After this layout pass: setting the position while the row is being laid out is ignored.
+        DispatchQueue.main.async { leading = target }
+    }
+
+    private func fadeMask(leading: Bool, trailing: Bool) -> some View {
+        HStack(spacing: 0) {
+            LinearGradient(colors: [.black.opacity(0), .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: leading ? Self.inset + 8 : 0)
+            Rectangle().fill(.black)
+            LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .leading, endPoint: .trailing)
+                .frame(width: trailing ? Self.peek + 8 : 0)
+        }
+    }
+
+    @ViewBuilder
+    private func edgeButton(_ edge: KanbanBoardLayout.Edge, layout: KanbanBoardLayout, from start: Int) -> some View {
+        let attention = layout.offscreenAttention(leading: start, page: page) == edge
+        let next = edge == .leading ? max(0, start - 1) : min(layout.lastLeading, start + 1)
+        let reveal = edge == .leading ? start - 1 : start + layout.visible
+        let goal = attention ? layout.openingLeading(for: page) : next
+        let name = page.columns[max(0, min(KanbanBoardLayout.count - 1, reveal))].title
+        Button { withAnimation(.easeInOut(duration: 0.3)) { leading = goal } } label: {
+            if attention {
+                HStack(spacing: 4) {
+                    if edge == .leading { Image(systemName: "chevron.left").font(.system(size: 9, weight: .bold)) }
+                    Text("\(page.needsYouCount) need\(page.needsYouCount == 1 ? "s" : "") you")
+                        .font(.system(size: 11, weight: .bold))
+                    if edge == .trailing { Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)) }
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10).frame(height: 26)
+                .background(Capsule().fill(BoardLook.needsYou).shadow(color: .black.opacity(0.18), radius: 4, y: 1))
+            } else {
+                Image(systemName: edge == .leading ? "chevron.left" : "chevron.right")
+                    .font(.system(size: 11, weight: .bold)).foregroundStyle(Color.primary.opacity(0.75))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(.regularMaterial).shadow(color: .black.opacity(0.15), radius: 4, y: 1))
+                    .overlay(Circle().strokeBorder(Live.hairline, lineWidth: 0.5))
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        // The red pointer sits level with the column titles so it never covers a card; the plain arrow
+        // sits mid-height.
+        .padding(.top, attention ? 4 : 0)
+        .frame(maxHeight: .infinity, alignment: attention ? .top : .center)
+        .help(attention ? "Show the card that needs you" : "Show \(name)")
+        .accessibilityLabel(attention ? "Show the card that needs you, in \(page.column(.blocked).title)" : "Show \(name)")
+        .accessibilityIdentifier(attention ? "board-needs-you-jump" : edge == .leading ? "board-scroll-back" : "board-scroll-more")
     }
 }
 

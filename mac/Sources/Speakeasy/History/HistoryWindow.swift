@@ -486,6 +486,26 @@ enum HistoryShots {
                 store.board.select("bake-sale")
                 await store.board.loadPage()
             }
+            await shot("14b-board-narrow") {
+                // A small window: the board opens scrolled so the card that needs you is in view, the
+                // cut-off edge fades and an arrow shows there's more (SPK-82).
+                store.openBoard()
+                store.board.select("garden-site")
+                await store.board.loadPage()
+                c.window?.setContentSize(NSSize(width: 720, height: 480))
+            }
+            await shot("14c-board-narrow-start") {
+                // Scrolled back to the start: the right edge says "1 needs you".
+                store.openBoard()
+                store.board.select("garden-site")
+                await store.board.loadPage()
+                c.window?.setContentSize(NSSize(width: 720, height: 480))
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                NotificationCenter.default.post(name: BoardColumnsRow.scrollToStartForShot, object: nil)
+            }
+            if only == nil || only == "14b-board-narrow" || only == "14c-board-narrow-start" {
+                c.window?.setContentSize(NSSize(width: 1040, height: 720))
+            }
             await shot("8-on-call-narrow") {
                 store.preview(outbox: HistoryOutbox())
                 store.setSource(nil)
