@@ -1159,7 +1159,8 @@ answered the latest call and how full its context window was, the chat-platform 
 line. Recorded from Hermes' `post_api_request` hook (Hermes saves no context figure), kept per Hermes
 session, and frozen on a task when it finishes so a later follow-up in the same chat doesn't change it.
 `{"estimate": true, "line": "Claude Opus 5.5 · about 22% of context used · 3 min" (the duration only on a
-finished task), "detail": "About 44K of 200K tokens in the latest model call (peak about 31%). An estimate
+finished task), "use": "about 22% of context used" (the line without model and duration, for a header
+that already names the model), "took"?: "3 min", "detail": "About 44K of 200K tokens in the latest model call (peak about 31%). An estimate
 …", "tokens", "window" (null when the model's context size isn't known; the line then says "about 44K
 tokens of context"), "percent", "peak_tokens", "peak_percent", "model", "model_calls", "at", "seconds"?}`.
 

@@ -152,10 +152,11 @@ def describe(rec: dict[str, Any] | None, model_name: str | None = None, seconds:
             detail += f" (peak about {peak_pct}%)"
     else:
         detail = f"About {_tokens(tokens)} tokens in the latest model call; the model's context size isn't known"
-    out: dict[str, Any] = {"estimate": True, "line": line, "detail": detail + ". " + NOTE,
+    out: dict[str, Any] = {"estimate": True, "line": line, "use": use, "detail": detail + ". " + NOTE,
                            "tokens": tokens, "window": window, "percent": pct, "peak_tokens": peak,
                            "peak_percent": peak_pct, "model": name, "model_calls": _int(rec.get("calls")) or None,
                            "at": rec.get("at")}
     if took:
         out["seconds"] = round(seconds or 0)
+        out["took"] = took
     return out

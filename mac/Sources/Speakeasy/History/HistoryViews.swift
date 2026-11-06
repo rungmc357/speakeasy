@@ -576,7 +576,12 @@ struct HistorySessionView: View {
                   c.isSpeakeasy ? nil : "replies show here, not in \(c.sourceLabel.components(separatedBy: " · ").first ?? c.sourceLabel)"]
                 .compactMap { $0 }.joined(separator: " · "))
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.primary.opacity(0.6))
-            if let badge = c.model, store.modelsSupported, store.picker?.headerShows(badge) ?? true { ModelWorkedLine(badge: badge) }
+            if let ctx = c.context {
+                // One line names the model and how full its context got; the model only when the
+                // composer chip doesn't already say it.
+                let showsModel = c.model.map { b in store.modelsSupported && (store.picker?.headerShows(b) ?? true) } ?? true
+                ContextUseLine(context: ctx, text: showsModel ? ctx.modelAndUse : ctx.useSentence)
+            } else if let badge = c.model, store.modelsSupported, store.picker?.headerShows(badge) ?? true { ModelWorkedLine(badge: badge) }
             if let usage = c.usage { HistoryUsageLine(usage: usage, sessionID: c.id, store: store) }
         }
         .padding(.bottom, 4)
@@ -786,6 +791,7 @@ struct HistoryTaskCard: View {
             if job.status == "failed", let why = job.failureReason ?? job.failure?.text {
                 Text(why).font(.system(size: 12)).foregroundStyle(Live.red).lineLimit(3)
             }
+            if let ctx = job.context { ContextUseLine(context: ctx, text: ctx.line, size: 10.5) }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Live.card))

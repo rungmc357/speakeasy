@@ -244,6 +244,8 @@ public struct WorkInfo: Equatable, Sendable {
     public var nowLine: String?
     /// One growing recap of what it has done so far ("Read the code, edited 2 files, ran the tests").
     public var soFar: String?
+    /// Plugin 0.3.37+: which model answered its latest call and how full the context was (an estimate).
+    public var context: ContextUse?
 
     /// The receipt for one "You added: …" step, if the api sent one.
     public func followUp(forStep text: String) -> FollowUp? { followUps.last { $0.milestone == text } }
@@ -307,6 +309,7 @@ public struct WorkInfo: Equatable, Sendable {
         model = ModelBadge(json: object["model"])
         nowLine = nonEmpty(object["now_line"])
         soFar = nonEmpty(object["so_far"])
+        context = ContextUse(json: object["context"])
         setAside = object["set_aside"] as? Bool ?? false
         seen = object["seen"] as? Bool ?? false
         answered = object["answered"] as? Bool ?? false

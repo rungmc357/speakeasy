@@ -274,6 +274,8 @@ public struct HistoryConversation: Equatable, Sendable {
     public var pinned = false
     /// Plugin 0.3.37+: what the conversation used (tokens, an estimated cost); nil = nothing recorded / older plugin.
     public var usage: ChatUsage?
+    /// Plugin 0.3.37+: the model on the chat's latest call and how full its context was; nil = not seen yet.
+    public var context: ContextUse?
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
@@ -301,6 +303,7 @@ public struct HistoryConversation: Equatable, Sendable {
         archived = o["archived"] as? Bool ?? false
         pinned = o["pinned"] as? Bool ?? false
         usage = ChatUsage(json: o["usage"])
+        context = ContextUse(json: o["context"])
     }
 
     /// The ONE job whose question (a decision card) waits on the user, as the plugin decides it

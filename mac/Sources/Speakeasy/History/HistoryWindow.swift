@@ -188,7 +188,8 @@ enum DemoHistory {
                                   args: "npx playwright test checkout.spec.ts --repeat-each=50")]),
                 bot("m4", ago(1), "Changed the test to wait for the mock. Running it 50 times now: 31 passes so far, no failures."),
             ], jobs: [["run_id": "run_0012", "status": "running", "title": "Fix the flaky checkout test",
-                       "short_status": "Rerunning the checkout test: 31 of 50", "step_index": 3, "step_count": 4, "subagents": [
+                       "short_status": "Rerunning the checkout test: 31 of 50", "step_index": 3, "step_count": 4,
+                       "context": ["line": "Claude Opus 5.5 · about 22% of context used", "use": "about 22% of context used", "detail": "About 44K of 200K tokens in the latest model call (peak about 31%). An estimate from the token counts the provider reported for the latest model call.", "model": "Claude Opus 5.5", "percent": 22, "peak_percent": 31, "tokens": 44000, "window": 200000], "subagents": [
                 ["id": "h1", "title": "Check the other payment tests", "status": "done", "goal": "Look for the same fixed wait in the other payment specs",
                  "started_at": ago(5), "ended_at": ago(3.5), "summary": "Two more specs wait 500 ms for the mock: refund.spec.ts and saved-card.spec.ts."],
                 ["id": "h2", "title": "Find when the wait was added", "status": "running", "started_at": ago(4), "now": "Reading git blame for checkout.spec.ts"]]]])
@@ -213,6 +214,7 @@ enum DemoHistory {
                              call(3, "browse", "Read fabrikam.example/pricing", "web_extract", ago(110), 3.1)]),
                 bot("m2", ago(96), "Northwind and Contoso charge per seat; Fabrikam is flat per workspace. We're the only one without an annual discount."),
             ], jobs: [["run_id": "run_0009", "status": "completed", "title": "Pricing vs. three competitors",
+                       "context": ["line": "GPT-6.1 Mini · about 6% of context used · 23 s", "use": "about 6% of context used", "took": "23 s", "detail": "About 24K of 400K tokens in the latest model call. An estimate from the token counts the provider reported for the latest model call.", "model": "GPT-6.1 Mini", "percent": 6, "tokens": 24000, "window": 400000],
                        "result": ["views": [["kind": "question", "question": "Which plan should the comparison put us against?",
                                              "options": [["text": "Their Team plans"], ["text": "Their Business plans"]]]]]]])
 
@@ -242,6 +244,9 @@ enum DemoHistory {
         add("s_rename", "Rename the staging buckets", "cli", "Terminal", daysAgo(9, 14, 20), "Renamed 4 buckets; updated the deploy config.")
         add("s_reading", "Reading list for the team", "speakeasy", "Speakeasy", daysAgo(12, 10, 4), "Six picks on pricing strategy.")
         convs["s_flaky"]?.usage = .demo
+        convs["s_flaky"]?.context = .demo
+        convs["s_dash"]?.context = .demoDone
+        convs["s_pricing"]?.context = .demoFast
         convs["s_dash"]?.usage = .demo
         convs["s_deploy"]?.usage = .demoIncluded
         convs["s_pricing"]?.usage = .demoIncluded
@@ -397,6 +402,8 @@ enum HistoryShots {
                 store.openSections = ["s_dash|usage"]
             }
             await shot("16b-usage-plan") { store.openSections = ["s_pricing|usage"]; store.open("s_pricing") }
+            await shot("17-context") { store.openSections = []; store.open("s_flaky") }
+            await shot("17b-context-done") { store.open("s_pricing") }
             exit(0)
         }
     }

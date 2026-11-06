@@ -36,6 +36,27 @@ struct HistoryUsageLine: View {
     }
 }
 
+/// "Claude Opus 5.5 · about 22% of context used · 3 min": which model ran it and how full its context
+/// got, quiet like a footer. Hover for the token count, the peak and the estimate note.
+struct ContextUseLine: View {
+    let context: ContextUse
+    let text: String
+    var size: CGFloat = 11
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: context.symbol).font(.system(size: size - 1.5, weight: .semibold))
+            Text(text).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.system(size: size))
+        .foregroundStyle(context.isNearlyFull ? AnyShapeStyle(Live.brass) : AnyShapeStyle(Color.primary.opacity(0.45)))
+        .help(context.detail)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(context.accessibilityText)
+        .accessibilityIdentifier("context-use")
+    }
+}
+
 struct HistoryUsageDetails: View {
     let usage: ChatUsage
 
