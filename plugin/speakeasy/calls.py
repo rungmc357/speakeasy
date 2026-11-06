@@ -44,6 +44,7 @@ from .hermes_api import HermesError, user_content
 from .settings import DEFAULT_UPDATE_INTERVAL_S, valid_delivery_target
 from .prompt import builder as P
 from . import text as text_mod
+from .store import fold_tasks
 from .text import (ID_RE, MAX_TRANSCRIPT, TERMINAL, clean_transcript, delivery_text, derive_tool_status,
                    interim_progress, live_images_in, notice_text, safe_user_text, short_title, home_title, split_result,
                    thread_commentary, vetted_live_ref)
@@ -411,6 +412,8 @@ class Runtime:
     status_call: Callable[[str], str | None] | None = None
     plan_call: Callable[[str], list[str] | None] | None = None
     shape_call: Callable[[str, str], dict[str, Any] | None] | None = None
+    # A finished answer's outcome headline (request, reply) -> str | None (None = the title model).
+    headline_call: Callable[[str, str], str | None] | None = None
     # Instant home control (home_control.HomeControl); None or turned off = every request goes to Hermes.
     home: Any = None
     # Quick answers (quick.answer); None = the real one. Tests swap in a fake.
@@ -683,7 +686,7 @@ def interaction_tasks(store: Any, interaction: Interaction, assistant_name: str 
     earlier = store.board_carry(exclude, MAX_BOARD) if hasattr(store, "board_carry") else []
     exclude |= {t["task_id"] for t in earlier}
     # A draft from an earlier call still waiting for Send / Deny / Revise stays on screen.
-    return earlier + tasks + store.carried_draft_tasks(exclude)
+    return fold_tasks(earlier + tasks + store.carried_draft_tasks(exclude))
 
 
 async def in_own_thread(fn: Callable[..., Any], *args: Any) -> Any:
@@ -1094,22 +1097,31 @@ class SidebandWorker:
         session_titles.PENDING.add(task)
         task.add_done_callback(session_titles.PENDING.discard)
 
-    def shape_result(self, idem: str, report: str) -> None:
+    def shape_result(self, idem: str, report: str, shape: bool = True) -> None:
         """Sort a long finished report into its parts (checks, shipped, open, sections) in the background,
-        so apps can lay it out; the answer itself is already delivered and never waits on this."""
+        so apps can lay it out; the answer itself is already delivered and never waits on this. Any
+        finished answer also gets its outcome headline from the side model (a long report's comes
+        with its shape)."""
         shaper = self.rt.shape_call or router.result_shape
+        headliner = self.rt.headline_call or router.result_headline
         request = self.store.request_text(idem) or ""
+        wants_shape = shape
 
         async def run() -> None:
-            shape = await asyncio.to_thread(shaper, request, report)
-            if not shape:
-                return
-            visual = shape.pop("_visual", None)
-            changed = self.store.add_shape(idem, shape) if any(
-                shape.get(k) for k in ("checks", "shipped", "open", "sections")) else False
-            # A picture of the answer's data for agents that didn't draw one (thread tasks never can).
-            if visual and self.store.add_view(idem, visual):
+            shape = await asyncio.to_thread(shaper, request, report) if wants_shape else None
+            changed = False
+            headline = text_mod.clean_headline((shape or {}).get("headline"))
+            if not headline:
+                headline = await asyncio.to_thread(headliner, request, report)
+            if headline and self.store.set_headline(idem, headline):
                 changed = True
+            if shape:
+                visual = shape.pop("_visual", None)
+                if any(shape.get(k) for k in ("checks", "shipped", "open", "sections")):
+                    changed = self.store.add_shape(idem, shape) or changed
+                # A picture of the answer's data for agents that didn't draw one (thread tasks never can).
+                if visual and self.store.add_view(idem, visual):
+                    changed = True
             if changed:
                 self.publish()
 
@@ -1450,6 +1462,12 @@ class SidebandWorker:
         listed = "\n".join(f"{i + 1}. {o}" for i, o in enumerate(options))
         try:
             self.store.reserve_run(idem, self.interaction.interaction_id, delegation_id, 0)
+            # The pick belongs to the task it's about (the one in view, else the newest real task on
+            # the call): it shows inside that task's job, never as its own "Decide on …" item.
+            about = self._choice_parent()
+            if about:
+                self.store.link_job(idem, about)
+                self.store.set_parent(idem, about)
             # A short question names its card as asked; a long one gets a clean cut, never an ellipsis.
             whole = notice_text(question, 200) or ""
             self.store.set_title(idem, (whole if len(whole) <= 60 else short_title(question)) or "A quick choice")
@@ -1464,6 +1482,18 @@ class SidebandWorker:
         # Name the card for the decision, not the first words of the question.
         self.retitle(idem, f"Question put to the user: {question} Options: {'; '.join(options)}")
         return delegation_id
+
+    def _choice_parent(self) -> str | None:
+        """The task a spoken pick is about: the one the user is looking at, else the newest task on
+        this call that ran (not another pick). None when the call has no task yet."""
+        focused, _ = self.focus()
+        with self.interaction.lock:
+            runs = list(self.interaction.runs.items())
+        for task_id, run in ([(t, r) for t, r in runs if t == focused] + list(reversed(runs))):
+            if task_id.startswith("choice_") or run.status == "rejected" or not run.idem_key:
+                continue
+            return run.idem_key
+        return None
 
     def close_choices(self) -> None:
         """Set aside every open spoken-choice card on this call."""
@@ -1492,6 +1522,10 @@ class SidebandWorker:
         if run is not None:
             self.store.set_aside(run.idem_key)
             self.store.progress(run.idem_key, "milestone", f"You picked: {notice_text(text, 120)}")
+            about = self.store.parent_of(run.idem_key)
+            if about:
+                # The pick folds away; the task it was about keeps what was chosen.
+                self.store.progress(about, "milestone", f"You picked: {notice_text(text, 120)}")
         self.touch()
         self.fragments.append({"speaker": "user", "text": text, "at": time.monotonic(), "start_ms": 0, "end_ms": 0})
         await self.append("session.commentary.append", None, P.choice_picked_note(text, question))
@@ -4829,10 +4863,11 @@ class SidebandWorker:
             unread = await self.settle_follow_ups(backend, event.get("pending_steer"), status,
                                                   modern="interrupted" in event or "pending_steer" in event)
             stored_drafts = [self.store.add_draft(idem, self.store.session_for(idem), d) for d in drafts]
-            # Long reports get sorted into parts; any answer with numbers in it may also get a picture.
-            if status == "completed" and result and (len(result.get("full") or "") >= 400 or (
-                    not result.get("views") and len(re.findall(r"\d", result.get("full") or "")) >= 4)):
-                self.shape_result(idem, result["full"])
+            # Long reports get sorted into parts; any answer with numbers in it may also get a picture;
+            # every answer gets its outcome headline (not a question: the question is the headline).
+            if status == "completed" and result and not result.get("question"):
+                self.shape_result(idem, result["full"], shape=len(result.get("full") or "") >= 400 or (
+                    not result.get("views") and len(re.findall(r"\d", result.get("full") or "")) >= 4))
             with self.interaction.lock:
                 wanted = idem in self.show_pending
                 self.show_pending.discard(idem)

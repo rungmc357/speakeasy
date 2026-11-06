@@ -23,7 +23,7 @@ from .emails import canonical_json, draft_sha256
 from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
                    short_title, valid_short_status)
-from .text import TITLE_META, fix_product_names, stand_in_titles as _stand_ins
+from .text import TITLE_META, fix_product_names, outcome_headline, stand_in_titles as _stand_ins, vague_title
 
 STALE_AFTER_S = 90
 MAX_REVIEWS = 3  # finished-image review cards carried onto the call panel
@@ -77,10 +77,52 @@ def _is_stand_in(title: str | None, request: str | None, continued: str | None =
         return False
     if not title or title in PLACEHOLDER_TITLES or title.endswith("…"):
         return True  # no name, a generic placeholder, or a sentence cut off with an ellipsis
+    if vague_title(title):
+        return True  # "Check work status", "Confirm the earlier task": names nothing, renamed on read
     return title in _stand_ins(request)
 
 
 PLACEHOLDER_TITLES = {"Voice task", "Quick answer", "A quick choice"}
+
+
+CHOICE_PREFIX = "choice_"   # a spoken pick shown as a card (calls.offer_choice): no Hermes run
+TWIN_WINDOW_S = 180         # the same ask started twice this close together is one task
+
+
+def _ask_key(text: Any) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+
+def fold_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The task list without rows that are only part of another task: a spoken pick that was
+    answered or set aside ("Decide on holding" / Set aside) never lists as its own item, and a
+    finished twin of the same ask started moments before a later one folds into the later one."""
+    def finished_choice(t: dict[str, Any]) -> bool:
+        return str(t.get("task_id") or "").startswith(CHOICE_PREFIX) and bool(t.get("set_aside") or t.get("answered"))
+
+    kept = [t for t in tasks if not finished_choice(t)]
+
+    def rank(i: int) -> tuple[int, int]:
+        t = kept[i]
+        status = t.get("status")
+        return (2 if status not in TERMINAL else 1 if status == "completed" else 0, i)
+
+    def twins(a: dict[str, Any], b: dict[str, Any]) -> bool:
+        sa, sb = a.get("started_at"), b.get("started_at")
+        return (bool(_ask_key(a.get("request"))) and _ask_key(a.get("request")) == _ask_key(b.get("request"))
+                and isinstance(sa, (int, float)) and isinstance(sb, (int, float)) and abs(sa - sb) <= TWIN_WINDOW_S)
+
+    out: list[dict[str, Any]] = []
+    for i, task in enumerate(kept):
+        # Only a finished twin with nothing waiting on the user folds, into the better of the pair
+        # (one still running, else one that completed, else the newer).
+        foldable = (task.get("status") in TERMINAL and not task.get("email_drafts") and not task.get("review")
+                    and not ((task.get("result") or {}).get("question") and not task.get("answered")
+                             and not task.get("set_aside")))
+        if foldable and any(j != i and twins(task, other) and rank(j) > rank(i) for j, other in enumerate(kept)):
+            continue
+        out.append(task)
+    return out
 
 
 RECEIPTS = {"Request received", "Started working"}  # milestones that are receipts, not progress
@@ -712,6 +754,21 @@ class StateStore:
                              (job_id, name, first[0], time.time()))
         return {"id": job_id, "name": name}
 
+    def set_headline(self, key: str, headline: str) -> bool:
+        """A finished result's outcome headline (the side model's), replacing the one taken from
+        the reply's words. False when there's no stored result or nothing changed."""
+        with self._lock, self._db:
+            row = self._db.execute("SELECT result_json FROM runs WHERE idem_key=?", (key,)).fetchone()
+            try:
+                result = json.loads(row[0]) if row and row[0] else None
+            except ValueError:
+                result = None
+            if not isinstance(result, dict) or result.get("headline") == headline:
+                return False
+            result["headline"] = headline
+            self._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?", (json.dumps(result), key))
+            return True
+
     def add_shape(self, key: str, shape: dict[str, Any]) -> bool:
         """Attach a result's structure to its stored result (kept beside spoken/full)."""
         with self._lock, self._db:
@@ -1327,7 +1384,7 @@ class StateStore:
         exclude = {t["task_id"] for t in tasks} | {k for k, _ in rows}
         earlier = self.board_carry(exclude)
         exclude |= {t["task_id"] for t in earlier}
-        return earlier + tasks + self.carried_draft_tasks(exclude)
+        return fold_tasks(earlier + tasks + self.carried_draft_tasks(exclude))
 
     def board_carry_keys(self, exclude: set[str], limit: int = 12) -> list[tuple[str, str]]:
         """Earlier calls' tasks that stay on the board until the user clears them, oldest first, as
@@ -1657,6 +1714,18 @@ class StateStore:
                 result = json.loads(result_json)
             except ValueError:
                 result = None
+        if isinstance(result, dict) and not result.get("headline") and not result.get("question"):
+            # Saved before results carried their outcome headline: taken from the reply's words on
+            # read, so an older "Okay, I'm dropping it." opener never stands as the headline.
+            headline = outcome_headline(result.get("spoken"), result.get("full"))
+            if headline:
+                result = {**result, "headline": headline}
+        asked = next((t for k, t, _ in reversed(events) if k == "request"), None)
+        if asked is None:
+            with self._lock:
+                first_req = self._db.execute("SELECT text FROM work_events WHERE idem_key=? AND kind='request' "
+                                             "ORDER BY seq LIMIT 1", (key,)).fetchone()
+            asked = first_req[0] if first_req else None
         work = {
             "run_id": actual_run_id, "status": status, "stale": stale, "updated": updated,
             "events": [{"kind": kind, "text": text, "at": created} for kind, text, created in reversed(events)],
@@ -1669,6 +1738,11 @@ class StateStore:
                                   title),
             "job": self.job(key, session_id, continued),
         }
+        # What the user asked, always (``events`` keeps only the newest 30, so a long task's request
+        # falls off them): the top of every task view says it.
+        asked_text = safe_user_text(re.sub(r"\s*\(following up: .+\)\s*$", "", " ".join(str(asked or "").split())), 400)
+        if asked_text:
+            work["request"] = asked_text
         if session_id or _placed_session(continued):
             # The Hermes session its conversation lives in: "Show full session" opens it (history).
             work["session_id"] = session_id or _placed_session(continued)

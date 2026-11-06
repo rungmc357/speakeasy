@@ -43,6 +43,10 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Clean answers.** The model/usage footer ("model · 22% · 23s"), "(1/2)" split markers, "Steered into current run" and "Context compression deferred" lines, cron "Cronjob Response" headers and "To stop or manage this job" footers, and "[SILENT]" replies no longer show.
 - **No "not posted to Discord" note.** What you send to a Discord or Telegram chat from Speakeasy sits in time order with the rest, without a label.
 - The same cleanup applies to previews, titles and search results; a search that only matches hidden plumbing no longer finds the chat.
+- **Titles name the subject.** Titles made only of generic words ("Check work status", "Decide on holding") or pointing at "the earlier task" are rejected and written again. Tasks already on your list with names like that are renamed the next time the list loads.
+- **The headline is what happened.** A finished task's headline is the outcome ("Nothing goes into build 66 from this"), never how the voice opened its reply ("Okay, I'm dropping it."); older answers get theirs when they're read.
+- **Every task says what you asked**, even long ones whose early steps have scrolled off.
+- **Picks fold into their task.** A quick pick the voice offers ("Hold it, or ship it now?") shows inside the task it's about, and once answered it doesn't stay on the list as its own "Set aside" item; the task keeps what you picked. Two copies of the same ask started moments apart show as one.
 
 ## Plugin 0.3.36 — Easier setup, and session pages end with the latest message
 
