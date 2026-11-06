@@ -115,6 +115,76 @@ def test_list_newest_first_with_labels_and_no_internal_sessions(server, state):
     assert {f["id"] for f in body["filters"]} >= {"speakeasy", "discord", "scheduled"}
 
 
+def _set_activity(path, sid, at):
+    db = sqlite3.connect(path)
+    db.execute("UPDATE sessions SET last_activity_at=? WHERE id=?", (at, sid))
+    db.commit(); db.close()
+
+
+def test_a_busy_thread_takes_its_time_and_place_from_its_newest_message(server, service, state):
+    """Hermes' ``last_activity_at`` is a rate-limited heartbeat: a short turn right after another one
+    never moves it. The row's time and order come from the newest message (user or assistant)."""
+    add_session(state, "busy", "discord", title="Porch lights", display="Workshop / #build / Porch lights",
+                chat_type="thread", at=NOW - 80)
+    add_msg(state, "busy", "assistant", "The porch timer is set for dusk.", at=NOW - 80)
+    add_session(state, "worker1", "kanban", title="Sand the bench", at=NOW - 70)
+    add_msg(state, "worker1", "assistant", "Sanded.", at=NOW - 70)
+    status, body = get(server, "/voice/history")
+    assert [s["id"] for s in body["sessions"]][:2] == ["worker1", "busy"]
+
+    # A new message and its reply land; the heartbeat column stays at the earlier turn.
+    add_msg(state, "busy", "user", "Make it 15 minutes after dusk", at=NOW - 40)
+    add_msg(state, "busy", "assistant", "Done, 15 minutes after dusk.", at=NOW - 35)
+    _set_activity(state, "busy", NOW - 80)
+    status, body = get(server, "/voice/history")       # the cached list is not reused: a message moved
+    assert status == 200, body
+    rows = body["sessions"]
+    assert [s["id"] for s in rows][:2] == ["busy", "worker1"]
+    assert rows[0]["last_activity"] == pytest.approx(NOW - 35, abs=0.01)
+    assert rows[0]["preview"].startswith("Done, 15 minutes")
+
+    # The person's own message counts as much as a reply (a turn still under way).
+    add_msg(state, "worker1", "user", "Now oil it", at=NOW - 20)
+    _, body = get(server, "/voice/history")
+    assert [s["id"] for s in body["sessions"]][:2] == ["worker1", "busy"]
+    assert body["sessions"][0]["last_activity"] == pytest.approx(NOW - 20, abs=0.01)
+    # Paging uses the same time: the cursor after the first row still yields the second.
+    _, page = get(server, "/voice/history?limit=1")
+    _, rest = get(server, "/voice/history?limit=1&cursor=" + page["next_cursor"].replace("|", "%7C"))
+    assert [s["id"] for s in rest["sessions"]] == ["busy"]
+
+
+def test_a_heartbeat_newer_than_every_message_still_counts(server, state):
+    """Mid-turn the heartbeat runs ahead of the message rows (a long tool call): that time wins."""
+    add_session(state, "think", "discord", title="Long think", display="Workshop / #build / Long think",
+                chat_type="thread", at=NOW - 900)
+    add_msg(state, "think", "user", "Compare the three quotes", at=NOW - 900)
+    _set_activity(state, "think", NOW - 10)
+    _, body = get(server, "/voice/history")
+    assert body["sessions"][0]["id"] == "think"
+    assert body["sessions"][0]["last_activity"] == pytest.approx(NOW - 10, abs=0.01)
+
+
+def test_a_chat_sorts_by_its_linked_tasks_newest_message_too(state):
+    """A chat continued from Speakeasy takes the newest message of its linked task's session, even
+    when that session's heartbeat column lags."""
+    add_session(state, "chat", "telegram", display="Robin", chat_type="dm", at=NOW - 900)
+    add_msg(state, "chat", "user", "Book the tile delivery", at=NOW - 900)
+    add_session(state, "speakeasy_task_link1", "api_server", title="Tile delivery", at=NOW - 850)
+    add_msg(state, "speakeasy_task_link1", "assistant", "Booked for Thursday morning.", at=NOW - 30)
+    _set_activity(state, "speakeasy_task_link1", NOW - 850)
+    body = H.list_sessions(state, folded=lambda: {"speakeasy_task_link1": "chat"}, now=NOW)
+    ids = [s["id"] for s in body["sessions"]]
+    assert ids[0] == "chat" and "speakeasy_task_link1" not in ids
+    assert body["sessions"][0]["last_activity"] == pytest.approx(NOW - 30, abs=0.01)
+
+
+def test_the_live_feed_stamp_moves_when_a_message_lands(service, state):
+    before = service._history_stamp()
+    add_msg(state, "d1", "user", "One more bracket please", at=NOW - 5)
+    assert service._history_stamp() != before
+
+
 def test_sources_lists_only_what_the_person_has_with_counts(server, state):
     """The filter chips: only sources with sessions, counted over everything visible (every page,
     any search or filter), so Slack never shows for someone with no Slack sessions."""

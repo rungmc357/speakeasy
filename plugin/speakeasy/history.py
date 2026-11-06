@@ -200,10 +200,15 @@ def _flag(cols: set[str], name: str) -> str:
 
 
 def _last_expr(cols: set[str]) -> str:
-    last_msg = "(SELECT max(m.timestamp) FROM messages m WHERE m.session_id = s.id)"
+    """A session's last activity: the newest of its newest message (any role), Hermes' own
+    ``last_activity_at`` and its start. ``last_activity_at`` alone lags: Hermes writes it from a
+    rate-limited heartbeat, so a short turn soon after the previous one never moves it, and a chat
+    that just got a message and a reply kept the earlier turn's time (and sorted under newer rows).
+    ``max(timestamp)`` per session is an index-only lookup (``messages(session_id, timestamp)``)."""
+    last_msg = "coalesce((SELECT max(m.timestamp) FROM messages m WHERE m.session_id = s.id), 0)"
     if "last_activity_at" in cols:
-        return f"coalesce(s.last_activity_at, {last_msg}, s.started_at, 0)"
-    return f"coalesce({last_msg}, s.started_at, 0)"
+        return f"max(coalesce(s.last_activity_at, 0), {last_msg}, coalesce(s.started_at, 0))"
+    return f"max({last_msg}, coalesce(s.started_at, 0))"
 
 
 def redact_text(text: Any) -> str:
