@@ -31,6 +31,8 @@ from . import delivery as D
 from . import duck as duck_mod
 from . import settings as S
 from . import history as H
+from . import usage as U
+from . import context_use as CU
 from . import messages as M
 from . import models as MD
 from .brief import BriefInvalid, BriefManager
@@ -409,6 +411,9 @@ class VoiceService(SecureInputMixin):
         # and sudo prompts for Speakeasy's runs; a CLI or test service never takes them over.
         self._init_secure(wire=start_threads)
         if start_threads:
+            # Which model ran each task and how full its context got (context_use.py): the gateway's
+            # long-lived service keeps the records; a CLI or test service never takes them over.
+            CU.attach(self.store.record_context, self.store.context_record)
             threading.Thread(target=self._idle_loop, daemon=True, name="speakeasy-idle").start()
             self._warm_catalog()
             self.brief.start_scheduler(ready=self.agent.health)
@@ -488,6 +493,7 @@ class VoiceService(SecureInputMixin):
     def close(self) -> None:
         self._stop.set()
         self._close_secure()
+        CU.detach(self.store.record_context)
         self.brief.stop()
         with self.lock:
             live = list(self.interactions.values())
@@ -2778,7 +2784,8 @@ class VoiceService(SecureInputMixin):
         linked = [s for s in (self.store.session_for(k) for k in self._continuations(session_id)) if s]
         stamp = self._sessions_for(session_id).fingerprint([session_id, *linked])
         return self._cached(("session", session_id, str((query or {}).get("before") or "")),
-                            None if stamp is None else (stamp, self.store.revision, self._approvals_stamp()),
+                            None if stamp is None else (stamp, self.store.revision, self._approvals_stamp(),
+                                                        CU.stamp([session_id, self.store._compression_tip(session_id), *linked])),
                             self.SESSION_CACHE_S, lambda: self._history_session(session_id, query))
 
     def _approvals_stamp(self) -> tuple[Any, ...]:
@@ -2882,7 +2889,35 @@ class VoiceService(SecureInputMixin):
             "entries": entries, "has_more": page["has_more"], "before": page["before"],
             "jobs": jobs, "approvals": self._session_approvals(keys), **self._session_models(sid, meta, jobs),
             "queued": self.queued_for(keys, sid), "steered": self.steered_for(keys, sid),
-            **({"agent": agent} if (agent := self._agent_info(sid)) else {})}}
+            **({"agent": agent} if (agent := self._agent_info(sid)) else {}),
+            **self._session_usage(sid, continued), **self._session_context(sid, continued)}}
+
+    def _session_context(self, sid: str, continued: list[str]) -> dict[str, Any]:
+        """``context``: which model answered this conversation's latest call and how full its context
+        was (context_use.py; the chat's newest compression segment or a linked Speakeasy follow-up,
+        whichever ran last). Absent until a model call was seen after this plugin version loaded."""
+        try:
+            ids = [sid, self.store._compression_tip(sid)]
+            ids += [s for s in (self.store.session_for(k) for k in continued) if s]
+            rec = CU.newest(ids) or next(
+                (r for r in sorted((self.store.context_record(i) or {} for i in dict.fromkeys(ids)),
+                                   key=lambda r: -(r.get("at") or 0)) if r), None)
+            got = CU.describe(rec, name_for=MD.friendly_name)
+        except Exception:
+            logger.debug("speakeasy: context read failed", exc_info=True)
+            got = None
+        return {"context": got} if got else {}
+
+    def _session_usage(self, sid: str, continued: list[str]) -> dict[str, Any]:
+        """``usage``: what this conversation used (tokens, an estimated cost), its helpers and a
+        continued chat's Speakeasy follow-ups included (usage.py). Absent when nothing was recorded."""
+        linked = [s for s in (self.store.session_for(k) for k in continued) if s]
+        try:
+            got = U.session_usage(self._db_for(sid), sid, linked, name_for=MD.friendly_name)
+        except Exception:  # never fail a page over its usage line
+            logger.warning("speakeasy: usage read failed", exc_info=True)
+            got = None
+        return {"usage": got} if got else {}
 
     @staticmethod
     def _speakeasy_owned(meta: dict[str, Any], link: H.Linked | None) -> bool:

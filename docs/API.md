@@ -1247,6 +1247,29 @@ the request after a provider fallback. `GET /voice/history/{id}` adds `"model"` 
 latest work; for a chat Speakeasy never ran, the model Hermes recorded for it), `"next_model"` (what
 the next message runs on) and `"model_choice"` (the chat's own pick, or null).
 
+`GET /voice/history/{id}` also carries `"usage"` when Hermes recorded tokens for the conversation
+(absent otherwise, and on older servers): what the chat used, summed over its compression segments,
+its helper (subagent) sessions and, for a continued chat, its linked Speakeasy task sessions. Every
+figure is an estimate (`"estimate": true`) built from Hermes' own `sessions` token counts and
+`cost_status`. `{"estimate": true, "basis": "estimated" | "included" | "unknown" | "mixed",
+"summary": "About $2.50 · estimate" | "Included in your ChatGPT plan · 42K tokens" | "1.5K tokens · no
+price known", "cost_usd": number | null (null when nothing was priced), "tokens", "input_tokens"
+(incl. cache), "output_tokens", "cache_read_tokens", "reasoning_tokens", "model_calls",
+"included_tokens", "unpriced_tokens", "helpers", "linked_tasks", "lines": [{"label", "value"}] (ready
+to show, in order), "models": [{"name", "tokens", "value"}] (biggest first, up to 6), "note"}` (the
+estimate caveat, shown under the details).
+
+Tasks (`work` objects) and `GET /voice/history/{id}` also carry `"context"` once Hermes has made a
+model call for them since this plugin loaded (absent otherwise, and on older servers): which model
+answered the latest call and how full its context window was, the chat-platform footer as one quiet
+line. Recorded from Hermes' `post_api_request` hook (Hermes saves no context figure), kept per Hermes
+session, and frozen on a task when it finishes so a later follow-up in the same chat doesn't change it.
+`{"estimate": true, "line": "Claude Opus 5.5 · about 22% of context used · 3 min" (the duration only on a
+finished task), "use": "about 22% of context used" (the line without model and duration, for a header
+that already names the model), "took"?: "3 min", "detail": "About 44K of 200K tokens in the latest model call (peak about 31%). An estimate
+…", "tokens", "window" (null when the model's context size isn't known; the line then says "about 44K
+tokens of context"), "percent", "peak_tokens", "peak_percent", "model", "model_calls", "at", "seconds"?}`.
+
 ### Settings
 
 `jobs`: `{"model": "", "reasoning": "", "fast_model": "", "fast_reasoning": "", "smart_model": "",

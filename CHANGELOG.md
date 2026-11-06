@@ -9,6 +9,10 @@ Works with the current Mac and iPhone apps; no app update needed.
 ## Mac app (unreleased) — Shorter setup
 
 - **One screen before your first call.** Once the Mac is connected and your voice is signed in, setup is a single "You're ready to talk" screen: microphone, your name and your assistant's, where finished work goes, home control (when Hermes has Home Assistant), the Dock icon and the call shortcut, each already filled in, with a Start a call button. Connecting and voice sign-in only appear when they still need you, and sign-in moves on by itself once it's done. Task routing and the voice brief keep their defaults and stay in Settings.
+## Plugin 0.3.37 (unreleased) — Which model ran each task, and what each chat used
+
+- **Model and context on every task.** Each task card and chat page now says, quietly, which model did the work and how full its context window got — "Claude Opus 5.5 · about 22% of context used · 3 min", the same footer Discord and Telegram can show. A running task updates as it goes; a finished one keeps the figure from when it finished. Open it for the token count and the peak. It's an estimate from the token counts the provider reported, and it appears once a task runs after this update. (Mac app and iPhone app.)
+- **Usage per chat.** Every conversation now shows what it used: an estimated cost ("About $2.50 · estimate"), or "Included in your ChatGPT plan" for a plan sign-in, or "No price known" for a model without a price. Open it for the token counts (sent, reused from cache, written, thinking), model calls and a per-model split. It counts the chat's helpers and, for a Discord or Telegram chat continued in Speakeasy, the follow-ups too. The figures come from what Hermes already records and are always labelled as estimates. (Mac app and iPhone app.)
 
 ## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
 ## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing

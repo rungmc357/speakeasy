@@ -362,21 +362,25 @@ public struct HistoryConversation: Equatable, Sendable {
     /// Archived in Hermes (the page offers Unarchive) / pinned on any device.
     public var archived = false
     public var pinned = false
-    /// Automated work (a board worker, a scheduled job): never needs-you.
-    public var automated = false
-    /// Its live line from its own steps while it runs with no Speakeasy task (plugins from 0.3.37).
-    public var live: HistoryLive?
-    /// A board worker's card (the first entry's), for the page's header.
-    public var card: HistoryWorkerTask? { entries.first(where: { $0.card != nil })?.card }
-    /// Messages held until the running task finishes, oldest first (servers with `message_modes`).
-    public var queued: [QueuedMessage] = []
-    /// What became of messages steered into its running tasks (sent / waiting / seen / follow_up / unused).
-    public var steered: [SteeredMessage] = []
-    /// The server can steer or queue (the page lists `queued`, even empty): the composer offers the choice.
-    public var messageModes = false
-    /// Servers with `agents`: the Hermes profile this chat talks to, when it isn't Speakeasy's own
-    /// (it runs on that agent's own model, so the model chip doesn't apply).
-    public var agent: AgentInfo?
+        /// Automated work (a board worker, a scheduled job): never needs-you.
+        public var automated = false
+        /// Its live line from its own steps while it runs with no Speakeasy task (plugins from 0.3.37).
+        public var live: HistoryLive?
+        /// A board worker's card (the first entry's), for the page's header.
+        public var card: HistoryWorkerTask? { entries.first(where: { $0.card != nil })?.card }
+        /// Messages held until the running task finishes, oldest first (servers with `message_modes`).
+        public var queued: [QueuedMessage] = []
+        /// What became of messages steered into its running tasks (sent / waiting / seen / follow_up / unused).
+        public var steered: [SteeredMessage] = []
+        /// The server can steer or queue (the page lists `queued`, even empty): the composer offers the choice.
+        public var messageModes = false
+        /// Servers with `agents`: the Hermes profile this chat talks to, when it isn't Speakeasy's own
+        /// (it runs on that agent's own model, so the model chip doesn't apply).
+        public var agent: AgentInfo?
+        /// Plugin 0.3.37+: what the conversation used (tokens, an estimated cost); nil = nothing recorded / older plugin.
+        public var usage: ChatUsage?
+        /// Plugin 0.3.37+: the model on the chat's latest call and how full its context was; nil = not seen yet.
+        public var context: ContextUse?
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
@@ -412,6 +416,8 @@ public struct HistoryConversation: Equatable, Sendable {
         }
         steered = (o["steered"] as? [Any] ?? []).compactMap(SteeredMessage.init(json:))
         agent = AgentInfo(json: o["agent"])
+        usage = ChatUsage(json: o["usage"])
+        context = ContextUse(json: o["context"])
     }
 
     /// The composer offers Steer now / When it's done: the server can, and a run is active.
