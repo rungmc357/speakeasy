@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -122,9 +123,37 @@ def service_file(home: Path) -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{label}.service"
 
 
+class ServiceStartError(RuntimeError):
+    """The computer wouldn't start the background service; the message says why in plain words."""
+
+
+def _ran(run: Callable[..., Any], cmd: list[str]) -> bool:
+    """Run a service-manager command; True when it worked (a fake ``run`` returning None counts)."""
+    try:
+        done = run(cmd, capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return getattr(done, "returncode", 0) == 0
+
+
+def _launchd_domains() -> list[str]:
+    """The logged-in screen session first, then the per-user one (which exists over SSH too)."""
+    return [f"gui/{os.getuid()}", f"user/{os.getuid()}"]
+
+
+def _forget(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
 def install_service(home: Path, binary: str, port: int, metrics_port: int,
                     run: Callable[..., Any] = subprocess.run, named: str = "") -> Path:
-    """Write and (re)start the tunnel service. Returns the service file."""
+    """Write and (re)start the tunnel service. Returns the service file.
+
+    When the service manager refuses (macOS over SSH has no logged-in screen session to start it
+    in), removes the file it wrote and raises ServiceStartError."""
     label, log = service_label(home), log_path(home)
     log.parent.mkdir(parents=True, exist_ok=True)
     path = service_file(home)
@@ -132,34 +161,49 @@ def install_service(home: Path, binary: str, port: int, metrics_port: int,
     command = tunnel_command(binary, port, metrics_port, named)
     if sys.platform == "darwin":
         path.write_text(launchd_plist(label, command, log))
-        domain = f"gui/{os.getuid()}"
-        run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True, timeout=30)
-        run(["launchctl", "bootstrap", domain, str(path)], capture_output=True, timeout=30, check=True)
-    else:
-        path.write_text(systemd_unit(command, log))
-        run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=30)
-        run(["systemctl", "--user", "enable", "--now", path.name], capture_output=True, timeout=30, check=True)
+        for domain in _launchd_domains():
+            _ran(run, ["launchctl", "bootout", f"{domain}/{label}"])
+        for domain in _launchd_domains():
+            if _ran(run, ["launchctl", "bootstrap", domain, str(path)]):
+                return path
+        _forget(path)
+        raise ServiceStartError("macOS wouldn't start a background service from this session (common over SSH, "
+                                "when nobody is logged in at the Mac's own screen).")
+    path.write_text(systemd_unit(command, log))
+    _ran(run, ["systemctl", "--user", "daemon-reload"])
+    if not _ran(run, ["systemctl", "--user", "enable", "--now", path.name]):
+        _forget(path)
+        raise ServiceStartError("This computer wouldn't start a background service for your user from this "
+                                "session (common over SSH; `loginctl enable-linger` allows it for good).")
     return path
 
 
 def restart_service(home: Path, run: Callable[..., Any] = subprocess.run) -> None:
     label = service_label(home)
     if sys.platform == "darwin":
-        run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"], capture_output=True, timeout=30)
+        for domain in _launchd_domains():
+            if _ran(run, ["launchctl", "kickstart", "-k", f"{domain}/{label}"]):
+                return
     else:
-        run(["systemctl", "--user", "restart", f"{label}.service"], capture_output=True, timeout=30)
+        _ran(run, ["systemctl", "--user", "restart", f"{label}.service"])
 
 
 def remove_service(home: Path, run: Callable[..., Any] = subprocess.run) -> None:
     label, path = service_label(home), service_file(home)
     if sys.platform == "darwin":
-        run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True, timeout=30)
+        for domain in _launchd_domains():
+            _ran(run, ["launchctl", "bootout", f"{domain}/{label}"])
     else:
-        run(["systemctl", "--user", "disable", "--now", path.name], capture_output=True, timeout=30)
-    try:
-        path.unlink()
-    except OSError:
-        pass
+        _ran(run, ["systemctl", "--user", "disable", "--now", path.name])
+    _forget(path)
+
+
+def rerun_command(action: str, hostname: str, home: Path) -> str:
+    """The exact command to run again from the computer's own terminal."""
+    parts = ["python3", shlex.quote(str(Path(__file__).resolve())), action] + ([hostname] if hostname else [])
+    if Path(home).expanduser() != Path.home() / ".hermes":
+        parts += ["--hermes-home", shlex.quote(str(home))]
+    return " ".join(parts)
 
 
 RELEASES_API = "https://api.github.com/repos/cloudflare/cloudflared/releases/latest"
@@ -370,7 +414,13 @@ def main(argv: list[str] | None = None) -> int:
         if problem:
             print(problem)
             return 1
-    install_service(home, binary, args.port, args.metrics_port, named=NAMED_TUNNEL if hostname else "")
+    try:
+        install_service(home, binary, args.port, args.metrics_port, named=NAMED_TUNNEL if hostname else "")
+    except ServiceStartError as problem:
+        where = "Terminal on the Mac itself" if sys.platform == "darwin" else "a terminal on this computer itself"
+        print(f"{problem} Run this once from {where} (or after logging in to it): "
+              f"{rerun_command(args.action, hostname, home)}")
+        return 1
     hermes_config(home, ("server.tunnel", "cloudflare"), ("server.tunnel_metrics_port", str(args.metrics_port)),
                   ("server.tunnel_hostname", hostname or '""'))
     if not hostname:
