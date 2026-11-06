@@ -82,6 +82,32 @@ public struct PickStore: Equatable, Sendable {
     }
 }
 
+/// Where a tapped option or typed answer goes (SPK-79). With a call open it goes through the call, so
+/// the voice hears it; with no call (the board on its own) it's addressed by the task's run id, so it
+/// reaches the server instead of only looking answered here.
+public enum QuestionAnswerRoute: Equatable, Sendable {
+    /// Through the open call (or the one to resume), by interaction id.
+    case call(String)
+    /// `POST /voice/tasks/{run}/question/answer` (servers with `question_state`).
+    case byRun(String)
+    /// A typed message to the task (servers with task messages but no `question_state`).
+    case byMessage(String)
+    /// Nowhere to send it: the card goes back to open.
+    case none
+
+    public static func choose(callOpen: Bool, interactionID: String?, runID: String?,
+                              questionState: Bool, taskMessages: Bool) -> QuestionAnswerRoute {
+        if callOpen, let interactionID { return .call(interactionID) }
+        if let runID {
+            if questionState { return .byRun(runID) }
+            if taskMessages { return .byMessage(runID) }
+        }
+        // An older server with no run route: the last call may still take it.
+        if let interactionID { return .call(interactionID) }
+        return .none
+    }
+}
+
 /// A task's question, as the server records it (`question_state`, plugins with `question_state`).
 /// Older plugins: derived from `answered` / `set_aside` / `question_closed`.
 public enum QuestionState: String, Sendable {

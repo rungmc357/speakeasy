@@ -99,4 +99,20 @@ final class QuestionStateTests: XCTestCase {
         XCTAssertNotEqual(a, PickStore.clientID(questionID: "run_b", text: "Green"))
         XCTAssertNotNil(a.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression), "a server id")
     }
+
+    func testABoardAnswerWithNoCallGoesByRunID() {
+        // The verified bug: with no call open the board marked the pick answered and sent nothing.
+        XCTAssertEqual(QuestionAnswerRoute.choose(callOpen: false, interactionID: nil, runID: "run_a",
+                                                  questionState: true, taskMessages: true), .byRun("run_a"))
+        XCTAssertEqual(QuestionAnswerRoute.choose(callOpen: false, interactionID: "call_old", runID: "run_a",
+                                                  questionState: true, taskMessages: true), .byRun("run_a"),
+                       "a closed call's id is not where an answer goes")
+        XCTAssertEqual(QuestionAnswerRoute.choose(callOpen: false, interactionID: nil, runID: "run_a",
+                                                  questionState: false, taskMessages: true), .byMessage("run_a"))
+        XCTAssertEqual(QuestionAnswerRoute.choose(callOpen: true, interactionID: "call_1", runID: "run_a",
+                                                  questionState: true, taskMessages: true), .call("call_1"),
+                       "during a call the voice hears the answer")
+        XCTAssertEqual(QuestionAnswerRoute.choose(callOpen: false, interactionID: nil, runID: "run_a",
+                                                  questionState: false, taskMessages: false), .none)
+    }
 }

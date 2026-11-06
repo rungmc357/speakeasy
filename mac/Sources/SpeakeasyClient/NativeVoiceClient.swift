@@ -1614,17 +1614,17 @@ public final class NativeVoiceClient: VoiceCallClient {
     private func answerQuestion(taskID: String, text: String) {
         guard let api, !previewMode else { return }
         let task = model.state.tasks.first(where: { $0.id == taskID })
-        let call = model.state.connection.isOpen ? (model.state.interactionID ?? model.state.resumeFrom) : nil
         // No call open (the board on its own): the answer is addressed by the task's run id, so it
         // reaches the server instead of only looking answered here. A call still takes it, so the
         // voice hears it.
-        if call == nil, let run = task?.info.runID {
-            let byRun = model.capabilities?.questionState == true
-            let byMessage = model.taskMessagesEnabled
-            guard byRun || byMessage else {
-                model.answers[taskID] = nil
-                dispatch(.error("Couldn't send that answer. Say it instead.")); return
-            }
+        let route = QuestionAnswerRoute.choose(callOpen: model.state.connection.isOpen,
+                                               interactionID: model.state.interactionID ?? model.state.resumeFrom,
+                                               runID: task?.info.runID,
+                                               questionState: model.capabilities?.questionState == true,
+                                               taskMessages: model.taskMessagesEnabled)
+        switch route {
+        case .byRun(let run), .byMessage(let run):
+            let byRun = route == .byRun(run)
             let client = PickStore.clientID(questionID: run, text: text)
             Task { [weak self] in
                 do {
@@ -1640,22 +1640,21 @@ public final class NativeVoiceClient: VoiceCallClient {
                     self?.dispatch(.error("Your answer may still be on its way. If nothing happens, tap it again."))
                 }
             }
-            return
-        }
-        guard let id = call ?? model.state.interactionID ?? model.state.resumeFrom else {
+        case .none:
             model.answers[taskID] = nil
-            dispatch(.error("Couldn't send that answer. Say it instead.")); return
-        }
-        Task { [weak self] in
-            do { try await api.answer(interactionID: id, taskID: taskID, text: text) }
-            catch let http as ServerClient.HTTPError where (400..<500).contains(http.status) {
-                // The api refused it (call ended, task not in this call): the question is still open.
-                self?.model.answers[taskID] = nil
-                self?.dispatch(.error("Couldn't send that answer. Say it instead."))
-            } catch {
-                // A timeout or a slow reply: the api may well have taken it (seen live, the follow-up
-                // was already working). Keep the pick settled; retapping the same answer is harmless.
-                self?.dispatch(.error("Your answer may still be on its way. If nothing happens, say it instead."))
+            dispatch(.error("Couldn't send that answer. Say it instead."))
+        case .call(let id):
+            Task { [weak self] in
+                do { try await api.answer(interactionID: id, taskID: taskID, text: text) }
+                catch let http as ServerClient.HTTPError where (400..<500).contains(http.status) {
+                    // The api refused it (call ended, task not in this call): the question is still open.
+                    self?.model.answers[taskID] = nil
+                    self?.dispatch(.error("Couldn't send that answer. Say it instead."))
+                } catch {
+                    // A timeout or a slow reply: the api may well have taken it (seen live, the follow-up
+                    // was already working). Keep the pick settled; retapping the same answer is harmless.
+                    self?.dispatch(.error("Your answer may still be on its way. If nothing happens, say it instead."))
+                }
             }
         }
     }
