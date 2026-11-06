@@ -47,6 +47,11 @@ Speakeasy reads keys and sign-ins only through Hermes (its secret scope, env and
 APIs); it never opens Hermes' `.env` or `auth.json` itself, and checks Codex with
 `codex login status`.
 
+> **Signing in to ChatGPT inside Hermes isn't enough for voice.** If your Hermes already uses your
+> ChatGPT account (through `hermes auth`), Codex on the same computer still needs its own sign-in:
+> run `codex login` there once (`hermes voice setup` does it for you). The two sign-ins are kept
+> separate on purpose, so Speakeasy never disturbs your Hermes login.
+
 ## Install
 
 **Let your agent do it.** Send this to your Hermes agent in any chat you already use with it:

@@ -107,6 +107,11 @@ link in chat is enough on its own.
   With no copy found, `--yes` installs or updates the CLI for you (npm, else Homebrew). To install it yourself:
   `npm install -g @openai/codex@latest` (or `brew install codex`). The user then signs in once
   with `codex login`, which opens a browser. If Codex is already signed in, nothing else is needed.
+- **Hermes' own Codex or OpenAI sign-in does not count.** Speakeasy's voice uses the Codex program's
+  sign-in on this machine (`codex login status`), which is stored separately. A user whose Hermes
+  runs on ChatGPT through `hermes auth` still needs `codex login` here. Say this up front, before
+  setup, so it isn't a surprise. Never copy or move tokens between Hermes and Codex: both renew the
+  same sign-in, and two copies sign each other out.
 - If the user prefers the **OpenAI API** (their own key, billed per minute), add `--api-key`.
   Setup then asks for the key on a hidden prompt and stores it in this Hermes profile as
   `SPEAKEASY_OPENAI_API_KEY`. If you can't answer hidden prompts, tell the user to run
