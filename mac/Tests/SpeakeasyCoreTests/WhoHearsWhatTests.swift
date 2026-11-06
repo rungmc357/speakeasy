@@ -47,7 +47,7 @@ final class WhoHearsWhatTests: XCTestCase {
         XCTAssertEqual(w.extras.count, 3)
         XCTAssertTrue(w.extras[0].contains("through Cloudflare"))
         XCTAssertTrue(w.extras[1].hasPrefix("Notifications go through Speakeasy's notification service."))
-        XCTAssertEqual(w.extras[2], "Nothing leaves your iPhone while it listens. When you start a call, what it heard goes to the voice so it can help.")
+        XCTAssertEqual(w.extras[2], "Nothing leaves your iPhone while it listens. When you start a call, the voice gets what it picked up, so it can help.")
         XCTAssertEqual(WhoHearsWhat(voice: .openai, notifications: true).extras.count, 1)
     }
 

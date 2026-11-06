@@ -98,7 +98,7 @@ public struct WhoHearsWhat: Equatable, Sendable {
             out.append("Notifications go through Speakeasy's notification service. It only learns that something changed, never what. Your phone gets the text from your own computer.")
         }
         if listening {
-            let nothing = voice == .local ? "" : " When you start a call, what it heard goes to the voice so it can help."
+            let nothing = voice == .local ? "" : " When you start a call, the voice gets what it picked up, so it can help."
             out.append("Nothing leaves your \(device) while it listens.\(nothing)")
         }
         return out
