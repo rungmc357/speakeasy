@@ -5800,21 +5800,22 @@ class SidebandWorker:
                 output, error = None, error or line
             result = split_result(output, self.rt.image_roots())
             drafts = (result or {}).pop("_email_drafts", None) or []
+            failed_as = (failures.failure_kind(error) or (None if result else failures.UNKNOWN)) if status == "failed" else None
+            failure_hint = (None if failed_as in failures.REASONS else failures.failure_hint(error)) if status == "failed" else None
             # Status and answer in one checked write (memory follows below): a second final event,
-            # or one after the task was settled another way, changes nothing.
-            if not self.store.transition(idem, status, run_id=local, result=result) \
+            # or one after the task was settled another way, changes nothing. Listeners see the
+            # failure reason and drafts too; there is no post-completion payload write.
+            if not self.store.settle(idem, status, run_id=local, result=result,
+                                     failure=(failed_as, failure_hint), drafts=drafts) \
                     and self.store.run_status(idem) is not None:
                 stored = self.store.run_status(idem)
                 if stored in RS.FINAL:
                     with self.interaction.lock:
                         backend.status, backend.approval = stored, None
                 return
-            failed_as = None  # a failures.py kind
             if status == "failed":
                 # Hermes' error line maps to Speakeasy's own sentence; with neither a known reason nor
                 # an answer, the app says it stopped without saying why (the cause is logged below).
-                failed_as = failures.failure_kind(error) or (None if result else failures.UNKNOWN)
-                self.store.set_failure(idem, failed_as, None if failed_as in failures.REASONS else failures.failure_hint(error))
                 if failed_as in failures.REASONS:
                     logger.info("speakeasy: Hermes run %s failed (%s)", backend.run_id, failed_as)
                 else:
@@ -5834,7 +5835,7 @@ class SidebandWorker:
             # text (pending_steer); without it, "nothing handed back" proves nothing.
             unread = await self.settle_follow_ups(backend, event.get("pending_steer"), status,
                                                   modern="interrupted" in event or "pending_steer" in event)
-            stored_drafts = [self.store.add_draft(idem, self.store.session_for(idem), d) for d in drafts]
+            stored_drafts = self.store.drafts_for(idem) if drafts else []
             # Long reports get sorted into parts; any answer with numbers in it may also get a picture;
             # every answer gets its outcome headline (not a question: the question is the headline).
             if status == "completed" and result and not result.get("question"):

@@ -788,10 +788,10 @@ class StateStore:
         """One task's bookkeeping row: what a message sent to it by id needs (messages.py)."""
         with self._lock:
             row = self._db.execute("SELECT delegation_id, revision, run_id, status, dismissed, session_id, "
-                                   "interaction_id FROM runs WHERE idem_key=?", (key,)).fetchone()
+                                   "interaction_id, settled_at FROM runs WHERE idem_key=?", (key,)).fetchone()
         if row is None:
             return None
-        names = ("delegation_id", "revision", "run_id", "status", "dismissed", "session_id", "interaction_id")
+        names = ("delegation_id", "revision", "run_id", "status", "dismissed", "session_id", "interaction_id", "settled_at")
         return dict(zip(names, row), idem_key=key)
 
     def newest_created(self, keys: list[str]) -> float | None:
@@ -1312,8 +1312,21 @@ class StateStore:
             row = self._db.execute("SELECT status FROM runs WHERE idem_key=?", (key,)).fetchone()
         return row[0] if row else None
 
+    def settle(self, key: str, status: str, *, result: dict[str, Any] | None,
+               failure: tuple[str | None, str | None] = (None, None),
+               drafts: Iterable[dict[str, Any]] = (), run_id: str | None = None) -> bool:
+        """Commit the entire outcome before listeners (or another database connection) see it.
+
+        ``settled_at`` is the committed finish marker. Repeated final events cannot replace the
+        payload or supersede drafts. Draft insertion failure rolls back the status and marker too.
+        """
+        if status not in TERMINAL:
+            raise ValueError("Only a terminal outcome can be settled")
+        return self.transition(key, status, result=result, failure=failure, drafts=drafts, run_id=run_id)
+
     def transition(self, key: str, to: str, expect: Iterable[str] | None = None, *, run_id: str | None = None,
-                   mirror: Any = None, orphaned: bool = False, result: Any = _UNSET) -> bool:
+                   mirror: Any = None, orphaned: bool = False, result: Any = _UNSET,
+                   failure: Any = _UNSET, drafts: Iterable[dict[str, Any]] = ()) -> bool:
         """Move a run to *to* only from one of the *expect* states (default: every state *to* may be
         entered from, runstate.ALLOWED_FROM) — a compare-and-set, like ``transition_draft``.
 
@@ -1340,6 +1353,11 @@ class StateStore:
                 if result is not _UNSET:
                     self._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?",
                                      (json.dumps(result) if result else None, key))
+                if failure is not _UNSET:
+                    self._db.execute("UPDATE runs SET failure=?,failure_hint=? WHERE idem_key=?", (*failure, key))
+                session = self._db.execute("SELECT session_id FROM runs WHERE idem_key=?", (key,)).fetchone()
+                for draft in drafts:
+                    self._add_draft_locked(key, session[0], draft, now)
                 if to in FINAL:
                     # Every finished task needs a run id so "Clear done" and the x can clear it.
                     self._db.execute("UPDATE runs SET run_id=? WHERE idem_key=? AND run_id IS NULL",
@@ -2549,15 +2567,20 @@ class StateStore:
         Hermes session, e.g. a spoken "revise it" follow-up) are superseded and can no longer be
         approved."""
         now = time.time()
+        with self._lock, self._db:
+            draft_id = self._add_draft_locked(key, session_id, draft, now)
+        return self.draft(draft_id) or {}
+
+    def _add_draft_locked(self, key: str, session_id: str | None, draft: dict[str, Any], now: float) -> str:
+        """Insert without a nested connection context (which would commit the outer transaction)."""
         draft_id = "ed_" + secrets.token_hex(12)
         body, digest = canonical_json(draft), draft_sha256(draft)
-        with self._lock, self._db:
-            self._db.execute(
-                "UPDATE email_drafts SET status='superseded', updated=? WHERE status IN ('pending','revising') "
-                "AND (idem_key=? OR (? IS NOT NULL AND session_id=?))", (now, key, session_id, session_id))
-            self._db.execute("INSERT INTO email_drafts VALUES (?,?,?,?,?,?,?,?,?,?)",
-                             (draft_id, key, session_id, body, digest, "pending", now, now, None, None))
-        return self.draft(draft_id) or {}
+        self._db.execute(
+            "UPDATE email_drafts SET status='superseded', updated=? WHERE status IN ('pending','revising') "
+            "AND (idem_key=? OR (? IS NOT NULL AND session_id=?))", (now, key, session_id, session_id))
+        self._db.execute("INSERT INTO email_drafts VALUES (?,?,?,?,?,?,?,?,?,?)",
+                         (draft_id, key, session_id, body, digest, "pending", now, now, None, None))
+        return draft_id
 
     def draft(self, draft_id: str) -> dict[str, Any] | None:
         with self._lock:
