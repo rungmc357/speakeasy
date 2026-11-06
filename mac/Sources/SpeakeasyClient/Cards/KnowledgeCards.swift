@@ -337,6 +337,9 @@ struct ChartCard: View {
                     .font(.system(size: small - 0.5)).foregroundStyle(Color.secondary)
                     .labelStyle(FreshnessLabel())
                     .fixedSize(horizontal: false, vertical: true)
+                    // Read as its words only (newer iOS read the icon's name, "Clock").
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(facts.stale ? "Older data. \(fresh)" : fresh)
                     .accessibilityIdentifier("chart-freshness")
             }
         }
