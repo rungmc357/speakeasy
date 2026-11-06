@@ -54,8 +54,27 @@ public struct ViewCardView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(card.summary)
+        .modifier(CardAccessibility(card: card))
+    }
+}
+
+/// A card that only shows things reads as one element (its summary). A question card is something
+/// to answer: its answers, "Something else…" box and Undo stay separate elements with their own
+/// labels and ids inside one "Question" container (merged, VoiceOver heard one button and the box
+/// lost its identity).
+struct CardAccessibility: ViewModifier {
+    let card: ViewCard
+    func body(content: Content) -> some View {
+        if card.kind == "question" {
+            content
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Question")
+                .accessibilityIdentifier("question-card")
+        } else {
+            content
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(card.summary)
+        }
     }
 }
 

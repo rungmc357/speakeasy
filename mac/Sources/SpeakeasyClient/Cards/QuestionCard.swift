@@ -14,10 +14,15 @@ public struct QuestionActions {
     /// "Something else…": an answer in the user's own words, to this decision only (servers with
     /// typed messages). Returns whether it went. nil: no field.
     public var onSomethingElse: ((String) -> Bool)?
+    /// Opens the card's job (the pinned card on the call screen opens it on a tap). The question
+    /// line carries it as its own button for VoiceOver, apart from the answers.
+    public var onOpen: (() -> Void)?
     public init(onAnswer: ((String) -> Void)? = nil, answered: String? = nil, image: ((Int) async -> Data?)? = nil,
-                undoUntil: Date? = nil, onUndo: (() -> Void)? = nil, onSomethingElse: ((String) -> Bool)? = nil) {
+                undoUntil: Date? = nil, onUndo: (() -> Void)? = nil, onSomethingElse: ((String) -> Bool)? = nil,
+                onOpen: (() -> Void)? = nil) {
         self.onAnswer = onAnswer; self.answered = answered; self.image = image
         self.undoUntil = undoUntil; self.onUndo = onUndo; self.onSomethingElse = onSomethingElse
+        self.onOpen = onOpen
     }
 }
 
@@ -51,20 +56,27 @@ struct QuestionCard: View {
         let answer = actions.undoUntil != nil ? actions.answered : (picked ?? actions.answered)
         let s = 1.2 * Self.typeFactor(typeSize)
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Circle().fill(answer == nil ? Color.orange : JobStyle.green).frame(width: 7, height: 7)
-                Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 11.5 * s, weight: .semibold))
-                    .foregroundStyle(answer == nil ? Color.orange : Color.secondary)
-                Spacer(minLength: 0)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(card["question"].string ?? "").font(.system(size: 14 * s, weight: .semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                if let context = decision?.context {
-                    Text(context).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Circle().fill(answer == nil ? Color.orange : JobStyle.green).frame(width: 7, height: 7)
+                    Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 11.5 * s, weight: .semibold))
+                        .foregroundStyle(answer == nil ? Color.orange : Color.secondary)
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card["question"].string ?? "").font(.system(size: 14 * s, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
+                    if let context = decision?.context {
+                        Text(context).font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
+            // One element ("Needs you, <question>, <context>"); where the card opens its job, that is
+            // this element's action. The answers below stay their own buttons.
+            .accessibilityElement(children: .combine)
+            .modifier(OpenJobAction(open: actions.onOpen))
+            .accessibilityIdentifier("question-title")
             let pictures = card["images"].doubles.isEmpty ? options.map { $0.image ?? 0 } : card["images"].doubles.map { Int($0) }
             if pictures.contains(where: { $0 > 0 }), let load = actions.image {
                 HStack(alignment: .top, spacing: 8) {
@@ -197,6 +209,21 @@ struct QuestionCard: View {
         #else
         return "Tap one, or just say it."
         #endif
+    }
+}
+
+/// Makes the question line a button that opens the job, for VoiceOver (a sighted tap hits the card).
+private struct OpenJobAction: ViewModifier {
+    let open: (() -> Void)?
+    func body(content: Content) -> some View {
+        if let open {
+            content
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint("Opens the job")
+                .accessibilityAction { open() }
+        } else {
+            content
+        }
     }
 }
 
