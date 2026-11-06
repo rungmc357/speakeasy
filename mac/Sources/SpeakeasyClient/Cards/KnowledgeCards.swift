@@ -161,9 +161,10 @@ struct TranslationCard: View {
 
 struct RecipeCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
-            if let img = card["image_url"].url { CardImage(url: img, size: 120, corner: 10, fill: true).frame(maxWidth: .infinity) }
+            if let img = card["image_url"].url { CardImage(url: img, size: fit == .compact ? 72 : 120, corner: 10, fill: true).frame(maxWidth: .infinity) }
             HStack {
                 Text(card["title"].string ?? "").font(.system(size: 14, weight: .semibold))
                 Spacer()
@@ -174,14 +175,15 @@ struct RecipeCard: View {
                 if let s = card["serves"].string { Label(s, systemImage: "person.2") }
             }
             .font(.system(size: 11)).foregroundStyle(.secondary)
-            let ingredients = card["ingredients"].strings
+            // Compact: the title, time and servings; ingredients and steps are in the full card.
+            let ingredients = fit == .compact ? [] : card["ingredients"].strings
             if !ingredients.isEmpty {
                 Text("INGREDIENTS").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
                 ForEach(Array(ingredients.prefix(14).enumerated()), id: \.offset) { _, i in
                     Text("· " + i).font(.system(size: 11.5))
                 }
             }
-            let steps = card["steps"].strings
+            let steps = fit == .compact ? [] : card["steps"].strings
             if !steps.isEmpty {
                 Text("STEPS").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary).padding(.top, 2)
                 ForEach(Array(steps.prefix(10).enumerated()), id: \.offset) { n, s in
@@ -267,19 +269,21 @@ struct ComparisonCard: View {
 
 struct ListCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
             CardHeader(icon: card.kind == "steps" ? "list.number" : "checklist", title: card["title"].string ?? "List")
             if card.kind == "steps" {
-                ForEach(Array(card["items"].strings.prefix(12).enumerated()), id: \.offset) { n, s in
+                ForEach(Array(card["items"].strings.prefix(fit.rows(12)).enumerated()), id: \.offset) { n, s in
                     HStack(alignment: .top, spacing: 8) {
                         Text("\(n + 1)").font(.system(size: 11, weight: .bold)).frame(width: 18, height: 18)
                             .background(Circle().fill(Color.accentColor.opacity(0.18)))
                         Text(s).font(.system(size: 12)).textSelection(.enabled)
                     }
                 }
+                MoreRows(total: min(card["items"].strings.count, 12), shown: fit.rows(12))
             } else {
-                ForEach(Array(card["items"].array.prefix(16).enumerated()), id: \.offset) { _, item in
+                ForEach(Array(card["items"].array.prefix(fit.rows(16)).enumerated()), id: \.offset) { _, item in
                     LinkedRow(url: item["url"].url) { HStack(alignment: .top, spacing: 8) {
                         Image(systemName: item["done"].bool == true ? "checkmark.circle.fill" : "circle")
                             .font(.system(size: 13)).foregroundStyle(item["done"].bool == true ? Color.green : Color.secondary)
@@ -291,6 +295,7 @@ struct ListCard: View {
                         Spacer(minLength: 0)
                     } }
                 }
+                MoreRows(total: min(card["items"].array.count, 16), shown: fit.rows(16))
             }
         }
     }
@@ -309,6 +314,7 @@ struct ChartCard: View {
     struct Point: Identifiable { let id: Int; let series: String; let label: String; let value: Double }
     /// The x label under the pointer (hover or drag): its values show above the chart.
     @State private var selected: String?
+    @Environment(\.cardFit) private var fit
     var body: some View {
         let labels = card["labels"].strings
         let series = card["series"].array
@@ -352,7 +358,7 @@ struct ChartCard: View {
             .chartXSelection(value: $selected)
             .modifier(OneSeriesTint(on: JobLook.touch && series.count == 1))
             .chartLegend(series.count > 1 ? .visible : .hidden)
-            .frame(height: 150)
+            .frame(height: fit == .compact ? 88 : 150)
             .onAppear { if let p = ChartPreview.selection, labels.contains(p) { selected = p } }
         }
     }
@@ -388,10 +394,11 @@ struct ProgressCard: View {
 
 struct NewsCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
             CardHeader(icon: "newspaper.fill", title: card["title"].string ?? "News")
-            ForEach(Array(card["items"].array.prefix(5).enumerated()), id: \.offset) { i, n in
+            ForEach(Array(card["items"].array.prefix(fit.rows(5)).enumerated()), id: \.offset) { i, n in
                 if i > 0 { Divider().opacity(0.4) }
                 let row = HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -405,6 +412,7 @@ struct NewsCard: View {
                 }
                 if let url = n["url"].url { Link(destination: url) { row }.buttonStyle(.plain) } else { row }
             }
+            MoreRows(total: min(card["items"].array.count, 5), shown: fit.rows(5))
         }
     }
 }
@@ -465,10 +473,11 @@ func deviceSymbol(_ kind: String?, on: Bool) -> String {
 
 struct CameraCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
             CardHeader(icon: "video.fill", title: card["name"].string ?? "Camera", trailing: card["when"].string)
-            CardImage(url: card["image_url"].url, size: 160, corner: 10, fill: true).frame(maxWidth: .infinity)
+            CardImage(url: card["image_url"].url, size: fit == .compact ? 96 : 160, corner: 10, fill: true).frame(maxWidth: .infinity)
         }
     }
 }
