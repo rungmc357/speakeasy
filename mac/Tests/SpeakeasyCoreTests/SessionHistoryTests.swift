@@ -198,4 +198,11 @@ final class VoiceMessageFlowTests: XCTestCase {
         XCTAssertFalse(f.shouldAutoStop(now: t0.addingTimeInterval(60)))
         XCTAssertTrue(f.shouldAutoStop(now: t0.addingTimeInterval(VoiceMessageFlow.maxSeconds)))
     }
+
+    func testAVoiceMessageEntryDecodesAsVoice() {
+        let spoken = HistoryEntry(json: ["id": "m1", "kind": "user", "text": "Make it oak", "voice": true])
+        let typed = HistoryEntry(json: ["id": "m2", "kind": "user", "text": "Add a hook rail"])
+        XCTAssertEqual(spoken?.voice, true)
+        XCTAssertEqual(typed?.voice, false)
+    }
 }

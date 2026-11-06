@@ -517,8 +517,15 @@ struct HistorySessionView: View {
                             Text("Showing the newest messages. Older ones stay in Hermes.")
                                 .font(.system(size: 11)).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
                         }
-                        ForEach(thread.messages) { m in
-                            HistoryMessageView(message: m, sessionID: c.id, store: store).id(m.id)
+                        let messages = thread.messages
+                        let via = ChatLabel.platform(source: c.source, label: c.sourceLabel)
+                        ForEach(Array(messages.enumerated()), id: \.element.id) { i, m in
+                            let next = i + 1 < messages.count ? messages[i + 1] : nil
+                            HistoryMessageView(message: m, sessionID: c.id, store: store,
+                                               via: ChatLabel.fromChat(m.id) ? via : nil,
+                                               lastInGroup: next?.role != m.role || next.map { ChatLabel.fromChat($0.id) } != ChatLabel.fromChat(m.id))
+                                .padding(.top, i > 0 && messages[i - 1].role == m.role && m.role != .note ? -12 : 0)
+                                .id(m.id)
                         }
                         // A task waiting on an approval or a question shows as that card only (no twin above it).
                         let asking = Set(c.approvals.map(\.runID) + c.waitingQuestions.compactMap(\.runID))
@@ -586,35 +593,147 @@ private extension HistoryConversation {
     var isSpeakeasy: Bool { source == "speakeasy" }
 }
 
+/// Labels for a chat from another app (Discord, Telegram…): its own turns say where they happened;
+/// what was said from Speakeasy (linked entries `<session>-<id>`, local `local-…`) doesn't.
+enum ChatLabel {
+    static func platform(source: String, label: String) -> String? {
+        let chats: Set<String> = ["discord", "telegram", "slack", "whatsapp", "signal", "matrix", "sms", "email", "imessage"]
+        guard chats.contains(source.lowercased()) else { return nil }
+        let name = label.split(separator: "·").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return name.isEmpty ? source.capitalized : name
+    }
+    static func fromChat(_ id: String) -> Bool { !id.contains("-") }
+
+    /// An answer that reads better as a page than as a bubble: headings, code, lists or just long.
+    static func isLongForm(_ text: String) -> Bool {
+        if text.contains("```") || text.count > 520 { return true }
+        let lines = text.split(separator: "\n")
+        if lines.contains(where: { $0.range(of: #"^#{1,6} "#, options: .regularExpression) != nil }) { return true }
+        return lines.filter { $0.hasPrefix("- ") || $0.hasPrefix("* ") }.count >= 3
+    }
+}
+
+/// Speakeasy's mark on the last reply of a group: a brass disc with the waveform.
+struct ChatMark: View {
+    var body: some View {
+        ZStack {
+            Circle().fill(LinearGradient(colors: [Live.brass.opacity(0.85), Live.brass], startPoint: .top, endPoint: .bottom))
+            Image(systemName: "waveform").font(.system(size: 10.5, weight: .bold)).foregroundStyle(ChatInk.onBrass)
+        }
+        .frame(width: 24, height: 24)
+        .accessibilityHidden(true)
+    }
+}
+
+enum ChatInk {
+    static let onBrass = BrandPalette.onBrass
+    static let paper = Color.adaptive(dark: Color.white.opacity(0.085), light: Color.white)
+    static let otherApp = Color.primary.opacity(0.08)
+}
+
 struct HistoryMessageView: View {
     let message: HistoryThreadMessage
     let sessionID: String
     @ObservedObject var store: HistoryStore
+    var via: String? = nil
+    var lastInGroup = true
+
+    private func bubble(mine: Bool) -> UnevenRoundedRectangle {
+        let small: CGFloat = lastInGroup ? 5 : 16
+        return UnevenRoundedRectangle(topLeadingRadius: 16, bottomLeadingRadius: mine ? 16 : small,
+                                      bottomTrailingRadius: mine ? small : 16, topTrailingRadius: 16, style: .continuous)
+    }
 
     var body: some View {
         switch message.role {
         case .user: user
         case .assistant: assistant
         case .note:
-            Text(message.text).font(.system(size: 11.5)).foregroundStyle(.tertiary)
+            Text(message.text).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                .padding(.horizontal, 10).padding(.vertical, 3)
+                .background(Capsule().fill(Color.primary.opacity(0.05)))
                 .frame(maxWidth: .infinity, alignment: .center).multilineTextAlignment(.center)
         }
     }
 
     private var user: some View {
+        Group {
+            if let call = message.call { callCard(call) } else { userBubble }
+        }
+    }
+
+    /// A request that came from a call: one card; what was said opens on tap.
+    private func callCard(_ lines: [HistoryCallLine]) -> some View {
+        let key = "\(sessionID)|call|\(message.id)"
+        let open = store.openSections.contains(key)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "phone.fill").font(.system(size: 8.5, weight: .bold)).foregroundStyle(ChatInk.onBrass)
+                    .frame(width: 18, height: 18).background(Circle().fill(Live.brass))
+                Text("From a call").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            }
+            Text(message.text).font(.system(size: 13.5, weight: .medium)).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if lines.count > 1 || lines.first?.text != message.text {
+                Button {
+                    if open { store.openSections.remove(key) } else { store.openSections.insert(key) }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(open ? "Hide what was said" : "What was said · \(lines.count) \(lines.count == 1 ? "line" : "lines")")
+                        Image(systemName: "chevron.down").rotationEffect(.degrees(open ? 180 : 0))
+                    }
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Live.brass)
+                }
+                .buttonStyle(.plain)
+                if open {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(line.who == .you ? "You" : "Speakeasy").font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(line.who == .you ? AnyShapeStyle(Live.brass) : AnyShapeStyle(.secondary))
+                                    .frame(width: 62, alignment: .leading)
+                                Text(line.text).font(.system(size: 12.5)).foregroundStyle(Color.primary.opacity(0.85))
+                                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(13)
+        .frame(maxWidth: 460, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(ChatInk.paper))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Live.brass.opacity(0.4), lineWidth: 1))
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.leading, 90)
+    }
+
+    private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            Text(message.text).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.96))
-                .lineSpacing(2).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 13).padding(.vertical, 9)
-                .background(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 5,
-                                                   topTrailingRadius: 14, style: .continuous).fill(Live.brass.opacity(0.2)))
-                .overlay(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 5,
-                                                topTrailingRadius: 14, style: .continuous).strokeBorder(Live.brass.opacity(0.28), lineWidth: 0.5))
-                .opacity(message.delivery == .sending ? 0.7 : 1)
-            caption
+            if let via { Text("You, in \(via)").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.tertiary) }
+            VStack(alignment: .leading, spacing: 6) {
+                if message.voice {
+                    HStack(spacing: 2) {
+                        Image(systemName: "mic.fill").font(.system(size: 9, weight: .bold)).padding(.trailing, 4)
+                        ForEach(Array([0.35, 0.6, 0.9, 0.5, 0.75, 1, 0.65, 0.4, 0.8, 0.55, 0.95, 0.45, 0.7, 0.3].enumerated()), id: \.offset) { _, h in
+                            Capsule().frame(width: 2, height: 3 + 12 * h)
+                        }
+                    }
+                    .foregroundStyle(ChatInk.onBrass.opacity(0.75))
+                    .accessibilityHidden(true)
+                }
+                Text(message.text).font(.system(size: 13.5))
+                    .foregroundStyle(via == nil ? ChatInk.onBrass : Color.primary.opacity(0.95))
+                    .lineSpacing(2).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 13).padding(.vertical, 9)
+            .background(bubble(mine: true).fill(via == nil ? AnyShapeStyle(Live.brass) : AnyShapeStyle(ChatInk.otherApp)))
+            .opacity(message.delivery == .sending ? 0.7 : 1)
+            if lastInGroup || message.delivery != nil { caption }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.leading, 60)
+        .padding(.leading, 90)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder private var caption: some View {
@@ -639,33 +758,47 @@ struct HistoryMessageView: View {
     }
 
     private var assistant: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let long = ChatLabel.isLongForm(message.text)
+        return VStack(alignment: .leading, spacing: 8) {
             if !message.tools.isEmpty {
                 HistoryToolCalls(items: message.tools, key: "\(sessionID)|\(message.id)", store: store)
+                    .padding(.leading, 34)
             }
             if !message.text.isEmpty {
-                HStack(alignment: .top, spacing: 10) {
-                    Circle().fill(Live.brass.opacity(0.18)).frame(width: 22, height: 22)
-                        .overlay(Image(systemName: "sparkle").font(.system(size: 9.5, weight: .bold)).foregroundStyle(Live.brass))
+                HStack(alignment: .bottom, spacing: 10) {
+                    ZStack { if lastInGroup { ChatMark() } }.frame(width: 24)
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(MessageBlock.split(message.text).enumerated()), id: \.offset) { _, block in
-                            switch block {
-                            case .text(let prose):
-                                Text(markdown(prose)).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.9))
-                                    .lineSpacing(3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                            case .code(let code, let language):
-                                HistoryCodeBlock(code: code, language: language)
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(MessageBlock.split(message.text).enumerated()), id: \.offset) { _, block in
+                                switch block {
+                                case .text(let prose):
+                                    Text(markdown(prose)).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.9))
+                                        .lineSpacing(3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                case .code(let code, let language):
+                                    HistoryCodeBlock(code: code, language: language)
+                                }
                             }
                         }
-                        if let t = HistoryLook.long(message.at, now: store.now) {
-                            Text(t).font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                        .frame(maxWidth: long ? .infinity : nil, alignment: .leading)
+                        .padding(.horizontal, long ? 16 : 13).padding(.vertical, long ? 13 : 9)
+                        .background(bubble(mine: false).fill(ChatInk.paper).shadow(color: .black.opacity(0.06), radius: 4, y: 1))
+                        .overlay(bubble(mine: false).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+                        if lastInGroup {
+                            HStack(spacing: 5) {
+                                if let via { Image(systemName: "arrow.turn.down.right"); Text("Replied in \(via)") }
+                                if let t = HistoryLook.long(message.at, now: store.now) {
+                                    if via != nil { Text("·") }
+                                    Text(t)
+                                }
+                            }
+                            .font(.system(size: 10.5)).foregroundStyle(.tertiary).padding(.leading, 6)
                         }
                     }
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.trailing, 24)
+        .padding(.trailing, ChatLabel.isLongForm(message.text) ? 0 : 90)
     }
 
     private func markdown(_ s: String) -> AttributedString {

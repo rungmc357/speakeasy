@@ -242,15 +242,17 @@ public struct HistoryThreadMessage: Equatable, Sendable, Identifiable {
     public var voice: Bool
     /// The tool calls behind this answer (assistant), oldest first.
     public var tools: [JobActivityItem]
+    /// The request came from a call: what was said on it.
+    public var call: [HistoryCallLine]? = nil
     /// A message this app sent that's still on its way (or failed).
     public var delivery: Delivery?
     /// Set on a local message: retry with the same client id.
     public var clientID: String?
 
     public init(id: String, role: Role, text: String, at: Date? = nil, voice: Bool = false, tools: [JobActivityItem] = [],
-                delivery: Delivery? = nil, clientID: String? = nil) {
+                delivery: Delivery? = nil, clientID: String? = nil, call: [HistoryCallLine]? = nil) {
         self.id = id; self.role = role; self.text = text; self.at = at; self.voice = voice; self.tools = tools
-        self.delivery = delivery; self.clientID = clientID
+        self.delivery = delivery; self.clientID = clientID; self.call = call
     }
 }
 
@@ -301,7 +303,7 @@ public struct HistoryThread: Equatable, Sendable {
                     out.append(HistoryThreadMessage(id: "tools-\(e.id)", role: .assistant, text: "", at: pendingAt, tools: pending))
                     pending = []; pendingAt = nil
                 }
-                out.append(HistoryThreadMessage(id: e.id, role: .user, text: e.text, at: e.at))
+                out.append(HistoryThreadMessage(id: e.id, role: .user, text: e.text, at: e.at, voice: e.voice, call: e.call))
             }
         }
         if !pending.isEmpty { out.append(HistoryThreadMessage(id: "tools-end", role: .assistant, text: "", at: pendingAt, tools: pending)) }

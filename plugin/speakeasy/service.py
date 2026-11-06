@@ -2102,6 +2102,10 @@ class VoiceService(SecureInputMixin):
                                          meta["source"], None, None, False))
         if continued and before is None:
             keys = list(reversed(continued)) + keys
+        said = self._voice_said(sid)
+        if said:
+            entries = [{**e, "voice": True} if e.get("kind") == "user" and H.said_key(e.get("text") or "") in said
+                       else e for e in entries]
         open_key = self._open_question(keys)
         jobs = []
         for key in keys[:8]:
@@ -2169,8 +2173,37 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(404, "I couldn't find that conversation.")
         if choice is not None:
             self._save_chat_choice(meta["id"], choice)  # a message carrying a choice: Use for this chat
-        return self._once(client_id, lambda: self._with_staged(
-            device_id, ids, lambda staged: self._history_message(meta, text, staged)))
+        voice = body.get("source") == "voice_message"
+
+        def deliver(staged: list[A.Attachment] | None) -> dict[str, Any]:
+            got = self._history_message(meta, text, staged)
+            if voice:
+                self._note_voice_message(meta["id"], text)
+            return got
+        return self._once(client_id, lambda: self._with_staged(device_id, ids, deliver))
+
+    _VOICE_SAID_KEEP = 60
+
+    def _note_voice_message(self, session_id: str, text: str) -> None:
+        """Remember that these words went to this session as a voice message, so its page shows them
+        as one (waveform + transcript) after a reload. Only a short hash is kept, never the words."""
+        key = "voice_said:" + session_id
+        try:
+            said = json.loads(self.store.get_meta(key) or "[]")
+        except ValueError:
+            said = []
+        said = [h for h in said if isinstance(h, str)][-(self._VOICE_SAID_KEEP - 1):] + [H.said_key(text)]
+        try:
+            self.store.set_meta(key, json.dumps(said))
+        except Exception:  # noqa: BLE001 - a missing mark only shows the message as typed
+            logger.debug("speakeasy: couldn't note a voice message", exc_info=True)
+
+    def _voice_said(self, session_id: str) -> set[str]:
+        try:
+            said = json.loads(self.store.get_meta("voice_said:" + session_id) or "[]")
+        except (ValueError, TypeError):
+            return set()
+        return {h for h in said if isinstance(h, str)} if isinstance(said, list) else set()
 
     def _history_message(self, meta: dict[str, Any], text: str,
                          staged: list[A.Attachment] | None = None) -> dict[str, Any]:
