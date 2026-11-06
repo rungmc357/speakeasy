@@ -2,48 +2,56 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Plugin (next) — Failure messages without terminal commands
+## Plugin 0.3.40 · Mac 0.3.21 · iPhone build 67 — Voice notes, agents, skills, files, and calls that keep the whole conversation
 
-Works with the current Mac and iPhone apps; no app update needed.
+The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.21 or iPhone build 67.
 
-- **A task that didn't finish says what to do in plain words.** Out of credits, a sign-in that ran out, too many requests or a model that's gone now read like "Your Hermes's AI account is out of credits. Add credits there, or switch model in this chat." instead of naming a terminal command.
-- **When Hermes itself needs a nudge, it's a message you send it.** A rejected key or an unreachable Hermes says "Send /restart to your Hermes, then try again."; a sign-in says "Send /model to your Hermes to sign in". The morning brief says the same.
-- **No log files.** A task that stopped with no reason says "Your Hermes stopped without saying why." instead of pointing at a log on the Hermes computer.
+**New**
+
+- **Voice messages are the recording itself.** Hold the mic on a chat's page and the recording is what goes, like a voice note in Telegram or Discord: it plays back in the chat with its length and waveform, Hermes writes down what you said under it, and a failed one keeps a Retry that sends exactly the same note again. *(apps)*
+- **Pick which agent a new chat talks to.** If you run several Hermes profiles, allow them in the Mac's Settings › Agents and New chat gets a small agent picker ("Ask Research desk anything"). The chat stays with that agent, on its own model, and shows its name in the list. *(apps)*
+- **Type / for your skills.** A `/` at the start of a message box lists your Hermes skills; pick one, add what you want ("/soup-scaler for twelve people") and it runs that skill, the same as `/skill` in Telegram. *(apps)*
+- **Files your agent made.** A new Files row lists every file Hermes sent you in a reply, from every chat, with Open chat to jump back. *(apps)*
+- **See your approval rules.** Settings › Approvals shows, in plain words, how your Hermes handles risky commands. Read-only for now. *(apps)*
+- **Model, context and usage.** Task cards and chat pages say which model did the work and how full its context got ("Claude Opus 5.5 · about 22% of context used"), and each chat shows an estimated cost or "Included in your plan". *(apps)*
+
+**Calls**
+
+- **A task gets the whole call.** Work started on a call now sees the whole conversation in whole turns, plus a short list of the call's other tasks, so "do the first one you mentioned" finds what it points at.
+- **Corrections stick.** "No, the guest room" replaces the misheard word in the task's name, its brief and what the voice says next.
+- **Follow-ups are just your new words.** A later message to a running task sends what you added, not the whole set of instructions again.
+- **Honest updates.** The voice keeps a task's tense ("submitting" is not "submitted"), doesn't claim to be "picking up where we left off", and doesn't read task titles aloud. "Where are you at?" is answered from the task's latest status; "what is it testing?" is asked of the task itself when the status can't say.
+- **A picture and a note are one message.** Attach a photo on a call, type "the labels run off the edge", and the agent gets both together and acts on them, without reading your note back to you.
+- **Dropped calls say so plainly.** "The call dropped. Your tasks keep running." with Call again, instead of billing words.
+- **Big cards fit the call screen.** A tall weather or list card no longer pushes the orb, captions and buttons off the screen. *(apps)*
+
+**Sending to a running task** *(apps)*
+
+- **Choose after Send.** The permanent Steer / When it's done row is gone. Sending to a running task opens a small pop-up at the Send button: Steer now or Queue for after. Nothing goes until you pick, and nothing is remembered.
+
+**Clearer messages**
+
+- **No terminal commands or program errors.** Failure reasons, Settings › Voice and setup say what to do in plain words ("Add key", "Sign in to ChatGPT", "Ask your Hermes to sign in to X") instead of telling you to run a command or read a log, and error names like "TimeoutError" never reach the screen.
+- **Setup checks Hermes has an AI model.** A brand-new Hermes with no model says so ("Hermes has no AI model yet") instead of letting your first task fail.
+- **Banners clear themselves.** "Can't load your work right now" and "Couldn't reach your Hermes" go away as soon as things load again.
+- **Questions stay settled.** A question you answered, skipped or set aside closes everywhere at once and doesn't come back.
+
+**Fixes**
+
+- The iPhone Duo's outer screen no longer freezes when you tap a chat in the side panel. *(apps)*
+- On the Lock Screen and in widgets, a private task's details stay hidden until the phone is unlocked. *(apps)*
+- Largest text sizes: side panel labels, Approve and Deny, and the message box no longer get cut off. *(apps)*
+- iPad: a half-width window opens the conversation list beside the chat, and setup says iPad, not iPhone. *(apps)*
+- VoiceOver names every button on chat, call and task screens; small call-screen buttons are easier to hit. *(apps)*
+- The keyboard no longer covers the box you're typing in. *(apps)*
+- A count shows as "4 of 9 builds", never as a progress bar. A chat's page shows one "On call" timer, not two. *(apps)*
+- The Kanban board shows when it scrolls; scheduled jobs show your time zone in words. *(Mac)*
+- Mac setup is shorter: connect, sign in to a voice if needed, then one "You're ready to talk" screen. *(Mac)*
+- Chat pages no longer show Hermes' internal wrappers in your own messages; the secure key box doesn't pop up for a skill that already has a way in; `hermes voice pair` hands out a link that works on the phone; setup only says voice is on when it is.
 
 ## Plugin 0.3.39 — Fewer false "Refused by the model's safety filter" failures
 
 Works with the current Mac and iPhone apps; no app update needed.
-## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
-## Mac app (unreleased) — Shorter setup
-
-- **One screen before your first call.** Once the Mac is connected and your voice is signed in, setup is a single "You're ready to talk" screen: microphone, your name and your assistant's, where finished work goes, home control (when Hermes has Home Assistant), the Dock icon and the call shortcut, each already filled in, with a Start a call button. Connecting and voice sign-in only appear when they still need you, and sign-in moves on by itself once it's done. Task routing and the voice brief keep their defaults and stay in Settings.
-## Plugin 0.3.37 (unreleased) — Which model ran each task, and what each chat used
-
-- **Model and context on every task.** Each task card and chat page now says, quietly, which model did the work and how full its context window got — "Claude Opus 5.5 · about 22% of context used · 3 min", the same footer Discord and Telegram can show. A running task updates as it goes; a finished one keeps the figure from when it finished. Open it for the token count and the peak. It's an estimate from the token counts the provider reported, and it appears once a task runs after this update. (Mac app and iPhone app.)
-- **Usage per chat.** Every conversation now shows what it used: an estimated cost ("About $2.50 · estimate"), or "Included in your ChatGPT plan" for a plan sign-in, or "No price known" for a model without a price. Open it for the token counts (sent, reused from cache, written, thinking), model calls and a per-model split. It counts the chat's helpers and, for a Discord or Telegram chat continued in Speakeasy, the follow-ups too. The figures come from what Hermes already records and are always labelled as estimates. (Mac app and iPhone app.)
-## Plugin 0.3.37 (unreleased) — Skills in the message box
-
-- **Type / for your skills.** Typing `/` in a message box lists your Hermes skills with a one-line description; keep typing to narrow it, tap one to put it in the box, add what you want and send. It runs that skill exactly like `/skill` in Telegram or Discord, and the chat shows just what you typed.
-## Plugin 0.3.37 · Mac · iPhone (next build) — Files your agent made
-
-- **Every file in one place.** A new **Files** row in the side panel (iPhone, iPad, and the Mac's History window) lists every file your agent sent you in a reply, from every chat: pictures as thumbnails, documents, recordings and videos as tiles, newest first, with the chat each one came from. Type chips (Images, Docs, Audio…) appear when you have more than one kind.
-- **Open, share, keep.** Tap or click a file to look at it in Quick Look (share, save to Files or AirDrop from there on iPhone); on the Mac, drag it straight to Finder or save it to Downloads. Hold or right-click for **Open chat** to jump to the conversation it came from.
-- **Only what Hermes would send you anyway.** The list comes from the files Hermes attached to its replies, and the plugin serves a file only when Hermes itself would deliver it; your settings, keys and other private files never show up. Files are fetched by an id, never by a path on your computer.
-## Plugin 0.3.37 (unreleased) — See your approval rules
-
-- **Approvals in Settings.** A new Approvals page (Mac, iPhone and iPad) shows how your Hermes handles risky commands, in plain words: whether it asks you every time, runs a quick safety check first or never asks; how long a question waits; the kinds of commands you've said Always to; anything you've blocked; what scheduled jobs do when nobody can answer; and whether memory and skill changes wait for your OK. It's read-only for now.
-
-## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
-## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
-
-- **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
-- **Honest waits.** One long step says what it's waiting on and for how long ("Waiting on the tests · 4 min"); a task that has gone quiet says so ("No new steps · 3 min"); the handoff line stops posing as "now" after a minute with nothing reported.
-- **No spoken "Sent."** A message or picture you type to a task during a call is delivered silently; the voice only speaks about it if you ask.
-- **One ask, one task.** Pictures sent during a call no longer fail with "couldn't reach Hermes" when Hermes is just slow to read them in (it's asked again for the same task, with more time), and something you add seconds after a task starts goes into that task instead of starting a twin that answers a second time.
-- **No choice card for a closing offer.** "Want me to hold, or walk you through it?" at the end of an answer is just talk now, not a card and a "Decide on…" task in Done.
-- **Titles name the subject.** Titles made only of generic words ("Check work status", "Decide on holding") or pointing at "the earlier task" are rejected and written again.
-- **Groundwork for other agents.** Nothing changes with Hermes; the plugin now tells the apps which agent it's connected to, so a later version can work with agents besides Hermes.
-- **Pick which agent a new chat talks to.** If you run more than one Hermes profile (say a research agent beside your main one), choose which ones Speakeasy may use in the Mac app's settings; New chat then has an agent chip in the title bar. The chat stays with that agent, on its own model, and shows in your list with its name.
 
 - **Tasks aren't refused for how they're briefed.** Some tasks failed with "Refused by the model's safety filter" because the instructions for the live status line used wording the model's filter read as a request for its private reasoning. The live status now asks only for the step being done and what it found, so it keeps working as before without tripping the filter.
 - **A refused turn is tried once more.** If the filter still refuses a turn, Speakeasy quietly sends it again in the same conversation before showing the task as failed, and your answer to a task's question still reaches it.
@@ -66,7 +74,6 @@ The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.20 or i
 - **One ask, one task.** Something you add seconds after a task starts joins that task instead of starting a twin, including an alternative ("or using the menu bar"), a change ("set it to 75") or pushback; only an ask about something clearly different starts its own. Pictures sent during a call no longer fail with "couldn't reach Hermes" when Hermes is just slow to read them.
 - **"Adding that to…" once.** The voice says where an addition went once per task, and not at all when it can only have gone one place. A message you type to a task during a call is delivered silently.
 - **Retry keeps your photos.** Retrying a failed task (or typing "try again") sends the same pictures and files again.
-- **Voice messages work like a Telegram voice note.** On a session page, tap the mic, talk, tap stop and it's sent: the recording itself is the message, your Hermes writes it down with its usual speech-to-text on arrival, and the agent gets it the same way it gets a voice note from a chat. The bubble shows play, a waveform and the length, with Hermes' words under it once ready. A pause no longer cuts the message short, and a failed send keeps the recording for Retry. *(apps)*
 
 **Task cards and spoken updates**
 - **A live line instead of a plan.** A running task says what it actually did in the last couple of minutes ("Editing store.py and router.py") with a short "So far" recap, written from its real steps. Guessed plans and step counts are gone; a long wait says what it's waiting on ("Waiting on the tests · 4 min") and a quiet task says so.
@@ -541,7 +548,7 @@ The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.20 or i
 
 ## Plugin 0.2.33
 
-- **Instant clock, date and math.** "What time is it in Nairobi", "what's the date", "what's 18 percent of 240" are answered on your machine with no search: under a tenth of a second, always right.
+- **Instant clock, date and math.** "What time is it in Tokyo", "what's the date", "what's 18 percent of 240" are answered on your machine with no search: under a tenth of a second, always right.
 - **Weather in about three seconds,** from live forecast data rather than a web search: now, today, tomorrow, the week, and the next 24 hours. Set a home city for questions that don't name one: `hermes voice fast home <city>`.
 - **"Who's playing Monday night?" and other league questions** ("any hockey games tonight", "who won the baseball games last night") now come from the live scoreboard in about two seconds.
 - **Quick answers start looking things up while the request is still being sorted,** saving about half a second each.
