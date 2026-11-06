@@ -59,6 +59,15 @@ within 180 s.
   paired app answers, skips, the job stops, or Hermes' deadline passes; then it does what
   Desktop's callback does (`save_env_value_secure` for keys; return the password for sudo; return
   `{identifier, password}` for the vault tool to store).
+- A skill's key is asked for only when the task needs it. Hermes runs the capture while
+  `skill_view` loads a skill, before the agent knows whether this task needs that skill (it often
+  has another way in: a script, CLI or login that already works). So the first ask for a key in a
+  job opens no box; a `transform_tool_result` hook adds `speakeasy_note` to that `skill_view` result
+  telling the agent to use what it has, or to open the skill again if the task truly needs the key.
+  The second ask opens the box, which names the skill and why (`reason`) and offers "Skip — the
+  agent has another way" (`skip_label`). A skip (or an unanswered box) is remembered for the job:
+  the agent is told to carry on without that key, and it is never asked again in that job. Without
+  the hook (an older Hermes) the box opens on the first ask, as before.
 - Allow-once sudo: a `post_tool_call` hook drops Hermes' cached sudo password for that run after
   the command.
 - `uninstall()` restores Hermes' originals; reloading the plugin re-wraps the originals (no stacking).

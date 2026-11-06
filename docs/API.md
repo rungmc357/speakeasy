@@ -1673,7 +1673,8 @@ continue — I've put a secure box on your screen") and is told never to ask for
 `{"requests": [...], "wired": {"secret": true, "sudo": true, "login": true}}`. Only requests this
 device may answer (a call's job: the device that placed the call; a job with no call: any paired
 device). Each request: `id` (`sec_…`), `kind`, `job`, `run_id`, `session_id`, `expires_at`,
-`seconds_left`, `label`, `stored_where`, and per kind `env_var`/`prompt`/`help`/`skill` (secret),
+`seconds_left`, `label`, `stored_where`, and per kind `env_var`/`prompt`/`help`/`skill`/`reason`/`skip_label`
+(secret: `reason` says which skill asked and why, `skip_label` is the Skip button's wording),
 `command` (sudo, credentials masked as Hermes' approval prompts mask them), `origin`/`site` (login),
 `site`/`help` (code). A call's event feed also carries them as a `secure_inputs` event.
 Never contains a value.
