@@ -110,6 +110,71 @@ def test_install_service_writes_and_starts_it(home, monkeypatch, tmp_path):
     assert not path.exists()
 
 
+def _fake_launchctl(tmp_path, refuse: str):
+    """A real `launchctl` program on PATH that exits 125 for bootstrap into the refused domains."""
+    import os
+    import stat
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir(exist_ok=True)
+    log = tmp_path / "launchctl.log"
+    tool = bin_dir / "launchctl"
+    tool.write_text("#!/bin/sh\n"
+                    f'echo "$@" >> "{log}"\n'
+                    f'if [ "$1" = bootstrap ] && echo "$2" | grep -Eq "^({refuse})/"; then\n'
+                    '  echo "Bootstrap failed: 125: Domain does not support specified action" >&2; exit 125\n'
+                    "fi\nexit 0\n")
+    tool.chmod(tool.stat().st_mode | stat.S_IEXEC)
+    return f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}", log
+
+
+def test_ssh_session_without_a_screen_session_gets_a_plain_next_step(home, monkeypatch, tmp_path, capsys):
+    """Over SSH macOS refuses gui/<uid> (and here user/<uid>) with exit 125: one plain line, exit 1,
+    no traceback, and the half-written LaunchAgents file is gone."""
+    T = _script()
+    monkeypatch.setattr(T.sys, "platform", "darwin")
+    monkeypatch.setattr(T.Path, "home", classmethod(lambda cls: tmp_path))
+    path, log = _fake_launchctl(tmp_path, "gui|user")
+    monkeypatch.setenv("PATH", path)
+    monkeypatch.setattr(T, "install_cloudflared", lambda out, home: "/bin/cf")
+    configured = []
+    monkeypatch.setattr(T, "hermes_config", lambda *a: configured.append(a))
+    code = T.main(["quick", "--hermes-home", str(home)])
+    out = capsys.readouterr().out.strip()
+    assert code == 1 and "Traceback" not in out and len(out.splitlines()) == 1
+    assert "macOS wouldn't start a background service from this session" in out and "SSH" in out
+    assert "Terminal on the Mac itself" in out and "speakeasy-cloudflare.py quick --hermes-home" in out
+    assert not T.service_file(home).exists() and not list((tmp_path / "Library" / "LaunchAgents").glob("*"))
+    tried = log.read_text()
+    assert f"bootstrap gui/{os.getuid()}" in tried and f"bootstrap user/{os.getuid()}" in tried
+    assert not configured  # nothing told Hermes a tunnel is on
+
+
+def test_ssh_session_falls_back_to_the_user_domain(home, monkeypatch, tmp_path):
+    T = _script()
+    monkeypatch.setattr(T.sys, "platform", "darwin")
+    monkeypatch.setattr(T.Path, "home", classmethod(lambda cls: tmp_path))
+    path, log = _fake_launchctl(tmp_path, "gui")
+    monkeypatch.setenv("PATH", path)
+    service = T.install_service(home, "/bin/cf", 8795, 8797)
+    assert service.exists() and f"bootstrap user/{os.getuid()}" in log.read_text()
+    T.restart_service(home)
+    assert f"kickstart -k gui/{os.getuid()}/" in log.read_text()
+
+
+def test_linux_user_service_refused_is_plain_too(home, monkeypatch, tmp_path):
+    T = _script()
+    monkeypatch.setattr(T.sys, "platform", "linux")
+    monkeypatch.setattr(T.Path, "home", classmethod(lambda cls: tmp_path))
+
+    def run(cmd, **kw):
+        if "enable" in cmd:
+            raise T.subprocess.CalledProcessError(1, cmd)
+        return T.subprocess.CompletedProcess(cmd, 0)
+    with pytest.raises(T.ServiceStartError):
+        T.install_service(home, "/bin/cf", 8795, 8797, run=run)
+    assert not T.service_file(home).exists()
+
+
 def test_named_tunnel_create_and_route():
     T = _script()
 

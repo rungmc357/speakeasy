@@ -90,6 +90,11 @@ Otherwise decide, without asking the user, from `tailscale status` on this compu
   (`brew install --cask tailscale` on a Mac, or the command at https://tailscale.com/download for
   Linux), and run setup again once they've signed in.
 
+  If the script says the computer **wouldn't start a background service from this session**
+  (common when you reach a Mac over SSH and nobody is logged in at its screen), retrying from here
+  won't help: pass the user the one command it printed, to run once from the computer's own
+  Terminal (or after logging in to it), then run setup again.
+
 Never use Tailscale Funnel. Details and the permanent-address upgrade: [Cloudflare mode](#cloudflare-mode).
 
 ## 3. Run setup
