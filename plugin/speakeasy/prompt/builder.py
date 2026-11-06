@@ -178,6 +178,13 @@ def open_work_block(tasks: list[dict[str, Any]], names: Names) -> str:
     return text
 
 
+def result_already_seen_note(request: str, spoken: str) -> str:
+    """A finished task whose answer the user already opened in the app: background, never read out."""
+    return (f"Background, do not say this now: the task \"{request}\" finished and the user already read its "
+            f"answer in the app: {notice_text(spoken, 300)}. Don't read it out or announce it; use it only if "
+            "they ask about it.")
+
+
 def resume_block(tasks: list[dict[str, Any]], names: Names) -> str:
     """Instructions for a call resumed after Pause: continue, don't restart."""
     lines = [
@@ -193,6 +200,10 @@ def resume_block(tasks: list[dict[str, Any]], names: Names) -> str:
         status = task.get("status")
         if task.get("set_aside"):
             open_tasks.append(f"- {request}: set aside by {names.user} (closed; don't ask its question again)")
+        elif status == "completed" and task.get("seen"):
+            spoken = notice_text((task.get("result") or {}).get("spoken"), 300)
+            open_tasks.append(f"- {request}: finished, and {names.user} already read it in the app (don't read it "
+                              "out; use it only if asked)" + (f": {spoken}" if spoken else ""))
         elif status in {"completed", "failed", "cancelled", "interrupted", "ambiguous"}:
             spoken = notice_text((task.get("result") or {}).get("spoken"), 300)
             outcome = "finished" + (f": {spoken}" if spoken else "") if status == "completed" else f"stopped ({status})"

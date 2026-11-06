@@ -201,6 +201,10 @@ THREAD_OPEN_WAIT_S = 20
 # (monotonic). The recovery sweep skips them; a wait orphaned by a hang-up ages out.
 LIVE_THREAD_WAITS: dict[str, float] = {}
 CONTINUITY_POLL_S = 5
+# A call that reaches voice.max_call_minutes while one of its tasks still runs is kept on, up to
+# CAP_STRETCH times the cap, so a long task's answer is still spoken; at the cap it is paused
+# (resumable: Resume picks up with the transcript and tasks), never dropped as an error.
+CAP_STRETCH = 2.0
 # Spoken progress: only for tasks running this long, at most once per PROGRESS_EVERY_S across the
 # whole call (two tasks don't take turns talking), and only when the task has done something new
 # since the last update. No forced silence: it's a conversation, just without filler updates.
@@ -219,6 +223,10 @@ STATUS_NOTE_EVERY_S = 60.0
 PULSE_EVERY_S = PROGRESS_EVERY_S
 PULSE_IDLE_EVERY_S = 90.0
 PULSE_IDLE_AFTER = 3
+# Nothing new on a task: its next line waits PULSE_IDLE_EVERY_S, then twice that after each further line
+# with nothing new, up to PULSE_STALE_MAX_S (open mic or not). Updates on real progress keep the normal
+# spacing. A line already said on the task (word for word) is never said again: silence beats a repeat.
+PULSE_STALE_MAX_S = 300.0
 PULSE_TICK_S = 5.0
 PULSE_QUIET_S = 6.0
 # With the mic open (the app reported muted=false) the user is listening in, so a task's first line
@@ -234,7 +242,7 @@ PULSE_MAX_WORDS = 22
 # wording model that keeps saying the same thing never gets the same words out twice in a long run.
 PULSE_SAID_KEEP = 20
 _PULSE_OPENERS = ("Meanwhile", "Right now", "Continuing")
-_OPENER_LEAD = re.compile(r"(?i)^(?:(?:quick update|meanwhile|right now|continuing)\s*[:,]\s*)+")
+_OPENER_LEAD = re.compile(r"(?i)^(?:(?:quick update|since the last update|so far|meanwhile|right now|continuing)\s*[:,]\s*)+")
 _ANCHORED_SHAPES = ("Still on {step}, {age} in.", "{Age} in, still {step}.", "{Step}, still going, {age} in.")
 _ANCHORED_STEP_WORDS = 12
 # Never talk over a thought in progress: a result, a task's question or a pulse waits until the user has
@@ -264,7 +272,8 @@ def cap_words(line: str, limit: int = PULSE_MAX_WORDS) -> str:
 
 
 def _said_key(line: str) -> str:
-    return " ".join(re.sub(r"[^\w\s]", " ", line.lower()).split())
+    """Words to compare spoken lines by: "Meanwhile, X" and "Quick update: X" are the same news as X."""
+    return " ".join(re.sub(r"[^\w\s]", " ", _OPENER_LEAD.sub("", line.strip()).lower()).split())
 
 
 _I_WORD = re.compile(r"^I(?:\b|['\u2019])")
@@ -346,8 +355,7 @@ def unrepeated(line: str | None, told: list[str] | list[tuple[float, str]], step
     `line`, else `line` re-worded behind an opener, else the anchored lines on `step` (see
     anchored_lines). Every candidate goes through `dress` (naming the job, the word cap) before it is
     compared, since that is what was said; `reserve` is how many words `dress` may put in front (see
-    anchored_lines). Never None: should all of them have been said, the one said
-    longest ago comes back, because an old line beats silence."""
+    anchored_lines). "" when all of them were said already: a repeat is worse than silence."""
     if told and not isinstance(told[0], str):
         told = [t for _, t in sorted(told, key=lambda pair: pair[0])]
     said = [_said_key(t) for t in told]
@@ -363,8 +371,13 @@ def unrepeated(line: str | None, told: list[str] | list[tuple[float, str]], step
     for candidate in candidates:
         if _said_key(candidate) not in said:
             return candidate
-    # Everything was said within the last few lines: the one said longest ago.
-    return min(candidates, key=lambda c: max(i for i, key in enumerate(said) if key == _said_key(c)))
+    return ""
+
+
+def stale_wait(every: float, idle: int) -> float:
+    """Seconds before a task with nothing new is spoken about again, after `idle` such lines in a row:
+    PULSE_IDLE_EVERY_S (or the user's longer interval), doubling, at most PULSE_STALE_MAX_S."""
+    return min(max(PULSE_IDLE_EVERY_S, every) * (2 ** max(0, min(int(idle), 6))), max(PULSE_STALE_MAX_S, every))
 
 
 class ServiceError(Exception):
@@ -416,6 +429,9 @@ class Runtime:
     # The model/reasoning a run starts with (task_id, idem key, session id, request) -> Hermes'
     # per-request overrides (models.run_fields), or None for its own config. None = never chosen.
     choose_model: Callable[[str, str, str | None, str | None], dict[str, Any] | None] | None = None
+    # Pauses a call (interaction id) the way Pause does, resumable, for a call that reached its length
+    # cap (Service.pause with limit=True). None = the transport just ends the call, as before.
+    pause_call: Callable[[str], Any] | None = None
 
     @property
     def names(self) -> P.Names:
@@ -563,6 +579,7 @@ class Interaction:
     progress_spoken_at: float = 0.0  # last spoken progress update on this call, any task (monotonic)
     paused: bool = False
     idle_paused_minutes: int | None = None  # paused for quiet after this many minutes (not by the user)
+    limit_paused: bool = False  # paused at the call's length cap (voice.max_call_minutes), not by the user
     mic_muted: bool | None = None  # the app's mic is off (POST .../mic), None = never said; only the pulse cares
     pause_bookkept: bool = False
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)
@@ -621,6 +638,7 @@ class Interaction:
                 # Paused for quiet (idle_pause_minutes), not by the user: "Paused after N min of quiet".
                 **({"idle_paused_minutes": self.idle_paused_minutes}
                    if self.paused and self.idle_paused_minutes else {}),
+                **({"limit_paused": True} if self.paused and self.limit_paused else {}),
                 "resumed_from": self.resumed_from,
                 **self.attachments.snapshot(),  # screen, captures, attachments
                 "hold": self.hold,
@@ -666,6 +684,38 @@ def interaction_tasks(store: Any, interaction: Interaction, assistant_name: str 
     exclude |= {t["task_id"] for t in earlier}
     # A draft from an earlier call still waiting for Send / Deny / Revise stays on screen.
     return earlier + tasks + store.carried_draft_tasks(exclude)
+
+
+async def in_own_thread(fn: Callable[..., Any], *args: Any) -> Any:
+    """``asyncio.to_thread`` for a call that blocks for a task's whole run (an event stream, a thread
+    turn being waited on): on a thread of its own. On the loop's shared executor (min(32, cpus + 4)
+    threads) a handful of long tasks took every thread, and every short call queued behind them:
+    Stop, a follow-up, the voice's spoken lines (Codex sends them through a thread), store reads."""
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[Any] = loop.create_future()
+
+    def settle(ok: bool, value: Any) -> None:
+        if future.done():
+            return
+        if ok:
+            future.set_result(value)
+        else:
+            future.set_exception(value)
+
+    def run() -> None:
+        try:
+            value = fn(*args)
+        except BaseException as exc:  # handed to the awaiting coroutine
+            ok, value = False, exc
+        else:
+            ok = True
+        try:
+            loop.call_soon_threadsafe(settle, ok, value)
+        except RuntimeError:
+            pass  # the call's loop closed while this waited: nobody is listening any more
+
+    threading.Thread(target=run, daemon=True, name="speakeasy-task-wait").start()
+    return await future
 
 
 def publish_state(store: Any, interaction: Interaction, assistant_name: str = "Hermes") -> None:
@@ -1232,6 +1282,37 @@ class SidebandWorker:
 
     def touch(self) -> None:
         self.interaction.last_activity = time.monotonic()
+
+    def work_running(self) -> bool:
+        """A task of this call (or one it took on) is still running: an answer is on its way."""
+        with self.interaction.lock:
+            return any(r.status in ACTIVE_RUN_STATES for r in self.interaction.runs.values())
+
+    def cap_reached(self, elapsed: float, cap: float) -> bool:
+        """The call is at its length cap (voice.max_call_minutes): True once it is over, except while
+        a task still runs (up to CAP_STRETCH x the cap), so the answer being waited on is still heard."""
+        if elapsed < cap:
+            return False
+        if elapsed < cap * CAP_STRETCH and self.work_running():
+            if not getattr(self, "_cap_stretched", False):
+                self._cap_stretched = True
+                logger.info("speakeasy: call reached its length cap with work running; kept on until it lands")
+            return False
+        return True
+
+    async def pause_at_cap(self) -> bool:
+        """Pause (resumable) a call at its length cap instead of ending it with an error. False when
+        this runtime can't pause calls (the caller ends it as before)."""
+        pause = self.rt.pause_call
+        if pause is None:
+            return False
+        try:
+            await asyncio.to_thread(pause, self.interaction.interaction_id)
+        except Exception:
+            logger.warning("speakeasy: pausing a call at its length cap failed", exc_info=True)
+            return False
+        logger.info("speakeasy: call paused at its length cap (resumable)")
+        return True
 
     def push(self, kind: str, key: str, title: str | None, body: str | None = None, run_id: str | None = None) -> None:
         """Wake a closed phone (push.py decides which, if any). Never raises into the task path."""
@@ -1969,6 +2050,10 @@ class SidebandWorker:
             logger.info("speakeasy: progress wording unavailable (%s)", type(exc).__name__)
             line = None
         line = line or P.progress_fallback(new_steps, milestone)
+        with self.interaction.lock:
+            already = {_said_key(t) for _, t in backend.pulse_said} | {_said_key(t) for t in backend.told}
+        if line and _said_key(line) in already and not urgent:
+            line = None  # the same words again are not news
         if not line or not self.call_connected():
             with self.interaction.lock:
                 self.interaction.progress_spoken_at = last_any
@@ -2144,10 +2229,12 @@ class SidebandWorker:
             notes = r.activity[-min(ACTIVITY_KEEP, r.activity_count - r.told_count):] \
                 if r.activity_count > r.told_count else []
             new = bool(fresh or notes or (current is not None and current["n"] not in r.pulse_told))
-            if open_mic:  # a task's first line early, then every `every` (the user's setting), news or not
-                wait = every if r.spoken_at else PULSE_FIRST_OPEN_S
-            else:
-                wait = max(PULSE_IDLE_EVERY_S, every) if not new and r.pulse_idle >= PULSE_IDLE_AFTER else every
+            if open_mic and not r.spoken_at:  # a task's first line early on an open mic
+                wait = PULSE_FIRST_OPEN_S
+            elif new:
+                wait = every
+            else:  # nothing new: back off, longer each time (see PULSE_STALE_MAX_S)
+                wait = stale_wait(every, r.pulse_idle)
             if now - max(r.spoken_at, last) < wait:
                 continue
             picks.append((not new, r.spoken_at, r, items, current, fresh, notes))
@@ -2169,8 +2256,8 @@ class SidebandWorker:
         steps = P.pulse_steps(items, backend.pulse_told, notes, current, running_s)
         request = self.store.request_text(backend.idem_key) or ""
         writer = self.rt.progress_call or router.progress_update
-        if open_mic and stale and idle >= PULSE_IDLE_AFTER:
-            line = None  # where a muted call backs off, the open mic hears the step and the task's age
+        if stale and idle >= 1:
+            line = None  # nothing new again: at most the step and the task's age (never the same words)
         else:
             try:
                 line = await asyncio.to_thread(writer, request, steps, told)
@@ -2181,14 +2268,17 @@ class SidebandWorker:
                                             current.get("text") if current else None,
                                             running_s, self.store.title(backend.idem_key), idle)
         name, needs = self.spoken_task_name(backend.idem_key), self.pulse_needs_name(backend)
-        if open_mic:
-            # Never word for word a recent line, never over the cap, and never nothing.
+        if open_mic or stale:
+            # Never word for word a line already said on this task, never over the cap; nothing when
+            # every wording was said (silence beats a repeat).
             line = unrepeated(line, told_all, self.pulse_step(backend, items, current), now - backend.started,
                               lambda c: cap_words(P.named_pulse(c, name, needs) or c),
                               reserve=len(name.split()) if needs and name else 0,
                               keep=proper_nouns(request, name, self.store.title(backend.idem_key)), every=every)
         else:
             line = P.named_pulse(line, name, needs)
+            if line and _said_key(line) in {_said_key(t) for _, t in told_all}:
+                line = None  # the wording model said the same thing again: nothing new to hear
         late = time.monotonic()
         if (not line or not self.call_connected() or self.muted_now() or self.someone_speaking(late)
                 or self.last_spoke_at() > now or backend.status not in {"running", "working"}):
@@ -4034,7 +4124,7 @@ class SidebandWorker:
                 backend.run_id, backend.status = run_id, "running"
             self.publish()
             loop = asyncio.get_running_loop()
-            terminal_seen = await asyncio.to_thread(
+            terminal_seen = await in_own_thread(
                 self.hermes.events, run_id,
                 lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
             if not terminal_seen:
@@ -4204,8 +4294,15 @@ class SidebandWorker:
                 elif name.startswith("run.") and name != "run.started":
                     final["status"] = name.split(".", 1)[1]
                     final["error"] = payload.get("error")
+                if name.startswith("run.") and isinstance(payload.get("runtime"), dict):
+                    # A continued chat runs on that chat's own model (its /model override, a fallback),
+                    # not the default: keep what Hermes says served it, as a new task's run.* events do.
+                    try:
+                        self.store.served_model(idem, payload["runtime"])
+                    except Exception:
+                        logger.debug("speakeasy: served model not recorded", exc_info=True)
 
-            terminal = await asyncio.to_thread(continuity.stream_session_chat, self.hermes.base, self.rt.hermes_key(),
+            terminal = await in_own_thread(continuity.stream_session_chat, self.hermes.base, self.rt.hermes_key(),
                                                conv, content, on_event)
             status = final.get("status") or ("completed" if terminal and final.get("text") else "ambiguous")
             output = P.without_voice_header(final.get("text", ""))
@@ -4310,7 +4407,7 @@ class SidebandWorker:
         LIVE_THREAD_WAITS[idem] = time.monotonic()  # being waited on: the stuck-task sweep leaves it
         vouch = self.vouch_for_thread(backend, conv.platform, str(thread_id))
         try:
-            answer = await asyncio.to_thread(runner.wait_turn, conv.platform, str(thread_id), after, on_activity)
+            answer = await in_own_thread(runner.wait_turn, conv.platform, str(thread_id), after, on_activity)
         finally:
             vouch.set()
             await asyncio.to_thread(tools.stop)
@@ -4354,7 +4451,7 @@ class SidebandWorker:
                 backend.run_id = run_id
             self.publish()
             loop = asyncio.get_running_loop()
-            terminal_seen = await asyncio.to_thread(
+            terminal_seen = await in_own_thread(
                 self.hermes.events, run_id,
                 lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
             if not terminal_seen:
@@ -4436,9 +4533,9 @@ class SidebandWorker:
         vouch = self.vouch_for_thread(backend, opened.platform, str(opened.thread_id))
         try:
             try:
-                answer = await asyncio.to_thread(self.rt.threads.wait, opened, on_session, on_title, on_activity)
+                answer = await in_own_thread(self.rt.threads.wait, opened, on_session, on_title, on_activity)
             except TypeError:  # an older runner without progress
-                answer = await asyncio.to_thread(self.rt.threads.wait, opened, on_session, on_title)
+                answer = await in_own_thread(self.rt.threads.wait, opened, on_session, on_title)
         except Exception as exc:
             answer, backend.error = None, type(exc).__name__
         finally:
@@ -4452,12 +4549,27 @@ class SidebandWorker:
                 backend.status = "ambiguous"
             self.publish()
             return
+        self.note_session_model(idem, threads.thread_session(state_db, opened.platform, str(opened.thread_id)))
         await self.handle_hermes_event(backend, {"event": "run.completed", "output": P.without_voice_header(answer),
                                                  "continued": True,
                                                  "thread_target": f"{channel.target}:{opened.thread_id}"
                                                  if channel.target.count(":") == 1 else None,
                                                  "pointer_target": None if channel.target == self.notices.target()
                                                  else f"{opened.platform}:{opened.thread_id}"})
+
+    def note_session_model(self, idem: str, session_id: str | None) -> None:
+        """A thread task has no run events: the model Hermes recorded on its session is what served it
+        (never the configured default, which a gateway's /model or a fallback may not have used)."""
+        if not session_id:
+            return
+        try:
+            from . import history as history_mod
+            meta = history_mod.session_meta(self.rt.state_db, session_id) or {}
+            model = meta.get("model")
+            if isinstance(model, str) and model.strip():
+                self.store.served_model(idem, {"provider": "", "model": model.strip()}, bare=True)
+        except Exception:
+            logger.debug("speakeasy: a thread task's model not recorded", exc_info=True)
 
     async def thread_activity(self, backend: BackendRun, kind: str, text: str, event: dict[str, Any]) -> None:
         """One step a thread task reported: keep its card live and the voice's picture of it current."""
@@ -4756,7 +4868,14 @@ class SidebandWorker:
             if self.call_connected():
                 # Never over a thought in progress: the answer (or its question) waits for a pause.
                 await self.wait_for_pause()
-            if status == "completed":
+            if status == "completed" and self.store.is_seen(idem):
+                # They already opened this answer in the app while the voice was busy: reading it out
+                # now would repeat what they've read. The voice knows it, and says it only if asked.
+                await self.append("session.thinking.append", delegation_id, P.result_already_seen_note(
+                    notice_text(self.store.request_text(idem), 140) or "an earlier request",
+                    result["spoken"] if result else "Done."))
+                self.replied_task = backend.delegation_id
+            elif status == "completed":
                 spoken = result["spoken"] if result else "Done."
                 notes = list(P.result_notes(self.store.title(idem) or self.store.request_text(idem),
                                             result.get("full") if result else None, spoken))

@@ -423,8 +423,11 @@ class GrokRelayWorker(SidebandWorker):
         while self.end_reason is None:
             await asyncio.sleep(.25)
             now = time.monotonic()
-            if now - self.started_at >= self.max_call_s:
-                self.end_call("max call length")
+            if self.cap_reached(now - self.started_at, self.max_call_s):
+                if not await self.pause_at_cap():
+                    self.end_call("max call length")
+                if self.end_reason is None:
+                    self.end_call("max call length")
             with self.relay_lock:
                 gone = self.detached_at
             if gone is not None and now - gone > self.relay_lost_s:

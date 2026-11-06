@@ -344,10 +344,13 @@ class StateStore:
             return None
         return value if isinstance(value, dict) else None
 
-    def served_model(self, key: str, runtime: dict[str, Any]) -> bool:
-        """Hermes said which provider/model served the run (its ``runtime``): kept beside what was asked."""
+    def served_model(self, key: str, runtime: dict[str, Any], bare: bool = False) -> bool:
+        """Hermes said which provider/model served the run (its ``runtime``): kept beside what was asked.
+        ``bare``: only the model is known (a session's recorded model); a full runtime is never replaced."""
         provider, model = runtime.get("provider"), runtime.get("model")
-        if not (isinstance(provider, str) and isinstance(model, str) and provider and model):
+        if not (isinstance(provider, str) and isinstance(model, str) and model and (provider or bare)):
+            return False
+        if bare and ((self.run_model(key) or {}).get("served") or {}).get("provider"):
             return False
         record = self.run_model(key) or {}
         served = {"provider": provider[:80], "model": model[:200]}
@@ -356,6 +359,25 @@ class StateStore:
         record["served"] = served
         self.set_run_model(key, record)
         return True
+
+    def last_default_served(self, scan: int = 40) -> str | None:
+        """``provider/model`` Hermes served the newest new task (not a continued chat) that asked for no
+        model, or None: what Speakeasy's default really runs on."""
+        with self._lock:
+            rows = self._db.execute("SELECT model FROM runs WHERE model IS NOT NULL AND continued IS NULL "
+                                    "ORDER BY created DESC LIMIT ?", (int(scan),)).fetchall()
+        for (raw,) in rows:
+            try:
+                record = json.loads(raw)
+            except ValueError:
+                continue
+            served = record.get("served") if isinstance(record, dict) else None
+            if (record.get("model") or record.get("source") not in (None, "hermes", "default")
+                    or not isinstance(served, dict)):
+                continue
+            if served.get("provider") and served.get("model"):
+                return f"{served['provider']}/{served['model']}"
+        return None
 
     def session_for(self, key: str) -> str | None:
         with self._lock:
@@ -896,6 +918,11 @@ class StateStore:
         apps leave it out of New answers. Opening it still shows the answer."""
         with self._lock, self._db:
             self._db.execute("UPDATE runs SET seen=1 WHERE idem_key=?", (key,))
+
+    def is_seen(self, key: str) -> bool:
+        with self._lock:
+            row = self._db.execute("SELECT seen FROM runs WHERE idem_key=?", (key,)).fetchone()
+        return bool(row and row[0])
 
     def is_set_aside(self, key: str) -> bool:
         with self._lock:

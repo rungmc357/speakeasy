@@ -95,7 +95,7 @@ def test_nothing_new_says_the_tool_running_now_with_its_time(service, clock):
     tool(service, backend, clock, "terminal", "pytest -q", "c1", done=False)
     clock.t += calls.PULSE_EVERY_S + 1
     assert tick(worker)
-    clock.t += 75  # nothing new for well over a minute: the running tool, and how long
+    clock.t += calls.PULSE_IDLE_EVERY_S + 1  # nothing new: it waits longer, then the running tool and how long
     assert tick(worker)
     second = spoken(worker)[1]
     assert "running the tests" in second and "minutes in" in second
@@ -151,21 +151,22 @@ def test_pulse_counts_from_when_the_assistant_last_spoke(service, clock):
     assert tick(worker) is True
 
 
-def test_back_off_after_three_updates_with_nothing_new(service, clock):
+def test_back_off_when_nothing_new(service, clock):
     worker, backend = setup(service, clock)
     tool(service, backend, clock, "terminal", "make build", "c1", done=False)
     times = []
-    end = clock.t + 600
+    end = clock.t + 900
     while clock.t < end:
         clock.t += calls.PULSE_TICK_S
         if tick(worker):
             times.append(clock.t)
     gaps = [b - a for a, b in zip(times, times[1:])]
-    # The first update (the build starting is new), then PULSE_IDLE_AFTER with nothing new at the
-    # normal spacing; after that, the longer one.
-    n = calls.PULSE_IDLE_AFTER
-    assert gaps[:n] == [pytest.approx(calls.PULSE_EVERY_S, abs=calls.PULSE_TICK_S)] * n
-    assert gaps[n:] and all(g >= calls.PULSE_IDLE_EVERY_S for g in gaps[n:])
+    # The first update (the build starting is new); then, with nothing new, longer and longer waits.
+    assert gaps[0] >= calls.PULSE_IDLE_EVERY_S
+    assert all(b >= a for a, b in zip(gaps, gaps[1:])) and gaps[-1] >= 2 * calls.PULSE_IDLE_EVERY_S
+    assert all(g <= calls.PULSE_STALE_MAX_S + calls.PULSE_TICK_S for g in gaps)
+    lines = spoken(worker)
+    assert len({calls._said_key(x) for x in lines}) == len(lines)  # never the same words twice
     # New activity resets it to the normal spacing.
     tool(service, backend, clock, "read_file", "build.log", "c2")
     clock.t = times[-1] + calls.PULSE_EVERY_S + 1
@@ -321,7 +322,7 @@ def test_never_reported_or_muted_keeps_the_45s_first_line(service, clock, mic):
 
 
 @pytest.mark.parametrize("wording", ["raises", "echoes_told", "echoes_steps", "rambles"])
-def test_open_mic_quiet_task_hears_a_line_at_least_every_50s(service, clock, wording):
+def test_open_mic_quiet_task_backs_off_and_never_repeats(service, clock, wording):
     def writer(request, steps, told):
         if wording == "raises":
             raise TimeoutError
@@ -334,29 +335,27 @@ def test_open_mic_quiet_task_hears_a_line_at_least_every_50s(service, clock, wor
     worker, backend = setup(service, clock, writer)
     worker.interaction.mic_muted = False
     tool(service, backend, clock, "terminal", "make build", "c1", done=False)  # one step, then nothing for 5 min
-    said = run_quiet(worker, clock, 300)
+    said = run_quiet(worker, clock, 600)
     times, lines = [t for t, _ in said], [line for _, line in said]
-    assert times[0] <= 20 and 300 - times[-1] <= 50
-    assert all(b - a <= 50 for a, b in zip(times, times[1:]))
+    assert times[0] <= 20
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    # Nothing new after the first line: it backs off instead of talking every interval.
+    assert gaps and gaps[0] >= calls.PULSE_IDLE_EVERY_S and all(b >= a for a, b in zip(gaps, gaps[1:]))
+    assert len(lines) <= 5
     assert all(len(line.split()) <= calls.PULSE_MAX_WORDS for line in lines)
-    assert len(set(lines)) == len(lines)  # no two the same
-    # Where a muted call would back off, the open mic hears the running step and the task's age.
-    anchored = lines[calls.PULSE_IDLE_AFTER + 1:]
-    assert anchored and all("building the project" in line.lower() and " in" in line for line in anchored)
-    assert any("minutes" in line for line in anchored)
+    assert len({calls._said_key(x) for x in lines}) == len(lines)  # no two the same, openers aside
+    # With nothing new, a later line is the running step and the task's age.
+    later = lines[2:]
+    assert all("building the project" in line.lower() and " in" in line for line in later)
 
 
 def test_muted_and_never_reported_keep_mains_timing_and_back_off(service, clock):
-    """Never reported: exactly main's timing (45 s, three stale updates, then 90 s). Muted: silent."""
+    """Never reported: 45 s for the first line, then (nothing new) 90 s, 180 s... Muted: silent."""
     worker, backend = setup(service, clock)
     tool(service, backend, clock, "terminal", "make build", "c1", done=False)
     assert worker.interaction.mic_muted is None and not worker.mic_open()
     times = [t for t, _ in run_quiet(worker, clock, 600)]
-    every, idle = calls.PULSE_EVERY_S, calls.PULSE_IDLE_EVERY_S
-    expected = [every * (i + 1) for i in range(calls.PULSE_IDLE_AFTER + 1)]
-    while expected[-1] + idle <= 600:
-        expected.append(expected[-1] + idle)
-    assert times == expected == [45, 90, 135, 180, 270, 360, 450, 540]
+    assert times == [45, 135, 315]
     worker, backend = setup(service, clock, key="idem_p2")
     worker.interaction.mic_muted = True
     tool(service, backend, clock, "terminal", "make build", "c2", done=False)
@@ -373,7 +372,8 @@ def test_open_mic_line_is_capped_at_22_words():
     assert calls.cap_words("Reading the logs.") == "Reading the logs."
     shapes = calls.anchored_lines("Reading the logs", 185)
     assert len(set(shapes)) == len(calls._ANCHORED_SHAPES) and all("about 3 minutes" in s.lower() for s in shapes)
-    assert calls.unrepeated("Same line.", ["Same line."], "reading the logs", 185) == "Meanwhile, same line."
+    # "Meanwhile, same line." is the same news: the next unsaid wording is the step and its age.
+    assert calls.unrepeated("Same line.", ["Same line."], "reading the logs", 185).startswith("About 3 minutes")
 
 
 def test_open_mic_model_that_repeats_itself_never_repeats_aloud(service, clock):
@@ -387,7 +387,7 @@ def test_open_mic_model_that_repeats_itself_never_repeats_aloud(service, clock):
         tool(service, backend, clock, "read_file", f"src/part{minute}.py", f"c{minute + 1}")
         said += run_quiet(worker, clock, 60)
     lines = [line for _, line in said]
-    assert len(lines) >= 600 // 50 and len(set(lines)) == len(lines)
+    assert len(lines) >= 600 // 120 and len({calls._said_key(x) for x in lines}) == len(lines)
     assert not any(line.lower().count("meanwhile") > 1 for line in lines)
 
 
@@ -443,7 +443,7 @@ def test_open_mic_named_lines_keep_the_age_and_never_repeat(service, clock):
     for lines in by_task.values():
         assert all(len(line.split()) <= calls.PULSE_MAX_WORDS for line in lines)
         anchored = [line for line in lines if line.rstrip(".\u2026").endswith(" in") or ", still" in line]
-        assert len(anchored) >= 3 and all("minute" in line.lower() for line in anchored)
+        assert len(anchored) >= 2 and all("minute" in line.lower() for line in anchored)
         assert len(set(lines)) == len(lines)
 
 
@@ -485,16 +485,14 @@ def test_proper_nouns_come_from_mid_sentence_capitals():
     assert not any("acme" in line for line in lines)
 
 
-def test_unrepeated_all_said_picks_the_oldest_by_time():
-    """Every candidate already said: the one said longest ago comes back, by when it was said, not
-    by where it sits in the lists it came from."""
+def test_unrepeated_all_said_says_nothing():
+    """Every candidate already said: nothing (a repeat is worse than silence), whatever the order."""
     step, age = "reading the logs", 185
     candidates = ["Same line."] + [f"{o}, same line." for o in calls._PULSE_OPENERS] + calls.anchored_lines(step, age)
     # Said in this order in time, newest first in the list: the oldest is the last one.
     said = [(1000.0 - i, line) for i, line in enumerate(candidates)]
-    assert calls.unrepeated("Same line.", said, step, age) == candidates[-1]
-    # Plain list: oldest first.
-    assert calls.unrepeated("Same line.", list(reversed(candidates)), step, age) == candidates[-1]
+    assert calls.unrepeated("Same line.", said, step, age) == ""
+    assert calls.unrepeated("Same line.", list(reversed(candidates)), step, age) == ""
 
 
 def test_interval_setting_validates_and_defaults(service):
@@ -520,7 +518,14 @@ def test_open_mic_cadence_follows_the_interval_setting(service, clock, every):
     worker, backend = setup(service, clock, lambda r, s, t: "I'm reading the build log.")
     worker.interaction.mic_muted = False
     tool(service, backend, clock, "terminal", "make build", "c1", done=False)
-    times = [t for t, _ in run_quiet(worker, clock, 600)]
+    times, n = [], 0
+    start = clock.t
+    while clock.t < start + 600:  # the task does something new every few seconds
+        clock.t += calls.PULSE_TICK_S
+        n += 1
+        tool(service, backend, clock, "read_file", f"src/part{n}.py", f"r{n}")
+        if tick(worker):
+            times.append(clock.t - start)
     assert times[0] <= 20  # the early first line is not part of the setting
     gaps = [b - a for a, b in zip(times, times[1:])]
     assert gaps and all(every <= g <= every + calls.PULSE_TICK_S for g in gaps)
@@ -543,6 +548,7 @@ def test_toggling_mute_mid_call(service, clock):
     worker.interaction.mic_muted = True
     assert run_quiet(worker, clock, 300) == []
     worker.interaction.mic_muted = False
+    tool(service, backend, clock, "read_file", "build.log", "c2")  # something new happened meanwhile
     again = run_quiet(worker, clock, 100)
     assert again and again[0][0] <= calls.PULSE_TICK_S and len(again) <= 3
     assert all(b - a >= calls.PULSE_EVERY_S for (a, _), (b, _) in zip(again, again[1:]))
@@ -587,3 +593,24 @@ def test_two_tasks_at_once_on_an_open_mic(service, clock):
     assert all(len(set(lines)) == len(lines) for lines in by_task.values())
     times = [t for t, _ in said]
     assert all(y - x >= calls.PULSE_FIRST_OPEN_S for x, y in zip(times, times[1:]))
+
+
+def test_progress_update_never_repeats_the_same_words(service, clock):
+    """The quick recap (progress_tick) with a wording model that keeps saying the same thing while
+    the task keeps doing things: said once, then silent until the words change."""
+    worker, backend = setup(service, clock, lambda r, s, t: "Quick update: still comparing the two quotes.")
+    tool(service, backend, clock, "web_search", "quote a", "c1")
+    said = []
+    for n in range(20):
+        clock.t += calls.PULSE_TICK_S * 3
+        tool(service, backend, clock, "read_file", f"quote{n}.pdf", f"r{n}")
+        tick(worker)
+    said = spoken(worker)
+    assert len({calls._said_key(x) for x in said}) == len(said)
+
+
+def test_stale_wait_doubles_up_to_the_cap():
+    assert calls.stale_wait(45, 0) == calls.PULSE_IDLE_EVERY_S
+    assert calls.stale_wait(45, 1) == 2 * calls.PULSE_IDLE_EVERY_S
+    assert calls.stale_wait(45, 9) == calls.PULSE_STALE_MAX_S
+    assert calls.stale_wait(120, 0) == 120
