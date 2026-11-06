@@ -60,6 +60,64 @@ def test_anything_else_is_not_guessed(error):
     assert failures.failure_kind(error) is None
 
 
+# Invented safety-filter refusals, shaped like what Hermes puts on a failed run (its own
+# ``content_policy_blocked: …`` verdict, or a provider's refusal wording relayed in the error).
+REFUSALS = [
+    "content_policy_blocked: Your request was blocked by an automatic filter. Please rephrase.",
+    "content_policy_blocked: model declined (content_filter)",
+    "HTTP 400: Your request was blocked: it was flagged by our safety system as possibly unsafe. content_policy_block",
+    "HTTP 400: Invalid prompt: your prompt was flagged by our safety system.",
+    "HTTP 403: This request violates our usage policies. Your request was blocked.",
+    "HTTP 400: finish_reason=content_filter",
+    "provider refusal category: cyber",
+]
+
+
+@pytest.mark.parametrize("error", REFUSALS)
+def test_a_safety_refusal_is_never_a_firewall(error):
+    """A refusal that says "your request was blocked" is the model's filter, never a firewall,
+    the key, or credits: the card says so and offers a retry or another model."""
+    assert failures.failure_kind(error) == "content_refused"
+    assert "firewall" not in failures.failure_reason("failed", "content_refused")
+    assert failures.failure_reason("failed", "content_refused") == "The model's safety filter refused this request."
+    assert failures.reason_text("content_refused") == ("The model's safety filter refused this request. "
+                                                       "Try again, or switch model for this chat.")
+
+
+@pytest.mark.parametrize("error", [
+    "HTTP 403 — Attention Required! | Cloudflare",
+    "HTTP 403 — Just a moment...",
+    "HTTP 403: <!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head>"
+    "<body><div class=\"cf-error-details\">Sorry, you have been blocked</div></body></html>",
+    "HTTP 503: <html><body><form id=\"challenge-form\" action=\"/cdn-cgi/challenge-platform/h/b\"></form></body></html>",
+])
+def test_only_a_real_challenge_page_is_called_a_firewall(error):
+    assert failures.failure_kind(error) is None
+    assert failures.failure_hint(error) == "blocked"
+    assert "firewall" in failures.failure_reason("failed", None, failures.failure_hint(error))
+
+
+def test_plain_blocked_words_are_not_a_firewall():
+    """No HTML page, no refusal marker: "request was blocked" alone isn't proof of a firewall."""
+    for error in ("HTTP 403: Your request was blocked.", "HTTP 400: request blocked"):
+        assert failures.failure_hint(error) != "blocked"
+        assert "firewall" not in failures.failure_reason("failed", failures.failure_kind(error),
+                                                         failures.failure_hint(error))
+
+
+def test_a_refusal_reply_is_read_as_a_refusal():
+    """The session chat stream has no error field: Hermes' refusal reply opens with its own fixed
+    sentence, then quotes the provider, whose line alone would read like a block page."""
+    reply = ("⚠️ Anthropic's safety filter refused this request, so the model didn't answer. Try rewording "
+             "your message or removing sensitive attachments, or switch to another model with /model.\n\n"
+             "Provider said: Your request was blocked.")
+    line = failures.provider_line(reply)
+    assert line.startswith("content_policy_blocked: ") and failures.failure_kind(line) == "content_refused"
+    # Any other failure reply keeps its provider line as it was.
+    assert failures.provider_line("Something broke.\n\nProvider said: HTTP 404: model not found") == \
+        "Provider said: HTTP 404: model not found"
+
+
 def test_the_sentences_are_speakeasys_own():
     for kind, (label, text) in failures.REASONS.items():
         assert label and text and failures.reason_text(kind) == text
@@ -248,6 +306,17 @@ def test_continued_conversation_failure_is_explained(server, service, hermes, mo
     assert not any("Diem" in c for _, _, c in worker.sent)
 
 
+def test_safety_refusal_reaches_the_card_and_the_voice(server, service, hermes):
+    hermes.fail_with = REFUSALS[0]
+    _, worker = start_call(server, service)
+    worker.delegate("call_refused", "Tidy up the checkout tests")
+    task = failed_task(server)
+    assert task["failure"]["kind"] == "content_refused"
+    assert task["failure_reason"] == "The model's safety filter refused this request."
+    assert "firewall" not in json.dumps(task) and "automatic filter" not in json.dumps(task)
+    wait_for(lambda: P.failed_because(failures.voice_text("content_refused")) in spoken(worker))
+
+
 def test_failure_reply_read_back_from_the_run_status(server, service, hermes):
     """The stream drops and GET /v1/runs returns a session-chat-shaped failed run: the reply is
     Hermes' failure message and there is no error field. Only its kind is kept."""
@@ -291,5 +360,6 @@ def test_voice_never_reads_a_command_aloud():
         assert said and "hermes model" not in said and "voice setup" not in said and "`" not in said
         assert not looks_like_command(said)
         assert "in the app" in said
-        assert "hermes " in failures.reason_text(kind)  # the on-screen text keeps the command
+        if kind != "content_refused":  # its fix is in the app (Try again, Switch model), not a command
+            assert "hermes " in failures.reason_text(kind)  # the on-screen text keeps the command
     assert "in the app" not in failures.voice_text(failures.UNKNOWN)
