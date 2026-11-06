@@ -1,7 +1,9 @@
 """Pytest wiring: fake Hermes, temp HERMES_HOME, a VoiceService with a fake live worker, a live server."""
 from __future__ import annotations
 
+import errno
 import shutil
+import socket
 
 import pytest
 
@@ -47,6 +49,54 @@ def no_global_hermes_sign_ins(monkeypatch):
     except ImportError:
         return
     monkeypatch.setattr(auth, "_global_auth_file_path", lambda: None)
+
+
+# Hermes' default API server port. On a dev machine that is the owner's live Hermes, so no test may
+# ever connect to it: the guard below is installed once for the whole run (also covering threads a
+# test leaves behind) and every connect to the port is refused and recorded.
+from speakeasy import settings as _settings  # noqa: E402
+
+HERMES_API_PORTS = frozenset({8642, _settings.DEFAULT_HERMES_API_PORT})
+REAL_HERMES_API_HITS: list[tuple[str, int]] = []
+_REAL_CONNECT = socket.socket.connect
+_REAL_CONNECT_EX = socket.socket.connect_ex
+
+
+def _to_real_hermes_api(address) -> bool:
+    if isinstance(address, tuple) and len(address) >= 2 and address[1] in HERMES_API_PORTS:
+        REAL_HERMES_API_HITS.append((str(address[0]), int(address[1])))
+        return True
+    return False
+
+
+def _guarded_connect(self, address):
+    if _to_real_hermes_api(address):
+        raise ConnectionRefusedError(errno.ECONNREFUSED,
+                                     f"tests may not reach a real Hermes API ({address[0]}:{address[1]})")
+    return _REAL_CONNECT(self, address)
+
+
+def _guarded_connect_ex(self, address):
+    if _to_real_hermes_api(address):
+        return errno.ECONNREFUSED
+    return _REAL_CONNECT_EX(self, address)
+
+
+socket.socket.connect = _guarded_connect  # type: ignore[method-assign]
+socket.socket.connect_ex = _guarded_connect_ex  # type: ignore[method-assign]
+
+
+@pytest.fixture(autouse=True)
+def no_real_hermes_api():
+    """Fail any test that tried to reach a real Hermes API server, even when the code under test
+    swallowed the refused connection (a model-options lookup that quietly falls back still fails)."""
+    start = len(REAL_HERMES_API_HITS)
+    yield
+    hits = REAL_HERMES_API_HITS[start:]
+    if hits:
+        pytest.fail(f"this test tried to reach a real Hermes API at {hits[0][0]}:{hits[0][1]} "
+                    f"({len(hits)} connection(s)); give it the fake Hermes (the `hermes` fixture) "
+                    "or a fake opener instead", pytrace=False)
 
 
 @pytest.fixture

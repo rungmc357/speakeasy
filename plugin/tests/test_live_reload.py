@@ -37,7 +37,7 @@ def _set_version(pkg: Path, version: str) -> None:
 
 
 @pytest.fixture
-def plugin():
+def plugin(hermes):
     """A copy of the plugin under its own package name, as Hermes would load it."""
     root = Path(tempfile.mkdtemp(prefix="speakeasy-reload-"))
     name = f"sp_reload_{int(time.time() * 1000) % 10**8}"
@@ -45,7 +45,7 @@ def plugin():
     shutil.copytree(SRC, pkg, ignore=shutil.ignore_patterns("__pycache__"))
     _set_version(pkg, "1.0.0")
     sys.path.insert(0, str(root))
-    home = make_home()
+    home = make_home(hermes.httpd.server_address[1])  # its Hermes calls reach the fake, never 8642
     reloader_mod = importlib.import_module(f"{name}.reloader")
     port = _free_port()
     r = reloader_mod.LiveReloader(name, pkg, home, "127.0.0.1", port, check_s=3600)  # ticks driven by the test

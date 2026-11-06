@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from fakes import FAKE_API_KEY
 from fake_codex import DEVICE_URL, USER_CODE, fake_log, make_fake_codex
 from speakeasy import codex_login as CL
 from speakeasy import codex_transport as ct
@@ -45,12 +46,15 @@ def make_service(home: Path, candidates, installer=None):
 
 
 @pytest.fixture
-def svc(tmp_path, codex_home):
+def svc(tmp_path, codex_home, hermes):
     made = []
 
     def build(candidates, installer=None, provider="codex"):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(exist_ok=True)
+        # The service's Hermes calls (model list etc.) go to the fake Hermes, never the real port.
+        (hermes_home / ".env").write_text(f"API_SERVER_KEY={FAKE_API_KEY}\n"
+                                          f"API_SERVER_PORT={hermes.httpd.server_address[1]}\n")
         s = make_service(hermes_home, candidates, installer)
         s.settings.patch({"voice": {"provider": provider}})
         made.append(s)
