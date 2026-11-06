@@ -2,8 +2,9 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Plugin 0.3.37 (unreleased) — What each chat used
+## Plugin 0.3.37 (unreleased) — Which model ran each task, and what each chat used
 
+- **Model and context on every task.** Each task card and chat page now says, quietly, which model did the work and how full its context window got — "Claude Opus 5.5 · about 22% of context used · 3 min", the same footer Discord and Telegram can show. A running task updates as it goes; a finished one keeps the figure from when it finished. Open it for the token count and the peak. It's an estimate from the token counts the provider reported, and it appears once a task runs after this update. (Mac app and iPhone app.)
 - **Usage per chat.** Every conversation now shows what it used: an estimated cost ("About $2.50 · estimate"), or "Included in your ChatGPT plan" for a plan sign-in, or "No price known" for a model without a price. Open it for the token counts (sent, reused from cache, written, thinking), model calls and a per-model split. It counts the chat's helpers and, for a Discord or Telegram chat continued in Speakeasy, the follow-ups too. The figures come from what Hermes already records and are always labelled as estimates. (Mac app and iPhone app.)
 
 ## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing

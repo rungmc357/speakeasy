@@ -247,10 +247,16 @@ class StateStore:
                 self._db.execute("ALTER TABLE runs ADD COLUMN parent TEXT")
             if "model" not in columns:  # the model/reasoning it was started with and what Hermes served (models.py)
                 self._db.execute("ALTER TABLE runs ADD COLUMN model TEXT")
+            if "context" not in columns:  # its last model call when it finished: model + context fill (context_use.py)
+                self._db.execute("ALTER TABLE runs ADD COLUMN context TEXT")
             # A chosen model/reasoning (models.py): scope "session:<hermes session id>" (Use for this chat)
             # or "task:<idem key>" (one task: a voice preset, a new chat's first job).
             self._db.execute("""CREATE TABLE IF NOT EXISTS model_choices (
                 scope TEXT PRIMARY KEY, model TEXT, reasoning TEXT, updated REAL NOT NULL)""")
+            # The newest model call per Hermes session: which model answered and how full its context
+            # was (context_use.py; Hermes never saves the figure, so it is recorded as the work runs).
+            self._db.execute("""CREATE TABLE IF NOT EXISTS context_use (
+                session_id TEXT PRIMARY KEY, record TEXT NOT NULL, at REAL NOT NULL)""")
             # Finished tasks that never had a Hermes run id (quick answers, home control) could not be
             # cleared: "Clear done" and the x address tasks by run id. Give them their local id.
             settled = sorted(TERMINAL | {"rejected"})
@@ -317,6 +323,26 @@ class StateStore:
             row = self._db.execute("SELECT model, reasoning, updated FROM model_choices WHERE scope=?",
                                    (scope,)).fetchone()
         return {"model": row[0], "reasoning": row[1], "updated": row[2]} if row else None
+
+    def record_context(self, session_id: str, record: dict[str, Any]) -> None:
+        """Keep one session's newest context record (context_use.after_api_request); records older
+        than 60 days are dropped now and then so the table stays small."""
+        now = time.time()
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO context_use (session_id, record, at) VALUES (?,?,?)",
+                             (session_id, json.dumps(record), now))
+            self._context_writes = getattr(self, "_context_writes", 0) + 1
+            if self._context_writes % 500 == 1:
+                self._db.execute("DELETE FROM context_use WHERE at < ?", (now - 60 * 86400,))
+
+    def context_record(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._db.execute("SELECT record FROM context_use WHERE session_id=?", (session_id,)).fetchone()
+        try:
+            value = json.loads(row[0]) if row else None
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
 
     def set_run_model(self, key: str, record: dict[str, Any]) -> None:
         with self._lock, self._db:
@@ -897,6 +923,7 @@ class StateStore:
 
     def update_run(self, key: str, run_id: str | None, status: str) -> None:
         now = time.time()
+        snapshot = self._context_snapshot(key) if status in TERMINAL else None
         with self._lock, self._db:
             self._db.execute("UPDATE runs SET run_id=COALESCE(?,run_id),status=?,updated=? WHERE idem_key=?",
                              (run_id, status, now, key))
@@ -906,6 +933,65 @@ class StateStore:
                                  (local_run_id(key), key))
             if status in SETTLED:
                 self._db.execute("UPDATE runs SET settled_at=? WHERE idem_key=?", (now, key))
+                if snapshot is not None:
+                    # Frozen as it finished: a later task in the same chat must not change this one's figure.
+                    self._db.execute("UPDATE runs SET context=? WHERE idem_key=? AND context IS NULL", (json.dumps(snapshot), key))
+
+    def _context_record_since(self, session_id: str | None, since: float | None) -> dict[str, Any] | None:
+        """The session's newest model call (context_use) if it happened after ``since`` (the task's start)."""
+        from . import context_use as CU
+        if not session_id:
+            return None
+        rec = CU.latest(session_id) or self.context_record(session_id)
+        if (rec is None or (since and (rec.get("at") or 0) < since - 1)) and self.hermes_home:
+            # Hermes compressed the conversation mid-task: the work goes on in a continuation session.
+            tip = self._compression_tip(session_id)
+            if tip != session_id:
+                rec = CU.latest(tip) or self.context_record(tip)
+        if rec is None or (since and (rec.get("at") or 0) < since - 1):
+            return None
+        return rec
+
+    def _compression_tip(self, session_id: str) -> str:
+        """The newest compression continuation of a Hermes session (cached 30 s; state.db read-only)."""
+        cache = self.__dict__.setdefault("_tip_cache", {})
+        hit = cache.get(session_id)
+        if hit and time.time() - hit[1] < 30:
+            return hit[0]
+        from . import history as H
+        tip = session_id
+        db = H._open(Path(self.hermes_home) / "state.db") if self.hermes_home else None
+        if db is not None:
+            try:
+                tip = H._tips(db, {session_id}).get(session_id, session_id)
+            except Exception:
+                tip = session_id
+            finally:
+                db.close()
+        if len(cache) > 500:
+            cache.clear()
+        cache[session_id] = (tip, time.time())
+        return tip
+
+    def _context_snapshot(self, key: str) -> dict[str, Any] | None:
+        try:
+            with self._lock:
+                row = self._db.execute("SELECT session_id, created FROM runs WHERE idem_key=?", (key,)).fetchone()
+            return self._context_record_since(row[0], row[1]) if row else None
+        except Exception:
+            return None
+
+    def run_context(self, key: str, session_id: str | None, status: str, created: float | None) -> dict[str, Any] | None:
+        """The context record for one task: frozen when it finished, live while it runs."""
+        if status in TERMINAL:
+            with self._lock:
+                row = self._db.execute("SELECT context FROM runs WHERE idem_key=?", (key,)).fetchone()
+            try:
+                value = json.loads(row[0]) if row and row[0] else None
+            except ValueError:
+                value = None
+            return value if isinstance(value, dict) else None
+        return self._context_record_since(session_id, created)
 
     def set_failure(self, key: str, kind: str | None, hint: str | None = None) -> None:
         """Why the run failed, as a ``failures`` kind (the app and voice get Speakeasy's own words),
@@ -1552,6 +1638,19 @@ class StateStore:
             described = describe(model_record)
             if described:
                 work["model"] = described
+        try:
+            ctx_rec = self.run_context(key, session_id, status, created)
+        except Exception:
+            ctx_rec = None
+        if ctx_rec:
+            # Which model answered its latest call and how full the context was (context_use.py), with how
+            # long it took once finished: the chat-platform footer, shown quietly on the card. An estimate.
+            from . import context_use as CU
+            from .models import friendly_name
+            took = (settled_at - created) if status in TERMINAL and settled_at and created else None
+            ctx = CU.describe(ctx_rec, seconds=took, name_for=friendly_name)
+            if ctx:
+                work["context"] = ctx
         behind = self.queued_behind(key, session_id, status)
         if behind:
             # Queued in its chat thread behind another task's turn: shown as waiting for that task

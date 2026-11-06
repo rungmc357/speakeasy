@@ -106,6 +106,7 @@ def register(ctx) -> None:
     )
     _register_routing_task(ctx)
     _register_secure_input_hook(ctx)
+    _register_context_hook(ctx)
     ctx.register_cli_command(
         "voice", help="Speakeasy voice: setup, pairing and devices",
         setup_fn=setup_parser, handler_fn=handle,
@@ -137,3 +138,28 @@ def _register_secure_input_hook(ctx) -> None:
         register("post_tool_call", after_tool_call)
     except Exception as exc:
         logger.warning("speakeasy: could not register the secure input hook: %s", type(exc).__name__)
+
+
+def _context_hook(**kwargs) -> None:
+    """Resolved at call time: a live reload swaps ``context_use`` for new code, and Hermes keeps
+    calling the function registered at startup."""
+    import sys
+    module = sys.modules.get(f"{__name__}.context_use")
+    if module is None:
+        try:
+            from . import context_use as module
+        except Exception:
+            return
+    module.after_api_request(**kwargs)
+
+
+def _register_context_hook(ctx) -> None:
+    """After every model call Hermes says which model answered and how many tokens it read: kept per
+    session so task cards and session pages can show the model and how full its context got."""
+    register = getattr(ctx, "register_hook", None)
+    if not callable(register):
+        return
+    try:
+        register("post_api_request", _context_hook)
+    except Exception as exc:
+        logger.warning("speakeasy: could not register the context hook: %s", type(exc).__name__)
