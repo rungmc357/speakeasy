@@ -203,6 +203,8 @@ public struct WorkInfo: Equatable, Sendable {
     /// Nothing in it to read: a finished home command ("lights off") the server already counts as
     /// seen, so it never sits in New answers. The answer is still there when the job is opened.
     public var seen = false
+    /// The user cleared this finished task from the board (on any device; the plugin's `dismissed`).
+    public var dismissed = false
     /// Its question was answered (on any device): it waits on nobody (the plugin's one truth).
     public var answered = false
     /// History pages (plugins from 0.3.34): whether THIS task's question is the one still waiting.
@@ -338,6 +340,7 @@ public struct WorkInfo: Equatable, Sendable {
         context = ContextUse(json: object["context"])
         setAside = object["set_aside"] as? Bool ?? false
         seen = object["seen"] as? Bool ?? false
+        dismissed = object["dismissed"] as? Bool ?? false
         answered = object["answered"] as? Bool ?? false
         questionOpen = object["question_open"] as? Bool
         questionClosed = nonEmpty(object["question_closed"])
