@@ -474,6 +474,14 @@ public final class ServerClient: @unchecked Sendable {
                            body: try JSONSerialization.data(withJSONObject: AgentRoster.allowedPatch(ids)))
     }
 
+    // MARK: Skills (servers with `slash_skills`; docs/API.md "Skills")
+
+    /// The skills a "/" in the message box offers.
+    public func slashSkills() async throws -> [SlashSkill] {
+        let reply = try await json("/voice/skills")
+        return ((reply["skills"] as? [[String: Any]]) ?? []).compactMap(SlashSkill.init(json:))
+    }
+
     // MARK: Models (servers with `model_choice`; docs/API.md "Models")
 
     /// The models Hermes offers, the default and the fast/smart presets.

@@ -1297,6 +1297,26 @@ Speakeasy chat can talk to any profile the user allowed. Capability `agents`.
   steer and approvals go to the same profile.
 - History rows and session pages of a chat on another agent carry `agent: {id, name, description?}`;
   the chat is read from that profile's `state.db` and listed in the same feed by time.
+## Skills
+
+`capabilities.slash_skills` (plugin 0.3.37+). Typing `/` at the start of a message box offers the
+user's Hermes skills; a message that starts with `/<skill>` (or several stacked, `/a /b do this`) runs
+that skill, the same way `/skill` works in Telegram or Discord.
+
+### GET /voice/skills
+
+`{"skills": [{"command": "soup-scaler", "name": "soup-scaler", "description": "Use when scaling a soup
+recipe.", "category": "cooking"}]}` — every skill enabled for the API server, sorted by `command`
+(what goes after the slash). Descriptions are one line, at most 160 characters. An older Hermes
+without skill commands returns an empty list.
+
+### Sending a skill
+
+No new route: send `"/soup-scaler for twelve"` as the `text` of `POST /voice/work`,
+`/voice/work/{run_id}/message` or `/voice/history/{session_id}/message`. The plugin builds the skill
+block with Hermes' own `agent.skill_commands` (its full instructions plus the words after the command)
+and adds it to the task's prompt (or to the steer, for a running task). The session page shows only
+what was typed. A `/word` that isn't an enabled skill is sent as plain text.
 
 ## Schedules
 

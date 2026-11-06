@@ -566,7 +566,8 @@ TYPED_MESSAGES = "Recent messages typed in the Speakeasy app"
 
 
 def build_task_prompt(names: Names, revision: int, context: str, focus: str | None = None,
-                      delivery_label: str = "", shared: str = "", room: str = "", typed: bool = False) -> str:
+                      delivery_label: str = "", shared: str = "", room: str = "", typed: bool = False,
+                      skill: str = "") -> str:
     """Prompt for a voice task running in its own Hermes session, beside other tasks.
 
     The session is private to this task (and its follow-ups), so it names the job and carries the
@@ -575,7 +576,9 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
     room transcript, labeled as background, just before the call transcript that holds the request.
     ``typed``: the task came from the app with no call (a message typed or recorded on a page), so
     the brief says so and its messages are not labeled a voice transcript (the history would show it
-    as "From a call")."""
+    as "From a call").
+    ``skill``: the skill block Hermes builds for a typed ``/skill …`` request (skills.invocation), placed
+    before the transcript so the person's words stay its last "User:" line (what history shows)."""
     where = (f"your final answer is still shown in the Speakeasy app and posted to {delivery_label}"
              if delivery_label else "your final answer is still shown in the Speakeasy app")
     heard = task_room_block(names, room) if room.strip() else ""
@@ -603,6 +606,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         + (shared + " " if shared else "")
         + status_rule(names) + "\n\n"
         + (heard + "\n\n" if heard else "")
+        + (skill.strip() + "\n\n" if skill and skill.strip() else "")
         + (f"{TYPED_MESSAGES} (revision {revision}):\n{context}" if typed else
            f"Recent timestamped voice transcript (revision {revision}):\n{context}")
     )

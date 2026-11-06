@@ -1564,7 +1564,9 @@ struct HistoryComposer: View {
                 .foregroundStyle(Live.brassText)
                 .padding(.horizontal, 6)
             }
-            if store.offersMessageModes && !inline { HistoryMessageModeBar(store: store) }
+            if store.slashOpen {
+                SlashSkillList(store: store).transition(.opacity.combined(with: .move(edge: .bottom)))
+            } else if store.offersMessageModes && !inline { HistoryMessageModeBar(store: store) }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(placeholder, text: Binding(get: { store.draft }, set: { store.draft = $0 }), axis: .vertical)
                     .textFieldStyle(.plain).font(.system(size: 13.5)).lineLimit(1...8)
@@ -1578,6 +1580,17 @@ struct HistoryComposer: View {
                         .strokeBorder(reviewing ? Live.brass.opacity(0.5) : focused ? Live.brass.opacity(0.5) : Live.hairline,
                                       lineWidth: focused || reviewing ? 1 : 0.5))
                     .accessibilityIdentifier("history-composer")
+                    .onKeyPress(keys: [.upArrow, .downArrow, .tab, .escape]) { press in
+                        guard store.slashOpen else { return .ignored }
+                        switch press.key {
+                        case .upArrow: store.slash.move(-1)
+                        case .downArrow: store.slash.move(1)
+                        case .escape: store.slash.dismiss()
+                        default: if let skill = store.slash.highlightedSkill { store.pickSkill(skill) }
+                        }
+                        return .handled
+                    }
+                    .onChange(of: store.draft) { _, new in store.slash.update(text: store.skillsSupported ? new : "") }
                 if store.voice.micVisible && (empty || reviewing) {
                     circle(reviewing ? "arrow.counterclockwise" : "mic.fill",
                            help: reviewing ? "Record again" : "Record a voice message",
@@ -1651,8 +1664,13 @@ struct HistoryComposer: View {
                 case .recording, .asking, .transcribing: Text("Transcribed on this Mac. Nothing is sent until you press Send.")
                 case .reviewing: Text("↩ send as a voice message · esc discard · replies show here only")
                 default:
-                    Text(store.voice.micVisible ? "↩ send · ⌥↩ new line · replies show here only"
-                                                : "↩ send · ⌥↩ new line · voice messages pause while you're on a call")
+                    if let skill = store.draftSkill {
+                        Image(systemName: "sparkles").foregroundStyle(Live.brassText)
+                        Text("Uses your \(skill.command) skill · ↩ send").foregroundStyle(Live.brassText)
+                    } else {
+                        Text(store.voice.micVisible ? "↩ send · ⌥↩ new line · replies show here only"
+                                                    : "↩ send · ⌥↩ new line · voice messages pause while you're on a call")
+                    }
                 }
             }
             Spacer()
@@ -1667,6 +1685,47 @@ struct HistoryComposer: View {
                 .frame(width: 34, height: 34).background(Circle().fill(fill))
         }
         .buttonStyle(.plain).help(help).accessibilityLabel(help)
+    }
+}
+
+/// The "/" list over the composer: the user's Hermes skills matching what's typed after the slash.
+/// Click a row, or ↑↓ then ↩/tab; esc closes it. Picking puts "/command " in the field.
+struct SlashSkillList: View {
+    @ObservedObject var store: HistoryStore
+
+    var body: some View {
+        let menu = store.slash
+        VStack(alignment: .leading, spacing: 0) {
+            Text("SKILLS").font(.system(size: 10, weight: .bold)).tracking(0.7).foregroundStyle(.tertiary)
+                .padding(.horizontal, 12).padding(.top, 9).padding(.bottom, 4)
+            ForEach(Array(menu.matches.enumerated()), id: \.element.id) { index, skill in
+                Button { store.pickSkill(skill) } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text("/" + skill.command).font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(index == menu.highlighted ? Live.brassText : Color.primary)
+                            .lineLimit(1).layoutPriority(1)
+                        Text(skill.description).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(index == menu.highlighted ? Live.brass.opacity(0.14) : Color.clear))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { if $0 { store.slash.highlighted = index } }
+                .accessibilityIdentifier("slash-skill-\(skill.command)")
+            }
+            Text("↑↓ choose · ↩ or tab pick · esc close").font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 8)
+        }
+        .padding(.horizontal, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(HistoryLook.window))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Live.hairline, lineWidth: 0.75))
+        .shadow(color: .black.opacity(0.10), radius: 10, y: 2)
+        .accessibilityIdentifier("slash-skills")
     }
 }
 

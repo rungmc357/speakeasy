@@ -900,6 +900,9 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var questionState: Bool = false
     /// Which Hermes profile a chat talks to (`GET /voice/agents`, AgentChoice.swift).
     public var agents: Bool = false
+    /// Typing "/" lists the user's Hermes skills (`GET /voice/skills`, SlashSkills.swift); a sent
+    /// "/skill words" runs that skill.
+    public var slashSkills: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -916,6 +919,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
         case messageModes = "message_modes", questionState = "question_state", agents
+        case slashSkills = "slash_skills"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -937,5 +941,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         transcribe = (try? c.decodeIfPresent(Bool.self, forKey: .transcribe)) ?? false
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
+        slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false
     }
 }

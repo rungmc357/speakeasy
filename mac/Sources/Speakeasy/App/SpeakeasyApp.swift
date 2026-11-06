@@ -159,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.schedulesSupported = caps?.schedules ?? false
                     self.wireHermesTranscription(caps?.transcribe ?? false)
                     self.history.store.boardsSupported = caps?.boards ?? false
+                    self.history.store.skillsSupported = caps?.slashSkills ?? false
                 }
             }
             .store(in: &bag)
@@ -600,6 +601,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         wireHermesTranscription(app.status?.capabilities?.transcribe ?? false)
         if store.board.backend == nil { store.board.backend = LiveBoardBackend { [weak self] in self?.native.api } }
         store.boardsSupported = app.status?.capabilities?.boards ?? false
+        store.skillsSupported = app.status?.capabilities?.slashSkills ?? false
         store.setCallLive(native.model.state.connection.isInCall)
         history.show()
         if let session { store.open(session) }

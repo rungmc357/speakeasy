@@ -27,6 +27,8 @@ protocol HistoryBackend: AnyObject {
     /// A message held for when the task finishes: cancel it, or send it now (servers with `message_modes`).
     func cancelQueued(sessionID: String, clientID: String) async throws
     func steerQueued(sessionID: String, clientID: String) async throws
+    /// Servers with `slash_skills`: the skills "/" offers in the composer.
+    func skills() async throws -> [SlashSkill]
 }
 
 /// What the row's context menu (and swipes) do to a conversation.
@@ -42,6 +44,7 @@ extension HistoryBackend {
     func cancelQueued(sessionID: String, clientID: String) async throws {}
     func steerQueued(sessionID: String, clientID: String) async throws {}
     func agents() async throws -> AgentRoster { AgentRoster(agents: []) }
+    func skills() async throws -> [SlashSkill] { [] }
 }
 
 @MainActor
@@ -60,6 +63,7 @@ final class LiveHistoryBackend: HistoryBackend {
     }
     func dismissQuestion(runID: String, undo: Bool) async throws { try await api.dismissQuestion(runID: runID, undo: undo) }
     func models() async throws -> ModelCatalog { try await api.models() }
+    func skills() async throws -> [SlashSkill] { try await api.slashSkills() }
     func setSessionModel(_ request: SessionModelRequest) async throws { try await api.setSessionModel(request) }
     func setDefaultModel(_ defaults: JobModelDefaults) async throws { try await api.setJobModelDefaults(defaults) }
     func cancelQueued(sessionID: String, clientID: String) async throws {
@@ -128,6 +132,10 @@ final class HistoryStore: ObservableObject {
     @Published private(set) var roster: AgentRoster?
     /// New chat's agent (nil = Speakeasy's own); the chat it becomes stays with it.
     @Published var newChatAgent: String?
+    /// The server has `capabilities.slash_skills`: typing "/" lists the user's skills.
+    @Published var skillsSupported = false { didSet { if skillsSupported && !oldValue { loadSkills() } } }
+    /// The "/" pop-up over the composer.
+    @Published var slash = SlashMenu()
     /// Scheduled (Hermes cron jobs; servers with `schedules`): the sidebar row and its pane.
     let schedules = SchedulesModel()
     let scheduleDictation = ScheduleDictation()
@@ -157,6 +165,7 @@ final class HistoryStore: ObservableObject {
         if list.sessions.isEmpty && !list.loading { run(list.reset()) }
         if modelsSupported { loadModels() }
         if agentsSupported { loadAgents() }
+        if skillsSupported { loadSkills() }
         if schedulesSupported, !schedules.loaded { Task { await schedules.reload() } }
         if boardsSupported, !board.loaded { Task { await board.reload() } }
         if showingBoard { board.startRefreshing() }
@@ -382,7 +391,30 @@ final class HistoryStore: ObservableObject {
     var draftKey: String { target?.sessionID ?? "new" }
     var draft: String {
         get { drafts[draftKey] ?? "" }
-        set { drafts[draftKey] = newValue }
+        set { drafts[draftKey] = newValue; slash.update(text: skillsSupported ? newValue : "") }
+    }
+
+    // MARK: Skills ("/" in the composer; servers with `slash_skills`)
+
+    func loadSkills() {
+        guard let backend else { return }
+        Task { [weak self] in
+            if let list = try? await backend.skills() { self?.slash.skills = list; self?.slash.update(text: self?.draft ?? "") }
+        }
+    }
+
+    /// The "/" list shows: a lone "/word" is being typed in this composer and skills match it.
+    var slashOpen: Bool {
+        skillsSupported && slash.isOpen && SlashMenu.commandQuery(draft) == slash.query
+    }
+
+    /// The skill the draft starts with ("/soup-scaler for twelve" → soup-scaler): the hint names it.
+    var draftSkill: SlashSkill? { skillsSupported ? slash.leadingSkill(in: draft) : nil }
+
+    /// A row of the "/" list (click, ↩ or tab): "/command " in the field, ready for the request.
+    func pickSkill(_ skill: SlashSkill) {
+        draft = slash.pick(skill, in: draft)
+        focusComposer += 1
     }
 
     // MARK: Steer or queue (servers with `message_modes`, only while a run is active)
@@ -430,7 +462,9 @@ final class HistoryStore: ObservableObject {
 
     /// ↩ / Send: what's in the field. Words from a voice message under review go as `voice_message`.
     /// `alternate` (⌘↩): the other of Steer now / When it's done, while a run is active.
+    /// With the "/" list open, ↩ picks the highlighted skill instead.
     func send(alternate: Bool = false) {
+        if slashOpen, let skill = slash.highlightedSkill { pickSkill(skill); return }
         let source: HistoryMessageRequest.Source = voice.reviewing ? .voiceMessage : .typed
         let answers = replyingTo.flatMap { r in conversations[target?.sessionID ?? ""].map { thread($0) }?
             .waiting.contains(where: { $0.id == r.id }) == true ? r.questionRunID : nil }
