@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import difflib
 import json
 import logging
 import os
@@ -28,17 +27,12 @@ from .text import ID_RE, clean_transcript
 
 
 def _same_words(typed: str, heard: str) -> bool:
-    """A transcript that says what was typed: the same words ignoring case and punctuation, or, for
-    four words or more, at least 80% of them in order (an echo that reworded a word or two). Short
-    turns ("yes", "turn it off") must match exactly, so a different short answer is never eaten."""
+    """A transcript that says exactly what was typed: the same words in the same order, ignoring
+    case and punctuation. Never by similarity: a dropped transcript is lost, and a near match is
+    often a real spoken correction that changes one word ("heater off" right after typing "heater
+    on"). A reworded echo is at worst recorded twice, which loses nothing."""
     a, b = _words(typed).replace("'", "").split(), _words(heard).replace("'", "").split()
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    if min(len(a), len(b)) < 4:
-        return False
-    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= 0.8
+    return bool(a) and a == b
 
 REPEAT_HANDOFF_S = 8.0  # the same words handed off again this soon are a repeat, not a new request
 
@@ -422,8 +416,8 @@ class CodexSidebandWorker(SidebandWorker):
         yes drops a real spoken turn: only within TYPED_ECHO_S of the voice taking the turn, each
         typed turn suppresses at most one transcript, and the first user transcript that isn't a
         match ends every pending window (an echo comes as the next user turn, so the user is now
-        talking and anything they say, the same words included, is theirs). Words are compared
-        loosely (case, punctuation, a reworded word or two) so a reworded echo isn't recorded twice."""
+        talking and anything they say, the same words included, is theirs). Words must match
+        exactly (case and punctuation aside), so a one-word spoken correction is never dropped."""
         now = time.monotonic()
         live = [entry for entry in self.typed_echoes if now - entry[1] <= TYPED_ECHO_S]
         self.typed_echoes.clear()

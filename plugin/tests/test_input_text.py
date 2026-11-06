@@ -401,17 +401,29 @@ def test_an_echo_is_suppressed_once_only(server, codex_call):
     assert user_texts(worker) == ["Turn on the den lights", "Turn on the den lights"]
 
 
-def test_a_reworded_echo_is_not_recorded_twice(server, codex_call):
+def test_a_one_word_spoken_correction_right_after_typing_is_kept(server, codex_call):
+    interaction, worker, transport = codex_call
+    assert typed(server, interaction.interaction_id, turn("Turn the bedroom heater on"))[0] == 200
+    # Inside the echo window the user says the same line with one word changed: a correction.
+    run_on(worker, worker._user_turn("Turn the bedroom heater off."))
+    assert user_texts(worker) == ["Turn the bedroom heater on", "Turn the bedroom heater off."]
+    assert list(worker.typed_echoes) == []  # and it ended the window
+
+
+def test_a_reworded_echo_is_recorded_rather_than_risk_dropping_real_words(server, codex_call):
     interaction, worker, transport = codex_call
     assert typed(server, interaction.interaction_id, turn("Turn on the den lights please"))[0] == 200
     run_on(worker, worker._user_turn("turn on the den light, please."))
-    assert user_texts(worker) == ["Turn on the den lights please"]
+    assert user_texts(worker) == ["Turn on the den lights please", "turn on the den light, please."]
     assert len(typed_events(interaction)) == 1
 
 
-def test_echo_matching_is_loose_about_wording_but_exact_for_short_turns():
+def test_echo_matching_is_exact_apart_from_case_and_punctuation():
     assert C._same_words("What's up?", "whats up")
-    assert C._same_words("Turn on the den lights please", "Turn on the den light, please.")
+    assert C._same_words("Turn on the den lights, please", "turn on the den lights please.")
+    assert not C._same_words("Turn on the den lights please", "Turn on the den light, please.")
+    assert not C._same_words("Turn the bedroom heater on", "Turn the bedroom heater off")
+    assert not C._same_words("Dim the den lamps to half now", "Dim the den lamps to half")
     assert not C._same_words("yes", "yeah")
     assert not C._same_words("turn it off", "turn it on")
     assert not C._same_words("Turn on the den lights", "Tell me about the weather tomorrow")
