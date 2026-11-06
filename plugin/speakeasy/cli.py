@@ -35,8 +35,10 @@ def _store(home: Path | None = None) -> DeviceStore:
 
 def setup_parser(parser) -> None:
     sub = parser.add_subparsers(dest="voice_command")
-    setup = sub.add_parser("setup", help="Set up Speakeasy for this Hermes profile and pair a Mac")
-    setup.add_argument("--server", default="", help="URL the Mac will use (default http://127.0.0.1:<port>)")
+    setup = sub.add_parser("setup",
+                           help="Set up Speakeasy for this Hermes profile and pair your Mac, iPhone or iPad")
+    setup.add_argument("--server", default="",
+                       help="URL your Mac, iPhone or iPad will use (default http://127.0.0.1:<port>)")
     setup.add_argument("--tailscale", action="store_true",
                        help="Require Tailscale (tailnet only); it is auto-detected without this flag")
     setup.add_argument("--no-tailscale", action="store_true", help="Stay local; don't publish on Tailscale")
@@ -53,10 +55,13 @@ def setup_parser(parser) -> None:
     setup.add_argument("--no-open", action="store_true", help="Print the pairing link instead of opening it")
     setup.add_argument("--here", action="store_true",
                        help="The Mac you'll talk from is this machine: open Speakeasy (or its download page) here")
-    pair = sub.add_parser("pair", help="Show a one-time code to pair a Mac")
+    pair = sub.add_parser("pair", help="Show a one-time code to pair your Mac, iPhone or iPad")
     pair.add_argument("--server", default="",
-                      help="URL the Mac will use (default: the URL setup advertised, else http://127.0.0.1:<port>)")
+                      help="URL your Mac, iPhone or iPad will use (default: the URL setup advertised, else "
+                           "http://127.0.0.1:<port>)")
     pair.add_argument("--send", default="", help="Also send the pairing link via `hermes send --to <target>`")
+    # Accepted like setup's flag, so agents that pass it don't hit "unrecognized arguments"; pair never opens.
+    pair.add_argument("--no-open", action="store_true", help="Print the pairing link (pair never opens it)")
     sub.add_parser("devices", help="List paired devices")
     revoke = sub.add_parser("revoke", help="Revoke a paired device")
     revoke.add_argument("device_id")
@@ -659,14 +664,38 @@ def _send_link(home: Path, target: str, link: str, out) -> bool:
     return ok
 
 
+PAIR_LOCAL_ONLY_NOT_SENT = ("✗ Pairing link not sent: Speakeasy is only reachable on this computer (no Tailscale or "
+                            "Cloudflare yet), so the link would fail on an iPhone, iPad or another Mac.")
+PAIR_LOCAL_ONLY = ("! This link only works on this computer: Speakeasy isn't reachable from other devices yet (no "
+                   "Tailscale or Cloudflare). For an iPhone, iPad or another Mac, set that up first:")
+PAIR_AGAIN = "  After that, `hermes voice pair` gives a link that works from anywhere."
+
+
+def _local_only_help(home: Path, out, *, sent: bool) -> None:
+    """Setup's Tailscale/Cloudflare step, for a pairing link that would only work on this computer."""
+    from . import setup_flow as F
+    out(PAIR_LOCAL_ONLY if sent else PAIR_LOCAL_ONLY_NOT_SENT)
+    out(TAILSCALE_RECOMMENDED)
+    F.banner(F.Env(out=out), cloudflare_auto(home, voice_port(home)))
+    out(PAIR_AGAIN)
+
+
 def cmd_pair(args, home: Path) -> int:
     from .handoff import link_ttl, pair_link
-    code = _store(home).new_pairing_code(ttl=link_ttl(home))
     server = (args.server or Settings(home).get()["server"]["advertised_url"]
               or f"http://127.0.0.1:{voice_port(home)}")
+    local = is_local_url(server)
+    if local and args.send:
+        # Setup's rule: a loopback link sent to a chat can only fail on the phone or other Mac.
+        _local_only_help(home, print, sent=False)
+        return 1
+    code = _store(home).new_pairing_code(ttl=link_ttl(home))
     link = pair_link(home, server, code)
     print(f"Pairing code: {code}  (single use, expires in {link_ttl(home) // 60} minutes)")
     print(f"Pairing link: {link}")
+    if local:
+        _local_only_help(home, print, sent=True)
+        return 0
     if args.send:
         return 0 if _send_link(home, args.send, link, print) else 1
     _print_qr(link, print, phone=not is_local_url(server))

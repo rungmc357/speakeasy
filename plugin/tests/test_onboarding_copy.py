@@ -93,6 +93,65 @@ def test_pair_skips_the_qr_for_a_loopback_address(tmp_path, capsys):
     assert "scan" not in capsys.readouterr().out
 
 
+# -- SPK-135: `hermes voice pair` applies setup's loopback rule ------------------------------------
+
+def _pair(tmp_path, monkeypatch, *, server="", send="", advertised=""):
+    from argparse import Namespace
+    from speakeasy import cli
+    from speakeasy.settings import Settings
+    if advertised:
+        Settings(tmp_path).patch({"server": {"advertised_url": advertised}})
+    sent = []
+    monkeypatch.setattr(cli, "_send_link", lambda h, target, link, out: sent.append((target, link)) or True)
+    return cli.cmd_pair(Namespace(server=server, send=send, no_open=False), tmp_path), sent
+
+
+@pytest.mark.parametrize("server", ["", "http://127.0.0.1:8795", "http://localhost:8795"])
+def test_pair_never_sends_a_link_that_only_works_on_this_computer(tmp_path, monkeypatch, capsys, server):
+    from speakeasy import cli
+    rc, sent = _pair(tmp_path, monkeypatch, server=server, send="telegram")
+    out = capsys.readouterr().out
+    assert rc == 1 and sent == []
+    assert cli.PAIR_LOCAL_ONLY_NOT_SENT in out and "Pairing link:" not in out
+    assert "speakeasy-cloudflare.py quick" in out and "tailscale.com/download" in out  # setup's same step
+    assert "`hermes voice pair` gives a link that works from anywhere" in out
+
+
+def test_pair_warns_when_its_printed_link_only_works_here(tmp_path, monkeypatch, capsys):
+    from speakeasy import cli
+    rc, sent = _pair(tmp_path, monkeypatch)
+    out = capsys.readouterr().out
+    assert rc == 0 and sent == []
+    assert "Pairing link: https://speakeasyvoice.ai/pair#" in out  # still usable for Speakeasy on this Mac
+    assert cli.PAIR_LOCAL_ONLY in out and "speakeasy-cloudflare.py quick" in out
+    assert out.index("Pairing link:") < out.index(cli.PAIR_LOCAL_ONLY)
+
+
+@pytest.mark.parametrize("advertised", ["https://box.tail123.ts.net:8795",
+                                        "https://calm-river-sound-test.trycloudflare.com"])
+def test_pair_sends_a_tailnet_or_cloudflare_link_as_before(tmp_path, monkeypatch, capsys, advertised):
+    from speakeasy import cli
+    rc, sent = _pair(tmp_path, monkeypatch, send="telegram", advertised=advertised)
+    out = capsys.readouterr().out
+    assert rc == 0 and len(sent) == 1 and sent[0][0] == "telegram"
+    assert "speakeasyvoice.ai/pair#" in sent[0][1]
+    assert cli.PAIR_LOCAL_ONLY not in out and cli.PAIR_LOCAL_ONLY_NOT_SENT not in out
+
+
+def test_pair_accepts_no_open_and_help_names_every_device():
+    import argparse
+    from speakeasy import cli
+    parser = argparse.ArgumentParser(prog="hermes voice")
+    cli.setup_parser(parser)
+    args = parser.parse_args(["pair", "--no-open", "--send", "telegram"])
+    assert args.voice_command == "pair" and args.no_open and args.send == "telegram"
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    text = " ".join(_flat(sub.choices[name].format_help()) for name in ("setup", "pair"))
+    text += " " + " ".join(c.help or "" for c in sub._choices_actions if c.dest in {"setup", "pair"})
+    assert "Mac, iPhone or iPad" in text
+    assert "pair a Mac" not in text and "the Mac will use" not in text
+
+
 def test_qr_text_encodes_the_link():
     pytest.importorskip("qrcode")
     from speakeasy import cli
