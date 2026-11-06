@@ -21,14 +21,19 @@ enum PanelSmoke {
         // A remembered orb-mode preference (from a preview run) would fold every check below.
         let savedOrb = client.model.slim
         client.model.slim = false
+        // SPEAKEASY_PANEL_SMOKE_ONLY=overflow,drag runs just those cases (unattended runs skip `drag`,
+        // whose press into transcript text can wait forever for a real mouse-up).
+        let only = ProcessInfo.processInfo.environment["SPEAKEASY_PANEL_SMOKE_ONLY"]?.split(separator: ",").map(String.init)
+        func want(_ name: String) -> Bool { only?.contains(name) ?? true }
         Task { @MainActor in
-            await workScroll(client)
-            await workStatusWraps(client)
-            await transcriptScroll(client)
-            await drag(client)
-            await endedPanel(client)
-            await lookAtThis(client, dir: snapshotDir)
-            if let dir = snapshotDir { await snapshots(client, dir: dir) }
+            if want("work-scroll") { await workScroll(client) }
+            if want("work-status") { await workStatusWraps(client) }
+            if want("transcript-scroll") { await transcriptScroll(client) }
+            if want("drag") { await drag(client) }
+            if want("ended") { await endedPanel(client) }
+            if want("look-at-this") { await lookAtThis(client, dir: snapshotDir) }
+            if want("overflow") { await overflow(client, dir: snapshotDir) }
+            if want("snapshots"), let dir = snapshotDir { await snapshots(client, dir: dir) }
             client.model.slim = savedOrb
             print("panel-smoke " + (ok ? "ok" : "FAILED"))
             log.forEach { print("  " + $0) }
@@ -383,9 +388,117 @@ enum PanelSmoke {
                 let win = c.panel.window; let visible = (win.screen ?? NSScreen.main)?.visibleFrame ?? .zero
                 record("email draft expanded: panel \(Int(win.frame.height))pt tall, screen \(Int(visible.height))pt, inside=\(visible.contains(win.frame))")
                 check(visible.contains(win.frame), "email draft: expanded card stays on screen")
+                cardFits(c, "email draft expanded")
                 do { try c.panel.snapshot(to: URL(fileURLWithPath: dir + "/email-draft-expanded.png")) } catch { fail("snapshot failed: \(error)") }
             }
         }
+    }
+
+    // MARK: Content taller than the screen: the panel stays on screen, its content inside it
+
+    /// The panel's drawn card (its blurred background) in window coordinates: where the content
+    /// really renders, which can differ from the window frame when the two disagree on height.
+    static func contentRect(_ c: NativeVoiceClient) -> NSRect? {
+        guard let root = c.panel.window.contentView else { return nil }
+        func walk(_ v: NSView) -> [NSVisualEffectView] {
+            v is PanelNSScrollView ? [] : ((v as? NSVisualEffectView).map { [$0] } ?? []) + v.subviews.flatMap(walk)
+        }
+        return walk(root).map { $0.convert($0.bounds, to: nil) }.max { $0.width * $0.height < $1.width * $1.height }
+    }
+
+    /// A scroller inside another one's content (an email draft's body in a job view) scrolls with it.
+    static func hasScrollAncestor(_ v: NSView) -> Bool {
+        var up = v.superview
+        while let s = up { if s is NSScrollView { return true }; up = s.superview }
+        return false
+    }
+
+    /// The card fills its window exactly — no clipped top, no clipped or empty bottom — the window is
+    /// on screen, and every scroll area sits inside it. Records the window, the height the off-screen
+    /// measurer asks for, and where (and how tall) the card really drew.
+    static func cardFits(_ c: NativeVoiceClient, _ label: String) {
+        let win = c.panel.window, width = c.model.displayWidth
+        let visible = (win.screen ?? NSScreen.main)?.visibleFrame ?? .zero
+        let bounds = win.contentView?.bounds ?? .zero
+        let probe = NSHostingController(rootView: VoicePanelView(model: c.model))
+        let first = probe.sizeThatFits(in: NSSize(width: width, height: 4000))
+        probe.view.frame = NSRect(x: 0, y: 0, width: width, height: ceil(first.height))
+        probe.view.layoutSubtreeIfNeeded()
+        let ideal = ceil(probe.sizeThatFits(in: NSSize(width: width, height: 4000)).height)
+        guard let r = contentRect(c) else { fail("\(label): no content view"); return }
+        let top = r.maxY - bounds.maxY, bottom = bounds.minY - r.minY
+        record("\(label): panel \(Int(win.frame.width))x\(Int(win.frame.height))pt, measurer wants \(Int(ideal))pt, "
+               + "screen \(Int(visible.height))pt, card drawn \(Int(r.height))pt at \(Int(r.minY))..\(Int(r.maxY)) "
+               + "of 0..\(Int(bounds.height)) (over top \(Int(top))pt, over bottom \(Int(bottom))pt), inside=\(visible.contains(win.frame))")
+        check(visible.contains(win.frame), "\(label): the panel stays on screen")
+        check(abs(top) <= 1, "\(label): the top of the card is not clipped (\(Int(top))pt)")
+        check(abs(bottom) <= 1, "\(label): the bottom of the card is neither clipped nor a gap (\(Int(bottom))pt)")
+        for sv in scrollViews(c) where !sv.isHiddenOrHasHiddenAncestor && !hasScrollAncestor(sv) {
+            let f = sv.convert(sv.bounds, to: nil)
+            check(f.minY >= bounds.minY - 1 && f.maxY <= bounds.maxY + 1, "\(label): scroll area \(fmt(f)) sits inside the panel")
+        }
+    }
+
+    /// Grows the content past the screen (an open transcript sized up with the grip, over a board or a
+    /// job) and checks the card fits its window at each height.
+    static func overflow(_ c: NativeVoiceClient, dir: String?) async {
+        guard let (busy, _) = PreviewFixtures.state("busy") else { fail("overflow: fixture missing"); return }
+        let win = c.panel.window
+        let savedExtra = c.model.extraHeight, savedWidth = c.model.panelWidth
+        c.panel.resetPlacement()
+        func measure(_ label: String) { cardFits(c, "overflow(\(label))") }
+        func snap(_ name: String) {
+            guard let dir else { return }
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            do { try c.panel.snapshot(to: URL(fileURLWithPath: "\(dir)/\(name).png")); record("snapshot \(dir)/\(name).png") }
+            catch { fail("snapshot failed: \(error)") }
+        }
+
+        // Board under an open transcript, from the default spot, at every grip size.
+        c.showPreview(busy, workExpanded: false, captionExpanded: true)
+        for extra in [0, 350, Tokens.maxExtraHeight] as [CGFloat] {
+            c.model.extraHeight = extra
+            await settle()
+            measure("board, transcript +\(Int(extra))")
+        }
+        snap("overflow-board-tall")
+        // Dragged to the top of the screen: the user's top-left placement keeps the same rule.
+        if let visible = (win.screen ?? NSScreen.main)?.visibleFrame {
+            win.setFrameOrigin(NSPoint(x: win.frame.minX, y: visible.maxY - 4 - win.frame.height))
+            (win as? VoicePanel)?.onMoved?()
+            await settle()
+            measure("board, placed at top")
+        }
+        // One job open, all its cards, under the same tall transcript.
+        if let job = c.model.jobs.first {
+            c.model.onOpenJob(job.id)
+            await settle()
+            measure("job view, transcript +\(Int(c.model.extraHeight))")
+            snap("overflow-job-tall")
+        }
+        // Content that fits: unchanged, the window hugs it.
+        c.panel.resetPlacement()
+        c.model.extraHeight = 0
+        c.showPreview(busy, workExpanded: false)
+        await settle()
+        measure("board, fits")
+        // A long email draft opened with "Show all" inside its job.
+        if var draft = PreviewFixtures.state("email-draft")?.0 {
+            let long = Array(repeating: "- Booked via Amex Travel, trip details, flights and hotels", count: 40).joined(separator: "\n")
+            draft.tasks = draft.tasks.map { t in
+                var t = t; t.info.emailDrafts = t.info.emailDrafts.map { d in var d = d; d.body = long; return d }; return t }
+            if var w = draft.workInfo { w.emailDrafts = w.emailDrafts.map { d in var d = d; d.body = long; return d }; draft.workInfo = w }
+            c.showPreview(draft, workExpanded: false)
+            if let job = c.model.jobs.first { c.model.onOpenJob(job.id) }
+            if let first = c.model.pinnedDrafts.first { c.model.expandedDraftIDs.insert(first.id) }
+            await settle()
+            measure("email draft, show all")
+            snap("overflow-email-draft")
+            c.model.expandedDraftIDs.removeAll()
+        }
+        c.model.extraHeight = savedExtra
+        c.model.panelWidth = savedWidth
+        c.panel.resetPlacement()
     }
 
     // MARK: A busy call: finished tasks fold away so a question stays in view
