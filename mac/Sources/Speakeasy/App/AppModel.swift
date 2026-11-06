@@ -232,6 +232,9 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(release.downloadURL ?? release.pageURL)
     }
 
+    /// Starts the plugin update as a job (set by the app delegate: the panel's Update does the same).
+    var startPluginUpdate: (() -> Void)?
+
     func copyPluginUpdateRequest() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(PluginUpdateFlow.requestText(version: pluginUpdateAvailable), forType: .string)

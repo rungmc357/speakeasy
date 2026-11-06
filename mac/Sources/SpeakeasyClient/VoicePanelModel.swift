@@ -165,7 +165,8 @@ public final class VoicePanelModel: ObservableObject {
     public var voicePhase: VoicePhase { state.voicePhase(userTalking: userTalking) }
     /// A call problem with a one-click fix, if there is one.
     public var callProblem: CallProblem? {
-        previewProblem ?? CallProblem.of(state, canSignInCodex: capabilities?.codexLogin == true)
+        previewProblem ?? CallProblem.of(state, canSignInCodex: capabilities?.codexLogin == true,
+                                         canUpdatePlugin: pluginUpdate.canUpdateNow)
     }
     /// Film frames show a problem without a real failure.
     @Published public var previewProblem: CallProblem?

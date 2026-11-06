@@ -109,6 +109,9 @@ public struct CallProblem: Equatable, Sendable {
         case signInCodex
         /// The ChatGPT plan has no voice through Codex: Settings › Voice to pick Grok or an API key.
         case chooseVoice
+        /// Codex isn't signed in and this plugin can't sign it in from the app yet: update the
+        /// plugin (the update brings Sign in to ChatGPT). Offered only when an update is offered.
+        case updatePlugin
     }
     public var title: String
     public var detail: String?
@@ -120,6 +123,7 @@ public struct CallProblem: Equatable, Sendable {
         case .retry: return "Try again"
         case .signInCodex: return CodexLoginCopy.button
         case .chooseVoice: return CodexLoginCopy.chooseVoice
+        case .updatePlugin: return CodexLoginCopy.update
         }
     }
 
@@ -128,7 +132,9 @@ public struct CallProblem: Equatable, Sendable {
     /// The problem in this state, if it has a fix.
     /// `canSignInCodex`: the server has `codex_login`, so a not-signed-in failure offers the sheet
     /// instead of a Try again that would redial into the same error.
-    public static func of(_ s: VoiceState, canSignInCodex: Bool = false) -> CallProblem? {
+    /// `canUpdatePlugin`: a plugin update is offered, so an older plugin's not-signed-in failure
+    /// offers Update (never the plugin's "run codex login here", which is wrong on another device).
+    public static func of(_ s: VoiceState, canSignInCodex: Bool = false, canUpdatePlugin: Bool = false) -> CallProblem? {
         let failure: String? = {
             if case .failed(let m) = s.connection { return s.lastError ?? m }
             return nil
@@ -144,6 +150,10 @@ public struct CallProblem: Equatable, Sendable {
             }
             if canSignInCodex, CodexLoginState.errorMeansNotSignedIn(failure) {
                 return CallProblem(title: "Sign in to ChatGPT to talk", detail: CodexLoginCopy.notSignedIn, fix: .signInCodex)
+            }
+            if CodexLoginState.errorMeansNotSignedIn(failure) {
+                return CallProblem(title: "Sign in to ChatGPT to talk", detail: CodexLoginCopy.notSignedInUpdate,
+                                   fix: canUpdatePlugin ? .updatePlugin : .chooseVoice)
             }
             if failure.localizedCaseInsensitiveContains("pair") { return nil }   // Settings › Connection says how
             return CallProblem(title: "Couldn't connect", detail: failure.replacingOccurrences(of: " Tap to try again.", with: "").replacingOccurrences(of: " Click Try again.", with: ""),

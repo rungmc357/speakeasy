@@ -584,14 +584,14 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         switch provider.flatMap(VoiceProvider.init(rawValue:)) ?? .codex {
         case .codex:
             out.append(Check(id: "voice", ok: codexSignedIn == true, title: "ChatGPT sign-in",
-                             fix: codexSignedIn == true ? nil : "On the Hermes machine, run hermes voice setup (it signs you in to ChatGPT)"))
+                             fix: codexSignedIn == true ? nil : CodexLoginCopy.fix(canSignIn: canSignInCodex)))
         case .openai:
             out.append(Check(id: "voice", ok: apiKeySet == true, title: "OpenAI API key",
                              fix: apiKeySet == true ? nil : OpenAIKeyCopy.fix(canAddKey: canAddOpenAIKey)))
         case .grok:
-            let ok = grokSignedIn ?? voiceReady ?? false
+            let ok = grokVoiceReady ?? voiceReady ?? false
             out.append(Check(id: "voice", ok: ok, title: "Grok Voice via your X/SuperGrok sign-in",
-                             fix: ok ? nil : "On the Hermes machine, run hermes auth add xai-oauth (SuperGrok or X Premium+), or set XAI_API_KEY"))
+                             fix: ok ? nil : GrokSignInCopy.notSignedIn))
         }
         let briefReady = briefState == "ready" || briefState == "edited"
         out.append(Check(id: "brief", ok: briefReady, title: "Voice brief",

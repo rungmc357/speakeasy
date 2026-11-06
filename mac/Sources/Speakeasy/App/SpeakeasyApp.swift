@@ -209,6 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// (no call needed), then the card confirms the new version or says the update didn't take.
     private func configurePluginUpdate() {
         let notice = native.model.pluginUpdate
+        app.startPluginUpdate = { [weak self] in self?.native.model.onPluginUpdate() }
         native.model.onPluginUpdate = { [weak self] in
             guard let self, let api = self.app.api else { return }
             Task { @MainActor in

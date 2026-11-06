@@ -134,4 +134,46 @@ public enum CodexLoginCopy {
     public static let planNoVoice = "Your ChatGPT plan doesn't include voice through Codex. Use Grok or an OpenAI API key for voice instead."
     public static let chooseVoice = "Choose another voice"
     public static let notSignedIn = "Codex on your Hermes computer isn't signed in to ChatGPT yet."
+    /// Not signed in on a plugin without `codex_login` (no sign-in from the app yet): the update
+    /// brings it. Never a terminal command: the row, the setup check and the call banner all say this.
+    public static let notSignedInUpdate = "Not signed in. Update Speakeasy on your Hermes to sign in from here."
+    public static let update = "Update"
+
+    /// The setup checklist's line for a Codex voice that isn't signed in.
+    public static func fix(canSignIn: Bool) -> String {
+        canSignIn ? "Sign in to ChatGPT in Settings › Voice" : notSignedInUpdate
+    }
+}
+
+/// Grok Voice (beta) uses Hermes' own xAI sign-in (X / SuperGrok). The app can't start that sign-in,
+/// so a signed-out row asks Hermes to do it: a copyable message for the agent, like the Cloudflare
+/// card's "Set up Tailscale". The command lives only in that message, never on screen as a step.
+public enum GrokSignInCopy {
+    public static let notSignedIn = "Not signed in to Grok. Ask your Hermes to sign in to X."
+    public static let signedIn = "Signed in on your Hermes"
+    /// Works through an xAI API key on the Hermes instead of the sign-in.
+    public static let usesKey = "Uses an xAI API key on your Hermes"
+    public static let copyButton = "Copy the request for Hermes"
+    public static let copied = "Copied. Paste it to your Hermes in any chat; it sends you the sign-in link."
+
+    /// The message the user pastes to their Hermes agent.
+    public static func request(device: String = "iPhone") -> String {
+        """
+        My Speakeasy app on my \(device) says Grok Voice isn't signed in. On this computer, please sign \
+        Hermes in to xAI with my X / SuperGrok account: run `hermes auth add xai-oauth --no-browser` and send \
+        me the sign-in link and any code to open on my \(device). Tell me when it's done so I can call with Grok Voice.
+        """
+    }
+}
+
+public extension ServerStatus {
+    /// Grok Voice works on the Hermes: signed in to xAI, or an xAI API key there (`grok_ready`).
+    /// nil when the server didn't say.
+    var grokVoiceReady: Bool? {
+        if grokSignedIn == true || grokReady == true { return true }
+        return grokSignedIn ?? grokReady
+    }
+
+    /// Grok works through the key, not the sign-in.
+    var grokOnAPIKey: Bool { grokSignedIn != true && grokReady == true }
 }

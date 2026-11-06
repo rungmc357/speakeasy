@@ -372,9 +372,13 @@ private struct VoiceSettings: View {
                     Text(status.codexOnAPIKey ? "Codex uses an OpenAI API key" : "Not signed in")
                         .foregroundStyle(Color.orange)
                 } else if let signed = app.status?.codexSignedIn {
-                    Text(signed ? "Signed in" : "Not signed in — run codex login on the Hermes machine")
+                    // Older plugins can't sign in from the app: the update brings it (no Terminal).
+                    Text(signed ? "Signed in" : CodexLoginCopy.notSignedInUpdate)
                         .foregroundStyle(signed ? Color.secondary : Color.orange)
                 } else { Text("Unknown").foregroundStyle(.secondary) }
+            }
+            if app.status?.offersCodexSignIn != true, app.status?.codexSignedIn == false {
+                HStack { Spacer(); PluginUpdateForSignInButton() }
             }
             if app.status?.offersCodexSignIn == true {
                 HStack {
@@ -401,10 +405,14 @@ private struct VoiceSettings: View {
                 .font(.caption).foregroundStyle(.secondary)
         case .grok:
             LabeledContent("Grok Voice via your X/SuperGrok sign-in") {
-                if let signed = app.status?.grokSignedIn {
-                    Text(signed ? "Signed in" : (app.status?.grokMessage ?? "Not signed in — run hermes auth add xai-oauth on the Hermes machine"))
-                        .foregroundStyle(signed ? Color.secondary : Color.orange)
+                if let status = app.status, let ready = status.grokVoiceReady {
+                    // Never the server's own hint (it names a terminal command).
+                    Text(!ready ? GrokSignInCopy.notSignedIn : status.grokOnAPIKey ? GrokSignInCopy.usesKey : "Signed in")
+                        .foregroundStyle(ready ? Color.secondary : Color.orange)
                 } else { Text("Unknown").foregroundStyle(.secondary) }
+            }
+            if app.status?.grokVoiceReady == false {
+                HStack { Spacer(); GrokSignInRequestButton() }
             }
             Text("Beta. Audio goes through your Hermes server to xAI; the sign-in stays on the Hermes machine.")
                 .font(.caption).foregroundStyle(.secondary)
