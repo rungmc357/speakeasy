@@ -36,6 +36,7 @@ from . import instant as instant_mod
 from . import fence as fence_mod
 from . import jev as jev_mod
 from . import receipts
+from . import history as history_mod
 from . import corrections as corrections_mod
 from . import vocabulary as vocabulary_mod
 from . import session_titles
@@ -73,6 +74,9 @@ ACK_GRACE_S = 5.0      # the voice said "on it": a task must exist (or start) wi
 APPROVED_MILESTONE = {"once": "Approved", "session": "Approved for the rest of this task", "deny": "Approval denied"}
 CORRECTION_RUN_WAIT_S = 15.0  # a correction to a task whose run is still being admitted waits this long
 FOLLOW_UP_POLL_S = 2.0 # how often a queued follow-up is looked for in the task's transcript (receipts.py)
+# A follow-up turn in a task's session carries the call since that session's last turn, capped.
+FOLLOW_UP_CALL_LINES = 12
+FOLLOW_UP_CALL_CHARS = 3000
 FOLLOW_UP_SETTLE_S = 3.0  # after the run ends, how long its transcript gets to show a follow-up it read
 FENCE_POLL_S = 2.0     # how often a task held behind another (same project) checks on it
 FENCE_MAX_WAIT_S = 4 * 3600  # never held longer than this: it then starts and says so
@@ -1002,6 +1006,7 @@ class SidebandWorker:
         self.offered_choices: set[frozenset[str]] = set()
         self.replied_task: str | None = None     # the task the voice last spoke an answer from
         self.wants_show: set[str] = set()        # delegation ids the user wants to SEE (routing said show)
+        self.screen_notes: dict[str, str] = {}   # delegation id -> what was on screen (its own line)
         self.show_seq = 0
         self.route_timings: dict[str, int] = {}  # task id -> routing latency (ms), stored with the task
         # Look at this, per handoff (a split request's parts share their handoff's): whether its words
@@ -3018,8 +3023,9 @@ class SidebandWorker:
             went = "to the focused task" if part.task_id == focus.task_id else "elsewhere"
             logger.info("speakeasy: focused request routed %s (%s)", went, decision.source)
             if part.task_id == focus.task_id and focus.detail:
-                part = router.Part(part.kind, f"{part.request}\n\n({self.names.user} is looking at: {focus.detail})",
-                                   part.task_id)
+                # What's on screen is its own line in the task's turn, never part of the user's words
+                # (a misheard title appended there became a "fact" in the next summary).
+                self.__dict__.setdefault("screen_notes", {})[delegation_id] = focus.detail
         if part.kind == router.IGNORE:
             self.handoff_at.pop(delegation_id, None)
             if delegation_id.startswith(EARLY_PREFIX):
@@ -3618,6 +3624,30 @@ class SidebandWorker:
             return []
         return [_data_url(a) for a in shared.images]
 
+    def call_lines_since(self, session_id: str, context: str, words: str) -> str:
+        """The call's lines since this session's last turn (what a follow-up's turn adds to the
+        session, which already holds the earlier ones). The newest user line is the follow-up's own
+        words, already on its first line, so it's left off. With no record of the last turn, or one
+        from another call, the last FOLLOW_UP_CALL_LINES lines."""
+        lines = [line for line in (context or "").splitlines() if line.strip()]
+        previous = [line for line in (self.store.get_meta("turn_context:" + session_id) or "").splitlines()
+                    if line.strip()]
+        start = max(0, len(lines) - FOLLOW_UP_CALL_LINES)
+        if previous:
+            tail = previous[-3:]
+            for end in range(len(lines), len(tail) - 1, -1):
+                if lines[end - len(tail):end] == tail:
+                    start = max(end, len(lines) - FOLLOW_UP_CALL_LINES)
+                    break
+        new = lines[start:]
+        said = " ".join(str(words or "").split()).lower()
+        while new and new[-1].startswith("User: ") and said:
+            body = " ".join(new[-1][6:].split()).lower()
+            if not body or (body not in said and said not in body):
+                break
+            new.pop()
+        return "\n".join(new)[-FOLLOW_UP_CALL_CHARS:]
+
     def shared_prompt(self, items: list[dict[str, Any]], attached: bool, session_id: str | None,
                       screen: bool) -> str:
         """The prompt's block about what was shared, plus a note when this session had a screenshot
@@ -3940,7 +3970,7 @@ class SidebandWorker:
             return
         if await self.correct_task(delegation_id, target, key, part):
             return
-        earlier = notice_text(self.store.request_text(key), 200) or "an earlier request"
+        earlier = notice_text(text_mod.request_notes(self.store.request_text(key))[0], 200) or "an earlier request"
         if status in RETRY_CARRY_STATES:
             self.carry_failed_shared(delegation_id, key)  # a retry takes the pictures and files again
         placed = self.store.continued_for(key)
@@ -3951,7 +3981,8 @@ class SidebandWorker:
             # A new task that references the running one carries what was shared, answered home.
             logger.info("speakeasy: %s; starting a task that references it", why)
             await self.start_task(delegation_id, revision, context, f"{part.request} (following up: {earlier})",
-                                  focus=P.follow_up_focus(part.request, earlier, None, status), parent=key)
+                                  focus=P.follow_up_focus(part.request, earlier, None, status), parent=key,
+                                  words=part.request, continues=P.continues_line(earlier, None, status))
 
         if status in ACTIVE_RUN_STATES and sharing and target.deliver_to:
             # A running task that posts its answer to a channel (one the user may never have named for
@@ -4001,9 +4032,13 @@ class SidebandWorker:
             text = (P.shared_steer_text(self.names, part.request, P.shared_block(self.names, items, attached=False), typed=typed)
                     if items else P.typed_steer_text(self.names, part.request)
                     if typed else P.steer_text(self.names, part.request))
+            screen = self.__dict__.get("screen_notes", {}).get(delegation_id, "")
+            if screen:
+                text += "\n" + P.on_screen_line(screen)  # context beside the words, never part of them
             nameable = all(i["path"] for i in items)  # an image with no saved copy can't be pointed at
             accepted = nameable and await self.steer_follow_up(target, key, part.request, text)
             if accepted:
+                self.__dict__.get("screen_notes", {}).pop(delegation_id, None)
                 if items:
                     self.store.add_shared(key, items)
                 else:
@@ -4017,7 +4052,15 @@ class SidebandWorker:
                 return
         work = self.store.work(idem_key=key) or {}
         result = notice_text((work.get("result") or {}).get("spoken"), 300)
-        focus = P.follow_up_focus(part.request, earlier, result, status)
+        asked = (work.get("result") or {}).get("question")
+        question = asked.get("question") if isinstance(asked, dict) else asked if isinstance(asked, str) else None
+        question = notice_text(question, 200) if question else None
+        tapped = delegation_id.startswith("answer_")
+        said = part.request
+        if tapped and question and said.rstrip().endswith(question):
+            # picked_request put the question after the pick for the task's name; said once here.
+            said = said.rstrip()[:-len(question)].rstrip(" :") or said
+        focus = P.follow_up_focus(said, earlier, result, status, question, tapped)
         # Carrying what the user shared: never into a chat's session (the task continued a
         # conversation), and answered home rather than in the task's channel.
         carrying = self.carries(delegation_id)
@@ -4028,7 +4071,8 @@ class SidebandWorker:
         await self.start_task(delegation_id, revision, context, f"{part.request} (following up: {earlier})",
                               focus=focus, session_id=None if carrying and placed else self.store.session_for(key),
                               replaces=target.delegation_id, deliver_to=None if carrying else target.deliver_to,
-                              parent=key)
+                              parent=key, words=said,
+                              continues=P.continues_line(earlier, result, status, question, tapped))
 
     # -- corrections (corrections.py) --------------------------------------------------------
     def vocabulary(self) -> list[str]:
@@ -4113,11 +4157,11 @@ class SidebandWorker:
         self.publish()
         if not delivered:
             # Finished (or it no longer takes guidance): the corrected request runs again in its session.
-            earlier = notice_text(fix.request, 200) or "an earlier request"
+            earlier = notice_text(text_mod.request_notes(fix.request)[0], 200) or "an earlier request"
             await self.start_task(delegation_id, 0, f"User: {part.request}", f"{steer} (following up: {earlier})",
                                   focus=P.follow_up_focus(steer, earlier, None, status),
                                   session_id=self.store.session_for(key), replaces=target.delegation_id,
-                                  deliver_to=target.deliver_to, parent=key)
+                                  deliver_to=target.deliver_to, parent=key, words=words, note=steer)
             return True
         with self.interaction.lock:
             self.interaction.latest_delegation_id = target.delegation_id
@@ -4294,8 +4338,14 @@ class SidebandWorker:
                          focus: str | None = None, voice_id: str | None = None,
                          session_id: str | None = None, replaces: str | None = None,
                          deliver_to: str | None = None, ack: str | None = None,
-                         ack_place: str | None = None, named: bool = False, parent: str | None = None) -> None:
-        """*parent*: the task this one answers or follows up (its idem key), which names it."""
+                         ack_place: str | None = None, named: bool = False, parent: str | None = None,
+                         continues: str = "", words: str | None = None, note: str = "") -> None:
+        """*parent*: the task this one answers or follows up (its idem key), which names it.
+
+        *continues* names the earlier task once, flat ("Answering your question …"); *words* is what
+        the user actually said when *request* carries more (a correction's steer); *note* is guidance
+        beside the words. A later turn in a session whose first turn's rules are still in its
+        context gets only these (``P.build_follow_up_prompt``), never the full brief again."""
         idem = self._idem(task_id, revision)
         backend = BackendRun(task_id, revision, idem, voice_id=voice_id, deliver_to=deliver_to)
         delegation_id = backend.say_id
@@ -4307,12 +4357,16 @@ class SidebandWorker:
         if not session_id:
             session_id = task_session_id(idem)
         label = self.rt.channel_label(deliver_to) if deliver_to else self.rt.delivery_label()
+        on_screen = self.__dict__.get("screen_notes", {}).pop(voice_id or task_id, "")
+        extras: list[str] = []
         show = self._take_show(voice_id or task_id, idem)
         if show:
             focus = (focus or request) + P.SHOW_IT_FOCUS
+            extras.append(P.SHOW_IT_FOCUS.strip(" ()") + ".")
         update_note = P.plugin_update_focus(request)
         if update_note:
             focus = (focus or request) + update_note
+            extras.append(update_note.strip(" ()"))
         # Read now, before any await: the call may end (and drop its room text) while what was shared is collected.
         room = self.room_handoff_text(voice_id or task_id)
         state, known_run = self.store.reserve_run(idem, self.interaction.interaction_id, task_id, revision)
@@ -4336,6 +4390,7 @@ class SidebandWorker:
                 added, backend.held_words = list(backend.held_words), []
             if added:
                 focus = (focus or request) + "\n\nThey added while it waited to start: " + " / ".join(added)
+                extras.append("They added while it waited to start: " + " / ".join(added))
         with self.interaction.lock:
             others = [r.idem_key for r in self.interaction.runs.values()
                       if r.delegation_id != task_id and r.status in ACTIVE_RUN_STATES]
@@ -4354,9 +4409,27 @@ class SidebandWorker:
         if items:
             self.store.add_shared(idem, items)
             self.publish()
-        prompt = P.build_task_prompt(self.names, revision, context, focus, label, shared=self.shared_prompt(
-            items, bool(images), session_id if continuing else None, shared.capture is not None), room=room,
-            typed=self.VOICELESS, names_hint=P.task_vocabulary_line(self.names, self.vocabulary()))
+        shared_text = self.shared_prompt(items, bool(images), session_id if continuing else None,
+                                         shared.capture is not None)
+        # A later turn in this task's own session: the first turn's rules are still in its context,
+        # so only what is new goes (as a chat follow-up is just the person's words). Compaction that
+        # summarized the rules away, or a state.db we can't read, sends the full brief again.
+        follow_up = continuing and await asyncio.to_thread(
+            history_mod.rules_in_session, self.rt.state_db, session_id, P.TASK_RULES_MARK)
+        if follow_up:
+            if room.strip():
+                extras.append(P.task_room_block(self.names, room))
+            prompt = P.build_follow_up_prompt(
+                self.names, words if words is not None else request, continues=continues, on_screen=on_screen,
+                shared=shared_text, call_lines=self.call_lines_since(session_id, context, words or request),
+                note="\n".join(p for p in (note, *extras) if p), typed=self.VOICELESS or
+                task_id.startswith(messages_mod.TYPED_PREFIX), tapped=task_id.startswith("answer_"))
+            logger.info("speakeasy: a follow-up turn in a task's session; rules not resent (%d chars)", len(prompt))
+        else:
+            prompt = P.build_task_prompt(self.names, revision, context, focus, label, shared=shared_text, room=room,
+                                         typed=self.VOICELESS, on_screen=on_screen,
+                                         names_hint=P.task_vocabulary_line(self.names, self.vocabulary()))
+        self.store.set_meta("turn_context:" + session_id, context[-MAX_TRANSCRIPT:])
         try:
             choice = await self.model_choice(task_id, idem, session_id, request)
             extra: dict[str, Any] = {**({"images": images} if images else {}), **({"choice": choice} if choice else {})}

@@ -116,6 +116,12 @@ _ADDED = re.compile(r"^\S+ (?:just added to this task(?: by voice| by typing)?|t
                     r"(?:\s*Fold it into the work.*)?$", re.S)
 # A correction steer (prompt.builder.correction_steer_text): only the person's own words show.
 _CORRECTION = re.compile(r'^Correction from .{1,60}?, who (?:said|typed): "(.+?)"\. ', re.S)
+# A later turn in a task's session (prompt.builder.build_follow_up_prompt): its first line holds the
+# person's words; everything under it (what it continues, the screen, the call) is context. The
+# "[Speakeasy follow-up]" head may already be gone (strip_gateway takes "[sender]"-style prefixes), so
+# the closing rules line is what tells it apart from someone's own words.
+_FOLLOW_UP = re.compile(r"^(?:\[Speakeasy follow-up\] )?.{1,60}? (?:said on the call|typed in the Speakeasy app|"
+                        r"answered by tapping): ([^\n]+)(?=.*\nSame rules as the first message in this session)", re.S)
 # What a steer says about pictures/files the person shared (saved copies the task opens itself).
 _SHARED = re.compile(r"(?s)\s*\S+ shared (?:the |a )?(?:picture|pictures|file|files|screenshot|images?)\b.*?"
                      r"Use them to understand what they mean\.\s*")
@@ -523,6 +529,9 @@ def user_words(content: str) -> tuple[str, str]:
     relayed = relayed_words(text[:TEXT_CHARS])
     if relayed is not None:
         return ("user", relayed) if relayed else ("note", "Request from Speakeasy")
+    follow = _FOLLOW_UP.match(text.lstrip())
+    if follow:
+        return "user", _LOOKING_AT.sub("", follow.group(1)).strip() or follow.group(1).strip()
     if _SPEAKEASY_BRIEF.search(text[:2000]) or (len(text) > 3000 and _USER_LINE.search(text)):
         said = _USER_LINE.findall(text)
         return (("user", _LOOKING_AT.sub("", said[-1]).strip() or said[-1].strip()) if said
@@ -1058,6 +1067,30 @@ def fingerprint(state_db: Path, session_ids: list[str] | None = None) -> tuple[A
         return (tuple(msg), tuple(sess))
     except sqlite3.Error:
         return None
+    finally:
+        db.close()
+
+
+def rules_in_session(state_db: Path, session_id: str | None, mark: str) -> bool:
+    """True when a user row carrying *mark* (the full task brief's own sentence) is still in the live
+    context of this session: its newest compression segment, active rows only. A compaction that
+    summarized the brief away (a new segment without it, or the row marked inactive) answers False,
+    and so does anything unreadable, so the caller sends the full brief again: never a follow-up
+    with no rules behind it."""
+    if not session_id or not mark:
+        return False
+    db = _open(state_db)
+    if db is None:
+        return False
+    try:
+        tip = _tips(db, {session_id}).get(session_id, session_id) \
+            if "parent_session_id" in _columns(db, "sessions") else session_id
+        active = " AND coalesce(active,1)=1" if "active" in _columns(db, "messages") else ""
+        row = db.execute(f"SELECT 1 FROM messages WHERE session_id=? AND role='user'{active} "
+                         "AND instr(content, ?) > 0 LIMIT 1", (tip, mark)).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
     finally:
         db.close()
 
