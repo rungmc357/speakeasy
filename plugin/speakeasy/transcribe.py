@@ -46,9 +46,30 @@ def check(content_type: str | None, length: int) -> str:
     return suffix
 
 
-def hermes_transcriber() -> Transcriber | None:
+# The user's own names (vocabulary.py) for the clip being transcribed right now, on this thread:
+# Hermes' ``pre_transcription`` hook (``pre_transcription`` below) adds them to the provider's prompt
+# only while Speakeasy's own transcription runs, never for the gateway's other voice notes.
+_HINTS = threading.local()
+
+
+def hint_prompt(terms: list[str]) -> str:
+    return ("Names that may come up: " + ", ".join(t for t in terms if t) + ".")[:600] if terms else ""
+
+
+def pre_transcription(**kwargs: Any) -> dict[str, str] | None:
+    """Hermes hook: while Speakeasy transcribes a voice message, its names list joins the prompt
+    (after any ``stt.prompt`` the user set). Any other transcription is left alone."""
+    hint = getattr(_HINTS, "prompt", "")
+    if not hint:
+        return None
+    base = kwargs.get("prompt")
+    return {"prompt": f"{base.strip()} {hint}" if isinstance(base, str) and base.strip() else hint}
+
+
+def hermes_transcriber(hints: Callable[[], list[str]] | None = None) -> Transcriber | None:
     """Hermes' transcription, as a gateway voice note uses it: configured provider, then the local
-    fallback. None when this Hermes has no transcription module."""
+    fallback. None when this Hermes has no transcription module. ``hints``: the user's names, given
+    to the provider through the ``pre_transcription`` hook."""
     try:
         from tools.transcription_tools import transcribe_audio  # type: ignore
     except Exception:  # noqa: BLE001 - an older Hermes or a broken install: say unavailable
@@ -59,7 +80,14 @@ def hermes_transcriber() -> Transcriber | None:
         transcribe_audio_local_fallback = None
 
     def run(path: str) -> dict[str, Any]:
-        result = transcribe_audio(path, None, "gateway")
+        try:
+            _HINTS.prompt = hint_prompt(hints()) if hints is not None else ""
+        except Exception:  # noqa: BLE001 - a names list never stops a transcription
+            _HINTS.prompt = ""
+        try:
+            result = transcribe_audio(path, None, "gateway")
+        finally:
+            _HINTS.prompt = ""
         if not result.get("success") and transcribe_audio_local_fallback is not None:
             fallback = transcribe_audio_local_fallback(path)
             if fallback.get("success"):

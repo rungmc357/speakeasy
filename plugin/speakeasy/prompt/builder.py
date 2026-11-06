@@ -349,7 +349,7 @@ def task_room_block(names: Names, room: str) -> str:
 def build_live_instructions(names: Names, *, brief: str = "", away: list[dict[str, Any]] | None = None,
                             recent_voice: str = "", resume: str = "", extra: str = "", now: str = "",
                             delivery_label: str = "", channels: list[dict[str, Any]] | None = None,
-                            tour: str = "", room: str = "", open_work: str = "",
+                            tour: str = "", room: str = "", open_work: str = "", vocabulary: list[str] | None = None,
                             max_chars: int = MAX_INSTRUCTION_CHARS) -> str:
     """Product rules + optional voice brief + per-call context, under the budget.
 
@@ -366,6 +366,8 @@ def build_live_instructions(names: Names, *, brief: str = "", away: list[dict[st
         head += "\n\n# About " + names.user + " and " + names.assistant_name + " (voice brief)\n" + brief.strip()[:MAX_BRIEF_CHARS]
     if now:
         head += f"\n\n# Now\nLocal date and time: {now}."
+    if vocabulary:
+        head += "\n\n" + vocabulary_block(names, vocabulary)
     if tour:
         head += "\n\n" + tour
     head += "\n\n" + identity_reminder(names)  # the voice model's own persona must not win
@@ -566,7 +568,8 @@ TYPED_MESSAGES = "Recent messages typed in the Speakeasy app"
 
 
 def build_task_prompt(names: Names, revision: int, context: str, focus: str | None = None,
-                      delivery_label: str = "", shared: str = "", room: str = "", typed: bool = False) -> str:
+                      delivery_label: str = "", shared: str = "", room: str = "", typed: bool = False,
+                      names_hint: str = "") -> str:
     """Prompt for a voice task running in its own Hermes session, beside other tasks.
 
     The session is private to this task (and its follow-ups), so it names the job and carries the
@@ -601,11 +604,73 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
            "Your task is the most recent user request in the transcript below; earlier requests are context and "
            "have their own tasks, so do not redo or cancel their work. ")
         + (shared + " " if shared else "")
+        + (names_hint.strip() + " " if names_hint.strip() else "")
         + status_rule(names) + "\n\n"
         + (heard + "\n\n" if heard else "")
         + (f"{TYPED_MESSAGES} (revision {revision}):\n{context}" if typed else
            f"Recent timestamped voice transcript (revision {revision}):\n{context}")
     )
+
+
+def vocabulary_block(names: Names, terms: list[str]) -> str:
+    """The user's own names (vocabulary.py), so a near-miss is heard as the name it is."""
+    listed = ", ".join(t for t in terms if t)[:900]
+    return render(
+        "# Names {user_name} uses\n"
+        "These names come up in {user_possessive} work (their machines, models and projects). Speech-to-text "
+        "often hears them as ordinary words (\"Man Pros\" for Mac Pro, \"Quinn\" for Qwen): when you hear "
+        "something close to one of them, it is that name; say it and hand it off spelled this way: ", names) + listed + ". " + render(
+        "When a request hinges on a name you aren't sure you heard right and it is not one of these, check it in "
+        "one short line before starting (\"Mac Pro, the computer?\"), then hand off what they confirm.", names)
+
+
+def task_vocabulary_line(names: Names, terms: list[str]) -> str:
+    """For the task's brief: its request came through speech-to-text, which mishears names."""
+    if not terms:
+        return ""
+    return render("The request came through speech-to-text, which can mishear names; names {user_name} uses include: ",
+                  names) + ", ".join(terms)[:700] + ". If a name in the request matches nothing, it may be a mishearing of one of these. "
+
+
+def correction_steer_text(names: Names, wrong: str | None, right: str | None, request: str, words: str,
+                          typed: bool = False) -> str:
+    """A correction to the running task's words: urgent, and it changes what the task is for. Starts
+    with the user's own words, which is all a session page shows of it (history.user_words)."""
+    how = "typed" if typed else "said"
+    said = notice_text(words, 300) or (right or "")
+    lead = f"Correction from {names.user}, who {how}: \"{said}\". "
+    if wrong and right:
+        lead += f"\"{wrong}\" was a mishearing of \"{right}\". Your request now reads: {request} "
+    else:
+        lead += (f"\"{wrong}\" was a mishearing; there is no such thing. Work out what they meant from the rest of "
+                 f"the request and the call (or ask), never \"{wrong}\". ")
+    return (lead + f"Redo anything you based on \"{wrong}\" (searches, findings, plans), drop what doesn't hold, "
+            "and don't mention the misheard words again. Carry on with the corrected request; do not start over "
+            "on work that still holds.")
+
+
+def correction_note(wrong: str | None, right: str | None, request: str, typed: bool = False) -> str:
+    """For the voice: the task was corrected in place (not a queued follow-up)."""
+    if typed:
+        # Typed to the task: delivered silently, like any typed message; this is context only.
+        return (f"Background, not a request: the task was corrected (now \"{notice_text(request, 200)}\") and told at "
+                "once. Say nothing about it. From now on use only the corrected words, never the misheard ones.")
+    if right:
+        return (f"Corrected: the task now reads \"{notice_text(request, 200)}\" (\"{right}\", not the misheard words). "
+                f"The task was told at once. Confirm once, in a few words, using only the corrected words (for example "
+                f"\"Got it, {right}.\"). Never say the misheard words again, never say it's queued or lined up, and "
+                "don't bring it up again unless they ask.")
+    return (f"Corrected: the task was told at once that \"{wrong}\" was a mishearing and to drop it. If you know "
+            "what they meant, say it once in a few words; otherwise ask once what they meant. Never say the "
+            "misheard words again and never say it's queued or lined up.")
+
+
+def correction_repeat_note(right: str) -> str:
+    """The user repeated a correction the task already took."""
+    has = f"the task already has \"{right}\"" if right else "the task already has the corrected words"
+    say = f"\"yep, {right}\"" if right else "that it's fixed"
+    return (f"Already corrected: {has}. Say at most {say}, once, in a few words; never say it's queued and never "
+            "say the misheard words.")
 
 
 def steer_text(names: Names, request: str) -> str:
