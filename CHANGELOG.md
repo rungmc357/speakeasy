@@ -2,9 +2,9 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Plugin 0.3.37 — Steer or queue, honest task cards, clean session chats
+## Plugin 0.3.37 · Mac 0.3.20 · iPhone build 66 — Steer or queue, honest task cards, clean session chats
 
-This plugin update works with the current iPhone and Mac apps. Items marked *(apps)* show once the Mac app and the next iPhone build arrive.
+The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.20 or iPhone build 66. The apps also read every session as a messaging thread: bubbles, day dividers and times, finished tasks as one quiet line after the reply they belong to, and the Mac opens every task in its session page.
 
 **Talking to a running task**
 - **Steer or queue.** A message to a task that's still working goes in right away (steer, the default) or waits and is sent as its next turn when it's done (queue). Held messages survive a reload, can be cancelled or sent now, and a steered message shows whether the task has read it yet ("Seen", "Waiting for the current step to finish"). *(apps: the Steer now / When it's done choice)*
