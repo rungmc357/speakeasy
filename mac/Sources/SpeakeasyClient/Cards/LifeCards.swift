@@ -75,7 +75,7 @@ struct AgendaCard: View {
                 Text(day["date"].string ?? "").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                 ForEach(Array(day["events"].array.prefix(fit.rows(6)).enumerated()), id: \.offset) { _, e in EventRow(event: e) }
             }
-            if fit == .compact { MoreRows(total: min(days.count, 7), shown: 1) }
+            if fit == .compact { MoreRows(total: min(days.count, 7), shown: 1, noun: ("day", "days")) }
         }
     }
 }

@@ -31,9 +31,12 @@ public extension EnvironmentValues {
 struct MoreRows: View {
     let total: Int
     let shown: Int
+    /// What the hidden rows are when it isn't obvious from the rows above ("days" under one day's events).
+    var noun: (one: String, many: String)? = nil
     var body: some View {
         if total > shown {
-            Text("\(total - shown) more").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            let n = total - shown
+            Text(noun.map { "\(n) more \(n == 1 ? $0.one : $0.many)" } ?? "\(n) more").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
                 .accessibilityHidden(true)
         }
     }
