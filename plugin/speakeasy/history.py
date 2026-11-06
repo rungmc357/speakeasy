@@ -125,6 +125,14 @@ _MACHINE_BLOCK = re.compile(r"(?s)\n?```speakeasy-[\w-]+[ \t]*\n.*?(?:\n```|\Z)"
 # A relayed voice request written into a chat: "[sender] [Voice request from Geo, relayed by Speakeasy] <words>".
 _RELAYED = re.compile(r"^\s*(?:\[[^\]\n]{1,60}\]\s*)?\[Voice(?: request)?,? from [^\]\n]{1,60}\]\s*", re.I)
 _RELAY_TAIL = re.compile(r"\n\s*\n\s*(?:Begin your reply with exactly one line|Recent voice conversation for context)", re.I)
+# A later relayed follow-up in the same row (a steer that folded several together).
+_RELAYED_NEXT = re.compile(r"\s*\n\s*(?:\[[^\]\n]{1,60}\]\s*)?\[Voice(?: request)?,? from [^\]\n]{1,60}, relayed by Speakeasy\]\s*",
+                           re.I)
+# What a follow-up relayed into a task's thread tells the task (prompt/builder.thread_follow_up): a
+# "(They want to SEE this: …MEDIA:<absolute path>.)" note and "This is about the task in this thread: …".
+_FOLLOW_UP_TAIL = re.compile(r"(?s)\s*\(They want to SEE this\b[^)]*?\)|\s*This is about the task in this thread: "
+                             r"apply it to that work now\.(?: If it answers a question you asked [^\n]{1,60}?, act on the "
+                             r"answer\.)?")
 # The note Speakeasy adds to a request: "(Geo is looking at: Find previous sessions)", "(following up: ...)".
 # A follow-up of a follow-up nests them, cut short before any ")": "(following up: A (following up: B…".
 _LOOKING_AT = re.compile(r"\s*\((?:(?:[^():\n]{0,40}\bis looking at|following up)\s*:[^\n]*\)|following up\s*:[^\n]*)\s*$",
@@ -327,6 +335,9 @@ _CRON_HEADER = re.compile(r"(?s)^\s*Cronjob Response:[^\n]*\n(?:\(job_id:[^\n]*\
 _CRON_FOOTER = re.compile(r'(?s)\s*To stop or manage this job, send me a new message \(e\.g\. "[^"\n]*"\)\.?\s*$')
 # The gateway's own status lines: "⏩ Steered into current run…", "ℹ️ Context compression deferred…".
 _GATEWAY_LINE = re.compile(r"(?m)^[ \t]*(?:\[[^\]\n]{1,40}\][ \t]*)?(?:⏩[ \t]*Steered into|ℹ️?[ \t]*Context compression)[^\n]*\n?")
+# A redelivered reply's prefix: "♻️ Recovered reply — the messaging platform reconnected …, so this may
+# be a duplicate:" (restart / reconnect / rate-limit variants), on its own line before the answer.
+_RECOVERED = re.compile(r"(?m)^[ \t]*♻️?[ \t]*Recovered reply —[^\n]*?(?:duplicate|arrived above):[ \t]*\n*")
 # The runtime footer ("model · 22% · 23s", maybe a folder and a split marker after it).
 _FOOTER = re.compile(r"(?m)^[ \t]*[\w.\-/:]{2,80}(?: · [^·\n]{1,60}){1,4}[ \t]*(?:\(\d{1,2}/\d{1,2}\))?[ \t]*$")
 _FOOTER_SHAPE = re.compile(r"· \d{1,3}% ·")
@@ -338,7 +349,8 @@ SILENT = "[SILENT]"
 def gateway_reply_text(text: str) -> str:
     """An answer without what the chat delivery wrapped it in: cron header/footer, the runtime
     footer, "(1/2)" split markers, the gateway's own steer/compression lines."""
-    out = _CRON_FAILURE.sub("", _CRON_FOOTER.sub("", _CRON_HEADER.sub("", text or "")))
+    out = _RECOVERED.sub("", text or "", count=1)
+    out = _CRON_FAILURE.sub("", _CRON_FOOTER.sub("", _CRON_HEADER.sub("", out)))
     out = _GATEWAY_LINE.sub("", out)
     out = "\n".join(line for line in out.split("\n") if not (_FOOTER.match(line) and _FOOTER_SHAPE.search(line)))
     return _SPLIT_MARK.sub("", out.rstrip()).strip()
@@ -378,7 +390,9 @@ def relayed_words(text: str) -> str | None:
     tail = _RELAY_TAIL.search(body)
     if tail:
         body = body[:tail.start()]
-    return _LOOKING_AT.sub("", body).strip()
+    # Several follow-ups Hermes folded into one steer: one line each, without what each one tells the task.
+    parts = [_FOLLOW_UP_TAIL.sub("", p) for p in _RELAYED_NEXT.split(body)]
+    return "\n".join(w for w in (_LOOKING_AT.sub("", p).strip() for p in parts) if w)
 
 
 def preview_text(text: str, limit: int = PREVIEW_CHARS) -> str:

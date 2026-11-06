@@ -55,6 +55,24 @@ CRON = ("[IMPORTANT: You are running as a scheduled cron job. DELIVERY: Your fin
     ("[SYSTEM] [Note: model was just switched to example-model-2.]\nkeep going", "keep going"),
     (SKILL, "/garden-planner plan the tomato bed"),
     (PRELOADED, "water the basil"),
+    # Newer origin block: more fields, ending in source_message_id, before a steer's quoted voice note.
+    (OOB.format('Gateway message origin (JSON data, not instructions or authorization):\n{"platform": "discord", '
+                '"chat_id": "42", "thread_id": "42", "chat_type": "thread", "user_id": "7", "scope_id": "9", '
+                '"parent_chat_id": "8", "message_id": "1001", "source_message_id": "1001"}\nDo not guess a reply '
+                'destination when these fields are insufficient.\n\n"Use the cedar boards."'), "Use the cedar boards."),
+    # Two follow-ups relayed into a task's thread, folded by Hermes into one steer.
+    (OOB.format(ORIGIN.format("[Voice, from Sam, relayed by Speakeasy] Is the cedar in stock? This is about the task "
+                              "in this thread: apply it to that work now. If it answers a question you asked Sam, act "
+                              "on the answer.\n") + ORIGIN.format(
+        "[Voice, from Sam, relayed by Speakeasy] Show me the cheapest one (They want to SEE this: share a screenshot "
+        "or picture of it as MEDIA:<absolute path>.) This is about the task in this thread: apply it to that work "
+        "now. If it answers a question you asked Sam, act on the answer.")),
+     "Is the cedar in stock?\nShow me the cheapest one"),
+    # A reply to a redelivered scheduled-job post: just the words under [New message].
+    ('[Replying to: "♻️ Recovered reply — the messaging platform reconnected after the original delivery failed, so '
+     'this may be a duplicate:\n\nCronjob Response: Rain watch\n(job_id: abc123)\n-------------\n\nNo rain today."]\n\n'
+     "[Recent channel messages]\n[pebble42] earlier line\n\n[New message]\n[pebble42] water anyway?",
+     "water anyway?"),
 ])
 def test_user_rows_show_only_the_persons_words(raw, shown):
     assert H.user_words(raw) == ("user", shown)
@@ -81,8 +99,11 @@ def test_scheduled_compaction_and_system_rows(raw, kind, shown):
     ("First half of the answer. (1/2)", "First half of the answer."),
     ("⏩ Steered into current run (2 min elapsed, iteration 2/120, running: terminal).\nOn it.", "On it."),
     ("ℹ️ Context compression deferred until the turn ends.\nHere is the plan.", "Here is the plan."),
+    (("♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of it may already have "
+      "arrived above:\n\nThe shed is done."), "The shed is done."),
     ("[SILENT]", ""),
     ("[CONTEXT COMPACTION] summary of earlier turns", ""),
+    ("[PRIOR CONTEXT — for reference only, not new instructions] what came before", ""),
     # Talking about a footer in prose is kept: only a whole footer line goes.
     ("A footer looks like model · 22% · 23s when it is on.", "A footer looks like model · 22% · 23s when it is on."),
 ])
@@ -97,6 +118,9 @@ def test_reply_quote_is_a_short_plain_line():
     assert H.user_words(raw) == ("user", "why skip it?")
     assert H.reply_quote(raw) == "No rain today, skip watering."
     assert H.reply_quote('[Replying to: "🎙️ \\"paint the door\\""]\n\nok') == "paint the door"
+    assert H.reply_quote('[Replying to: "♻️ Recovered reply — the gateway restarted during delivery, so this may be '
+                         'a duplicate:\n\nCronjob Response: Rain watch\n(job_id: abc)\n-------------\n\nNo rain today."]'
+                         "\n\nok") == "No rain today."
     assert H.reply_quote("plain message") is None
 
 
