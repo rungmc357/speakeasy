@@ -134,6 +134,7 @@ that address is locked out for 15 minutes. Codes last 10 minutes while a Cloudfl
 
 Plugin 0.3.28+ also returns the fields of `GET /voice/endpoints` (`endpoints`, `address_drop`), so
 a phone knows every address and can read the address note. Older apps ignore them.
+Plugin 0.3.37+ also returns `agent` (see "Agent kind" under `GET /voice/status`).
 
 ## GET /voice/endpoints
 
@@ -1698,6 +1699,21 @@ drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
 `spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules`, `task_stop` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
+
+### Agent kind
+
+Plugin 0.3.37+ says which agent this server hands work to, in `GET /voice/status` and the pair
+response. Older apps ignore it; a missing `agent` means Hermes.
+
+```json
+"agent": {"kind": "hermes", "display_name": "Hermes", "version": "0.22.5", "host": "hermes"}
+```
+
+`kind` is the agent (`hermes` today), `display_name` the name to show for it, `version` its own
+version when it reports one (may be empty), `host` the program the server runs inside (`hermes`).
+Features an agent doesn't offer are `false` in `capabilities`: `history` (past conversations),
+`job_subagents` (helpers a task started) and `questions` (a task can end on a question card). With
+Hermes all three are `true`, as before.
 
 `200`
 ```json

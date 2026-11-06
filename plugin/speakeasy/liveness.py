@@ -95,13 +95,16 @@ def doing(summary: dict[str, Any] | None) -> str:
 
 
 def watch(session_of: Callable[[], str | None], on_alive: Callable[[dict[str, Any]], None],
-          stop: Any, every_s: float = 20.0, runner: Any = None) -> None:
+          stop: Any, every_s: float = 20.0, runner: Any = None,
+          activity: Callable[[str | None], dict[str, Any] | None] | None = None) -> None:
     """Blocking loop (run it in a thread): every ``every_s`` until ``stop`` is set, call
     ``on_alive(summary)`` when the session's turn is verifiably running. Silent otherwise, so a dead
-    turn still goes stale on its own."""
+    turn still goes stale on its own. ``activity``: the host's check (host.Host.session_activity);
+    None = Hermes' gateway, as before."""
     while not stop.wait(every_s):
         try:
-            summary = session_activity(session_of(), runner)
+            sid = session_of()
+            summary = activity(sid) if activity is not None and runner is None else session_activity(sid, runner)
             if alive(summary):
                 on_alive(summary or {})
         except Exception:

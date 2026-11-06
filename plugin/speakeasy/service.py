@@ -37,7 +37,10 @@ from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
 from .devices import CLIENT_HEADER, DeviceStore, parse_client
 from .emails import canonical_json, extract_email_drafts
+from . import agent_slot
+from .backends.hermes import hermes_agent
 from .hermes_api import HermesAPI, HermesError
+from .host import HermesHost
 
 RESTART_NEEDED = ("Speakeasy was updated while Hermes was running. Restart Hermes to finish the update: send "
                   "/restart in your chat with Hermes (or run hermes gateway restart in a terminal).")
@@ -109,6 +112,9 @@ CAPABILITIES["schedules"] = True
 # device-code login (codex_login.py). The plugin first looks for a working sign-in in every Codex
 # copy on the machine, and installs Codex when there is none; the app asks only when nothing works.
 CAPABILITIES["codex_login"] = True
+# A task can end on a question for the user (question cards; the answer goes back as a follow-up).
+# Like history and job_subagents, it is on only when the agent offers it (agent_slot.FEATURE_FLAGS).
+CAPABILITIES["questions"] = True
 
 
 
@@ -238,7 +244,8 @@ class HistoryEvents:
 
 
 class VoiceService(SecureInputMixin):
-    def __init__(self, hermes_home: Path, *, hermes: Any = None, notifier: Any = None,
+    def __init__(self, hermes_home: Path, *, agent: Any = None, host: Any = None, hermes: Any = None,
+                 notifier: Any = None,
                  codex_factory: Callable[..., Any] | None = None, openai_negotiate: Callable[..., Any] | None = None,
                  openai_worker: Callable[..., Any] | None = None, codex_login: Callable[..., Any] | None = None,
                  brief_run: Callable[[str, str], tuple[str, str]] | None = None, start_threads: bool = True,
@@ -261,16 +268,20 @@ class VoiceService(SecureInputMixin):
         self.settings = Settings(self.home)
         self.devices = DeviceStore(self.home)
         self.store = StateStore(self.dir / "state.sqlite3", hermes_home=self.home)
-        self.hermes = hermes or HermesAPI(hermes_api_base(self.home), self.hermes_key,
-                                          self.settings.get()["hermes_profile"])
-        self.notifier = notifier if notifier is not None else D.HermesSendNotifier(
-            self.home, self.settings.get()["hermes_profile"])
+        # The host this server lives in (settings, secrets, side model, chat delivery, liveness) and
+        # the agent that does the work. Both are Hermes today; ``hermes=`` is the older name.
+        self.host = host or HermesHost(self.home)
+        self.agent = agent or hermes or hermes_agent(self.host, key_fn=self.hermes_key)
+        if getattr(self.agent, "state_db", False) is None:  # bind an injected Hermes to this profile
+            self.agent.state_db = self.home / "state.db"
+        self.notifier = notifier if notifier is not None else self.host.notifier(self.settings.get()["hermes_profile"])
         self.notices = Notices(self.store, self.notifier, lambda: self.settings.get()["delivery"]["target"],
                                lambda: P.Names.from_settings(self.settings.get()))
-        self.rt = Runtime(store=self.store, hermes=self.hermes, settings=self.settings.get, hermes_home=self.home,
+        self.rt = Runtime(store=self.store, hermes=self.agent, settings=self.settings.get, hermes_home=self.home,
                           image_roots=self.image_roots, notices=self.notices, hermes_key=self.hermes_key,
                           route_call=route_call, title_call=title_call, polish_call=polish_call, status_call=status_call,
-                          threads=thread_runner or ThreadRunner(self.home, D.threads_supported))
+                          threads=thread_runner or ThreadRunner(self.home, self.host.threads_supported),
+                          host=self.host)
         from .home_control import HomeAssistantClient, HomeControl, credentials
         self.home_control = HomeControl(self.settings.get, lambda: credentials(self.home),
                                         plan_call=home_plan_call or router_home_plan_call,
@@ -310,7 +321,7 @@ class VoiceService(SecureInputMixin):
         self.rt.history_events = self.history_events
         self._suggest_run = suggest_run or self._brief_run
         self.brief = BriefManager(self.home, brief_run or self._brief_run, self.settings.get,
-                                  error_fn=lambda: getattr(self.hermes, "last_error", "") or "")
+                                  error_fn=lambda: getattr(self.agent, "last_error", "") or "")
         from .tune import CallLog, TuneManager, merge_calls
         self.call_log = CallLog(self.dir)
         self.rt.call_log = self.call_log
@@ -351,11 +362,29 @@ class VoiceService(SecureInputMixin):
         if start_threads:
             threading.Thread(target=self._idle_loop, daemon=True, name="speakeasy-idle").start()
             self._warm_catalog()
-            self.brief.start_scheduler(ready=self.hermes.health)
+            self.brief.start_scheduler(ready=self.agent.health)
 
     # -- secrets (read per use, never stored or returned) ------------------------------------
+    @property
+    def hermes(self) -> Any:
+        """The agent in the slot, by its older name (Hermes was the only agent)."""
+        return self.agent
+
+    @hermes.setter
+    def hermes(self, value: Any) -> None:
+        self.agent = value
+
+    @property
+    def sessions(self) -> Any:
+        """The agent's past conversations (optional feature ``history``; agent_slot.session_catalog)."""
+        return agent_slot.session_catalog(self.agent, self.rt.state_db)
+
+    @property
+    def agent_name(self) -> str:
+        return agent_slot.display_name(self.agent)
+
     def hermes_key(self) -> str:
-        return hermes_secret(self.home, "API_SERVER_KEY")
+        return self.host.agent_api_key()
 
     def openai_key(self) -> str:
         return openai_api_key(self.home)
@@ -364,16 +393,16 @@ class VoiceService(SecureInputMixin):
         return default_image_roots(self.home, self.settings.get()["image_roots"])
 
     def _tune_run(self, prompt: str, idem: str) -> tuple[str, str]:
-        self.hermes.last_error = ""
-        return self.hermes.run_to_completion(prompt, idem, "speakeasy_tune")
+        self.agent.last_error = ""
+        return self.agent.run_to_completion(prompt, idem, "speakeasy_tune")
 
     def _tune_names(self) -> tuple[str, str]:
         names = P.Names.from_settings(self.settings.get())
         return names.assistant_name, names.user_cap or "User"
 
     def _brief_run(self, prompt: str, idem: str) -> tuple[str, str]:
-        self.hermes.last_error = ""
-        return self.hermes.run_to_completion(prompt, idem, "speakeasy_brief")
+        self.agent.last_error = ""
+        return self.agent.run_to_completion(prompt, idem, "speakeasy_brief")
 
     def busy(self) -> bool:
         """A call is live or a task is still running: an automatic reload would cut it off."""
@@ -443,7 +472,8 @@ class VoiceService(SecureInputMixin):
         if result is None:
             raise ServiceError(403, "pairing code is wrong or expired")
         device_id, token = result
-        out: dict[str, Any] = {"device_id": device_id, "token": token, "assistant_name": self.settings.get()["assistant_name"]}
+        out: dict[str, Any] = {"device_id": device_id, "token": token, "assistant_name": self.settings.get()["assistant_name"],
+                               "agent": agent_slot.agent_info(self.agent, self.host)}
         out.update(self.endpoints())  # endpoints + the address-drop key: only a paired device sees them
         return out
 
@@ -963,10 +993,10 @@ class VoiceService(SecureInputMixin):
     def refresh_image_support(self) -> None:
         """Check again whether Hermes reads images; status reports the cached answer. Runs on the
         idle loop (at startup, then hourly), never on a request: the check can wait on the network."""
-        refresh = getattr(self.hermes, "refresh_image_support", None)
+        refresh = getattr(self.agent, "refresh_image_support", None)
         if refresh is None:
             return
-        before = dict(getattr(self.hermes, "image_support", None) or {})
+        before = dict(getattr(self.agent, "image_support", None) or {})
         try:
             support = refresh()
         except Exception as exc:
@@ -1280,13 +1310,13 @@ class VoiceService(SecureInputMixin):
         name = self.settings.get()["assistant_name"]
         publish_state(self.store, interaction, name)
         try:
-            result = self.hermes.stop(backend.run_id)
+            result = self.agent.stop(backend.run_id)
         except Exception:
             with interaction.lock:
                 if backend.status == "cancel_requested":
                     backend.status, backend.error = "ambiguous", "Backend stop outcome is ambiguous"
             publish_state(self.store, interaction, name)
-            raise ServiceError(502, "Hermes stop failed") from None
+            raise ServiceError(502, f"{self.agent_name} stop failed") from None
         return {"interaction_id": interaction_id, "backend_cancel": result.get("status", "unknown"),
                 "run_id": backend.run_id, "voice_session": "open"}
 
@@ -1309,13 +1339,13 @@ class VoiceService(SecureInputMixin):
             backend.approval, backend.status = None, "resolving_approval"
         name = self.settings.get()["assistant_name"]
         try:
-            result = self.hermes.approve(backend.run_id, request_id, choice, offered)
+            result = self.agent.approve(backend.run_id, request_id, choice, offered)
         except Exception:
             with interaction.lock:
                 if backend.status == "resolving_approval":
                     backend.status, backend.error = "ambiguous", "Backend approval outcome is ambiguous"
             publish_state(self.store, interaction, name)
-            raise ServiceError(502, "Hermes approval failed") from None
+            raise ServiceError(502, f"{self.agent_name} approval failed") from None
         with interaction.lock:
             if backend.status == "resolving_approval":
                 backend.status = "working"
@@ -1376,7 +1406,7 @@ class VoiceService(SecureInputMixin):
                     backend.approval, backend.status = None, "working"
             if approval and backend.run_id:
                 try:
-                    self.hermes.approve(backend.run_id, approval.get("request_id", ""), "deny")
+                    self.agent.approve(backend.run_id, approval.get("request_id", ""), "deny")
                 except Exception:
                     logger.warning("speakeasy: set-aside could not decline the approval")
         self.store.progress(key, "milestone", "Set aside")
@@ -1739,7 +1769,7 @@ class VoiceService(SecureInputMixin):
     # -- models: which model works a chat, how hard it thinks (models.py, docs/API.md "Models") ------
 
     def _fetch_model_options(self) -> dict[str, Any]:
-        fetch = getattr(self.hermes, "model_options", None)
+        fetch = getattr(self.agent, "model_options", None)
         if fetch is None:
             raise RuntimeError("this Hermes client can't list models")
         return fetch()
@@ -1790,7 +1820,7 @@ class VoiceService(SecureInputMixin):
             return
         entries = self.catalog.entries(self.catalog.raw())
         if entries and any(m not in entries for m in picked):
-            raise ServiceError(400, "That model isn't one Hermes offers. Pick one from the list.", reason="model")
+            raise ServiceError(400, f"That model isn't one {self.agent_name} offers. Pick one from the list.", reason="model")
 
     def _save_chat_choice(self, session_id: str, choice: dict[str, Any]) -> None:
         old = self.store.model_choice("session:" + session_id) or {}
@@ -1809,7 +1839,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "Send model and/or reasoning.")
         if not H.valid_session_id(session_id):
             raise ServiceError(404, "I couldn't find that conversation.")
-        meta = H.session_meta(self.rt.state_db, session_id)
+        meta = self.sessions.session_meta(session_id)
         if meta is None:
             raise ServiceError(404, "I couldn't find that conversation.")
         choice = self._body_choice(body) or {}
@@ -2014,7 +2044,7 @@ class VoiceService(SecureInputMixin):
     def _history_stamp(self) -> tuple[Any, ...]:
         """What the history watcher compares (one shared poll for every open stream, every
         HistoryEvents.POLL_S): Speakeasy's own store revision and state.db's newest message/session."""
-        return (self.store.revision, H.fingerprint(self.rt.state_db))
+        return (self.store.revision, self.sessions.fingerprint())
 
     def forget_history_cache(self) -> None:
         with self.__dict__.setdefault("_history_cache_lock", threading.Lock()):
@@ -2023,7 +2053,7 @@ class VoiceService(SecureInputMixin):
     def history(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/history?cursor=&q=&source=&limit=``."""
         args = tuple(sorted((k, str(v)) for k, v in (query or {}).items()))
-        stamp = H.fingerprint(self.rt.state_db)
+        stamp = self.sessions.fingerprint()
         return self._cached(("list", args), None if stamp is None else (stamp, self.store.revision),
                             self.LIST_CACHE_S, lambda: self._history(query))
 
@@ -2034,7 +2064,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "limit must be a number") from None
         q = (query.get("q") or "").strip()[:200]
         try:
-            return H.list_sessions(self.rt.state_db, cursor=query.get("cursor") or None, q=q, source=query.get("source") or "",
+            return self.sessions.list_sessions(cursor=query.get("cursor") or None, q=q, source=query.get("source") or "",
                                    limit=limit, linked=self._linked_with_continuations,
                                    speakeasy_ids=self.store.speakeasy_sessions, folded=self.store.folded_sessions,
                                    marks=self.store.session_marks,
@@ -2050,7 +2080,7 @@ class VoiceService(SecureInputMixin):
         if not H.valid_session_id(session_id):
             raise ServiceError(404, "I couldn't find that conversation.")
         linked = [s for s in (self.store.session_for(k) for k in self._continuations(session_id)) if s]
-        stamp = H.fingerprint(self.rt.state_db, [session_id, *linked])
+        stamp = self.sessions.fingerprint([session_id, *linked])
         return self._cached(("session", session_id, str((query or {}).get("before") or "")),
                             None if stamp is None else (stamp, self.store.revision, self._approvals_stamp()),
                             self.SESSION_CACHE_S, lambda: self._history_session(session_id, query))
@@ -2070,7 +2100,7 @@ class VoiceService(SecureInputMixin):
         return tuple(sorted(out))
 
     def _history_session(self, session_id: str, query: dict[str, str]) -> dict[str, Any]:
-        meta = H.session_meta(self.rt.state_db, session_id)
+        meta = self.sessions.session_meta(session_id)
         if meta is None:
             raise ServiceError(404, "I couldn't find that conversation.")
         sid = meta["id"]
@@ -2079,7 +2109,7 @@ class VoiceService(SecureInputMixin):
         except ValueError:
             raise ServiceError(400, "before must be a number") from None
         try:
-            page = H.session_messages(self.rt.state_db, sid, before=before)
+            page = self.sessions.session_messages(sid, before=before)
         except H.HistoryError as exc:
             raise ServiceError(exc.status, exc.message) from None
         link = self._linked(sid)
@@ -2099,12 +2129,12 @@ class VoiceService(SecureInputMixin):
                 if linked_sid and linked_sid not in seen:
                     seen.add(linked_sid)
                     try:
-                        got = H.session_messages(self.rt.state_db, linked_sid)["entries"]
+                        got = self.sessions.session_messages(linked_sid)["entries"]
                     except H.HistoryError:
                         got = []
                     more += [{**e, "id": f"{linked_sid[-6:]}-{e['id']}"} for e in got]
-            lower = H.message_time(self.rt.state_db, page["before"]) if page["has_more"] else None
-            upper = H.message_time(self.rt.state_db, before) if before is not None else None
+            lower = self.sessions.message_time(page["before"]) if page["has_more"] else None
+            upper = self.sessions.message_time(before) if before is not None else None
             if before is not None and upper is None:
                 more = []  # can't place this page's span: linked entries stay on the newest page
             entries = H.merge_linked(entries, more, lower=lower, upper=upper,
@@ -2174,7 +2204,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "client_id must be an id.")
         if not H.valid_session_id(session_id):
             raise ServiceError(404, "I couldn't find that conversation.")
-        meta = H.session_meta(self.rt.state_db, session_id)
+        meta = self.sessions.session_meta(session_id)
         if meta is None:
             raise ServiceError(404, "I couldn't find that conversation.")
         if choice is not None:
@@ -2230,7 +2260,7 @@ class VoiceService(SecureInputMixin):
                     "delivered_as": "follow_up", "task": got.get("task")}
         label = H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), False)
         title = (meta.get("title") or "").strip() or "this conversation"
-        context = H.linked_context(self.rt.state_db, sid, title, label, text)
+        context = self.sessions.linked_context(sid, title, label, text)
         got = self._start_job(text, staged, context=context, link_to=sid)
         logger.info("speakeasy: a message to a %s session started a linked task", meta["source"])
         return {"ok": True, "session_id": sid, "via": "linked", "run_id": got.get("run_id"),
@@ -2244,7 +2274,7 @@ class VoiceService(SecureInputMixin):
         published on ``/voice/history/events`` at once."""
         if not isinstance(body, dict):
             raise ServiceError(400, "Send a JSON object.")
-        if not H.valid_session_id(session_id) or H.session_meta(self.rt.state_db, session_id) is None:
+        if not H.valid_session_id(session_id) or self.sessions.session_meta(session_id) is None:
             raise ServiceError(404, "I couldn't find that conversation.")
         allowed = {"rename": {"title"}, "pin": {"pinned"}, "archive": {"archived"}, "read": {"at"}}[action]
         if not set(body) <= allowed:
@@ -2284,17 +2314,17 @@ class VoiceService(SecureInputMixin):
         return {"ok": True, **event}
 
     def _hermes_patch(self, session_id: str, fields: dict[str, Any]) -> None:
-        patch = getattr(self.rt.hermes, "patch_session", None)
+        patch = getattr(self.rt.agent, "patch_session", None)
         if patch is None:
-            raise ServiceError(501, "This Hermes can't rename or archive conversations.")
+            raise ServiceError(501, f"This {self.agent_name} can't rename or archive conversations.")
         try:
             patch(session_id, fields)
         except HermesError as exc:
             if exc.status == 400 and "title" in fields:
                 raise ServiceError(400, "Another conversation already has that title.") from None
             if exc.status == 404:
-                raise ServiceError(404, "Hermes doesn't have that conversation.") from None
-            raise ServiceError(502, "Hermes didn't take that change. Try again.") from None
+                raise ServiceError(404, f"{self.agent_name} doesn't have that conversation.") from None
+            raise ServiceError(502, f"{self.agent_name} didn't take that change. Try again.") from None
 
     def _session_approvals(self, keys: list[str]) -> list[dict[str, Any]]:
         """Approvals the session's Speakeasy tasks wait on, from whichever worker holds them (an open
@@ -2336,7 +2366,7 @@ class VoiceService(SecureInputMixin):
                     done = asyncio.run_coroutine_threadsafe(worker.resolve_approval(task_id, choice),
                                                             worker.loop).result(30)
                     if done is None:
-                        raise ServiceError(502, "Hermes didn't take that answer. Try again.")
+                        raise ServiceError(502, f"{self.agent_name} didn't take that answer. Try again.")
                     self.publish_all(key)
                     return {"ok": True, "choice": done}
         raise ServiceError(409, "That approval has closed.")
@@ -2743,7 +2773,7 @@ class VoiceService(SecureInputMixin):
                                                "revise": "Revising the email draft"}[action])
         idem = f"speakeasy_draft_{draft_id}_{action}"
         try:
-            run_id = self.hermes.start_run(message, idem, session_id)
+            run_id = self.agent.start_run(message, idem, session_id)
         except HermesError as exc:
             if action == "approve":
                 # Nothing reached Hermes: mark failed rather than pretend it was sent.
@@ -2751,7 +2781,7 @@ class VoiceService(SecureInputMixin):
             elif action == "revise":
                 self.store.transition_draft(draft_id, {"revising"}, "pending", error=exc.message[:200])
             self.publish_all(key)
-            raise ServiceError(502, "Hermes did not accept the decision") from None
+            raise ServiceError(502, f"{self.agent_name} did not accept the decision") from None
         self.store.transition_draft(draft_id, {target}, target, action_run_id=run_id)
         self.publish_all(key)
         interaction = self.interaction_for_key(key)
@@ -2771,8 +2801,8 @@ class VoiceService(SecureInputMixin):
                 if isinstance(event.get("output"), str):
                     final["output"] = event["output"]
         try:
-            if not self.hermes.events(run_id, on_event) or "output" not in final:
-                result = self.hermes.get_run(run_id)
+            if not self.agent.events(run_id, on_event) or "output" not in final:
+                result = self.agent.get_run(run_id)
                 final.setdefault("status", result.get("status"))
                 if isinstance(result.get("output"), str):
                     final.setdefault("output", result["output"])
@@ -2863,7 +2893,7 @@ class VoiceService(SecureInputMixin):
         """Keep Hermes' webhook routes in step with the channels that open threads (hot-reloaded)."""
         try:
             sync_routes(self.home, self.thread_channels(s),
-                        supported=capability(self.home, D.threads_supported())["supported"])
+                        supported=capability(self.home, self.host.threads_supported())["supported"])
         except OSError as exc:
             logger.warning("speakeasy: could not update thread routes (%s)", type(exc).__name__)
 
@@ -3084,11 +3114,11 @@ class VoiceService(SecureInputMixin):
             # switch for api_key), never while a working ChatGPT sign-in exists (codex_login).
             "codex_sign_in": codex_kind,
             "api_key_set": api_key_set, "brief_state": self.brief.status()["state"],
-            "hermes_api_ok": self.hermes.health(), "hermes_api_key_set": bool(self.hermes_key()),
+            "hermes_api_ok": self.agent.health(), "hermes_api_key_set": bool(self.hermes_key()),
             "delivery_target": s["delivery"]["target"], **self.thread_status(),
             "continuity_enabled": s["continuity"]["enabled"], "devices": len(self.devices.devices()),
             "home_control_enabled": s["home_control"]["enabled"],
-            "routing_model": routing_model(), "routing_hint": ROUTING_HINT, "routing_explainer": ROUTING_EXPLAINER,
+            "routing_model": routing_model(), "routing_hint": ROUTING_HINT, "routing_explainer": agent_slot.named(ROUTING_EXPLAINER, self.agent_name),
             "routing_choice": self.routing_choices(),
             "advertised_url": s["server"]["advertised_url"], "tailscale_name": s["server"]["tailscale_name"],
             "tunnel": s["server"]["tunnel"] or None,
@@ -3106,13 +3136,16 @@ class VoiceService(SecureInputMixin):
             "input_text": True,
             "version": __version__,
             # What this server supports from the UX contract; a missing flag means an older server.
-            "capabilities": dict(CAPABILITIES),
+            # Features the agent doesn't offer are off (agent_slot.capabilities).
+            "capabilities": agent_slot.capabilities(CAPABILITIES, self.agent),
+            # Which agent this server talks to (older apps ignore it; no field = Hermes).
+            "agent": agent_slot.agent_info(self.agent, self.host),
         }
 
     def attachment_status(self) -> dict[str, Any]:
         """Whether Hermes reads images (``images``: the input path exists; ``vision``: native,
         described, none or unknown) and the attachment limits. Reads the cached check only."""
-        support = getattr(self.hermes, "image_support", None) or {}
+        support = getattr(self.agent, "image_support", None) or {}
         return {"images": bool(support.get("images")), "vision": support.get("vision") or "unknown",
                 "max_attachments": A.MAX_ATTACHMENTS, "max_image_bytes": A.MAX_IMAGE_BYTES,
                 "max_request_image_bytes": A.MAX_REQUEST_IMAGE_BYTES, "max_file_bytes": A.MAX_FILE_BYTES,

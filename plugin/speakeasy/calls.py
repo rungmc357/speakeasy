@@ -37,6 +37,7 @@ from . import session_titles
 from . import quick as quick_mod
 from . import views as views_mod
 from . import activity as activity_mod
+from . import agent_slot
 from . import subagents as subagents_mod
 from . import attachments as A
 from .attachments import Attachment, CallAttachments
@@ -430,6 +431,9 @@ class Runtime:
     # The model/reasoning a run starts with (task_id, idem key, session id, request) -> Hermes'
     # per-request overrides (models.run_fields), or None for its own config. None = never chosen.
     choose_model: Callable[[str, str, str | None, str | None], dict[str, Any] | None] | None = None
+    # The host this server lives in (host.Host: secrets, side model, chat delivery, liveness);
+    # None = Hermes' gateway directly, as before the host layer.
+    host: Any = None
 
     @property
     def names(self) -> P.Names:
@@ -438,6 +442,11 @@ class Runtime:
     @property
     def state_db(self) -> Path:
         return self.hermes_home / "state.db"
+
+    @property
+    def agent(self) -> Any:
+        """The agent in the slot (``hermes`` is the field's older name)."""
+        return self.hermes
 
     def routable(self) -> dict[str, Any]:
         """Settings minus any topic channel another Hermes profile answers (see
@@ -909,8 +918,17 @@ class SidebandWorker:
     HOLD_QUIET_NOTES = False
     """Base worker. Subclasses read provider events in ``run()`` and write in ``_send()``."""
 
+    @property
+    def hermes(self) -> Any:
+        """The agent in the slot, by its older name."""
+        return self.agent
+
+    @hermes.setter
+    def hermes(self, value: Any) -> None:
+        self.agent = value
+
     def __init__(self, rt: Runtime, interaction: Interaction):
-        self.rt, self.store, self.hermes, self.interaction = rt, rt.store, rt.hermes, interaction
+        self.rt, self.store, self.agent, self.interaction = rt, rt.store, rt.agent, interaction
         self.notices = rt.notices
         self.fragments: deque[dict[str, Any]] = deque(maxlen=512)
         self.absorbed: list[tuple[str, float]] = []  # words folded into an earlier task by settle()
@@ -1054,7 +1072,7 @@ class SidebandWorker:
 
         # Not a dispatch task: the end of a call never waits on a session's name.
         task = asyncio.get_running_loop().create_task(
-            asyncio.to_thread(session_titles.push, self.hermes, session_id, name))
+            asyncio.to_thread(session_titles.push, self.agent, session_id, name))
         session_titles.PENDING.add(task)
         task.add_done_callback(session_titles.PENDING.discard)
 
@@ -1542,7 +1560,7 @@ class SidebandWorker:
         self.store.progress(key, "milestone", "Replaced by your correction")
         self.publish()
         try:
-            await asyncio.to_thread(self.hermes.stop, run_id)
+            await asyncio.to_thread(self.agent.stop, run_id)
         except Exception as exc:
             logger.warning("speakeasy: could not stop the corrected task (%s)", type(exc).__name__)
 
@@ -1727,8 +1745,8 @@ class SidebandWorker:
             answer = P.set_aside_answer(self.names)
             try:
                 if approval and approval.get("request_id"):
-                    await asyncio.to_thread(self.hermes.approve, run_id, approval["request_id"], "deny")
-                await asyncio.to_thread(self.hermes.steer, run_id, P.steer_text(self.names, answer))
+                    await asyncio.to_thread(self.agent.approve, run_id, approval["request_id"], "deny")
+                await asyncio.to_thread(self.agent.steer, run_id, P.steer_text(self.names, answer))
             except Exception as exc:  # the run may already be gone; it is closed here either way
                 logger.warning("speakeasy: set-aside could not reach the run (%s)", type(exc).__name__)
             with self.interaction.lock:
@@ -2524,7 +2542,7 @@ class SidebandWorker:
             run.approval, run.status = None, "resolving_approval"
         self.publish()
         try:
-            await asyncio.to_thread(self.hermes.approve, run.run_id, approval["request_id"], choice,
+            await asyncio.to_thread(self.agent.approve, run.run_id, approval["request_id"], choice,
                                     approval.get("choices") or ["once", "deny"])
         except HermesError as exc:
             logger.warning("speakeasy: approval by voice refused (%s)", exc.status)
@@ -2582,7 +2600,7 @@ class SidebandWorker:
             self.store.progress(blocker.idem_key, "milestone", "Stop requested")
             self.publish()
             try:
-                await asyncio.to_thread(self.hermes.stop, blocker.run_id)
+                await asyncio.to_thread(self.agent.stop, blocker.run_id)
             except Exception:
                 with self.interaction.lock:
                     if blocker.status == "cancel_requested":
@@ -3194,7 +3212,7 @@ class SidebandWorker:
         if running and not run.run_id:
             return False  # a thread task: the request goes into its thread (see message_thread_task)
         if running and run.run_id:
-            accepted = await asyncio.to_thread(self.hermes.steer, run.run_id, P.SCREENSHOT_STEER)
+            accepted = await asyncio.to_thread(self.agent.steer, run.run_id, P.SCREENSHOT_STEER)
             if accepted:
                 with self.interaction.lock:
                     self.show_pending.add(key)
@@ -3422,7 +3440,7 @@ class SidebandWorker:
         if not shared.images:
             return []
         try:
-            readable = bool(self.hermes.capabilities().images)
+            readable = bool(self.agent.capabilities().images)
         except Exception:
             readable = False
         if not readable:
@@ -3847,7 +3865,7 @@ class SidebandWorker:
         # A run Hermes admitted a moment ago refuses guidance (409) until its agent is up. Two things
         # said seconds apart then became two near-identical runs that both answered out loud; ask
         # again for a few seconds while the run is still going before starting another one.
-        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+        accepted = await asyncio.to_thread(self.agent.steer, target.run_id, text)
         for _ in range(STEER_RETRIES):
             if accepted:
                 break
@@ -3856,7 +3874,7 @@ class SidebandWorker:
             if not going:
                 break
             await asyncio.sleep(STEER_RETRY_S)
-            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+            accepted = await asyncio.to_thread(self.agent.steer, target.run_id, text)
         if not accepted:
             return False
         milestone = f"You added: {notice_text(words, 200)}"
@@ -4053,7 +4071,7 @@ class SidebandWorker:
             items, bool(images), session_id if continuing else None, shared.capture is not None), room=room)
         try:
             choice = await self.model_choice(task_id, idem, session_id, request)
-            run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,
+            run_id = await asyncio.to_thread(self.agent.start_run, prompt, idem, session_id,
                                              **({"images": images} if images else {}),
                                              **({"choice": choice} if choice else {}))
             images = []
@@ -4066,7 +4084,7 @@ class SidebandWorker:
             self.publish()
             loop = asyncio.get_running_loop()
             terminal_seen = await asyncio.to_thread(
-                self.hermes.events, run_id,
+                self.agent.events, run_id,
                 lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
             if not terminal_seen:
                 await self.reconcile_stream_end(backend)
@@ -4236,7 +4254,7 @@ class SidebandWorker:
                     final["status"] = name.split(".", 1)[1]
                     final["error"] = payload.get("error")
 
-            terminal = await asyncio.to_thread(continuity.stream_session_chat, self.hermes.base, self.rt.hermes_key(),
+            terminal = await asyncio.to_thread(continuity.stream_session_chat, self.agent.base, self.rt.hermes_key(),
                                                conv, content, on_event)
             status = final.get("status") or ("completed" if terminal and final.get("text") else "ambiguous")
             output = P.without_voice_header(final.get("text", ""))
@@ -4244,7 +4262,7 @@ class SidebandWorker:
                 # Real Hermes ends a refused turn's stream without a run.* event; the refusal is only
                 # on the run itself. Read it so a refused chat still gets the request another way.
                 try:
-                    run = await asyncio.to_thread(self.hermes.get_run, backend.run_id)
+                    run = await asyncio.to_thread(self.agent.get_run, backend.run_id)
                 except Exception:
                     run = {}
                 if run.get("status") == "failed" and continuity.refused(run.get("error")) and not str(run.get("output") or "").strip():
@@ -4303,7 +4321,9 @@ class SidebandWorker:
                 self.publish()
             loop.call_soon_threadsafe(apply)
 
+        host = self.rt.host
         threading.Thread(target=liveness.watch, args=(session_of, on_alive, stop),
+                         kwargs={"activity": host.session_activity if host is not None else None},
                          name=f"speakeasy-vouch-{idem[:12]}", daemon=True).start()
         return stop
 
@@ -4377,7 +4397,7 @@ class SidebandWorker:
         self.publish()
         try:
             choice = await self.model_choice(backend.delegation_id, idem, session_id, request)
-            run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,
+            run_id = await asyncio.to_thread(self.agent.start_run, prompt, idem, session_id,
                                              **({"choice": choice} if choice else {}))
             self.store.update_run(idem, run_id, "running")
             self.title_session(idem)
@@ -4386,7 +4406,7 @@ class SidebandWorker:
             self.publish()
             loop = asyncio.get_running_loop()
             terminal_seen = await asyncio.to_thread(
-                self.hermes.events, run_id,
+                self.agent.events, run_id,
                 lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
             if not terminal_seen:
                 await self.reconcile_stream_end(backend)
@@ -4521,7 +4541,7 @@ class SidebandWorker:
         if not backend.run_id:
             raise ServiceError(502, "Hermes stream ended before a run ID was assigned")
         try:
-            result = await asyncio.to_thread(self.hermes.get_run, backend.run_id)
+            result = await asyncio.to_thread(self.agent.get_run, backend.run_id)
         except Exception as exc:
             result, cause = {}, cause or exc
         status = result.get("status")
@@ -4616,9 +4636,11 @@ class SidebandWorker:
         def title(goal: str) -> str | None:  # the same titler (and rules) as a task's own name
             return self._titled(titler, text_mod.title_input(goal, names=(names.user_name, names.assistant_name)))
 
+        source = agent_slot.subagent_source(self.agent, self.rt.state_db)
+        if source is None:  # the agent doesn't offer helpers to follow
+            return
         try:
-            subagents_mod.ensure_watch(self.store, backend.idem_key, self.rt.state_db, session_of,
-                                       on_flush=publish_soon, titler=title)
+            source.ensure_watch(self.store, backend.idem_key, session_of, on_flush=publish_soon, titler=title)
         except Exception:
             logger.debug("speakeasy: helper watch failed to start", exc_info=True)
 

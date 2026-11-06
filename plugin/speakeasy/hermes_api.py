@@ -8,6 +8,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from . import attachments as A
@@ -116,13 +117,25 @@ def _auxiliary_vision() -> bool:
         return any(resolve_vision_provider_client(**kw)[1] is not None for kw in ({}, {"provider": "auto"}))
 
 
+def hermes_version() -> str:
+    """The installed Hermes version (``hermes_cli.__version__``), "" when it can't be read."""
+    try:
+        import hermes_cli  # type: ignore
+        return str(getattr(hermes_cli, "__version__", "") or "")
+    except Exception:
+        return ""
+
+
 class HermesAPI:
     """`key_fn` is called per request so a key written by `hermes voice setup` is picked up
     without a restart; the key is never logged or returned."""
 
     def __init__(self, base: str, key_fn: Callable[[], str], profile: str = "",
-                 opener: Callable[..., Any] = urllib.request.urlopen):
+                 opener: Callable[..., Any] = urllib.request.urlopen, state_db: Path | None = None):
         root = _loopback(base)
+        # The profile's state.db: past conversations and helpers' transcripts are read from it
+        # (optional agent features; see backends/hermes.py). None = not offered.
+        self.state_db = Path(state_db) if state_db is not None else None
         self.base = f"{root}/p/{profile}" if profile else root
         self.key_fn, self.opener = key_fn, opener
         self.last_error = ""  # Hermes' own message for the last failed background run
@@ -167,7 +180,19 @@ class HermesAPI:
         support = self.image_support
         return Capabilities(kind="hermes", display_name="Hermes", chat_delivery=True, threads=True,
                             conversation_continuity=True, email_drafts=True, daily_brief=True,
-                            images=bool(support["images"]) and support["vision"] != "none")
+                            images=bool(support["images"]) and support["vision"] != "none",
+                            history=self.state_db is not None, subagents=self.state_db is not None,
+                            questions=True, version=hermes_version())
+
+    def session_catalog(self):
+        """Past conversations (optional feature ``history``): this profile's Hermes sessions."""
+        from .backends.hermes import HermesSessionCatalog
+        return HermesSessionCatalog(self.state_db) if self.state_db is not None else None
+
+    def subagent_source(self):
+        """Helpers a run started (optional feature ``subagents``): delegate_task child sessions."""
+        from .backends.hermes import HermesSubagentSource
+        return HermesSubagentSource(self.state_db) if self.state_db is not None else None
 
     def refresh_image_support(self) -> dict[str, Any]:
         """Check again whether Hermes reads images and cache it. Slow at times: never call it on a

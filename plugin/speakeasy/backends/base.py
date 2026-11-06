@@ -87,6 +87,12 @@ class Capabilities:
     daily_brief: bool = False
     needs_workspace: bool = False               # tasks run in a project folder the user picks
     images: bool = False                        # start_run takes images and the agent can read them
+    # Optional features (see the mixins below). An agent without one simply doesn't offer it: the
+    # server drops the matching capability flag so the apps hide it.
+    history: bool = False                       # past conversations readable by id (SessionCatalog)
+    subagents: bool = False                     # helpers a run starts are followable (SubagentSource)
+    questions: bool = False                     # the agent can ask the user mid-run and take the answer
+    version: str = ""                           # the agent's own version, when it reports one
     extras: dict[str, Any] = field(default_factory=dict)
 
 
@@ -135,3 +141,35 @@ class TaskBackend(Protocol):
     def run_to_completion(self, prompt: str, idem_key: str, session_id: str | None = None) -> tuple[str, str]:
         """Start and wait: ``(status, output)``."""
         ...
+
+
+# -- optional features ---------------------------------------------------------------------------
+# A backend offers each by setting its Capabilities flag and returning an object from the matching
+# accessor; Speakeasy never reads an agent's own storage except through these.
+
+@runtime_checkable
+class SessionCatalog(Protocol):
+    """Past conversations (``history``): list, read one, and tell when anything changed."""
+
+    def list_sessions(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def session_meta(self, session_id: str) -> dict[str, Any] | None: ...
+
+    def session_messages(self, session_id: str, **kwargs: Any) -> dict[str, Any]: ...
+
+    def fingerprint(self, session_ids: list[str] | None = None) -> Any: ...
+
+
+@runtime_checkable
+class SubagentSource(Protocol):
+    """Helpers a run started (``subagents``): follow each one's steps until it settles."""
+
+    def ensure_watch(self, store: Any, idem_key: str, session_of: Callable[[], str | None],
+                     **kwargs: Any) -> Any: ...
+
+
+@runtime_checkable
+class Questions(Protocol):
+    """The agent asked the user something mid-run (``questions``); the answer goes back here."""
+
+    def answer(self, run_id: str, text: str) -> bool: ...
