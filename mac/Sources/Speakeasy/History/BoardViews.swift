@@ -168,6 +168,7 @@ struct BoardColumnsRow: View {
     static let inset: CGFloat = 28, spacing: CGFloat = 12, minColumn: CGFloat = 150, peek: CGFloat = 44
     /// `--history-shots` only: scroll back to Ready.
     static let scrollToStartForShot = Notification.Name("speakeasy.board.scrollToStartForShot")
+    static let scrollToEndForShot = Notification.Name("speakeasy.board.scrollToEndForShot")
 
     var body: some View {
         GeometryReader { geo in
@@ -186,7 +187,8 @@ struct BoardColumnsRow: View {
                 .padding(.bottom, 20)
                 .frame(minHeight: geo.size.height, alignment: .top)
             }
-            .contentMargins(.horizontal, Self.inset, for: .scrollContent)
+            .contentMargins(.leading, Self.inset, for: .scrollContent)
+            .contentMargins(.trailing, layout.trailingMargin, for: .scrollContent)
             .scrollTargetBehavior(.viewAligned)
             .scrollPosition(id: $leading)
             .scrollDisabled(!layout.scrolls)
@@ -206,6 +208,7 @@ struct BoardColumnsRow: View {
             .onChange(of: page.slug) { _, _ in open(layout, force: true) }
             .onChange(of: page.attentionIndex) { _, _ in open(layout, force: false) }
             .onReceive(NotificationCenter.default.publisher(for: Self.scrollToStartForShot)) { _ in leading = 0 }
+            .onReceive(NotificationCenter.default.publisher(for: Self.scrollToEndForShot)) { _ in leading = layout.lastLeading }
         }
     }
 

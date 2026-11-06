@@ -503,7 +503,16 @@ enum HistoryShots {
                 try? await Task.sleep(nanoseconds: 600_000_000)
                 NotificationCenter.default.post(name: BoardColumnsRow.scrollToStartForShot, object: nil)
             }
-            if only == nil || only == "14b-board-narrow" || only == "14c-board-narrow-start" {
+            await shot("14d-board-narrow-end") {
+                // Scrolled on to the end: Done lines up at the left margin, a back arrow on the left.
+                store.openBoard()
+                store.board.select("garden-site")
+                await store.board.loadPage()
+                c.window?.setContentSize(NSSize(width: 720, height: 480))
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                NotificationCenter.default.post(name: BoardColumnsRow.scrollToEndForShot, object: nil)
+            }
+            if only == nil || ["14b-board-narrow", "14c-board-narrow-start", "14d-board-narrow-end"].contains(only!) {
                 c.window?.setContentSize(NSSize(width: 1040, height: 720))
             }
             await shot("8-on-call-narrow") {

@@ -195,21 +195,37 @@ public struct KanbanBoardLayout: Equatable, Sendable {
     /// Whole columns in view at once (all four when nothing scrolls).
     public var visible: Int
     public var scrolls: Bool { visible < Self.count }
+    /// The margin after the last column. When the row scrolls it is the peek's width plus a gap, so
+    /// the last columns can still line up at the leading margin (with only the inset there, the row
+    /// can't scroll that far and a tap on the arrow does nothing).
+    public var trailingMargin: CGFloat
+    /// The scroll offset that lines column `i` up at the leading margin.
+    public func offset(of i: Int) -> CGFloat { CGFloat(i) * (columnWidth + spacing) }
+    /// The furthest the row scrolls: content (margins included) minus the pane.
+    public func maxOffset(inset: CGFloat) -> CGFloat {
+        let n = CGFloat(Self.count)
+        return max(0, inset + n * columnWidth + (n - 1) * spacing + trailingMargin - width)
+    }
+    private var spacing: CGFloat
+    private var width: CGFloat
     /// The highest leading column the row can scroll to.
     public var lastLeading: Int { Self.count - visible }
 
     /// - width: the pane; `inset`: the margin on each side; `peek`: how much of the next column shows.
     public init(width: CGFloat, minColumn: CGFloat, spacing: CGFloat, inset: CGFloat, peek: CGFloat) {
+        self.spacing = spacing; self.width = width
         let n = CGFloat(Self.count)
         let all = (width - 2 * inset - (n - 1) * spacing) / n
         if all >= minColumn {
-            columnWidth = all; visible = Self.count; return
+            columnWidth = all; visible = Self.count; trailingMargin = inset; return
         }
         // k full columns from the leading margin, then a gap and `peek` of the next one at the edge.
         let room = width - inset - peek
         let k = max(1, min(Self.count - 1, Int(((room) / (minColumn + spacing)).rounded(.down))))
         visible = k
         columnWidth = max(minColumn * 0.75, (room - CGFloat(k) * spacing) / CGFloat(k))
+        // What's left of the pane after k columns lined up at the leading margin (peek + gap).
+        trailingMargin = max(inset, width - inset - CGFloat(k) * columnWidth - CGFloat(k - 1) * spacing)
     }
 
     /// Columns fully in view when `leading` is the first one.

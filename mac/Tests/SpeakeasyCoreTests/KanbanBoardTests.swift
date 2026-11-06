@@ -150,6 +150,18 @@ final class KanbanBoardTests: XCTestCase {
         XCTAssertEqual(l.openingLeading(for: nil), 0)
     }
 
+    func testRowScrollsFarEnoughToLineUpTheLastColumns() {
+        // Every pane width: the last leading column can sit at the leading margin (else the arrow's
+        // tap is clamped and nothing moves), and the row never scrolls past it.
+        for width in stride(from: CGFloat(200), through: 1400, by: 10) {
+            let l = KanbanBoardLayout(width: width, minColumn: 200, spacing: 12, inset: 28, peek: 52)
+            guard l.scrolls else { XCTAssertEqual(l.maxOffset(inset: 28), 0, accuracy: 0.01); continue }
+            XCTAssertGreaterThanOrEqual(l.maxOffset(inset: 28), l.offset(of: l.lastLeading) - 0.01, "width \(width)")
+            // Once a whole column fits, exactly that far (no blank scroll past the last column).
+            if width >= 300 { XCTAssertEqual(l.maxOffset(inset: 28), l.offset(of: l.lastLeading), accuracy: 0.01, "width \(width)") }
+        }
+    }
+
     func testScrollPositionIsClampedToTheLastFullView() {
         let l = KanbanBoardLayout(width: 820, minColumn: 200, spacing: 12, inset: 28, peek: 44)   // 3 in view
         XCTAssertEqual(l.lastLeading, 1)
