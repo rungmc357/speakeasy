@@ -42,12 +42,13 @@ final class VisualTaskRouteTests: XCTestCase {
                        "the newest task with a session; one with none yet doesn't hide it")
     }
 
-    func testDraftsAndPicturesStayInThePanel() {
+    func testDraftsAndPicturesOpenTheSessionPage() {
         let drafted = JobBoard.jobs([task("a", session: "s1", drafts: true)])
-        XCTAssertNil(VisualTaskRoute.sessionID(for: drafted[0], historySupported: true), "drafts are reviewed and sent in the panel")
+        XCTAssertEqual(VisualTaskRoute.sessionID(for: drafted[0], historySupported: true), "s1", "drafts are sent from the session page")
+        XCTAssertNil(VisualTaskRoute.sessionID(for: drafted[0], historySupported: false), "an older server keeps the panel page")
         let look = JobBoard.jobs([task("b", status: "completed", session: "s1", review: true)], reviewing: ["b"])
         XCTAssertNotNil(look[0].lookTask)
-        XCTAssertNil(VisualTaskRoute.sessionID(for: look[0], historySupported: true), "pictures to look at stay in the panel")
+        XCTAssertEqual(VisualTaskRoute.sessionID(for: look[0], historySupported: true), "s1", "pictures are looked at on the session page")
     }
 
     func testOneTaskOpensItsOwnSession() {
@@ -58,8 +59,23 @@ final class VisualTaskRouteTests: XCTestCase {
         XCTAssertNil(VisualTaskRoute.sessionID(forTask: "a", in: jobs, tasks: tasks, historySupported: false))
         XCTAssertNil(VisualTaskRoute.sessionID(forTask: "zzz", in: jobs, tasks: tasks, historySupported: true))
         let drafted = [task("d", session: "s3", drafts: true)]
-        XCTAssertNil(VisualTaskRoute.sessionID(forTask: "d", in: JobBoard.jobs(drafted), tasks: drafted, historySupported: true))
-        XCTAssertNil(VisualTaskRoute.sessionID(forTask: "d", in: [], tasks: drafted, historySupported: true), "also without a job")
+        XCTAssertEqual(VisualTaskRoute.sessionID(forTask: "d", in: JobBoard.jobs(drafted), tasks: drafted, historySupported: true), "s3")
+        XCTAssertEqual(VisualTaskRoute.sessionID(forTask: "d", in: [], tasks: drafted, historySupported: true), "s3", "also without a job")
+    }
+
+    func testSessionPageShowsItsOwnTasksDraftsAndPictures() {
+        let mine = task("a", session: "s1", drafts: true)
+        let linked = task("b", status: "completed", session: "s_linked", review: true)
+        let other = task("c", status: "completed", session: "s2", review: true)
+        let tasks = [mine, linked, other]
+        let ids = SessionReviewCards.taskIDs(sessionID: "s1", runIDs: ["run_b"], tasks: tasks)
+        XCTAssertEqual(ids, ["a", "b"], "its own session's tasks plus the linked tasks the page lists")
+        var state = VoiceState()
+        state.tasks = tasks
+        XCTAssertEqual(SessionReviewCards.drafts(state.pendingDrafts, taskIDs: ids, tasks: tasks).map(\.draftID), ["d1"])
+        XCTAssertEqual(SessionReviewCards.reviews(state.pendingReviews, taskIDs: ids).map(\.taskID), ["b"])
+        XCTAssertTrue(SessionReviewCards.drafts(state.pendingDrafts, taskIDs: ["c"], tasks: tasks).isEmpty)
+        XCTAssertTrue(SessionReviewCards.reviews(state.pendingReviews, taskIDs: []).isEmpty)
     }
 
     // MARK: The card's live lines

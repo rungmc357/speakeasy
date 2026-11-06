@@ -603,6 +603,7 @@ struct HistorySessionView: View {
                         ForEach(layout.pinned, id: \.lineID) { job in
                             HistoryTaskCard(job: job).transition(.opacity)
                         }
+                        if let panel = store.panel { HistoryReviewCards(panel: panel, conversation: c) }
                         if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
                         ForEach(store.waiting(thread)) { HistoryWaitingCard(waiting: $0, store: store) }
                         ForEach(c.queued) { HistoryQueuedBubble(message: $0, store: store) }
@@ -1413,6 +1414,34 @@ struct HistoryWaitingCard: View {
         case "session": return task ? "Approve for this task" : "Approve for this session"
         case "no", "deny": return "Deny"
         default: return choice.prefix(1).uppercased() + choice.dropFirst()
+        }
+    }
+}
+
+/// A session page's email drafts to send and pictures to look at, at the end of the page with what
+/// else needs you. Same cards and same state as the panel: Send, Deny, Revise or Dismiss here
+/// clears them there too, so the panel's old job page isn't needed for them.
+struct HistoryReviewCards: View {
+    @ObservedObject var panel: VoicePanelModel
+    let conversation: HistoryConversation
+
+    var body: some View {
+        let tasks = panel.state.tasks
+        let ids = SessionReviewCards.taskIDs(sessionID: conversation.id, runIDs: Set(conversation.jobs.compactMap(\.runID)), tasks: tasks)
+        let drafts = SessionReviewCards.drafts(panel.pinnedDrafts, taskIDs: ids, tasks: tasks)
+        let reviews = SessionReviewCards.reviews(panel.pinnedReviews, taskIDs: ids)
+        ForEach(drafts) { draft in
+            EmailDraftCard(draft: draft, model: panel, voiceHint: false)
+                .accessibilityIdentifier("history-email-draft")
+                .transition(.opacity)
+        }
+        ForEach(reviews) { review in
+            // Pictures that came along with a written answer aren't "to review".
+            let incidental = tasks.first { $0.id == review.taskID }?.info.reviewIsIncidental == true
+            ImageReviewCard(review: review, shownCount: 1, model: panel, inJob: true, previewCap: 320,
+                            heading: incidental ? "Came with the answer" : "Ready to review")
+                .accessibilityIdentifier("history-image-review")
+                .transition(.opacity)
         }
     }
 }

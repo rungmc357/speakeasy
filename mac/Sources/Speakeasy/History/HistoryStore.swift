@@ -164,6 +164,9 @@ final class HistoryStore: ObservableObject {
     @Published var now = Date()
 
     var backend: HistoryBackend?
+    /// The call panel's model, set by the app: a session page shows its tasks' email drafts and
+    /// pictures to look at from the same state the panel uses, so acting here clears them there.
+    weak var panel: VoicePanelModel?
     var recorder: VoiceMessageRecording = VoiceMessageRecorder()
     private var searchTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?

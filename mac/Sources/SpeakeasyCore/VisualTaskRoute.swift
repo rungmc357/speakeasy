@@ -3,14 +3,13 @@ import Foundation
 /// Where opening a task lands. Every way into a task (a board tile, the task list, a notification,
 /// a plugin-update job) opens its visual view: the session page, with the task card's live line and
 /// "So far" recap, its tool steps, helpers and approvals. The old text job page (a "Now" line and a
-/// plan) is only the fallback for what a session page can't show yet: a server without session
-/// pages, a task with no session yet, email drafts to review and send, and pictures to look at.
+/// plan) is only the fallback for what a session page can't show: a server without session pages
+/// and a task with no session yet. Email drafts to send and pictures to look at are reviewed on the
+/// session page too (`SessionReviewCards`).
 public enum VisualTaskRoute {
     /// The session to open for this job, or nil to keep the panel's own job page.
     public static func sessionID(for job: Job, historySupported: Bool) -> String? {
         guard historySupported else { return nil }
-        if job.stage == .needsYou(.review) || job.lookTask != nil { return nil }
-        if job.tasks.contains(where: { !$0.info.pendingDrafts.isEmpty }) { return nil }
         // The newest task's session: a follow-up may have moved the job into a newer one.
         return job.tasks.lazy.reversed().compactMap(\.info.sessionID).first
     }
@@ -24,9 +23,30 @@ public enum VisualTaskRoute {
             // This task's own session first (it may be a linked task of a chat), else the job's.
             return job.tasks.first { $0.id == taskID }?.info.sessionID ?? sessionID(for: job, historySupported: true)
         }
-        guard let task = tasks.first(where: { $0.id == taskID }), task.info.pendingDrafts.isEmpty,
-              task.info.reviewImages.isEmpty || task.info.reviewIsIncidental else { return nil }
-        return task.info.sessionID
+        return tasks.first { $0.id == taskID }?.info.sessionID
+    }
+}
+
+/// Which of the app's tasks a session page shows review cards for (email drafts to send, pictures
+/// to look at): the tasks that ran in that session, and the tasks the page lists (a chat continued
+/// from Discord or Telegram lists its linked tasks, which run in sessions of their own).
+public enum SessionReviewCards {
+    public static func taskIDs(sessionID: String, runIDs: Set<String>, tasks: [TaskItem]) -> Set<String> {
+        Set(tasks.filter { t in
+            t.info.sessionID == sessionID || (t.info.runID.map(runIDs.contains) ?? false)
+        }.map(\.id))
+    }
+
+    /// The page's drafts, from the app's pinned drafts: one state with the panel, so sending one
+    /// here clears it there.
+    public static func drafts(_ pinned: [EmailDraft], taskIDs: Set<String>, tasks: [TaskItem]) -> [EmailDraft] {
+        let mine = Set(tasks.filter { taskIDs.contains($0.id) }.flatMap(\.info.emailDrafts).map(\.draftID))
+        return pinned.filter { mine.contains($0.draftID) }
+    }
+
+    /// The page's picture reviews (oldest first), from the app's pinned reviews.
+    public static func reviews(_ pinned: [ImageReview], taskIDs: Set<String>) -> [ImageReview] {
+        pinned.filter { taskIDs.contains($0.taskID) }
     }
 }
 
