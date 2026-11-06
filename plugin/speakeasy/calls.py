@@ -42,6 +42,7 @@ from . import session_titles
 from . import quick as quick_mod
 from . import views as views_mod
 from . import activity as activity_mod
+from . import agent_slot
 from . import subagents as subagents_mod
 from . import attachments as A
 from .attachments import Attachment, CallAttachments
@@ -483,6 +484,9 @@ class Runtime:
     # Pauses a call (interaction id) the way Pause does, resumable, for a call that reached its length
     # cap (Service.pause with limit=True). None = the transport just ends the call, as before.
     pause_call: Callable[[str], Any] | None = None
+    # The host this server lives in (host.Host: secrets, side model, chat delivery, liveness);
+    # None = Hermes' gateway directly, as before the host layer.
+    host: Any = None
 
     @property
     def names(self) -> P.Names:
@@ -491,6 +495,11 @@ class Runtime:
     @property
     def state_db(self) -> Path:
         return self.hermes_home / "state.db"
+
+    @property
+    def agent(self) -> Any:
+        """The agent in the slot (``hermes`` is the field's older name)."""
+        return self.hermes
 
     def routable(self) -> dict[str, Any]:
         """Settings minus any topic channel another Hermes profile answers (see
@@ -1041,8 +1050,17 @@ class SidebandWorker:
     VOICELESS = False
     """Base worker. Subclasses read provider events in ``run()`` and write in ``_send()``."""
 
+    @property
+    def hermes(self) -> Any:
+        """The agent in the slot, by its older name."""
+        return self.agent
+
+    @hermes.setter
+    def hermes(self, value: Any) -> None:
+        self.agent = value
+
     def __init__(self, rt: Runtime, interaction: Interaction):
-        self.rt, self.store, self.hermes, self.interaction = rt, rt.store, rt.hermes, interaction
+        self.rt, self.store, self.agent, self.interaction = rt, rt.store, rt.agent, interaction
         self.notices = rt.notices
         self.fragments: deque[dict[str, Any]] = deque(maxlen=512)
         self.absorbed: list[tuple[str, float]] = []  # words folded into an earlier task by settle()
@@ -4639,7 +4657,9 @@ class SidebandWorker:
                 self.publish()
             loop.call_soon_threadsafe(apply)
 
+        host = self.rt.host
         threading.Thread(target=liveness.watch, args=(session_of, on_alive, stop),
+                         kwargs={"activity": host.session_activity if host is not None else None},
                          name=f"speakeasy-vouch-{idem[:12]}", daemon=True).start()
         return stop
 
@@ -4952,9 +4972,11 @@ class SidebandWorker:
         def title(goal: str) -> str | None:  # the same titler (and rules) as a task's own name
             return self._titled(titler, text_mod.title_input(goal, names=(names.user_name, names.assistant_name)))
 
+        source = agent_slot.subagent_source(self.hermes, self.rt.state_db)
+        if source is None:  # the agent doesn't offer helpers to follow
+            return
         try:
-            subagents_mod.ensure_watch(self.store, backend.idem_key, self.rt.state_db, session_of,
-                                       on_flush=publish_soon, titler=title)
+            source.ensure_watch(self.store, backend.idem_key, session_of, on_flush=publish_soon, titler=title)
         except Exception:
             logger.debug("speakeasy: helper watch failed to start", exc_info=True)
 

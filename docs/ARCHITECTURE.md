@@ -51,6 +51,27 @@ Not in v1: iPhone and Watch clients, platform-specific routing rules (results go
 `prompt/rules.md` + `prompt/builder.py`, templated with `{assistant_name}`, `{user_name}` and
 `{machine_description}`. A request is a new task unless the voice model marks it as a follow-up.
 
+
+### The agent slot and the host
+
+Two seams keep the server agent-neutral; Hermes fills both today, unchanged.
+
+- **Agent** (`backends/base.py` `TaskBackend` + `Capabilities`): starts, streams, steers, stops and
+  approves runs. `HermesAPI` is the Hermes implementation (`backends/hermes.py` builds it). Optional
+  features are capability flags plus an accessor: past conversations (`history`,
+  `session_catalog()`), helpers (`subagents`, `subagent_source()`), questions (`questions`).
+  `agent_slot.py` turns the flags into the status `capabilities`, gives an agent without past
+  conversations a stand-in that reads nothing, reports `agent{kind, display_name, version, host}`
+  to the apps and puts the agent's name into generic wording.
+- **Host** (`host.py` `Host`, `HermesHost`): what Speakeasy borrows from the program it runs in:
+  secrets and config through Hermes' readers, the API server address and key, the side model for
+  routing and titles (Hermes' auxiliary client), `hermes send` chat delivery, webhook threads and
+  the running-agent check behind liveness. `HermesHost` only forwards to the code that did each of
+  these before.
+
+Hermes-only features (chat delivery, threads, email drafts, the daily brief) are gated on the
+agent's capability flags, never on which agent or host is running.
+
 ## Listening mode (Mac, macOS 26+, during a call)
 
 Listening mode lets the Mac hear the conversation around a call without the voice answering, then

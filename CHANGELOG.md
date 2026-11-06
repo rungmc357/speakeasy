@@ -5,6 +5,15 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 ## Plugin 0.3.39 — Fewer false "Refused by the model's safety filter" failures
 
 Works with the current Mac and iPhone apps; no app update needed.
+## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
+
+- **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
+- **Honest waits.** One long step says what it's waiting on and for how long ("Waiting on the tests · 4 min"); a task that has gone quiet says so ("No new steps · 3 min"); the handoff line stops posing as "now" after a minute with nothing reported.
+- **No spoken "Sent."** A message or picture you type to a task during a call is delivered silently; the voice only speaks about it if you ask.
+- **One ask, one task.** Pictures sent during a call no longer fail with "couldn't reach Hermes" when Hermes is just slow to read them in (it's asked again for the same task, with more time), and something you add seconds after a task starts goes into that task instead of starting a twin that answers a second time.
+- **No choice card for a closing offer.** "Want me to hold, or walk you through it?" at the end of an answer is just talk now, not a card and a "Decide on…" task in Done.
+- **Titles name the subject.** Titles made only of generic words ("Check work status", "Decide on holding") or pointing at "the earlier task" are rejected and written again.
+- **Groundwork for other agents.** Nothing changes with Hermes; the plugin now tells the apps which agent it's connected to, so a later version can work with agents besides Hermes.
 
 - **Tasks aren't refused for how they're briefed.** Some tasks failed with "Refused by the model's safety filter" because the instructions for the live status line used wording the model's filter read as a request for its private reasoning. The live status now asks only for the step being done and what it found, so it keeps working as before without tripping the filter.
 - **A refused turn is tried once more.** If the filter still refuses a turn, Speakeasy quietly sends it again in the same conversation before showing the task as failed, and your answer to a task's question still reaches it.

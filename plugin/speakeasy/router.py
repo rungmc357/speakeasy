@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any, Callable
 from . import runstate as RS
 
+from . import host as host_mod
+
 logger = logging.getLogger(__name__)
 
 MAX_OPEN_TASKS = 8
@@ -852,7 +854,9 @@ def needs_model(request: str, tasks: list[OpenTask], topics: list[Topic], chats:
 def aux_call(messages: list[dict[str, str]], timeout: float = ROUTE_TIMEOUT_S, max_tokens: int = 300) -> str | None:
     """One request through Hermes' auxiliary client, in-process (the plugin runs in the gateway)."""
     try:
-        from agent.auxiliary_client import call_llm, extract_content_or_reasoning  # type: ignore
+        call_llm, extract_content_or_reasoning = host_mod.aux_client()
+        if extract_content_or_reasoning is None:
+            return None
     except Exception:
         return None
     with _profile_scope():
@@ -970,7 +974,7 @@ def smart_title(request: str, timeout: float = TITLE_TIMEOUT_S) -> str | None:
 def _title_llm(messages: list[dict[str, str]], timeout: float) -> str | None:
     """One titler request (task ``title_generation``); None when the aux client can't be imported."""
     try:
-        from agent.auxiliary_client import call_llm  # type: ignore
+        call_llm, _ = host_mod.aux_client()
     except Exception:
         return None
     with _profile_scope():
@@ -1011,7 +1015,7 @@ def polish_request(request: str, timeout: float = TITLE_TIMEOUT_S) -> str | None
     if not text:
         return None
     try:
-        from agent.auxiliary_client import call_llm  # type: ignore
+        call_llm, _ = host_mod.aux_client()
     except Exception:
         return None
     try:
@@ -1044,7 +1048,7 @@ def working_status(request: str, timeout: float = TITLE_TIMEOUT_S) -> str | None
     if not text:
         return None
     try:
-        from agent.auxiliary_client import call_llm  # type: ignore
+        call_llm, _ = host_mod.aux_client()
     except Exception:
         return None
     try:
@@ -1102,7 +1106,7 @@ def plan_steps(request: str, timeout: float = TITLE_TIMEOUT_S) -> list[str] | No
     if not text:
         return None
     try:
-        from agent.auxiliary_client import call_llm  # type: ignore
+        call_llm, _ = host_mod.aux_client()
     except Exception:
         return None
     try:
@@ -1217,7 +1221,7 @@ def result_shape(request: str, report: str, timeout: float = 12.0) -> dict[str, 
     if len(text) < 400:
         return None
     try:
-        from agent.auxiliary_client import call_llm  # type: ignore
+        call_llm, _ = host_mod.aux_client()
     except Exception:
         return None
     try:
@@ -1252,7 +1256,7 @@ def result_headline(request: str, report: str, timeout: float = 10.0) -> str | N
     if not text:
         return None
     try:
-        from agent.auxiliary_client import call_llm  # type: ignore
+        call_llm, _ = host_mod.aux_client()
     except Exception:
         return None
     try:
@@ -1307,6 +1311,7 @@ def bind_home(hermes_home: Any) -> None:
     """The Hermes home this plugin serves (set once by the adapter at start)."""
     global _HOME
     _HOME = str(hermes_home)
+    host_mod.bind(host_mod.HermesHost(Path(hermes_home)))
 
 
 def _profile_scope():
