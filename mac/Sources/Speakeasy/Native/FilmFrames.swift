@@ -302,7 +302,7 @@ enum FilmFrames {
         out.append(Shot("ux-06-mic-broken", done(s), nil))
 
         // 7–9: a decision on a run that's still going: the board says Needs you; compare; undo.
-        let q = card(["kind": "question", "question": "Which caching layer should the API use?",
+        let qData: [String: Any] = ["kind": "question", "question": "Which caching layer should the API use?",
                       "context": "Product pages call the pricing service on every view; it's 60% of API time.",
                       "why": "In-process is the least to run and can be turned off with one flag.",
                       "options": [
@@ -311,7 +311,8 @@ enum FilmFrames {
                         ["text": "Shared Redis", "detail": "One copy for every server. A new service to run.",
                          "risk": "medium", "reversible": true, "tags": ["~half a day"]],
                         ["text": "Leave it", "detail": "Nothing changes."]],
-                      "recommended": 0])
+                      "recommended": 0]
+        let q = card(qData)
         var ask = task("c", "working", "Speed up product pages", title: "Cache pricing calls", short: "Needs your pick",
                        age: 40, now: now, result: WorkResult(spoken: nil, full: nil, views: [q]),
                        milestones: ["Profiled the product page", "Pricing calls are 60% of API time"])
@@ -323,6 +324,12 @@ enum FilmFrames {
         out.append(Shot("ux-09-decide-undo", done(s), "task:c") { m in
             m.answers["c"] = "In-process cache"; m.pendingPicks["c"] = Date().addingTimeInterval(4)
         })
+        // 9b: the same decision with one-tap allowed: the tile's button is the recommended answer in
+        // its own words, with a quieter "Other options".
+        var oneTapData = qData; oneTapData["approvable"] = true
+        var oneTap = ask; oneTap.info.result = WorkResult(spoken: nil, full: nil, views: [card(oneTapData)])
+        s = base(); s.tasks = [running, oneTap]
+        out.append(Shot("ux-09b-decide-one-tap", done(s), nil))
 
         // 10: an approval with its context, real Approve/Deny on the tile.
         var deploy = task("a", "waiting_for_approval", "Ship the pricing cache to staging", title: "Deploy to staging",
