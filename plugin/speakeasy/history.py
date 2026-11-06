@@ -151,6 +151,17 @@ _FOLLOW_UP_TAIL = re.compile(r"(?s)\s*\(They want to SEE this\b[^)]*?\)|\s*This 
 # A follow-up of a follow-up nests them, cut short before any ")": "(following up: A (following up: B…".
 _LOOKING_AT = re.compile(r"\s*\((?:(?:[^():\n]{0,40}\bis looking at|following up)\s*:[^\n]*\)|following up\s*:[^\n]*)\s*$",
                          re.I | re.M)
+# Speakeasy's own notes to the task after the person's words (prompt.builder SHOW_IT_FOCUS,
+# thread_follow_up, PLUGIN_UPDATE_FOCUS): "(They want to SEE this…MEDIA:<absolute path>.)",
+# "This is about the task in this thread: apply it to that work now. If it answers…act on the answer.",
+# "(This is an update of the Speakeasy voice plugin…switches over after the call.)".
+_TASK_NOTES = re.compile(
+    r"\s*\(They want to SEE this\b[^\n]*?MEDIA:<absolute path>\.?\)"
+    r"|\s*This is about the task in this thread: apply it to that work now\."
+    r"(?: If it answers a question you asked [^\n]{1,60}?, act on the answer\.)?"
+    r"|\s*\(This is an update of the Speakeasy voice plugin\b.*?switches over after the call\.\)", re.S)
+# A later relayed request inside the same row (two steers the gateway delivered together).
+_RELAYED_LINE = re.compile(r"(?m)^[ \t]*(?:\[[^\]\n]{1,60}\][ \t]*)?\[Voice(?: request)?,? from [^\]\n]{1,60}\][ \t]*", re.I)
 # The echo line a relayed request asks for: "Voice: <the request>" first.
 _VOICE_LINE = re.compile(r"^\s*Voice:[^\n]*(?:\n+|$)")
 _STATUS = re.compile(r"(?im)^[ \t]*STATUS:[ \t]*(.+?)[ \t]*$")
@@ -414,9 +425,16 @@ def relayed_words(text: str) -> str | None:
     tail = _RELAY_TAIL.search(body)
     if tail:
         body = body[:tail.start()]
-    # Several follow-ups Hermes folded into one steer: one line each, without what each one tells the task.
+    # Several follow-ups Hermes folded into one steer: one line each, without what each one tells the task
+    # or the notes Speakeasy appended for it.
     parts = [_FOLLOW_UP_TAIL.sub("", p) for p in _RELAYED_NEXT.split(body)]
-    return "\n".join(w for w in (_LOOKING_AT.sub("", p).strip() for p in parts) if w)
+    return "\n".join(w for w in (drop_task_notes(_LOOKING_AT.sub("", drop_task_notes(p))) for p in parts) if w)
+
+
+def drop_task_notes(text: str) -> str:
+    """The person's words without the notes Speakeasy appends for the task ("They want to SEE this…",
+    "This is about the task in this thread…", the plugin-update instructions)."""
+    return _TASK_NOTES.sub("", text).strip() if isinstance(text, str) else ""
 
 
 def preview_text(text: str, limit: int = PREVIEW_CHARS) -> str:
@@ -424,7 +442,7 @@ def preview_text(text: str, limit: int = PREVIEW_CHARS) -> str:
     line = _MD_LINK.sub(r"\1", text or "")
     line = _MD_LEAD.sub("", line)
     line = _MD_MARKS.sub("", line)
-    line = _LOOKING_AT.sub("", line)
+    line = drop_task_notes(_LOOKING_AT.sub("", line))
     return _one_line(line, limit)
 
 
@@ -575,8 +593,8 @@ def user_words(content: str) -> tuple[str, str]:
     added = _ADDED.match(text.strip())
     if added:
         words = _SHARED.sub("", added.group(1))
-        return "user", _LOOKING_AT.sub("", words).strip()
-    return "user", text
+        return "user", drop_task_notes(_LOOKING_AT.sub("", drop_task_notes(words)))
+    return "user", drop_task_notes(text) or text
 
 
 # -- a Kanban worker's session: its card as a compact header, its updates as messages -------------

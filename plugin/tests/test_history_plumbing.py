@@ -196,3 +196,42 @@ def test_one_compaction_divider_even_with_a_linked_task():
     linked = [{"kind": "note", "id": "x1", "at": 2.0, "text": H.COMPACTED}, {"kind": "user", "id": "x2", "at": 3.0, "text": "b"}]
     out = H.merge_linked(own, linked, lower=None, upper=None)
     assert [e["id"] for e in out] == ["m1", "x2", "m2"]
+
+
+# -- SPK-133: Speakeasy's own notes to the task never show inside the person's words ---------------
+from speakeasy.prompt import builder as _P  # noqa: E402
+
+_NAMES = _P.Names("Hermes", "Sam")
+
+
+def test_a_show_it_request_shows_only_the_words():
+    asked = "Show me the porch lights" + _P.SHOW_IT_FOCUS
+    row = _P.thread_task_message(_NAMES, asked, "Show me the porch lights", "User: Show me the porch lights")
+    assert H.user_words(row) == ("user", "Show me the porch lights")
+    cont = _P.continuation_message(_NAMES, "How does the garden look" + _P.SHOW_IT_FOCUS, "garden")
+    assert H.user_words(cont) == ("user", "How does the garden look")
+
+
+def test_a_relayed_follow_up_steer_shows_only_the_words():
+    steer = OOB.format(ORIGIN.format(_P.thread_follow_up(_NAMES, "It's a heron, not a crane")))
+    assert H.user_words(steer) == ("user", "It's a heron, not a crane")
+    shown = OOB.format(ORIGIN.format(_P.thread_follow_up(_NAMES, "Find a photo of the old bridge", show=True)))
+    assert H.user_words(shown) == ("user", "Find a photo of the old bridge")
+
+
+def test_two_relayed_steers_in_one_row_show_both_and_no_notes():
+    both = OOB.format(ORIGIN.format(_P.thread_follow_up(_NAMES, "Which bakery was it"))
+                      + "\n" + ORIGIN.format(_P.thread_follow_up(_NAMES, "Check the opening hours too", show=True)))
+    kind, text = H.user_words(both)
+    assert kind == "user" and text == "Which bakery was it\nCheck the opening hours too"
+
+
+def test_a_plugin_update_request_shows_only_the_words():
+    row = _P.continuation_message(_NAMES, "update speakeasy" + _P.plugin_update_focus("update speakeasy"), "update")
+    assert H.user_words(row) == ("user", "update speakeasy")
+    assert H.preview_text("Show me the porch lights" + _P.SHOW_IT_FOCUS) == "Show me the porch lights"
+
+
+def test_the_persons_own_similar_words_are_kept():
+    said = "This is about the task in this thread, right? They want to SEE the plan."
+    assert H.user_words(said) == ("user", said)
