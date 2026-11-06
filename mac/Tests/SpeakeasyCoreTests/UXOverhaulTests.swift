@@ -82,7 +82,7 @@ final class UXOverhaulTests: XCTestCase {
     func testProgressFieldsDecodeAndAreOptional() {
         let i = info(["started_at": now.timeIntervalSince1970 - 240, "step_index": 3, "step_count": 5, "eta_seconds": 120])
         XCTAssertEqual(i.stepIndex, 3); XCTAssertEqual(i.stepCount, 5); XCTAssertEqual(i.etaSeconds, 120)
-        XCTAssertEqual(JobProgress.line(i, now: now), "Step 3 of 5 · 4 min · about 2 min left")
+        XCTAssertEqual(JobProgress.line(i, now: now), "4 min · about 2 min left", "no step count")
         let old = info([:])
         XCTAssertNil(old.stepIndex); XCTAssertNil(JobProgress.eta(old)); XCTAssertNil(old.failureReason)
     }

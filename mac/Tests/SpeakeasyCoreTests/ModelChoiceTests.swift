@@ -77,6 +77,15 @@ final class ModelChoiceTests: XCTestCase {
         XCTAssertEqual(s.selection.reasoning, nil)
     }
 
+    func testHeaderShowsTheModelOnlyWhenItDiffersFromTheChip() {
+        let s = ModelPickerState(catalog: catalog, chatChoice: nil)  // chip: Claude Opus 5.5 · Medium
+        XCTAssertFalse(s.headerShows(ModelBadge(id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", reasoning: .medium)),
+                       "same as the chip: shown once, above the composer")
+        XCTAssertFalse(s.headerShows(ModelBadge(id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5")), "no level reported")
+        XCTAssertTrue(s.headerShows(ModelBadge(id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", reasoning: .high)))
+        XCTAssertTrue(s.headerShows(ModelBadge(id: "openai-codex/gpt-5.5", name: "GPT-5.5", reasoning: .medium)))
+    }
+
     func testUseForThisChatAndMakeDefault() {
         var s = ModelPickerState(catalog: catalog, chatChoice: nil)
         s.select(catalog.option("openai-codex/gpt-5.5")!)

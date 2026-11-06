@@ -99,6 +99,21 @@ final class JobLiveTests: XCTestCase {
         XCTAssertNotEqual(ToolCallLog.listKey(job: "j"), ToolCallLog.rowKey(job: "j", item: "toolcalls"))
     }
 
+    func testToolGroupSummaryIsPlainWordsNeverToolNames() {
+        func call(_ id: String, _ tool: String?, _ kind: JobActivityItem.Kind = .tool) -> JobActivityItem {
+            JobActivityItem(id: id, kind: kind, text: "x", tool: tool)
+        }
+        let items = [call("1", "web_search"), call("2", "web_extract"), call("3", "web_extract"), call("4", "execute_code")]
+        XCTAssertEqual(ToolCallLog.plainSummary(items), "Searched the web, read 2 pages, ran code")
+        let more = items + [call("5", "terminal"), call("6", "mcp__linear__create_issue")]
+        let s = ToolCallLog.plainSummary(more)
+        XCTAssertEqual(s, "Searched the web, read 2 pages, ran code…")
+        XCTAssertFalse(s.contains("_"), "no raw tool identifiers")
+        XCTAssertEqual(ToolCallLog.plainSummary([call("a", "mcp__linear__create_issue"), call("b", "patch")]), "Used a tool, edited a file")
+        XCTAssertEqual(ToolCallLog.plainSummary([call("c", nil, .search)]), "Searched the files")
+        XCTAssertEqual(ToolCallLog.plainSummary([]), "")
+    }
+
     // MARK: Glance
 
     func testGlanceFollowsHeroThenStepsThenNow() {
@@ -109,7 +124,7 @@ final class JobLiveTests: XCTestCase {
         let sources = JobGlance.of(info(["hero": ["type": "sources", "items": (1...6).map { ["site": "s\($0).example"] }]]))
         XCTAssertEqual(sources, .sources(count: 6, sites: ["s3.example", "s4.example", "s5.example", "s6.example"]))
         XCTAssertEqual(JobGlance.of(info(["plan": ["One", "Two", "Three"], "step_index": 2, "step_count": 3])),
-                       .steps(index: 2, count: 3))
+                       .now("Two"), "the step it's on, never a step count")
         XCTAssertEqual(JobGlance.of(info(["activity": [["kind": "read", "text": "Read the config"]]])), .now("Read the config"))
         XCTAssertNil(JobGlance.of(info([:])), "nothing sent, nothing drawn")
     }

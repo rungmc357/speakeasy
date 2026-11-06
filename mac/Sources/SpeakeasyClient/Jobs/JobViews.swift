@@ -652,13 +652,10 @@ public struct JobTile: View {
             let info = job.activeTask?.info ?? job.newest.info
             Text(taskStatusLine(info, now: model.state.now, assistantName: model.state.assistantName).0)
                 .font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(1)
-            if let step = JobProgress.step(info) {
-                HStack(spacing: 8) {
-                    StepBar(done: step.index - 1, total: step.count)
-                    Text(["Step \(step.index) of \(step.count)", JobProgress.eta(info)].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 11 * s, weight: .medium)).foregroundStyle(.secondary).fixedSize()
-                }
-                .padding(.top, 3)
+            if let step = JobProgress.currentStep(info) {
+                Text([step, JobProgress.eta(info)].compactMap { $0 }.joined(separator: " · "))
+                    .font(.system(size: 11 * s, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                    .padding(.top, 3)
             } else if let eta = JobProgress.eta(info) {
                 Text(eta).font(.system(size: 11 * s)).foregroundStyle(.secondary)
             }

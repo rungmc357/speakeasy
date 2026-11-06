@@ -70,18 +70,80 @@ public enum ToolCallLog {
         count == 1 ? "1 tool call" : "All \(count) tool calls"
     }
 
+    /// A folded group of tool calls in plain words, the plugin's activity phrasing
+    /// (activity.py `humanize`): "Searched the web, read 2 pages, ran code". Never a raw tool name.
+    public static func plainSummary(_ items: [JobActivityItem], limit: Int = 3) -> String {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for item in items where item.isToolCall {
+            let key = family(item.tool, kind: item.kind)
+            if counts[key] == nil { order.append(key) }
+            counts[key, default: 0] += 1
+        }
+        let phrases = order.prefix(limit).map { phrase($0, count: counts[$0] ?? 1) }
+        guard var text = phrases.isEmpty ? nil : phrases.joined(separator: ", ") else { return "" }
+        if order.count > limit { text += "…" }
+        return text.prefix(1).uppercased() + text.dropFirst()
+    }
+
+    static func family(_ tool: String?, kind: JobActivityItem.Kind) -> String {
+        let t = (tool ?? "").lowercased().replacingOccurrences(of: "mcp__", with: "")
+        switch t {
+        case "web_search": return "web"
+        case "web_extract", "web_fetch", "fetch": return "page"
+        case "read_file": return "readfile"
+        case "write_file": return "write"
+        case "patch", "edit_file", "apply_patch", "str_replace_editor": return "edit"
+        case "search_files", "grep", "glob": return "searchfiles"
+        case "terminal", "bash", "shell", "run_command", "exec_command": return "command"
+        case "execute_code": return "code"
+        case "delegate_task": return "helper"
+        case "skill_view": return "notes"
+        case "skill_manage": return "updatenotes"
+        default:
+            if t.hasPrefix("browser") { return "browser" }
+            if !t.isEmpty { return "tool" }
+            switch kind {
+            case .search: return "searchfiles"
+            case .read: return "readfile"
+            case .edit: return "edit"
+            case .run: return "command"
+            case .browse: return "page"
+            default: return "tool"
+            }
+        }
+    }
+
+    static func phrase(_ family: String, count n: Int) -> String {
+        func counted(_ one: String, _ verb: String, _ noun: String) -> String { n == 1 ? one : "\(verb) \(n) \(noun)" }
+        switch family {
+        case "web": return "searched the web"
+        case "page": return counted("read a page", "read", "pages")
+        case "readfile": return counted("read a file", "read", "files")
+        case "write": return counted("wrote a file", "wrote", "files")
+        case "edit": return counted("edited a file", "edited", "files")
+        case "searchfiles": return "searched the files"
+        case "command": return counted("ran a command", "ran", "commands")
+        case "code": return "ran code"
+        case "helper": return counted("handed work to a helper", "handed work to", "helpers")
+        case "notes": return "read its notes"
+        case "updatenotes": return "updated its notes"
+        case "browser": return "worked in the browser"
+        default: return counted("used a tool", "used", "tools")
+        }
+    }
+
     /// The section's open-state key in `VoicePanelModel.openSections`.
     public static func listKey(job: String) -> String { "\(job)|toolcalls" }
     public static func rowKey(job: String, item: String) -> String { "\(job)|toolcall:\(item)" }
 }
 
-/// What a running job's board tile draws small: its hero in miniature, else its steps, else
-/// the call it's on now.
+/// What a running job's board tile draws small: its hero in miniature, else the plan step it's
+/// on, else the call it's on now (never a step count).
 public enum JobGlance: Equatable, Sendable {
     case trials(passed: Int, failed: Int, total: Int)
     case sources(count: Int, sites: [String])
     case diff(files: Int, added: Int, removed: Int)
-    case steps(index: Int, count: Int)
     case now(String)
 
     public static func of(_ info: WorkInfo) -> JobGlance? {
@@ -90,7 +152,7 @@ public enum JobGlance: Equatable, Sendable {
         case let .sources(items): return .sources(count: items.count, sites: items.suffix(4).map(\.site))
         case let .diff(files, added, removed, _): return .diff(files: files, added: added, removed: removed)
         case .steps, .series, nil:
-            if let s = JobProgress.step(info) { return .steps(index: s.index, count: s.count) }
+            if let s = JobProgress.currentStep(info) { return .now(s) }
             if let p = ToolCallLog.pinned(info.activity) { return .now(p.text) }
             return nil
         }

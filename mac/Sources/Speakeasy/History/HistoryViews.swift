@@ -576,7 +576,7 @@ struct HistorySessionView: View {
                   c.isSpeakeasy ? nil : "replies show here, not in \(c.sourceLabel.components(separatedBy: " · ").first ?? c.sourceLabel)"]
                 .compactMap { $0 }.joined(separator: " · "))
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.primary.opacity(0.6))
-            if let badge = c.model, store.modelsSupported { ModelWorkedLine(badge: badge) }
+            if let badge = c.model, store.modelsSupported, store.picker?.headerShows(badge) ?? true { ModelWorkedLine(badge: badge) }
         }
         .padding(.bottom, 4)
     }
@@ -753,10 +753,8 @@ struct HistoryToolCalls: View {
     }
 
     private var summary: String {
-        let names = items.compactMap { $0.tool }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
-        let head = "Used \(items.count) tool\(items.count == 1 ? "" : "s")"
-        guard !names.isEmpty else { return head }
-        return head + " · " + names.prefix(3).joined(separator: ", ") + (names.count > 3 ? "…" : "")
+        let words = ToolCallLog.plainSummary(items)
+        return words.isEmpty ? "Used \(items.count) tool\(items.count == 1 ? "" : "s")" : words
     }
 
     private func toggle(_ k: String) {
@@ -783,10 +781,6 @@ struct HistoryTaskCard: View {
                     LiveDot(color: Live.brass, size: 6)
                     Text(now).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
                 }
-            }
-            if running, let i = job.stepIndex, let n = job.stepCount, n > 0 {
-                ProgressView(value: Double(min(i, n)), total: Double(n)).tint(Live.brass)
-                Text("Step \(min(i, n)) of \(n)").font(.system(size: 10.5).monospacedDigit()).foregroundStyle(.tertiary)
             }
             if job.status == "failed", let why = job.failureReason ?? job.failure?.text {
                 Text(why).font(.system(size: 12)).foregroundStyle(Live.red).lineLimit(3)

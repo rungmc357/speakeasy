@@ -43,6 +43,16 @@ public struct ModelPickerState: Equatable, Sendable {
         reasoning = level
     }
 
+    /// The session header's "worked on by" line is shown only when the chat ran on something other
+    /// than what the composer's chip says now (the chip is the one place the model shows otherwise).
+    public func headerShows(_ badge: ModelBadge) -> Bool {
+        let (m, r) = catalog.effective(chatChoice)
+        guard let m else { return true }
+        if m.id != badge.id { return true }
+        if let ran = badge.reasoning, let now = r, !m.levels.isEmpty { return ran != now }
+        return false
+    }
+
     /// The selection as a choice to save.
     public var selection: ModelChoice {
         ModelChoice(model: model?.id, reasoning: levels.isEmpty ? nil : reasoning)

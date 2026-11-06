@@ -119,11 +119,6 @@ struct MiniGlance: View {
                 Spacer(minLength: 0)
             }
             .font(.system(size: 11, weight: .semibold).monospacedDigit())
-        case let .steps(index, count):
-            HStack(spacing: 8) {
-                StepBar(done: index - 1, total: count)
-                Text("Step \(index) of \(count)").font(.system(size: 11, weight: .medium).monospacedDigit()).foregroundStyle(.secondary).fixedSize()
-            }
         case let .now(text):
             HStack(spacing: 6) {
                 LiveSpinner(size: 9)

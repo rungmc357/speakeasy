@@ -15,7 +15,7 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Press and hold a session** (right-click on the Mac) for Rename, Pin, Archive, Mark as read, Copy link, and Stop while it's running.
 - **Swipe a session to pin or archive it**, with Undo.
 - **Archived filter.** Archived sessions have their own filter, and search still finds them (marked archived) so you can open or unarchive them.
-- **Live task cards on session pages.** See what a task is doing now, its real step progress, the tool steps it took and the helpers it brought in, right on the session page.
+- **Live task cards on session pages.** See what a task is doing now and the step it's on, the tool steps it took (in plain words) and the helpers it brought in, right on the session page.
 - **Faster history.** The panel and session pages load quicker and update live.
 - **Clearer connection messages.** A slow reply no longer blames Tailscale when its connection is fine, and a brief hiccup while your Hermes updates no longer shows as "can't reach your Hermes".
 - The voice no longer turns requests down itself: anything that needs work goes to your Hermes, which decides under your own rules.

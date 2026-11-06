@@ -841,7 +841,7 @@ struct LiveJobBlock: View {
     @ViewBuilder private func plan(_ info: WorkInfo, _ running: Bool) -> some View {
         if let hero = Self.hero(job), hero != .steps, info.plan.count >= 2, running {
             LiveCard(title: "The plan", symbol: "point.topleft.down.to.point.bottomright.curvepath.fill",
-                     trailing: JobProgress.step(info).map { "Step \($0.index) of \($0.count)" }) {
+                     trailing: nil) {
                 StepPathPicture(info: info)
             }
         }

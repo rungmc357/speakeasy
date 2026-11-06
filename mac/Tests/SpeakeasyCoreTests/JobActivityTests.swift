@@ -111,7 +111,6 @@ final class JobActivityTests: XCTestCase {
         let busy = info(["activity": (1...8).map { ["id": "a\($0)", "kind": "read", "text": "Read file \($0)"] }])
         XCTAssertEqual(busy.activity.count, 8)
         XCTAssertNil(JobHero.select(busy))
-        if case .steps? = JobGlance.of(busy) { XCTFail("no plan, no step count on the tile") }
     }
 
     func testCapabilityFlag() throws {

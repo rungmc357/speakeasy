@@ -34,6 +34,14 @@ public enum JobProgress {
         return (min(p.done + 1, p.total), p.total)
     }
 
+    /// The plan step it's on now ("Run the checkout tests"), while running. The apps show this line
+    /// and the status, never a step count or a bar driven by one.
+    public static func currentStep(_ info: WorkInfo) -> String? {
+        guard !info.isTerminal, !info.plan.isEmpty, let s = step(info) else { return nil }
+        let text = info.plan[min(max(s.index - 1, 0), info.plan.count - 1)].trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
     /// "about 3 min left", only when the server gave an ETA.
     public static func eta(_ info: WorkInfo) -> String? {
         guard !info.isTerminal, let s = info.etaSeconds, s > 0 else { return nil }
@@ -41,10 +49,9 @@ public enum JobProgress {
         return "about \(duration(TimeInterval(s))) left"
     }
 
-    /// One line for a running tile: "Step 3 of 5 · 4 min · about 2 min left".
+    /// One line for a running tile: "4 min · about 2 min left" (no step count).
     public static func line(_ info: WorkInfo, now: Date) -> String? {
         var parts: [String] = []
-        if let s = step(info), !info.isTerminal { parts.append("Step \(s.index) of \(s.count)") }
         if let e = elapsed(info, now: now) { parts.append(e) }
         if let eta = eta(info) { parts.append(eta) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")

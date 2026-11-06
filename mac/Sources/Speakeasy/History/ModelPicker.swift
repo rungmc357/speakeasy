@@ -140,15 +140,16 @@ struct ModelPopover: View {
     }
 }
 
-/// The session header's "Worked on by GPT-5.5 · High" line.
+/// The session header's "Worked on by GPT-5.5 · High" line: small and secondary, and only when the
+/// chat ran on a model other than the composer chip's current choice.
 struct ModelWorkedLine: View {
     let badge: ModelBadge
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "sparkle").font(.system(size: 9, weight: .bold))
-            Text(badge.label)
+            Image(systemName: "sparkle").font(.system(size: 8, weight: .bold))
+            Text("Ran on \(badge.label)")
         }
-        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Color.primary.opacity(0.5))
+        .font(.system(size: 10.5)).foregroundStyle(.tertiary)
         .help(badge.served ? "Hermes ran this chat's latest work on \(badge.label)" : "Asked for \(badge.label)")
     }
 }

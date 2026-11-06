@@ -332,7 +332,7 @@ extension PreviewFixtures {
             ["text": "Jazz brunch", "detail": "11:00 · Corner Café", "url": "https://www.example.com/jazz-brunch"], ["text": "Gallery opening", "detail": "15:00 · North Hall"],
             ["text": "Night market", "detail": "19:00 · Pier 4", "url": "https://www.example.com/night-market"]]]
         let planAgenda: [String: Any] = ["kind": "stats", "title": "Saturday at a glance", "items": [
-            ["label": "Stops", "value": "3"], ["label": "Walking", "value": "2.1 km"],
+            ["label": "Stops", "value": "3"], ["label": "Walking", "value": "1.3 mi"],
             ["label": "Warmest", "value": "83°"], ["label": "Cost", "value": "$45"]]]
         let declutterPlan = task("d_plan", job: ("dplan", "Saturday plan"), title: "Plan Saturday", age: 120, result: [
             "spoken": "Here's a plan for Saturday: brunch, a gallery, then the night market.",
