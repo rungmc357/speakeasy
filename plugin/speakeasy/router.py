@@ -173,6 +173,68 @@ def continues_newest(request: str, tasks: list[OpenTask]) -> OpenTask | None:
     return newest
 
 
+# Asks said seconds after a task started in the same call are, by default, more of that task: the
+# user is still finishing the thought. Only an ask that is clearly about something else starts its own run.
+JOIN_WINDOW_S = 20.0
+_LIVE = {"admitting", "working", "running"}
+# "set it to 75", "turn that off", "send them", "book that one": an action on the thing just asked about.
+_LEANS = re.compile(r"(?i)\b(?:set|turn|make|change|move|send|book|cancel|add|put|do|try|keep|open|close|switch|"
+                    r"bump|raise|lower|drop|use|fix|save|share|email|text|post|check|run|ship|undo|redo|"
+                    r"start|stop|pause|skip|delete|remove|rename|update)\s+(?:it|that|them|those|this one|"
+                    r"that one|the same)\b(?!\s+(?:the|a|an|my|your|our|his|her|their|there|it|this|that|i|we|you|they|he|she)\b)")
+_ALTERNATIVE = re.compile(r"(?i)^(?:or|or else|or maybe|or just)\b")
+
+
+def just_started(tasks: list[OpenTask]) -> OpenTask | None:
+    """The newest task when it is still running and started within JOIN_WINDOW_S."""
+    if not tasks:
+        return None
+    newest = tasks[-1]
+    if newest.status not in _LIVE or newest.age_s is None or newest.age_s > JOIN_WINDOW_S:
+        return None
+    return newest
+
+
+def _named(words: list[str], old: set[str]) -> bool:
+    """A proper name or acronym the running task never mentioned (\"Rome\", \"PRs\" mid-sentence)."""
+    return any((w[:1].isupper() and i > 0) or (len(w) <= 4 and w.isupper() and len(w) > 1)
+               for i, w in enumerate(words) if w.lower().strip("'") not in old and w.lower() not in _FILLER)
+
+
+def leans_on_newest(request: str, tasks: list[OpenTask]) -> OpenTask | None:
+    """The task that started seconds ago, when this ask only makes sense as more of it: \"or using the
+    menu bar\" (an alternative to what was just asked), or a short ask pointing at it (\"can you set it
+    to 75\") that brings no subject of its own. Anything naming its own thing is left to routing."""
+    newest = just_started(tasks)
+    if newest is None:
+        return None
+    words = re.findall(r"[A-Za-z0-9.']+", request)
+    if not words or len(words) > 10:
+        return None
+    old = _content(re.findall(r"[A-Za-z0-9.']+", newest.request))
+    rest = re.findall(r"[A-Za-z0-9.']+", _JOINER.sub("", request.strip()))
+    new_subject = _content(rest) - old
+    if _named(rest, old):
+        return None
+    if _ALTERNATIVE.search(request.strip()) and len(words) <= 8:
+        return newest  # "or using the menu bar": never an ask of its own
+    others_live = any(t.status in _LIVE for t in tasks[:-1])
+    if _LEANS.search(request) and len(new_subject) <= 2 and not others_live:
+        return newest  # with several tasks running, which one "it" is goes to the routing model
+    return None
+
+
+def just_started_line(tasks: list[OpenTask]) -> str:
+    """The routing model's hint that the newest task began seconds ago, or \"\"."""
+    newest = just_started(tasks[-MAX_OPEN_TASKS:])
+    if newest is None:
+        return ""
+    return (f"Task {newest.task_id} started {int(newest.age_s or 0)} seconds ago in this call and is still "
+            f"running: the user is most likely still adding to it. Send the request there "
+            f"(follow_up_task_id) unless it is clearly about something else (a different subject, thing, "
+            f"place or person than that task).\n\n")
+
+
 # "fix that helper the agent was telling me about", "do what it suggested", "the one you mentioned".
 _BACK_REF = re.compile(
     r"(?i)\b(?:(?:you|it|he|she|they|hermes|the agent|the assistant)\s+(?:was|were|is)?\s*"
@@ -204,7 +266,7 @@ def route(request: str, tasks: list[OpenTask], marked_task_id: Any = None) -> li
     """One Part: the request as a new task, or a follow-up to one open task."""
     request = (request or "").strip()
     open_tasks = tasks[-MAX_OPEN_TASKS:]
-    tail = continues_newest(request, open_tasks)
+    tail = continues_newest(request, open_tasks) or leans_on_newest(request, open_tasks)
     if tail is not None and not (isinstance(marked_task_id, str) and marked_task_id != tail.task_id):
         return [Part("follow_up", request, tail.task_id)]
     if isinstance(marked_task_id, str) and TASK_ID_RE.fullmatch(marked_task_id):
@@ -674,7 +736,10 @@ def route_messages(request: str, tasks: list[OpenTask], topics: list[Topic],
             "thing it suggested\", \"send the one you mentioned\") is a follow-up to that task, even when the task "
             "has finished: it continues in that task's thread. People pause mid-thought: a short fragment said seconds after "
             "a task started that only makes sense as the end of that request (\"...and am I gonna win?\") is a "
-            "follow-up to it, never a new task. Decide by topic, never by timing: a request that starts with "
+            "follow-up to it, never a new task. Seconds after a task started, anything still about that task's "
+            "subject (another detail, an alternative, a change, pushback on it, more of the same ask: \"or using "
+            "the menu bar\", \"it still doesn't have enough context\") is a follow-up to it, never a second task "
+            "running beside it. Only the subject decides against it: a request that starts with "
             "\"and\", \"also\" or \"oh\" but brings a different subject (\"and also, are we pulling the new model?\" "
             "while a deploy runs) is NEW work, not a follow-up. An answer to a question a task asked (a time, a "
             "choice, yes/no) is a follow-up to that task. \"Hold off\", \"wait\", \"stop\" go to the task they are "
@@ -702,7 +767,8 @@ def route_messages(request: str, tasks: list[OpenTask], topics: list[Topic],
                                     f"Existing conversations:\n{chat_lines(chats or [])}\n\n"
                                     + (f"The call so far (for what 'that', 'it', 'the X one' refer to):\n"
                                        f"{call_so_far[-1200:]}\n\n" if call_so_far and (chats or tasks) else "")
-                                    + focus_line(focus, tasks[-MAX_OPEN_TASKS:])
+                                    + (focus_line(focus, tasks[-MAX_OPEN_TASKS:])
+                                       or just_started_line(tasks))
                                     + f"Request: {request[:1500]}"},
     ]
 
@@ -1289,6 +1355,9 @@ def decide(request: str, tasks: list[OpenTask], marked_task_id: Any = None, topi
     tail = continues_newest(request, open_tasks)
     if tail is not None and marked_task_id in (None, "", tail.task_id):
         return Decision([Part("follow_up", request, tail.task_id)], None, "fragment")
+    joined = leans_on_newest(request, open_tasks)
+    if joined is not None and marked_task_id in (None, "", joined.task_id):
+        return Decision([Part("follow_up", request, joined.task_id)], None, "just_started")
     back = refers_back(request, open_tasks)
     if back is not None:
         return Decision([Part("follow_up", request, back.task_id)], None, "refers_back")
