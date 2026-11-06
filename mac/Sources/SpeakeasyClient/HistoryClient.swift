@@ -70,6 +70,8 @@ public final class HistoryLiveFeed {
     private func deliver(_ name: String, _ payload: [String: Any]) {
         connected = true
         onEvent?(name, payload)
+        // Home's `now` {rev} is for Home alone: lists and pages already reload on the event that caused it.
+        if name == "now" { return }
         onChange(name, payload["session_id"] as? String)
     }
 

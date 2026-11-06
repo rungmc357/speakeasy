@@ -73,10 +73,11 @@ def _cap(text: str) -> str:
 
 
 def sentence(items: list[dict[str, Any]]) -> str:
-    """The header sentence: at most two clauses, by priority questions > stopped > new answers >
-    working > waiting. With exactly one item of the only kind there is, it is named."""
+    """The header sentence: one clause for every kind of card the list shows, in the list's own
+    order (questions, stopped, in the works, new answers, waiting), so nothing below it goes
+    unmentioned. With exactly one item of the only kind there is, it is named."""
     counts = {k: sum(1 for i in items if i["kind"] == k) for k in KINDS}
-    order = [k for k in (QUESTION, STOPPED, NEW_ANSWER, WORKING, WAITING) if counts[k]]
+    order = [k for k in (QUESTION, STOPPED, WORKING, NEW_ANSWER, WAITING) if counts[k]]
     if not order:
         return "All caught up." if counts[SEEN_ANSWER] else "All quiet."
     first = order[0]
@@ -86,7 +87,7 @@ def sentence(items: list[dict[str, Any]]) -> str:
                 NEW_ANSWER: f"{title} has a new answer.", WORKING: f"{title} is in the works.",
                 WAITING: "Waiting on one reply."}[first]
 
-    def clause(kind: str, lead: bool, after_thing: bool) -> str:
+    def clause(kind: str, lead: bool) -> str:
         n = counts[kind]
         if kind == QUESTION:
             return _plural(n, "question", "questions") + " for you"
@@ -95,14 +96,15 @@ def sentence(items: list[dict[str, Any]]) -> str:
         if kind == NEW_ANSWER:
             return _plural(n, "new answer", "new answers")
         if kind == WORKING:
-            return f"{number(n)} in the works" if after_thing else _plural(n, "thing", "things") + " in the works"
-        return ("waiting on " if not lead else "Waiting on ") + _plural(n, "reply", "replies")
+            return _plural(n, "thing", "things") + " in the works"
+        if lead:
+            return "Waiting on " + _plural(n, "reply", "replies")
+        return number(n) + (" waiting on a reply" if n == 1 else " waiting on replies")
 
-    head = clause(first, True, False)
-    if len(order) == 1:
-        return _cap(head) + "."
-    second = clause(order[1], False, first == STOPPED)
-    return _cap(head) + ", and " + second + "."
+    parts = [clause(k, i == 0) for i, k in enumerate(order)]
+    if len(parts) == 1:
+        return _cap(parts[0]) + "."
+    return _cap(", ".join(parts[:-1]) + ", and " + parts[-1]) + "."
 
 
 # -- time ----------------------------------------------------------------------------------------

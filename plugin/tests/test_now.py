@@ -59,15 +59,28 @@ def _items(**n):
     ({"question": 1}, "Desk hunt has a question for you."),
     ({"question": 1, "new_answer": 1}, "One question for you, and one new answer."),
     ({"question": 2, "working": 4}, "Two questions for you, and four things in the works."),
-    ({"stopped": 1, "working": 2}, "One thing stopped, and two in the works."),
+    ({"stopped": 1, "working": 2}, "One thing stopped, and two things in the works."),
     ({"working": 2}, "Two things in the works."),
     ({"seen_answer": 3}, "All caught up."),
     ({"waiting": 1}, "Waiting on one reply."),
     ({"working": 12}, "12 things in the works."),
-    ({"new_answer": 1, "working": 1, "waiting": 3}, "One new answer, and one thing in the works."),
+    ({"new_answer": 1, "working": 1, "waiting": 3}, "One thing in the works, one new answer, and three waiting on replies."),
+    ({"question": 1, "stopped": 1, "working": 2, "new_answer": 2, "waiting": 1},
+     "One question for you, one thing stopped, two things in the works, two new answers, and one waiting on a reply."),
+    ({"working": 1, "waiting": 1}, "One thing in the works, and one waiting on a reply."),
 ])
 def test_the_header_sentence_follows_the_grammar(counts, text):
     assert N.sentence(_items(**counts)) == text
+
+
+def test_the_sentence_mentions_every_kind_of_card_shown():
+    words = {"question": "question", "stopped": "stopped", "working": "in the works",
+             "new_answer": "new answer", "waiting": "waiting"}
+    for combo in [{"question": 1, "stopped": 1, "working": 2}, {"stopped": 2, "new_answer": 1, "waiting": 2},
+                  {"question": 1, "stopped": 1, "working": 2, "new_answer": 2, "waiting": 1}]:
+        text = N.sentence(N.order(_items(**combo), {})).lower()
+        for kind in combo:
+            assert words[kind] in text, (combo, text)
 
 
 def test_the_sentence_always_describes_the_first_card():
@@ -121,7 +134,7 @@ def test_home_orders_questions_stopped_working_new_then_seen(server, service, st
     assert status == 200, body
     assert [i["kind"] for i in body["items"]] == ["question", "stopped", "working", "new_answer", "seen_answer"]
     assert [i["tier"] for i in body["items"]] == [1, 2, 3, 4, 6]
-    assert body["sentence"] == "One question for you, and one thing stopped."
+    assert body["sentence"] == "One question for you, one thing stopped, one thing in the works, and one new answer."
     assert body["counts"] == {"needs_you": 1, "stopped": 1, "working": 1, "waiting": 0, "finished_unread": 1,
                               "on_its_own_running": 0}
     q = body["items"][0]

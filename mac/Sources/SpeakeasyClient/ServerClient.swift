@@ -790,7 +790,8 @@ public final class ServerClient: @unchecked Sendable {
     public func streamHistoryEvents(parser: inout SSEParser, onEvent: (SSEEvent) async -> Void) async -> StreamOutcome {
         var headers = ["Accept": "text/event-stream"]
         if let last = parser.lastEventID { headers["Last-Event-ID"] = last }
-        var req = request("/voice/history/events", headers: headers, timeout: 3600)
+        // `now=1`: Home's `now` {rev} events too (plugins without Home ignore the query).
+        var req = request("/voice/history/events?now=1", headers: headers, timeout: 3600)
         req.timeoutInterval = 3600
         do {
             let (bytes, response) = try await session.bytes(for: req)

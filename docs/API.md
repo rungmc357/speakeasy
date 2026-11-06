@@ -1062,8 +1062,8 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
   Questions sort by expiry, then high risk first, then oldest; a working card keeps its place while it
   keeps working (new ones go on top); answers newest first; waiting oldest first. Up to 60 items;
   the device caps are the app's, from `tiers`.
-- `sentence`: at most two clauses (questions > stopped > new answers > working > waiting), one to
-  nine as words, the item named when it's the only one. "All quiet." / "All caught up.".
+- `sentence`: one clause for every kind of card shown, in list order (questions, stopped, in the
+  works, new answers, waiting), so nothing below it goes unmentioned; one to nine as words, the item named when it's the only one. "All quiet." / "All caught up.".
 - There are no pins. A seen answer leaves Home at the next 4:00 AM in the phone's zone (or the one
   after, if it was opened in the six hours before); questions, stopped and working never leave on
   their own. An answer nobody opened leaves after three days (still unread in Earlier).
