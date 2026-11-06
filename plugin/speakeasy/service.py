@@ -129,6 +129,9 @@ QUEUE_BEHIND = ACTIVE_RUN_STATES - {"cancel_requested"}
 QUEUE_SENDS_AFTER = {"completed", "failed"}  # a stopped task keeps its queue (shown; Steer now or Cancel)
 STEER_WAITING_AFTER_S = 60  # a steered message not read by then: "Waiting for the current step to finish"
 STEER_UNREAD_GRACE_S = 8    # a finished task with no receipt for it this long after: it was never read
+# GET /voice/setup-check (+ POST /voice/setup-check/{id}): every requirement a first call needs as
+# ready / not-ready rows with one fix each, which the apps show instead of dialing into a failure.
+CAPABILITIES["setup_check"] = True
 
 
 
@@ -3660,6 +3663,19 @@ class VoiceService(SecureInputMixin):
             # What this server supports from the UX contract; a missing flag means an older server.
             "capabilities": dict(CAPABILITIES),
         }
+
+    def setup_check(self) -> dict[str, Any]:
+        """The Setup check screen's rows (setup_check.py), from the same facts as status()."""
+        from . import setup_check
+        return setup_check.check(self.status())
+
+    def setup_check_fix(self, row_id: str) -> dict[str, Any]:
+        """Do one row's plugin-side fix (e.g. turn Grok voice on), then answer the fresh rows."""
+        from . import setup_check
+        if not setup_check.run_fix(row_id, self.status(),
+                                   turn_on_grok=lambda: self.settings.patch({"beta": {"grok_voice": True}})):
+            raise ServiceError(409, "That item has nothing Speakeasy can fix by itself right now.")
+        return setup_check.check(self.status())
 
     def attachment_status(self) -> dict[str, Any]:
         """Whether Hermes reads images (``images``: the input path exists; ``vision``: native,

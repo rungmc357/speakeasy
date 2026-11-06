@@ -148,6 +148,19 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await json("/voice/codex/login", method: "DELETE")
     }
     public func status() async throws -> ServerStatus { try JSONDecoder().decode(ServerStatus.self, from: try await data("/voice/status")) }
+    /// The Setup check rows (SetupCheck.swift); nil from a plugin without the route (404).
+    public func setupCheck() async throws -> SetupCheck? {
+        do {
+            return SetupCheck(json: try await json("/voice/setup-check"))
+        } catch let error as HTTPError where error.status == 404 {
+            return nil
+        }
+    }
+    /// A Setup check row's plugin-side fix (`kind: action`); answers the fresh rows.
+    public func fixSetupCheck(_ rowID: String) async throws -> SetupCheck? {
+        let safe = rowID.filter { $0.isLetter || $0 == "_" }
+        return SetupCheck(json: try await post("/voice/setup-check/\(safe)", [:]))
+    }
     public func brief() async throws -> VoiceBrief { try JSONDecoder().decode(VoiceBrief.self, from: try await data("/voice/brief")) }
     public func saveBrief(_ text: String) async throws -> VoiceBrief? {
         try? JSONDecoder().decode(VoiceBrief.self, from: try await data("/voice/brief", method: "PUT", body: try VoiceBrief.putBody(text: text)))

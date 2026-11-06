@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var quitPending = false
     private var idle: IdleContinuity?
     private var onboarding: OnboardingWindowController?
+    private var setupCheck: SetupCheckWindowController?
     private var bag = Set<AnyCancellable>()
     /// A pairing link that arrived before launch finished.
     private var pendingLink: URL?
@@ -90,6 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let rest = Array(args.dropFirst(i + 2))
             CodexLoginSnapshot.render(to: args[i + 1], appearance: rest.first ?? "dark",
                                       phase: rest.count > 1 ? rest[1] : "pending"); return
+        }
+        if let i = args.firstIndex(of: "--setup-check-snapshot"), i + 1 < args.count {
+            let rest = Array(args.dropFirst(i + 2))
+            SetupCheckSnapshot.render(to: args[i + 1], appearance: rest.first ?? "dark", state: rest.count > 1 ? rest[1] : "fix"); return
         }
         if let i = args.firstIndex(of: "--onboarding-snapshot"), i + 1 < args.count {
             OnboardingSnapshot.render(to: args[i + 1], step: i + 2 < args.count && !args[i + 2].hasPrefix("--") ? args[i + 2] : nil); return
@@ -630,7 +635,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startConversation() {
         guard app.isPaired else { showOnboarding(); return }
         if room.canAsk { room.takeOff(); return }   // continues in beginCall(room:takeoffAt:)
+        // Setup isn't finished (voice not signed in, Hermes needs a restart…): show the Setup check
+        // instead of dialing into an error. Ask the server again first: the fix may be done already.
+        if !active, let status = app.status, status.needsSetupCheck {
+            Task { [weak self] in
+                guard let self else { return }
+                await self.app.refresh()
+                if self.app.status?.needsSetupCheck == true { self.showSetupCheck() } else { self.beginCall(room: nil, takeoffAt: nil) }
+            }
+            return
+        }
         beginCall(room: nil, takeoffAt: nil)
+    }
+
+    func showSetupCheck() {
+        if setupCheck == nil {
+            let controller = SetupCheckWindowController(app: app)
+            controller.onStartCall = { [weak self] in self?.beginCall(room: nil, takeoffAt: nil) }
+            setupCheck = controller
+        }
+        setupCheck?.show()
     }
 
     private func beginCall(room text: String?, takeoffAt: Date?) {
