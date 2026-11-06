@@ -5,7 +5,7 @@ from __future__ import annotations
 from fakes import yaml
 import pytest
 
-from speakeasy import cli, profiles as P, setup_flow as F
+from speakeasy import agent_model as AM, cli, profiles as P, setup_flow as F
 from test_setup import Fake, args
 
 
@@ -25,6 +25,7 @@ def two(tmp_path, monkeypatch):
     monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
     monkeypatch.setattr(F, "gateway_running", lambda h: True)
     monkeypatch.setattr(F, "find_codex", lambda configured="": tmp_path / "codex")
+    monkeypatch.setattr(F, "codex_candidates", lambda: [])  # never this machine's real Codex copies
     return root, work
 
 
@@ -33,6 +34,7 @@ def _setup(home, servers: dict, **kw):
     fake = Fake(interactive=False)
     env = fake.env()
     env.health = None
+    env.agent_model = lambda: AM.OK  # identity/port fakes must not consult the host provider
     env.identity = lambda url: ({"platform": "voice", "home_id": P.home_id(servers[int(url.rsplit(":", 1)[1])]),
                                  "profile": P.profile_name(servers[int(url.rsplit(":", 1)[1])])}
                                 if int(url.rsplit(":", 1)[1]) in servers else None)
@@ -73,6 +75,30 @@ def test_default_profile_keeps_its_port(two):
     root, work = two
     rc, text = _setup(root, {8795: root}, yes=True)
     assert rc == 0 and _port(root) == 8795 and "(Hermes profile 'default', port 8795)" in text
+
+
+@pytest.mark.parametrize("profile, port", [("default", 8795), ("work", 8805)])
+@pytest.mark.parametrize("host_state", [AM.MISSING, AM.UNKNOWN, "raises"])
+def test_setup_never_resolves_the_host_model(two, monkeypatch, profile, port, host_state):
+    root, work = two
+    home = root if profile == "default" else work
+    _profile(home, port)
+    calls = []
+
+    def host_model():
+        calls.append(True)
+        if host_state == "raises":
+            raise AssertionError("Setup must use its fake model, not the host resolver")
+        return host_state
+
+    monkeypatch.setattr(AM, "resolve", host_model)
+    rc, text = _setup(home, {8795: root, 8805: work}, yes=True)
+    assert calls == []
+    assert rc == 0
+    assert f"✓ Voice server is running (Hermes profile '{profile}', port {port})" in text
+    assert f"127.0.0.1%3A{port}" in text
+    assert "voice brief in the background" in text and AM.SETUP_LINE not in text
+    assert _port(home) == port
 
 
 def test_an_older_server_without_a_profile_id_on_a_claimed_port_is_not_ours(two):
