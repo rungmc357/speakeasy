@@ -27,6 +27,7 @@ from . import delivery as D
 from . import duck as duck_mod
 from . import settings as S
 from . import history as H
+from . import usage as U
 from . import messages as M
 from . import models as MD
 from .brief import BriefInvalid, BriefManager
@@ -2140,7 +2141,19 @@ class VoiceService(SecureInputMixin):
             **({"archived": True} if meta.get("archived") else {}),
             **({"pinned": True} if (self.store.session_marks().get(sid) or {}).get("pinned") else {}),
             "entries": entries, "has_more": page["has_more"], "before": page["before"],
-            "jobs": jobs, "approvals": self._session_approvals(keys), **self._session_models(sid, meta, jobs)}}
+            "jobs": jobs, "approvals": self._session_approvals(keys), **self._session_models(sid, meta, jobs),
+            **self._session_usage(sid, continued)}}
+
+    def _session_usage(self, sid: str, continued: list[str]) -> dict[str, Any]:
+        """``usage``: what this conversation used (tokens, an estimated cost), its helpers and a
+        continued chat's Speakeasy follow-ups included (usage.py). Absent when nothing was recorded."""
+        linked = [s for s in (self.store.session_for(k) for k in continued) if s]
+        try:
+            got = U.session_usage(self.rt.state_db, sid, linked, name_for=MD.friendly_name)
+        except Exception:  # never fail a page over its usage line
+            logger.warning("speakeasy: usage read failed", exc_info=True)
+            got = None
+        return {"usage": got} if got else {}
 
     @staticmethod
     def _speakeasy_owned(meta: dict[str, Any], link: H.Linked | None) -> bool:

@@ -1141,6 +1141,18 @@ the request after a provider fallback. `GET /voice/history/{id}` adds `"model"` 
 latest work; for a chat Speakeasy never ran, the model Hermes recorded for it), `"next_model"` (what
 the next message runs on) and `"model_choice"` (the chat's own pick, or null).
 
+`GET /voice/history/{id}` also carries `"usage"` when Hermes recorded tokens for the conversation
+(absent otherwise, and on older servers): what the chat used, summed over its compression segments,
+its helper (subagent) sessions and, for a continued chat, its linked Speakeasy task sessions. Every
+figure is an estimate (`"estimate": true`) built from Hermes' own `sessions` token counts and
+`cost_status`. `{"estimate": true, "basis": "estimated" | "included" | "unknown" | "mixed",
+"summary": "About $2.50 · estimate" | "Included in your ChatGPT plan · 42K tokens" | "1.5K tokens · no
+price known", "cost_usd": number | null (null when nothing was priced), "tokens", "input_tokens"
+(incl. cache), "output_tokens", "cache_read_tokens", "reasoning_tokens", "model_calls",
+"included_tokens", "unpriced_tokens", "helpers", "linked_tasks", "lines": [{"label", "value"}] (ready
+to show, in order), "models": [{"name", "tokens", "value"}] (biggest first, up to 6), "note"}` (the
+estimate caveat, shown under the details).
+
 ### Settings
 
 `jobs`: `{"model": "", "reasoning": "", "fast_model": "", "fast_reasoning": "", "smart_model": "",
