@@ -120,6 +120,8 @@ _SPEAKEASY_BRIEF = re.compile(r"Recent timestamped voice transcript|Recent messa
 _USER_LINE = re.compile(r"^(?:\[[^\]]{1,40}\]\s*)?(?:User|You)\s*:\s*(.+)$", re.M)
 _ADDED = re.compile(r"^\S+ (?:just added to this task(?: by voice| by typing)?|typed to this task):?\s*(.+?)"
                     r"(?:\s*Fold it into the work.*)?$", re.S)
+# A correction steer (prompt.builder.correction_steer_text): only the person's own words show.
+_CORRECTION = re.compile(r'^Correction from .{1,60}?, who (?:said|typed): "(.+?)"\. ', re.S)
 # What a steer says about pictures/files the person shared (saved copies the task opens itself).
 _SHARED = re.compile(r"(?s)\s*\S+ shared (?:the |a )?(?:picture|pictures|file|files|screenshot|images?)\b.*?"
                      r"Use them to understand what they mean\.\s*")
@@ -545,6 +547,9 @@ def user_words(content: str) -> tuple[str, str]:
         said = _USER_LINE.findall(text)
         return (("user", _LOOKING_AT.sub("", said[-1]).strip() or said[-1].strip()) if said
                 else ("note", "Task brief from Speakeasy"))
+    corrected = _CORRECTION.match(text.strip())
+    if corrected:
+        return "user", corrected.group(1).strip()
     added = _ADDED.match(text.strip())
     if added:
         words = _SHARED.sub("", added.group(1))

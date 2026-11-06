@@ -107,6 +107,7 @@ def register(ctx) -> None:
     _register_routing_task(ctx)
     _register_secure_input_hook(ctx)
     _register_context_hook(ctx)
+    _register_transcription_hook(ctx)
     ctx.register_cli_command(
         "voice", help="Speakeasy voice: setup, pairing and devices",
         setup_fn=setup_parser, handler_fn=handle,
@@ -125,6 +126,19 @@ def _register_routing_task(ctx) -> None:
         register(AUX_TASK, display_name=AUX_DISPLAY_NAME, description=AUX_DESCRIPTION, defaults={"timeout": 3})
     except Exception as exc:
         logger.warning("speakeasy: could not register the routing task: %s", exc)
+
+
+def _register_transcription_hook(ctx) -> None:
+    """A voice message Speakeasy transcribes carries the user's own names to their STT provider
+    (transcribe.pre_transcription); Hermes' other transcriptions are untouched."""
+    register = getattr(ctx, "register_hook", None)
+    if not callable(register):
+        return
+    try:
+        from .transcribe import pre_transcription
+        register("pre_transcription", pre_transcription)
+    except Exception as exc:
+        logger.warning("speakeasy: could not register the transcription hook: %s", type(exc).__name__)
 
 
 def _register_secure_input_hook(ctx) -> None:

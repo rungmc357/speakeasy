@@ -39,6 +39,8 @@ from . import fence as fence_mod
 from . import jev as jev_mod
 from . import receipts
 from . import skills as skills_mod
+from . import corrections as corrections_mod
+from . import vocabulary as vocabulary_mod
 from . import session_titles
 from . import quick as quick_mod
 from . import views as views_mod
@@ -74,6 +76,7 @@ CORRECTION_WINDOW_S = 30.0  # "guest room, sorry" this soon after a request repl
 ACK_GRACE_S = 5.0      # the voice said "on it": a task must exist (or start) within this long
 # The card's step for an approval answered from the call (the panel's buttons record the same words).
 APPROVED_MILESTONE = {"once": "Approved", "session": "Approved for the rest of this task", "deny": "Approval denied"}
+CORRECTION_RUN_WAIT_S = 15.0  # a correction to a task whose run is still being admitted waits this long
 FOLLOW_UP_POLL_S = 2.0 # how often a queued follow-up is looked for in the task's transcript (receipts.py)
 FOLLOW_UP_SETTLE_S = 3.0  # after the run ends, how long its transcript gets to show a follow-up it read
 FENCE_POLL_S = 2.0     # how often a task held behind another (same project) checks on it
@@ -634,6 +637,9 @@ class BackendRun:
     # How the run ended for follow-ups: Hermes' handed-back steer text and whether it reports one at
     # all, kept so a follow-up recorded just after the end is settled on the same evidence.
     ended_steer: tuple[Any, bool] | None = None
+    # Words the user corrected in this task's request (corrections.py): a status or spoken update that
+    # still says them is never said.
+    misheard: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def say_id(self) -> str:
@@ -2165,6 +2171,9 @@ class SidebandWorker:
             if last and now - last < STATUS_NOTE_EVERY_S:
                 return
             backend.noted_at = now
+            misheard = list(backend.misheard)
+        if misheard and corrections_mod.mentions(detail, misheard):
+            return  # still about the misheard words: not the voice's picture of the task
         await self.quiet("status:" + str(backend.say_id), backend.say_id, P.status_note(detail))
 
     def card_line(self, key: str) -> tuple[str, str | None, bool] | None:
@@ -2177,8 +2186,8 @@ class SidebandWorker:
             logger.debug("speakeasy: task card unavailable for a spoken update", exc_info=True)
             return None
         line = work.get("short_status")
-        if not isinstance(line, str) or not line.strip():
-            return None
+        if not isinstance(line, str) or not line.strip() or line == corrections_mod.CORRECTING:
+            return None  # just corrected: the voice confirmed it, nothing more to say until real work
         source, detail = work.get("status_source"), work.get("detail")
         if source == "authored":
             return line, detail, False
@@ -2206,6 +2215,10 @@ class SidebandWorker:
         text = cap_words(P.named_pulse(text, name, needs) or text) if text else None
         if not text or _said_key(text) in said:
             return None
+        with self.interaction.lock:
+            misheard = list(backend.misheard)
+        if misheard and corrections_mod.mentions(text, misheard):
+            return None  # written before the correction: never spoken
         return text
 
     def remember_update(self, backend: BackendRun, card: tuple[str, str | None, bool], text: str, now: float,
@@ -2980,6 +2993,12 @@ class SidebandWorker:
             await self._drop(delegation_id, revision, "Added to the previous request", None)
             return
         if not marked:
+            # "No, not X, Y" / "I meant Y" about an open task's words: that task is corrected in place
+            # (corrections.py), whatever the routing would have made of the words on their own.
+            corrects = await asyncio.to_thread(self.corrected_task, delegation_id, last_request)
+            if corrects is not None:
+                await self.follow_up(delegation_id, revision, context, router.Part("follow_up", last_request, corrects))
+                return
             # "Our guest room, sorry" / "no, turn them on": replaces what it corrects, never runs on.
             corrected = await self._apply_correction(last_request, context)
             if corrected != last_request:
@@ -4026,6 +4045,8 @@ class SidebandWorker:
         if target is None or key is None:
             await self.start_task(delegation_id, revision, context, part.request)
             return
+        if await self.correct_task(delegation_id, target, key, part):
+            return
         earlier = notice_text(self.store.request_text(key), 200) or "an earlier request"
         if status in RETRY_CARRY_STATES:
             self.carry_failed_shared(delegation_id, key)  # a retry takes the pictures and files again
@@ -4118,6 +4139,118 @@ class SidebandWorker:
                               focus=focus, session_id=None if carrying and placed else self.store.session_for(key),
                               replaces=target.delegation_id, deliver_to=None if carrying else target.deliver_to,
                               parent=key)
+
+    # -- corrections (corrections.py) --------------------------------------------------------
+    def vocabulary(self) -> list[str]:
+        """The user's own names (vocabulary.py), for spelling corrections and the task's brief."""
+        home = getattr(self.rt, "hermes_home", None)
+        if home is None:
+            return list(vocabulary_mod.DEVICES)
+        return vocabulary_mod.terms(home)
+
+    def corrected_task(self, delegation_id: str, words: str) -> str | None:
+        """The newest task of this call whose words `words` correct, or None."""
+        typed = delegation_id.startswith(messages_mod.TYPED_PREFIX)
+        with self.interaction.lock:
+            runs = [(r.delegation_id, r.idem_key, list(r.misheard)) for r in self.interaction.runs.values()
+                    if r.status != "rejected" and r.delegation_id != delegation_id][-MAX_TASKS:]
+        vocabulary = None
+        for task_id, key, known in reversed(runs):
+            request = self.store.request_text(key)
+            if not request:
+                continue
+            if vocabulary is None:
+                vocabulary = self.vocabulary()
+            if corrections_mod.detect(words, request, typed=typed, vocabulary=vocabulary, known_wrong=known):
+                return task_id
+        return None
+
+    async def correct_task(self, delegation_id: str, target: BackendRun, key: str, part: router.Part) -> bool:
+        """A correction to the task's words ("no, not X, Y", "I meant Y", a typed fix) rewrites the
+        task's request and title, reaches the running task at once as a correction, and drops every
+        status line still written around the misheard words. Never a queued follow-up. False when
+        what they said isn't a correction of this task's words (it is handled as a follow-up)."""
+        request = self.store.request_text(key)
+        typed = delegation_id.startswith(messages_mod.TYPED_PREFIX)
+        with self.interaction.lock:
+            known = list(target.misheard)
+        fix = corrections_mod.detect(part.request, request, typed=typed, vocabulary=self.vocabulary(),
+                                     known_wrong=known)
+        if fix is None:
+            return False
+        self.drop_capture(delegation_id)
+        self.handoff_at.pop(delegation_id, None)
+        if fix.wrong is None:
+            # Said again after the task took it: confirmed, never sent twice (a typed repeat: silently).
+            if typed:
+                return True
+            right = next((c.get("right") for c in reversed(self.store.corrections(key)) if c.get("right")), None) \
+                or fix.right or ""
+            if self.call_connected():
+                await self.append("session.thinking.append", delegation_id, P.correction_repeat_note(right or ""))
+            return True
+        with self.interaction.lock:
+            status, run_id = target.status, target.run_id
+            if fix.wrong and fix.wrong not in target.misheard:
+                target.misheard.append(fix.wrong)
+            wrongs = list(target.misheard)
+            # What was said about the task before the correction is never said again or built on.
+            target.card_said = target.recap_said = ""
+            for kind in [k for k, note in self.quiet_notes.items() if corrections_mod.mentions(note, wrongs)]:
+                self.quiet_notes.pop(kind, None)
+        new_title = await asyncio.to_thread(self.store.correct_request, key, fix.request, fix.wrong, fix.right)
+        logger.info("speakeasy: a correction rewrote a task's request%s", " and title" if new_title else "")
+        if new_title:
+            self.title_session(key)
+        words = text_mod.request_notes(part.request)[0]
+        steer = P.correction_steer_text(self.names, fix.wrong, fix.right, fix.request, words, typed=typed)
+        delivered = False
+        if status == "waiting_on_task":
+            with self.interaction.lock:
+                target.held_words.append(steer)  # it starts with the corrected words
+            delivered = True
+        elif status in ACTIVE_RUN_STATES:
+            waited = 0.0
+            while not run_id and waited < CORRECTION_RUN_WAIT_S:
+                await asyncio.sleep(0.5)  # just handed over: its run is being admitted
+                waited += 0.5
+                with self.interaction.lock:
+                    run_id, going = target.run_id, target.status in ACTIVE_RUN_STATES
+                if not going:
+                    break
+            if run_id:
+                delivered = await self.steer_now(target, steer)
+        self.publish()
+        if not delivered:
+            # Finished (or it no longer takes guidance): the corrected request runs again in its session.
+            earlier = notice_text(fix.request, 200) or "an earlier request"
+            await self.start_task(delegation_id, 0, f"User: {part.request}", f"{steer} (following up: {earlier})",
+                                  focus=P.follow_up_focus(steer, earlier, None, status),
+                                  session_id=self.store.session_for(key), replaces=target.delegation_id,
+                                  deliver_to=target.deliver_to, parent=key)
+            return True
+        with self.interaction.lock:
+            self.interaction.latest_delegation_id = target.delegation_id
+        if self.call_connected():
+            await self.append("session.thinking.append", delegation_id,
+                              P.correction_note(fix.wrong, fix.right, fix.request, typed=typed))
+        return True
+
+    async def steer_now(self, target: BackendRun, text: str) -> bool:
+        """Steer a running task, asking again for a few seconds while a just-admitted run refuses."""
+        if not target.run_id:
+            return False
+        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+        for _ in range(STEER_RETRIES):
+            if accepted:
+                break
+            with self.interaction.lock:
+                going = target.status in ACTIVE_RUN_STATES
+            if not going or not target.run_id:
+                break
+            await asyncio.sleep(STEER_RETRY_S)
+            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+        return bool(accepted)
 
     # -- follow-up receipts (receipts.py) ----------------------------------------------------
     async def steer_follow_up(self, target: BackendRun, key: str, words: str, text: str) -> bool:
@@ -4360,7 +4493,8 @@ class SidebandWorker:
         prompt = P.build_task_prompt(self.names, revision, context, focus, label, shared=self.shared_prompt(
             items, bool(images), session_id if continuing else None, shared.capture is not None), room=room,
             typed=self.VOICELESS,
-            skill=await asyncio.to_thread(skills_mod.invocation, request, idem) if request else "")
+            skill=await asyncio.to_thread(skills_mod.invocation, request, idem) if request else "",
+            names_hint=P.task_vocabulary_line(self.names, self.vocabulary()))
         try:
             choice = await self.model_choice(task_id, idem, session_id, request)
             extra: dict[str, Any] = {**({"images": images} if images else {}), **({"choice": choice} if choice else {})}
