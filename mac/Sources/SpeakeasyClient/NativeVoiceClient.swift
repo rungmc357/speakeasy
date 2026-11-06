@@ -1632,8 +1632,14 @@ public final class NativeVoiceClient: VoiceCallClient {
         case .retry:
             dispatch(.reset)
             start()
+        case .signInCodex, .chooseVoice:
+            dispatch(.reset)
+            onAccountFix?(fix)
         }
     }
+
+    /// The app opens the Sign in to ChatGPT sheet or Settings › Voice (CallProblem.Fix).
+    public var onAccountFix: ((CallProblem.Fix) -> Void)?
 
     private func stopWork(runID run: String) {
         guard let api, let id = model.state.interactionID ?? model.state.resumeFrom else { return }

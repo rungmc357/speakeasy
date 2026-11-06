@@ -151,3 +151,45 @@ def test_transcripts_never_start_work(fake_codex, service):
     worker.start()
     worker.feed({"type": "session.input_transcript.delta", "delta": "Delete everything", "start_ms": 1, "end_ms": 2})
     assert worker.delegations == set()
+
+
+PLAN_ERRORS = [
+    "Your ChatGPT plan does not include access to realtime voice. Upgrade to use this feature.",
+    "403 Forbidden: realtime is not available for your workspace",
+    "model_not_found: The model `gpt-live-1-codex` does not exist or you do not have access to it.",
+]
+
+
+@pytest.mark.parametrize("error", PLAN_ERRORS)
+def test_a_plan_without_voice_says_so_and_offers_grok_or_a_key(tmp_path, monkeypatch, error):
+    """The fake codex refuses `thread/realtime/start` with a plan error: the call error names the
+    plan (not "Codex couldn't start the voice call") and carries reason codex_plan_no_voice."""
+    path = tmp_path / "codex"
+    script = FAKE_CODEX.format(python=sys.executable).replace(
+        'elif method == "thread/realtime/start":',
+        'elif method == "thread/realtime/start" and os.environ.get("FAKE_PLAN_ERROR"):\n'
+        '        send({"id": mid, "error": {"message": os.environ["FAKE_PLAN_ERROR"]}})\n'
+        '    elif method == "thread/realtime/start":')
+    path.write_text(script)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(C, "child_env", lambda: {**os.environ, "FAKE_PLAN_ERROR": error})
+    C._REJECTED.clear()
+    transport = C.CodexTransport(path, tmp_path / "work")
+    try:
+        with pytest.raises(C.CodexStartError) as err:
+            transport.start(SDP, "rules", [], "cove")
+    finally:
+        transport.stop()
+    assert err.value.reason == "codex_plan_no_voice"
+    assert "plan doesn't include voice" in str(err.value) and "Grok" in str(err.value)
+    assert "couldn't start" not in str(err.value)
+    assert str(path) not in C._REJECTED  # a plan limit is not a sign-out
+
+
+def test_sign_in_errors_carry_their_reason():
+    assert C.codex_error_reason("401 Unauthorized: You didn't provide an API key.") == "codex_not_signed_in"
+    assert "Sign in to ChatGPT" in C.explain_codex_error("Not logged in")
+    assert C.codex_error_reason("rate limit reached for realtime on your plan") is None
+    assert C.codex_error_reason("realtime voice `marin` is not supported for v3") is None
+    assert C.explain_codex_error("something odd") == "Codex couldn't start the voice call."

@@ -367,10 +367,25 @@ private struct VoiceSettings: View {
         switch draft.resolvedProvider {
         case .codex:
             LabeledContent("ChatGPT sign-in") {
-                if let signed = app.status?.codexSignedIn {
+                if let status = app.status, status.offersCodexSignIn {
+                    // Plugins with codex_login: sign in from here, no Terminal on the Hermes machine.
+                    Text(status.codexOnAPIKey ? "Codex uses an OpenAI API key" : "Not signed in")
+                        .foregroundStyle(Color.orange)
+                } else if let signed = app.status?.codexSignedIn {
                     Text(signed ? "Signed in" : "Not signed in — run codex login on the Hermes machine")
                         .foregroundStyle(signed ? Color.secondary : Color.orange)
                 } else { Text("Unknown").foregroundStyle(.secondary) }
+            }
+            if app.status?.offersCodexSignIn == true {
+                HStack {
+                    Spacer()
+                    CodexSignInButton(onAlternative: {
+                        // Grok when it's offered, else the API key; Save applies it like any other edit.
+                        let next: VoiceProvider = app.status?.grokOffered == true ? .grok : .openai
+                        var v = draft.voice ?? .init(); v.provider = next.rawValue
+                        v.voice = VoiceCatalog.compatible(v.voice, provider: next); draft.voice = v
+                    })
+                }
             }
         case .openai:
             LabeledContent("OpenAI API key") {

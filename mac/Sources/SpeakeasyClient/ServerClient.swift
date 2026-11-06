@@ -131,6 +131,22 @@ public final class ServerClient: @unchecked Sendable {
         let out = try await data("/voice/settings", method: "PATCH", body: try settings.patchBody())
         return (try? ServerSettings.decode(out)) ?? settings
     }
+    /// Sign in to ChatGPT (CodexLogin.swift): start Codex's device-code login on the Hermes computer.
+    public func startCodexLogin(switchFromAPIKey: Bool = false) async throws -> CodexLoginState {
+        let body: [String: Any] = switchFromAPIKey ? ["switch_from_api_key": true] : [:]
+        let object = try await post("/voice/codex/login", body)
+        guard let state = CodexLoginState(json: object) else { throw HTTPError(status: 502, message: "Unexpected sign-in answer") }
+        return state
+    }
+    public func codexLoginState() async throws -> CodexLoginState {
+        guard let state = CodexLoginState(json: try await json("/voice/codex/login")) else {
+            throw HTTPError(status: 502, message: "Unexpected sign-in answer")
+        }
+        return state
+    }
+    public func cancelCodexLogin() async throws {
+        _ = try await json("/voice/codex/login", method: "DELETE")
+    }
     public func status() async throws -> ServerStatus { try JSONDecoder().decode(ServerStatus.self, from: try await data("/voice/status")) }
     public func brief() async throws -> VoiceBrief { try JSONDecoder().decode(VoiceBrief.self, from: try await data("/voice/brief")) }
     public func saveBrief(_ text: String) async throws -> VoiceBrief? {

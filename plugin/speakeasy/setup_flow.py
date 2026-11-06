@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .settings import OPENAI_KEY_NAME, Settings, codex_too_old, find_codex, openai_api_key, save_hermes_secret
+from .settings import OPENAI_KEY_NAME, Settings, codex_candidates, codex_too_old, find_codex, openai_api_key, save_hermes_secret
 
 HEALTH_TIMEOUT_S = 60
 
@@ -113,23 +113,100 @@ def ask_api_key(env: Env, home: Path) -> bool:
     return True
 
 
-def voice_sign_in(env: Env, home: Path, settings: Settings, *, api_key: bool, assume: bool | None) -> bool:
-    """Leave one working voice provider configured. Returns True when voice is ready."""
+def find_signed_in_codex(env: Env, settings: Settings) -> dict:
+    """Every Codex copy on this machine, checked for a working sign-in before anyone is asked
+    (codex_login.discover). The first copy signed in with ChatGPT is saved as voice.codex_path."""
+    from .codex_login import discover
+    from .codex_transport import login_status
+    status = lambda b: login_status(b, runner=env.run, ttl_s=0)  # noqa: E731
+    default = find_codex(settings.get()["voice"]["codex_path"])
+    found = discover(default, status, codex_candidates(), codex_too_old)
+    if found["kind"] == "chatgpt" and found["changed"]:
+        settings.patch({"voice": {"codex_path": str(found["binary"])}})
+    return found
+
+
+REMOTE_RETRY = "Run `hermes voice setup --yes --sign-in remote` again for a new code."
+
+
+def remote_sign_in(env: Env, home: Path, binary: Path, *, wait_s: float | None = None) -> bool:
+    """Codex's device-code sign-in for a machine nobody is sitting at: print ONE machine-readable
+    line (``SIGN_IN url=… code=… expires_in=…``), wait, and return True once Codex is signed in.
+    Never opens a browser; the user approves on any device (their phone)."""
+    from .codex_login import CodexLogin, CodexLoginError, SIGNED_IN, PENDING
+    from .codex_transport import _LOGIN_CACHE, mark_signed_in
+    flow = CodexLogin(home / "speakeasy" / "codex-login",
+                      on_signed_in=lambda b: (_LOGIN_CACHE.pop(str(b), None), mark_signed_in(b)))
+    try:
+        started = flow.start(binary)
+    except CodexLoginError as exc:
+        env.out(f"✗ {exc}")
+        env.out(f"  {REMOTE_RETRY}")
+        return False
+    env.out(f"SIGN_IN url={started['verification_url']} code={started['user_code']} "
+            f"expires_in={started['expires_in']}")
+    env.out(f"  Open {started['verification_url']} on any device, sign in to ChatGPT, and enter code "
+            f"{started['user_code']}. Waiting…")
+    deadline = None if wait_s is None else env.clock() + wait_s
+    try:
+        while True:
+            state = flow.status()
+            if state["state"] != PENDING:
+                break
+            if deadline is not None and env.clock() >= deadline:
+                flow.cancel()
+                state = flow.status()
+                break
+            env.sleep(1.0)
+    except KeyboardInterrupt:
+        flow.cancel()
+        env.out("✗ Sign-in cancelled.")
+        env.out(f"  {REMOTE_RETRY}")
+        return False
+    if state["state"] == SIGNED_IN:
+        env.out("SIGNED_IN")
+        return True
+    env.out(f"SIGN_IN_FAILED state={state['state']}")
+    env.out(f"✗ {state['message']}")
+    env.out(f"  {REMOTE_RETRY}")
+    return False
+
+
+def voice_sign_in(env: Env, home: Path, settings: Settings, *, api_key: bool, assume: bool | None,
+                  sign_in: str = "browser") -> bool:
+    """Leave one working voice provider configured. Returns True when voice is ready.
+
+    Order: (1) a working ChatGPT sign-in in any Codex copy on this machine is used silently;
+    (2) with none, Codex is installed/updated if needed and the user signs in (``sign_in``:
+    ``browser`` runs `codex login` here, ``remote`` prints a device code for another device);
+    (3) an API-key-only sign-in is reported, and ``remote`` switches it to ChatGPT."""
     provider = settings.get()["voice"]["provider"]
     have_key = bool(openai_api_key(home))
-    if api_key or (provider == "openai" and have_key):
+    if api_key or (provider == "openai" and have_key and sign_in != "remote"):
         if not have_key and not ask_api_key(env, home):
             return False
         settings.patch({"voice": {"provider": "openai"}})
         env.out("✓ Voice: GPT-Live-1 through the OpenAI API (your API key, billed per minute)")
         return True
 
-    binary = find_codex(settings.get()["voice"]["codex_path"])
-    if binary is None:
-        env.out("• Voice is GPT-Live-1 through Codex OAuth (your ChatGPT account), and no copy of Codex was found "
-                "(the ChatGPT desktop app includes one).")
+    found = find_signed_in_codex(env, settings)
+    if found["kind"] == "chatgpt":
+        settings.patch({"voice": {"provider": "codex"}})
+        env.out(f"✓ Voice: GPT-Live-1 through Codex OAuth (your ChatGPT account, Codex at {found['binary']})")
+        return True
+    if found["kind"] == "api_key" and sign_in != "remote":
+        settings.patch({"voice": {"provider": "codex"}})
+        env.out("✓ Voice: GPT-Live-1 through Codex, which is signed in with an OpenAI API key, not a ChatGPT "
+                "account (billed to that key). To use your ChatGPT plan instead: "
+                "`hermes voice setup --yes --sign-in remote`, or Sign in to ChatGPT in the app.")
+        return True
+
+    binary = found["binary"]
+    if binary is None and not found["too_old"]:
+        env.out("• Voice is GPT-Live-1 through Codex OAuth (your ChatGPT account), and no copy of Codex was found \
+(the ChatGPT desktop app includes one).")
         if env.confirm("  Install Codex now?", True, assume) and install_codex(env):
-            binary = find_codex(settings.get()["voice"]["codex_path"])
+            binary = find_signed_in_codex(env, settings)["binary"]
         if binary is None:
             if env.interactive and assume is None and env.confirm("  Use an OpenAI API key instead?", False):
                 return voice_sign_in(env, home, settings, api_key=True, assume=assume)
@@ -137,19 +214,24 @@ def voice_sign_in(env: Env, home: Path, settings: Settings, *, api_key: bool, as
                     "then run `hermes voice setup` again, or run "
                     "`hermes voice setup --api-key`.")
             return False
-
-    if codex_too_old(binary):
+    elif binary is None:
         env.out("• Your Codex is too old for voice calls.")
         if env.confirm("  Update Codex now?", True, assume) and install_codex(env):
-            binary = find_codex(settings.get()["voice"]["codex_path"])
-        if codex_too_old(binary):
+            binary = find_signed_in_codex(env, settings)["binary"]
+        if binary is None or codex_too_old(binary):
             env.out("✗ Update Codex (npm install -g @openai/codex@latest), then run `hermes voice setup` again.")
             return False
 
-    if codex_signed_in(env, binary):
+    if codex_signed_in(env, binary) and sign_in != "remote":  # signed in during the install
         settings.patch({"voice": {"provider": "codex"}})
         env.out("✓ Voice: GPT-Live-1 through Codex OAuth (your ChatGPT account)")
         return True
+    if sign_in == "remote":
+        if remote_sign_in(env, home, binary):
+            settings.patch({"voice": {"provider": "codex"}})
+            env.out("✓ Voice: GPT-Live-1 through Codex OAuth (your ChatGPT account)")
+            return True
+        return False
     env.out("• Sign in to ChatGPT so Speakeasy can use GPT-Live-1 on your plan. A browser window will open.")
     if env.interactive and env.confirm("  Sign in now?", True, assume):
         from .codex_transport import child_env
@@ -161,8 +243,9 @@ def voice_sign_in(env: Env, home: Path, settings: Settings, *, api_key: bool, as
             settings.patch({"voice": {"provider": "codex"}})
             env.out("✓ Voice: GPT-Live-1 through Codex OAuth (your ChatGPT account)")
             return True
-    env.out("✗ Not signed in yet. Run `codex login`, then `hermes voice setup` again "
-            "(or `hermes voice setup --api-key`).")
+    env.out("✗ Not signed in yet. On a computer nobody is at, run `hermes voice setup --yes --sign-in remote` "
+            "(prints a link and code to open on any device), or tap Sign in to ChatGPT in the app. "
+            "Or run `codex login` here, then `hermes voice setup` again (or `hermes voice setup --api-key`).")
     return False
 
 

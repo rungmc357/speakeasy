@@ -101,15 +101,35 @@ link in chat is enough on its own.
 
 - Voice uses **GPT-Live-1 through Codex OAuth**: the user's ChatGPT sign-in, no API key. It needs
   **Codex, version 0.150.0 or newer**, on this machine. **The ChatGPT desktop app for Mac already
-  includes Codex** (so does the older standalone Codex app), and setup finds it there on its own:
-  if the user has the ChatGPT app, don't install anything and don't send them to download a
-  "Codex app". Setup never opens an app or asks for a code; it signs in through a browser window.
-  With no copy found, `--yes` installs or updates the CLI for you (npm, else Homebrew). To install it yourself:
-  `npm install -g @openai/codex@latest` (or `brew install codex`). The user then signs in once
-  with `codex login`, which opens a browser. If Codex is already signed in, nothing else is needed.
+  includes Codex** (so does the older standalone Codex app). If the user has the ChatGPT app,
+  don't install anything and don't send them to download a "Codex app".
+- **Sign-in, in this order:**
+  1. **Find an existing sign-in first.** `hermes voice setup` checks every Codex copy on this
+     machine (PATH, Homebrew, npm, the ChatGPT app's bundled Codex, the older Codex app) and uses
+     the first one already signed in with ChatGPT. When setup prints `✓ Voice: GPT-Live-1 through
+     Codex OAuth`, it's done: **never ask the user to sign in.** With no copy at all, `--yes`
+     installs or updates Codex for you (npm, else Homebrew).
+  2. **None signed in: sign them in remotely, from the chat they're talking to you in.** Run, in
+     the background:
+
+         hermes voice setup --yes --sign-in remote
+
+     It starts Codex's device-code sign-in and prints exactly one line like
+     `SIGN_IN url=https://auth.openai.com/codex/device code=ABCD-12345 expires_in=885`, then waits.
+     Send the user the link and code in the **same thread** (Discord, Telegram, Slack, iMessage…)
+     in one short plain message, e.g. "Open https://auth.openai.com/codex/device on your phone and
+     enter code ABCD-12345 to connect voice to your ChatGPT account." Wait for the command:
+     exit 0 (it prints `SIGNED_IN`, then the rest of setup) means signed in, so confirm it in one
+     line; exit 3 means the code expired, was declined or was cancelled: offer a new code (run it
+     again). Mention the app can do the same: **Sign in to ChatGPT** on its setup screen or in
+     Settings › Voice.
+  3. **Signed in with an OpenAI API key only:** setup says so (voice works, billed to that key).
+     Tell the user, and if they want their ChatGPT plan instead, run step 2's command; it switches.
+- **Never** open a browser on a headless machine, never ask the user to paste a token or key in
+  chat, and never copy or move tokens between Hermes and Codex. Use only Codex's own sign-in.
 - **Hermes' own Codex or OpenAI sign-in does not count.** Speakeasy's voice uses the Codex program's
   sign-in on this machine (`codex login status`), which is stored separately. A user whose Hermes
-  runs on ChatGPT through `hermes auth` still needs `codex login` here. Say this up front, before
+  runs on ChatGPT through `hermes auth` still needs Codex signed in here (step 2 above). Say this up front, before
   setup, so it isn't a surprise. Never copy or move tokens between Hermes and Codex: both renew the
   same sign-in, and two copies sign each other out.
 - If the user prefers the **OpenAI API** (their own key, billed per minute), add `--api-key`.
@@ -142,7 +162,7 @@ Setup never restarts Hermes. Its exit code tells you where things stand:
   - with `--send`, the pairing link arrives in this chat by itself;
   - with `--here`, run `hermes voice setup --here --yes` again to open the link.
 - **1: something needs the user.** Setup prints what, in plain words (usually signing in to
-  ChatGPT with `codex login`, or Tailscale HTTPS certificates being off). Pass that on in one or
+  ChatGPT: do the remote sign-in above, or Tailscale HTTPS certificates being off). Pass that on in one or
   two sentences. When it's fixed, run setup again.
 
 Do not paste pairing codes or links from setup's output into other chats. Each link works once and

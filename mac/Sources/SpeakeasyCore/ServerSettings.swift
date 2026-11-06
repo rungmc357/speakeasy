@@ -423,6 +423,9 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     public var assistantName: String?
     public var provider: String?
     public var codexSignedIn: Bool?
+    /// How Codex on the Hermes computer is signed in (`chatgpt`, `api_key`, `none`), after the plugin
+    /// checked every Codex copy there; nil from plugins without `codex_login`.
+    public var codexSignIn: CodexSignIn?
     public var apiKeySet: Bool?
     public var briefState: String?
     public var hermesAPIOK: Bool?
@@ -475,6 +478,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case assistantName = "assistant_name", provider, codexSignedIn = "codex_signed_in"
+        case codexSignIn = "codex_sign_in"
         case apiKeySet = "api_key_set", briefState = "brief_state", hermesAPIOK = "hermes_api_ok", version
         case threadsSupported = "threads_supported", voiceReady = "voice_ready"
         case threadsReason = "threads_reason", threadPlatforms = "thread_platforms", continuityEnabled = "continuity_enabled"
@@ -501,6 +505,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         assistantName = try? c.decodeIfPresent(String.self, forKey: .assistantName)
         provider = try? c.decodeIfPresent(String.self, forKey: .provider)
         codexSignedIn = try? c.decodeIfPresent(Bool.self, forKey: .codexSignedIn)
+        codexSignIn = try? c.decodeIfPresent(CodexSignIn.self, forKey: .codexSignIn)
         apiKeySet = try? c.decodeIfPresent(Bool.self, forKey: .apiKeySet)
         briefState = try? c.decodeIfPresent(String.self, forKey: .briefState)
         hermesAPIOK = try? c.decodeIfPresent(Bool.self, forKey: .hermesAPIOK)
@@ -882,10 +887,13 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var modelChoice: Bool
     /// Hermes scheduled (cron) jobs, listed and managed (`GET /voice/schedules`, Schedules.swift).
     public var schedules: Bool = false
+    /// Sign in to ChatGPT from the app (`/voice/codex/login`, CodexLogin.swift).
+    public var codexLogin: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
-                history: Bool = false, callNoLimit: Bool = false, modelChoice: Bool = false) {
+                history: Bool = false, callNoLimit: Bool = false, modelChoice: Bool = false, codexLogin: Bool = false) {
+        self.codexLogin = codexLogin
         self.cardActions = cardActions; self.jobProgress = jobProgress; self.spokenChoices = spokenChoices
         self.taskMessages = taskMessages; self.jobActivity = jobActivity; self.toolLog = toolLog
         self.startJobs = startJobs; self.jobSubagents = jobSubagents; self.history = history
@@ -895,7 +903,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
-        case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules
+        case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -911,5 +919,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         callNoLimit = (try? c.decodeIfPresent(Bool.self, forKey: .callNoLimit)) ?? false
         modelChoice = (try? c.decodeIfPresent(Bool.self, forKey: .modelChoice)) ?? false
         schedules = (try? c.decodeIfPresent(Bool.self, forKey: .schedules)) ?? false
+        codexLogin = (try? c.decodeIfPresent(Bool.self, forKey: .codexLogin)) ?? false
     }
 }

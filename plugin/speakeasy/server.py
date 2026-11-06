@@ -533,6 +533,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/voice/brief/tune": self.service.get_tune,
                 "/voice/endpoints": self.service.endpoints,
                 "/voice/secrets": lambda: self.service.secure_list(device_id),
+                "/voice/codex/login": self.service.codex_login_status,
             }
             if path in routes:
                 self._reply(200, routes[path]())
@@ -671,6 +672,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/onboarding":
                 self._reply(200, self.service.save_onboarding(self._body()))
                 return
+            if path == "/voice/codex/login":  # Sign in to ChatGPT: Codex's device-code login
+                has_body = (self.headers.get("Content-Length") or "0").strip() not in {"", "0"}
+                self._reply(200, self.service.codex_login_start(self._body() if has_body else {}))
+                return
             if path == "/voice/routing":
                 self._reply(200, self.service.choose_routing(self._body()))
                 return
@@ -731,6 +736,9 @@ class Handler(BaseHTTPRequestHandler):
             schedule = re.fullmatch(rf"/voice/schedules/{_ID}", path)
             if schedule:
                 self._reply(200, self.service.schedule_call("delete", schedule.group(1)))
+                return
+            if path == "/voice/codex/login":
+                self._reply(200, self.service.codex_login_cancel())
                 return
             staged = re.fullmatch(rf"/voice/attachments/{_ID}", path)
             if staged:

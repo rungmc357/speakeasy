@@ -79,6 +79,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_home", lambda: tmp_path)
     monkeypatch.setattr(F, "gateway_running", lambda h: True)
     monkeypatch.setattr(F, "find_codex", lambda configured="": _codex(tmp_path, fake_holder))
+    monkeypatch.setattr(F, "codex_candidates", lambda: [])  # never this machine's real Codex copies
     return tmp_path
 
 

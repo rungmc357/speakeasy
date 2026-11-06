@@ -19,7 +19,8 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Faster history.** The panel and session pages load quicker and update live.
 - **Clearer connection messages.** A slow reply no longer blames Tailscale when its connection is fine, and a brief hiccup while your Hermes updates no longer shows as "can't reach your Hermes".
 - The voice no longer turns requests down itself: anything that needs work goes to your Hermes, which decides under your own rules.
-- Setup says up front that voice needs Codex signed in on the Hermes computer.
+- **Sign in to ChatGPT from the app:** Speakeasy finds an existing Codex sign-in first, and otherwise shows a code you approve on your phone.
+- **Setup can sign Codex in remotely** and send the link to the chat you're installing from.
 
 ## Plugin 0.3.33 · Mac 0.3.18 · iPhone build 64 — Speakeasy as your Hermes app
 

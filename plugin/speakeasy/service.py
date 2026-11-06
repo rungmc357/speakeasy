@@ -25,6 +25,7 @@ from . import __version__
 from . import attachments as A
 from . import delivery as D
 from . import duck as duck_mod
+from . import settings as S
 from . import history as H
 from . import messages as M
 from . import models as MD
@@ -104,10 +105,24 @@ CAPABILITIES["model_choice"] = True
 # GET /voice/schedules (+ /{id}, preview, create, pause/resume/run, PATCH, DELETE): the Hermes scheduled
 # (cron) jobs of this profile, seen and managed from the apps through Hermes' own cron API (schedules.py).
 CAPABILITIES["schedules"] = True
+# POST/GET/DELETE /voice/codex/login: sign Codex in to ChatGPT from the app with Codex's own
+# device-code login (codex_login.py). The plugin first looks for a working sign-in in every Codex
+# copy on the machine, and installs Codex when there is none; the app asks only when nothing works.
+CAPABILITIES["codex_login"] = True
 
 
 
 _SHORTCUT_RE = re.compile(r"^[^\x00-\x1f<>{}]{1,24}$")
+
+
+def _install_codex_quietly() -> bool:
+    """Install or update Codex the way `hermes voice setup --yes` does, with its output in the log."""
+    import functools
+    import subprocess as _sp
+    from .setup_flow import Env, install_codex
+    return install_codex(Env(run=functools.partial(_sp.run, capture_output=True, text=True),
+                             out=lambda line: logger.info("speakeasy: codex install: %s", line.strip()),
+                             interactive=False))
 
 
 def _tour(value: Any) -> dict[str, str]:
@@ -237,7 +252,9 @@ class VoiceService(SecureInputMixin):
                  volume_backend: duck_mod.VolumeBackend | None = None,
                  grok_credential: Callable[[], tuple[str, str]] | None = None,
                  grok_connect: Callable[..., Any] | None = None,
-                 grok_signin: Callable[[], tuple[bool, bool, str]] | None = None):
+                 grok_signin: Callable[[], tuple[bool, bool, str]] | None = None,
+                 codex_install: Callable[[], bool] | None = None, codex_login_popen: Callable[..., Any] | None = None,
+                 codex_candidates: Callable[[], list[Path]] | None = None):
         self.home = Path(hermes_home)
         self.dir = self.home / "speakeasy"
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -311,6 +328,14 @@ class VoiceService(SecureInputMixin):
         self._openai_negotiate = openai_negotiate
         self._openai_worker = openai_worker
         self._codex_login = codex_login
+        self._codex_install = codex_install or _install_codex_quietly
+        self._codex_candidates = codex_candidates
+        from .codex_login import CodexLogin
+        import subprocess as _sp
+        self.codex_signin = CodexLogin(self.dir / "codex-login", popen=codex_login_popen or _sp.Popen,
+                                       on_signed_in=self._codex_signed_in)
+        self._install_lock = threading.Lock()
+        self._install: dict[str, Any] = {"state": "", "message": "", "switch": False}
         self._grok_credential = grok_credential
         self._grok_connect = grok_connect
         self._grok_signin = grok_signin
@@ -380,6 +405,7 @@ class VoiceService(SecureInputMixin):
                 except Exception:
                     pass
         self.duck.close()  # put the volume back before a reload swaps this code out
+        self.codex_signin.close()  # a waiting sign-in's Codex child must not outlive the service
         if self._text_worker is not None:
             self._text_worker.stop()
 
@@ -573,7 +599,7 @@ class VoiceService(SecureInputMixin):
             from .codex_transport import CodexStartError
             if isinstance(exc, CodexStartError):
                 logger.warning("speakeasy: voice start failed: %s", exc)
-                raise ServiceError(502, str(exc)) from None
+                raise ServiceError(502, str(exc), reason=getattr(exc, "reason", None)) from None
             logger.warning("speakeasy: voice start failed (%s)", type(exc).__name__)
             raise ServiceError(502, f"Voice session creation failed: {type(exc).__name__}") from None
         if not isinstance(live_id, str) or not live_id or not isinstance(answer, str) or not answer:
@@ -621,7 +647,8 @@ class VoiceService(SecureInputMixin):
             transport = self._codex_factory()
         else:
             from .codex_transport import CodexTransport
-            binary = find_codex(s["voice"]["codex_path"])
+            # The copy signed in with ChatGPT, wherever it is on the machine (codex_discovery).
+            binary = self.codex_discovery()["binary"]
             if binary is None:
                 raise ServiceError(409, "Codex not found: install the ChatGPT desktop app (it includes Codex) or the Codex CLI, then run `hermes voice setup`")
             transport = CodexTransport(binary, self.dir / "codex", max_call_seconds(s))
@@ -2861,14 +2888,154 @@ class VoiceService(SecureInputMixin):
         except BriefInvalid as exc:
             raise ServiceError(409, str(exc)) from None
 
-    def codex_state(self) -> tuple[bool, bool, str]:
-        s = self.settings.get()
-        binary = find_codex(s["voice"]["codex_path"])
+    def _codex_status_fn(self) -> Callable[[Path | None], tuple[bool, str]]:
         if self._codex_login is not None:
-            ok, msg = self._codex_login(binary)
+            return self._codex_login
+        from .codex_transport import login_status
+        return login_status
+
+    def codex_discovery(self) -> dict[str, Any]:
+        """The Codex copy voice should use and how it is signed in (``kind``: chatgpt, api_key or
+        none). The configured/newest copy is checked first; only when it has no ChatGPT sign-in is
+        every other copy on the machine checked, and the first one signed in with ChatGPT is saved
+        as ``voice.codex_path`` so calls use it. The user is asked to sign in only when none is."""
+        from .codex_login import discover, sign_in_kind
+        import functools
+        configured = self.settings.get()["voice"]["codex_path"]
+        status_fn = self._codex_status_fn()
+        version_fn = functools.lru_cache(maxsize=32)(S.codex_version)
+        candidates = self._codex_candidates() if self._codex_candidates else S.codex_candidates()
+        default = find_codex(configured) if configured else find_codex("", version_fn=version_fn,
+                                                                         candidates=candidates)
+        too_old = lambda b: S.codex_too_old(b, version_fn=version_fn)  # noqa: E731
+        if default is not None and not too_old(default):  # the usual case: one status check
+            first = discover(default, status_fn, [], too_old)
+            if first["kind"] == "chatgpt":
+                return {**first, "message": status_fn(default)[1]}
+        found = discover(default, status_fn, candidates, too_old)
+        binary = found["binary"]
+        if binary is not None:
+            found["message"] = status_fn(binary)[1]
+        elif found["too_old"]:
+            found["message"] = ("This Codex is too old for voice. Tap Sign in to ChatGPT to update it, "
+                                "or run hermes voice setup on the Hermes computer.")
         else:
-            ok, msg = _submodule("codex_transport").login_status(binary)
-        return binary is not None, ok, msg
+            ok, found["message"] = status_fn(None)
+            if ok:  # only an injected status check (tests) says a missing Codex is signed in
+                found["kind"] = sign_in_kind(ok, found["message"])
+        if found["kind"] == "chatgpt" and found["changed"]:
+            self._remember_codex(binary)
+        return found
+
+    def _remember_codex(self, binary: Path) -> None:
+        """Save a signed-in Codex copy as voice.codex_path (only when the default pick differs)."""
+        s = self.settings.get()
+        if s["voice"]["codex_path"] == str(binary):
+            return
+        if not s["voice"]["codex_path"] and find_codex("") == binary:
+            return
+        logger.info("speakeasy: using the Codex copy that is signed in to ChatGPT: %s", binary)
+        self.settings.patch({"voice": {"codex_path": str(binary)}})
+
+    def _codex_signed_in(self, binary: Path) -> None:
+        from .codex_transport import _LOGIN_CACHE, mark_signed_in
+        _LOGIN_CACHE.pop(str(binary), None)
+        mark_signed_in(binary)
+        self._remember_codex(binary)
+
+    def codex_state(self) -> tuple[bool, bool, str]:
+        found = self.codex_discovery()
+        return found["binary"] is not None, found["kind"] != "none", found["message"]
+
+    # -- Sign in to ChatGPT from the app (codex_login.py) --------------------------------------------
+    def codex_login_status(self) -> dict[str, Any]:
+        with self._install_lock:
+            install = dict(self._install)
+        if install["state"] == "installing":
+            return {"state": "installing", "message": install["message"], "sign_in": "none", "codex_found": False}
+        out = self.codex_signin.status()
+        if install["state"] == "failed" and out["state"] in {"idle", "cancelled"}:
+            out = {"state": "failed", "message": install["message"]}
+        if out["state"] == "pending":
+            return {**out, "sign_in": "none", "codex_found": True}
+        found = self.codex_discovery()
+        if out["state"] in {"idle", "cancelled"} and found["kind"] == "chatgpt":
+            out = {"state": "signed_in", "message": "Signed in to ChatGPT."}
+        return {**out, "sign_in": found["kind"], "codex_found": found["installed"],
+                **({"codex_message": found["message"]} if out["state"] == "idle" else {})}
+
+    def codex_login_start(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Start Codex's device-code sign-in, unless a working sign-in already exists anywhere."""
+        if not isinstance(body, dict) or not set(body) <= {"switch_from_api_key"}:
+            raise ServiceError(400, "body may contain only: switch_from_api_key")
+        switch = body.get("switch_from_api_key", False)
+        if not isinstance(switch, bool):
+            raise ServiceError(400, "switch_from_api_key must be true or false")
+        with self._install_lock:
+            if self._install["state"] == "installing":
+                return self.codex_login_status()
+            self._install = {"state": "", "message": "", "switch": switch}
+        pending = self.codex_signin.status()
+        if pending["state"] == "pending":
+            return {**pending, "sign_in": "none", "codex_found": True}
+        found = self.codex_discovery()
+        if found["kind"] == "chatgpt":
+            return {"state": "signed_in", "message": "Signed in to ChatGPT.", "sign_in": "chatgpt", "codex_found": True}
+        if found["kind"] == "api_key" and not switch:
+            raise ServiceError(409, "Codex is signed in with an OpenAI API key, not a ChatGPT account. "
+                                    "Switch to ChatGPT to use your plan.", reason="api_key_signed_in")
+        if found["binary"] is None:
+            self._start_codex_install(switch)
+            return self.codex_login_status()
+        return self._begin_device_login(found["binary"])
+
+    def _begin_device_login(self, binary: Path) -> dict[str, Any]:
+        from .codex_login import CodexLoginError
+        try:
+            out = self.codex_signin.start(binary)
+        except CodexLoginError as exc:
+            raise ServiceError(502, str(exc), reason="codex_login_failed") from None
+        return {**out, "sign_in": "none", "codex_found": True}
+
+    def _start_codex_install(self, switch: bool) -> None:
+        with self._install_lock:
+            self._install = {"state": "installing", "message": "Installing Codex on the Hermes computer…",
+                             "switch": switch}
+
+        def run() -> None:
+            try:
+                ok = bool(self._codex_install())
+            except Exception:  # noqa: BLE001
+                logger.exception("speakeasy: installing Codex failed")
+                ok = False
+            from .codex_transport import _LOGIN_CACHE
+            _LOGIN_CACHE.clear()
+            if ok:
+                found = self.codex_discovery()
+                with self._install_lock:
+                    cancelled = self._install["state"] != "installing"
+                    self._install = {"state": "", "message": "", "switch": switch}
+                if found["binary"] is not None and found["kind"] == "none" and not cancelled:
+                    try:
+                        self._begin_device_login(found["binary"])
+                    except ServiceError as exc:
+                        with self._install_lock:
+                            self._install = {"state": "failed", "message": exc.message, "switch": switch}
+                    return
+                if found["binary"] is not None:
+                    return
+            with self._install_lock:
+                self._install = {"state": "failed", "switch": switch, "message":
+                                 "Couldn't install Codex on the Hermes computer. Run hermes voice setup there, "
+                                 "or use Grok or an API key instead."}
+
+        threading.Thread(target=run, daemon=True, name="speakeasy-codex-install").start()
+
+    def codex_login_cancel(self) -> dict[str, Any]:
+        with self._install_lock:
+            if self._install["state"] in {"installing", "failed"}:
+                self._install = {"state": "", "message": "", "switch": False}
+        return self.codex_signin.cancel()
 
     @staticmethod
     def updated_underneath() -> bool:
@@ -2881,7 +3048,9 @@ class VoiceService(SecureInputMixin):
 
     def status(self) -> dict[str, Any]:
         s = self.settings.get()
-        found, signed_in, codex_message = self.codex_state()
+        discovery = self.codex_discovery()
+        found, codex_kind, codex_message = discovery["binary"] is not None, discovery["kind"], discovery["message"]
+        signed_in = codex_kind != "none"
         api_key_set = bool(self.openai_key())
         provider = s["voice"]["provider"]
         voice_ready = signed_in if provider == "codex" else api_key_set
@@ -2894,6 +3063,9 @@ class VoiceService(SecureInputMixin):
             "voice": default_voice(s), "voice_ready": voice_ready and not self.updated_underneath(),
             "restart_needed": self.updated_underneath(),
             "codex_found": found, "codex_signed_in": signed_in, "codex_message": codex_message,
+            # chatgpt | api_key | none: the app offers "Sign in to ChatGPT" only for none (and a
+            # switch for api_key), never while a working ChatGPT sign-in exists (codex_login).
+            "codex_sign_in": codex_kind,
             "api_key_set": api_key_set, "brief_state": self.brief.status()["state"],
             "hermes_api_ok": self.hermes.health(), "hermes_api_key_set": bool(self.hermes_key()),
             "delivery_target": s["delivery"]["target"], **self.thread_status(),

@@ -71,6 +71,8 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var config: AppConfig
     @Published var status: ServerStatus?
+    /// The Sign in to ChatGPT sheet is open (Settings › Voice, setup, or a failed call's button).
+    @Published var showingCodexLogin = false
     /// An unsaved routing-model change from Settings; nil when nothing is pending. Saved and
     /// reverted by the same Save/Revert bar as the other server settings.
     @Published var routingDraft: RoutingChoices.Current?
@@ -146,7 +148,7 @@ final class AppModel: ObservableObject {
     /// the read blocks on a prompt no one is there to click.
     static let isAutomatedRun: Bool = {
         if ProcessInfo.processInfo.environment["SPEAKEASY_NO_KEYCHAIN"] == "1" { return true }
-        let flags: Set<String> = ["--onboarding-snapshot", "--ui-preview", "--snapshot", "--film-frames", "--history-shots"]
+        let flags: Set<String> = ["--onboarding-snapshot", "--codex-login-snapshot", "--ui-preview", "--snapshot", "--film-frames", "--history-shots"]
         return CommandLine.arguments.contains { $0.hasSuffix("-smoke") || flags.contains($0) }
     }()
 

@@ -105,6 +105,10 @@ public struct CallProblem: Equatable, Sendable {
         case restartCall
         /// Start the call again.
         case retry
+        /// Codex on the Hermes isn't signed in: the Sign in to ChatGPT sheet (plugins with codex_login).
+        case signInCodex
+        /// The ChatGPT plan has no voice through Codex: Settings › Voice to pick Grok or an API key.
+        case chooseVoice
     }
     public var title: String
     public var detail: String?
@@ -114,13 +118,17 @@ public struct CallProblem: Equatable, Sendable {
         case .openMicSettings: return "Open Settings"
         case .restartCall: return "Restart call"
         case .retry: return "Try again"
+        case .signInCodex: return CodexLoginCopy.button
+        case .chooseVoice: return CodexLoginCopy.chooseVoice
         }
     }
 
     public init(title: String, detail: String? = nil, fix: Fix) { self.title = title; self.detail = detail; self.fix = fix }
 
     /// The problem in this state, if it has a fix.
-    public static func of(_ s: VoiceState) -> CallProblem? {
+    /// `canSignInCodex`: the server has `codex_login`, so a not-signed-in failure offers the sheet
+    /// instead of a Try again that would redial into the same error.
+    public static func of(_ s: VoiceState, canSignInCodex: Bool = false) -> CallProblem? {
         let failure: String? = {
             if case .failed(let m) = s.connection { return s.lastError ?? m }
             return nil
@@ -130,6 +138,12 @@ public struct CallProblem: Equatable, Sendable {
                 return CallProblem(title: "Speakeasy can't use the microphone",
                                    detail: "Turn on Speakeasy under Privacy & Security › Microphone, then try again.",
                                    fix: .openMicSettings)
+            }
+            if CodexLoginState.errorMeansPlanHasNoVoice(failure) {
+                return CallProblem(title: "Your ChatGPT plan has no voice here", detail: CodexLoginCopy.planNoVoice, fix: .chooseVoice)
+            }
+            if canSignInCodex, CodexLoginState.errorMeansNotSignedIn(failure) {
+                return CallProblem(title: "Sign in to ChatGPT to talk", detail: CodexLoginCopy.notSignedIn, fix: .signInCodex)
             }
             if failure.localizedCaseInsensitiveContains("pair") { return nil }   // Settings › Connection says how
             return CallProblem(title: "Couldn't connect", detail: failure.replacingOccurrences(of: " Tap to try again.", with: "").replacingOccurrences(of: " Click Try again.", with: ""),
