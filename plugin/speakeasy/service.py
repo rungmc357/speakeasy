@@ -2107,9 +2107,7 @@ class VoiceService(SecureInputMixin):
             upper = H.message_time(self.rt.state_db, before) if before is not None else None
             if before is not None and upper is None:
                 more = []  # can't place this page's span: linked entries stay on the newest page
-            entries = H.merge_linked(entries, more, lower=lower, upper=upper,
-                                     note="From Speakeasy · not posted to " + H.source_label(
-                                         meta["source"], None, None, False))
+            entries = H.merge_linked(entries, more, lower=lower, upper=upper)
         if continued and before is None:
             keys = list(reversed(continued)) + keys
         open_key = self._open_question(keys)

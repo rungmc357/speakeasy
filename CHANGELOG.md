@@ -2,7 +2,7 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
+## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
 
 - **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
 - **Honest waits.** One long step says what it's waiting on and for how long ("Waiting on the tests · 4 min"); a task that has gone quiet says so ("No new steps · 3 min"); the handoff line stops posing as "now" after a minute with nothing reported.
@@ -10,6 +10,11 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **One ask, one task.** Pictures sent during a call no longer fail with "couldn't reach Hermes" when Hermes is just slow to read them in (it's asked again for the same task, with more time), and something you add seconds after a task starts goes into that task instead of starting a twin that answers a second time.
 - **No choice card for a closing offer.** "Want me to hold, or walk you through it?" at the end of an answer is just talk now, not a card and a "Decide on…" task in Done.
 - **Titles name the subject.** Titles made only of generic words ("Check work status", "Decide on holding") or pointing at "the earlier task" are rejected and written again.
+- **Session pages show the conversation, not the agent's plumbing.** Hermes' notes to itself no longer appear: background-job, helper and internal notices are hidden (a helper's report shows up as one step in the work of the reply it fed), system notes and skill files are gone (a /skill command reads "/name what you asked"), scheduled runs show as one quiet "Scheduled run" line, and context compaction is at most one "Earlier messages were summarized" divider per page.
+- **Your words only.** Steer wrappers, Discord origin blocks, the replied-to message and the chat lines around it (a reply carries a small "Replying to …" quote instead), voice-note quote marks and empty-attachment placeholders are stripped from your messages.
+- **Clean answers.** The model/usage footer ("model · 22% · 23s"), "(1/2)" split markers, "Steered into current run" and "Context compression deferred" lines, cron "Cronjob Response" headers and "To stop or manage this job" footers, and "[SILENT]" replies no longer show.
+- **No "not posted to Discord" note.** What you send to a Discord or Telegram chat from Speakeasy sits in time order with the rest, without a label.
+- The same cleanup applies to previews, titles and search results; a search that only matches hidden plumbing no longer finds the chat.
 
 ## Plugin 0.3.35 — Easier setup, and session pages end with the latest message
 

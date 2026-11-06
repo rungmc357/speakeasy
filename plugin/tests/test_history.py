@@ -199,7 +199,7 @@ def test_session_page_collapses_tool_calls_and_redacts_them(server, state):
     page = body["session"]
     assert page["source_label"] == "Discord · #home" and page["send_via"] == "linked"
     kinds = [e["kind"] for e in page["entries"]]
-    assert kinds == ["user", "tools", "note", "assistant"]
+    assert kinds == ["user", "tools", "assistant"]   # Hermes' own system note never shows
     tools = page["entries"][1]["items"]
     assert tools[0]["tool"] == "terminal" and tools[0]["status"] == "done" and tools[0]["started_at"]
     blob = json.dumps(page)
@@ -283,7 +283,8 @@ def test_send_to_a_discord_thread_starts_a_linked_task_and_never_posts_back(serv
     s = page["session"]
     assert s["send_via"] == "linked" and s["source"] == "discord"
     texts = [e.get("text") for e in s["entries"]]
-    assert "From Speakeasy · not posted to Discord" in texts and "Ordered three brackets." in texts
+    assert "Ordered three brackets." in texts
+    assert not any("not posted" in (t or "") for t in texts)   # no "not posted to Discord" note
     assert s["jobs"] and s["jobs"][0]["run_id"] == body["run_id"]
     # The next message goes to the same linked task, not a new one.
     wait_for(lambda: service.store.work(body["run_id"])["status"] == "completed")
