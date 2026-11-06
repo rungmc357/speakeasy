@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from . import router
 from .prompt import builder as P
 from .text import notice_text, short_title
+from . import runstate as RS
 
 if TYPE_CHECKING:  # pragma: no cover
     from .calls import SidebandWorker
@@ -117,7 +118,7 @@ async def deliver(worker: "SidebandWorker", task_id: str, text: str,
     while time.monotonic() < deadline and not follow.done():
         with worker.interaction.lock:
             started = worker.interaction.runs.get(delegation_id)
-            begun = started is not None and (started.run_id or started.status in TERMINAL | {"rejected"})
+            begun = started is not None and (started.run_id or started.status in RS.FINAL)
         if begun:
             break
         await asyncio.sleep(0.05)
@@ -408,7 +409,7 @@ async def start_job(worker: "SidebandWorker", text: str, session_id: str | None 
     while time.monotonic() < deadline and not job.done():
         with worker.interaction.lock:
             run = worker.interaction.runs.get(task_id)
-            begun = run is not None and (run.run_id or run.status in TERMINAL | {"rejected"})
+            begun = run is not None and (run.run_id or run.status in RS.FINAL)
         if begun:
             break
         await asyncio.sleep(0.05)
@@ -427,6 +428,6 @@ def adopt_row(worker: "SidebandWorker", row: dict[str, Any]) -> str:
             run = BackendRun(task_id, int(row["revision"] or 0), row["idem_key"], run_id=row["run_id"],
                              status=row["status"])
             worker.interaction.runs[task_id] = run
-        elif run.status not in {"running", "working", "waiting_for_approval", "resolving_approval"}:
+        elif run.status not in RS.STEERABLE:
             run.status, run.run_id = row["status"], row["run_id"] or run.run_id
     return task_id

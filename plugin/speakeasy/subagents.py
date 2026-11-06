@@ -176,6 +176,11 @@ def _settle(sub: dict[str, Any], status: str, now: float, *, summary: Any = None
                 item["ended_at"] = round(now, 3)
 
 
+def settle_orphan(sub: dict[str, Any], now: float) -> None:
+    """A helper whose task was settled by a sweep: nothing follows it any more, so it stops."""
+    _settle(sub, "stopped", now, note="No word back from this helper")
+
+
 def on_run_end(state: dict[str, Any], end: str, now: float) -> None:
     """The task's run ended. A helper still running when the run was stopped or failed stops with
     it; when the run completed it may be a background helper still at work, so the watch keeps

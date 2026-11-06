@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import channels, continuity, failures, liveness, router, threads
+from . import runstate as RS
 from . import messages as messages_mod
 from .devices import client_label
 from .duck import Ducker
@@ -211,8 +212,7 @@ _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 MAX_TASKS = 8
 # Earlier calls' tasks kept on a call's board until cleared (running, waiting on the user, finished).
 MAX_BOARD = 12
-ACTIVE_RUN_STATES = {"admitting", "running", "working", "waiting_for_approval", "resolving_approval",
-                     "cancel_requested", "waiting_on_task"}
+ACTIVE_RUN_STATES = RS.LIVE  # the run states live in runstate.py
 # A follow-up to a task in one of these states (Retry, "try again") takes that task's pictures and
 # files again (carry_failed_shared): the failed run may never have reached Hermes with them.
 RETRY_CARRY_STATES = {"failed", "interrupted"}
@@ -1404,7 +1404,7 @@ class SidebandWorker:
             with self.interaction.lock:
                 self.interaction.finalization = "confirmed"
                 latest = self.interaction.runs.get(self.interaction.latest_delegation_id or "")
-                if not latest or latest.status not in {"working", "running", "waiting_for_approval"}:
+                if not latest or latest.status not in RS.STARTED_SHOWN:
                     self.interaction.status = "closed"
             self.publish()
 
@@ -1644,9 +1644,9 @@ class SidebandWorker:
             run = self.interaction.runs.get(task_id)
             if run is None or run.status not in ACTIVE_RUN_STATES or not run.run_id:
                 return
-            run.status = "cancel_requested"
             key, run_id = run.idem_key, run.run_id
-        self.store.update_run(key, None, "cancel_requested")
+        if not self.move(run, "cancel_requested"):
+            return  # it ended meanwhile: nothing to stop
         self.store.progress(key, "milestone", "Replaced by your correction")
         self.publish()
         try:
@@ -1840,8 +1840,9 @@ class SidebandWorker:
             except Exception as exc:  # the run may already be gone; it is closed here either way
                 logger.warning("speakeasy: set-aside could not reach the run (%s)", type(exc).__name__)
             with self.interaction.lock:
-                if run.status == "resolving_approval":
-                    run.status = "working"
+                resolving = run.status == "resolving_approval"
+            if resolving:
+                self.move(run, "working")
         self.publish()
         if self.call_connected():
             name = self.store.title(key) or self.store.request_text(key) or ""
@@ -2122,7 +2123,7 @@ class SidebandWorker:
             return False  # muted: no "still working" lines (results, questions and approvals still speak)
         with self.interaction.lock:
             last_any = self.interaction.progress_spoken_at
-            if (now - backend.started < PROGRESS_AFTER_S or backend.status not in {"running", "working"}
+            if (now - backend.started < PROGRESS_AFTER_S or backend.status not in RS.WORKING
                     or (last_any and now - last_any < self.update_every(PROGRESS_EVERY_S) and not urgent)):
                 return False
             self.interaction.progress_spoken_at = now  # claim the slot before reading the card
@@ -2255,7 +2256,7 @@ class SidebandWorker:
         with self.interaction.lock:
             runs = list(self.interaction.runs.values())
         silent = getattr(self, "silent_ids", set())
-        return [r for r in runs if r.status in {"running", "working"} and now - r.started >= after
+        return [r for r in runs if r.status in RS.WORKING and now - r.started >= after
                 and not r.delegation_id.startswith("choice_") and r.delegation_id not in self.home_tasks
                 and r.delegation_id not in silent]
 
@@ -2270,7 +2271,7 @@ class SidebandWorker:
             return False
         now = time.monotonic()
         with self.interaction.lock:
-            asking = any(r.status in {"waiting_for_approval", "resolving_approval"} or r.approval
+            asking = any(r.status in RS.ASKING or r.approval
                          for r in self.interaction.runs.values())
         if asking or self.held is not None or self.someone_speaking(now) or self.user_mid_thought(now):
             return False
@@ -2311,7 +2312,7 @@ class SidebandWorker:
         line = await asyncio.to_thread(self.card_update, backend, card)
         late = time.monotonic()
         if (not line or not self.call_connected() or self.muted_now() or self.someone_speaking(late)
-                or self.last_spoke_at() > now or backend.status not in {"running", "working"}):
+                or self.last_spoke_at() > now or backend.status not in RS.WORKING):
             with self.interaction.lock:
                 if self.interaction.progress_spoken_at == now:
                     self.interaction.progress_spoken_at = claimed
@@ -2529,7 +2530,7 @@ class SidebandWorker:
             if run is None or run.status not in ACTIVE_RUN_STATES:
                 continue
             name = self.spoken_task_name(run.idem_key) or "that"
-            if run.run_id and run.status in {"running", "working"}:
+            if run.run_id and run.status in RS.WORKING:
                 await self._supersede(task_id)
             with self.interaction.lock:
                 run.status, run.error = "rejected", "Taken back"
@@ -2629,19 +2630,24 @@ class SidebandWorker:
                     if 400 <= exc.status < 500:
                         run.approval, run.status = approval, "waiting_for_approval"  # nothing changed
                     else:
-                        run.status, run.error = "ambiguous", "Backend approval outcome is ambiguous"
+                        run.error = "Backend approval outcome is ambiguous"
+            if run.error == "Backend approval outcome is ambiguous" and run.status == "resolving_approval":
+                self.move(run, "ambiguous")
             self.publish()
             return None
         except Exception:
             with self.interaction.lock:
-                if run.status == "resolving_approval":
-                    run.status, run.error = "ambiguous", "Backend approval outcome is ambiguous"
+                lost = run.status == "resolving_approval"
+                if lost:
+                    run.error = "Backend approval outcome is ambiguous"
+            if lost:
+                self.move(run, "ambiguous")
             self.publish()
             return None
         with self.interaction.lock:
-            if run.status == "resolving_approval":
-                run.status = "working"
-        self.store.update_run(run.idem_key, None, "working")
+            resolving = run.status == "resolving_approval"
+        if resolving:
+            self.move(run, "working")
         self.store.progress(run.idem_key, "milestone", APPROVED_MILESTONE[choice])
         self.publish()
         return choice
@@ -2672,17 +2678,18 @@ class SidebandWorker:
                 await self.append("session.commentary.append", delegation_id, P.FENCE_CANT_STOP_SPOKEN)
                 return True
             name = self.store.title(blocker.idem_key) or notice_text(self.store.request_text(blocker.idem_key), 80) or "that task"
-            with self.interaction.lock:
-                blocker.status = "cancel_requested"
-            self.store.update_run(blocker.idem_key, None, "cancel_requested")
+            self.move(blocker, "cancel_requested")
             self.store.progress(blocker.idem_key, "milestone", "Stop requested")
             self.publish()
             try:
                 await asyncio.to_thread(self.hermes.stop, blocker.run_id)
             except Exception:
                 with self.interaction.lock:
-                    if blocker.status == "cancel_requested":
-                        blocker.status, blocker.error = "ambiguous", "Backend stop outcome is ambiguous"
+                    lost = blocker.status == "cancel_requested"
+                    if lost:
+                        blocker.error = "Backend stop outcome is ambiguous"
+                if lost:
+                    self.move(blocker, "ambiguous")
                 self.publish()
                 await self.append("session.commentary.append", delegation_id, P.FENCE_CANT_STOP_SPOKEN)
                 return True
@@ -2717,8 +2724,8 @@ class SidebandWorker:
         idem = backend.idem_key
         name = self.store.title(blocker.idem_key) or notice_text(self.store.request_text(blocker.idem_key), 80) or "the other task"
         with self.interaction.lock:
-            backend.status, backend.blocked_by = "waiting_on_task", blocker.delegation_id
-        self.store.update_run(idem, None, "waiting_on_task")
+            backend.blocked_by = blocker.delegation_id
+        self.move(backend, "waiting_on_task")
         self.store.set_waiting(idem, {"name": name, "project": project})
         self.store.progress(idem, "milestone", notice_text(f"Waiting for \"{name}\" ({project})", 200) or "Waiting")
         self.publish()
@@ -2734,10 +2741,9 @@ class SidebandWorker:
             await asyncio.sleep(FENCE_POLL_S)
             waited += FENCE_POLL_S
         with self.interaction.lock:
-            backend.status = "admitting"
             released, ended = backend.released, blocker.status
         self.store.set_waiting(idem, None)
-        self.store.update_run(idem, None, "admitting")
+        self.move(backend, "admitting")
         self.store.progress(idem, "milestone", "Started")
         self.publish()
         if released:
@@ -3051,7 +3057,7 @@ class SidebandWorker:
             run = runs.get(t.task_id)
             key = run.idem_key if run else None
             items = len(activity_mod.speech_steps(self.store, key)[0]) if key else 0
-            return (int(t.status in {"running", "working", "waiting_for_approval"}), int(items > 0))
+            return (int(t.status in RS.STARTED_SHOWN), int(items > 0))
         return max(enumerate(running), key=lambda p: (busy(p[1]), p[0]))[1].task_id
 
     async def answer_status(self, delegation_id: str, task_id: str, confused: bool = False) -> None:
@@ -3266,7 +3272,7 @@ class SidebandWorker:
         if task_id is not None:
             target = next((t for t in tasks if t.task_id == task_id), None)
             if target is None or (only_if_visible and target.task_id not in has_image
-                                  and target.status not in {"admitting", "working", "running"}):
+                                  and target.status not in RS.UNDER_WAY):
                 return False  # a finished task with no picture: the caller asks for one as new work
         else:
             target = router.show_me_target(request, tasks, has_image)
@@ -3284,7 +3290,7 @@ class SidebandWorker:
         key = keys.get(target.task_id)
         if run is None or key is None:
             return False
-        running = run.status in {"admitting", "working", "running", "waiting_for_approval"}
+        running = run.status in RS.IN_FLIGHT
         if target.task_id in has_image:
             kind = "live" if running and self.store.live_image(key) else "review"
             self.show_action(run.run_id, target.task_id, kind)
@@ -3956,7 +3962,7 @@ class SidebandWorker:
                 # what was shared never goes into that chat's running turn.
                 await answered_home("a running task continued a chat that can't be looked up")
                 return
-        if run_id and status in {"running", "working"}:
+        if run_id and status in RS.WORKING:
             items: list[dict[str, Any]] = []
             if sharing:
                 # A running task can't take new image parts: the steer names Speakeasy's saved copies,
@@ -4130,6 +4136,22 @@ class SidebandWorker:
         await self.append("session.thinking.append", delegation_id, P.added_to_task_note(earlier))
         return True
 
+    def move(self, backend: BackendRun, to: str, *, run_id: str | None = None,
+             expect: set[str] | None = None) -> bool:
+        """One checked status change for a task: the stored row (compare-and-set, runstate.py) and
+        this in-memory copy together, under the store's lock. False when the task was not in a state
+        *to* may follow (it finished, was stopped, ...); a final stored status then wins in memory.
+        A task with no stored row (never reserved) just takes the new status."""
+        if self.store.transition(backend.idem_key, to, expect, run_id=run_id, mirror=backend):
+            return True
+        if self.store.run_status(backend.idem_key) is None:
+            with self.interaction.lock:
+                backend.status = to
+                if run_id is not None:
+                    backend.run_id = run_id
+            return True
+        return False
+
     def _register(self, task_id: str, backend: BackendRun, replaces: str | None = None) -> str | None:
         replaced_key = None
         with self.interaction.lock:
@@ -4218,10 +4240,8 @@ class SidebandWorker:
             images = []
             if voice_id is None:
                 shared.forget_bytes()  # the run has them; a split request's parts still share theirs
-            self.store.update_run(idem, run_id, "running")
+            self.move(backend, "running", run_id=run_id)
             self.title_session(idem)
-            with self.interaction.lock:
-                backend.run_id, backend.status = run_id, "running"
             self.publish()
             loop = asyncio.get_running_loop()
             terminal_seen = await in_own_thread(
@@ -4365,9 +4385,7 @@ class SidebandWorker:
             def on_event(name: str, payload: dict[str, Any]) -> None:
                 if name == "run.started" and isinstance(payload.get("run_id"), str) and ID_RE.fullmatch(payload["run_id"]):
                     run_id = payload["run_id"]
-                    self.store.update_run(idem, run_id, "running")
-                    with self.interaction.lock:
-                        backend.run_id, backend.status = run_id, "running"
+                    self.move(backend, "running", run_id=run_id)
                     asyncio.run_coroutine_threadsafe(self._publish_async(), loop)
                 elif name == "assistant.commentary" and isinstance(payload.get("text"), str):
                     # What Hermes writes while it works ("Ratings are in, now checking fares") is the
@@ -4538,17 +4556,14 @@ class SidebandWorker:
         prompt = P.build_task_prompt(self.names, revision, context, focus, where)
         self.store.set_session(idem, session_id)
         self.store.progress(idem, "milestone", f"Working on it here; the answer goes to {where}")
-        with self.interaction.lock:
-            backend.run_id, backend.status = None, "running"
+        self.move(backend, "running")
         self.publish()
         try:
             choice = await self.model_choice(backend.delegation_id, idem, session_id, request)
             run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,
                                              **({"choice": choice} if choice else {}))
-            self.store.update_run(idem, run_id, "running")
+            self.move(backend, "running", run_id=run_id)
             self.title_session(idem)
-            with self.interaction.lock:
-                backend.run_id = run_id
             self.publish()
             loop = asyncio.get_running_loop()
             terminal_seen = await in_own_thread(
@@ -4599,10 +4614,8 @@ class SidebandWorker:
         self.record_timing(task_id, idem)
         self.store.progress(idem, "request", request)
         self.name_task(idem, request)
-        self.store.update_run(idem, None, "running")
+        self.move(backend, "running")
         self.store.progress(idem, "milestone", f"Started in {where}")
-        with self.interaction.lock:
-            backend.status = "running"
         self.publish()
         await self.say_where(delegation_id, P.ack_channel_thread(channel.label), place=where, named=named)
 
@@ -4644,9 +4657,7 @@ class SidebandWorker:
             LIVE_THREAD_WAITS.pop(idem, None)
         if answer is None:
             self.store.user_progress(idem, "In the thread", f"The answer will land in {where}")
-            self.store.update_run(idem, None, "ambiguous")
-            with self.interaction.lock:
-                backend.status = "ambiguous"
+            self.move(backend, "ambiguous")
             self.publish()
             return
         self.note_session_model(idem, threads.thread_session(state_db, opened.platform, str(opened.thread_id)))
@@ -4713,7 +4724,9 @@ class SidebandWorker:
             await self.handle_hermes_event(backend, event)
             return
         detail = "Hermes event stream ended before a terminal event" + (f": {type(cause).__name__}" if cause else "")
-        self.store.update_run(backend.idem_key, None, "ambiguous")
+        if not self.move(backend, "ambiguous") and backend.status in RS.FINAL:
+            self.publish()
+            return  # it settled meanwhile (a final event, Stop): not lost after all
         with self.interaction.lock:
             backend.status, backend.approval, backend.error = "ambiguous", None, detail
         self.publish()
@@ -4841,11 +4854,9 @@ class SidebandWorker:
         if kind in {"media.seen", "message.interim", "tool.completed", "tool.complete"}:
             self._see_images(backend, event)
         if kind in {"tool.started", "tool.start", "message.interim"}:
-            with self.interaction.lock:
-                if backend.status != "ambiguous":
-                    backend.status = "working"
             if backend.status != "ambiguous":
-                self.store.update_run(idem, None, "working")
+                # Checked: a late tool event never reopens a finished task or undoes a Stop.
+                self.move(backend, "working")
             if kind == "message.interim":
                 progress = interim_progress(event)
                 if progress:
@@ -4875,8 +4886,10 @@ class SidebandWorker:
             with self.interaction.lock:
                 if backend.status == "ambiguous":
                     return
-                backend.approval, backend.status = safe, "waiting_for_approval"
-            self.store.update_run(idem, None, "waiting_for_approval")
+            if not self.move(backend, "waiting_for_approval"):
+                return  # stopped or finished meanwhile: no card for a question nobody can answer
+            with self.interaction.lock:
+                backend.approval = safe
             self.store.progress(idem, "milestone", "Waiting for your approval")
             if not self.call_connected():
                 self.notices.needs_you(request_id, safe["description"])
@@ -4887,17 +4900,25 @@ class SidebandWorker:
                               P.approval_note(self.names, description, choices))
         elif kind and kind.startswith("run."):
             status = kind.split(".", 1)[1]
-            if status in TERMINAL and not backend.run_id:
+            if status not in TERMINAL:
+                if status in RS.ALL:
+                    self.move(backend, status)
+                return
+            local = None
+            if not backend.run_id:
                 # A task that ran in a Discord/Telegram thread has no Hermes run id, and review cards,
                 # image routes, dismissals and "show" are all addressed by one: give it a local id
                 # so its pictures are not silently dropped.
                 local = LOCAL_RUN_PREFIX + hashlib.sha256(idem.encode()).hexdigest()[:32]
                 with self.interaction.lock:
                     backend.run_id = local
-                self.store.update_run(idem, local, status)
-            else:
-                self.store.update_run(idem, None, status)
-            if status not in TERMINAL:
+            # The row first (memory follows once the result is stored, below): a checked move, so a
+            # second final event, or one after the task was settled another way, changes nothing.
+            if not self.store.transition(idem, status, run_id=local) and self.store.run_status(idem) is not None:
+                stored = self.store.run_status(idem)
+                if stored in RS.FINAL:
+                    with self.interaction.lock:
+                        backend.status, backend.approval = stored, None
                 return
             output, error = event.get("output"), event.get("error")
             if status == "failed" and (line := failures.provider_line(output)):

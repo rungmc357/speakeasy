@@ -11,10 +11,11 @@ import logging
 from typing import Any
 
 from . import secure_input as S
+from . import runstate as RS
 
 logger = logging.getLogger(__name__)
 
-_ACTIVE = {"admitting", "running", "working", "waiting_for_approval", "resolving_approval"}
+_ACTIVE = RS.LIVE - {"cancel_requested", "waiting_on_task"}
 
 
 class SecureInputMixin:

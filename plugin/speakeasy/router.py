@@ -25,6 +25,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Callable
+from . import runstate as RS
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ def quick_intent(request: str, tasks: list["OpenTask"], replied_task_id: str | N
     words = _norm(request)
     if not words:
         return Part(IGNORE, request)
-    live = [t for t in tasks if t.status in {"admitting", "working", "running", "waiting_for_approval"}]
+    live = [t for t in tasks if t.status in RS.IN_FLIGHT]
     if len(words) <= 14 and _STATUS_ASK.search(request.strip()) and tasks:
         pool = live or tasks
         asked = _words(request)
@@ -159,7 +160,7 @@ def continues_newest(request: str, tasks: list[OpenTask]) -> OpenTask | None:
     if not tasks:
         return None
     newest = tasks[-1]
-    if newest.status not in {"admitting", "working", "running"} or newest.age_s is None:
+    if newest.status not in RS.UNDER_WAY or newest.age_s is None:
         return None
     words = re.findall(r"[A-Za-z0-9.']+", request)
     if newest.age_s > FRAGMENT_WINDOW_S or not words or len(words) > 7:
@@ -176,7 +177,7 @@ def continues_newest(request: str, tasks: list[OpenTask]) -> OpenTask | None:
 # Asks said seconds after a task started in the same call are, by default, more of that task: the
 # user is still finishing the thought. Only an ask that is clearly about something else starts its own run.
 JOIN_WINDOW_S = 20.0
-_LIVE = {"admitting", "working", "running"}
+_LIVE = RS.UNDER_WAY
 # "set it to 75", "turn that off", "send them", "book that one": an action on the thing just asked about.
 _LEANS = re.compile(r"(?i)\b(?:set|turn|make|change|move|send|book|cancel|add|put|do|try|keep|open|close|switch|"
                     r"bump|raise|lower|drop|use|fix|save|share|email|text|post|check|run|ship|undo|redo|"
@@ -633,7 +634,7 @@ def show_me_target(request: str, tasks: list[OpenTask], has_image: set[str]) -> 
         scored = sorted(((len(asked & _words(t.request)), i, t) for i, t in enumerate(tasks)), key=lambda x: x[:2])
         if scored[-1][0] > 0:
             return scored[-1][2]
-    running = [t for t in tasks if t.status in {"admitting", "working", "running", "waiting_for_approval"}]
+    running = [t for t in tasks if t.status in RS.IN_FLIGHT]
     for task in reversed(running):
         if task.task_id in has_image:
             return task
