@@ -188,6 +188,9 @@ public struct VoiceState: Equatable, Sendable {
     private var lastInteractionID: String?
     /// Reconnect a live call that dropped by itself (iPhone) instead of ending it.
     public var reconnectsDroppedCalls = false
+    /// Sessions the server admitted for attempts this call gave up on (a stalled connect): the
+    /// client closes each one (`POST …/end {"abandon": true}`) and removes it from here.
+    public var sessionsToClose: [String] = []
 
     public var connection: ConnectionPhase {
         get { phase.coarse }
@@ -338,6 +341,7 @@ public struct VoiceState: Equatable, Sendable {
         s.idleTimeout = idleTimeout
         s.callShortcutHint = callShortcutHint
         s.reconnectsDroppedCalls = reconnectsDroppedCalls
+        s.sessionsToClose = sessionsToClose
         // What the user cleared stays cleared: a new call or reopening the board must not let a
         // list fetched before the server had the clear bring it back (the server keeps it too).
         s.dismissedRunIDs = dismissedRunIDs
@@ -452,6 +456,7 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         // The watchdog: a fresh attempt (the client closes the session the stalled one had admitted
         // first), or the call fails once the attempts are used up.
         guard case .connecting(var c) = s.phase else { break }
+        if let admitted = c.admittedID { s.sessionsToClose.append(admitted) }
         if c.attempt < CallReconnect.connectAttempts {
             c.attempt += 1
             c.deadline = now.addingTimeInterval(CallReconnect.connectStallAfter)

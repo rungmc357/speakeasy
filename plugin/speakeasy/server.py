@@ -758,7 +758,11 @@ class Handler(BaseHTTPRequestHandler):
             elif verb == "input-text":
                 self._reply(200, self.service.input_text(interaction_id, self._body()))
             elif verb == "end":
-                self._reply(200, self.service.finish_transport(interaction_id))
+                body = self._body() if self.headers.get("Content-Length", "0") not in ("", "0") else {}
+                if body.get("abandon") is True:
+                    self._reply(200, self.service.abandon(interaction_id))
+                else:
+                    self._reply(200, self.service.finish_transport(interaction_id))
             elif verb == "early-request":
                 self._reply(200, self.service.early_request(interaction_id, self._body()))
             elif verb == "answer":

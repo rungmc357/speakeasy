@@ -110,6 +110,7 @@ final class CallPhaseTests: XCTestCase {
         XCTAssertEqual(c.attempt, 2)
         XCTAssertNil(c.admittedID, "the stalled attempt's session isn't this attempt's")
         XCTAssertNil(s.interactionID)
+        XCTAssertEqual(s.sessionsToClose, ["vi_stalled"], "the retry closes the session the server already admitted")
         // End during the retry closes nothing: the stalled session was closed when it was dropped.
         XCTAssertEqual(reduce(s, .endRequested, now: t0).phase, .ended(.complete))
         // A fallback (room text or resume refused) doesn't use up the watchdog's attempts.
@@ -118,6 +119,16 @@ final class CallPhaseTests: XCTestCase {
         XCTAssertEqual(after.attempt, 2)
         s = reduce(s, .connectStalled(failure: "Couldn't connect"), now: t0.addingTimeInterval(25))
         XCTAssertEqual(s.phase, .failed("Couldn't connect"))
+    }
+
+    func testStallBeforeAdmissionHasNothingToClose() {
+        var s = reduce(VoiceState(), .startRequested, now: t0)
+        s = reduce(s, .connectStalled(failure: "Couldn't connect"), now: t0.addingTimeInterval(12))
+        XCTAssertEqual(s.sessionsToClose, [])
+        s = reduce(s, .sessionAdmitted(interactionID: "vi_2"), now: t0.addingTimeInterval(13))
+        s = reduce(s, .connectStalled(failure: "Couldn't connect"), now: t0.addingTimeInterval(25))
+        XCTAssertEqual(s.phase, .failed("Couldn't connect"))
+        XCTAssertEqual(s.sessionsToClose, ["vi_2"], "giving up closes the last attempt's session too")
     }
 
     func testFallbackKeepsTheWatchdogBudgetForTheNextStall() {

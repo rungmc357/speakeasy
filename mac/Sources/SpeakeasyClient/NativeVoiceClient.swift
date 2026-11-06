@@ -274,13 +274,19 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     // MARK: Reducer plumbing
 
+    /// iPhone: a live call that drops by itself is brought back (up to `CallReconnect.maxAttempts`,
+    /// resuming the same conversation) instead of ending. The Mac ends it, as before.
+    public var reconnectsDroppedCalls = false
+
     public func dispatch(_ event: VoiceEvent) {
+        if model.state.reconnectsDroppedCalls != reconnectsDroppedCalls { model.state.reconnectsDroppedCalls = reconnectsDroppedCalls }
         let before = model.state
         let after = reduce(before, event, now: Date())
         model.state = after
         if after.interactionID != nil, after.interactionID != before.interactionID { postFocus() }
         postMicIfChanged()
         if after.connection != .connecting, connectWatchdog != nil { connectWatchdog?.cancel(); connectWatchdog = nil }
+        closeAbandonedSessions()
         applySideEffects(from: before, to: after)
         watchMic(event, from: before, to: after)
         scheduleUploadsIfNeeded()
@@ -381,14 +387,13 @@ public final class NativeVoiceClient: VoiceCallClient {
         streamTask?.cancel(); streamTask = nil
         eventsPollTask?.cancel(); eventsPollTask = nil
         engine?.close(); engine = nil
-        // The server may already have admitted this attempt: close that session before trying
-        // again, or it stays open (and billed) next to the new one.
-        if let admitted = attempt.admittedID { abandon(admitted, api: api) }
         #if os(macOS)
         let failure = "Couldn't connect to \(model.state.assistantName). Click Try again."
         #else
         let failure = "Couldn't connect to \(model.state.assistantName). Tap to try again."
         #endif
+        // The reducer queues the session the server already admitted for this attempt (if any) in
+        // sessionsToClose; dispatch closes it before the retry, so it isn't left open (and billed).
         dispatch(.connectStalled(failure: failure))
         guard case .connecting(let next) = model.state.phase, next.attempt > attempt.attempt else {
             connectWatchdog?.cancel(); connectWatchdog = nil
@@ -401,9 +406,15 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// Close a session this device gave up on (a stalled connection attempt). Best effort: an older
     /// plugin ignores `abandon` and the session ends when its audio never arrives.
-    private func abandon(_ interactionID: String, api: ServerClient) {
-        reportMic("closing the stalled attempt's session")
-        Task { try? await api.abandonSession(interactionID: interactionID) }
+    private func closeAbandonedSessions() {
+        guard !model.state.sessionsToClose.isEmpty else { return }
+        let ids = model.state.sessionsToClose
+        model.state.sessionsToClose = []
+        guard let api, !previewMode else { return }
+        for id in ids {
+            reportMic("closing the stalled attempt's session")
+            Task { try? await api.abandonSession(interactionID: id) }
+        }
     }
 
     /// The app is in front again: reopen the voice connection, which now gets the mic.
@@ -756,10 +767,10 @@ public final class NativeVoiceClient: VoiceCallClient {
                     guard let request = api.relaySocketRequest(relay) else { throw RelayCallEngine.EngineError.badURL }
                     engine.close()
                     let relayEngine = RelayCallEngine()
+                    self.engine = relayEngine
                     self.wire(relayEngine)
                     if early != nil { relayEngine.holdAudio() }
                     relayEngine.setMicEnabled(early == nil && self.model.state.localAudioEnabled)
-                    self.engine = relayEngine
                     call = relayEngine
                     self.connectStage = "admitted; opening the relay"
                     try relayEngine.start(request: request)
@@ -811,8 +822,10 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// Same callbacks for either transport.
     private func wire(_ transport: CallTransport) {
-        transport.onMessage = { [weak self] data in
-            guard let self else { return }
+        // A connection this call has dropped (a stalled or reconnected attempt, a paused call's)
+        // can still deliver a last message or failure; only the current one speaks for the call.
+        transport.onMessage = { [weak self, weak transport] data in
+            guard let self, let transport, self.engine === transport else { return }
             for event in parseDataChannelMessage(data) {
                 if case .sessionClosed = event, self.voiceProvider == "codex" {
                     self.finishCodexCall()
@@ -821,11 +834,15 @@ public final class NativeVoiceClient: VoiceCallClient {
                 }
             }
         }
-        transport.onChannelClosed = { [weak self] in self?.channelClosed() }
+        transport.onChannelClosed = { [weak self, weak transport] in
+            guard let self, let transport, self.engine === transport else { return }
+            self.channelClosed()
+        }
         transport.onChannelOpen = { [weak self] in self?.connectStage = "channel open; waiting for the call to start" }
         transport.onAudioFormatChanged = { [weak self] in self?.audioDevicesChanged() }
-        transport.onConnectionFailed = { [weak self] in
-            guard let self, self.model.state.connection == .live || self.model.state.connection == .connecting else { return }
+        transport.onConnectionFailed = { [weak self, weak transport] in
+            guard let self, let transport, self.engine === transport,
+                  self.model.state.connection == .live || self.model.state.connection == .connecting else { return }
             self.dispatch(.transportLost)
         }
     }
@@ -998,7 +1015,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         endDeadline?.cancel()
         let deadline = DispatchWorkItem { [weak self] in self?.dispatch(.endTimedOut) }
         endDeadline = deadline
-        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: deadline)
+        DispatchQueue.main.asyncAfter(deadline: .now() + VoiceState.endConfirmWithin, execute: deadline)
         if engine?.send(json: ["type": "session.close"]) != true {
             engine?.close()
             startFinalizationPolling()

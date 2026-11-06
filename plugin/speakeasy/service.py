@@ -32,8 +32,8 @@ from . import messages as M
 from . import models as MD
 from .brief import BriefInvalid, BriefManager
 from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_BOARD, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
-                    TYPED_SENT, BackendRun, ServiceError,
-                    Interaction, Notices, Runtime, SidebandWorker, end_shared, interaction_tasks, publish_state,
+                    TYPED_SENT, BackendRun, CallState, ServiceError,
+                    Interaction, Notices, Runtime, SidebandWorker, call_work_running, end_shared, interaction_tasks, publish_state,
                     typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
 from .devices import CLIENT_HEADER, DeviceStore, parse_client
@@ -765,13 +765,20 @@ class VoiceService(SecureInputMixin):
         ``idle_minutes``: paused for that long a quiet spell (the idle check), not by the user.
         ``limit``: paused at the call's length cap (voice.max_call_minutes), not by the user."""
         interaction = self.interaction(interaction_id)
+        reason = "cap" if limit else "idle" if idle_minutes else "user"
         with interaction.lock:
             if interaction.successor is not None:
                 raise ServiceError(409, "call was already resumed")
+            # One pause per call (a CAS from not-paused): a repeat (the app retrying, the idle check
+            # and the cap racing) answers the same without another expiry timer, transport stop or
+            # end_shared. The first reason is the one the call keeps.
+            if interaction.paused:
+                return self._pause_reply(interaction)
             already_closed = interaction.call_closed
             interaction.paused = True
-            interaction.idle_paused_minutes = idle_minutes
-            interaction.limit_paused = limit
+            interaction.pause_reason = reason
+            interaction.idle_paused_minutes = idle_minutes if reason == "idle" else None
+            interaction.limit_paused = reason == "cap"
         worker = interaction.worker
         if already_closed and worker is not None:
             with interaction.lock:
@@ -789,9 +796,35 @@ class VoiceService(SecureInputMixin):
         timer.daemon = True
         timer.start()
         publish_state(self.store, interaction, self.settings.get()["assistant_name"])
-        return {"interaction_id": interaction_id, "paused": True,
-                **({"idle_paused_minutes": idle_minutes} if idle_minutes else {}),
-                **({"limit_paused": True} if limit else {})}
+        return self._pause_reply(interaction)
+
+    @staticmethod
+    def _pause_reply(interaction: Interaction) -> dict[str, Any]:
+        return {"interaction_id": interaction.interaction_id, "paused": True,
+                "pause_reason": interaction.pause_reason or "user",
+                **({"idle_paused_minutes": interaction.idle_paused_minutes}
+                   if interaction.idle_paused_minutes else {}),
+                **({"limit_paused": True} if interaction.limit_paused else {})}
+
+    def abandon(self, interaction_id: str) -> dict[str, Any]:
+        """The app gave up on this call before it went live (its connect watchdog is retrying with a
+        new session): stop the voice session the plugin holds for it, so it isn't left open (and
+        billed) beside the new one. A call that already went live is not abandoned (use end)."""
+        interaction = self.interaction(interaction_id)
+        with interaction.lock:
+            if interaction.call_state not in (CallState.CONNECTING, CallState.LIVE) or interaction.paused:
+                return {"interaction_id": interaction_id, "abandoned": interaction.abandoned}
+            interaction.abandoned = True
+        worker = interaction.worker
+        try:
+            if hasattr(worker, "end_call"):
+                worker.end_call("abandoned")
+            elif worker is not None:
+                worker.stop_transport()
+        except Exception as exc:
+            logger.info("speakeasy: closing an abandoned call's session failed: %s", type(exc).__name__)
+        logger.info("speakeasy: the app abandoned a call that never went live; its session was closed")
+        return {"interaction_id": interaction_id, "abandoned": True}
 
     def pause_expired(self, interaction: Interaction) -> None:
         with interaction.lock:
@@ -831,6 +864,7 @@ class VoiceService(SecureInputMixin):
                 raise ServiceError(409, "call was already resumed")
             source.successor = interaction
             source.paused = False
+            source.pause_reason = None
             runs = dict(source.runs)
             # Listening mode's room text moves to the resumed call; the paused one no longer holds it.
             room, source.room = source.room, ""
@@ -909,12 +943,13 @@ class VoiceService(SecureInputMixin):
             worker = interaction.worker
             with interaction.lock:
                 quiet = now - interaction.last_activity
-                eligible = (worker is not None and not interaction.paused and not interaction.call_closed
-                            and interaction.successor is None and quiet > minutes * 60)
-                # A task still running is the call waiting on an answer, not a quiet call: it stays up so
-                # the answer is spoken when it lands (up to IDLE_WORK_STRETCH x the idle setting).
-                working = any(r.status in ACTIVE_RUN_STATES for r in interaction.runs.values())
-            if eligible and working and quiet <= minutes * 60 * IDLE_WORK_STRETCH:
+                eligible = (worker is not None and interaction.call_state in (CallState.CONNECTING, CallState.LIVE)
+                            and quiet > minutes * 60)
+            # A task that may still be running is the call waiting on an answer, not a quiet call: it
+            # stays up so the answer is spoken when it lands (up to IDLE_WORK_STRETCH x the idle
+            # setting). Judged on the reconciled run state: a run whose stream dropped may still be
+            # working; a stuck in-memory admission is not.
+            if eligible and quiet <= minutes * 60 * IDLE_WORK_STRETCH and call_work_running(self.store, interaction):
                 continue
             if not eligible or not worker.call_connected():
                 continue
