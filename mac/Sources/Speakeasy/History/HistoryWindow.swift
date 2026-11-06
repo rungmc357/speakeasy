@@ -241,6 +241,10 @@ enum DemoHistory {
         add("s_gift", "Pick the shop for the gift", "speakeasy", "Speakeasy", daysAgo(6, 19, 9), "Lark Home: 60-day returns, free label.")
         add("s_rename", "Rename the staging buckets", "cli", "Terminal", daysAgo(9, 14, 20), "Renamed 4 buckets; updated the deploy config.")
         add("s_reading", "Reading list for the team", "speakeasy", "Speakeasy", daysAgo(12, 10, 4), "Six picks on pricing strategy.")
+        convs["s_flaky"]?.usage = .demo
+        convs["s_dash"]?.usage = .demo
+        convs["s_deploy"]?.usage = .demoIncluded
+        convs["s_pricing"]?.usage = .demoIncluded
         return (sessions, convs)
     }
 }
@@ -387,6 +391,12 @@ enum HistoryShots {
                 c.window?.setContentSize(NSSize(width: 1040, height: 720))
                 store.open("s_dash")
             }
+            await shot("16-usage") {
+                store.open("s_dash")
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                store.openSections = ["s_dash|usage"]
+            }
+            await shot("16b-usage-plan") { store.openSections = ["s_pricing|usage"]; store.open("s_pricing") }
             exit(0)
         }
     }

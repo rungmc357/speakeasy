@@ -272,6 +272,8 @@ public struct HistoryConversation: Equatable, Sendable {
     /// Archived in Hermes (the page offers Unarchive) / pinned on any device.
     public var archived = false
     public var pinned = false
+    /// Plugin 0.3.37+: what the conversation used (tokens, an estimated cost); nil = nothing recorded / older plugin.
+    public var usage: ChatUsage?
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
@@ -298,6 +300,7 @@ public struct HistoryConversation: Equatable, Sendable {
                   modelChoice: ModelChoice(json: o["model_choice"]))
         archived = o["archived"] as? Bool ?? false
         pinned = o["pinned"] as? Bool ?? false
+        usage = ChatUsage(json: o["usage"])
     }
 
     /// The ONE job whose question (a decision card) waits on the user, as the plugin decides it

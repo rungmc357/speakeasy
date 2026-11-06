@@ -577,6 +577,7 @@ struct HistorySessionView: View {
                 .compactMap { $0 }.joined(separator: " · "))
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.primary.opacity(0.6))
             if let badge = c.model, store.modelsSupported, store.picker?.headerShows(badge) ?? true { ModelWorkedLine(badge: badge) }
+            if let usage = c.usage { HistoryUsageLine(usage: usage, sessionID: c.id, store: store) }
         }
         .padding(.bottom, 4)
     }
