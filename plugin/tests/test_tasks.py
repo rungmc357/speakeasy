@@ -36,6 +36,9 @@ def test_result_is_spoken_and_shown(server, service, hermes):
 def test_parallel_tasks_get_their_own_sessions(server, service, hermes):
     _, worker = start_call(server, service)
     worker.delegate("call_a", "Book a table for two tonight")
+    # The voice answered in between: two requests of their own. Without it, the second handoff can
+    # land inside the merge window and is (correctly) read as the rest of the first sentence.
+    worker.feed({"type": "session.output_transcript.delta", "delta": "Sure.", "start_ms": 1, "end_ms": 2})
     worker.delegate("call_b", "Find the cheapest flight to Rome next week")
     wait_for(lambda: len([t for t in tasks(server) if t["status"] == "completed"]) == 2)
     sessions = {c["session_id"] for c in hermes.calls}
