@@ -537,7 +537,7 @@ SCREENSHOT_STEER = ("The user wants to see what you are looking at. Take a scree
 
 def status_rule(names: Names) -> str:
     return render(
-        "{user_name_cap} watches a one-line live status while you work, so keep them company: narrate the work, "
+        "{user_name_cap} watches a one-line live status while you work, so keep them company: report the work, "
         "research and background activity as it happens. Before your first tool call, write interim commentary "
         "exactly as two lines: STATUS: <specific present-tense action of 2-6 words, e.g. Checking the weather forecast> "
         "then DETAIL: <one sentence on what you are working on or looking up at this moment and what you found so far, "
@@ -551,7 +551,7 @@ def status_rule(names: Names) -> str:
         "scan 40 log files for the crash while I read the config, or Build finished in 2 minutes, green; three price "
         "lookups still running. Never put STATUS or DETAIL lines in the final answer. "
         "Skip a pair that would only repeat the last one: no filler, no \"still working\", each pair stays two short lines. "
-        "Each pair says what you are doing and what you found, never how you weigh it: no credentials or raw tool arguments. "
+        "Each pair names the step and what it turned up, never credentials or raw tool arguments. "
         "End your final answer with two last lines: DONE: <past-tense label of 1-5 words, e.g. Weather checked> "
         "then SPOKEN: <one or two plain sentences to say aloud>; "
         "the full answer above them is shown on screen and may include links and detail. "

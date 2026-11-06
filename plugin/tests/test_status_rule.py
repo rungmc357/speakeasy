@@ -18,7 +18,7 @@ def test_status_rule_narrates_steps_and_background_work_without_filler():
     assert "parallel sessions" not in rule and "delegated workers" not in rule
     # No filler, no repeats, and still no raw reasoning, credentials or tool arguments.
     assert "Skip a pair that would only repeat the last one" in rule and "still working" in rule
-    assert "never how you weigh it: no credentials or raw tool arguments" in rule
+    assert "never credentials or raw tool arguments" in rule
     # Placeholders were rendered, never left raw.
     assert "{user_name" not in rule and "Sam" in rule
 
@@ -30,6 +30,29 @@ def test_status_rule_never_asks_for_the_models_thinking():
     rule = P.status_rule(P.Names("Ava", "Sam")).lower()
     for phrase in ("thinking", "reasoning", "deliberat", "thought"):
         assert phrase not in rule, phrase
+
+
+# Wording that reads as a request for the model's own reasoning (Anthropic refuses such prompts as
+# reasoning_extraction). None of it may appear in anything Speakeasy sends a task.
+REASONING_ASKS = ("thinking", "reasoning", "deliberat", "thought", "chain of", "step-by-step", "step by step",
+                  "how you weigh", "how you decide", "your thinking", "inner monologue", "scratchpad",
+                  "explain your", "narrate the")
+
+
+def _no_reasoning_ask(text):
+    low = text.lower()
+    return [p for p in REASONING_ASKS if p in low]
+
+
+def test_task_brief_never_asks_for_or_replays_reasoning():
+    """The whole task brief (status rule, card rules, task line) carries no reasoning-request phrasing,
+    for a call, a typed task and a follow-up of an earlier task."""
+    names = P.Names("Ava", "Sam")
+    briefs = [P.build_task_prompt(names, 1, "User: check the weather", "check the weather"),
+              P.build_task_prompt(names, 3, "User: what's the status of build 67\nAssistant: Build 67 has 5 open tickets.",
+                                  "which tickets are still open for that")]
+    for brief in briefs:
+        assert _no_reasoning_ask(brief) == [], _no_reasoning_ask(brief)
 
 
 def test_every_task_prompt_carries_the_status_rule():

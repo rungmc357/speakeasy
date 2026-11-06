@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.39 — Fewer false "Refused by the model's safety filter" failures
+
+Works with the current Mac and iPhone apps; no app update needed.
+
+- **Tasks aren't refused for how they're briefed.** Some tasks failed with "Refused by the model's safety filter" because the instructions for the live status line used wording the model's filter read as a request for its private reasoning. The live status now asks only for the step being done and what it found, so it keeps working as before without tripping the filter.
+- **A refused turn is tried once more.** If the filter still refuses a turn, Speakeasy quietly sends it again in the same conversation before showing the task as failed, and your answer to a task's question still reaches it.
+- **No "Your request was not processed" replies.** That internal line no longer shows as the reply or the preview; a reply sent again after a failure shows once.
+
 ## Plugin 0.3.38 — Messages on a chat's page answer that chat
 
 Works with the current Mac and iPhone apps; no app update needed.
