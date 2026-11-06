@@ -501,7 +501,7 @@ The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.20 or i
 
 ## Plugin 0.2.33
 
-- **Instant clock, date and math.** "What time is it in Tokyo", "what's the date", "what's 18 percent of 240" are answered on your machine with no search: under a tenth of a second, always right.
+- **Instant clock, date and math.** "What time is it in Nairobi", "what's the date", "what's 18 percent of 240" are answered on your machine with no search: under a tenth of a second, always right.
 - **Weather in about three seconds,** from live forecast data rather than a web search: now, today, tomorrow, the week, and the next 24 hours. Set a home city for questions that don't name one: `hermes voice fast home <city>`.
 - **"Who's playing Monday night?" and other league questions** ("any hockey games tonight", "who won the baseball games last night") now come from the live scoreboard in about two seconds.
 - **Quick answers start looking things up while the request is still being sorted,** saving about half a second each.

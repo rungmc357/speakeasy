@@ -139,9 +139,9 @@ def test_the_model_can_decline_and_bad_refs_fall_back():
 
 def test_the_model_is_asked_whenever_there_are_conversations():
     asked = []
-    router.decide("What time is it in Tokyo?", [], None, [], lambda m: asked.append(1) or None, chats=CHATS)
+    router.decide("What time is it in Nairobi?", [], None, [], lambda m: asked.append(1) or None, chats=CHATS)
     assert asked == [1]
-    router.decide("What time is it in Tokyo?", [], None, [], lambda m: asked.append(2) or None, chats=[])
+    router.decide("What time is it in Nairobi?", [], None, [], lambda m: asked.append(2) or None, chats=[])
     assert asked == [1]  # nothing to decide: stays instant
 
 

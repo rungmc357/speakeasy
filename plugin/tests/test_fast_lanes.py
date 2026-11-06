@@ -126,8 +126,8 @@ def test_instant_clock_date_math():
     from datetime import datetime, timezone
     from speakeasy import instant
     now = datetime(2026, 3, 2, 15, 5, tzinfo=timezone.utc)
-    assert instant.answer("What time is it in Tokyo", now) == "It's 12:05 AM tomorrow, Tuesday, in Tokyo, 9 hours ahead of you." \
-        or "Tokyo" in instant.answer("What time is it in Tokyo", now)
+    nairobi = instant.answer("What time is it in Nairobi", now)
+    assert nairobi.startswith("It's 6:05 PM, Monday, in Nairobi")
     assert instant.answer("what's 18 percent of 240") == "18 percent of 240 is 43.2."
     assert instant.answer("whats 12 times 7") == "That's 84."
     assert instant.answer("what is 1,250 divided by 4") == "That's 312.5."

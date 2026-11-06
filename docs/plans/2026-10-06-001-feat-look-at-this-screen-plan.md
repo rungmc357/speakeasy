@@ -410,7 +410,7 @@ flowchart TB
 - Happy path: a follow-up to a finished task in its own session with sharing on → a new run in the same session with the capture.
 - Edge case: a call without a `screen` declaration says "look at my screen" → a normal text-only run, with no capture or hold.
 - Edge case: sharing on, "kitchen lights to 30%" → home control answers and no capture event is published.
-- Edge case: sharing on, "what time is it in Tokyo" → the instant lane answers, and any capture is discarded.
+- Edge case: sharing on, "what time is it in Nairobi" → the instant lane answers, and any capture is discarded.
 - Edge case: sharing on, "what's this error?" → the quick web-search lane is skipped.
 - Edge case: sharing on, "what's on my screen" → captured. "Show me what you're looking at" → the task's own view.
 - Edge case: "look at my screen" never sets `decision.show` or `wants_to_see`.

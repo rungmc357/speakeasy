@@ -153,8 +153,8 @@ def test_shared_things_reach_only_hermes(home, hermes, monkeypatch, caplog):
         wait_for(lambda: hermes.calls)
         say(worker, "call_home", "kitchen lights to 30%")
         wait_for(lambda: any("Kitchen lights" in c for _, _, c in worker.sent))
-        say(worker, "call_tokyo", "what time is it in Tokyo")
-        wait_for(lambda: any("Tokyo" in c for _, _, c in worker.sent))
+        say(worker, "call_nairobi", "what time is it in Nairobi")
+        wait_for(lambda: any("Nairobi" in c for _, _, c in worker.sent))
         say(worker, "call_hockey", "who won the hockey game last night")
         wait_for(lambda: any("Otters" in c for _, _, c in worker.sent))
         # Continuing the user's own DM: the capture goes along as an image part of that message.
