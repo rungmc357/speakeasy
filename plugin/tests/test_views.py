@@ -65,3 +65,41 @@ def test_task_prompt_asks_informational_answers_for_a_card_and_headline():
     # The headline it asks for still passes the DONE label check.
     from speakeasy.text import valid_done_label
     assert valid_done_label("Saturday is the drier day") == "Saturday is the drier day"
+
+
+def test_a_finished_task_never_keeps_a_progress_bar():
+    """A count put up as a progress bar ("4 builds of 9 builds · 44%") on a done task is a fact card."""
+    out = ("Four of the nine nightly builds kept their logs.\n```speakeasy-views\n"
+           "[{\"kind\": \"progress\", \"label\": \"Nightly builds with logs\", \"value\": 4, \"total\": 9, \"unit\": \"builds\"}]"
+           "\n```\nSPOKEN: Four of nine builds kept logs.")
+    result = split_result(out, ())
+    assert result["views"] == [{"kind": "fact", "title": "Nightly builds with logs", "value": "4 of 9", "unit": "builds"}]
+    assert "%" not in str(result["views"])
+
+
+def test_progress_is_only_kept_while_running():
+    raw = {"kind": "progress", "label": "Pages checked", "value": 3, "total": 12, "unit": "pages", "detail": "Still going"}
+    assert views.clean(raw, running=True)["kind"] == "progress"
+    assert views.clean(raw) == {"kind": "fact", "title": "Pages checked", "value": "3 of 12", "unit": "pages",
+                                "subtitle": "Still going"}
+    assert views.clean({"kind": "progress", "value": 2.5})["value"] == "2.5"
+    assert views.clean({"kind": "progress", "label": "Pages", "value": 7, "total": 0})["value"] == "7"
+    assert views.clean({"kind": "progress", "unit": "pages"}) is None   # nothing to say
+
+
+def test_stored_results_lose_old_progress_bars_and_keep_card_positions():
+    from speakeasy.text import public_result
+    stored = {"spoken": "Done.", "views": [
+        {"kind": "progress", "label": "Photos tagged", "value": 30, "total": 30},
+        {"kind": "progress", "label": "Without numbers"},
+        {"kind": "home", "title": "Office", "devices": [], "actions": [{"id": "toggle", "label": "Turn off"}]}]}
+    shown = public_result(stored)["views"]
+    assert [v["kind"] for v in shown] == ["fact", "fact", "home"]   # buttons are addressed by position
+    assert shown[0]["value"] == "30 of 30" and shown[1] == {"kind": "fact", "title": "Without numbers"}
+    assert stored["views"][0]["kind"] == "progress", "the stored row itself is untouched"
+
+
+def test_task_prompt_never_offers_a_progress_card_for_counts():
+    from speakeasy.prompt import builder as P
+    assert "progress {" not in P.VIEWS_RULE
+    assert "never draw a progress bar" in P.VIEWS_RULE and "unit once" in P.VIEWS_RULE

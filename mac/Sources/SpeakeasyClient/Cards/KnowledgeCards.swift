@@ -372,26 +372,6 @@ private struct OneSeriesTint: ViewModifier {
     }
 }
 
-struct ProgressCard: View {
-    let card: ViewCard
-    var body: some View {
-        let value = card["value"].double ?? 0
-        let total = max(card["total"].double ?? 1, 0.0001)
-        CardBox {
-            Text(card["label"].string ?? "").font(.system(size: 12.5, weight: .medium))
-            Bar(fraction: value / total, tint: value >= total ? .green : .accentColor, height: 7)
-            HStack {
-                let unit = card["unit"].string.map { " \($0)" } ?? ""
-                Text("\(JSONValue.number(value).string ?? "")\(unit) of \(JSONValue.number(total).string ?? "")\(unit)")
-                Spacer()
-                Text("\(Int((value / total * 100).rounded()))%")
-            }
-            .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
-            if let d = card["detail"].string { Text(d).font(.system(size: 11)).foregroundStyle(.secondary) }
-        }
-    }
-}
-
 struct NewsCard: View {
     let card: ViewCard
     @Environment(\.cardFit) private var fit

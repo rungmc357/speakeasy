@@ -66,13 +66,35 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
         "quote", "weather", "game", "games", "standings", "clock", "timer", "countdown", "calendar_day", "agenda",
         "reminder", "place", "places", "route", "transit", "flight", "package", "contact", "message_draft",
         "message", "inbox", "media", "now_playing", "fact", "entity", "definition", "conversion", "math",
-        "translation", "recipe", "nutrition", "comparison", "list", "steps", "stats", "chart", "progress", "news",
+        "translation", "recipe", "nutrition", "comparison", "list", "steps", "stats", "chart", "news",
         "home", "thermostat", "camera", "question", "lanes", "before_after", "flow", "devices",
     ]
 
+    /// Cards are a task's answer, so the task has finished: a "progress" card (older servers sent
+    /// counts like "5 of 13 crashes had reports" as one) is drawn as a plain fact, never a bar.
     public init?(json: Any?, number: Int) {
-        guard let raw = json as? [String: Any], let kind = raw["kind"] as? String, Self.drawn.contains(kind) else { return nil }
+        guard var raw = json as? [String: Any], var kind = raw["kind"] as? String else { return nil }
+        if kind == "progress" { raw = Self.settled(progress: raw); kind = "fact" }
+        guard Self.drawn.contains(kind) else { return nil }
         self.number = number; self.kind = kind; self.data = JSONValue(any: raw)
+    }
+
+    /// A finished task's progress card as a fact: the label is the title, the numbers read "5 of 13"
+    /// with the unit once ("5 of 13 crashes", not "5 crashes of 13 crashes"), no bar, no percent.
+    static func settled(progress raw: [String: Any]) -> [String: Any] {
+        func number(_ v: Any?) -> Double? {
+            guard let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+            return n.doubleValue.isFinite ? n.doubleValue : nil
+        }
+        func text(_ v: Double) -> String { JSONValue.number(v).string ?? "\(v)" }
+        var fact: [String: Any] = ["kind": "fact"]
+        if let label = raw["label"] as? String, !label.isEmpty { fact["title"] = label }
+        if let value = number(raw["value"]) {
+            if let total = number(raw["total"]), total > 0 { fact["value"] = "\(text(value)) of \(text(total))" } else { fact["value"] = text(value) }
+            if let unit = raw["unit"] as? String, !unit.isEmpty { fact["unit"] = unit }
+        }
+        if let detail = raw["detail"] as? String, !detail.isEmpty { fact["subtitle"] = detail }
+        return fact
     }
 
     public init(kind: String, number: Int = 1, data: [String: Any]) {
@@ -101,6 +123,9 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
         case "game":
             let teams = self["teams"].array.map { [$0["abbr"].string ?? $0["name"].string, $0["score"].string].compactMap { $0 }.joined(separator: " ") }
             return ([self["league"].string] + teams + [self["detail"].string]).compactMap { $0 }.joined(separator: " · ")
+        case "fact":
+            let value = [self["value"].string, self["unit"].string].compactMap { $0 }.joined(separator: " ")
+            return [self["title"].string, value.isEmpty ? nil : value].compactMap { $0 }.joined(separator: ", ")
         default:
             return self["title"].string ?? self["name"].string ?? self["word"].string ?? kind.replacingOccurrences(of: "_", with: " ").capitalized
         }

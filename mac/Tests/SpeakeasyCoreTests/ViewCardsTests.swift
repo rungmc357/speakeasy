@@ -42,4 +42,27 @@ final class ViewCardsTests: XCTestCase {
         XCTAssertEqual(ViewCard.signed(3.62, money: true), "+$3.62")
         XCTAssertEqual(ViewCard.signed(-0.24), "−0.24%")
     }
+
+    /// A count sent as a progress card ("4 builds of 9 builds · 44%") on a finished task is a fact.
+    func testFinishedTaskNeverDrawsAProgressBar() {
+        let json: [String: Any] = ["task_id": "t3", "status": "completed", "result": [
+            "spoken": "Four of the nine nightly builds kept their logs.",
+            "views": [
+                ["kind": "progress", "label": "Nightly builds with logs", "value": 4, "total": 9, "unit": "builds"],
+                ["kind": "progress", "label": "Pages read", "value": 2.5, "detail": "Half a page left"],
+                ["kind": "home", "title": "Office", "devices": []],
+            ],
+        ]]
+        let views = TaskItem(json: json)?.info.views ?? []
+        XCTAssertEqual(views.map(\.kind), ["fact", "fact", "home"], "no progress card survives; positions kept")
+        XCTAssertEqual(views.map(\.number), [1, 2, 3])
+        XCTAssertEqual(views[0]["title"].string, "Nightly builds with logs")
+        XCTAssertEqual(views[0]["value"].string, "4 of 9")
+        XCTAssertEqual(views[0]["unit"].string, "builds", "the unit is said once")
+        XCTAssertEqual(views[0].summary, "Nightly builds with logs, 4 of 9 builds")
+        XCTAssertEqual(views[1]["value"].string, "2.5")
+        XCTAssertEqual(views[1]["subtitle"].string, "Half a page left")
+        XCTAssertFalse(ViewCard.drawn.contains("progress"))
+        XCTAssertNil(ViewCard(json: ["kind": "progress", "value": true], number: 1)?["value"].string, "a flag isn't a number")
+    }
 }

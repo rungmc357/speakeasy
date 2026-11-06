@@ -51,7 +51,6 @@ public struct ViewCardView: View {
             case "comparison": ComparisonCard(card: card)
             case "list", "steps": ListCard(card: card)
             case "chart": ChartCard(card: card)
-            case "progress": ProgressCard(card: card)
             case "news": NewsCard(card: card)
             case "home", "thermostat": HomeCard(card: card)
             case "camera": CameraCard(card: card)

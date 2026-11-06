@@ -273,13 +273,6 @@ public struct AnswerGlance: View {
                 value([card["to_value"].string, card["to_unit"].string].compactMap { $0 }.joined(separator: " "), nil)
             case "math":
                 value(card["result"].string ?? "", nil)
-            case "progress":
-                let v = card["value"].double ?? 0, total = max(card["total"].double ?? 1, 1)
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text("\(JSONValue.number(v).string ?? "") of \(JSONValue.number(total).string ?? "")").font(.system(size: 12, weight: .semibold).monospacedDigit())
-                    Capsule().fill(Color.primary.opacity(0.12)).frame(width: 64, height: 4)
-                        .overlay(alignment: .leading) { Capsule().fill(toneColor("info")).frame(width: 64 * min(max(v / total, 0), 1), height: 4) }
-                }
             default: EmptyView()
             }
         }
