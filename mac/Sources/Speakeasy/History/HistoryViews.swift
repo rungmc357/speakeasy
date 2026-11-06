@@ -350,7 +350,7 @@ struct HistoryRow: View {
                     }
                     if session.state != .idle || !session.isSpeakeasy {
                         HStack(spacing: 6) {
-                            if session.state == .needsYou { tag("Needs you", Live.amber) }
+                            if session.state == .needsYou { NeedsYouMark(font: .system(size: 10, weight: .semibold)) }
                             else if session.state == .running { tag("Working", Live.brassText) }
                             if !session.isSpeakeasy {
                                 Text(session.sourceLabel).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary).lineLimit(1)

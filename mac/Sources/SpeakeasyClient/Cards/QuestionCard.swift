@@ -37,6 +37,7 @@ struct QuestionCard: View {
     @State private var picked: String?
     @State private var comparing = false
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.needsYouShownAbove) private var shownAbove
 
     var body: some View {
         if JobLook.touch { touchBody } else { macBody }
@@ -51,11 +52,10 @@ struct QuestionCard: View {
         let answer = actions.undoUntil != nil ? actions.answered : (picked ?? actions.answered)
         let s = 1.2 * Self.typeFactor(typeSize)
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Circle().fill(answer == nil ? Color.orange : JobStyle.green).frame(width: 7, height: 7)
-                Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 11.5 * s, weight: .semibold))
-                    .foregroundStyle(answer == nil ? Color.orange : Color.secondary)
-                Spacer(minLength: 0)
+            if answer == nil {
+                if !shownAbove { NeedsYouMark() }
+            } else {
+                AnsweredMark()
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(card["question"].string ?? "").font(.system(size: 14 * s, weight: .semibold))
@@ -135,12 +135,11 @@ struct QuestionCard: View {
         let options = decision?.options.map(\.text) ?? []
         let recommended = decision?.recommended
         let answer = actions.undoUntil != nil ? actions.answered : (picked ?? actions.answered)
-        CardBox(tint: answer == nil ? .orange : nil) {
-            HStack(spacing: 6) {
-                Circle().fill(answer == nil ? Color.orange : Color.green).frame(width: 7, height: 7)
-                Text(answer == nil ? "Needs you" : "Answered")
-                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
+        CardBox(tint: answer == nil ? NeedsYouMark.color : nil) {
+            if answer == nil {
+                if !shownAbove { NeedsYouMark() }
+            } else {
+                AnsweredMark()
             }
             Text(card["question"].string ?? "").font(.system(size: 14, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
