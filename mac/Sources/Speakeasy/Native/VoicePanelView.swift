@@ -1103,7 +1103,7 @@ struct TaskListView: View {
             ForEach(shown.reversed()) { task in
                 TaskRow(task: task, now: model.state.now, assistantName: model.state.assistantName, compact: compact,
                         canStop: task.canStop && model.state.connection.isOpen,
-                        onOpen: { model.onSelectTask(task.id) },
+                        onOpen: { model.onOpenTask(task.id) },
                         onStop: { if let run = task.info.runID { model.onStopTask(run) } },
                         onDismiss: { if let run = task.info.runID { model.onDismissTasks([run]) } },
                         loadLive: model.loadLiveImage)

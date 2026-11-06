@@ -155,6 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
             .store(in: &bag)
+        // Opening a task anywhere in the panel opens its session page in History.
+        native.openSessionPage = { [weak self] session in self?.openHistory(session: session) }
         // A job page's "Full session" opens its conversation in History.
         NotificationCenter.default.publisher(for: .speakeasyOpenHistory)
             .receive(on: RunLoop.main)

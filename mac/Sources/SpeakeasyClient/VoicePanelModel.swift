@@ -191,6 +191,8 @@ public final class VoicePanelModel: ObservableObject {
     @Published public var setAsideTasks: Set<String> = []
     /// nil shows the task list; an id opens that task.
     public var onSelectTask: (String?) -> Void = { _ in }
+    /// Open one task from the task list: its session page when it has one, else the panel's task view.
+    public var onOpenTask: (String) -> Void = { _ in }
     /// Clear finished tasks (run ids) from the list.
     public var onDismissTasks: ([String]) -> Void = { _ in }
     /// Exact-run, authenticated image load through the api; no retailer request from the app.
