@@ -430,7 +430,7 @@ Body `{}`. Ends the call. Tasks keep running; their results show in the task lis
 
 ## POST /voice/interactions/{id}/pause
 
-Body `{}`. Pauses the call (the voice transport is closed, tasks keep running). Resume with `POST /voice/sessions` + `resume_from`. A call left idle for `idle_pause_minutes` is paused the same way.
+Body `{}`. Pauses the call (the voice transport is closed, tasks keep running). Resume with `POST /voice/sessions` + `resume_from`. A call left idle for `idle_pause_minutes` is paused the same way. A quiet call with a task still running isn't (it's waiting on that answer) until four times that long. A call reaching `voice.max_call_minutes` with a task still running is kept on up to twice the cap, then paused the same way (resumable; the interaction carries `"limit_paused": true`), never ended with an error.
 
 `200`
 ```json
@@ -1120,6 +1120,12 @@ Cached for ten minutes (`refresh=1` re-reads Hermes). Shape:
 featured (else first) six models plus any in use; `more` counts the rest. `available: false` (Hermes'
 list couldn't be read): hide the chip.
 
+When Speakeasy has no default of its own and Hermes actually served its latest new task (one that named
+no model) on a different model than config.yaml names (a profile override, a fallback provider),
+`default` names the served one and adds `"served": true, "configured": "<config.yaml's id>"`; only that
+model carries `"default": true`. A task's `model` is likewise what Hermes reported serving it (a run's
+`runtime`, or for a thread task the model on its session), not just what was asked.
+
 ### PUT /voice/history/{session_id}/model
 
 Body `{"model"?: "<id>" | "default", "reasoning"?: "<level>" | "default"}`: Use for this chat. `default`
@@ -1227,6 +1233,13 @@ forms as the preview. `400` for an unreadable schedule or nothing to change.
 ### DELETE /voice/schedules/{id}
 
 `200 {"ok": true, "id"}`. Apps confirm first.
+
+## POST /voice/tasks/{run_id}/seen
+
+Body `{}`. The user opened (or dismissed) this finished answer in an app: it leaves New answers on every
+device (the task's `seen: true`), and the voice never reads it out afterwards (an answer landing while the
+voice was busy, or a resumed call's results). `200 {"run_id", "seen": true}`; `400` non-empty body; `404`
+unknown task. Older plugins answer `404`; clients treat it as best effort.
 
 ## POST /voice/tasks/dismiss
 
@@ -1490,7 +1503,7 @@ partial object (nested objects merge); unknown keys or invalid values are 400.
 | `voice.provider` | `"codex"` | `codex` (ChatGPT sign-in) or `openai` (API key) |
 | `voice.voice` | `""` | voice name; empty = provider default |
 | `voice.codex_path` | `""` | path to `codex`; empty = find on PATH |
-| `voice.max_call_minutes` | `30` | hard cap per call; `0` = no limit (a forgotten call keeps using the voice provider's minutes) |
+| `voice.max_call_minutes` | `30` | cap per call; `0` = no limit (a forgotten call keeps using the voice provider's minutes). Stretched up to 2x while a task runs; at the cap the call is paused (resumable) |
 | `speech.progress` | `true` | short spoken "still working" updates on long tasks while the call is quiet (finished work, questions and approvals are always spoken, even while muted) |
 | `speech.interval_seconds` | `45` | how often those updates come: `30`, `45`, `60`, `90` or `120`. With the mic open (the app posted `/mic` `{"muted": false}`) a task's first line comes 12-20 s in, then one every interval; never-reported calls start at the interval and back off on a quiet task; muted calls get none |
 | `idle_pause_minutes` | `15` | pause a silent call after this long; `0` = never. Tasks keep running and stay on the board; a new call starts with them |

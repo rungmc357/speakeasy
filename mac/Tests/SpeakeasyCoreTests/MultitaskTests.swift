@@ -276,4 +276,14 @@ final class MultitaskTests: XCTestCase {
         s = reduce(s, .tasks([done, running]), now: Date())
         XCTAssertEqual(s.tasks.map(\.id), ["d2"])
     }
+
+    func testAnUnconfirmedRunShownStoppedCanBeCleared() {
+        // The stream dropped before the run's final event: the card says Stopped, so its x must work.
+        let lost = TaskItem(id: "d3", info: WorkInfo(runID: "r3", status: "ambiguous"))
+        XCTAssertTrue(lost.isSettled)
+        XCTAssertFalse(lost.isActive)
+        var s = reduce(VoiceState(), .tasks([lost]), now: Date())
+        s = reduce(s, .tasksDismissed(["r3"]), now: Date())
+        XCTAssertTrue(s.tasks.isEmpty)
+    }
 }

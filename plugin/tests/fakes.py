@@ -196,7 +196,9 @@ class FakeHermes(BaseHTTPRequestHandler):
             self.state.calls.append({"run_id": run_id, "input": prompt, "session_id": session_id, "idem": idem,
                                      **{k: body[k] for k in ("provider", "model", "model_options") if k in body}})
             # Hermes' served runtime (api_server_runs): the requested pair, else its configured default.
-            served = {"provider": body.get("provider") or "anthropic", "model": body.get("model") or "claude-opus-5-5",
+            fallback = self.state.served_default or {"provider": "anthropic", "model": "claude-opus-5-5"}
+            served = {"provider": body.get("provider") or fallback["provider"],
+                      "model": body.get("model") or fallback["model"],
                       "route_source": "raw_request" if body.get("model") else "global"}
             if session_id and self.state.create_sessions:
                 with self.state.lock:
@@ -273,6 +275,7 @@ class FakeHermesServer:
         self.state_db: Any = None  # set: PATCH /api/sessions writes this state.db, as Hermes does
         self.session_patches: list[tuple[str, dict[str, Any]]] = []
         self.create_sessions = True
+        self.served_default: dict[str, str] | None = None  # what Hermes serves when a run names no model
         self.auto_title: str | None = "Handle voice task from Speakeasy"
         self.hold = False
         self.approval_first = False

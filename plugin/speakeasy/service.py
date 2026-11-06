@@ -71,6 +71,7 @@ MAX_SDP = 96 * 1024
 CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True,
                 "task_messages": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
+IDLE_WORK_STRETCH = 4  # a quiet call with a task still running waits this many times idle_pause_minutes
 LOOK_TEXT = "Take a look at what I attached."  # a typed message or job that is only attachments
 IDLE_CHECK_S = 15
 TITLE_SWEEP_TICKS = 40  # idle ticks between stand-in title sweeps (about ten minutes)
@@ -284,6 +285,7 @@ class VoiceService(SecureInputMixin):
         self.push = PushNotifier(self.devices, self.settings.get, hermes_home=self.home,
                                  claim=self.store.claim_notice, background=start_threads)
         self.rt.push = self.push
+        self.rt.pause_call = lambda interaction_id: self.pause(interaction_id, stop_transport=True, limit=True)
         self.shared = A.SharedFolder(self.home)
         self.rt.shared = self.shared
         # Pictures and files a device uploaded for a message it hasn't sent yet (POST /voice/attachments).
@@ -729,9 +731,10 @@ class VoiceService(SecureInputMixin):
 
     # -- pause / resume / idle ---------------------------------------------------------------
     def pause(self, interaction_id: str, *, stop_transport: bool = False,
-              idle_minutes: int | None = None) -> dict[str, Any]:
+              idle_minutes: int | None = None, limit: bool = False) -> dict[str, Any]:
         """Pause closes the paid voice session but keeps the call's transcript and tasks.
-        ``idle_minutes``: paused for that long a quiet spell (the idle check), not by the user."""
+        ``idle_minutes``: paused for that long a quiet spell (the idle check), not by the user.
+        ``limit``: paused at the call's length cap (voice.max_call_minutes), not by the user."""
         interaction = self.interaction(interaction_id)
         with interaction.lock:
             if interaction.successor is not None:
@@ -739,6 +742,7 @@ class VoiceService(SecureInputMixin):
             already_closed = interaction.call_closed
             interaction.paused = True
             interaction.idle_paused_minutes = idle_minutes
+            interaction.limit_paused = limit
         worker = interaction.worker
         if already_closed and worker is not None:
             with interaction.lock:
@@ -757,7 +761,8 @@ class VoiceService(SecureInputMixin):
         timer.start()
         publish_state(self.store, interaction, self.settings.get()["assistant_name"])
         return {"interaction_id": interaction_id, "paused": True,
-                **({"idle_paused_minutes": idle_minutes} if idle_minutes else {})}
+                **({"idle_paused_minutes": idle_minutes} if idle_minutes else {}),
+                **({"limit_paused": True} if limit else {})}
 
     def pause_expired(self, interaction: Interaction) -> None:
         with interaction.lock:
@@ -874,8 +879,14 @@ class VoiceService(SecureInputMixin):
         for interaction in live:
             worker = interaction.worker
             with interaction.lock:
+                quiet = now - interaction.last_activity
                 eligible = (worker is not None and not interaction.paused and not interaction.call_closed
-                            and interaction.successor is None and now - interaction.last_activity > minutes * 60)
+                            and interaction.successor is None and quiet > minutes * 60)
+                # A task still running is the call waiting on an answer, not a quiet call: it stays up so
+                # the answer is spoken when it lands (up to IDLE_WORK_STRETCH x the idle setting).
+                working = any(r.status in ACTIVE_RUN_STATES for r in interaction.runs.values())
+            if eligible and working and quiet <= minutes * 60 * IDLE_WORK_STRETCH:
+                continue
             if not eligible or not worker.call_connected():
                 continue
             try:
@@ -1343,6 +1354,19 @@ class VoiceService(SecureInputMixin):
                 publish_state(self.store, interaction, name)
         return {"dismissed": dismissed}
 
+    def answer_seen(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/tasks/{run_id}/seen``: the user opened (or dismissed) this answer in an app. It
+        leaves New answers on every device, and the voice never reads it out afterwards (a late result,
+        or a resumed call's results that arrived while it was paused)."""
+        if not ID_RE.fullmatch(run_id) or not isinstance(body, dict) or body:
+            raise ServiceError(400, "body must be empty")
+        key = self.store.key_for_run(run_id) or (run_id if self.store.run_row(run_id) else None)
+        if key is None:
+            raise ServiceError(404, "task not found")
+        self.store.mark_seen(key)
+        self._republish_all()
+        return {"run_id": run_id, "seen": True}
+
     def set_aside(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """"Not needed": set aside a question, decision or approval waiting on the user without
         answering it (already handled, or not needed). The task settles as set aside (not failed),
@@ -1776,7 +1800,11 @@ class VoiceService(SecureInputMixin):
     def models(self, query: dict[str, str] | None = None) -> dict[str, Any]:
         """``GET /voice/models[?refresh=1]``: what the model chip offers (models.public)."""
         refresh = (query or {}).get("refresh") in {"1", "true"}
-        return MD.public(self.catalog, self.settings.get(), refresh=refresh)
+        try:
+            served = self.store.last_default_served()
+        except Exception:
+            served = None
+        return MD.public(self.catalog, self.settings.get(), refresh=refresh, served_default=served)
 
     def _body_choice(self, body: dict[str, Any]) -> dict[str, Any] | None:
         try:

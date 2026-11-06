@@ -50,6 +50,22 @@ def test_the_titler_refines_the_job_name_and_it_is_never_empty(tmp_path):
     assert store.work(idem_key="se_blank")["job"]["name"]
 
 
+def test_a_follow_up_that_names_nothing_does_not_name_the_job(tmp_path):
+    """A vague follow-up ("any luck?") titled "Check the earlier task status" named the
+    session's job, so a real request later in that session showed under that name."""
+    store = Store(tmp_path / "s.sqlite3")
+    _run(store, "se_check", "sess_mixed")
+    store.set_title("se_check", "Check the earlier task status")
+    assert store.work(idem_key="se_check")["job"]["name"] == "Check the earlier task"  # nothing better yet
+    _run(store, "se_bug", "sess_mixed")
+    store.set_title("se_bug", "Fix the flaky checkout test in CI")
+    for key in ("se_check", "se_bug"):
+        assert store.work(idem_key=key)["job"]["name"] == "Fix the flaky checkout"
+    _run(store, "se_more", "sess_mixed")
+    store.set_title("se_more", "Redesign the session header colors")
+    assert store.work(idem_key="se_more")["job"]["name"] == "Fix the flaky checkout"  # a real name sticks
+
+
 def test_job_names_are_two_to_four_words():
     assert job_name("Architect combined voice and generation system") == "Architect combined voice"
     assert job_name("Build rules engine implementation") == "Build rules engine implementation"

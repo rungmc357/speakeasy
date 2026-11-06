@@ -362,7 +362,10 @@ class CodexSidebandWorker(SidebandWorker):
             self.interaction.status = "listening"
         self.publish()
         try:
-            while time.monotonic() - self.transport.started_at < self.transport.max_call_s:
+            while True:
+                if self.cap_reached(time.monotonic() - self.transport.started_at, self.transport.max_call_s):
+                    await self.pause_at_cap()  # resumable, not "ended without a confirmed close"
+                    break
                 try:
                     event = await asyncio.to_thread(self.transport.notifications.get, True, .5)
                 except queue.Empty:

@@ -232,6 +232,10 @@ public final class NativeVoiceClient: VoiceCallClient {
         }
         model.onDismissTasks = { [weak self] runIDs in self?.dismissTasks(runIDs) }
         model.onDismissReview = { [weak self] runID in self?.dismissReview(runID) }
+        model.onAnswerSeen = { [weak self] runID in
+            guard let self, let api = self.api, !self.previewMode else { return }
+            Task { try? await api.markAnswerSeen(runID: runID) }  // best effort: the app keeps its own list too
+        }
         model.loadProductImage = { [weak self] runID, index in
             guard let self, let api = self.api else { return nil }
             return try? await api.image(runID: runID, index: index)

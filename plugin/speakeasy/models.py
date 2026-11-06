@@ -279,9 +279,14 @@ def presets(settings: dict[str, Any], entries: dict[str, dict[str, Any]] | None,
 
 
 def public(catalog: Catalog, settings: dict[str, Any], keep: set[str] | None = None,
-           refresh: bool = False) -> dict[str, Any]:
+           refresh: bool = False, served_default: str | None = None) -> dict[str, Any]:
     """``GET /voice/models``: the providers Hermes is signed in to with a short list each (featured or
-    newest first, plus any model already in use), the defaults, and the fast/smart presets."""
+    newest first, plus any model already in use), the defaults, and the fast/smart presets.
+
+    ``served_default``: the model Hermes actually served Speakeasy's latest run that asked for no model
+    (its reported runtime). When Speakeasy has no default of its own and that differs from the configured
+    one (a fallback provider, a profile override), ``default`` names what really runs, with
+    ``configured`` the model config.yaml names, so the chip never claims a model the work didn't use."""
     raw = catalog.raw(refresh=refresh)
     if raw is None:
         return {"available": False, "providers": [], "levels": [{"id": lvl, "label": LABELS[lvl],
@@ -292,6 +297,11 @@ def public(catalog: Catalog, settings: dict[str, Any], keep: set[str] | None = N
     wanted = set(keep or ()) | {p["model"] for p in pre.values() if p["model"]}
     if hermes_default:
         wanted.add(hermes_default)
+    own_default = bool(pre["default"]["model"] or pre["default"]["reasoning"])
+    really = served_default if (served_default and not own_default and served_default != hermes_default
+                                and served_default in entries) else None
+    if really:
+        wanted.add(really)
     providers = []
     rows = [r for r in raw.get("providers") or [] if isinstance(r, dict)]
     rows.sort(key=lambda r: (not r.get("is_current"), not any(
@@ -308,19 +318,22 @@ def public(catalog: Catalog, settings: dict[str, Any], keep: set[str] | None = N
         shown = []
         for model in shown_models:
             e = dict(entries[make_id(slug, model)])
-            e["default"] = e["id"] == (pre["default"]["model"] or hermes_default)
+            e["default"] = e["id"] == (pre["default"]["model"] or really or hermes_default)
             if e["id"] == hermes_default:
                 e["hermes_default"] = True
             shown.append(e)
         providers.append({"id": slug, "name": str(row.get("name") or slug), "current": bool(row.get("is_current")),
                           "local": bool(row.get("is_user_defined")), "models": shown,
                           "more": max(0, len(mine) - len(shown))})
-    default_id = pre["default"]["model"] or hermes_default
+    default_id = pre["default"]["model"] or really or hermes_default
+    default: dict[str, Any] = {"model": default_id, "reasoning": pre["default"]["reasoning"] or catalog.hermes_reasoning,
+                               "source": "speakeasy" if own_default else "hermes"}
+    if really:
+        default.update(served=True, configured=hermes_default)
     return {
         "available": True,
         "providers": providers,
-        "default": {"model": default_id, "reasoning": pre["default"]["reasoning"] or catalog.hermes_reasoning,
-                    "source": "speakeasy" if pre["default"]["model"] or pre["default"]["reasoning"] else "hermes"},
+        "default": default,
         "hermes_default": {"model": hermes_default, "reasoning": catalog.hermes_reasoning},
         "fast": pre["fast"], "smart": pre["smart"],
         "levels": [{"id": lvl, "label": LABELS[lvl], "short": SHORT_LABELS[lvl]} for lvl in LEVELS],
@@ -445,6 +458,10 @@ def describe(record: dict[str, Any] | None, entries: dict[str, dict[str, Any]], 
     mid = None
     if served and served.get("provider") and served.get("model"):
         mid = make_id(served["provider"], served["model"])
+    elif served and served.get("model"):
+        # Only the model is known (a thread's session row): the catalog entry with that model, else bare.
+        mid = next((eid for eid, e in entries.items() if e.get("model") == served["model"]), None) \
+            or "/" + str(served["model"])
     mid = mid or record.get("model") or hermes_default
     if not mid:
         return None

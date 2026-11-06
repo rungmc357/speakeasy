@@ -405,8 +405,13 @@ public final class VoicePanelModel: ObservableObject {
     public func markAnswerSeen(_ job: Job) {
         guard let t = job.newTask else { return }
         let key = JobBoard.seenKey(t)
-        if !seenAnswers.contains(key) { seenAnswers.append(key) }
+        if !seenAnswers.contains(key) {
+            seenAnswers.append(key)
+            if let run = t.info.runID { onAnswerSeen(run) }
+        }
     }
+    /// Tells the server an answer was opened (run id), so the voice won't read it out later.
+    public var onAnswerSeen: (String) -> Void = { _ in }
     /// Dismiss: the answer leaves New answers without being opened (it stays in Done today). Pictures
     /// to look at are dismissed with it, so they don't come back on the next call.
     public func dismissAnswer(_ job: Job) {

@@ -96,7 +96,23 @@ it's do does get go up out as""".split())
 _GENERIC_STEP = set("""recall prior points point continue topic add input read context find answer answers trace
 confusion explain confirm clarify discuss discussion respond response reply review call thought thoughts speak
 understand request question questions info information details detail check look gather collect summarize
-summary wrap next steps step previous earlier talk talking listen note notes share update""".split())
+summary wrap next steps step previous earlier talk talking listen note notes share update
+checked done finished status progress verify verified handled cause causes fix fixes fixed test tests testing
+retest bug bugs issue issues problem problems stuck state flow debug investigate investigation root try it
+solution solve research plan options option result results work changes change apply""".split())
+
+
+_REFERENCE_WORDS = set("""task tasks job jobs thing things work one ones earlier previous last prior
+before again it that this those these was were been being has have had did can could should would will
+whether if""".split())
+
+
+def weak_job_name(title: str | None) -> bool:
+    """A title that only points at other work ("Check the earlier task", "Look into that"):
+    no word of it names the actual subject, so it must not name a whole job."""
+    words = [w for w in re.findall(r"[a-z0-9']+", (title or "").lower())
+             if w not in _PLAN_STOP and w not in _REFERENCE_WORDS]
+    return not words or all(w in _GENERIC_STEP for w in words)
 
 
 def concrete_plan(plan: list[str], request: str | None = None, title: str | None = None) -> list[str]:
@@ -331,10 +347,13 @@ class StateStore:
             return None
         return value if isinstance(value, dict) else None
 
-    def served_model(self, key: str, runtime: dict[str, Any]) -> bool:
-        """Hermes said which provider/model served the run (its ``runtime``): kept beside what was asked."""
+    def served_model(self, key: str, runtime: dict[str, Any], bare: bool = False) -> bool:
+        """Hermes said which provider/model served the run (its ``runtime``): kept beside what was asked.
+        ``bare``: only the model is known (a session's recorded model); a full runtime is never replaced."""
         provider, model = runtime.get("provider"), runtime.get("model")
-        if not (isinstance(provider, str) and isinstance(model, str) and provider and model):
+        if not (isinstance(provider, str) and isinstance(model, str) and model and (provider or bare)):
+            return False
+        if bare and ((self.run_model(key) or {}).get("served") or {}).get("provider"):
             return False
         record = self.run_model(key) or {}
         served = {"provider": provider[:80], "model": model[:200]}
@@ -343,6 +362,25 @@ class StateStore:
         record["served"] = served
         self.set_run_model(key, record)
         return True
+
+    def last_default_served(self, scan: int = 40) -> str | None:
+        """``provider/model`` Hermes served the newest new task (not a continued chat) that asked for no
+        model, or None: what Speakeasy's default really runs on."""
+        with self._lock:
+            rows = self._db.execute("SELECT model FROM runs WHERE model IS NOT NULL AND continued IS NULL "
+                                    "ORDER BY created DESC LIMIT ?", (int(scan),)).fetchall()
+        for (raw,) in rows:
+            try:
+                record = json.loads(raw)
+            except ValueError:
+                continue
+            served = record.get("served") if isinstance(record, dict) else None
+            if (record.get("model") or record.get("source") not in (None, "hermes", "default")
+                    or not isinstance(served, dict)):
+                continue
+            if served.get("provider") and served.get("model"):
+                return f"{served['provider']}/{served['model']}"
+        return None
 
     def session_for(self, key: str) -> str | None:
         with self._lock:
@@ -422,6 +460,22 @@ class StateStore:
         local = local_run_id(key)
         self.add_run_alias(local, key)
         return local
+
+    def unconfirmed_runs(self) -> list[dict[str, Any]]:
+        """Hermes runs left unconfirmed: the event stream ended before a final event and Hermes
+        couldn't say how the run went then. The run may well have finished afterwards, but nothing
+        listens to it any more, so the board showed it stopped forever and it couldn't be dismissed."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT idem_key, run_id, session_id, updated, created, rowid FROM runs "
+                "WHERE run_id IS NOT NULL AND status='ambiguous'").fetchall()
+            out = []
+            for key, run_id, session_id, updated, created, rowid in rows:
+                newer = bool(session_id) and self._db.execute(
+                    "SELECT 1 FROM runs WHERE session_id=? AND rowid>? LIMIT 1", (session_id, rowid)).fetchone() is not None
+                out.append({"key": key, "run_id": run_id, "session_id": session_id, "updated": float(updated or 0),
+                            "created": float(created) if created else None, "superseded": newer})
+        return out
 
     def keys_for_session(self, session_id: str) -> list[tuple[str, str | None, str]]:
         """Every task that ran in a Hermes session, newest first: (idem key, run id, status). Kept after
@@ -626,11 +680,20 @@ class StateStore:
         job_id = self._job_id(key, session_id, continued)
         with self._lock, self._db:
             row = self._db.execute("SELECT name FROM jobs WHERE job_id=?", (job_id,)).fetchone()
-            if row:
-                return {"id": job_id, "name": row[0]}
-            first = self._db.execute(
+            titled = self._db.execute(
                 "SELECT idem_key, own_title FROM runs WHERE (session_id=? OR idem_key=? OR idem_key=?) "
-                "AND own_title IS NOT NULL ORDER BY rowid LIMIT 1", (job_id, job_id, key)).fetchone()
+                "AND own_title IS NOT NULL ORDER BY rowid", (job_id, job_id, key)).fetchall()
+            # A job named by a follow-up that names nothing ("any luck?" -> "Check the earlier
+            # task") takes the first real name one of its tasks gets.
+            strong = next((t for t in titled if not weak_job_name(t[1])), None)
+            if row:
+                if strong and weak_job_name(row[0]) and job_name(strong[1]):
+                    name = job_name(strong[1])
+                    self._db.execute("UPDATE jobs SET name=?, from_key=?, updated=? WHERE job_id=?",
+                                     (name, strong[0], time.time(), job_id))
+                    return {"id": job_id, "name": name}
+                return {"id": job_id, "name": row[0]}
+            first = strong or (titled[0] if titled else None)
             if first is None:
                 first = self._older_title(job_id, key)
             name = job_name(first[1]) if first else None
@@ -686,7 +749,7 @@ class StateStore:
 
     def dismiss(self, run_ids: list[str]) -> list[str]:
         """Hide finished tasks from the task list. Running tasks are never dismissed."""
-        settled = sorted(TERMINAL | {"rejected"})
+        settled = sorted(TERMINAL | {"rejected", "ambiguous"})  # unconfirmed runs can be cleared too
         marks = ",".join("?" * len(settled))
         done = []
         with self._lock, self._db:
@@ -803,7 +866,7 @@ class StateStore:
             self._db.execute("UPDATE runs SET dismissed=NULL WHERE idem_key=?", (key,))
 
     def dismiss_key(self, key: str) -> bool:
-        settled = sorted(TERMINAL | {"rejected"})
+        settled = sorted(TERMINAL | {"rejected", "ambiguous"})  # unconfirmed runs can be cleared too
         marks = ",".join("?" * len(settled))
         with self._lock, self._db:
             cursor = self._db.execute(
@@ -858,6 +921,11 @@ class StateStore:
         apps leave it out of New answers. Opening it still shows the answer."""
         with self._lock, self._db:
             self._db.execute("UPDATE runs SET seen=1 WHERE idem_key=?", (key,))
+
+    def is_seen(self, key: str) -> bool:
+        with self._lock:
+            row = self._db.execute("SELECT seen FROM runs WHERE idem_key=?", (key,)).fetchone()
+        return bool(row and row[0])
 
     def is_set_aside(self, key: str) -> bool:
         with self._lock:

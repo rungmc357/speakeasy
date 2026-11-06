@@ -278,3 +278,61 @@ def test_store_migrates_and_keeps_choices(home, service):
     assert again.model_choice("session:abc") is None
     assert json.dumps(MD.run_fields({"model": "a/b", "reasoning": "none"})) == json.dumps(
         {"provider": "a", "model": "b", "model_options": {"reasoning": {"enabled": False}}})
+
+
+
+# -- what really ran (the chip never names a model the work didn't use) ----------------------------
+
+def test_default_chip_names_what_hermes_really_served(server, service, hermes, catalog):
+    """config.yaml names one model, but Hermes serves Speakeasy's runs on another (a profile or
+    fallback): after a run, the default is the served one, with the configured one beside it."""
+    hermes.served_default = {"provider": "openai-codex", "model": "gpt-6.1-sol"}
+    status, before = get(server, "/voice/models")
+    assert before["default"]["model"] == "anthropic/claude-opus-5-5" and "served" not in before["default"]
+    status, started = post(server, "/voice/work", {"text": "Sort the seed packets by month"})
+    assert status == 202, started
+    work = wait_for(lambda: (get(server, f"/voice/work/{started['run_id']}")[1]["work"].get("model") or {})
+                    .get("served") and get(server, f"/voice/work/{started['run_id']}")[1]["work"])
+    assert work["model"]["id"] == "openai-codex/gpt-6.1-sol" and work["model"]["served"] is True
+    status, after = get(server, "/voice/models")
+    assert after["default"]["model"] == "openai-codex/gpt-6.1-sol"
+    assert after["default"]["served"] is True and after["default"]["configured"] == "anthropic/claude-opus-5-5"
+    defaults = [m["id"] for p in after["providers"] for m in p["models"] if m.get("default")]
+    assert defaults == ["openai-codex/gpt-6.1-sol"]
+    assert after["hermes_default"]["model"] == "anthropic/claude-opus-5-5"
+
+
+def test_a_speakeasy_default_is_never_overridden_by_what_served(server, service, hermes, catalog):
+    service.settings.patch({"jobs": {"model": "anthropic/claude-opus-5-5"}})
+    service.store.reserve_run("idem_served_x", "int_x", "t_x", 1)
+    service.store.set_run_model("idem_served_x", {"model": None, "reasoning": None, "source": "hermes"})
+    service.store.served_model("idem_served_x", {"provider": "openai-codex", "model": "gpt-6.1-sol"})
+    status, body = get(server, "/voice/models")
+    assert body["default"]["model"] == "anthropic/claude-opus-5-5" and body["default"]["source"] == "speakeasy"
+
+
+def test_last_default_served_skips_chosen_and_continued_runs(service):
+    store = service.store
+    store.reserve_run("idem_a", "int_x", "t_a", 1)
+    store.set_run_model("idem_a", {"model": None, "source": "hermes"})
+    store.served_model("idem_a", {"provider": "studio-qwen", "model": "qwen3.8-coder"})
+    time.sleep(0.01)
+    store.reserve_run("idem_b", "int_x", "t_b", 1)  # chosen on purpose: not the default
+    store.set_run_model("idem_b", {"model": "openai-codex/gpt-6.1-sol", "source": "chat"})
+    store.served_model("idem_b", {"provider": "openai-codex", "model": "gpt-6.1-sol"})
+    time.sleep(0.01)
+    store.reserve_run("idem_c", "int_x", "t_c", 1)  # continued an outside chat: that chat's model
+    store.set_continued("idem_c", "tg_chat_1", "your Telegram chat")
+    store.set_run_model("idem_c", {"model": None, "source": "hermes"})
+    store.served_model("idem_c", {"provider": "xai", "model": "grok-5"})
+    assert store.last_default_served() == "studio-qwen/qwen3.8-coder"
+
+
+def test_a_session_recorded_model_only_fills_in_never_replaces_a_runtime(service):
+    store = service.store
+    store.reserve_run("idem_t", "int_x", "t_t", 1)
+    assert store.served_model("idem_t", {"provider": "", "model": "grok-5"}, bare=True)
+    assert MD.describe(store.run_model("idem_t"), {})["id"] == "/grok-5"
+    assert store.served_model("idem_t", {"provider": "xai", "model": "grok-5"})
+    assert not store.served_model("idem_t", {"provider": "", "model": "other"}, bare=True)
+    assert store.run_model("idem_t")["served"] == {"provider": "xai", "model": "grok-5"}
