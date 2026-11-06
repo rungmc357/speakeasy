@@ -428,6 +428,9 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     public var codexSignIn: CodexSignIn?
     public var apiKeySet: Bool?
     public var briefState: String?
+    /// Whether Hermes can run a turn at all (`agent_model`: `ok`, `missing` = no AI provider chosen
+    /// yet so every task would fail, `unknown`); nil from plugins without the `agent_model` capability.
+    public var agentModel: String?
     public var hermesAPIOK: Bool?
     public var version: String?
     /// The delivery platform can open a thread per task.
@@ -480,6 +483,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         case assistantName = "assistant_name", provider, codexSignedIn = "codex_signed_in"
         case codexSignIn = "codex_sign_in"
         case apiKeySet = "api_key_set", briefState = "brief_state", hermesAPIOK = "hermes_api_ok", version
+        case agentModel = "agent_model"
         case threadsSupported = "threads_supported", voiceReady = "voice_ready"
         case threadsReason = "threads_reason", threadPlatforms = "thread_platforms", continuityEnabled = "continuity_enabled"
         case homeControlEnabled = "home_control_enabled"
@@ -508,6 +512,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         codexSignIn = try? c.decodeIfPresent(CodexSignIn.self, forKey: .codexSignIn)
         apiKeySet = try? c.decodeIfPresent(Bool.self, forKey: .apiKeySet)
         briefState = try? c.decodeIfPresent(String.self, forKey: .briefState)
+        agentModel = try? c.decodeIfPresent(String.self, forKey: .agentModel)
         hermesAPIOK = try? c.decodeIfPresent(Bool.self, forKey: .hermesAPIOK)
         version = try? c.decodeIfPresent(String.self, forKey: .version)
         threadsSupported = try? c.decodeIfPresent(Bool.self, forKey: .threadsSupported)
@@ -538,6 +543,10 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     /// Show the call screen's composer: only a server that says `input_text: true` (a missing key,
     /// or a value that isn't a boolean, means an older plugin without the route).
     public var takesTypedTurns: Bool { inputText == true }
+
+    /// The server says Hermes has no AI model yet, so every task would fail at once. Only a plugin
+    /// that checks says so (`agent_model`); "unknown" and older plugins never do.
+    public var agentModelMissing: Bool { agentModel == "missing" }
 
     /// Grok Voice goes in the provider picker: beta on and Grok available on the server.
     public var grokOffered: Bool { beta == true && grokAvailable == true }
@@ -581,6 +590,12 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         var out: [Check] = []
         out.append(Check(id: "hermes", ok: hermesAPIOK == true, title: "Hermes API server",
                          fix: hermesAPIOK == true ? nil : "Turn on the Hermes API server: run hermes voice setup"))
+        // Only plugins that check say ok/missing; "unknown" and older plugins add no row.
+        if agentModel == "ok" || agentModelMissing {
+            out.append(Check(id: "agent_model", ok: !agentModelMissing, title: agentModelMissing
+                                ? AgentModelCopy.title : "AI model in Hermes",
+                             fix: agentModelMissing ? AgentModelCopy.detail : nil))
+        }
         switch provider.flatMap(VoiceProvider.init(rawValue:)) ?? .codex {
         case .codex:
             out.append(Check(id: "voice", ok: codexSignedIn == true, title: "ChatGPT sign-in",
@@ -603,6 +618,16 @@ public struct ServerStatus: Codable, Equatable, Sendable {
 
     /// Calls can start (the brief is optional).
     public var readyForCalls: Bool { checks.filter { $0.id != "brief" }.allSatisfy(\.ok) }
+}
+
+/// What the apps say when Hermes has no AI model yet (`agent_model: missing`): plain words for
+/// someone who may never have opened a terminal, plus the command for whoever runs that computer.
+public enum AgentModelCopy {
+    public static let title = "Your Hermes has no AI model yet"
+    public static let detail = "Hermes needs one to do anything you ask, so every task would stop at once. "
+        + "Ask whoever set up your Hermes, or run hermes model on that computer and pick one."
+    public static let command = "hermes model"
+    public static let copyButton = "Copy hermes model"
 }
 
 /// One entry of `GET /voice/destinations`: a connected Hermes platform finished work can go to.

@@ -52,6 +52,14 @@ class Env:
     clock: Callable[[], float] = time.monotonic
     identity: Callable[[str], dict | None] | None = None   # the local /health answer (profiles.py)
     port_free: Callable[[int], bool] | None = None
+    agent_model: Callable[[], str] | None = None   # "ok" | "missing" | "unknown" (agent_model.py)
+
+    def model_state(self) -> str:
+        """Whether Hermes has an AI model to run turns with. Tests that fake ``health`` get "ok"."""
+        from . import agent_model
+        if self.agent_model is not None:
+            return self.agent_model()
+        return agent_model.OK if self.health is not None else agent_model.resolve()
 
     def whois(self, home: Path) -> Callable[[str], dict | None]:
         """Who answers on a local URL. Tests that fake only ``health`` get "this profile" for a yes."""

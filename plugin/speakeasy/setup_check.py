@@ -13,7 +13,9 @@ new check (or a better fix) ships with a plugin update and no app build. Kinds:
 - ``open_settings``: the app's own settings page named by ``payload`` (``voice``).
 
 A client that sees a kind it doesn't know shows the row's detail without a button. Rows never ask
-anyone to open a terminal, and no secret ever crosses this route.
+anyone to open a terminal, and no secret ever crosses this route. One exception: a Hermes with no AI
+model can't take a pasted chat request (every turn fails), so the ``agent_model`` row copies the
+``hermes model`` command for whoever runs that computer.
 """
 from __future__ import annotations
 
@@ -25,6 +27,10 @@ FINISH_SETUP_REQUEST = ("Please finish setting up Speakeasy on this Hermes: run 
                         "then tell me if Hermes needs a restart.")
 OPENAI_KEY_REQUEST = ("Please set up Speakeasy's voice with my OpenAI API key: run hermes voice setup --api-key "
                       "and ask me for the key in a private prompt (never in this chat).")
+AGENT_MODEL_COMMAND = "hermes model"
+AGENT_MODEL_TITLE = "Your Hermes has no AI model yet"
+AGENT_MODEL_DETAIL = ("Hermes needs one to do anything you ask, so every task would stop at once. Ask whoever set up "
+                      "your Hermes, or run hermes model on that computer and pick one.")
 GROK_SIGN_IN_REQUEST = ("Please sign Speakeasy's Grok voice in to my xAI account: run hermes auth add xai-oauth "
                         "and send me the sign-in link and code here.")
 
@@ -91,12 +97,19 @@ def rows(status: dict[str, Any]) -> list[dict[str, Any]]:
                         "Hermes hasn't been given Speakeasy's connection yet. Paste this request into your chat "
                         "with Hermes and it will finish setup.",
                         _fix("copy", "Copy a request for Hermes", FINISH_SETUP_REQUEST)))
+    model = status.get("agent_model")
+    if model == "ok":
+        out.append(_row("agent_model", True, "Hermes has an AI model"))
+    elif model == "missing":
+        out.append(_row("agent_model", False, AGENT_MODEL_TITLE, AGENT_MODEL_DETAIL,
+                        _fix("copy", "Copy hermes model", AGENT_MODEL_COMMAND)))
     out.append(_voice_row(status))
     brief = status.get("brief_state") or ""
     brief_ready = brief in {"ready", "edited"}
     out.append(_row("brief", brief_ready, "Voice brief is ready" if brief_ready else (
         "Hermes is writing your voice brief" if brief == "writing" else "No voice brief yet"),
-        "" if brief_ready else "Optional: calls work without it. It helps the voice know your work and names.",
+        "" if brief_ready else ("Optional. Hermes writes it by itself once it has an AI model." if model == "missing"
+                                else "Optional: calls work without it. It helps the voice know your work and names."),
         None, blocking=False))
     return out
 

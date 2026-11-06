@@ -75,5 +75,37 @@ final class SetupCheckTests: XCTestCase {
         let old = ServerStatus(provider: "codex", codexSignedIn: true, briefState: "writing", hermesAPIOK: true)
         XCTAssertFalse(old.needsSetupCheck)
         XCTAssertTrue(ServerStatus(provider: "codex", codexSignedIn: false, hermesAPIOK: true).needsSetupCheck)
+        // Hermes has no AI model yet: every task would fail, so the check opens; "unknown" never blocks.
+        var noModel = ServerStatus(provider: "codex", codexSignedIn: true, hermesAPIOK: true)
+        noModel.voiceReady = true; noModel.agentModel = "missing"
+        XCTAssertTrue(noModel.needsSetupCheck)
+        noModel.agentModel = "unknown"
+        XCTAssertFalse(noModel.needsSetupCheck)
+    }
+
+    func testAgentModelDecodesAndOlderPluginsLeaveItNil() throws {
+        let new = try JSONDecoder().decode(ServerStatus.self, from: Data(#"{"agent_model": "missing"}"#.utf8))
+        XCTAssertEqual(new.agentModel, "missing")
+        XCTAssertTrue(new.agentModelMissing)
+        let old = try JSONDecoder().decode(ServerStatus.self, from: Data(#"{"brief_state": "none"}"#.utf8))
+        XCTAssertNil(old.agentModel)
+        XCTAssertFalse(old.agentModelMissing)
+    }
+
+    func testChecklistShowsTheMissingModelAndCallsAreNotReady() {
+        var status = ServerStatus(provider: "codex", codexSignedIn: true, hermesAPIOK: true)
+        XCTAssertFalse(status.checks.contains { $0.id == "agent_model" })  // older plugin: no row
+        XCTAssertTrue(status.readyForCalls)
+        status.agentModel = "missing"
+        let row = status.checks.first { $0.id == "agent_model" }
+        XCTAssertEqual(row?.ok, false)
+        XCTAssertEqual(row?.title, "Your Hermes has no AI model yet")
+        XCTAssertTrue(row?.fix?.contains("Ask whoever set up your Hermes") == true)
+        XCTAssertFalse(status.readyForCalls)
+        status.agentModel = "ok"
+        XCTAssertEqual(status.checks.first { $0.id == "agent_model" }?.ok, true)
+        XCTAssertTrue(status.readyForCalls)
+        status.agentModel = "unknown"
+        XCTAssertFalse(status.checks.contains { $0.id == "agent_model" })
     }
 }

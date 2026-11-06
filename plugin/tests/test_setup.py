@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from speakeasy import cli, setup_flow as F
+from speakeasy import agent_model as AM
 from speakeasy import settings as S
 from fakes import read_profile_env
 
@@ -589,3 +590,46 @@ def test_forced_tailscale_never_falls_back(home):
     fake = Fake(tailscale="stopped")
     run_setup(fake, yes=True, tailscale=True)
     assert "Cloudflare instead" not in "\n".join(fake.lines)
+
+
+# -- a Hermes with no AI model yet (SPK-138) --------------------------------------------------------
+
+def setup_with(model_state, **fake_kw):
+    fake = Fake(**fake_kw)
+    original = fake.env
+
+    def env():
+        made = original()
+        made.agent_model = lambda: model_state
+        return made
+
+    fake.env = env  # type: ignore[method-assign]
+    rc, _ = run_setup(fake)
+    return rc, fake.lines
+
+
+# -- setup ----------------------------------------------------------------------------------------
+
+def test_setup_without_a_model_says_so_and_does_not_promise_a_brief(home):
+    rc, lines = setup_with(AM.MISSING)
+    text = "\n".join(lines)
+    assert any(line == "✗ " + AM.SETUP_LINE for line in lines), text
+    assert "voice brief" not in text
+    assert rc == 1  # pairing still offered, but setup isn't done
+    assert any("pair" in line.lower() or "link" in line.lower() for line in lines)
+
+
+def test_setup_with_a_model_promises_the_brief_as_before(home):
+    rc, lines = setup_with(AM.OK)
+    text = "\n".join(lines)
+    assert AM.SETUP_LINE not in text and "voice brief in the background" in text and rc == 0
+
+
+def test_setup_says_nothing_when_the_model_cannot_be_checked(home):
+    rc, lines = setup_with(AM.UNKNOWN)
+    assert AM.SETUP_LINE not in "\n".join(lines) and rc == 0
+
+
+def test_setup_without_a_model_while_hermes_is_down_still_says_it(home):
+    rc, lines = setup_with(AM.MISSING, running=False)
+    assert "✗ " + AM.SETUP_LINE in lines and rc != 0
