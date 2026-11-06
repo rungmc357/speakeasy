@@ -17,6 +17,9 @@ struct SettingsView: View {
             BriefSettings().tabItem { Label("Voice brief", systemImage: "text.quote") }.tag(SettingsTab.brief)
             BehaviorSettings().tabItem { Label("Behavior", systemImage: "slider.horizontal.3") }.tag(SettingsTab.behavior)
             DeliverySettings().tabItem { Label("Delivery", systemImage: "paperplane") }.tag(SettingsTab.delivery)
+            if app.status?.capabilities?.approvalRules == true {
+                ApprovalSettings().tabItem { Label("Approvals", systemImage: "checkmark.shield") }.tag(SettingsTab.approvals)
+            }
             HomeSettings().tabItem { Label("Home", systemImage: "house") }.tag(SettingsTab.home)
             ConnectionSettings().tabItem { Label("Connection", systemImage: "network") }.tag(SettingsTab.connection)
             AboutSettings().tabItem { Label("About", systemImage: "info.circle") }.tag(SettingsTab.about)
@@ -1255,6 +1258,7 @@ struct CallLimitsSection: View {
 enum CallLimitsSnapshot {
     static func run(dir: String) {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["SETTINGS_SHOT"] == "approvals" { ApprovalSettingsSnapshot.run(dir: dir); return }
         if ProcessInfo.processInfo.environment["SETTINGS_SHOT"] == "jobs" {
             if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
                 NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)

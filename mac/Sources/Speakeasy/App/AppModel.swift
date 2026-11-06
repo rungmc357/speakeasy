@@ -62,6 +62,7 @@ enum Prefs {
 /// The Settings window's tabs, so other parts of the app can open it at the right one.
 enum SettingsTab: String, Hashable {
     case general, shortcuts, voice, brief, behavior, delivery, home, connection, about
+    case approvals
 }
 
 /// App-wide state shared by the menu bar, onboarding and Settings.
