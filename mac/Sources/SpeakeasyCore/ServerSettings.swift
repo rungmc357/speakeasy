@@ -887,6 +887,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var modelChoice: Bool
     /// Hermes scheduled (cron) jobs, listed and managed (`GET /voice/schedules`, Schedules.swift).
     public var schedules: Bool = false
+    /// Hermes Kanban boards, read-only (`GET /voice/boards`, KanbanBoard.swift): the Board screen.
+    public var boards: Bool = false
     /// Sign in to ChatGPT from the app (`/voice/codex/login`, CodexLogin.swift).
     public var codexLogin: Bool = false
     /// Steer a running task or queue a message for when it's done (`mode`, docs/API.md "Steer or queue").
@@ -907,7 +909,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case cardActions = "card_actions", jobProgress = "job_progress", spokenChoices = "spoken_choices"
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
-        case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe
+        case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
         case messageModes = "message_modes"
     }
     public init(from decoder: Decoder) throws {
@@ -927,5 +929,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         codexLogin = (try? c.decodeIfPresent(Bool.self, forKey: .codexLogin)) ?? false
         messageModes = (try? c.decodeIfPresent(Bool.self, forKey: .messageModes)) ?? false
         transcribe = (try? c.decodeIfPresent(Bool.self, forKey: .transcribe)) ?? false
+        boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
     }
 }

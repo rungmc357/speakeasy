@@ -377,6 +377,8 @@ enum HistoryShots {
         c.store.scheduleDictation.recorder = SilentRecorder()
         c.store.schedules.backend = DemoScheduleBackend()
         c.store.schedulesSupported = true
+        c.store.board.backend = DemoBoardBackend(links: DemoBoardBackend.macLinks)
+        c.store.boardsSupported = true
         if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
             NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
         }
@@ -471,6 +473,18 @@ enum HistoryShots {
                 store.schedules.startDraft()
                 store.openSchedules("reading")
                 await store.schedules.load("reading")
+            }
+            await shot("14-board") {
+                store.openBoard()
+                await store.board.reload()
+                store.board.select("garden-site")
+                await store.board.loadPage()
+            }
+            await shot("15-board-small") {
+                store.openBoard()
+                await store.board.reload()
+                store.board.select("bake-sale")
+                await store.board.loadPage()
             }
             await shot("8-on-call-narrow") {
                 store.preview(outbox: HistoryOutbox())

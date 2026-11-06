@@ -548,6 +548,7 @@ class Handler(BaseHTTPRequestHandler):
             work = re.fullmatch(rf"/voice/work/{_ID}", path)
             history_one = re.fullmatch(rf"/voice/history/{_SESSION}", path)
             schedule_one = re.fullmatch(rf"/voice/schedules/{_ID}", path)
+            board_one = re.fullmatch(rf"/voice/boards/{_ID}", path)
             routes = {
                 "/voice/work/latest": self.service.work_latest,
                 "/voice/titles": self.service.pending_thread_titles,
@@ -577,6 +578,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.schedule_call("list"))
             elif schedule_one:
                 self._reply(200, self.service.schedule_call("detail", schedule_one.group(1)))
+            elif path == "/voice/boards":
+                self._reply(200, self.service.board_call())
+            elif board_one:
+                self._reply(200, self.service.board_call(board_one.group(1)))
             elif path == "/voice/history/events":
                 self._history_events()
             elif path == "/voice/history":

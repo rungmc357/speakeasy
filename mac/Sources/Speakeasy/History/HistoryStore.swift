@@ -115,7 +115,11 @@ final class HistoryStore: ObservableObject {
     let schedules = SchedulesModel()
     let scheduleDictation = ScheduleDictation()
     @Published var schedulesSupported = false
-    @Published private(set) var showingSchedules = false
+    @Published private(set) var showingSchedules = false { didSet { if showingSchedules { showingBoard = false } } }
+    /// Board (Hermes Kanban boards, read-only; servers with `boards`): the sidebar row and its pane.
+    let board = BoardModel()
+    @Published var boardsSupported = false
+    @Published private(set) var showingBoard = false { didSet { if !showingBoard { board.stopRefreshing() } } }
     @Published var now = Date()
 
     var backend: HistoryBackend?
@@ -136,6 +140,8 @@ final class HistoryStore: ObservableObject {
         if list.sessions.isEmpty && !list.loading { run(list.reset()) }
         if modelsSupported { loadModels() }
         if schedulesSupported, !schedules.loaded { Task { await schedules.reload() } }
+        if boardsSupported, !board.loaded { Task { await board.reload() } }
+        if showingBoard { board.startRefreshing() }
         if feed == nil, let live = backend as? LiveHistoryBackend {
             let api = live.api
             feed = HistoryLiveFeed(api: { api }) { [weak self] event, sid in self?.liveChange(event, sessionID: sid) }
@@ -150,6 +156,7 @@ final class HistoryStore: ObservableObject {
 
     func stop() {
         clockTimer?.invalidate(); clockTimer = nil
+        board.stopRefreshing()
         pollTask?.cancel(); pollTask = nil
         feed?.stop()
         cancelVoice()
@@ -277,6 +284,7 @@ final class HistoryStore: ObservableObject {
 
     func open(_ sessionID: String) {
         showingSchedules = false
+        showingBoard = false
         guard target != .session(sessionID) else { return }
         cancelVoice()
         target = .session(sessionID)
@@ -287,6 +295,7 @@ final class HistoryStore: ObservableObject {
 
     func newChat() {
         showingSchedules = false
+        showingBoard = false
         cancelVoice()
         target = .newChat
         newChatError = nil
@@ -301,6 +310,15 @@ final class HistoryStore: ObservableObject {
         showingSchedules = true
         schedules.selected = id
         Task { await schedules.reload() }
+    }
+
+    /// The Board pane: the picked (or suggested) Kanban board, refreshed while it's open.
+    func openBoard() {
+        guard boardsSupported else { return }
+        cancelVoice()
+        showingSchedules = false
+        showingBoard = true
+        board.startRefreshing()
     }
 
     func load(_ sessionID: String) {
