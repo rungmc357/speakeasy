@@ -229,7 +229,7 @@ def job_progress(status: str, created: float | None, settled_at: float | None, p
 class StateStore:
     def __init__(self, path: Path, hermes_home: Path | None = None):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.hermes_home = hermes_home  # where Hermes' errors.log lives, named when a failure has no known reason
+        self.hermes_home = hermes_home  # Hermes' home (kept for callers; failure text no longer names a log path)
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.Lock()
         # Called (key, status) after a task's status became terminal (the queued-message drain).

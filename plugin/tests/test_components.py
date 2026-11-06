@@ -179,7 +179,8 @@ def test_brief_failure_says_why_and_retries_hourly(tmp_path):
                        clock=lambda: now[0], error_fn=lambda: err[0])
     m.rewrite(force=True, background=False)
     st = m.status()
-    assert st["state"] == "failed" and "hermes model" in st["error"]
+    assert st["state"] == "failed" and "Send /model to your Hermes" in st["error"]
+    assert "hermes model" not in st["error"] and "`" not in st["error"]
     assert not m.refresh_due()
     now[0] += B.RETRY_INTERVAL_S
     assert m.refresh_due()

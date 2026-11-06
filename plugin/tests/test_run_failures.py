@@ -122,18 +122,62 @@ def test_the_sentences_are_speakeasys_own():
     for kind, (label, text) in failures.REASONS.items():
         assert label and text and failures.reason_text(kind) == text
         assert failures.public_failure(kind) == {"kind": kind, "label": label, "text": text}
-    assert "hermes model" in failures.reason_text("billing")
+    assert failures.reason_text("billing") == ("Your Hermes's AI account is out of credits. Add credits "
+                                               "there, or switch model in this chat.")
     unknown = failures.public_failure(failures.UNKNOWN)
-    assert "label" not in unknown and "error log" in unknown["text"]
+    assert unknown == {"kind": failures.UNKNOWN, "text": "Your Hermes stopped without saying why."}
     assert failures.public_failure(None) is None and failures.public_failure("from-a-newer-version") is None
 
 
-def test_unknown_names_the_hermes_error_log(tmp_path, monkeypatch):
-    assert str(tmp_path / "logs" / "errors.log") in failures.unknown_text(tmp_path)
+def test_unknown_says_so_without_a_log_path(tmp_path, monkeypatch):
+    """Nobody on a phone can open a log file: an unknown failure just says Hermes gave no reason
+    (the app offers Try again), with or without a Hermes home, on screen and spoken."""
     monkeypatch.setattr(failures.Path, "home", staticmethod(lambda: tmp_path))  # a real install: under ~
-    assert failures.unknown_text(tmp_path / ".hermes").endswith(": ~/.hermes/logs/errors.log")
-    # The voice gets the pointer without a path to read aloud.
-    assert "/" not in failures.voice_text(failures.UNKNOWN)
+    for home in (None, tmp_path, tmp_path / ".hermes"):
+        assert failures.unknown_text(home) == "Your Hermes stopped without saying why."
+    assert failures.voice_text(failures.UNKNOWN) == "Your Hermes stopped without saying why."
+    assert failures.failure_reason("failed", failures.UNKNOWN) == "Your Hermes stopped without saying why."
+
+
+# Words a reason must never contain: terminal commands, files, logs, or a machine the user may not
+# be sitting at. A fix that needs Hermes is a chat command sent to it (/model, /restart).
+_TERMINAL_WORDS = ("hermes model", "hermes voice", "voice setup", "codex login", "errors.log", "error log",
+                   "~/", ".hermes", "hermes machine", "terminal", "`", "restart hermes")
+
+
+def _all_reason_texts():
+    texts = [failures.unknown_text(None), failures.NO_REASON, failures.INTERRUPTED_REASON]
+    texts += list(failures.HINT_REASONS.values())
+    for kind in failures.REASONS:
+        texts += [failures.REASONS[kind][0], failures.reason_text(kind), failures.voice_text(kind),
+                  failures.failure_reason("failed", kind)]
+    return texts
+
+
+def test_no_reason_sends_anyone_to_a_terminal_or_a_log_file():
+    import re
+    for text in _all_reason_texts():
+        lowered = text.lower()
+        assert not any(word in lowered for word in _TERMINAL_WORDS), text
+        # The only slash commands are Hermes chat commands, named as something you send your Hermes.
+        for command in re.findall(r"(?<![\w/])/[a-z]+", text):
+            assert command in ("/model", "/restart"), text
+            assert f"Send {command} to your Hermes" in text, text
+
+
+def test_the_fixes_are_the_agreed_plain_words():
+    assert failures.reason_text("auth") == ("Your Hermes's AI account needs signing in again. Send /model "
+                                            "to your Hermes to sign in, or switch model here.")
+    assert failures.reason_text("rate_limit") == ("Your Hermes's AI account is busy (too many requests). "
+                                                  "Try again in a minute, or switch model.")
+    assert failures.reason_text("model_not_found") == "That AI model isn't available any more. Pick another for this chat."
+    assert failures.reason_text("hermes_key").startswith("Your Hermes didn't accept Speakeasy's key. "
+                                                         "Send /restart to your Hermes.")
+    assert failures.reason_text("hermes_unreachable") == ("Speakeasy couldn't get through to your Hermes. "
+                                                          "Send /restart to your Hermes, then try again.")
+    # The card's one-line reason is the first sentence, without the fix.
+    assert failures.failure_reason("failed", "billing") == "Your Hermes's AI account is out of credits."
+    assert failures.failure_reason("failed", "hermes_unreachable") == "Speakeasy couldn't get through to your Hermes."
 
 
 def test_only_the_provider_line_of_a_failed_reply_is_read():
@@ -237,7 +281,7 @@ def test_out_of_credits_reaches_the_task_and_the_voice(server, service, hermes):
     assert task["failure"] == {"kind": "billing", "label": "Out of credits", "text": reason}
     assert task["events"][-1] == {"kind": "result", "text": f"Work failed: {reason}", "at": task["events"][-1]["at"]}
     wait_for(lambda: P.failed_because(said) in spoken(worker))
-    assert not any("hermes model" in c for c in spoken(worker))  # the command is on screen, not spoken
+    assert not any("hermes model" in c or "/model" in c for c in spoken(worker))  # no command is spoken
     assert stopped == [("failed", reason)]
     # The provider's words stay in Hermes' log: not in the task, not in anything said on the call.
     assert "Diem" not in json.dumps(task) and not any("Diem" in c for _, _, c in worker.sent)
@@ -253,13 +297,14 @@ def test_reason_is_read_from_the_run_status_when_the_stream_drops(server, servic
     assert "sk-proj" not in json.dumps(task)
 
 
-def test_unrecognized_failure_points_at_the_error_log(server, service, hermes, home):
+def test_unrecognized_failure_says_hermes_gave_no_reason(server, service, hermes, home):
     hermes.fail_with = "HTTP 500: upstream exploded"
     _, worker = start_call(server, service)
     worker.delegate("call_odd", "Book a table for two")
     task = failed_task(server)
     assert task["failure"]["kind"] == "unknown" and "label" not in task["failure"]
-    assert str(home / "logs" / "errors.log") in task["failure"]["text"]
+    assert task["failure"]["text"] == "Your Hermes stopped without saying why."
+    assert "errors.log" not in json.dumps(task) and str(home) not in json.dumps(task)
     assert "exploded" not in json.dumps(task)
     wait_for(lambda: P.FAILED_SPOKEN in spoken(worker))
 
@@ -352,14 +397,13 @@ def test_continued_conversation_that_cannot_reach_hermes(server, service, hermes
 
 
 def test_voice_never_reads_a_command_aloud():
-    """The voice names the fix in words; the command (hermes model, hermes voice setup) is only on
-    screen and in the chat notice, where it can be copied."""
+    """The voice names the fix in words; a chat command (/model, /restart) is only on screen and in
+    the chat notice, where it can be copied."""
     from speakeasy.text import looks_like_command
     for kind in failures.REASONS:
         said = failures.voice_text(kind)
         assert said and "hermes model" not in said and "voice setup" not in said and "`" not in said
+        assert "/" not in said
         assert not looks_like_command(said)
         assert "in the app" in said
-        if kind != "content_refused":  # its fix is in the app (Try again, Switch model), not a command
-            assert "hermes " in failures.reason_text(kind)  # the on-screen text keeps the command
     assert "in the app" not in failures.voice_text(failures.UNKNOWN)

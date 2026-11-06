@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin (next) — Failure messages without terminal commands
+
+Works with the current Mac and iPhone apps; no app update needed.
+
+- **A task that didn't finish says what to do in plain words.** Out of credits, a sign-in that ran out, too many requests or a model that's gone now read like "Your Hermes's AI account is out of credits. Add credits there, or switch model in this chat." instead of naming a terminal command.
+- **When Hermes itself needs a nudge, it's a message you send it.** A rejected key or an unreachable Hermes says "Send /restart to your Hermes, then try again."; a sign-in says "Send /model to your Hermes to sign in". The morning brief says the same.
+- **No log files.** A task that stopped with no reason says "Your Hermes stopped without saying why." instead of pointing at a log on the Hermes computer.
+
 ## Plugin 0.3.39 — Fewer false "Refused by the model's safety filter" failures
 
 Works with the current Mac and iPhone apps; no app update needed.

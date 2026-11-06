@@ -528,8 +528,8 @@ ask (same words, started within three minutes) are left out of the task list.
 running), `step_index` / `step_count` (the step it is on, 1-based, out of its `plan`; null without a
 plan; `step_index == step_count` once completed), `eta_seconds` (only once two steps are done, from
 their measured pace; never a guess), and `failure_reason`: one short plain sentence for a `failed`
-or `interrupted` task (e.g. "Hermes's model provider is out of credits.", "It timed out waiting on
-Hermes's model provider.", "Hermes stopped with an error and didn't say why."), never "unknown";
+or `interrupted` task (e.g. "Your Hermes's AI account is out of credits.", "It timed out waiting on
+Hermes's model provider.", "Your Hermes stopped without saying why."), never "unknown";
 null otherwise. The richer `failure` object (below) is unchanged.
 
 **Summary points** (capability `summary_points`): when an answer is laid out in sections (two or
@@ -573,15 +573,20 @@ or a card number for `/voice/card-image`); `flow {title, nodes[≤5]{label, deta
 `devices {title, items[≤8]{name, value, detail, tone, history[≤6]}}`.
 
 A `failed` task also has `failure`: why it failed, in Speakeasy's own words (the provider's error
-text is never passed through). `kind` is `billing`, `auth`, `rate_limit`, `model_not_found`,
-`hermes_key`, `hermes_unreachable` or `unknown`; `label` is a short tag for the status line
-("Out of credits"), present only for a known reason; `text` says what happened and what to do.
-`unknown` means Hermes gave neither a recognized reason nor an answer, and its `text` points at
-Hermes' errors.log. A failed item in `away` carries the same `failure` object.
+text is never passed through). `kind` is `billing`, `auth`, `rate_limit`, `content_refused`,
+`model_not_found`, `hermes_key`, `hermes_unreachable` or `unknown`; `label` is a short tag for the
+status line ("Out of credits"), present only for a known reason; `text` says what happened and what
+to do, in plain words: never a terminal command or a file path. A fix that needs Hermes itself is a
+chat command the user sends it ("Send /model to your Hermes", "Send /restart to your Hermes"); the
+rest is for the app's own buttons: Switch model for `billing`, `auth`, `rate_limit`,
+`content_refused` and `model_not_found`, Try again for `rate_limit`, `content_refused`,
+`hermes_key`, `hermes_unreachable` and `unknown`. `unknown` means Hermes gave neither a recognized
+reason nor an answer ("Your Hermes stopped without saying why."). A failed item in `away` carries
+the same `failure` object.
 
 ```json
 "failure": {"kind": "billing", "label": "Out of credits",
-            "text": "Hermes's model provider is out of credits. Top up that account, or run hermes model on the Hermes machine to switch providers."}
+            "text": "Your Hermes's AI account is out of credits. Add credits there, or switch model in this chat."}
 ```
 
 `200`
