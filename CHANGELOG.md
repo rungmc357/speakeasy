@@ -2,7 +2,7 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Unreleased
+## Plugin 0.3.34 · Mac 0.3.19 · iPhone build 65 — Your whole Hermes, in one app
 
 - **Pick the model for each chat.** A chip above the message field on a session page or New chat shows which model and reasoning level the next message runs on; tap it to use another one for this chat, make it your default, or go back to the default. Set Speakeasy's default in Settings › Jobs. On a call, "use the smart model for this" (or "the fast model") picks for that job. The list is your Hermes' own (signed-in providers only), and nothing about where your words go changes.
 - **Scheduled.** Your Hermes scheduled jobs in the side panel on iPhone, iPad and Mac: what's coming up, paused or done, each in plain English ("Weekdays at 8:00 AM"), with its last result and recent runs (open a run to read its conversation). Run now, Pause/Resume, Edit or Delete, or make a new one by typing or saying it ("every weekday at 8 summarize my inbox"): you see a preview and nothing is saved until you tap Save.
