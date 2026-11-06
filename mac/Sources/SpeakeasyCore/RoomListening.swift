@@ -284,7 +284,7 @@ public enum RoomTakeoffDecision: Equatable, Sendable {
     case waitForLive
     /// Nothing said yet: decide again at this time.
     case waitUntil(Date)
-    /// Nothing said: ask the voice to respond from what it heard in the room.
+    /// No words yet: the voice answers from the room audio it has.
     case nudgeNow
     /// The user has started talking on the live call: never nudge over them.
     case skip
