@@ -158,7 +158,7 @@ final class KanbanBoardTests: XCTestCase {
             guard l.scrolls else { XCTAssertEqual(l.maxOffset(inset: 28), 0, accuracy: 0.01); continue }
             XCTAssertGreaterThanOrEqual(l.maxOffset(inset: 28), l.offset(of: l.lastLeading) - 0.01, "width \(width)")
             // Once a whole column fits, exactly that far (no blank scroll past the last column).
-            if width >= 300 { XCTAssertEqual(l.maxOffset(inset: 28), l.offset(of: l.lastLeading), accuracy: 0.01, "width \(width)") }
+            if width >= 300 { XCTAssertEqual(l.maxOffset(inset: 28), l.offset(of: l.lastLeading) + 2, accuracy: 0.01, "width \(width)") }
         }
     }
 

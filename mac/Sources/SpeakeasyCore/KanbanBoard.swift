@@ -225,7 +225,9 @@ public struct KanbanBoardLayout: Equatable, Sendable {
         visible = k
         columnWidth = max(minColumn * 0.75, (room - CGFloat(k) * spacing) / CGFloat(k))
         // What's left of the pane after k columns lined up at the leading margin (peek + gap).
-        trailingMargin = max(inset, width - inset - CGFloat(k) * columnWidth - CGFloat(k - 1) * spacing)
+        // Plus a couple of points: frames round to pixels, and a row a fraction short of the target
+        // offset won't move to it at all (iPad).
+        trailingMargin = max(inset, width - inset - CGFloat(k) * columnWidth - CGFloat(k - 1) * spacing) + 2
     }
 
     /// Columns fully in view when `leading` is the first one.
