@@ -1,10 +1,12 @@
 import Foundation
 
 // Steer or queue (docs/API.md "Steer or queue", servers with `message_modes`): while a task runs, a
-// message goes into it now (steer, the default) or waits and is sent as its next turn once it
-// finishes (queue). The composer shows the choice only while a run is active; otherwise a plain send.
+// message goes into it now (steer) or waits and is sent as its next turn once it finishes (queue).
+// The apps ask at Send (a small pop-up with both choices, nothing sent until a pick); with nothing
+// running Send is a plain send.
 
-/// The composer's choice. Return sends with `selected`; ⌘↩ (Mac, iPad keyboard) sends with the other.
+/// A remembered choice (older composers kept one under the field; the current apps ask every time
+/// and pass the pick straight through, so `selected` is only a default for callers that still use it).
 public struct MessageModeChoice: Equatable, Sendable {
     public var selected: MessageMode
     public init(selected: MessageMode = .steer) { self.selected = selected }
@@ -25,7 +27,7 @@ public struct MessageModeChoice: Equatable, Sendable {
     /// The send button's label for the current choice (accessibility, tooltip).
     public func sendLabel(offered: Bool) -> String {
         guard offered else { return "Send" }
-        return selected == .steer ? "Steer now" : "Send when it's done"
+        return selected == .steer ? "Steer now" : "Queue for after"
     }
 }
 
