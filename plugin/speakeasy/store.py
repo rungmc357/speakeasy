@@ -15,10 +15,12 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from . import activity as activity_mod
 from . import live_status
+from . import runstate as RS
+from .runstate import FINAL, RunState
 from .emails import canonical_json, draft_sha256
 from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
@@ -129,8 +131,9 @@ RECEIPTS = {"Request received", "Started working"}  # milestones that are receip
 # Milestones about where a task went or what was added to it: bookkeeping, never a plan step done.
 PLUMBING = re.compile(r"^(?:Continuing in |Sent into |You added: |Moved to another task|Replaced by your correction|"
                       r"Taken back|Queued|Waiting for |Started in |Answer will land)")
-NOT_STARTED = {"admitting", "waiting_on_task"}
+NOT_STARTED = RS.NOT_STARTED
 logger = logging.getLogger(__name__)
+_UNSET: Any = object()  # transition(): no result given
 _PLAN_STOP = set("""a an the and or to of in on for with at by from is are be it its this that your my our me you we
 it's do does get go up out as""".split())
 # Words of a plan step that say nothing about the actual work ("Recall prior points", "Continue the
@@ -339,7 +342,7 @@ class StateStore:
             self._db.execute("UPDATE queued_messages SET state='queued' WHERE state='sending'")
             # Finished tasks that never had a Hermes run id (quick answers, home control) could not be
             # cleared: "Clear done" and the x address tasks by run id. Give them their local id.
-            settled = sorted(TERMINAL | {"rejected"})
+            settled = sorted(RS.FINAL)
             for (key,) in self._db.execute(
                     f"SELECT idem_key FROM runs WHERE run_id IS NULL AND status IN ({','.join('?' * len(settled))})",
                     settled).fetchall():
@@ -747,9 +750,9 @@ class StateStore:
             if mine is None or started is not None:
                 return None
             ahead = self._db.execute(
-                "SELECT title, summary FROM runs WHERE session_id=? AND rowid<? AND status IN "
-                "('running','working','admitting','waiting_for_approval') AND COALESCE(dismissed,0)=0 "
-                "ORDER BY rowid LIMIT 1", (session_id, mine[0])).fetchone()
+                f"SELECT title, summary FROM runs WHERE session_id=? AND rowid<? AND status IN "
+                f"({','.join('?' * len(RS.IN_FLIGHT))}) AND COALESCE(dismissed,0)=0 "
+                "ORDER BY rowid LIMIT 1", (session_id, mine[0], *sorted(RS.IN_FLIGHT))).fetchone()
         if ahead is None:
             return None
         return (ahead[0] or ahead[1] or "another task")[:120]
@@ -844,7 +847,7 @@ class StateStore:
 
     def dismiss(self, run_ids: list[str]) -> list[str]:
         """Hide finished tasks from the task list. Running tasks are never dismissed."""
-        settled = sorted(TERMINAL | {"rejected", "ambiguous"})  # unconfirmed runs can be cleared too
+        settled = sorted(RS.DISMISSABLE)  # unconfirmed runs can be cleared too
         marks = ",".join("?" * len(settled))
         done = []
         with self._lock, self._db:
@@ -961,7 +964,7 @@ class StateStore:
             self._db.execute("UPDATE runs SET dismissed=NULL WHERE idem_key=?", (key,))
 
     def dismiss_key(self, key: str) -> bool:
-        settled = sorted(TERMINAL | {"rejected", "ambiguous"})  # unconfirmed runs can be cleared too
+        settled = sorted(RS.DISMISSABLE)  # unconfirmed runs can be cleared too
         marks = ",".join("?" * len(settled))
         with self._lock, self._db:
             cursor = self._db.execute(
@@ -972,7 +975,7 @@ class StateStore:
         """The user set this task's question (or approval) aside: already handled, or not needed.
         It settles as no longer needed, never as failed, and stops waiting on them. Only a settled
         task (finished, or waiting for approval) has anything to set aside."""
-        settled = sorted(SETTLED | {"rejected"})
+        settled = sorted(SETTLED | RS.FINAL)
         marks = ",".join("?" * len(settled))
         now = time.time()
         with self._lock, self._db:
@@ -1111,23 +1114,94 @@ class StateStore:
                                  (row[0], key, time.time()))
             self._db.execute("UPDATE runs SET run_id=NULL WHERE idem_key=?", (key,))
 
-    def update_run(self, key: str, run_id: str | None, status: str) -> None:
+    def update_run(self, key: str, run_id: str | None, status: str) -> bool:
+        """A checked status change (``transition`` with the allowed states for *status*)."""
+        return self.transition(key, status, run_id=run_id)
+
+    def run_status(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT status FROM runs WHERE idem_key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def transition(self, key: str, to: str, expect: Iterable[str] | None = None, *, run_id: str | None = None,
+                   mirror: Any = None, orphaned: bool = False, result: Any = _UNSET) -> bool:
+        """Move a run to *to* only from one of the *expect* states (default: every state *to* may be
+        entered from, runstate.ALLOWED_FROM) — a compare-and-set, like ``transition_draft``.
+
+        True when the row moved. *mirror* (the in-memory copy, anything with ``.status``) is set
+        under the same lock when it moved, and set to the stored status when that is final and the
+        change was refused, so memory never drifts from the row. A move to a final state stamps a
+        run id, fires the settle listeners and settles the task's activity and helpers (one
+        ``run.<outcome>`` event): every path that ends a task — its own events, Stop, the sweeps —
+        stops the card spinning the same way. *result*: the answer, stored in the same write, so
+        no reader ever sees a finished task without it (and a refused write never replaces it).
+        *orphaned*: settled by a sweep; helpers stop too (nothing follows them any more)."""
+        to = RunState(to).value
+        allowed = sorted(RS.allowed_from(to) if expect is None else {RunState(s).value for s in expect})
+        if not allowed:
+            return False
         now = time.time()
+        marks = ",".join("?" * len(allowed))
         with self._lock, self._db:
-            self._db.execute("UPDATE runs SET run_id=COALESCE(?,run_id),status=?,updated=? WHERE idem_key=?",
-                             (run_id, status, now, key))
-            if status in TERMINAL or status == "rejected":
-                # Every finished task needs a run id so "Clear done" and the x can clear it.
-                self._db.execute("UPDATE runs SET run_id=? WHERE idem_key=? AND run_id IS NULL",
-                                 (local_run_id(key), key))
-            if status in SETTLED:
-                self._db.execute("UPDATE runs SET settled_at=? WHERE idem_key=?", (now, key))
-        if status in TERMINAL:
+            moved = self._db.execute(
+                f"UPDATE runs SET run_id=COALESCE(?,run_id),status=?,updated=? WHERE idem_key=? AND status IN ({marks})",
+                (run_id, to, now, key, *allowed)).rowcount == 1
+            if moved:
+                if result is not _UNSET:
+                    self._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?",
+                                     (json.dumps(result) if result else None, key))
+                if to in FINAL:
+                    # Every finished task needs a run id so "Clear done" and the x can clear it.
+                    self._db.execute("UPDATE runs SET run_id=? WHERE idem_key=? AND run_id IS NULL",
+                                     (local_run_id(key), key))
+                if to in SETTLED:
+                    self._db.execute("UPDATE runs SET settled_at=? WHERE idem_key=?", (now, key))
+                if mirror is not None:
+                    mirror.status = to
+                    if run_id is not None and hasattr(mirror, "run_id"):
+                        mirror.run_id = run_id
+            else:
+                row = self._db.execute("SELECT status FROM runs WHERE idem_key=?", (key,)).fetchone()
+                if row is not None and run_id is not None:
+                    # Hermes' run id is a fact, whatever the status: a Stop that got in before the
+                    # run.started event still needs it to reach the run.
+                    self._db.execute("UPDATE runs SET run_id=? WHERE idem_key=? AND run_id IS NULL", (run_id, key))
+                    if mirror is not None and getattr(mirror, "run_id", "") is None:
+                        mirror.run_id = run_id
+                if row is not None:
+                    logger.info("speakeasy: run status %s -> %s refused (not from %s)", row[0], to, ",".join(allowed))
+                    if mirror is not None and row[0] in FINAL:
+                        mirror.status = row[0]
+        if moved and to in TERMINAL:
             for listener in list(self.settle_listeners):
                 try:
-                    listener(key, status)
+                    listener(key, to)
                 except Exception:  # a listener never breaks a status write
                     pass
+            try:
+                activity_mod.settle(self, key, to, orphaned=orphaned)
+            except Exception:
+                logger.debug("speakeasy: activity not settled", exc_info=True)
+        return moved
+
+    def open_runs(self) -> list[dict[str, Any]]:
+        """Every run that is not final (runstate.OPEN), for the orphan sweep."""
+        states = sorted(RS.OPEN)
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT idem_key, run_id, status, updated, created, continued FROM runs "
+                f"WHERE status IN ({','.join('?' * len(states))})", states).fetchall()
+        out = []
+        for key, run_id, status, updated, created, continued in rows:
+            try:
+                placed = json.loads(continued) if continued else {}
+            except ValueError:
+                placed = {}
+            placed = placed if isinstance(placed, dict) else {}
+            out.append({"key": key, "run_id": run_id, "status": status, "updated": float(updated or 0),
+                        "created": float(created) if created else None,
+                        "thread": bool(placed.get("thread_id") or placed.get("platform"))})
+        return out
 
     # -- queued messages ("Send when it's done") ---------------------------------------------------
     _QUEUED_COLS = "client_id,kind,target,page_session,watch_key,text,state,created,updated,reply_json,error"

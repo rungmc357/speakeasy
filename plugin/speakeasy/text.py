@@ -13,11 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from .cards import LOCAL_IMAGE_EXTS, ImageRejected, vetted_image_url, vetted_local_image
+from .runstate import SETTLED, TERMINAL  # noqa: F401  (the run states live in runstate.py)
 
 MAX_TRANSCRIPT = 64 * 1024
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
-SETTLED = TERMINAL | {"waiting_for_approval"}
 MAX_CARDS = 8
 MAX_RESULT_FULL = 8000
 AUTHORED_PRECEDENCE_S = 20.0

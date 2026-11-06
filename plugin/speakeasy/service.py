@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from . import __version__
 from . import attachments as A
+from . import runstate as RS
 from . import transcribe as T
 from . import delivery as D
 from . import duck as duck_mod
@@ -125,7 +126,7 @@ CAPABILITIES["question_actions"] = True
 # (queue). Session pages and tasks list held messages (``queued``); DELETE cancels one, .../steer sends it now.
 CAPABILITIES["message_modes"] = True
 # A task can take a queued message while it is in one of these (else the message is simply sent).
-QUEUE_BEHIND = ACTIVE_RUN_STATES - {"cancel_requested"}
+QUEUE_BEHIND = RS.QUEUE_BEHIND
 QUEUE_SENDS_AFTER = {"completed", "failed"}  # a stopped task keeps its queue (shown; Steer now or Cancel)
 STEER_WAITING_AFTER_S = 60  # a steered message not read by then: "Waiting for the current step to finish"
 STEER_UNREAD_GRACE_S = 8    # a finished task with no receipt for it this long after: it was never read
@@ -354,6 +355,7 @@ class VoiceService(SecureInputMixin):
                                 lambda: merge_calls(self.call_log.recent(), self.store.calls_from_tasks()),
                                 names=self._tune_names)
         self.interactions: dict[str, Interaction] = {}
+        self._started_at = time.time()  # rows last touched before this are from before a restart
         self.lock = threading.Lock()
         # Typed turns sent with a client_id, per call chain: (root interaction id, client_id) ->
         # (text, the send's future). A retry of the same id waits on, or reports, the first send.
@@ -927,7 +929,7 @@ class VoiceService(SecureInputMixin):
 
     def _idle_loop(self) -> None:
         ticks = 0
-        self.settle_stuck_tasks()
+        self.settle_stuck_tasks(startup=True)  # nothing is followed yet: every open row is from before
         self._drain_quietly()  # held messages from before a reload
         self._check_image_support_soon()
         self.prune_shared()
@@ -1017,14 +1019,35 @@ class VoiceService(SecureInputMixin):
         if support != before:
             logger.info("speakeasy: Hermes images: %s, vision: %s", support.get("images"), support.get("vision"))
 
-    def settle_stuck_tasks(self) -> list[tuple[str, str]]:
+    def settle_stuck_tasks(self, startup: bool = False) -> list[tuple[str, str]]:
         from .calls import LIVE_THREAD_WAITS
-        from .recovery import sweep
+        from .recovery import sweep, sweep_orphans
+        settled: list[tuple[str, str]] = []
         try:
-            return sweep(self.store, self.home / "state.db", self.image_roots, LIVE_THREAD_WAITS)
+            settled += sweep_orphans(self.store, self.hermes, self.followed_run_keys() | set(LIVE_THREAD_WAITS),
+                                     self.image_roots, started_at=self._started_at if startup else None)
+        except Exception as exc:
+            logger.warning("speakeasy: open-task sweep failed: %s", type(exc).__name__)
+        try:
+            settled += sweep(self.store, self.home / "state.db", self.image_roots, LIVE_THREAD_WAITS)
         except Exception as exc:
             logger.warning("speakeasy: stuck-task sweep failed: %s", type(exc).__name__)
-            return []
+        if settled:
+            self.publish_all()
+        return settled
+
+    def followed_run_keys(self) -> set[str]:
+        """Tasks this process is following right now (their in-memory run is still open)."""
+        with self.lock:
+            live = list(self.interactions.values())
+        text = self._text_worker
+        if text is not None:
+            live.append(text.interaction)
+        keys: set[str] = set()
+        for interaction in live:
+            with interaction.lock:
+                keys |= {r.idem_key for r in interaction.runs.values() if r.status in RS.OPEN}
+        return keys
 
     # -- lookups -------------------------------------------------------------------------------
     def interaction(self, interaction_id: str) -> Interaction:
@@ -1316,8 +1339,12 @@ class VoiceService(SecureInputMixin):
         with interaction.lock:
             if backend.status in TERMINAL or backend.status in {"ambiguous", "cancel_requested"}:
                 raise ServiceError(409, "no active backend run")
-            backend.status = "cancel_requested"
-        self.store.update_run(backend.idem_key, None, "cancel_requested")
+        # Checked against the stored status too: a task that just finished is not reopened.
+        if not self.store.transition(backend.idem_key, "cancel_requested", mirror=backend):
+            if self.store.run_status(backend.idem_key) is not None:
+                raise ServiceError(409, "no active backend run")
+            with interaction.lock:
+                backend.status = "cancel_requested"
         self.store.progress(backend.idem_key, "milestone", "Stop requested")
         name = self.settings.get()["assistant_name"]
         publish_state(self.store, interaction, name)
@@ -1325,8 +1352,11 @@ class VoiceService(SecureInputMixin):
             result = self.hermes.stop(backend.run_id)
         except Exception:
             with interaction.lock:
-                if backend.status == "cancel_requested":
-                    backend.status, backend.error = "ambiguous", "Backend stop outcome is ambiguous"
+                lost = backend.status == "cancel_requested"
+                if lost:
+                    backend.error = "Backend stop outcome is ambiguous"
+            if lost:
+                self.store.transition(backend.idem_key, "ambiguous", mirror=backend)
             publish_state(self.store, interaction, name)
             raise ServiceError(502, "Hermes stop failed") from None
         return {"interaction_id": interaction_id, "backend_cancel": result.get("status", "unknown"),
@@ -1354,14 +1384,19 @@ class VoiceService(SecureInputMixin):
             result = self.hermes.approve(backend.run_id, request_id, choice, offered)
         except Exception:
             with interaction.lock:
-                if backend.status == "resolving_approval":
-                    backend.status, backend.error = "ambiguous", "Backend approval outcome is ambiguous"
+                lost = backend.status == "resolving_approval"
+                if lost:
+                    backend.error = "Backend approval outcome is ambiguous"
+            if lost:
+                self.store.transition(backend.idem_key, "ambiguous", mirror=backend)
             publish_state(self.store, interaction, name)
             raise ServiceError(502, "Hermes approval failed") from None
         with interaction.lock:
-            if backend.status == "resolving_approval":
-                backend.status = "working"
-        self.store.update_run(backend.idem_key, None, "working")
+            resolving = backend.status == "resolving_approval"
+        if resolving and not self.store.transition(backend.idem_key, "working", mirror=backend):
+            with interaction.lock:  # it was stopped or ended meanwhile: memory follows the row
+                if backend.status == "resolving_approval":
+                    backend.status = self.store.run_status(backend.idem_key) or "working"
         self.store.progress(backend.idem_key, "milestone", APPROVED_MILESTONE[choice])
         publish_state(self.store, interaction, name)
         return {"interaction_id": interaction_id, "choice": choice, "run_id": backend.run_id,
@@ -1428,8 +1463,9 @@ class VoiceService(SecureInputMixin):
                 backend = next((r for r in interaction.runs.values() if r.idem_key == key), None)
                 approval = backend.approval if backend and backend.status == "waiting_for_approval" else None
                 if approval and backend.run_id:
-                    backend.approval, backend.status = None, "working"
+                    backend.approval = None
             if approval and backend.run_id:
+                self.store.transition(key, "working", mirror=backend)
                 try:
                     self.hermes.approve(backend.run_id, approval.get("request_id", ""), "deny")
                 except Exception:
@@ -2257,7 +2293,7 @@ class VoiceService(SecureInputMixin):
             return None
         statuses = [status for _, _, status in keys[:8]]
         running = any(st in ACTIVE_RUN_STATES for st in statuses)
-        needs_you = any(st in {"waiting_for_approval", "resolving_approval"} for st in statuses)
+        needs_you = any(st in RS.ASKING for st in statuses)
         work = self.store.work(idem_key=keys[0][0], assistant_name=self.settings.get()["assistant_name"]) or {}
         title = (work.get("job") or {}).get("name") or work.get("title")
         needs_you = needs_you or self._open_question([k for k, _, _ in keys] + self._continuations(session_id)) is not None
@@ -2287,7 +2323,7 @@ class VoiceService(SecureInputMixin):
             return None
         statuses = [(self.store.run_row(k) or {}).get("status") for k in keys[-4:]]
         return H.Linked(keys=[], name=None, running=any(st in ACTIVE_RUN_STATES for st in statuses),
-                        needs_you=any(st in {"waiting_for_approval", "resolving_approval"} for st in statuses)
+                        needs_you=any(st in RS.ASKING for st in statuses)
                         or self._open_question(keys) is not None,
                         run_ids=[])
 
@@ -2591,7 +2627,7 @@ class VoiceService(SecureInputMixin):
         live = H.session_live(self.rt.state_db, sid, entries) if not running and before is None else None
         title = (meta.get("title") or "").strip() or (link.name if link else None)
         first_user = next((e["text"] for e in page["entries"] if e["kind"] == "user"), None)
-        needs_you = (any(j.get("status") in {"waiting_for_approval", "resolving_approval"} for j in jobs)
+        needs_you = (any(j.get("status") in RS.ASKING for j in jobs)
                      or bool(open_keys))
         return {"session": {
             "id": sid, "title": H.tidy_title(title) if title else (

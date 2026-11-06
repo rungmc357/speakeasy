@@ -813,6 +813,34 @@ def observe(store: Any, key: str, event: dict[str, Any], on_flush: Any = None, n
         return _flush_locked(store, key, job, force=terminal, on_flush=on_flush, now=now)
 
 
+def settle(store: Any, key: str, outcome: str, now: float | None = None, *, orphaned: bool = False) -> bool:
+    """The task's run ended (store.transition): end every step and helper still shown running, the
+    same way the run's own ``run.<outcome>`` event does. A no-op once settled, so the run's event
+    and this together never double anything; a task with no activity gets none. *orphaned*: the
+    run was settled by a sweep (nothing follows it any more), so a helper a completed run left
+    working stops too instead of spinning on the card for good."""
+    from . import subagents as S
+    with _LOCK:
+        job = tracker(store, key)
+        state = job.state
+        running = any(i.get("status") == "running" for i in state.get("items") or [])
+        subs = state.get("subagents") if isinstance(state.get("subagents"), list) else []
+        helpers = [s for s in subs if isinstance(s, dict) and s.get("status") == "running"]
+        if not running and not helpers:
+            return False
+        if running or not state.get("ended"):
+            job.observe({"event": f"run.{outcome}"}, now)
+        if orphaned:
+            clock = time.time() if now is None else now
+            for sub in helpers:
+                if sub.get("status") == "running":
+                    S.settle_orphan(sub, clock)
+            job.dirty = True
+        if not job.dirty:
+            return False
+        return _flush_locked(store, key, job, force=True, on_flush=None, now=now)
+
+
 SPEECH_STEPS = 10  # items the call pulse's wording model sees
 FINDING_BASE = 1_000_000  # findings' numbers, apart from the steps'
 _SPEECH_KEYS = ("text", "detail", "tool", "args", "result", "status", "at", "started_at", "ended_at")
