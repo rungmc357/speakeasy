@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from . import recap
+
 logger = logging.getLogger(__name__)
 
 MAX_OPEN_TASKS = 8
@@ -746,7 +748,8 @@ def route_messages(request: str, tasks: list[OpenTask], topics: list[Topic],
             "about, usually the one just discussed. parts: when not a follow-up, the request as 1 to 4 independent, "
             "self-contained asks. Split only clearly separate asks about different things; one question with "
             "several details about the same thing (storage used, what's taking space, what to delete) is ONE "
-            "part; each part must make sense alone). channel: the label of the channel whose description clearly fits, else null. "
+            "part, and so is a status question with its follow-on (\"status of the move? what's still left?\"): "
+            "never two parts that check or work on the same thing; each part must make sense alone). channel: the label of the channel whose description clearly fits, else null. "
             "conversation: when the request is not a follow-up to an open task but continues work already going "
             "on in one of the existing conversations (same project, same bug, same thing being built, or it "
             "says 'that thread', 'where we were working on', 'keep going on'), that conversation's ref; judge by "
@@ -805,6 +808,16 @@ def parse_decision(text: Any, request: str, tasks: list[OpenTask], topics: list[
     clean = [" ".join(p.split())[:600] for p in parts if isinstance(p, str) and p.strip()]
     if len(clean) != len(parts):
         return None
+    conversation_at = data.get("conversation_part")
+    if len(clean) > 1:
+        # One subject is never parallel twin tasks: parts naming the same thing (the same build or
+        # issue number, mostly the same words, two status checks of one thing) are one task.
+        groups = recap.merge_parts(clean)
+        if len(groups) < len(clean):
+            logger.info("speakeasy: routing split one subject into %d parts; merged into %d", len(clean), len(groups))
+            if isinstance(conversation_at, int) and not isinstance(conversation_at, bool):
+                conversation_at = next((g for g, members in enumerate(groups) if conversation_at in members), None)
+            clean = recap.merged(clean, groups) if len(groups) > 1 else [request]
     conversation = data.get("conversation")
     if conversation is not None:
         if not isinstance(conversation, str):
@@ -818,7 +831,7 @@ def parse_decision(text: Any, request: str, tasks: list[OpenTask], topics: list[
             # Several asks, one of which continues a conversation ("where'd we leave off with my PRs,
             # and how's my fantasy team"): that part goes to the conversation, the rest are new tasks.
             # Sending the whole request there buried the other asks inside that one thread.
-            at = _conversation_part(data.get("conversation_part"), clean, next(c for c in chats or [] if c.ref == ref))
+            at = _conversation_part(conversation_at, clean, next(c for c in chats or [] if c.ref == ref))
             return Decision([Part(NEW, p, conversation=ref if i == at else None) for i, p in enumerate(clean)],
                             channel, "model", show=show)
     if len(clean) == 1:

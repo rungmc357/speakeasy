@@ -1307,6 +1307,35 @@ class StateStore:
             call["tasks"].append({"request": request, "title": title or "", "status": status, "result": result})
         return list(calls.values())
 
+    def recent_subject_tasks(self, since_s: float = 12 * 3600, limit: int = 40) -> list[Any]:
+        """Voice tasks of the last ``since_s`` (any call), newest first, as recap.Earlier: what a
+        repeat "where are we on X?" is matched against. Rejected and dismissed rows are left out."""
+        from .recap import Earlier
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT idem_key, delegation_id, status, title, result_json, created, settled_at,
+                          interaction_id, session_id, seen FROM runs
+                   WHERE COALESCE(settled_at, created, updated) > ? AND status != 'rejected'
+                     AND COALESCE(dismissed, 0) = 0
+                   ORDER BY COALESCE(settled_at, created, updated) DESC LIMIT ?""",
+                (time.time() - since_s, limit)).fetchall()
+        out = []
+        for key, delegation, status, title, result_json, created, settled_at, interaction, session, seen in rows:
+            request = self.request_text(key)
+            if not request:
+                continue
+            spoken = ""
+            if result_json:
+                try:
+                    spoken = str((json.loads(result_json) or {}).get("spoken") or "")
+                except (ValueError, AttributeError):
+                    spoken = ""
+            out.append(Earlier(key=key, task_id=delegation or key, request=request, status=status,
+                               title=title or "", result=spoken, created=float(created or 0),
+                               settled_at=float(settled_at) if settled_at else None,
+                               interaction_id=interaction or "", session_id=session, seen=bool(seen)))
+        return out
+
     def away(self, limit: int = 3) -> list[dict[str, Any]]:
         """Runs that settled (terminal or approval-needed) since the previous call ended."""
         ended = self.get_meta("last_call_end")
