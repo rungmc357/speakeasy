@@ -1,39 +1,90 @@
 import XCTest
 @testable import SpeakeasyCore
 
-/// Automated work in the history (SPK-70): one show/hide switch for board workers and scheduled jobs,
+/// Automated work in the history (SPK-70, SPK-72): a filter menu for board workers, scheduled jobs and helpers,
 /// never unread or needs-you, and a board worker's chat opening on its card.
 final class HistoryAutomatedTests: XCTestCase {
     private func row(_ id: String, source: String = "speakeasy", automated: Bool = false) -> HistorySession {
         HistorySession(id: id, title: "T", source: source, sourceLabel: source.capitalized, lastActivity: nil, automated: automated)
     }
 
-    func testHideAutomatedGoesInTheQueryAndStartsOver() throws {
-        var list = HistoryList()
-        let q1 = list.reset()
-        XCTAssertFalse(q1.path.contains("automated"))
-        list.apply(HistoryPage(sessions: [row("a"), row("k", source: "kanban", automated: true)],
-                               automated: HistoryAutomated(count: 1, hidden: false)), for: q1)
-        XCTAssertTrue(list.offersAutomatedSwitch)
-        let q2 = try XCTUnwrap(list.setHideAutomated(true))
-        XCTAssertEqual(q2.path, "/voice/history?automated=0&limit=40")
-        XCTAssertTrue(list.sessions.isEmpty, "starts over")
-        XCTAssertNil(list.setHideAutomated(true), "no change, no request")
-        // Paging and filters keep it.
-        list.apply(HistoryPage(sessions: [row("a")], nextCursor: "1|a", automated: HistoryAutomated(count: 1, hidden: true)), for: q2)
-        XCTAssertTrue(try XCTUnwrap(list.loadMore()).path.contains("automated=0"))
-        XCTAssertTrue(try XCTUnwrap(list.setSource("kanban")).path.contains("automated=0"))
-        XCTAssertTrue(HistoryList(hideAutomated: true).hideAutomated, "remembered choice starts the list")
+    private func kinds(kanban: Int = 1, scheduled: Int = 0, helpers: Int = 0, shown: HistoryShown = .standard) -> HistoryAutomated {
+        HistoryAutomated(count: kanban + scheduled, hidden: !shown.kanban && !shown.scheduled, kinds: [
+            .init(id: "kanban", label: "Board workers", count: kanban, shown: shown.kanban),
+            .init(id: "scheduled", label: "Scheduled jobs", count: scheduled, shown: shown.scheduled),
+            .init(id: "helpers", label: "Background helpers", count: helpers, shown: shown.helpers)])
     }
 
-    func testTheSwitchShowsOnlyWhenThereIsSomethingToHide() {
+    func testEachMenuToggleGoesInTheQueryAndStartsOver() throws {
+        var list = HistoryList()
+        let q1 = list.reset()
+        XCTAssertEqual(q1.path, "/voice/history?limit=40", "standard choice: nothing extra asked")
+        list.apply(HistoryPage(sessions: [row("a"), row("k", source: "kanban", automated: true)],
+                               automated: kinds(kanban: 1, scheduled: 2, helpers: 3)), for: q1)
+        XCTAssertTrue(list.offersAutomatedMenu)
+        XCTAssertEqual(list.automatedMenu.map(\.id), ["kanban", "scheduled", "helpers"])
+        let q2 = try XCTUnwrap(list.setShown("kanban", false))
+        XCTAssertEqual(q2.path, "/voice/history?hide=kanban&limit=40")
+        XCTAssertTrue(list.sessions.isEmpty, "starts over")
+        XCTAssertNil(list.setShown("kanban", false), "no change, no request")
+        let q3 = try XCTUnwrap(list.setShown("helpers", true))
+        XCTAssertEqual(q3.path, "/voice/history?hide=kanban&helpers=1&limit=40")
+        let q4 = try XCTUnwrap(list.setShown("scheduled", false))
+        XCTAssertTrue(q4.path.contains("hide=kanban,scheduled"))
+        // Paging and source filters keep it.
+        list.apply(HistoryPage(sessions: [row("a")], nextCursor: "1|a", automated: kinds(shown: list.shown)), for: q4)
+        XCTAssertTrue(try XCTUnwrap(list.loadMore()).path.contains("helpers=1"))
+        XCTAssertTrue(try XCTUnwrap(list.setSource("discord")).path.contains("hide=kanban,scheduled"))
+        XCTAssertEqual(HistoryList(shown: HistoryShown(helpers: true)).shown.helpers, true, "remembered choice starts the list")
+    }
+
+    func testTurningOffTheFilteredKindDropsThatSourceFilter() throws {
+        var list = HistoryList()
+        _ = list.setSource("kanban")
+        let q = try XCTUnwrap(list.setShown("kanban", false))
+        XCTAssertNil(q.source)
+        XCTAssertTrue(HistoryShown(kanban: false).hides(filter: "kanban"))
+        XCTAssertFalse(HistoryShown(kanban: false).hides(filter: "discord"))
+        XCTAssertTrue(HistoryShown.standard.hides(filter: "helpers"), "helpers are off by default")
+    }
+
+    func testTheIconShowsOnlyWhenTheMenuHasSomething() {
         var list = HistoryList()
         let q = list.reset()
         list.apply(HistoryPage(sessions: [row("a")]), for: q)
-        XCTAssertFalse(list.offersAutomatedSwitch, "older plugins: no switch")
-        XCTAssertFalse(HistoryAutomation.offers(HistoryAutomated(count: 0, hidden: false), hiding: false))
-        XCTAssertTrue(HistoryAutomation.offers(HistoryAutomated(count: 0, hidden: true), hiding: true), "can always turn it back")
-        XCTAssertEqual(HistoryAutomation.label(hiding: true), "Show automated")
+        XCTAssertFalse(list.offersAutomatedMenu, "older plugins: no icon")
+        XCTAssertFalse(HistoryAutomation.offers(HistoryAutomated(count: 0, hidden: false), shown: .standard), "0.3.37 before kinds: no icon")
+        XCTAssertFalse(HistoryAutomation.offers(kinds(kanban: 0), shown: .standard), "nothing automated: no icon")
+        XCTAssertEqual(HistoryAutomation.menu(kinds(kanban: 0, helpers: 4), shown: .standard).map(\.id), ["helpers"],
+                       "only kinds with sessions")
+        XCTAssertEqual(HistoryAutomation.menu(kinds(kanban: 0), shown: HistoryShown(kanban: false)).map(\.id), ["kanban"],
+                       "a changed one stays so it can be turned back")
+        XCTAssertNotEqual(HistoryAutomation.symbol(.standard), HistoryAutomation.symbol(HistoryShown(kanban: false)),
+                          "the icon fills while something is filtered")
+    }
+
+    func testTheChoicesAreRememberedAndTheOldSwitchCarriesOver() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "spk72-\(UUID().uuidString)"))
+        XCTAssertEqual(HistoryAutomation.shown(in: defaults), .standard)
+        defaults.set(true, forKey: HistoryAutomation.legacyKey)   // SPK-70's "Hide automated" was on
+        XCTAssertEqual(HistoryAutomation.shown(in: defaults), HistoryShown(kanban: false, scheduled: false, helpers: false))
+        HistoryAutomation.set(HistoryShown(kanban: true, scheduled: false, helpers: true), in: defaults)
+        XCTAssertNil(defaults.object(forKey: HistoryAutomation.legacyKey), "carried over once")
+        XCTAssertEqual(HistoryAutomation.shown(in: defaults), HistoryShown(kanban: true, scheduled: false, helpers: true))
+    }
+
+    func testTheKindsFacetDecodesAndDemoListsMatchTheServer() throws {
+        let page = HistoryPage(json: ["sessions": [], "automated": ["count": 3, "hidden": false, "kinds": [
+            ["id": "kanban", "label": "Board workers", "count": 1, "shown": true],
+            ["id": "helpers", "count": 2, "shown": false],
+            ["id": "mystery", "label": "?", "count": 9, "shown": true]]]])
+        let facet = try XCTUnwrap(page.automated)
+        XCTAssertEqual(facet.kinds.map(\.id), ["kanban", "helpers"], "unknown kinds dropped")
+        XCTAssertEqual(facet.kinds[1].label, "Background helpers", "a missing label filled in")
+        XCTAssertEqual(HistorySources.filterID(for: "subagent"), "helpers")
+        let rows = [row("a"), row("k", source: "kanban", automated: true), row("h", source: "subagent", automated: true)]
+        XCTAssertEqual(rows.filter { HistoryShown.standard.lists($0) }.map(\.id), ["a", "k"])
+        XCTAssertEqual(HistoryShown.standard.facet(for: rows), kinds(kanban: 1, scheduled: 0, helpers: 1))
     }
 
     func testAutomatedRowsAreNeverUnreadOrNeedsYou() throws {

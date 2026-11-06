@@ -86,7 +86,7 @@ final class LiveHistoryBackend: HistoryBackend {
 /// The history window's state: the list, the open session, the composer.
 @MainActor
 final class HistoryStore: ObservableObject {
-    @Published private(set) var list = HistoryList(hideAutomated: HistoryAutomation.hidden)
+    @Published private(set) var list = HistoryList(shown: HistoryAutomation.shown)
     /// nil: nothing open yet.
     @Published private(set) var target: HistoryTarget?
     @Published private(set) var conversations: [String: HistoryConversation] = [:]
@@ -200,10 +200,17 @@ final class HistoryStore: ObservableObject {
     func retryList() { if let q = list.retry() { run(q) } }
     func setSource(_ id: String?) { if let q = list.setSource(id) { run(q) } }
     func setArchived(_ on: Bool) { if let q = list.setArchived(on) { run(q) } }
-    /// The show/hide switch for automated work (board workers, scheduled jobs), remembered on this Mac.
-    func setHideAutomated(_ on: Bool) {
-        HistoryAutomation.hidden = on
-        if let q = list.setHideAutomated(on) { run(q) }
+    /// The filter menu: list one kind of automated work or not (board workers, scheduled jobs,
+    /// background helpers), remembered on this Mac.
+    func setShown(_ kind: String, _ on: Bool) {
+        var next = list.shown
+        next[kind] = on
+        setShown(next)
+    }
+    func setShown(_ next: HistoryShown) {
+        guard let q = list.setShown(next) else { return }
+        HistoryAutomation.shown = list.shown
+        run(q)
     }
 
     // MARK: Row actions (context menu)

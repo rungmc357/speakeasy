@@ -100,6 +100,7 @@ public enum HistorySources {
         case "gui", "local", "desktop": return "desktop"
         case "cron", "scheduled": return "scheduled"
         case "kanban": return "kanban"
+        case "subagent", "helpers": return "helpers"
         case "api_server", "api": return "api"
         default: return nil
         }
@@ -132,35 +133,124 @@ public enum HistorySources {
 }
 
 /// `GET /voice/history`'s `automated`: how many automated sessions (Kanban workers, scheduled jobs)
-/// there are, and whether this page hid them. Plugins before 0.3.37 don't send it.
+/// there are, whether this page hid both, and (`kinds`) what the filter menu offers: each kind with
+/// its count and whether it's shown. Plugins before 0.3.37 don't send it.
 public struct HistoryAutomated: Equatable, Sendable {
+    public struct Kind: Equatable, Sendable, Identifiable {
+        public var id: String
+        public var label: String
+        public var count: Int
+        public var shown: Bool
+        public init(id: String, label: String, count: Int, shown: Bool) {
+            self.id = id; self.label = label; self.count = count; self.shown = shown
+        }
+    }
     public var count: Int
     public var hidden: Bool
-    public init(count: Int, hidden: Bool) { self.count = count; self.hidden = hidden }
+    public var kinds: [Kind]
+    public init(count: Int, hidden: Bool, kinds: [Kind] = []) { self.count = count; self.hidden = hidden; self.kinds = kinds }
     public init?(json: Any?) {
         guard let o = json as? [String: Any] else { return nil }
-        self.init(count: (o["count"] as? NSNumber)?.intValue ?? 0, hidden: o["hidden"] as? Bool ?? false)
+        let kinds: [Kind] = (o["kinds"] as? [Any] ?? []).compactMap { raw in
+            guard let k = raw as? [String: Any], let id = nonEmpty(k["id"]), HistoryShown.kinds.contains(id) else { return nil }
+            return Kind(id: id, label: nonEmpty(k["label"]) ?? HistoryShown.label(id), count: (k["count"] as? NSNumber)?.intValue ?? 0,
+                        shown: k["shown"] as? Bool ?? true)
+        }
+        self.init(count: (o["count"] as? NSNumber)?.intValue ?? 0, hidden: o["hidden"] as? Bool ?? false, kinds: kinds)
     }
 }
 
-/// The one show/hide switch for automated work at the top of the conversation list, remembered on
-/// this device. Offered only when the server can hide them (`automated` in its reply) and there is
-/// something to hide, or while they're hidden (so it can be turned back).
+/// What the conversation list shows of automated work: board workers and scheduled jobs (shown
+/// unless turned off) and background helpers (off unless turned on). The filter menu's toggles.
+public struct HistoryShown: Equatable, Sendable, Hashable {
+    public static let kinds = ["kanban", "scheduled", "helpers"]
+    public var kanban = true
+    public var scheduled = true
+    public var helpers = false
+    public init(kanban: Bool = true, scheduled: Bool = true, helpers: Bool = false) {
+        self.kanban = kanban; self.scheduled = scheduled; self.helpers = helpers
+    }
+    public static let standard = HistoryShown()
+    public var isStandard: Bool { self == .standard }
+
+    public subscript(kind: String) -> Bool {
+        get { kind == "kanban" ? kanban : kind == "scheduled" ? scheduled : kind == "helpers" ? helpers : true }
+        set {
+            switch kind {
+            case "kanban": kanban = newValue
+            case "scheduled": scheduled = newValue
+            case "helpers": helpers = newValue
+            default: break
+            }
+        }
+    }
+    /// The menu's words for a kind (the server sends its own; these cover a missing label).
+    public static func label(_ kind: String) -> String {
+        ["kanban": "Board workers", "scheduled": "Scheduled jobs", "helpers": "Background helpers"][kind] ?? kind.capitalized
+    }
+    /// `?hide=` (the shown-by-default kinds turned off) and whether `?helpers=1`.
+    public var hidden: [String] { [kanban ? nil : "kanban", scheduled ? nil : "scheduled"].compactMap { $0 } }
+    /// A source filter this hides (its chip goes away, like on the server).
+    public func hides(filter id: String) -> Bool { Self.kinds.contains(id) && !self[id] }
+    /// Whether a listed session passes these choices (for local/demo lists; the server does the real one).
+    public func lists(_ session: HistorySession) -> Bool {
+        guard let kind = HistorySources.filterID(for: session.source), Self.kinds.contains(kind) else { return true }
+        return self[kind]
+    }
+    /// The facet a server would send for these sessions (demo backends and tests).
+    public func facet(for sessions: [HistorySession]) -> HistoryAutomated {
+        let counts = Dictionary(grouping: sessions.compactMap { HistorySources.filterID(for: $0.source) }, by: { $0 }).mapValues(\.count)
+        return HistoryAutomated(count: (counts["kanban"] ?? 0) + (counts["scheduled"] ?? 0), hidden: !kanban && !scheduled,
+                                kinds: Self.kinds.map { .init(id: $0, label: Self.label($0), count: counts[$0] ?? 0, shown: self[$0]) })
+    }
+}
+
+/// The filter menu for automated work at the end of the conversation list's filter row, remembered
+/// on this device. Offered only when the server can filter them (`automated.kinds` in its reply) and
+/// one of them has something in it, or while a choice differs from the standard one (to turn it back).
 public enum HistoryAutomation {
-    public static let defaultsKey = "history.hideAutomated"
-    public static var hidden: Bool {
-        get { UserDefaults.standard.bool(forKey: defaultsKey) }
-        set { UserDefaults.standard.set(newValue, forKey: defaultsKey) }
+    /// SPK-70's single switch ("hide automated"): carried over once to the menu's two kinds.
+    public static let legacyKey = "history.hideAutomated"
+    static func key(_ kind: String) -> String { "history.show.\(kind)" }
+
+    public static var shown: HistoryShown {
+        get { shown(in: .standard) }
+        set { set(newValue, in: .standard) }
     }
-    public static func offers(_ facet: HistoryAutomated?, hiding: Bool) -> Bool {
-        guard let facet else { return false }
-        return facet.count > 0 || hiding
+    public static func shown(in defaults: UserDefaults) -> HistoryShown {
+        var out = HistoryShown.standard
+        let legacy = defaults.bool(forKey: legacyKey)
+        for kind in HistoryShown.kinds {
+            if let on = defaults.object(forKey: key(kind)) as? Bool { out[kind] = on }
+            else if legacy, kind != "helpers" { out[kind] = false }
+        }
+        return out
     }
-    /// The switch's words: what tapping it does.
-    public static func label(hiding: Bool) -> String { hiding ? "Show automated" : "Hide automated" }
-    public static let symbol = "gearshape.2"
-    /// What counts as automated, for the switch's help text.
-    public static let help = "Board workers and scheduled jobs"
+    public static func set(_ shown: HistoryShown, in defaults: UserDefaults) {
+        for kind in HistoryShown.kinds { defaults.set(shown[kind], forKey: key(kind)) }
+        defaults.removeObject(forKey: legacyKey)
+    }
+
+    /// The kinds the menu lists: ones with sessions, plus any not at its standard setting.
+    public static func menu(_ facet: HistoryAutomated?, shown: HistoryShown) -> [HistoryAutomated.Kind] {
+        guard let facet else { return [] }
+        return facet.kinds.filter { $0.count > 0 || shown[$0.id] != HistoryShown.standard[$0.id] }
+    }
+    public static func offers(_ facet: HistoryAutomated?, shown: HistoryShown) -> Bool { !menu(facet, shown: shown).isEmpty }
+    /// The icon: a filter mark, filled while something differs from the standard choice.
+    public static func symbol(_ shown: HistoryShown) -> String {
+        shown.isStandard ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"
+    }
+    public static let title = "Show in the list"
+    /// The icon's spoken label and tooltip.
+    public static func accessibilityLabel(_ shown: HistoryShown) -> String {
+        shown.isStandard ? "Filter automated work" : "Filter automated work, changed"
+    }
+    public static let help = "Choose which board workers, scheduled jobs and background helpers show"
+    /// A kind's mark in the menu.
+    public static func symbol(kind: String) -> String {
+        ["kanban": "square.grid.3x2", "scheduled": "clock", "helpers": "person.2"][kind] ?? "circle"
+    }
 }
 
 /// `GET /voice/history`'s page.
@@ -198,10 +288,11 @@ public struct HistoryPage: Equatable, Sendable {
 
     /// The query string for a page: search, source filter, cursor (all optional).
     public static func path(query: String = "", source: String? = nil, cursor: String? = nil, limit: Int? = nil,
-                            archived: Bool = false, hideAutomated: Bool = false) -> String {
+                            archived: Bool = false, shown: HistoryShown = .standard) -> String {
         var items: [URLQueryItem] = []
         if archived { items.append(URLQueryItem(name: "archived", value: "1")) }
-        if hideAutomated { items.append(URLQueryItem(name: "automated", value: "0")) }
+        if !shown.hidden.isEmpty { items.append(URLQueryItem(name: "hide", value: shown.hidden.joined(separator: ","))) }
+        if shown.helpers { items.append(URLQueryItem(name: "helpers", value: "1")) }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !q.isEmpty { items.append(URLQueryItem(name: "q", value: String(q.prefix(200)))) }
         if let source, !source.isEmpty { items.append(URLQueryItem(name: "source", value: source)) }

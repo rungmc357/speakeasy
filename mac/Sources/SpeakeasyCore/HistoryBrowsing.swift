@@ -17,15 +17,15 @@ public struct HistoryQuery: Equatable, Sendable {
     public var generation: Int
     /// Only archived conversations (the Archived filter).
     public var archived = false
-    /// Leave out automated work (Kanban workers, scheduled jobs): the list's show/hide switch.
-    public var hideAutomated = false
+    /// Which automated work to list (board workers, scheduled jobs, helpers): the filter menu.
+    public var shown = HistoryShown.standard
 
     public init(cursor: String? = nil, q: String = "", source: String? = nil, limit: Int = HistoryList.pageSize, generation: Int = 0) {
         self.cursor = cursor; self.q = q; self.source = source; self.limit = limit; self.generation = generation
     }
 
     public var path: String {
-        HistoryPage.path(query: q, source: source, cursor: cursor, limit: limit, archived: archived, hideAutomated: hideAutomated)
+        HistoryPage.path(query: q, source: source, cursor: cursor, limit: limit, archived: archived, shown: shown)
     }
 }
 
@@ -48,20 +48,30 @@ public struct HistoryList: Equatable, Sendable {
     public private(set) var generation = 0
     /// Showing archived conversations (with Unarchive) instead of the live list.
     public private(set) var archived = false
-    /// Automated work left out (the switch, remembered per device by the app).
-    public private(set) var hideAutomated = false
-    /// The server's automated-work facet (nil from plugins before 0.3.37: no switch).
+    /// Which automated work is listed (the filter menu, remembered per device by the app).
+    public private(set) var shown = HistoryShown.standard
+    /// The server's automated-work facet (nil from plugins before 0.3.37: no menu).
     public private(set) var automated: HistoryAutomated?
 
-    public init(hideAutomated: Bool = false) { self.hideAutomated = hideAutomated }
+    public init(shown: HistoryShown = .standard) { self.shown = shown }
 
-    public mutating func setHideAutomated(_ on: Bool) -> HistoryQuery? {
-        guard on != hideAutomated else { return nil }
-        hideAutomated = on
+    /// Turn one kind on or off in the filter menu: starts over. Nil when nothing changed.
+    public mutating func setShown(_ kind: String, _ on: Bool) -> HistoryQuery? {
+        var next = shown
+        next[kind] = on
+        return setShown(next)
+    }
+    public mutating func setShown(_ next: HistoryShown) -> HistoryQuery? {
+        guard next != shown else { return nil }
+        shown = next
+        // A source filter on a kind just turned off would list nothing new: back to everything.
+        if let source, next.hides(filter: source) { self.source = nil }
         return reset()
     }
-    /// Offer the switch: the server can hide them and there is something to hide (or they're hidden).
-    public var offersAutomatedSwitch: Bool { !archived && HistoryAutomation.offers(automated, hiding: hideAutomated) }
+    /// The filter menu's rows (kinds with sessions, or not at their standard setting).
+    public var automatedMenu: [HistoryAutomated.Kind] { archived ? [] : HistoryAutomation.menu(automated, shown: shown) }
+    /// Offer the filter icon: the server can filter them and there's something in the menu.
+    public var offersAutomatedMenu: Bool { !automatedMenu.isEmpty }
 
     public mutating func setArchived(_ on: Bool) -> HistoryQuery? {
         guard on != archived else { return nil }
@@ -132,7 +142,7 @@ public struct HistoryList: Equatable, Sendable {
         loading = true
         var q = HistoryQuery(cursor: nextCursor, q: activeQuery, source: source, limit: Self.pageSize, generation: generation)
         q.archived = archived
-        q.hideAutomated = hideAutomated
+        q.shown = shown
         return q
     }
 
@@ -204,6 +214,7 @@ public struct HistoryList: Equatable, Sendable {
         HistoryFilter(id: "telegram", label: "Telegram"), HistoryFilter(id: "slack", label: "Slack"),
         HistoryFilter(id: "terminal", label: "Terminal"), HistoryFilter(id: "desktop", label: "Desktop"),
         HistoryFilter(id: "scheduled", label: "Scheduled"), HistoryFilter(id: "kanban", label: "Kanban"),
+        HistoryFilter(id: "helpers", label: "Helpers"),
     ]
 
     /// The SF Symbol for where a session came from.
@@ -214,6 +225,7 @@ public struct HistoryList: Equatable, Sendable {
         case "cli", "terminal": return "terminal"
         case "cron", "scheduled": return "clock.arrow.circlepath"
         case "kanban": return "square.grid.3x2"
+        case "subagent", "helpers": return "person.2"
         case "email": return "envelope"
         case "gui", "desktop": return "macwindow"
         default: return "circle.grid.2x2"

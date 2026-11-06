@@ -29,7 +29,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from . import activity as A
 
@@ -51,22 +51,28 @@ HIDDEN_SOURCES = ("subagent", "tool", "oneshot", "acp", "recovered")
 LABELS = {"discord": "Discord", "telegram": "Telegram", "slack": "Slack", "whatsapp": "WhatsApp",
           "signal": "Signal", "matrix": "Matrix", "email": "Email", "sms": "SMS",
           "cli": "Terminal", "tui": "Terminal", "gui": "Desktop", "local": "Desktop", "desktop": "Desktop",
-          "api_server": "Hermes API", "cron": "Scheduled", "kanban": "Kanban", "webhook": "Webhook"}
+          "api_server": "Hermes API", "cron": "Scheduled", "kanban": "Kanban", "webhook": "Webhook", "subagent": "Helper"}
 # The source filter (``?source=``): id -> the Hermes sources it covers (None: Speakeasy's own).
 FILTERS: dict[str, tuple[str, ...] | None] = {
     "speakeasy": None,
     "discord": ("discord",), "telegram": ("telegram",), "slack": ("slack",),
     "terminal": ("cli", "tui"), "desktop": ("gui", "local", "desktop"),
-    "scheduled": ("cron",), "kanban": ("kanban",), "api": ("api_server",),
+    "scheduled": ("cron",), "kanban": ("kanban",), "api": ("api_server",), "helpers": ("subagent",),
 }
 FILTER_LABELS = {"speakeasy": "Speakeasy", "discord": "Discord", "telegram": "Telegram", "slack": "Slack",
                  "terminal": "Terminal", "desktop": "Desktop", "scheduled": "Scheduled", "kanban": "Kanban",
-                 "api": "Hermes API"}
+                 "api": "Hermes API", "helpers": "Helpers"}
 # Automated work: sessions nobody typed into (Kanban board workers, scheduled jobs). Listed like any
-# other unless ``?automated=0`` hides them (one switch in the apps, remembered per device); never
-# unread and never "needs you" (they belong to their board card / job, not to the person's inbox).
+# other unless ``?hide=kanban,scheduled`` (or the older ``?automated=0``: both) leaves them out (the
+# apps' filter menu, remembered per device); never unread and never "needs you" (they belong to their
+# board card / job, not to the person's inbox).
 AUTOMATED_SOURCES = ("kanban", "cron")
 AUTOMATED_FILTERS = ("kanban", "scheduled")
+# Background helpers (``delegate_task`` children): left out unless ``?helpers=1`` asks for them (their
+# work also shows inside the session that started them); automated like the others when listed.
+HELPER_SOURCE = "subagent"
+# The filter menu's kinds, in its order: id -> label (each id is also its source filter's id).
+AUTOMATED_KINDS = {"kanban": "Board workers", "scheduled": "Scheduled jobs", "helpers": "Background helpers"}
 
 # A context-compaction handoff (as a user or an assistant row): one quiet divider per page at most.
 COMPACTED = "Earlier messages were summarized"
@@ -655,6 +661,8 @@ def source_label(source: str, display_name: str | None, chat_type: str | None, s
 
 def _title_from(row: sqlite3.Row, first_user: str | None) -> str:
     title = (row["title"] or "").strip() if "title" in row.keys() else ""
+    if title and "source" in row.keys() and row["source"] == HELPER_SOURCE:
+        title = re.sub(r"^\s*subagent\s*:\s*", "", title, flags=re.I)   # the source line already says "Helper"
     if title:
         return tidy_title(_one_line(title, 90))
     name = (row["display_name"] or "").strip() if "display_name" in row.keys() else ""
@@ -859,8 +867,9 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                   speakeasy_ids: Callable[[], set[str]] = set, live: Callable[[str], bool] = lambda sid: False,
                   folded: Callable[[], dict[str, str]] = dict,
                   marks: Callable[[], dict[str, dict[str, Any]]] = dict, archived: bool = False,
-                   include_archived: bool | None = None, automated: bool = True,
-                   now: float | None = None, only: set[str] | None = None) -> dict[str, Any]:
+                  include_archived: bool | None = None, automated: bool = True,
+                  hide: Iterable[str] = (), helpers: bool = False,
+                  now: float | None = None, only: set[str] | None = None) -> dict[str, Any]:
     """``GET /voice/history``: conversations newest first, ``limit`` per page; pass ``next_cursor`` back
     as ``cursor`` for the next page.
 
@@ -873,10 +882,14 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
     (Hermes' own ``archived`` flag, set by any Hermes app). *include_archived*: list archived ones too,
     marked ``archived`` (default: when searching, so an archived thread is still found).
 
-    *automated*: False hides automated work (``AUTOMATED_SOURCES``: Kanban workers, scheduled jobs) from
-    the list, the search and the ``sources`` facet, unless ``source`` asks for one of them by name. The
-    reply's ``automated`` says how many such sessions there are (so an app offers the switch only when
-    there is something to hide) and whether they're hidden. Automated rows are never unread or needs-you."""
+    *hide*: automated kinds to leave out (``kanban``: board workers, ``scheduled``: scheduled jobs) of
+    the list, the search and the ``sources`` facet, unless ``source`` asks for one of them by name;
+    *automated* False is the older spelling of hiding both. *helpers*: also list background helpers
+    (``subagent`` sessions; left out by default). The reply's ``automated`` says how many automated
+    sessions there are and whether both are hidden, and ``kinds`` gives the apps' filter menu each
+    kind's id, label, count and whether it's shown. Automated rows are never unread or needs-you."""
+    hidden_kinds = {k for k in hide if k in AUTOMATED_FILTERS} | (set() if automated else set(AUTOMATED_FILTERS))
+    automated = not set(AUTOMATED_FILTERS) <= hidden_kinds
     after = parse_cursor(cursor)
     now = time.time() if now is None else now
     limit = max(1, min(int(limit or PAGE), MAX_PAGE))
@@ -885,7 +898,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
     db = _open(state_db)
     if db is None:
         return {"sessions": [], "next_cursor": None, "filters": _filters(), "sources": [],
-                "automated": {"count": 0, "hidden": not automated}, "search": "none" if q else None}
+                "automated": {"count": 0, "hidden": not automated, "kinds": []}, "search": "none" if q else None}
     try:
         cols = _columns(db, "sessions")
         fold = {k: v for k, v in (folded() or {}).items() if k != v and SAFE_ID_RE.fullmatch(k) and SAFE_ID_RE.fullmatch(v)}
@@ -898,17 +911,19 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                     f"JOIN sessions l ON l.id = f.column2 WHERE f.column1 = s.id), 0))")
         if include_archived is None:
             include_archived = bool(q.strip())
-        where = [f"s.source NOT IN ({','.join('?' * len(HIDDEN_SOURCES))})", _flag(cols, "hidden")]
+        # Helpers are counted with the rest (for the filter menu) and left out below unless asked for.
+        hidden_sources = tuple(s for s in HIDDEN_SOURCES if s != HELPER_SOURCE)
+        where = [f"s.source NOT IN ({','.join('?' * len(hidden_sources))})", _flag(cols, "hidden")]
         if archived:
             where.append("coalesce(s.archived,0)!=0" if "archived" in cols else "1=0")
         elif not include_archived:
             where.append(_flag(cols, "archived"))
-        params: list[Any] = list(HIDDEN_SOURCES)
+        params: list[Any] = list(hidden_sources)
         if "parent_session_id" in cols:
             # The newest segment of a conversation only; children of another source are helpers.
             where.append("NOT EXISTS (SELECT 1 FROM sessions c WHERE c.parent_session_id = s.id AND c.source = s.source)")
             where.append("(s.parent_session_id IS NULL OR EXISTS (SELECT 1 FROM sessions p "
-                         "WHERE p.id = s.parent_session_id AND p.source = s.source))")
+                         f"WHERE p.id = s.parent_session_id AND p.source = s.source) OR s.source = '{HELPER_SOURCE}')")
         if "message_count" in cols:
             where.append("(coalesce(s.message_count,0) > 0 OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id))")
         if fold:
@@ -924,12 +939,19 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             params += ids
         mine = speakeasy_ids()
         sources = _source_counts(db, where, params, mine)
-        auto = {"count": sum(c["count"] for c in sources if c["source"] in AUTOMATED_FILTERS), "hidden": not automated}
-        if not automated:
-            sources = [c for c in sources if c["source"] not in AUTOMATED_FILTERS]
-            if source not in AUTOMATED_FILTERS:
-                where.append(f"s.source NOT IN ({','.join('?' * len(AUTOMATED_SOURCES))})")
-                params += list(AUTOMATED_SOURCES)
+        counts = {c["source"]: c["count"] for c in sources}
+        shown = {"kanban": "kanban" not in hidden_kinds, "scheduled": "scheduled" not in hidden_kinds, "helpers": helpers}
+        auto = {"count": sum(counts.get(k, 0) for k in AUTOMATED_FILTERS), "hidden": not automated,
+                "kinds": [{"id": k, "label": label, "count": counts.get(k, 0), "shown": shown[k]}
+                          for k, label in AUTOMATED_KINDS.items()]}
+        for kind, on in shown.items():
+            if on:
+                continue
+            sources = [c for c in sources if c["source"] != kind]
+            if source != kind:
+                covered = FILTERS[kind] or ()
+                where.append(f"s.source NOT IN ({','.join('?' * len(covered))})")
+                params += list(covered)
         if source == "speakeasy":
             ids = sorted(mine | set())
             where.append(f"(s.id LIKE '{SPEAKEASY_PREFIX}%'" + (f" OR s.id IN ({','.join('?' * len(ids))}))" if ids else ")"))
@@ -993,7 +1015,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             speakeasy = bool(link and link.keys) or sid.startswith(SPEAKEASY_PREFIX)
             preview, first = _preview(db, sid, links.get(sid, ()))
             running = bool(link and link.running) or live(sid) or (link is None and _pending_turn(db, sid, now))
-            automated_row = row["source"] in AUTOMATED_SOURCES and not speakeasy
+            automated_row = row["source"] in (*AUTOMATED_SOURCES, HELPER_SOURCE) and not speakeasy
             entry: dict[str, Any] = {
                 "id": sid, "title": (link.name if link and link.name and not (row["title"] or "").strip() else None)
                 or _title_from(row, first),

@@ -166,33 +166,41 @@ struct HistorySidebar: View {
         HStack(spacing: 8) {
             // Only sources the person has sessions from; no menu at all when everything is from one place.
             if store.list.showsSourcePicker { sourceMenu }
-            if store.list.offersAutomatedSwitch { automatedSwitch }
             Spacer()
             if !store.list.activeQuery.isEmpty, !store.list.loading {
                 let q = store.list.activeQuery
                 Text(store.list.sessions.isEmpty ? "No matches" : "\(store.list.sessions.count)\(store.list.reachedEnd ? "" : "+") for “\(q)”")
                     .font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
             }
+            if store.list.offersAutomatedMenu { automatedMenu }
         }
     }
 
-    /// One switch: show or hide automated work (board workers, scheduled jobs). On = they're hidden.
-    private var automatedSwitch: some View {
-        let hiding = store.list.hideAutomated
-        return Button { store.setHideAutomated(!hiding) } label: {
-            HStack(spacing: 5) {
-                Image(systemName: hiding ? "eye.slash" : HistoryAutomation.symbol).font(.system(size: 10, weight: .semibold))
-                Text(hiding ? "Automated hidden" : "Hide automated").font(.system(size: 11.5, weight: .medium))
+    /// One small filter icon at the end of the row: a menu of what automated work the list shows
+    /// (board workers, scheduled jobs, background helpers), remembered on this Mac. Filled and
+    /// brass while something differs from the standard choice.
+    private var automatedMenu: some View {
+        let shown = store.list.shown
+        return Menu {
+            Section(HistoryAutomation.title) {
+                ForEach(store.list.automatedMenu) { kind in
+                    Toggle(isOn: Binding(get: { store.list.shown[kind.id] }, set: { store.setShown(kind.id, $0) })) {
+                        Label(kind.label, systemImage: HistoryAutomation.symbol(kind: kind.id))
+                    }
+                    .accessibilityIdentifier("history-automated-\(kind.id)")
+                }
             }
-            .foregroundStyle(hiding ? Live.brassText : Color.secondary)
-            .padding(.horizontal, 9).frame(height: 22)
-            .background(Capsule().fill(hiding ? Live.brass.opacity(0.16) : Color.primary.opacity(0.05)))
+        } label: {
+            Image(systemName: HistoryAutomation.symbol(shown))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(shown.isStandard ? Color.secondary : Live.brassText)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).fixedSize()
-        .help(hiding ? "Show board workers and scheduled jobs again" : "Hide board workers and scheduled jobs")
-        .accessibilityLabel(hiding ? "Show automated work" : "Hide automated work")
-        .accessibilityAddTraits(hiding ? .isSelected : [])
-        .accessibilityIdentifier("history-automated-switch")
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help(HistoryAutomation.help)
+        .accessibilityLabel(HistoryAutomation.accessibilityLabel(shown))
+        .accessibilityIdentifier("history-automated-menu")
     }
 
     private var sourceMenu: some View {
