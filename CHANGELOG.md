@@ -2,7 +2,7 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
+## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
 
 - **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
 - **Honest waits.** One long step says what it's waiting on and for how long ("Waiting on the tests · 4 min"); a task that has gone quiet says so ("No new steps · 3 min"); the handoff line stops posing as "now" after a minute with nothing reported.
@@ -10,6 +10,7 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **One ask, one task.** Pictures sent during a call no longer fail with "couldn't reach Hermes" when Hermes is just slow to read them in (it's asked again for the same task, with more time), and something you add seconds after a task starts goes into that task instead of starting a twin that answers a second time.
 - **No choice card for a closing offer.** "Want me to hold, or walk you through it?" at the end of an answer is just talk now, not a card and a "Decide on…" task in Done.
 - **Titles name the subject.** Titles made only of generic words ("Check work status", "Decide on holding") or pointing at "the earlier task" are rejected and written again.
+- **Board.** The apps can show your Hermes Kanban boards as Ready, Running, Blocked and Done columns (read-only): how long each card has been running or when it finished, a "Needs you" mark on blocked ones, and a tap opens the chat the card ran in.
 
 ## Plugin 0.3.35 — Easier setup, and session pages end with the latest message
 

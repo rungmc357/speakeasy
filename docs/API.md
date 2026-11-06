@@ -1228,6 +1228,30 @@ forms as the preview. `400` for an unreadable schedule or nothing to change.
 
 `200 {"ok": true, "id"}`. Apps confirm first.
 
+## Boards
+
+Servers with `capabilities.boards`: the Hermes Kanban boards, read-only (`kanban_board.py`). The
+plugin opens each board's `kanban.db` read-only; it never creates, migrates or changes a board.
+
+### GET /voice/boards
+
+`200 {"boards": [{"slug", "name", "counts": {"ready", "running", "blocked", "done"}, "needs_you",
+"active_at"}], "suggested"}`: newest activity first; archived boards left out. `done` counts the last
+7 days. `suggested` is the board to open when the app has no remembered pick (one with work running
+or waiting on the person, else the most recently active); null when there are no boards.
+
+### GET /voice/boards/{slug}
+
+`200 {"slug", "name", "now", "change", "done_days", "columns": [{"key", "title", "count", "cards"}]}`
+with the columns `ready` (triage, todo, scheduled, ready), `running`, `blocked` (blocked and review)
+and `done` (the last `done_days` days, newest first, at most 30). A card is `{"id", "title", "status",
+"column", "priority", "since", "created_at", "needs_you", "session_id"?, "note"?, "reason"?,
+"summary"?, "assignee"?}`: `since` is when it was queued (Ready), started its current run (Running),
+was blocked or sent for review (Blocked) or finished (Done), in Unix seconds; `session_id` is the
+session it ran in, when that session is in this profile (open it with `GET /voice/history/{id}`);
+`reason` is why it's blocked; `summary` is a finished card's handoff. `change` moves whenever the
+board does; apps poll every few seconds while the board is open. `404` for an unknown board.
+
 ## POST /voice/tasks/dismiss
 
 Hides finished tasks from the list. Only terminal runs are dismissed; the rest are ignored.

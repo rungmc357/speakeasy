@@ -105,6 +105,9 @@ CAPABILITIES["model_choice"] = True
 # GET /voice/schedules (+ /{id}, preview, create, pause/resume/run, PATCH, DELETE): the Hermes scheduled
 # (cron) jobs of this profile, seen and managed from the apps through Hermes' own cron API (schedules.py).
 CAPABILITIES["schedules"] = True
+# GET /voice/boards (+ /{slug}): the Hermes Kanban boards, read-only, as Ready / Running / Blocked / Done
+# columns whose cards open the session they ran in (kanban_board.py).
+CAPABILITIES["boards"] = True
 # POST/GET/DELETE /voice/codex/login: sign Codex in to ChatGPT from the app with Codex's own
 # device-code login (codex_login.py). The plugin first looks for a working sign-in in every Codex
 # copy on the machine, and installs Codex when there is none; the app asks only when nothing works.
@@ -278,6 +281,8 @@ class VoiceService(SecureInputMixin):
         self.rt.home = self.home_control
         from .schedules import Schedules
         self.schedules = Schedules(self.home, self.rt.state_db)
+        from .kanban_board import KanbanBoards, kanban_root
+        self.boards = KanbanBoards(kanban_root(self.home), self.rt.state_db)
         from .push import PushNotifier
         # Phone notifications while the app is closed. Only the gateway's long-lived service sends them
         # from a background thread; a short-lived one (the CLI, tests) sends inline when asked.
@@ -1963,6 +1968,14 @@ class VoiceService(SecureInputMixin):
         try:
             return calls[action]()
         except ScheduleError as exc:
+            raise ServiceError(exc.status, exc.message) from None
+
+    def board_call(self, slug: str | None = None) -> dict[str, Any]:
+        """The Kanban boards (``slug`` None) or one board's columns; refusals as plain sentences."""
+        from .kanban_board import BoardError
+        try:
+            return self.boards.list() if slug is None else self.boards.board(slug)
+        except BoardError as exc:
             raise ServiceError(exc.status, exc.message) from None
 
     QUESTION_KEPT_S = 24 * 3600  # as long as the board keeps an unanswered decision (JobBoard.decisionKeptFor)
