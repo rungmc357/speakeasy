@@ -294,6 +294,11 @@ class VoiceService(SecureInputMixin):
         self._catalog_warming = threading.Lock()
         self.rt.choose_model = self.choose_model
         self.store.describe_model = self.describe_model
+        # A running task's live line (live_status.py): the side model words it at most every 40 s
+        # per task; a deterministic line from its steps otherwise. A fresh summary republishes.
+        from . import live_status as LS
+        self.store.live_summarizer = LS.Summarizer(self._live_summary_call)
+        self.store.live_publish = lambda key: self.publish_all(key)
         # Messages sent to a task by id (POST /voice/work/{id}/message): replies by client_id for
         # MESSAGE_REPLAY_S, and the voiceless worker for tasks whose call is gone.
         self._message_replies: dict[str, tuple[float, threading.Event, dict[str, Any] | None]] = {}
@@ -998,6 +1003,11 @@ class VoiceService(SecureInputMixin):
         if backend is not None and backend.run_id:
             return backend
         raise ServiceError(409, "run does not belong to this interaction")
+
+    @staticmethod
+    def _live_summary_call(messages: list[dict[str, str]]) -> str | None:
+        from .router import aux_call
+        return aux_call(messages, 8.0, 120)
 
     def publish_all(self, key: str | None = None) -> None:
         events = getattr(self, "history_events", None)
@@ -2102,6 +2112,10 @@ class VoiceService(SecureInputMixin):
                                          meta["source"], None, None, False))
         if continued and before is None:
             keys = list(reversed(continued)) + keys
+        said = self._voice_said(sid)
+        if said:
+            entries = [{**e, "voice": True} if e.get("kind") == "user" and H.said_key(e.get("text") or "") in said
+                       else e for e in entries]
         open_key = self._open_question(keys)
         jobs = []
         for key in keys[:8]:
@@ -2169,8 +2183,37 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(404, "I couldn't find that conversation.")
         if choice is not None:
             self._save_chat_choice(meta["id"], choice)  # a message carrying a choice: Use for this chat
-        return self._once(client_id, lambda: self._with_staged(
-            device_id, ids, lambda staged: self._history_message(meta, text, staged)))
+        voice = body.get("source") == "voice_message"
+
+        def deliver(staged: list[A.Attachment] | None) -> dict[str, Any]:
+            got = self._history_message(meta, text, staged)
+            if voice:
+                self._note_voice_message(meta["id"], text)
+            return got
+        return self._once(client_id, lambda: self._with_staged(device_id, ids, deliver))
+
+    _VOICE_SAID_KEEP = 60
+
+    def _note_voice_message(self, session_id: str, text: str) -> None:
+        """Remember that these words went to this session as a voice message, so its page shows them
+        as one (waveform + transcript) after a reload. Only a short hash is kept, never the words."""
+        key = "voice_said:" + session_id
+        try:
+            said = json.loads(self.store.get_meta(key) or "[]")
+        except ValueError:
+            said = []
+        said = [h for h in said if isinstance(h, str)][-(self._VOICE_SAID_KEEP - 1):] + [H.said_key(text)]
+        try:
+            self.store.set_meta(key, json.dumps(said))
+        except Exception:  # noqa: BLE001 - a missing mark only shows the message as typed
+            logger.debug("speakeasy: couldn't note a voice message", exc_info=True)
+
+    def _voice_said(self, session_id: str) -> set[str]:
+        try:
+            said = json.loads(self.store.get_meta("voice_said:" + session_id) or "[]")
+        except (ValueError, TypeError):
+            return set()
+        return {h for h in said if isinstance(h, str)} if isinstance(said, list) else set()
 
     def _history_message(self, meta: dict[str, Any], text: str,
                          staged: list[A.Attachment] | None = None) -> dict[str, Any]:

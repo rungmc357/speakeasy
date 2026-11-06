@@ -118,6 +118,18 @@ def _log_follow_up_failure(task: "asyncio.Task[Any]") -> None:
         logger.error("speakeasy: an answered question's follow-up failed", exc_info=task.exception())
 
 
+CLOSING_OFFER_RE = re.compile(r"(?i)^\W*(?:so\W+)?(?:want me to|do you want me to|should i|would you like me to|shall i)\b")
+
+
+def closing_offer(said: str, question: str) -> bool:
+    """The voice ended a substantial answer with an offer of what to do next ("Want me to hold until
+    the tests finish, or walk through the fix?"). That is conversation, answered by talking; a card
+    for it (and a "Decide on holding" task in Done) is noise. A real pick asked on its own still
+    becomes a card."""
+    before = said.rsplit(question.strip()[:40], 1)[0] if question.strip() else said
+    return bool(CLOSING_OFFER_RE.match(question or "")) and len(before.strip()) >= 160
+
+
 def _words(text: str) -> str:
     """Just the words, lowercased: to tell whether the same thing was said again."""
     return " ".join(re.findall(r"[a-z0-9']+", (text or "").lower()))
@@ -186,6 +198,8 @@ MAX_INPUT_TEXT = 1000
 # words out loud later, which loses a real turn; a missed echo only shows the turn twice.
 TYPED_ECHO_S = 6.0
 # What one typed turn's delivery came to (SidebandWorker.input_text / forward_typed).
+STEER_RETRIES = 4                    # a just-admitted run refusing guidance: ask again (steer_follow_up)
+STEER_RETRY_S = 1.5
 TYPED_SENT = "sent"                   # the voice took it; it is in the transcript
 TYPED_NOT_CONNECTED = "not_connected"  # the call (or its voice connection) is gone
 TYPED_NOT_DELIVERED = "not_delivered"  # the call is up but this one send failed; nothing recorded
@@ -1334,6 +1348,8 @@ class SidebandWorker:
         if found is None:
             return
         question, options = found
+        if closing_offer(said, question):
+            return  # "Want me to hold, or walk you through it?" closing a report: talk, not a card
         key = frozenset(_words(question).split())
         if key in self.offered_choices:
             return
@@ -3826,7 +3842,22 @@ class SidebandWorker:
         """Send what the user added to a running task. Accepted means Hermes queued it: the card
         shows it as queued, and it only turns to landed once its text is in the task's transcript."""
         after = await asyncio.to_thread(threads.last_message_id, self.rt.state_db)
-        if not target.run_id or not await asyncio.to_thread(self.hermes.steer, target.run_id, text):
+        if not target.run_id:
+            return False
+        # A run Hermes admitted a moment ago refuses guidance (409) until its agent is up. Two things
+        # said seconds apart then became two near-identical runs that both answered out loud; ask
+        # again for a few seconds while the run is still going before starting another one.
+        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+        for _ in range(STEER_RETRIES):
+            if accepted:
+                break
+            with self.interaction.lock:
+                going = target.status in ACTIVE_RUN_STATES
+            if not going:
+                break
+            await asyncio.sleep(STEER_RETRY_S)
+            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+        if not accepted:
             return False
         milestone = f"You added: {notice_text(words, 200)}"
         self.store.progress(key, "milestone", milestone)

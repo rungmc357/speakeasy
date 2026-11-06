@@ -828,10 +828,20 @@ _TITLE_PROMPT = (
     "nice premium speaker\": sleeper was misheard)\n"
     "Good: {\"title\": \"Check fantasy football matchup this week\"}\n"
     "Bad: {\"title\": \"Fix and ship\"} (says nothing about what)\n"
+    "Bad: {\"title\": \"Check work status\"}, {\"title\": \"Decide on holding\"} (generic verbs, no subject: "
+    "name the project and what was asked, e.g. \"Speakeasy build 66: why task cards freeze\")\n"
+    "Bad: {\"title\": \"Confirm the earlier task\"} (a reference: say what the earlier task was about)\n"
     "Bad: {\"title\": \"Continue previous discussion\"} (meta)\n"
     "Bad: {\"title\": \"Check the weather for tomorrow in\"} (cut off)\n\n"
     "Reply with JSON only: {\"title\": \"...\"}"
 )
+# Words that name no subject: a title made only of these ("Check work status", "Decide on holding",
+# "Review the update") can't be recognized a day later.
+TITLE_VAGUE = set("""check checking confirm confirming decide deciding review reviewing look looking continue
+continuing update updating follow up work status progress task tasks thing things stuff it this that these those
+the a an on of about for to in with and or my our your earlier previous last latest holding hold wait waiting
+see get got do done make handle sort out going how what is are""".split())
+TITLE_REFERENCE_RE = re.compile(r"(?i)\b(?:the|that|this)\s+(?:earlier|previous|last|other|same)\s+(?:task|one|thing|job)\b")
 _TITLE_TRANSCRIPT_TAIL = {"to", "the", "a", "an", "of", "for", "in", "at", "with", "from", "and", "or", "but", "my",
                           "our", "your", "is", "are", "be", "going", "gonna", "about", "by", "into", "on", "that"}
 
@@ -859,6 +869,10 @@ def clean_task_title(raw: str | None, request: str = "") -> tuple[str | None, st
         return None, "it ends mid-phrase"
     if TITLE_META.search(text):
         return None, "it describes the conversation, not the task"
+    if TITLE_REFERENCE_RE.search(text):
+        return None, "it points at another task instead of naming it; say what that task was about"
+    if len([w for w in re.findall(r"[A-Za-z0-9']+", text.lower()) if w not in TITLE_VAGUE]) < 2:
+        return None, "it doesn't name the subject; say which project or thing and what was asked"
     named = has_name(text, names_in(request))
     if named:
         return None, f"it uses the name {named}; leave the user's and the assistant's names out"

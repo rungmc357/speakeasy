@@ -517,14 +517,31 @@ struct HistorySessionView: View {
                             Text("Showing the newest messages. Older ones stay in Hermes.")
                                 .font(.system(size: 11)).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
                         }
-                        ForEach(thread.messages) { m in
-                            HistoryMessageView(message: m, sessionID: c.id, store: store).id(m.id)
+                        // Tasks: finished ones sit where they were asked, as one quiet line; only what's
+                        // still going (or needs you) stays at the end, above the composer.
+                        let layout = Self.layout(c, thread)
+                        if layout.showsFinishedRow {
+                            HistoryFinishedRow(jobs: layout.finished, key: "\(c.id)|finished", store: store) { open($0, c, thread, proxy) }
                         }
-                        // A task waiting on an approval or a question shows as that card only (no twin above it).
-                        let asking = Set(c.approvals.map(\.runID) + c.waitingQuestions.compactMap(\.runID))
-                        let cards = c.jobs.filter { !(asking.contains($0.runID ?? "") && $0.status != "running") }
-                        ForEach(Array(cards.suffix(4).enumerated()), id: \.offset) { _, job in
-                            HistoryTaskCard(job: job)
+                        ForEach(layout.top, id: \.lineID) { job in
+                            HistoryTaskLine(job: job, now: store.now, openable: Self.opensElsewhere(job, c)) { open(job, c, thread, proxy) }
+                        }
+                        let messages = thread.messages
+                        let via = ChatLabel.platform(source: c.source, label: c.sourceLabel)
+                        ForEach(Array(messages.enumerated()), id: \.element.id) { i, m in
+                            let next = i + 1 < messages.count ? messages[i + 1] : nil
+                            HistoryMessageView(message: m, sessionID: c.id, store: store,
+                                               via: ChatLabel.fromChat(m.id) ? via : nil,
+                                               lastInGroup: next?.role != m.role || next.map { ChatLabel.fromChat($0.id) } != ChatLabel.fromChat(m.id))
+                                .padding(.top, i > 0 && messages[i - 1].role == m.role && m.role != .note ? -12 : 0)
+                                .id(m.id)
+                            ForEach(layout.after[m.id] ?? [], id: \.lineID) { job in
+                                HistoryTaskLine(job: job, now: store.now, openable: Self.opensElsewhere(job, c)) { open(job, c, thread, proxy) }
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            }
+                        }
+                        ForEach(layout.pinned, id: \.lineID) { job in
+                            HistoryTaskCard(job: job).transition(.opacity)
                         }
                         if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
                         ForEach(thread.waiting) { HistoryWaitingCard(waiting: $0, store: store) }
@@ -550,6 +567,31 @@ struct HistorySessionView: View {
             }
             HistoryComposer(store: store, placeholder: "Message “\(TaskMessageCopy.shortName(c.title, limit: 34))”", enabled: true)
         }
+        .animation(.snappy(duration: 0.3), value: c.jobs.map { "\($0.runID ?? "")\($0.status)" })
+    }
+
+    static func layout(_ c: HistoryConversation, _ thread: HistoryThread) -> SessionTaskLayout {
+        // A task waiting on an approval or a question shows as that card only (no twin above it).
+        let asking = Set(c.approvals.map(\.runID) + c.waitingQuestions.compactMap(\.runID))
+        return SessionTaskLayout(jobs: c.jobs, messages: thread.messages.map {
+            .init(id: $0.id, isUser: $0.role == .user, at: $0.at, text: $0.text)
+        }, hasMore: c.hasMore, asking: asking)
+    }
+
+    /// The task ran in its own session (a chat continued from Discord, Telegram…): its line opens that.
+    static func opensElsewhere(_ job: WorkInfo, _ c: HistoryConversation) -> Bool {
+        guard let sid = job.sessionID else { return false }
+        return sid != c.id
+    }
+
+    /// A task line: its own session when it has one, else the reply it produced on this page.
+    private func open(_ job: WorkInfo, _ c: HistoryConversation, _ thread: HistoryThread, _ proxy: ScrollViewProxy) {
+        if Self.opensElsewhere(job, c), let sid = job.sessionID { store.open(sid); return }
+        let layout = Self.layout(c, thread)
+        guard let anchor = layout.after.first(where: { $0.value.contains { $0.runID == job.runID } })?.key,
+              let i = thread.messages.firstIndex(where: { $0.id == anchor }) else { return }
+        let reply = thread.messages[(i + 1)...].first { $0.role == .assistant }?.id ?? anchor
+        withAnimation(.snappy) { proxy.scrollTo(reply, anchor: .top) }
     }
 
     private func header(_ c: HistoryConversation, _ thread: HistoryThread) -> some View {
@@ -586,35 +628,147 @@ private extension HistoryConversation {
     var isSpeakeasy: Bool { source == "speakeasy" }
 }
 
+/// Labels for a chat from another app (Discord, Telegram…): its own turns say where they happened;
+/// what was said from Speakeasy (linked entries `<session>-<id>`, local `local-…`) doesn't.
+enum ChatLabel {
+    static func platform(source: String, label: String) -> String? {
+        let chats: Set<String> = ["discord", "telegram", "slack", "whatsapp", "signal", "matrix", "sms", "email", "imessage"]
+        guard chats.contains(source.lowercased()) else { return nil }
+        let name = label.split(separator: "·").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return name.isEmpty ? source.capitalized : name
+    }
+    static func fromChat(_ id: String) -> Bool { !id.contains("-") }
+
+    /// An answer that reads better as a page than as a bubble: headings, code, lists or just long.
+    static func isLongForm(_ text: String) -> Bool {
+        if text.contains("```") || text.count > 520 { return true }
+        let lines = text.split(separator: "\n")
+        if lines.contains(where: { $0.range(of: #"^#{1,6} "#, options: .regularExpression) != nil }) { return true }
+        return lines.filter { $0.hasPrefix("- ") || $0.hasPrefix("* ") }.count >= 3
+    }
+}
+
+/// Speakeasy's mark on the last reply of a group: a brass disc with the waveform.
+struct ChatMark: View {
+    var body: some View {
+        ZStack {
+            Circle().fill(LinearGradient(colors: [Live.brass.opacity(0.85), Live.brass], startPoint: .top, endPoint: .bottom))
+            Image(systemName: "waveform").font(.system(size: 10.5, weight: .bold)).foregroundStyle(ChatInk.onBrass)
+        }
+        .frame(width: 24, height: 24)
+        .accessibilityHidden(true)
+    }
+}
+
+enum ChatInk {
+    static let onBrass = BrandPalette.onBrass
+    static let paper = Color.adaptive(dark: Color.white.opacity(0.085), light: Color.white)
+    static let otherApp = Color.primary.opacity(0.08)
+}
+
 struct HistoryMessageView: View {
     let message: HistoryThreadMessage
     let sessionID: String
     @ObservedObject var store: HistoryStore
+    var via: String? = nil
+    var lastInGroup = true
+
+    private func bubble(mine: Bool) -> UnevenRoundedRectangle {
+        let small: CGFloat = lastInGroup ? 5 : 16
+        return UnevenRoundedRectangle(topLeadingRadius: 16, bottomLeadingRadius: mine ? 16 : small,
+                                      bottomTrailingRadius: mine ? small : 16, topTrailingRadius: 16, style: .continuous)
+    }
 
     var body: some View {
         switch message.role {
         case .user: user
         case .assistant: assistant
         case .note:
-            Text(message.text).font(.system(size: 11.5)).foregroundStyle(.tertiary)
+            Text(message.text).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                .padding(.horizontal, 10).padding(.vertical, 3)
+                .background(Capsule().fill(Color.primary.opacity(0.05)))
                 .frame(maxWidth: .infinity, alignment: .center).multilineTextAlignment(.center)
         }
     }
 
     private var user: some View {
+        Group {
+            if let call = message.call { callCard(call) } else { userBubble }
+        }
+    }
+
+    /// A request that came from a call: one card; what was said opens on tap.
+    private func callCard(_ lines: [HistoryCallLine]) -> some View {
+        let key = "\(sessionID)|call|\(message.id)"
+        let open = store.openSections.contains(key)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "phone.fill").font(.system(size: 8.5, weight: .bold)).foregroundStyle(ChatInk.onBrass)
+                    .frame(width: 18, height: 18).background(Circle().fill(Live.brass))
+                Text("From a call").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            }
+            Text(message.text).font(.system(size: 13.5, weight: .medium)).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if lines.count > 1 || lines.first?.text != message.text {
+                Button {
+                    if open { store.openSections.remove(key) } else { store.openSections.insert(key) }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(open ? "Hide what was said" : "What was said · \(lines.count) \(lines.count == 1 ? "line" : "lines")")
+                        Image(systemName: "chevron.down").rotationEffect(.degrees(open ? 180 : 0))
+                    }
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Live.brass)
+                }
+                .buttonStyle(.plain)
+                if open {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(line.who == .you ? "You" : "Speakeasy").font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(line.who == .you ? AnyShapeStyle(Live.brass) : AnyShapeStyle(.secondary))
+                                    .frame(width: 62, alignment: .leading)
+                                Text(line.text).font(.system(size: 12.5)).foregroundStyle(Color.primary.opacity(0.85))
+                                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(13)
+        .frame(maxWidth: 460, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(ChatInk.paper))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Live.brass.opacity(0.4), lineWidth: 1))
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.leading, 90)
+    }
+
+    private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            Text(message.text).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.96))
-                .lineSpacing(2).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 13).padding(.vertical, 9)
-                .background(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 5,
-                                                   topTrailingRadius: 14, style: .continuous).fill(Live.brass.opacity(0.2)))
-                .overlay(UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 5,
-                                                topTrailingRadius: 14, style: .continuous).strokeBorder(Live.brass.opacity(0.28), lineWidth: 0.5))
-                .opacity(message.delivery == .sending ? 0.7 : 1)
-            caption
+            if let via { Text("You, in \(via)").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.tertiary) }
+            VStack(alignment: .leading, spacing: 6) {
+                if message.voice {
+                    HStack(spacing: 2) {
+                        Image(systemName: "mic.fill").font(.system(size: 9, weight: .bold)).padding(.trailing, 4)
+                        ForEach(Array([0.35, 0.6, 0.9, 0.5, 0.75, 1, 0.65, 0.4, 0.8, 0.55, 0.95, 0.45, 0.7, 0.3].enumerated()), id: \.offset) { _, h in
+                            Capsule().frame(width: 2, height: 3 + 12 * h)
+                        }
+                    }
+                    .foregroundStyle(ChatInk.onBrass.opacity(0.75))
+                    .accessibilityHidden(true)
+                }
+                Text(message.text).font(.system(size: 13.5))
+                    .foregroundStyle(via == nil ? ChatInk.onBrass : Color.primary.opacity(0.95))
+                    .lineSpacing(2).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 13).padding(.vertical, 9)
+            .background(bubble(mine: true).fill(via == nil ? AnyShapeStyle(Live.brass) : AnyShapeStyle(ChatInk.otherApp)))
+            .opacity(message.delivery == .sending ? 0.7 : 1)
+            if lastInGroup || message.delivery != nil { caption }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.leading, 60)
+        .padding(.leading, 90)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder private var caption: some View {
@@ -639,33 +793,47 @@ struct HistoryMessageView: View {
     }
 
     private var assistant: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let long = ChatLabel.isLongForm(message.text)
+        return VStack(alignment: .leading, spacing: 8) {
             if !message.tools.isEmpty {
                 HistoryToolCalls(items: message.tools, key: "\(sessionID)|\(message.id)", store: store)
+                    .padding(.leading, 34)
             }
             if !message.text.isEmpty {
-                HStack(alignment: .top, spacing: 10) {
-                    Circle().fill(Live.brass.opacity(0.18)).frame(width: 22, height: 22)
-                        .overlay(Image(systemName: "sparkle").font(.system(size: 9.5, weight: .bold)).foregroundStyle(Live.brass))
+                HStack(alignment: .bottom, spacing: 10) {
+                    ZStack { if lastInGroup { ChatMark() } }.frame(width: 24)
                     VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(MessageBlock.split(message.text).enumerated()), id: \.offset) { _, block in
-                            switch block {
-                            case .text(let prose):
-                                Text(markdown(prose)).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.9))
-                                    .lineSpacing(3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                            case .code(let code, let language):
-                                HistoryCodeBlock(code: code, language: language)
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(MessageBlock.split(message.text).enumerated()), id: \.offset) { _, block in
+                                switch block {
+                                case .text(let prose):
+                                    Text(markdown(prose)).font(.system(size: 13.5)).foregroundStyle(Color.primary.opacity(0.9))
+                                        .lineSpacing(3).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                case .code(let code, let language):
+                                    HistoryCodeBlock(code: code, language: language)
+                                }
                             }
                         }
-                        if let t = HistoryLook.long(message.at, now: store.now) {
-                            Text(t).font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                        .frame(maxWidth: long ? .infinity : nil, alignment: .leading)
+                        .padding(.horizontal, long ? 16 : 13).padding(.vertical, long ? 13 : 9)
+                        .background(bubble(mine: false).fill(ChatInk.paper).shadow(color: .black.opacity(0.06), radius: 4, y: 1))
+                        .overlay(bubble(mine: false).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+                        if lastInGroup {
+                            HStack(spacing: 5) {
+                                if let via { Image(systemName: "arrow.turn.down.right"); Text("Replied in \(via)") }
+                                if let t = HistoryLook.long(message.at, now: store.now) {
+                                    if via != nil { Text("·") }
+                                    Text(t)
+                                }
+                            }
+                            .font(.system(size: 10.5)).foregroundStyle(.tertiary).padding(.leading, 6)
                         }
                     }
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.trailing, 24)
+        .padding(.trailing, ChatLabel.isLongForm(message.text) ? 0 : 90)
     }
 
     private func markdown(_ s: String) -> AttributedString {
@@ -764,6 +932,92 @@ struct HistoryToolCalls: View {
 
 /// One of the session's tasks, updated in place by the live feed: what it's doing now, a real
 /// progress bar (only with a step count), the outcome. The phone's session page draws the same card.
+extension WorkInfo {
+    /// A stable row id for a task line/card.
+    var lineID: String { runID ?? (title ?? "") + (startedAt.map { "\($0.timeIntervalSince1970)" } ?? "") }
+}
+
+/// A finished task in the thread where it was asked: one quiet line, "✓ Fixed the login redirect · 9:41 PM ›".
+struct HistoryTaskLine: View {
+    let job: WorkInfo
+    let now: Date
+    var openable: Bool
+    var action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 10.5, weight: .bold)).foregroundStyle(tint).accessibilityHidden(true)
+                Text(TaskLineCopy.line(job, now: now)).font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Color.primary.opacity(hover ? 0.75 : 0.5)).lineLimit(1).truncationMode(.middle)
+                if openable {
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Color.primary.opacity(0.3)).accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, 10).frame(height: 24)
+            .background(Capsule().fill(Color.primary.opacity(hover ? 0.07 : 0.04)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .frame(maxWidth: .infinity)
+        .help(openable ? "Open this task" : "Show the reply")
+        .accessibilityLabel(TaskLineCopy.line(job, now: now))
+        .accessibilityIdentifier("history-task-line")
+    }
+
+    private var icon: String {
+        switch job.status {
+        case "failed": return "exclamationmark.triangle.fill"
+        case "cancelled": return "stop.fill"
+        default: return "checkmark"
+        }
+    }
+    private var tint: Color {
+        switch job.status {
+        case "failed": return Live.red
+        case "cancelled": return .secondary
+        default: return Live.green
+        }
+    }
+}
+
+/// The chat's finished tasks that aren't on this page: one collapsed row, opened on tap.
+struct HistoryFinishedRow: View {
+    let jobs: [WorkInfo]
+    let key: String
+    @ObservedObject var store: HistoryStore
+    var open: (WorkInfo) -> Void
+
+    var body: some View {
+        let isOpen = store.openSections.contains(key)
+        VStack(spacing: 6) {
+            Button {
+                withAnimation(.snappy) { if isOpen { store.openSections.remove(key) } else { store.openSections.insert(key) } }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(TaskLineCopy.finishedRow(jobs.count)).font(.system(size: 11.5, weight: .semibold))
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                        .rotationEffect(.degrees(isOpen ? 90 : 0))
+                }
+                .foregroundStyle(Color.primary.opacity(0.5))
+                .padding(.horizontal, 10).frame(height: 24)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("history-finished-row")
+            if isOpen {
+                ForEach(jobs, id: \.lineID) { job in
+                    HistoryTaskLine(job: job, now: store.now, openable: job.sessionID != nil && store.target != .session(job.sessionID!)) { open(job) }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 struct HistoryTaskCard: View {
     let job: WorkInfo
     private var running: Bool { !["completed", "failed", "cancelled"].contains(job.status) }

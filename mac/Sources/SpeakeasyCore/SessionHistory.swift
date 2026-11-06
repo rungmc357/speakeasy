@@ -210,9 +210,14 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
     public var text: String
     /// `tools`: the calls made between two messages, in the job tool log's shape.
     public var tools: [JobActivityItem]
+    /// `user`: the words went in as a voice message (shown as waveform + transcript).
+    public var voice: Bool
+    /// `user`: the request came from a call; what was said on it, oldest first (one card, transcript on tap).
+    public var call: [HistoryCallLine]?
 
-    public init(id: String, kind: Kind, at: Date? = nil, text: String = "", tools: [JobActivityItem] = []) {
-        self.id = id; self.kind = kind; self.at = at; self.text = text; self.tools = tools
+    public init(id: String, kind: Kind, at: Date? = nil, text: String = "", tools: [JobActivityItem] = [], voice: Bool = false,
+                call: [HistoryCallLine]? = nil) {
+        self.id = id; self.kind = kind; self.at = at; self.text = text; self.tools = tools; self.voice = voice; self.call = call
     }
 
     public init?(json: Any?) {
@@ -222,7 +227,8 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
             ? (o["items"] as? [Any] ?? []).enumerated().compactMap { JobActivityItem(json: $0.element, index: $0.offset) } : []
         let text = nonEmpty(o["text"]) ?? ""
         if kind == .tools ? tools.isEmpty : text.isEmpty { return nil }
-        self.init(id: id, kind: kind, at: decodeDate(o["at"]), text: text, tools: tools)
+        self.init(id: id, kind: kind, at: decodeDate(o["at"]), text: text, tools: tools, voice: (o["voice"] as? Bool) ?? false,
+                  call: ((o["call"] as? [String: Any])?["lines"] as? [Any]).map { $0.compactMap(HistoryCallLine.init(json:)) }.flatMap { $0.isEmpty ? nil : $0 })
     }
 }
 
@@ -363,5 +369,17 @@ public struct HistoryMessageReply: Equatable, Sendable {
         guard let o = json as? [String: Any], o["ok"] as? Bool == true,
               let via = (o["via"] as? String).flatMap(HistoryConversation.SendVia.init(rawValue:)) else { return nil }
         self.init(via: via, runID: nonEmpty(o["run_id"]))
+    }
+}
+
+/// One line said on a call (`entries[].call.lines`).
+public struct HistoryCallLine: Equatable, Sendable {
+    public enum Who: String, Equatable, Sendable { case you, agent }
+    public var who: Who
+    public var text: String
+    public init(who: Who, text: String) { self.who = who; self.text = text }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let text = o["text"] as? String, !text.isEmpty else { return nil }
+        self.init(who: Who(rawValue: o["who"] as? String ?? "") ?? .you, text: text)
     }
 }

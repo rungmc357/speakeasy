@@ -17,6 +17,7 @@ from .text import ID_RE, TERMINAL
 logger = logging.getLogger(__name__)
 
 MAX_BODY = 512 * 1024
+START_IMAGES_TIMEOUT_S = 120.0  # POST /v1/runs with pictures: Hermes reads them in before it answers
 RUN_EVENTS_TIMEOUT_S = 1800
 # What Speakeasy may ever answer an approval with. "always" (permanent) is never sent, from any
 # surface: a spoken or tapped answer grants at most the rest of one task.
@@ -152,7 +153,11 @@ class HermesAPI:
                 return data if isinstance(data, dict) else {}
         except urllib.error.HTTPError as exc:
             raise HermesError(502 if exc.code >= 500 else exc.code, f"Hermes HTTP {exc.code}") from None
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except TimeoutError:
+            # The request reached Hermes and the answer was slow (a run with pictures can take over
+            # half a minute to admit): not "unreachable", and never advice to restart it.
+            raise HermesError(504, "Hermes timed out answering") from None
+        except (urllib.error.URLError, OSError) as exc:
             raise HermesError(502, f"Hermes unavailable: {type(exc).__name__}") from None
         except ValueError:
             raise HermesError(502, "Hermes returned invalid JSON") from None
@@ -199,7 +204,15 @@ class HermesAPI:
         headers = {"Idempotency-Key": idem_key}
         if session_key:
             headers["X-Hermes-Session-Key"] = session_key
-        result = self._json("POST", "/v1/runs", body, headers)
+        # Pictures make admission slow (Hermes reads them in before it answers). A slow answer is
+        # asked again with the same Idempotency-Key, so it is the same run, never a second one.
+        timeout = START_IMAGES_TIMEOUT_S if images else 30
+        try:
+            result = self._json("POST", "/v1/runs", body, headers, timeout=timeout)
+        except HermesError as exc:
+            if exc.status != 504:
+                raise
+            result = self._json("POST", "/v1/runs", body, headers, timeout=timeout)
         run_id = result.get("run_id")
         if not isinstance(run_id, str) or not ID_RE.fullmatch(run_id):
             raise HermesError(502, "Hermes returned an invalid run ID")

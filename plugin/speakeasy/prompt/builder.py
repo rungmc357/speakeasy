@@ -1543,8 +1543,11 @@ def typed_note(task: str, text: str, muted: bool) -> str:
     """Told to the voice (never spoken) when the user typed a message to a task during the call."""
     name = notice_text(task, 120) or "a task"
     said = notice_text(text, 600)
+    # Delivery is silent: the app already shows the message (and its pictures) as sent. The voice
+    # speaks only when it has something useful to say about the content, never "Sent." or "Got it."
     tail = ("They are muted: say nothing about it." if muted else
-            "Don't read it back or repeat it. At most a five-word acknowledgement (\"Sent.\"), or nothing.")
+            "Say nothing about it: no \"sent\", \"got it\" or other acknowledgement, and don't read it "
+            "back. The app already shows it was delivered. Speak only if they ask you about it.")
     return (f"Background, not a request: the user typed to the task \"{name}\": \"{said}\". It is already "
             f"on its way to that task. Don't hand it off again and don't answer it yourself. {tail}")[:2000]
 

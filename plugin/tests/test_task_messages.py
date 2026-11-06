@@ -53,7 +53,7 @@ def test_typed_to_a_running_task_steers_it_and_the_voice_only_gets_a_silent_note
     assert "Mention the tomato swap too" in hermes.steers[-1][1] and "typed" in hermes.steers[-1][1]
     wait_for(lambda: any("typed to the task" in n for n in notes(worker)))
     note = next(n for n in notes(worker) if "typed to the task" in n)
-    assert "Don't read it back" in note and "five-word" in note
+    assert "Say nothing about it" in note and "Sent." not in note
     assert len(spoken(worker)) == before                  # nothing said out loud
     assert not any("Queued" in n for n in notes(worker))  # the spoken follow-up note is not sent for it
     assert len(hermes.calls) == 1                         # no second job

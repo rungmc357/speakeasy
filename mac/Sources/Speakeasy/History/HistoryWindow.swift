@@ -155,13 +155,13 @@ enum DemoHistory {
         var convs: [String: HistoryConversation] = [:]
         func add(_ id: String, _ title: String, _ source: String, _ label: String, _ last: Double, _ preview: String,
                  state: String = "idle", entries: [[String: Any]] = [], jobs: [[String: Any]] = [], approvals: [[String: Any]] = [],
-                 pinned: Bool = false, unread: Bool = false) {
+                 pinned: Bool = false, unread: Bool = false, more: Bool = false) {
             let row: [String: Any] = ["id": id, "title": title, "source": source, "source_label": label, "last_activity": last,
                                       "preview": preview, "state": state, "pinned": pinned, "unread": unread,
                                       "run_ids": jobs.compactMap { $0["run_id"] as? String }]
             sessions.append(HistorySession(json: row)!)
             var full = row
-            full["entries"] = entries; full["jobs"] = jobs; full["approvals"] = approvals
+            full["entries"] = entries; full["jobs"] = jobs; full["approvals"] = approvals; full["has_more"] = more
             full["send_via"] = source == "speakeasy" ? "task" : "linked"
             convs[id] = HistoryConversation(json: ["session": full])
         }
@@ -169,7 +169,10 @@ enum DemoHistory {
         let t0 = ago(9)
         add("s_flaky", "Fix the flaky checkout test", "speakeasy", "Speakeasy", ago(0.5), "Rerunning the checkout test 50 times",
             state: "running", entries: [
-                user("m1", t0, "The checkout test keeps failing on CI. Find out why and fix it."),
+                user("m1", t0, "The checkout test keeps failing on CI. Find out why and fix it.").merging(["call": ["lines": [
+                    ["who": "you", "text": "The build went red again this morning."],
+                    ["who": "agent", "text": "Which part, the checkout test again?"],
+                    ["who": "you", "text": "The checkout test keeps failing on CI. Find out why and fix it."]]]]) { $1 },
                 tools("t1", [call(1, "search", "Searched the files for “checkout”", "search_files", t0 + 10, 1.8, args: "checkout",
                                   result: "3 matches\ncheckout.spec.ts:12  test('checkout', …)\npayment-mock.ts:1  // payment mock"),
                              call(2, "read", "Read checkout.spec.ts", "read_file", t0 + 14, 0.6, args: "checkout.spec.ts",
@@ -179,7 +182,7 @@ enum DemoHistory {
                                   result: "10 passed, 2 failed (1.2m)\n  checkout.spec.ts:43  Timed out waiting for “Order placed”", failed: true),
                              call(4, "read", "Read payment-mock.ts", "read_file", t0 + 90, 0.5)]),
                 bot("m2", ago(6), "It's a race: the test clicks **Pay** before the payment mock is listening, so it fails about 1 run in 6. A fixed 500 ms wait was standing in for “mock ready”."),
-                user("m3", ago(5), "Wait on the mock's ready signal instead of the timeout, then run it 50 times."),
+                user("m3", ago(5), "Wait on the mock's ready signal instead of the timeout, then run it 50 times.").merging(["voice": true]) { $1 },
                 tools("t2", [call(5, "edit", "Edited payment-mock.ts", "patch", ago(4.8), 0.7, args: "payment-mock.ts",
                                   result: "+  export const mockReady = new Promise(r => server.on('listening', r))"),
                              call(6, "edit", "Edited checkout.spec.ts", "patch", ago(4.6), 0.6, args: "checkout.spec.ts",
@@ -199,7 +202,7 @@ enum DemoHistory {
                 tools("t1", [call(1, "run", "Built the site", "terminal", ago(40), 64, args: "npm run build")]),
                 bot("m2", ago(31), "The build passed. Uploading needs your OK because it overwrites the staging site."),
                 ["kind": "note", "id": "m3", "text": "Continued in Speakeasy · not posted to Discord"],
-                user("m4", ago(30), "Go ahead and upload it."),
+                user("sk0001-m4", ago(30), "Go ahead and upload it."),
             ], jobs: [["run_id": "run_0011", "status": "waiting_for_approval", "title": "Upload the pricing page",
                        "detail": "Run rsync -az --delete dist/ staging:/srv/site"]],
             approvals: [["run_id": "run_0011", "description": "Run rsync -az --delete dist/ staging:/srv/site",
@@ -224,6 +227,40 @@ enum DemoHistory {
                              call(3, "run", "Checked the load time", "terminal", ago(236), 38, result: "p50 0.8 s (was 6.1 s)")]),
                 bot("m2", ago(232), "The dashboard loads in 0.8 seconds now, down from 6. One query was scanning every order; it has an index on created_at now.\n\n```sql\nCREATE INDEX orders_created_at_idx ON orders (created_at);\n```"),
             ], pinned: true)
+        // A long session where several tasks finished along the way (two of them asked twice) and one still runs.
+        func job(_ run: String, _ title: String, _ status: String, _ start: Double, _ end: Double? = nil,
+                 now: String? = nil) -> [String: Any] {
+            var o: [String: Any] = ["run_id": run, "status": status, "title": title, "started_at": start]
+            if let end { o["finished_at"] = end }
+            if let now { o["short_status"] = now }
+            return o
+        }
+        add("s_long", "Polish the notes app", "speakeasy", "Speakeasy", ago(2), "Running the layout tests after the sidebar change",
+            state: "running", entries: [
+                user("m1", ago(190), "Bold text in the chat bubbles shows the asterisks. Fix it."),
+                tools("t1", [call(1, "edit", "Edited the message renderer", "patch", ago(188), 1.2)]),
+                bot("m2", ago(180), "Fixed: bold now renders in every bubble, and the asterisks are gone."),
+                user("m3", ago(150), "A stopped task can't be dismissed. Make it dismissible."),
+                tools("t2", [call(2, "edit", "Edited the task list", "patch", ago(148), 0.9)]),
+                bot("m4", ago(140), "Stopped tasks now have a Dismiss button and swipe away like finished ones."),
+                user("m5", ago(120), "The bold fix didn't reach the notifications. Fix that too."),
+                bot("m6", ago(110), "Notifications use the same renderer now, so bold shows there as well."),
+                user("m7", ago(80), "Make the export button bigger on iPad."),
+                bot("m8", ago(72), "The export button is 44 points tall on iPad now, matching the other toolbar buttons."),
+                user("m9", ago(40), "Dismissing still doesn't stick after a relaunch."),
+                bot("m10", ago(31), "It sticks now: a dismissed task is remembered across relaunches."),
+                user("m11", ago(10), "Last one: move the sidebar toggle to the left and rerun the layout tests."),
+                tools("t3", [call(3, "edit", "Moved the sidebar toggle", "patch", ago(8), 0.7),
+                             call(4, "run", "Running the layout tests", "terminal", ago(6), nil)]),
+            ], jobs: [
+                job("run_0106", "Move the sidebar toggle left", "running", ago(10), now: "Running the layout tests after the sidebar change"),
+                job("run_0105", "Make stopped task dismissible in the app", "completed", ago(40), ago(31)),
+                job("run_0104", "Bigger export button on iPad", "completed", ago(80), ago(72)),
+                job("run_0103", "Fix asterisk bold in chat bubbles", "completed", ago(120), ago(110)),
+                job("run_0102", "Make stopped task dismissible in the app", "completed", ago(150), ago(140)),
+                job("run_0101", "Fix asterisk bold in chat bubbles", "completed", ago(190), ago(180)),
+                job("run_0100", "Rename the settings tabs", "completed", ago(400), ago(380)),
+            ], more: true)
         add("s_tickets", "This week's support tickets", "cli", "Terminal", daysAgo(1, 17, 52),
             "Half the billing tickets are the same card-declined message.", entries: [
                 user("m1", daysAgo(1, 17, 40), "Summarize this week's support tickets by cause."),
@@ -285,7 +322,7 @@ enum HistoryShots {
             await shot("1-session-tool-calls") {
                 store.open("s_flaky")
                 try? await Task.sleep(nanoseconds: 300_000_000)
-                store.openSections = ["s_flaky|m4", "s_flaky|m4|b2"]
+                store.openSections = ["s_flaky|m4", "s_flaky|m4|b2", "s_flaky|call|m1"]
             }
             await shot("2-approval") { store.openSections = []; store.open("s_deploy") }
             await shot("3-question-search") {
@@ -386,6 +423,10 @@ enum HistoryShots {
                 store.setCallLive(false)
                 c.window?.setContentSize(NSSize(width: 1040, height: 720))
                 store.open("s_dash")
+            }
+            await shot("14-long-session-tasks") {
+                c.window?.setContentSize(NSSize(width: 1040, height: 720))
+                store.open("s_long")
             }
             exit(0)
         }

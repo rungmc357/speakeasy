@@ -335,10 +335,12 @@ def test_older_clients_see_the_same_work_object_plus_optional_fields(store):
     A.observe(store, "k1", started("read_file", "cart.ts"))
     rich = store.work(idem_key="k1")
     added = set(rich) - set(plain)
-    assert added <= {"activity", "activity_total", "touched", "findings", "hero"} and "activity" in added
+    assert added <= {"activity", "activity_total", "touched", "findings", "hero", "now_line", "so_far"} and "activity" in added
     for key in plain:
-        if key not in {"updated", "updated_at"}:
+        # The live line (live_status.py) rides the same status fields every client already reads.
+        if key not in {"updated", "updated_at", "short_status", "detail", "status_source", "stale"}:
             assert rich[key] == plain[key], key
+    assert rich["short_status"] == rich["now_line"] == "Reading cart.ts"
     # an older client decoding only the fields it knows gets exactly what it got before
     old_view = {k: v for k, v in json.loads(json.dumps(rich)).items() if k in plain}
     assert set(old_view) == set(plain)
