@@ -386,7 +386,8 @@ def test_pair_limiter_window_and_global_cap():
 def test_setup_without_tailscale_tells_the_agent_to_turn_cloudflare_on():
     from speakeasy import cli
     text = "\n".join(cli.CLOUDFLARE_AUTO)
-    assert "speakeasy-cloudflare.py quick" in text and "don't ask" in text and "Tailscale" in text
+    assert "don't ask" in text and "Tailscale" in text and "two lines under this box" in text
+    assert cli.CLOUDFLARE_QUICK == "python3 speakeasy-cloudflare.py quick"
     assert "AGENT_SETUP.md#cloudflare-mode" in text and "public" in cli.CLOUDFLARE_NOTE
     assert cli.CLOUDFLARE_CONNECTED == "✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale."
 

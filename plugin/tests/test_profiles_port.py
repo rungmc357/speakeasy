@@ -93,9 +93,10 @@ def test_a_port_held_by_some_other_program_is_skipped(two):
 def test_cloudflare_step_names_the_profile_and_its_ports(two):
     root, work = two
     _profile(work, 8805)
-    lines = cli.cloudflare_auto(work, 8805)
-    assert f"--hermes-home {work} --port 8805 --metrics-port 8807" in "\n".join(lines)
-    assert cli.cloudflare_auto(root, 8795) == cli.CLOUDFLARE_AUTO
+    lines = cli.cloudflare_commands(work, 8805)
+    assert lines[0] == cli.CLOUDFLARE_DOWNLOAD
+    assert lines[1] == f"{cli.CLOUDFLARE_QUICK} --hermes-home {work} --port 8805 --metrics-port 8807"
+    assert cli.cloudflare_commands(root, 8795) == [cli.CLOUDFLARE_DOWNLOAD, cli.CLOUDFLARE_QUICK]
 
 
 def test_local_health_names_the_profile(server, service):
