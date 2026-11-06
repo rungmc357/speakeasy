@@ -2,8 +2,8 @@
 
 You are a Hermes agent setting up Speakeasy for your user. Speakeasy lets them talk to you by voice
 with GPT-Live-1 from a Mac app, or from the iPhone and iPad app (a beta on TestFlight). You install
-it on the machine where Hermes runs. The user's only jobs are to restart Hermes once when you ask,
-and to open one link on the device they'll talk from.
+it on the machine where Hermes runs. The user's only jobs are to restart Hermes once when you ask
+(they send `/restart` in this chat), and to open one link on the device they'll talk from.
 
 That device may be the machine Hermes runs on, or a different one (Hermes often lives on a Mac mini
 or a server while the user talks from a laptop or a phone). Find out which before step 2: check
@@ -28,6 +28,11 @@ iOS app), follow the same steps with these differences:
 
 ## 1. Install the plugin
 
+First check `hermes --version`. Speakeasy needs Hermes **0.22.0 or newer**; an older Hermes skips
+the plugin, so `hermes voice` is then an unknown command (`invalid choice: 'voice'`), and
+`hermes plugins show speakeasy` says `requires hermes >=0.22.0`. If it's older, run
+`hermes update` first and ask the user to send `/restart` in this chat, then continue.
+
     hermes plugins install rungmc357/speakeasy/plugin/speakeasy --enable
 
 If it's already installed, update it instead: `hermes plugins update speakeasy`. Then check
@@ -40,7 +45,7 @@ once no call is live and no voice task is running. To load it right away, run
 `hermes voice reload`: a live call ends (the user redials), and tasks already running keep going
 in Hermes. It prints `Speakeasy <version> loaded. No gateway restart needed.`, or why the new
 version didn't load (the previous one keeps running). Only an update from Speakeasy 0.2.16 or
-earlier needs one gateway restart.
+earlier needs one restart (the user sends `/restart` in this chat).
 
 The paired Mac app checks its latest GitHub release and the published plugin manifest separately
 about once a week while it is running. It compares the manifest version against the *running*
@@ -56,20 +61,24 @@ Skip this step when the user talks from the Mac Hermes runs on.
 
 Otherwise decide, without asking the user, from `tailscale status` on this computer:
 
-- **Tailscale is installed and signed in** (`tailscale status` lists this machine; if it's only
-  stopped, `tailscale up` brings it back without a sign-in): use Tailscale. Setup publishes the
-  voice server to their tailnet only. Their device needs Tailscale too, signed in with the **same
-  account** (https://tailscale.com/download): say so in the same message as the link. If setup
-  reports that HTTPS certificates are off for the tailnet, the user turns them on once at
-  https://login.tailscale.com/admin/dns (HTTPS Certificates), then you run setup again.
-- **Anything else** (not installed, `tailscale` not found, logged out, or it needs a browser
-  sign-in): turn on Cloudflare mode **now, without asking**, so pairing works from anywhere
-  right away. Don't show the user a choice and don't ask them to install anything first:
+- **Tailscale is installed, signed in and connected** (`tailscale status` lists this machine):
+  use Tailscale. Setup publishes the voice server to their tailnet only. Their device needs
+  Tailscale too, signed in with the **same account** (https://tailscale.com/download): say so in
+  the same message as the link.
+- **Anything else** (not installed, `tailscale` not found, stopped, logged out, needs a browser
+  sign-in, or setup says its HTTPS certificates are off): turn on Cloudflare mode **now, without
+  asking**, so pairing works from anywhere right away. Setup itself says "connects through
+  Cloudflare instead" in these cases and won't send a link that only works on this computer.
+  Tailscale can come later: `tailscale up`, or the user turns HTTPS Certificates on once at
+  https://login.tailscale.com/admin/dns, then you run setup again (no re-pairing). Don't show the user a
+  choice and don't ask them to install anything first:
 
       curl -fsSL https://raw.githubusercontent.com/rungmc357/speakeasy/main/scripts/speakeasy-cloudflare.py -o speakeasy-cloudflare.py
       python3 speakeasy-cloudflare.py quick
 
-  It installs Cloudflare's tunnel daemon (Homebrew on a Mac), runs a free quick tunnel as a
+  It installs Cloudflare's tunnel daemon (Homebrew when it's there; otherwise it downloads
+  Cloudflare's own release into `~/.hermes/bin` and keeps it only if both published SHA-256
+  checksums match, so no package manager is needed), runs a free quick tunnel as a
   background service, turns on `server.tunnel`, and waits until the tunnel reports its address:
   it prints `✓ Cloudflare address is up: …`. Then run step 3; setup's output must say
   `✓ Connected through Cloudflare (works anywhere)`. That's the check that it worked.
@@ -146,6 +155,12 @@ link in chat is enough on its own.
   `✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale.` and the pairing
   link carries the Cloudflare address. With neither, it prints a box telling you to run
   `python3 speakeasy-cloudflare.py quick` (step 2) and set up again: do that, don't ask.
+- **More than one Hermes profile on this machine:** each profile gets its own voice port. If
+  another profile already uses the port, setup moves this one to a free port, says so (`Port 8795
+  is already used by the Hermes profile '…'`), and never pairs against the other profile's server.
+  `✓ Voice server is running (Hermes profile '…', port …)` names the profile it set up: check it's
+  the one you meant. For Cloudflare mode in a second profile, run the exact command setup prints
+  (it carries that profile's `--hermes-home` and ports).
 
 ## 4. Read the result and tell the user the one thing to do
 
@@ -155,18 +170,22 @@ Setup never restarts Hermes. Its exit code tells you where things stand:
   and to open it on the device they'll talk from if it was sent. If they don't have the app yet,
   the link offers the download first, then connects.
 - **2: Hermes needs a restart.** This happens once, on the first install: the gateway starts the
-  new `voice` platform only when it starts. Tell the user Speakeasy is installed and the Hermes
-  gateway needs one restart: `hermes gateway restart` if it runs as a service, or stop
-  `hermes gateway` (Ctrl-C) and start it again if it runs in a terminal. Do not restart it
-  yourself. Once Hermes is back:
+  new `voice` platform only when it starts. Tell the user Speakeasy is installed and Hermes needs
+  one restart: **send `/restart` in this chat** (Hermes' built-in command: it lets running work
+  finish, then comes back in a few seconds). Only for a user at a terminal: `hermes gateway
+  restart`, or stop `hermes gateway` (Ctrl-C) and start it again if it runs in a terminal. Do not
+  restart it yourself. Once Hermes is back:
   - with `--send`, the pairing link arrives in this chat by itself;
   - with `--here`, run `hermes voice setup --here --yes` again to open the link.
-- **1: something needs the user.** Setup prints what, in plain words (usually signing in to
-  ChatGPT: do the remote sign-in above, or Tailscale HTTPS certificates being off). Pass that on in one or
-  two sentences. When it's fixed, run setup again.
+- **1: something needs the user (or you).** Setup prints what, in plain words (usually signing in
+  to ChatGPT: do the remote sign-in above, or Tailscale HTTPS certificates being off). If it says
+  `No pairing link sent yet`, there's no connection the phone can use: turn on Cloudflare mode
+  (step 2) and run setup again. Otherwise pass it on in one or two sentences. When it's fixed, run
+  setup again.
 
 Do not paste pairing codes or links from setup's output into other chats. Each link works once and
-expires after 30 minutes. For a new one: `hermes voice pair --send <this chat>`.
+expires after 30 minutes, or 10 minutes once Cloudflare mode is on (the link and setup's output
+say which). For a new one: `hermes voice pair --send <this chat>`.
 
 ## 5. Tell the user how it connects
 
@@ -237,6 +256,8 @@ an update). Brief sleep or a network drop keeps it. The app finds a new address 
 
 1. Install Cloudflare's tunnel daemon: `brew install cloudflared` on a Mac; on Linux, Cloudflare's
    package from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/.
+   Without either, the release file from https://github.com/cloudflare/cloudflared/releases works
+   (check its SHA-256 against the release notes; the script does this for you).
 2. Run it as a background service that outlives Hermes, pointed at the voice server, with its
    metrics on loopback (the plugin reads the address there):
    `cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:8797 --url http://127.0.0.1:8795`,

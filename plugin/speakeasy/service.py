@@ -39,8 +39,8 @@ from .devices import CLIENT_HEADER, DeviceStore, parse_client
 from .emails import canonical_json, extract_email_drafts
 from .hermes_api import HermesAPI, HermesError
 
-RESTART_NEEDED = ("Speakeasy was updated while Hermes was running. Restart the Hermes gateway "
-                  "(hermes gateway restart) to finish the update.")
+RESTART_NEEDED = ("Speakeasy was updated while Hermes was running. Restart Hermes to finish the update: send "
+                  "/restart in your chat with Hermes (or run hermes gateway restart in a terminal).")
 from .prompt import builder as P
 from .router import home_plan_call as router_home_plan_call, routing_model
 from .threads import THREAD_PLATFORMS
@@ -2078,22 +2078,29 @@ class VoiceService(SecureInputMixin):
         keys = list(link.keys) if link else []
         entries = page["entries"]
         continued = [] if own else self._continuations(sid)
-        if continued and before is None:
-            # The chat's own messages, then what was said to it from Speakeasy (its linked tasks'
-            # sessions), so the page reads as one conversation. Never posted to the chat.
-            entries = entries + [{"kind": "note", "id": "linked", "at": None,
-                                  "text": "Continued in Speakeasy · not posted to " + H.source_label(
-                                      meta["source"], None, None, False)}]
+        if continued:
+            # The chat's own messages and what was said to it from Speakeasy (its linked tasks'
+            # sessions), merged by time so the page reads as one conversation and ends with the newest
+            # message. Each linked entry shows on the one page whose span holds it. Never posted to the chat.
+            more: list[dict[str, Any]] = []
             seen: set[str] = set()
             for key in continued:
                 linked_sid = self.store.session_for(key)
                 if linked_sid and linked_sid not in seen:
                     seen.add(linked_sid)
                     try:
-                        more = H.session_messages(self.rt.state_db, linked_sid)["entries"]
+                        got = H.session_messages(self.rt.state_db, linked_sid)["entries"]
                     except H.HistoryError:
-                        more = []
-                    entries += [{**e, "id": f"{linked_sid[-6:]}-{e['id']}"} for e in more]
+                        got = []
+                    more += [{**e, "id": f"{linked_sid[-6:]}-{e['id']}"} for e in got]
+            lower = H.message_time(self.rt.state_db, page["before"]) if page["has_more"] else None
+            upper = H.message_time(self.rt.state_db, before) if before is not None else None
+            if before is not None and upper is None:
+                more = []  # can't place this page's span: linked entries stay on the newest page
+            entries = H.merge_linked(entries, more, lower=lower, upper=upper,
+                                     note="From Speakeasy · not posted to " + H.source_label(
+                                         meta["source"], None, None, False))
+        if continued and before is None:
             keys = list(reversed(continued)) + keys
         open_key = self._open_question(keys)
         jobs = []

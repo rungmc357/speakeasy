@@ -2,6 +2,16 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.36 — Easier setup, and session pages end with the latest message
+
+- **Session pages end with the latest message.** When you've continued a Discord or Telegram chat from Speakeasy, those replies now sit in the chat in time order instead of piling up at the bottom after newer messages.
+- **Cleaner messages in history.** Behind-the-scenes text Hermes adds to chat messages (message ids, sender tags, memory notes, report labels like DONE: and SPOKEN:) no longer shows on session pages, list previews or search results; background-job notices show as one short line.
+- **Restart by sending /restart.** When setup needs Hermes to restart, it tells you to send /restart in your chat with Hermes; the terminal command is only the fallback. A gateway that never ran is started, not restarted.
+- **Setup works when Tailscale doesn't.** If Tailscale is stopped or its HTTPS certificates are off, setup switches to Cloudflare with a plain note instead of sending a link that only works on this computer, and Cloudflare mode no longer needs Homebrew.
+- **Pairing links say how long they last** (30 minutes, or 10 in Cloudflare mode), and setup can show the pairing QR code right in the terminal.
+- **Two Hermes profiles on one computer.** Setup moves off a port another profile already uses, never pairs with another profile's server, and names the profile it set up.
+- Clearer setup wording for iPhone, iPad or Mac, a plain "update Hermes" message on a Hermes that's too old, and the Grok fix names the right sign-in command.
+
 ## Plugin 0.3.35 — Lost-track jobs settle, better job names and steps
 
 - **A job that lost its connection mid-run no longer sits "Stopped" forever.** If the live link to a job drops before it reports back, Speakeasy now picks up its final answer from the job's session once it goes quiet (or marks it interrupted if none arrives) and the answer shows up as usual. Such a job can also be dismissed right away. On iPhone and Mac the x and swipe work on it once the apps update.

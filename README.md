@@ -23,9 +23,9 @@ Tailscale).
    hermes voice setup --here --yes   # installs the Codex CLI if needed and opens the ChatGPT sign-in
    ```
 
-3. If setup says Hermes needs a restart (exit code 2, first install only): `hermes gateway restart`
-   (or stop and start `hermes gateway` if it runs in a terminal), then run
-   `hermes voice setup --here --yes` again.
+3. If setup says Hermes needs a restart (exit code 2, first install only): send `/restart` in your
+   chat with Hermes (from a terminal: `hermes gateway restart`, or stop and start `hermes gateway`
+   if it runs in a terminal), then run `hermes voice setup --here --yes` again.
 4. The pairing link opens Speakeasy: allow the microphone, pick names and where finished work
    goes, and the first call shows you around.
 
@@ -83,9 +83,11 @@ When Hermes and the app are on the same Mac, setup opens the link directly.
 **Tailscale is picked up automatically.** When `tailscale` is installed and connected, setup
 serves the voice server to your tailnet only (`tailscale serve`, never Funnel), prints a
 `✓ Tailscale detected` box with the `https://<machine>.<tailnet>.ts.net:8795` address, and
-remembers it so `hermes voice pair` reuses it. If Tailscale is installed but stopped, setup says
-so loudly (run `tailscale up`) and stays local. If HTTPS certificates are off for your tailnet,
-turn them on at https://login.tailscale.com/admin/dns (HTTPS Certificates) and run setup again.
+remembers it so `hermes voice pair` reuses it. If Tailscale is installed but stopped, or HTTPS
+certificates are off for your tailnet, setup says so plainly and connects through Cloudflare
+instead (below), so the pairing link works right away; to switch to Tailscale later, run
+`tailscale up` or turn certificates on at https://login.tailscale.com/admin/dns (HTTPS
+Certificates), then run setup again.
 `--tailscale` insists on it, `--no-tailscale` skips it, `--server <url>` sets the address by hand.
 
 **No Tailscale?** Setup recommends it (most private), and your agent can give Speakeasy a
@@ -155,7 +157,8 @@ anything itself: `hermes plugins update` puts the new files on disk, and the run
 them within a few seconds once no call is live and no voice task is running. To load it right away,
 even mid-call, run `hermes voice reload`: a live call ends and you redial; tasks already running keep
 going in Hermes. If the new version fails to load, the previous one keeps running and the command
-says why. Updating from 0.2.16 or earlier needs one last `hermes gateway restart`.
+says why. Updating from 0.2.16 or earlier needs one last restart: send `/restart` in your chat with Hermes
+(or `hermes gateway restart` in a terminal).
 
 ## Contributing
 

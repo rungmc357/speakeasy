@@ -366,3 +366,91 @@ def test_prove_binds_token_nonce_and_host_without_revealing_the_token(server, se
     _, again = _raw(server.base_url, "POST", "/voice/prove", TUNNEL_HDRS, {"device_id": "ffffffff", "nonce": nonce})
     assert other["proof"] != again["proof"]  # unknown ids get noise
     assert _raw(server.base_url, "POST", "/voice/prove", TUNNEL_HDRS, {"device_id": "x", "nonce": "short"})[0] == 400
+
+
+# -- no Homebrew: a verified download of Cloudflare's release into ~/.hermes/bin -----------------
+
+def _release(program: bytes, name: str, *, archive=None, digest=None, listed=None):
+    import hashlib
+    import io
+    import tarfile
+    if archive is None:
+        if name.endswith(".tgz"):
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                info = tarfile.TarInfo("cloudflared")
+                info.size = len(program)
+                tar.addfile(info, io.BytesIO(program))
+            archive = buf.getvalue()
+        else:
+            archive = program
+    digest = digest or "sha256:" + hashlib.sha256(archive).hexdigest()
+    listed = listed or hashlib.sha256(program).hexdigest()
+    url = "https://github.com/cloudflare/cloudflared/releases/download/x/" + name
+    meta = {"tag_name": "2026.10.7", "assets": [{"name": name, "digest": digest, "browser_download_url": url}],
+            "body": "### SHA256 Checksums:\n```\nother-file: " + "ab" * 32 + "\n" + f"{name}: {listed}\n```"}
+    pages = {"https://api.github.com/repos/cloudflare/cloudflared/releases/latest": json.dumps(meta).encode(),
+             url: archive}
+    return lambda u: pages[u]
+
+
+@pytest.mark.parametrize("system,machine,name", [("Darwin", "arm64", "cloudflared-darwin-arm64.tgz"),
+                                                 ("Linux", "x86_64", "cloudflared-linux-amd64")])
+def test_download_installs_a_verified_program_into_hermes_bin(tmp_path, system, machine, name):
+    T = _script()
+    home = tmp_path / "hermes" / "profiles" / "work"
+    home.mkdir(parents=True)
+    lines = []
+    path = T.download_cloudflared(home, lines.append, fetch=_release(b"\x7fELF fake program", name),
+                                  system=system, machine=machine)
+    assert path == str(tmp_path / "hermes" / "bin" / "cloudflared")   # the root's bin, not the profile's
+    assert (tmp_path / "hermes" / "bin" / "cloudflared").read_bytes() == b"\x7fELF fake program"
+    assert os.access(path, os.X_OK) and "Installed and verified" in lines[-1]
+
+
+@pytest.mark.parametrize("bad", ["digest", "listed"])
+def test_download_refuses_a_checksum_mismatch(tmp_path, bad):
+    T = _script()
+    kw = {"digest": "sha256:" + "0" * 64} if bad == "digest" else {"listed": "1" * 64}
+    lines = []
+    path = T.download_cloudflared(tmp_path, lines.append,
+                                  fetch=_release(b"program", "cloudflared-linux-arm64", **kw),
+                                  system="Linux", machine="aarch64")
+    assert path == "" and not (tmp_path / "bin" / "cloudflared").exists()
+    assert "wasn't installed" in lines[-1]
+
+
+def test_download_refuses_without_checksums_or_on_an_unknown_computer(tmp_path):
+    T = _script()
+    lines = []
+    fetch = _release(b"program", "cloudflared-linux-amd64")
+    meta = json.loads(fetch("https://api.github.com/repos/cloudflare/cloudflared/releases/latest"))
+    meta["body"] = "no checksums"
+    pages = {"https://api.github.com/repos/cloudflare/cloudflared/releases/latest": json.dumps(meta).encode()}
+    assert T.download_cloudflared(tmp_path, lines.append, fetch=pages.__getitem__, system="Linux", machine="x86_64") == ""
+    assert "no checksum" in lines[-1]
+    assert T.download_cloudflared(tmp_path, lines.append, fetch=pages.__getitem__, system="Windows", machine="x86_64") == ""
+
+
+def test_install_prefers_path_then_hermes_bin_then_brew_then_download(tmp_path):
+    T = _script()
+    calls = []
+    dl = lambda home, out: calls.append("download") or str(tmp_path / "bin" / "cloudflared")
+    assert T.install_cloudflared(print, which=lambda n: "/usr/bin/cloudflared" if n == "cloudflared" else None,
+                                 home=tmp_path, download=dl) == "/usr/bin/cloudflared"
+    # no brew, nothing installed: the verified download, never a package manager
+    ran = []
+    assert T.install_cloudflared(print, which=lambda n: None, run=lambda c, **k: ran.append(c), home=tmp_path,
+                                 download=dl).endswith("bin/cloudflared")
+    assert calls == ["download"] and ran == []
+    # already downloaded earlier: reused
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "cloudflared").write_bytes(b"x")
+    (tmp_path / "bin" / "cloudflared").chmod(0o755)
+    assert T.install_cloudflared(print, which=lambda n: None, home=tmp_path, download=dl) == str(tmp_path / "bin" / "cloudflared")
+    assert calls == ["download"]
+    # brew present but its install fails: still falls through to the download
+    (tmp_path / "bin" / "cloudflared").unlink()
+    assert T.install_cloudflared(print, which=lambda n: "/opt/homebrew/bin/brew" if n == "brew" else None,
+                                 run=lambda c, **k: ran.append(c), home=tmp_path, download=dl)
+    assert ran and ran[0][:2] == ["brew", "install"] and calls == ["download", "download"]

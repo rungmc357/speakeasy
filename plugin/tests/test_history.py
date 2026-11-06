@@ -283,7 +283,7 @@ def test_send_to_a_discord_thread_starts_a_linked_task_and_never_posts_back(serv
     s = page["session"]
     assert s["send_via"] == "linked" and s["source"] == "discord"
     texts = [e.get("text") for e in s["entries"]]
-    assert "Continued in Speakeasy · not posted to Discord" in texts and "Ordered three brackets." in texts
+    assert "From Speakeasy · not posted to Discord" in texts and "Ordered three brackets." in texts
     assert s["jobs"] and s["jobs"][0]["run_id"] == body["run_id"]
     # The next message goes to the same linked task, not a new one.
     wait_for(lambda: service.store.work(body["run_id"])["status"] == "completed")
