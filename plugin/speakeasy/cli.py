@@ -690,7 +690,8 @@ def cmd_reload(home: Path, timeout: float = 30) -> int:
         time.sleep(.3)
     (state / REQUEST_FILE).unlink(missing_ok=True)
     print("No answer from Speakeasy. Is the Hermes gateway running with Speakeasy 0.2.17 or newer? "
-          "If it's older, restart the gateway once: `hermes gateway restart`.")
+          "If it's older, restart Hermes once: send /restart in your chat with Hermes "
+          "(or run `hermes gateway restart` in a terminal).")
     return 1
 
 

@@ -2,8 +2,8 @@
 
 You are a Hermes agent setting up Speakeasy for your user. Speakeasy lets them talk to you by voice
 with GPT-Live-1 from a Mac app, or from the iPhone and iPad app (a beta on TestFlight). You install
-it on the machine where Hermes runs. The user's only jobs are to restart Hermes once when you ask,
-and to open one link on the device they'll talk from.
+it on the machine where Hermes runs. The user's only jobs are to restart Hermes once when you ask
+(they send `/restart` in this chat), and to open one link on the device they'll talk from.
 
 That device may be the machine Hermes runs on, or a different one (Hermes often lives on a Mac mini
 or a server while the user talks from a laptop or a phone). Find out which before step 2: check
@@ -40,7 +40,7 @@ once no call is live and no voice task is running. To load it right away, run
 `hermes voice reload`: a live call ends (the user redials), and tasks already running keep going
 in Hermes. It prints `Speakeasy <version> loaded. No gateway restart needed.`, or why the new
 version didn't load (the previous one keeps running). Only an update from Speakeasy 0.2.16 or
-earlier needs one gateway restart.
+earlier needs one restart (the user sends `/restart` in this chat).
 
 The paired Mac app checks its latest GitHub release and the published plugin manifest separately
 about once a week while it is running. It compares the manifest version against the *running*
@@ -135,10 +135,11 @@ Setup never restarts Hermes. Its exit code tells you where things stand:
   and to open it on the device they'll talk from if it was sent. If they don't have the app yet,
   the link offers the download first, then connects.
 - **2: Hermes needs a restart.** This happens once, on the first install: the gateway starts the
-  new `voice` platform only when it starts. Tell the user Speakeasy is installed and the Hermes
-  gateway needs one restart: `hermes gateway restart` if it runs as a service, or stop
-  `hermes gateway` (Ctrl-C) and start it again if it runs in a terminal. Do not restart it
-  yourself. Once Hermes is back:
+  new `voice` platform only when it starts. Tell the user Speakeasy is installed and Hermes needs
+  one restart: **send `/restart` in this chat** (Hermes' built-in command: it lets running work
+  finish, then comes back in a few seconds). Only for a user at a terminal: `hermes gateway
+  restart`, or stop `hermes gateway` (Ctrl-C) and start it again if it runs in a terminal. Do not
+  restart it yourself. Once Hermes is back:
   - with `--send`, the pairing link arrives in this chat by itself;
   - with `--here`, run `hermes voice setup --here --yes` again to open the link.
 - **1: something needs the user.** Setup prints what, in plain words (usually signing in to

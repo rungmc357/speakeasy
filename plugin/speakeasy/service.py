@@ -36,8 +36,8 @@ from .devices import CLIENT_HEADER, DeviceStore, parse_client
 from .emails import canonical_json, extract_email_drafts
 from .hermes_api import HermesAPI, HermesError
 
-RESTART_NEEDED = ("Speakeasy was updated while Hermes was running. Restart the Hermes gateway "
-                  "(hermes gateway restart) to finish the update.")
+RESTART_NEEDED = ("Speakeasy was updated while Hermes was running. Restart Hermes to finish the update: send "
+                  "/restart in your chat with Hermes (or run hermes gateway restart in a terminal).")
 from .prompt import builder as P
 from .router import home_plan_call as router_home_plan_call, routing_model
 from .threads import THREAD_PLATFORMS

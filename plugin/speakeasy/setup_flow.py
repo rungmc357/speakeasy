@@ -209,9 +209,13 @@ def voice_server_running(env: Env, url: str) -> bool:
     return bool((env.health or voice_health)(url))
 
 
-RESTART_NOTE = ("Hermes needs a restart, once, to turn Speakeasy on: `hermes gateway restart` if the gateway "
-                "runs as a service, or stop `hermes gateway` and start it again if it runs in a terminal. "
-                "Chats pause for a few seconds. Later updates load without a restart.")
+# Users are in a chat with Hermes: its built-in /restart (lets running work finish first) is the
+# step. The terminal form is only the fallback for someone at a terminal.
+RESTART_CHAT = "send /restart in your chat with Hermes"
+RESTART_TERMINAL = ("From a terminal instead: `hermes gateway restart` (or stop `hermes gateway` and start it "
+                    "again if it runs in a terminal).")
+RESTART_NOTE = (f"Hermes needs a restart, once, to turn Speakeasy on: {RESTART_CHAT}. It lets running work "
+                f"finish, then comes back in a few seconds. {RESTART_TERMINAL} Later updates load without a restart.")
 
 
 # -- 4. tailscale ---------------------------------------------------------------------------------

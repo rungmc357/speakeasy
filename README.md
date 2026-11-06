@@ -23,9 +23,9 @@ Tailscale).
    hermes voice setup --here --yes   # installs the Codex CLI if needed and opens the ChatGPT sign-in
    ```
 
-3. If setup says Hermes needs a restart (exit code 2, first install only): `hermes gateway restart`
-   (or stop and start `hermes gateway` if it runs in a terminal), then run
-   `hermes voice setup --here --yes` again.
+3. If setup says Hermes needs a restart (exit code 2, first install only): send `/restart` in your
+   chat with Hermes (from a terminal: `hermes gateway restart`, or stop and start `hermes gateway`
+   if it runs in a terminal), then run `hermes voice setup --here --yes` again.
 4. The pairing link opens Speakeasy: allow the microphone, pick names and where finished work
    goes, and the first call shows you around.
 
@@ -155,7 +155,8 @@ anything itself: `hermes plugins update` puts the new files on disk, and the run
 them within a few seconds once no call is live and no voice task is running. To load it right away,
 even mid-call, run `hermes voice reload`: a live call ends and you redial; tasks already running keep
 going in Hermes. If the new version fails to load, the previous one keeps running and the command
-says why. Updating from 0.2.16 or earlier needs one last `hermes gateway restart`.
+says why. Updating from 0.2.16 or earlier needs one last restart: send `/restart` in your chat with Hermes
+(or `hermes gateway restart` in a terminal).
 
 ## Contributing
 
