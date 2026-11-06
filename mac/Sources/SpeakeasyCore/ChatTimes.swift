@@ -37,6 +37,12 @@ public enum ChatTimeline {
         return out
     }
 
+    /// When a message's part of the thread began: a reply drawn with the steps that led to it
+    /// starts at its first step, so a divider never lands between those steps and the reply.
+    public static func began(_ at: Date?, tools: [JobActivityItem]) -> Date? {
+        [at, ToolCallLog.startedAt(tools)].compactMap { $0 }.min()
+    }
+
     /// "Today", "Yesterday", "Tuesday" (this week), "Mon, Oct 3" (this year), "Oct 3, 2025".
     public static func day(_ date: Date, now: Date = Date(), calendar: Calendar = .current, locale: Locale = .current) -> String {
         if calendar.isDate(date, inSameDayAs: now) { return "Today" }
@@ -99,6 +105,15 @@ public enum TaskTimes {
         return parts.joined(separator: " · ")
     }
 
+    /// A task page's header line: the newest task's job (it and its follow-ups), so a chat that
+    /// ran several tasks shows the one at hand, not one stretch since the first.
+    public static func header(_ jobs: [WorkInfo], now: Date = Date(), calendar: Calendar = .current,
+                              locale: Locale = .current) -> String? {
+        guard let newest = jobs.max(by: { ($0.startedAt ?? .distantPast) < ($1.startedAt ?? .distantPast) }) else { return nil }
+        let same = newest.job.map { ref in jobs.filter { $0.job?.id == ref.id } } ?? [newest]
+        return line(same, now: now, calendar: calendar, locale: locale)
+    }
+
     /// "40 s", "13 min", "1 h 4 min", "2 h".
     public static func duration(_ seconds: TimeInterval) -> String {
         let s = max(0, Int(seconds.rounded()))
@@ -116,11 +131,12 @@ extension ToolCallLog {
         items.compactMap { $0.startedAt ?? $0.at }.min()
     }
 
-    /// The quiet suffix of a folded group of steps: "9:02 PM · 6 s" ("Tue 9:02 PM" another day).
+    /// The quiet suffix of a folded group of steps: "9:02 PM · 6 s". The clock only: the thread's
+    /// day dividers already say which day.
     public static func whenLine(_ items: [JobActivityItem], now: Date = Date(), calendar: Calendar = .current,
                                 locale: Locale = .current) -> String? {
         var parts: [String] = []
-        if let start = startedAt(items) { parts.append(TaskLineCopy.time(start, now: now, calendar: calendar, locale: locale)) }
+        if let start = startedAt(items) { parts.append(ChatTimeline.clock(start, calendar: calendar, locale: locale)) }
         let total = items.compactMap { $0.duration(now: now) }.reduce(0, +)
         if total > 0, !items.contains(where: { $0.status == .running }) { parts.append(JobActivityItem.durationText(total)) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")

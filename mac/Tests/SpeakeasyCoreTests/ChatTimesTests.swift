@@ -70,6 +70,33 @@ final class ChatTimesTests: XCTestCase {
         XCTAssertNil(TaskTimes.line([], now: at(5), calendar: cal, locale: us))
     }
 
+    func testTaskPageHeaderIsTheNewestJobAndItsFollowUps() {
+        func j(_ run: String, _ job: String?, _ status: String, _ s: Double, _ f: Double?) -> WorkInfo {
+            var o: [String: Any] = ["run_id": run, "status": status, "started_at": at(s).timeIntervalSince1970]
+            if let f { o["finished_at"] = at(f).timeIntervalSince1970 }
+            if let job { o["job"] = ["id": job, "name": "Polish the app"] }
+            return WorkInfo(json: o)!
+        }
+        let jobs = [j("r3", "jB", "completed", 60, 70), j("r2", "jB", "completed", 40, 50), j("r1", "jA", "completed", 0, 20)]
+        XCTAssertEqual(TaskTimes.header(jobs, now: at(80), calendar: cal, locale: us),
+                       "Started 9:40\u{202F}PM · Done 10:10\u{202F}PM · Took 30 min")
+        XCTAssertEqual(TaskTimes.header([j("r1", nil, "running", 0, nil), j("r0", nil, "completed", -60, -50)],
+                                        now: at(5), calendar: cal, locale: us),
+                       "Started 9:00\u{202F}PM · 5 min so far")
+    }
+
+    func testAReplyWithItsStepsBeginsAtTheFirstStep() {
+        let step = JobActivityItem(id: "a1", at: at(-5), kind: .run, text: "Ran the tests", tool: "terminal",
+                                   startedAt: at(-5), endedAt: at(-4))
+        XCTAssertEqual(ChatTimeline.began(at(3), tools: [step]), at(-5))
+        XCTAssertEqual(ChatTimeline.began(at(3), tools: []), at(3))
+        XCTAssertNil(ChatTimeline.began(nil, tools: []))
+        // Steps before midnight, reply after: the divider goes above the steps, not between.
+        let marks = ChatTimeline.marks([("u1", at(-10)), ("a1", ChatTimeline.began(at(3), tools: [step]))],
+                                       now: at(5), calendar: cal, locale: us)
+        XCTAssertNil(marks["a1"])
+    }
+
     func testDurations() {
         XCTAssertEqual(TaskTimes.duration(0.2), "1 s")
         XCTAssertEqual(TaskTimes.duration(40), "40 s")

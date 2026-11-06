@@ -528,12 +528,19 @@ struct HistorySessionView: View {
                         }
                         let messages = thread.messages
                         let via = ChatLabel.platform(source: c.source, label: c.sourceLabel)
+                        // Quiet times: a day divider when the day changes, a time after a pause.
+                        let marks = ChatTimeline.marks(messages.map { ($0.id, ChatTimeline.began($0.at, tools: $0.tools)) }, now: store.now)
                         ForEach(Array(messages.enumerated()), id: \.element.id) { i, m in
                             let next = i + 1 < messages.count ? messages[i + 1] : nil
-                            HistoryMessageView(message: m, sessionID: c.id, store: store,
-                                               via: ChatLabel.fromChat(m.id) ? via : nil,
-                                               lastInGroup: next?.role != m.role || next.map { ChatLabel.fromChat($0.id) } != ChatLabel.fromChat(m.id))
-                                .padding(.top, i > 0 && messages[i - 1].role == m.role && m.role != .note ? -12 : 0)
+                            let mark = marks[m.id]
+                            VStack(spacing: 12) {
+                                if let mark { HistoryTimeMark(mark: mark) }
+                                HistoryMessageView(message: m, sessionID: c.id, store: store,
+                                                   via: ChatLabel.fromChat(m.id) ? via : nil,
+                                                   lastInGroup: next?.role != m.role || next.map { ChatLabel.fromChat($0.id) } != ChatLabel.fromChat(m.id)
+                                                       || (next.map { marks[$0.id] != nil } ?? false))
+                            }
+                                .padding(.top, mark == nil && i > 0 && messages[i - 1].role == m.role && m.role != .note ? -12 : 0)
                                 .id(m.id)
                             ForEach(layout.after[m.id] ?? [], id: \.lineID) { job in
                                 HistoryTaskLine(job: job, now: store.now, openable: Self.opensElsewhere(job, c)) { open(job, c, thread, proxy) }
@@ -618,6 +625,12 @@ struct HistorySessionView: View {
                   c.isSpeakeasy ? nil : "replies show here, not in \(c.sourceLabel.components(separatedBy: " · ").first ?? c.sourceLabel)"]
                 .compactMap { $0 }.joined(separator: " · "))
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.primary.opacity(0.6))
+            // A task's own page: when it started, when it finished, how long it took.
+            if c.sendVia == .task, let times = TaskTimes.header(c.jobs, now: store.now) {
+                Label(times, systemImage: "clock").font(.system(size: 12, weight: .medium).monospacedDigit())
+                    .foregroundStyle(Color.primary.opacity(0.55))
+                    .accessibilityIdentifier("history-task-times")
+            }
             if let badge = c.model, store.modelsSupported, store.picker?.headerShows(badge) ?? true { ModelWorkedLine(badge: badge) }
         }
         .padding(.bottom, 4)
@@ -764,7 +777,8 @@ struct HistoryMessageView: View {
             .padding(.horizontal, 13).padding(.vertical, 9)
             .background(bubble(mine: true).fill(via == nil ? AnyShapeStyle(Live.brass) : AnyShapeStyle(ChatInk.otherApp)))
             .opacity(message.delivery == .sending ? 0.7 : 1)
-            if lastInGroup || message.delivery != nil { caption }
+            .help(exactTime ?? "")
+            if message.voice || message.delivery != nil { caption }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.leading, 90)
@@ -786,7 +800,6 @@ struct HistoryMessageView: View {
             default:
                 if message.voice { Image(systemName: "mic.fill").font(.system(size: 8.5)); Text("Voice message") }
                 if message.delivery == .sent { Image(systemName: "checkmark").font(.system(size: 8.5, weight: .bold)); Text("Sent") }
-                if let t = HistoryLook.long(message.at, now: store.now) { Text(t) }
             }
         }
         .font(.system(size: 10.5)).foregroundStyle(.tertiary)
@@ -818,13 +831,10 @@ struct HistoryMessageView: View {
                         .padding(.horizontal, long ? 16 : 13).padding(.vertical, long ? 13 : 9)
                         .background(bubble(mine: false).fill(ChatInk.paper).shadow(color: .black.opacity(0.06), radius: 4, y: 1))
                         .overlay(bubble(mine: false).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
-                        if lastInGroup {
+                        .help(exactTime ?? "")
+                        if lastInGroup, let via {
                             HStack(spacing: 5) {
-                                if let via { Image(systemName: "arrow.turn.down.right"); Text("Replied in \(via)") }
-                                if let t = HistoryLook.long(message.at, now: store.now) {
-                                    if via != nil { Text("·") }
-                                    Text(t)
-                                }
+                                Image(systemName: "arrow.turn.down.right"); Text("Replied in \(via)")
                             }
                             .font(.system(size: 10.5)).foregroundStyle(.tertiary).padding(.leading, 6)
                         }
@@ -838,6 +848,28 @@ struct HistoryMessageView: View {
 
     private func markdown(_ s: String) -> AttributedString {
         (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+    }
+
+    /// The message's own time, on hover ("9:41 PM", "Yesterday, 9:41 PM").
+    private var exactTime: String? { message.at.map { ChatTimeline.exact($0, now: store.now) } }
+}
+
+/// A quiet time in the thread: a day divider ("Today  9:41 PM" between hairlines) or, after a
+/// pause, just the time.
+struct HistoryTimeMark: View {
+    let mark: ChatTimeline.Mark
+    var body: some View {
+        HStack(spacing: 10) {
+            if mark.day != nil { Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5) }
+            (Text(mark.day.map { "\($0)  " } ?? "").font(.system(size: 10.5, weight: .semibold))
+             + Text(mark.time).font(.system(size: 10.5)))
+                .foregroundStyle(.tertiary).fixedSize()
+            if mark.day != nil { Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5) }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, mark.day != nil ? 6 : 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(mark.day != nil ? "history-day-divider" : "history-time-mark")
     }
 }
 
@@ -893,6 +925,9 @@ struct HistoryToolCalls: View {
                     }
                     if items.contains(where: { $0.status == .running }) { LiveSpinner(size: 10) }
                     Spacer(minLength: 4)
+                    if let when = ToolCallLog.whenLine(items, now: store.now) {
+                        Text(when).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+                    }
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(open ? 90 : 0))
                 }
@@ -937,7 +972,7 @@ extension WorkInfo {
     var lineID: String { runID ?? (title ?? "") + (startedAt.map { "\($0.timeIntervalSince1970)" } ?? "") }
 }
 
-/// A finished task in the thread where it was asked: one quiet line, "✓ Fixed the login redirect · 9:41 PM ›".
+/// A finished task in the thread where it was asked: one quiet line, "✓ Fixed the login redirect · Done 9:41 PM ›".
 struct HistoryTaskLine: View {
     let job: WorkInfo
     let now: Date
