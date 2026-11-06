@@ -19,6 +19,18 @@ protocol VoiceMessageRecording: AnyObject {
     func stop()
     /// Drop everything; `finished` is not called.
     func cancel()
+    /// Voice notes: record only (no recognizer, so nothing on the Mac ends it or writes words).
+    func startClip(level: @escaping @MainActor (Float) -> Void) -> Bool
+    /// Voice notes: stop and hand back the whole recording (AAC), its length and its levels.
+    func finishClip() -> (audio: Data, duration: TimeInterval, levels: [Double])?
+    /// Asks for the microphone only (voice notes need nothing else).
+    func authorizeMic(_ done: @escaping @MainActor (Bool) -> Void)
+}
+
+extension VoiceMessageRecording {
+    func startClip(level: @escaping @MainActor (Float) -> Void) -> Bool { false }
+    func finishClip() -> (audio: Data, duration: TimeInterval, levels: [Double])? { nil }
+    func authorizeMic(_ done: @escaping @MainActor (Bool) -> Void) { authorize { granted, _ in done(granted) } }
 }
 
 @MainActor
@@ -86,6 +98,45 @@ final class VoiceMessageRecorder: VoiceMessageRecording {
             }
         }
         return true
+    }
+
+    private var clipStarted: Date?
+    private var clipLevels: [Double] = []
+
+    func authorizeMic(_ done: @escaping @MainActor (Bool) -> Void) {
+        guard Bundle.main.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") != nil else { done(false); return }
+        AVCaptureDevice.requestAccess(for: .audio) { mic in Task { @MainActor in done(mic) } }
+    }
+
+    func startClip(level: @escaping @MainActor (Float) -> Void) -> Bool {
+        guard engine == nil, task == nil else { return false }
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0, let audio = VoiceMemoAudio(format: format) else { return false }
+        clipLevels = []
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
+            audio.append(buffer)
+            let rms = Self.rms(buffer)
+            Task { @MainActor [weak self] in
+                level(rms)
+                if let self, self.clipLevels.count < 20_000 { self.clipLevels.append(Double(rms)) }
+            }
+        }
+        engine.prepare()
+        do { try engine.start() } catch { input.removeTap(onBus: 0); return false }
+        self.engine = engine; self.audio = audio; clipStarted = Date()
+        return true
+    }
+
+    func finishClip() -> (audio: Data, duration: TimeInterval, levels: [Double])? {
+        let duration = clipStarted.map { Date().timeIntervalSince($0) } ?? 0
+        clipStarted = nil
+        stopAudio()
+        let clip = audio?.finish()
+        audio = nil
+        guard let clip, !clip.isEmpty else { return nil }
+        return (clip, duration, clipLevels)
     }
 
     func stop() {

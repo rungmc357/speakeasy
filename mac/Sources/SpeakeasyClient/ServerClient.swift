@@ -657,6 +657,21 @@ public final class ServerClient: @unchecked Sendable {
         return text
     }
 
+    /// A voice note (servers with `voice_notes`): the recording itself is the message; Hermes
+    /// transcribes it on arrival. Idempotent on `clientID`, so Retry never sends it twice.
+    public func sendVoiceNote(_ note: VoiceNoteRequest) async throws -> VoiceNoteReply {
+        // Hermes transcribes before the message goes: allow for a slow local model.
+        let timeout: TimeInterval = note.audio.count > 2_000_000 ? 240 : 150
+        let req = request(note.path, method: "POST", headers: note.headers, timeout: timeout)
+        let (data, response) = try await sessionFor(timeout).upload(for: req, from: note.audio)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else { throw HTTPError(status: status, body: data, fallback: "Voice message HTTP \(status)") }
+        guard let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let reply = VoiceNoteReply(json: body) else {
+            throw HTTPError(status: 502, message: "Your Hermes didn't take that voice message.")
+        }
+        return reply
+    }
+
     /// The ✕ on a pending picture or file. 404 = already gone; 409 reason `sent` = it went with a request.
     public func removeAttachment(interactionID: String, attachmentID: String) async throws {
         _ = try await json(SharingRoute.attachment(interactionID, attachmentID), method: "DELETE")

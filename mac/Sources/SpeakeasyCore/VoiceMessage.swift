@@ -43,7 +43,32 @@ public struct VoiceMessageFlow: Equatable, Sendable {
     /// Text that was in the field before recording started; the transcript is appended to it.
     public private(set) var draftBefore = ""
 
-    public init(permitted: Bool = false) { self.permitted = permitted }
+    /// Voice notes (servers with `voice_notes`): the recording itself is the message. Stop = sent
+    /// (`.sendClip`); nothing goes in the field, and no recognizer event ever ends the recording —
+    /// only the user's stop (or the length cap) does, so a pause mid-sentence never cuts it in two.
+    public private(set) var sendsOnStop = false
+
+    /// Hermes transcribes the whole clip on stop (servers with `transcribe`, no voice notes): the
+    /// on-device words are only a preview, so the recognizer ending never stops the recording.
+    public private(set) var wholeClip = false
+
+    public init(permitted: Bool = false, sendsOnStop: Bool = false, wholeClip: Bool = false) {
+        self.permitted = permitted; self.sendsOnStop = sendsOnStop; self.wholeClip = wholeClip || sendsOnStop
+    }
+
+    public mutating func setWholeClip(_ on: Bool) {
+        if case .recording = phase { return }
+        wholeClip = on || sendsOnStop
+    }
+
+    /// Switch between voice notes and transcribe-then-review (the server's capability can arrive
+    /// after the composer appeared). Only while idle.
+    public mutating func setSendsOnStop(_ on: Bool) {
+        if case .recording = phase { return }
+        if case .asking = phase { return }
+        sendsOnStop = on
+        if on { wholeClip = true }
+    }
 
     public var isRecording: Bool { if case .recording = phase { return true }; return false }
     public var isBusy: Bool {
@@ -68,7 +93,8 @@ public struct VoiceMessageFlow: Equatable, Sendable {
     /// Recording should stop on its own (the cap).
     public func shouldAutoStop(now: Date) -> Bool { (elapsed(now: now) ?? 0) >= Self.maxSeconds }
 
-    public enum Effect: Equatable, Sendable { case none, askPermissions, startRecording, stopRecording, cancelRecording }
+    /// `sendClip`: stop the mic and send the whole recording as the message (voice notes).
+    public enum Effect: Equatable, Sendable { case none, askPermissions, startRecording, stopRecording, cancelRecording, sendClip }
 
     /// Apply an event; returns what the view must do next.
     @discardableResult
@@ -85,13 +111,24 @@ public struct VoiceMessageFlow: Equatable, Sendable {
             return .askPermissions
         case (.asking, .permissions(let granted, let onDevice)):
             guard granted else { phase = .unavailable(Self.deniedText); return .none }
-            guard onDevice else { phase = .unavailable(Self.noOnDeviceText); return .none }
+            guard onDevice || sendsOnStop else { phase = .unavailable(Self.noOnDeviceText); return .none }
             permitted = true
             phase = .recording(started: Date())
             return .startRecording
+        case (.recording, .micTapped) where sendsOnStop:
+            phase = .idle
+            transcript = ""
+            return .sendClip
         case (.recording, .micTapped):
             phase = .transcribing
             return .stopRecording
+        case (.recording, .partial) where sendsOnStop, (.recording, .final) where sendsOnStop:
+            return .none   // nothing on the device decides anything about a voice note
+        case (.recording, .final(let text)) where wholeClip:
+            // Hermes transcribes the whole clip on stop: a pause that ends the recognizer's segment
+            // never ends the recording (it used to stop the mic and keep only the last half).
+            transcript = text
+            return .none
         case (.recording, .partial(let text)), (.transcribing, .partial(let text)):
             transcript = text
             return .none
@@ -126,6 +163,60 @@ public struct VoiceMessageFlow: Equatable, Sendable {
     public static func clock(_ seconds: TimeInterval) -> String {
         let s = Int(seconds.rounded(.down))
         return String(format: "%d:%02d", s / 60, s % 60)
+    }
+}
+
+/// `POST /voice/history/{id}/voice-message` / `POST /voice/work/{id}/voice-message` (servers with
+/// `voice_notes`): the recording itself as the message, raw body, the message's fields as headers.
+/// Hermes transcribes it on arrival like a Telegram voice note; the reply adds `voice.transcript`.
+public struct VoiceNoteRequest: Equatable, Sendable {
+    public enum Target: Equatable, Sendable { case session(String), task(String) }
+    public var target: Target
+    public var audio: Data
+    public var mimeType: String
+    public var clientID: String
+    public var duration: TimeInterval
+    public var mode: MessageMode?
+    public var answers: String?
+
+    public init(target: Target, audio: Data, mimeType: String = "audio/mp4", clientID: String = UUID().uuidString,
+                duration: TimeInterval, mode: MessageMode? = nil, answers: String? = nil) {
+        self.target = target; self.audio = audio; self.mimeType = mimeType; self.clientID = clientID
+        self.duration = duration; self.mode = mode; self.answers = answers
+    }
+
+    public var path: String {
+        switch target {
+        case .session(let id): return HistoryConversation.path(id) + "/voice-message"
+        case .task(let run): return "/voice/work/\(run)/voice-message"
+        }
+    }
+
+    public var headers: [String: String] {
+        var out = ["Content-Type": mimeType, "X-Speakeasy-Client-Id": clientID,
+                   "X-Speakeasy-Duration": String(format: "%.1f", max(0, min(duration, 600)))]
+        if let mode { out["X-Speakeasy-Mode"] = mode.rawValue }
+        if let answers, !answers.isEmpty, case .session = target { out["X-Speakeasy-Answers"] = answers }
+        return out
+    }
+}
+
+/// The server's word on a voice note: what Hermes heard (nil: it couldn't write it down; the agent
+/// still got the clip, as with a Telegram voice note).
+public struct VoiceNoteReply: Equatable, Sendable {
+    public var transcript: String?
+    public var deliveredAs: TaskMessageDelivery
+    public var runID: String?
+    public init(transcript: String?, deliveredAs: TaskMessageDelivery = .unknown, runID: String? = nil) {
+        self.transcript = transcript; self.deliveredAs = deliveredAs; self.runID = runID
+    }
+    public init?(json: [String: Any]) {
+        guard json["ok"] as? Bool == true else { return nil }
+        let voice = json["voice"] as? [String: Any]
+        let words = (voice?["transcript"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.init(transcript: words,
+                  deliveredAs: (json["delivered_as"] as? String).flatMap(TaskMessageDelivery.init(rawValue:)) ?? .unknown,
+                  runID: (json["run_id"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
 }
 

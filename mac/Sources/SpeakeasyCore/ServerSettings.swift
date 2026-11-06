@@ -895,6 +895,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var messageModes: Bool = false
     /// Voice messages transcribed by Hermes (`POST /voice/transcribe`), like a Telegram voice note.
     public var transcribe: Bool = false
+    /// Voice notes: the recording itself is the message (`POST …/voice-message`), like a Telegram voice note.
+    public var voiceNotes: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -910,6 +912,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
+        case voiceNotes = "voice_notes"
         case messageModes = "message_modes"
     }
     public init(from decoder: Decoder) throws {
@@ -929,6 +932,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         codexLogin = (try? c.decodeIfPresent(Bool.self, forKey: .codexLogin)) ?? false
         messageModes = (try? c.decodeIfPresent(Bool.self, forKey: .messageModes)) ?? false
         transcribe = (try? c.decodeIfPresent(Bool.self, forKey: .transcribe)) ?? false
+        voiceNotes = (try? c.decodeIfPresent(Bool.self, forKey: .voiceNotes)) ?? false
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
     }
 }

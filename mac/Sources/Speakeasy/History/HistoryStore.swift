@@ -23,6 +23,8 @@ protocol HistoryBackend: AnyObject {
     /// A message held for when the task finishes: cancel it, or send it now (servers with `message_modes`).
     func cancelQueued(sessionID: String, clientID: String) async throws
     func steerQueued(sessionID: String, clientID: String) async throws
+    /// A voice note (servers with `voice_notes`): the recording itself is the message.
+    func sendVoiceNote(_ note: VoiceNoteRequest) async throws -> VoiceNoteReply
 }
 
 /// What the row's context menu (and swipes) do to a conversation.
@@ -37,6 +39,9 @@ extension HistoryBackend {
     func dismissQuestion(runID: String, undo: Bool) async throws {}
     func cancelQueued(sessionID: String, clientID: String) async throws {}
     func steerQueued(sessionID: String, clientID: String) async throws {}
+    func sendVoiceNote(_ note: VoiceNoteRequest) async throws -> VoiceNoteReply {
+        throw ServerClient.HTTPError(status: 404, message: "Your Hermes can't take voice messages yet.")
+    }
 }
 
 @MainActor
@@ -62,6 +67,7 @@ final class LiveHistoryBackend: HistoryBackend {
     func steerQueued(sessionID: String, clientID: String) async throws {
         _ = try await api.steerQueued(sessionID: sessionID, clientID: clientID)
     }
+    func sendVoiceNote(_ note: VoiceNoteRequest) async throws -> VoiceNoteReply { try await api.sendVoiceNote(note) }
     func act(_ action: HistorySessionAction, sessionID: String) async throws {
         switch action {
         case .rename(let title): try await api.renameSession(sessionID, title: title)
@@ -106,6 +112,8 @@ final class HistoryStore: ObservableObject {
     /// The server has `capabilities.history`; false shows the update note.
     @Published var supported = true
     /// The server has `capabilities.model_choice`: the composer's model chip.
+    /// The server has `capabilities.voice_notes`: on a session page, stop sends the recording itself.
+    @Published var voiceNotesSupported = false
     @Published var modelsSupported = false { didSet { if modelsSupported && !oldValue { loadModels() } } }
     @Published private(set) var catalog: ModelCatalog?
     /// New chat's pick (its first job runs on it, and the chat keeps it).
@@ -495,6 +503,7 @@ final class HistoryStore: ObservableObject {
     func retry(clientID: String) {
         guard let item = outbox.item(clientID), let backend else { return }
         outbox.mark(clientID, .sending)
+        if let note = item.voiceNote { transmit(voiceNote: note, session: item.request.sessionID, backend); return }
         transmit(item.request, backend)
     }
 
@@ -662,7 +671,49 @@ final class HistoryStore: ObservableObject {
 
     /// The mic button (and Stop: the same tap ends a recording).
     func tapMic() {
+        if !voice.flow.isBusy {
+            voice.setVoiceNotes(voiceNotesSupported && target?.sessionID != nil, wholeClip: false)
+        }
         apply(voice.handle(.micTapped(now: Date()), draft: draft))
+    }
+
+    /// Stop = sent: the whole recording goes to the session as a voice note. The bubble shows at
+    /// once (play, waveform, length); Hermes writes it down on arrival and the words appear under it.
+    private func sendVoiceNote() {
+        level = 0
+        guard let clip = recorder.finishClip(), clip.duration >= 0.4 else {
+            apply(voice.handle(.failed(VoiceMessageFlow.nothingHeardText))); return
+        }
+        guard let session = target?.sessionID, let backend else { return }
+        let answers = replyingTo.flatMap { r in conversations[session].map { thread($0) }?
+            .waiting.contains(where: { $0.id == r.id }) == true ? r.questionRunID : nil }
+        let note = VoiceNoteRequest(target: .session(session), audio: clip.audio, mimeType: VoiceMemoAudio.mimeType,
+                                    duration: clip.duration,
+                                    mode: answers == nil ? messageMode.mode(offered: offersMessageModes, alternate: false) : nil,
+                                    answers: answers)
+        VoiceClipStore.save(note.clientID, audio: clip.audio,
+                            meta: .init(duration: clip.duration, levels: VoiceClipStore.bars(clip.levels)))
+        replyingTo = nil
+        outbox.add(voiceNote: note, session: session, at: Date())
+        transmit(voiceNote: note, session: session, backend)
+    }
+
+    private func transmit(voiceNote note: VoiceNoteRequest, session: String, _ backend: HistoryBackend) {
+        Task { [weak self] in
+            do {
+                let reply = try await backend.sendVoiceNote(note)
+                self?.outbox.heard(note.clientID, reply.transcript)
+                if reply.deliveredAs == .queued {
+                    self?.outbox.remove(note.clientID)
+                } else {
+                    self?.outbox.mark(note.clientID, .sent)
+                }
+                self?.bump(session, text: reply.transcript ?? "Voice message")
+                self?.load(session)
+            } catch {
+                self?.outbox.mark(note.clientID, .failed(Self.message(error)))
+            }
+        }
     }
 
     func cancelVoice() {
@@ -672,11 +723,22 @@ final class HistoryStore: ObservableObject {
     private func apply(_ effect: VoiceMessageFlow.Effect) {
         switch effect {
         case .none: break
+        case .askPermissions where voice.sendsOnStop:
+            recorder.authorizeMic { [weak self] granted in
+                guard let self else { return }
+                self.apply(self.voice.handle(.permissions(granted: granted, onDevice: true)))
+            }
         case .askPermissions:
             recorder.authorize { [weak self] granted, onDevice in
                 guard let self else { return }
                 self.apply(self.voice.handle(.permissions(granted: granted, onDevice: onDevice)))
             }
+        case .startRecording where voice.sendsOnStop:
+            if !recorder.startClip(level: { [weak self] l in self?.level = l }) {
+                apply(voice.handle(.failed("Couldn't open the microphone.")))
+            }
+        case .sendClip:
+            sendVoiceNote()
         case .startRecording:
             let started = recorder.start(
                 partial: { [weak self] text in self?.voice.handle(.partial(text)) },

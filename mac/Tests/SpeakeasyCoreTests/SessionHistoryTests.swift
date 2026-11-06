@@ -206,3 +206,73 @@ final class VoiceMessageFlowTests: XCTestCase {
         XCTAssertEqual(typed?.voice, false)
     }
 }
+
+final class VoiceNoteFlowTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1000)
+
+    func testStopSendsTheClipAndNothingGoesInTheField() {
+        var f = VoiceMessageFlow(permitted: true, sendsOnStop: true)
+        XCTAssertEqual(f.handle(.micTapped(now: t0), draft: "half typed"), .startRecording)
+        f.handle(.partial("book the table"))
+        XCTAssertEqual(f.fieldText, "half typed", "no on-device words in the field")
+        XCTAssertEqual(f.handle(.micTapped(now: t0)), .sendClip)
+        XCTAssertEqual(f.phase, .idle)
+    }
+
+    func testAPauseNeverEndsTheRecording() {
+        // Speech, a pause (the recognizer ends its segment and says final), more speech, stop.
+        var f = VoiceMessageFlow(permitted: true, sendsOnStop: true)
+        f.handle(.micTapped(now: t0))
+        XCTAssertEqual(f.handle(.final("Book the table for four.")), .none)
+        XCTAssertTrue(f.isRecording, "the recording goes on through the pause")
+        XCTAssertEqual(f.handle(.failed("no speech")), .cancelRecording, "a real mic failure still stops")
+        var g = VoiceMessageFlow(permitted: true, sendsOnStop: true)
+        g.handle(.micTapped(now: t0))
+        g.handle(.final("Book the table for four."))
+        g.handle(.partial("Then text everyone"))
+        XCTAssertEqual(g.handle(.micTapped(now: t0)), .sendClip, "one clip, both halves")
+    }
+
+    func testHermesTranscribingKeepsRecordingThroughAPause() {
+        var f = VoiceMessageFlow(permitted: true, wholeClip: true)
+        f.handle(.micTapped(now: t0))
+        XCTAssertEqual(f.handle(.final("Book the table for four.")), .none)
+        XCTAssertTrue(f.isRecording)
+        XCTAssertEqual(f.handle(.micTapped(now: t0)), .stopRecording)
+    }
+
+    func testNoOnDeviceRecognizerIsFineForVoiceNotes() {
+        var f = VoiceMessageFlow(sendsOnStop: true)
+        f.handle(.micTapped(now: t0))
+        XCTAssertEqual(f.handle(.permissions(granted: true, onDevice: false)), .startRecording)
+    }
+
+    func testRequestCarriesTheMessageAsHeaders() {
+        let note = VoiceNoteRequest(target: .session("api_shelf"), audio: Data([1, 2, 3]), clientID: "vm-1",
+                                    duration: 31.42, mode: .steer, answers: "run_9")
+        XCTAssertEqual(note.path, "/voice/history/api_shelf/voice-message")
+        XCTAssertEqual(note.headers["X-Speakeasy-Client-Id"], "vm-1")
+        XCTAssertEqual(note.headers["X-Speakeasy-Duration"], "31.4")
+        XCTAssertEqual(note.headers["X-Speakeasy-Mode"], "steer")
+        XCTAssertEqual(note.headers["X-Speakeasy-Answers"], "run_9")
+        XCTAssertEqual(note.headers["Content-Type"], "audio/mp4")
+        let task = VoiceNoteRequest(target: .task("run_5"), audio: Data(), duration: 2, answers: "run_9")
+        XCTAssertEqual(task.path, "/voice/work/run_5/voice-message")
+        XCTAssertNil(task.headers["X-Speakeasy-Answers"])
+    }
+
+    func testReplyAndPageEntries() throws {
+        let reply = VoiceNoteReply(json: ["ok": true, "via": "session_job", "run_id": "r1", "delivered_as": "steer",
+                                          "voice": ["transcript": " Order the cedar boards ", "duration": 4.0]])
+        XCTAssertEqual(reply?.transcript, "Order the cedar boards")
+        XCTAssertEqual(reply?.deliveredAs, .steer)
+        XCTAssertNil(VoiceNoteReply(json: ["ok": true, "voice": ["transcript": NSNull()]])?.transcript)
+        let entry = try XCTUnwrap(HistoryEntry(json: ["id": "m1", "kind": "user", "text": "Order the cedar boards", "voice": true,
+                                                      "voice_clip": "vm-1", "voice_duration": 4.5]))
+        XCTAssertEqual(entry.voiceClip, "vm-1")
+        XCTAssertEqual(entry.voiceDuration, 4.5)
+        // Hermes couldn't write it down: still a voice message on the page.
+        XCTAssertNotNil(HistoryEntry(json: ["id": "m2", "kind": "user", "text": "", "voice": true]))
+        XCTAssertNil(HistoryEntry(json: ["id": "m3", "kind": "user", "text": ""]))
+    }
+}
