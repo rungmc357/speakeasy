@@ -28,7 +28,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from . import activity as A
 
@@ -378,12 +378,23 @@ def _pending_turn(db: sqlite3.Connection, session_id: str, now: float) -> bool:
     return row["role"] in {"user", "tool"} or (row["role"] == "assistant" and row["tool_calls"] not in (None, "", "[]"))
 
 
-def _preview(db: sqlite3.Connection, session_id: str) -> tuple[str, str | None]:
-    """(preview line, first user words) of a session."""
+def _preview(db: sqlite3.Connection, session_id: str, linked: Sequence[str] = ()) -> tuple[str, str | None]:
+    """(preview line, first user words) of a session. *linked*: the sessions of its linked Speakeasy
+    tasks. The preview is the newest real message in the chat or any of them, by time (as the page
+    merges them), so a chat continued from Speakeasy previews the task's reply instead of the chat's
+    older last message. The first user words (the title fallback) stay the chat's own."""
     preview, first = "", None
     try:
-        rows = db.execute("SELECT role, content FROM messages WHERE session_id=? AND role IN ('user','assistant') "
-                          "AND content IS NOT NULL AND content != '' ORDER BY id DESC LIMIT 6", (session_id,)).fetchall()
+        query = ("SELECT id, role, content, timestamp FROM messages WHERE session_id=? AND role IN ('user','assistant') "
+                 "AND content IS NOT NULL AND content != '' ORDER BY id DESC LIMIT 6")
+        rows = db.execute(query, (session_id,)).fetchall()
+        others = [sid for sid in dict.fromkeys(linked) if sid != session_id]
+        if others:
+            # Each session's newest few, merged newest first by time (row id breaks ties).
+            for sid in others:
+                rows += db.execute(query, (sid,)).fetchall()
+            rows.sort(key=lambda r: (r["timestamp"] if isinstance(r["timestamp"], (int, float)) else 0.0, r["id"]),
+                      reverse=True)
         for row in rows:
             kind, text = user_words(row["content"]) if row["role"] == "user" else ("assistant", assistant_text(row["content"]))
             if kind != "note" and text.strip():
@@ -477,6 +488,9 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
         if fold:
             where.append(f"s.id NOT IN ({','.join('?' * len(fold))})")
             params += list(fold)
+        links: dict[str, list[str]] = {}  # chat: its linked tasks' sessions
+        for task_sid, chat_sid in fold.items():
+            links.setdefault(chat_sid, []).append(task_sid)
         mine = speakeasy_ids()
         sources = _source_counts(db, where, params, mine)
         if source == "speakeasy":
@@ -540,7 +554,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             link = linked(sid)
             # A chat continued from Speakeasy (linked tasks, no keys of its own) stays the chat's row.
             speakeasy = bool(link and link.keys) or sid.startswith(SPEAKEASY_PREFIX)
-            preview, first = _preview(db, sid)
+            preview, first = _preview(db, sid, links.get(sid, ()))
             running = bool(link and link.running) or live(sid) or (link is None and _pending_turn(db, sid, now))
             entry: dict[str, Any] = {
                 "id": sid, "title": (link.name if link and link.name and not (row["title"] or "").strip() else None)

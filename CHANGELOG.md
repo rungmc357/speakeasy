@@ -11,6 +11,7 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **No choice card for a closing offer.** "Want me to hold, or walk you through it?" at the end of an answer is just talk now, not a card and a "Decide on…" task in Done.
 - **Titles name the subject.** Titles made only of generic words ("Check work status", "Decide on holding") or pointing at "the earlier task" are rejected and written again.
 - **The conversation list shows when a chat last moved.** A chat that just got a message and a reply now shows that time and moves to the top, instead of keeping the time of the turn before it and sorting under newer conversations.
+- **A continued chat previews its newest reply.** After you send something to a Telegram or Discord chat from Speakeasy, the chat's line in the list shows the reply Speakeasy got, not the chat's older last message.
 
 ## Plugin 0.3.35 — Easier setup, and session pages end with the latest message
 

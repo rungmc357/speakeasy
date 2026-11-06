@@ -179,6 +179,28 @@ def test_a_chat_sorts_by_its_linked_tasks_newest_message_too(state):
     assert body["sessions"][0]["last_activity"] == pytest.approx(NOW - 30, abs=0.01)
 
 
+def test_a_continued_chat_previews_its_linked_tasks_newer_reply(state):
+    """The preview is the newest real message of the chat or its linked task (SPK-55): the task's reply
+    when it's newer, the chat's own message once the chat moves on; the title fallback stays the chat's."""
+    add_session(state, "chat", "telegram", display="Robin", chat_type="dm", at=NOW - 900)
+    add_msg(state, "chat", "user", "Book the tile delivery", at=NOW - 900)
+    add_msg(state, "chat", "assistant", "Which day works for you?", at=NOW - 880)
+    add_session(state, "speakeasy_task_link1", "api_server", title="Tile delivery", at=NOW - 60)
+    add_msg(state, "speakeasy_task_link1", "user", "Thursday morning please", at=NOW - 60)
+    add_msg(state, "speakeasy_task_link1", "assistant", "**Booked** for Thursday morning.", at=NOW - 30)
+    folded = lambda: {"speakeasy_task_link1": "chat"}
+    row = H.list_sessions(state, folded=folded, now=NOW)["sessions"][0]
+    assert row["id"] == "chat" and row["preview"] == "Booked for Thursday morning."
+    # A note-only row in the task (an internal notice) never becomes the preview.
+    add_msg(state, "speakeasy_task_link1", "user", "[IMPORTANT: Background process proc_1 completed]", at=NOW - 20)
+    assert H.list_sessions(state, folded=folded, now=NOW)["sessions"][0]["preview"] == "Booked for Thursday morning."
+    # The chat itself moves on: its own newer message is the preview again.
+    add_msg(state, "chat", "user", "Also order grout", at=NOW - 10)
+    assert H.list_sessions(state, folded=folded, now=NOW)["sessions"][0]["preview"] == "Also order grout"
+    # Without the link, the chat previews only itself.
+    assert H.list_sessions(state, now=NOW)["sessions"][0]["preview"] == "Also order grout"
+
+
 def test_the_live_feed_stamp_moves_when_a_message_lands(service, state):
     before = service._history_stamp()
     add_msg(state, "d1", "user", "One more bracket please", at=NOW - 5)
