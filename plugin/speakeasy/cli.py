@@ -111,31 +111,68 @@ def enable_voice_platform(home: Path, port: int, move_port: bool = False) -> boo
     it); refuses (config untouched) if the file can't be read."""
     from . import hermes_config
 
+    def section(parent: dict, key: str, empty):
+        # A key with only comments under it loads as None (Hermes' own config template ships
+        # `gateway:` that way): treat it as empty. Filling it in only adds settings.
+        if parent.get(key) is None:
+            parent[key] = empty
+        return parent[key]
+
     def turn_on(data: dict) -> bool:
-        gateway = data.setdefault("gateway", {})
+        gateway = section(data, "gateway", {})
         if not isinstance(gateway, dict):
             return False
-        platforms = gateway.setdefault("platforms", {})
+        platforms = section(gateway, "platforms", {})
         if not isinstance(platforms, dict):
             return False
-        voice = platforms.setdefault("voice", {})
+        voice = section(platforms, "voice", {})
         if not isinstance(voice, dict):
             return False
         changed = not voice.get("enabled")
         voice["enabled"] = True
-        extra = voice.setdefault("extra", {})
+        extra = section(voice, "extra", {})
         if isinstance(extra, dict) and ("port" not in extra or (move_port and extra["port"] != port)):
             extra["port"] = port
             changed = True
-        plugins = data.setdefault("plugins", {})
+        plugins = section(data, "plugins", {})
         if isinstance(plugins, dict):
-            enabled = plugins.setdefault("enabled", [])
+            enabled = section(plugins, "enabled", [])
             if isinstance(enabled, list) and "speakeasy" not in enabled:
                 enabled.append("speakeasy")
                 changed = True
         return changed
 
     return hermes_config.update(home / "config.yaml", turn_on)
+
+
+class VoiceNotEnabled(RuntimeError):
+    """config.yaml still doesn't turn the voice platform on after setup tried to (message = why)."""
+
+
+def voice_platform_problem(home: Path) -> str:
+    """Why config.yaml does not turn Speakeasy on, read back from disk ("" when it does): the
+    voice platform must be enabled with a port, and ``speakeasy`` in ``plugins.enabled``."""
+    from . import hermes_config
+    data = hermes_config._read_full(home / "config.yaml")  # the reader the write itself uses
+    node: Any = data
+    path: list[str] = []
+    for key in ("gateway", "platforms", "voice"):
+        path.append(key)
+        node = node.get(key)
+        if node is None:
+            return "the voice platform is still missing from it"
+        if not isinstance(node, dict):
+            return f"its '{'.'.join(path)}' setting is not a group of settings Speakeasy can add to"
+    if node.get("enabled") is not True:
+        return "the voice platform is still switched off"
+    extra = node.get("extra")
+    if not isinstance(extra, dict) or "port" not in extra:
+        return "the voice platform has no port"
+    plugins = data.get("plugins")
+    enabled = plugins.get("enabled") if isinstance(plugins, dict) else None
+    if not isinstance(enabled, list) or "speakeasy" not in enabled:
+        return "Speakeasy is not in its list of enabled plugins (plugins.enabled)"
+    return ""
 
 
 def voice_port(home: Path) -> int:
@@ -179,6 +216,9 @@ def _prepare_profile(home: Path, port: int, out, move_port: bool = False) -> Non
     if added:
         out("✓ Turned on Hermes' local API (Speakeasy uses it to hand work to your agent)")
     enable_voice_platform(home, port, move_port)
+    problem = voice_platform_problem(home)
+    if problem:
+        raise VoiceNotEnabled(problem)
     Settings(home).ensure()  # settings.json (0600) with defaults
     out("✓ Speakeasy is enabled in this Hermes profile")
 
@@ -203,6 +243,11 @@ def cmd_setup(args, home: Path, env=None) -> int:
     except ConfigWriteRefused as exc:
         out(f"✗ Left your Hermes config.yaml untouched: {exc}")
         out("  Fix or restore config.yaml (hermes config check), then run setup again.")
+        return 1
+    except VoiceNotEnabled as exc:
+        out(f"✗ Couldn't turn Speakeasy on in your Hermes config.yaml: {exc}.")
+        out("  Voice won't start until it's on. In config.yaml, set gateway.platforms.voice.enabled to true "
+            "and add speakeasy to plugins.enabled, then run setup again.")
         return 1
 
     settings = Settings(home)
