@@ -430,6 +430,9 @@ class Runtime:
     # The model/reasoning a run starts with (task_id, idem key, session id, request) -> Hermes'
     # per-request overrides (models.run_fields), or None for its own config. None = never chosen.
     choose_model: Callable[[str, str, str | None, str | None], dict[str, Any] | None] | None = None
+    # The state.db a session lives in (agents.py: a chat on another Hermes profile is in that
+    # profile's). None = this profile's own for every session.
+    session_db: Callable[[str | None], Path] | None = None
 
     @property
     def names(self) -> P.Names:
@@ -438,6 +441,15 @@ class Runtime:
     @property
     def state_db(self) -> Path:
         return self.hermes_home / "state.db"
+
+    def db_for(self, session_id: str | None) -> Path:
+        """The state.db *session_id* lives in (another agent's for a chat on another profile)."""
+        if self.session_db is not None and session_id:
+            try:
+                return self.session_db(session_id)
+            except Exception:
+                pass
+        return self.state_db
 
     def routable(self) -> dict[str, Any]:
         """Settings minus any topic channel another Hermes profile answers (see
@@ -2991,7 +3003,7 @@ class SidebandWorker:
         """What the task's Hermes session has done lately, in plain words, newest last: the voice's
         answer to "how's it going?" comes from the work itself, not only what the task chose to report."""
         try:
-            rows = threads.recent_steps(self.rt.state_db, session_id)
+            rows = threads.recent_steps(self.rt.db_for(session_id), session_id)
         except Exception:
             return []
         out: list[str] = []
@@ -4617,7 +4629,7 @@ class SidebandWorker:
             return self._titled(titler, text_mod.title_input(goal, names=(names.user_name, names.assistant_name)))
 
         try:
-            subagents_mod.ensure_watch(self.store, backend.idem_key, self.rt.state_db, session_of,
+            subagents_mod.ensure_watch(self.store, backend.idem_key, self.rt.db_for(session_of()), session_of,
                                        on_flush=publish_soon, titler=title)
         except Exception:
             logger.debug("speakeasy: helper watch failed to start", exc_info=True)

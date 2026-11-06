@@ -67,6 +67,15 @@ class FakeHermes(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _strip_profile(self) -> None:
+        """A multiplexing gateway serves each Hermes profile at ``/p/<name>/...``: record which one
+        (``agent``, "" = the host's own) and route the rest like any request."""
+        self.agent = ""
+        parts = self.path.split("/", 3)
+        if len(parts) >= 4 and parts[1] == "p" and parts[2]:
+            self.agent, self.path = parts[2], "/" + parts[3]
+            self.state.agent_paths.append((self.agent, self.command, self.path))
+
     def _authed(self) -> bool:
         if self.headers.get("Authorization") != f"Bearer {FAKE_API_KEY}":
             self._json(401, {"error": "unauthorized"})
@@ -74,6 +83,7 @@ class FakeHermes(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self) -> None:
+        self._strip_profile()
         if self.path == "/health":
             self._json(200, {"status": "ok"})
             return
@@ -126,6 +136,7 @@ class FakeHermes(BaseHTTPRequestHandler):
 
     def do_PATCH(self) -> None:
         """PATCH /api/sessions/{id} {"title"}: Hermes' rename; titles are unique (400 when taken)."""
+        self._strip_profile()
         if not self._authed():
             return
         length = int(self.headers.get("Content-Length") or 0)
@@ -171,6 +182,7 @@ class FakeHermes(BaseHTTPRequestHandler):
         self._json(200, {"object": "hermes.session", "session": {"id": parts[2], "title": title}})
 
     def do_POST(self) -> None:
+        self._strip_profile()
         if not self._authed():
             return
         length = int(self.headers.get("Content-Length") or 0)
@@ -194,6 +206,7 @@ class FakeHermes(BaseHTTPRequestHandler):
             # ``input`` is recorded as sent: a string, or a list of messages with text and image parts.
             prompt, session_id = body.get("input", ""), body.get("session_id")
             self.state.calls.append({"run_id": run_id, "input": prompt, "session_id": session_id, "idem": idem,
+                                     **({"agent": self.agent} if self.agent else {}),
                                      **{k: body[k] for k in ("provider", "model", "model_options") if k in body}})
             # Hermes' served runtime (api_server_runs): the requested pair, else its configured default.
             served = {"provider": body.get("provider") or "anthropic", "model": body.get("model") or "claude-opus-5-5",
@@ -266,6 +279,7 @@ class FakeHermesServer:
         self.by_idem: dict[str, str] = {}
         self.idem_bodies: dict[str, str] = {}  # what each idempotency key was first sent with
         self.calls: list[dict[str, Any]] = []
+        self.agent_paths: list[tuple[str, str, str]] = []  # (profile, method, path) under /p/<profile>
         self.approvals: list[dict[str, Any]] = []
         self.counter = 0
         self.session_titles: dict[str, str | None] = {}  # session rows the runs created: id -> title

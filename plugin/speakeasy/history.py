@@ -423,7 +423,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                   folded: Callable[[], dict[str, str]] = dict,
                   marks: Callable[[], dict[str, dict[str, Any]]] = dict, archived: bool = False,
                   include_archived: bool | None = None,
-                  now: float | None = None) -> dict[str, Any]:
+                  now: float | None = None, only: set[str] | None = None) -> dict[str, Any]:
     """``GET /voice/history``: conversations newest first, ``limit`` per page; pass ``next_cursor`` back
     as ``cursor`` for the next page.
 
@@ -472,6 +472,11 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
         if fold:
             where.append(f"s.id NOT IN ({','.join('?' * len(fold))})")
             params += list(fold)
+        if only is not None:
+            # Another agent's state.db (agents.py): only the chats Speakeasy started there.
+            ids = sorted(i for i in only if SAFE_ID_RE.fullmatch(i))[:500]
+            where.append(f"s.id IN ({','.join('?' * len(ids))})" if ids else "1=0")
+            params += ids
         mine = speakeasy_ids()
         sources = _source_counts(db, where, params, mine)
         if source == "speakeasy":

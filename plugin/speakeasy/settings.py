@@ -81,6 +81,9 @@ DEFAULTS: dict[str, Any] = {
     # model for this" on a call picks fast_* / smart_* for that task ("" = picked from Hermes' default).
     "jobs": {"model": "", "reasoning": "", "fast_model": "", "fast_reasoning": "", "smart_model": "",
              "smart_reasoning": ""},
+    # Other Hermes profiles a new chat may talk to (agents.py), set on the Mac. Empty = only the
+    # profile Speakeasy lives in, and the apps show no agent picker.
+    "agents": {"allowed": []},
 }
 DEFAULT_UPDATE_INTERVAL_S = 45
 UPDATE_INTERVALS = (30, 45, 60, 90, 120)  # speech.interval_seconds choices (the apps' picker)
@@ -175,6 +178,11 @@ def validate(settings: dict[str, Any]) -> dict[str, Any]:
     s["audio_duck"] = validate_audio_duck(s["audio_duck"])
     s["push"] = validate_push(s["push"])
     s["jobs"] = validate_jobs(s["jobs"])
+    agents = s["agents"]
+    if not isinstance(agents, dict) or set(agents) - {"allowed"}:
+        raise SettingsError("agents takes: allowed")
+    from .agents import validate_allowed
+    s["agents"] = {"allowed": validate_allowed(agents.get("allowed", []))}
     fast = s["fast_routing"]
     if not isinstance(fast.get("quick_answers"), bool):
         raise SettingsError("fast_routing.quick_answers must be true or false")

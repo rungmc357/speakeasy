@@ -1147,6 +1147,28 @@ the next message runs on) and `"model_choice"` (the chat's own pick, or null).
 "smart_reasoning": ""}` ("" = default). `model`/`reasoning` are Speakeasy's default; `fast_*` / `smart_*`
 are what "use the fast/smart model" picks (by default: a quick sibling of the default model at Low, and
 the default model at High).
+## Agents
+
+A Hermes install can run several profiles (`~/.hermes` plus `profiles/<name>`), each its own agent with
+its own memory, skills, model and history. When the gateway multiplexes them
+(`gateway.multiplex_profiles: true`) one API server answers every profile at `/p/<name>/v1/...`, and a
+Speakeasy chat can talk to any profile the user allowed. Capability `agents`.
+
+- `GET /voice/agents` → `{agents, default, allowed, available, multiplexed}`. `agents` is what the picker
+  offers: Speakeasy's own agent first (`default: true`), then each allowed one this gateway serves, in the
+  user's order. Each is `{id, name, description?, default?}`; `name` is the profile's display name, else
+  its id in words (`research-desk` → "Research desk"); the root profile is "Hermes". `available` lists
+  every agent that could be allowed (parked and standalone profiles are not served, so not listed);
+  `allowed` is the saved allowlist. Without multiplexing only the own agent is available.
+- Settings `agents.allowed`: up to 24 profile names (edited in the Mac app's settings). Empty (the
+  default) = the apps show no agent picker and everything runs on Speakeasy's own profile.
+- `POST /voice/work {text, agent?}`: `agent` starts the new chat on that profile (400 `reason: agent` if
+  it isn't offered; the own agent or `""` = no pick). That agent runs it on its own model: `model` /
+  `reasoning` aren't sent there. The chat stays on its agent: its later messages, follow-ups, stop,
+  steer and approvals go to the same profile.
+- History rows and session pages of a chat on another agent carry `agent: {id, name, description?}`;
+  the chat is read from that profile's `state.db` and listed in the same feed by time.
+
 ## Schedules
 
 Capability `schedules` (added after plugin 0.3.33). The Hermes scheduled jobs (cron) of this profile,
