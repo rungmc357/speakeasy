@@ -116,7 +116,12 @@ final class DemoHistoryBackend: HistoryBackend {
         models.defaultChoice = ModelChoice(model: defaults.model, reasoning: defaults.reasoning)
     }
 
-    func startChat(text: String, clientID: String, choice: ModelChoice?) async throws -> String? {
+    var roster = AgentRoster.sample
+    var startedAgents: [String?] = []
+    func agents() async throws -> AgentRoster { roster }
+
+    func startChat(text: String, clientID: String, choice: ModelChoice?, agent: String?) async throws -> String? {
+        startedAgents.append(agent)
         let id = "s_new_\(sessions.count)", run = "run_new_\(sessions.count)"
         let s = HistorySession(id: id, title: text, source: "speakeasy", sourceLabel: "Speakeasy", lastActivity: Date(),
                                preview: text, state: .running, runIDs: [run])
@@ -581,6 +586,31 @@ enum HistoryShots {
                 store.open("s_porch")
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 if let c = store.conversations["s_porch"], let w = store.thread(c).waiting.first { store.dismiss(w) }
+            }
+            await shot("12-agent-new-chat") {
+                store.preview(catalog: ModelCatalog.sample)
+                store.preview(roster: AgentRoster.sample)
+                store.newChat()
+                store.preview(roster: AgentRoster.sample)
+                store.draft = "Summarize this week's papers on soil moisture sensors"
+            }
+            await shot("13-agent-picked") {
+                store.preview(catalog: ModelCatalog.sample)
+                store.preview(roster: AgentRoster.sample)
+                if store.target != .newChat { store.newChat(); store.preview(roster: AgentRoster.sample) }
+                store.pickAgent("research-desk")
+                store.draft = "Summarize this week's papers on soil moisture sensors"
+            }
+            if only == nil || only == "14-agent-popover" {
+                snapshotView(AgentPopover(roster: AgentRoster.sample, selected: "research-desk") { _ in },
+                             size: NSSize(width: 300, height: 290),
+                             appearance: c.window?.effectiveAppearance, to: "\(dir)/14-agent-popover.png")
+                print("history shot 14-agent-popover")
+            }
+            await shot("15-agent-session") {
+                backend.conversations["s_reading"]?.agent = AgentRoster.sample.agents[1]
+                store.open("s_reading")
+                store.load("s_reading")
             }
             exit(0)
         }

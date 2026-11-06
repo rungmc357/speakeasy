@@ -461,6 +461,19 @@ public final class ServerClient: @unchecked Sendable {
         return reply["run_id"] as? String
     }
 
+    // MARK: Agents (servers with `agents`; docs/API.md "Agents")
+
+    /// The agent picker's list, the saved allowlist and every profile that could be allowed.
+    public func agents() async throws -> AgentRoster {
+        AgentRoster(json: try await json(AgentRoster.path))
+    }
+
+    /// Settings › Agents: which Hermes profiles new chats may use.
+    public func setAllowedAgents(_ ids: [String]) async throws {
+        _ = try await json("/voice/settings", method: "PATCH",
+                           body: try JSONSerialization.data(withJSONObject: AgentRoster.allowedPatch(ids)))
+    }
+
     // MARK: Models (servers with `model_choice`; docs/API.md "Models")
 
     /// The models Hermes offers, the default and the fast/smart presets.
@@ -487,12 +500,14 @@ public final class ServerClient: @unchecked Sendable {
     /// A New chat: `startJob`, plus the Hermes session it runs in (plugins from 0.3.34 reply with
     /// `session_id` at once; nil from older ones, which the caller then looks up by run id).
     public func startChatSession(text: String, attachments: [String] = [], clientID: String = UUID().uuidString,
-                                 choice: ModelChoice? = nil) async throws -> (runID: String?, sessionID: String?) {
+                                 choice: ModelChoice? = nil, agent: String? = nil) async throws -> (runID: String?, sessionID: String?) {
         let clean = TaskMessageRequest.clean(text)
         guard clean != nil || !attachments.isEmpty else { throw HTTPError(status: 400, message: "The job is empty.") }
         var body: [String: Any] = ["text": clean ?? "", "source": "typed", "client_id": clientID]
         if !attachments.isEmpty { body["attachments"] = attachments }
-        if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
+        if let agent {
+            body["agent"] = agent   // another agent runs on its own model: no model fields
+        } else if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
         let reply = try await post("/voice/work", body)
         guard reply["ok"] as? Bool == true else {
             throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't start that job.")

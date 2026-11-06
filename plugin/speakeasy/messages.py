@@ -406,6 +406,9 @@ async def start_job(worker: "SidebandWorker", text: str, session_id: str | None 
     if choice and (choice.get("model") or choice.get("reasoning")):
         # The model / reasoning picked for this job (models.py): its runs, follow-ups included, use it.
         worker.store.set_model_choice("task:" + task_id, choice.get("model"), choice.get("reasoning"))
+    if choice and choice.get("agent"):
+        # The Hermes profile picked for a new chat (agents.py): its runs go there.
+        worker.store.set_agent("task:" + task_id, choice["agent"])
     carry(worker, task_id, staged)
     job = asyncio.get_running_loop().create_task(worker.start_task(task_id, 0, context or f"User: {text}", text,
                                                                    session_id=session_id))

@@ -348,10 +348,13 @@ struct HistoryRow: View {
                             .lineLimit(session.match != nil ? 3 : 2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if session.state != .idle || !session.isSpeakeasy {
+                    if session.state != .idle || !session.isSpeakeasy || session.agent != nil {
                         HStack(spacing: 6) {
                             if session.state == .needsYou { tag("Needs you", Live.amber) }
                             else if session.state == .running { tag("Working", Live.brassText) }
+                            if let agent = session.agent {
+                                Text(agent.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(Live.brassText).lineLimit(1)
+                            }
                             if !session.isSpeakeasy {
                                 Text(session.sourceLabel).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary).lineLimit(1)
                             }
@@ -491,6 +494,18 @@ struct HistoryDetailPane: View {
                 else { loading }
             }
             }
+        }
+        .overlay(alignment: .topTrailing) { agentInTitleBar }
+    }
+
+    /// In the window's title bar: New chat's agent chip, or the agent a chat talks to.
+    @ViewBuilder private var agentInTitleBar: some View {
+        if !store.showingSchedules {
+            Group {
+                if store.showsAgentChip { AgentChip(store: store) }
+                else if case .session = store.target, let agent = store.openAgent { AgentBadge(agent: agent) }
+            }
+            .padding(.top, 9).padding(.trailing, 16)
         }
     }
 
@@ -1457,7 +1472,8 @@ struct HistoryNewChat: View {
                     Text("NEW CHAT").font(.system(size: 10.5, weight: .bold)).tracking(1.0)
                 }
                 .foregroundStyle(Live.brass)
-                Text("What should Hermes work on?").font(.system(size: 24, weight: .bold))
+                Text("What should \(store.agentsSupported ? (store.newChatAgentInfo?.name ?? "Hermes") : "Hermes") work on?")
+                    .font(.system(size: 24, weight: .bold))
                 Text(store.voice.micVisible
                      ? "Type it, or tap the mic and say it. It starts as its own session, and the reply shows up here."
                      : "Type it. It starts as its own session, and the reply shows up here.")
@@ -1466,7 +1482,8 @@ struct HistoryNewChat: View {
             .frame(maxWidth: HistoryLook.readable, alignment: .leading)
             .padding(.horizontal, 28)
             .frame(maxWidth: .infinity)
-            HistoryComposer(store: store, placeholder: "Ask Hermes anything…", enabled: !store.startingChat, inline: true)
+            HistoryComposer(store: store, placeholder: "Ask \(store.agentsSupported ? (store.newChatAgentInfo?.name ?? "Hermes") : "Hermes") anything…",
+                            enabled: !store.startingChat, inline: true)
                 .padding(.top, 8)
             Group {
                 if store.startingChat {

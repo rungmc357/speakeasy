@@ -487,6 +487,9 @@ class Runtime:
     # The host this server lives in (host.Host: secrets, side model, chat delivery, liveness);
     # None = Hermes' gateway directly, as before the host layer.
     host: Any = None
+    # The state.db a session lives in (agents.py: a chat on another Hermes profile is in that
+    # profile's). None = this profile's own for every session.
+    session_db: Callable[[str | None], Path] | None = None
 
     @property
     def names(self) -> P.Names:
@@ -500,6 +503,14 @@ class Runtime:
     def agent(self) -> Any:
         """The agent in the slot (``hermes`` is the field's older name)."""
         return self.hermes
+    def db_for(self, session_id: str | None) -> Path:
+        """The state.db *session_id* lives in (another agent's for a chat on another profile)."""
+        if self.session_db is not None and session_id:
+            try:
+                return self.session_db(session_id)
+            except Exception:
+                pass
+        return self.state_db
 
     def routable(self) -> dict[str, Any]:
         """Settings minus any topic channel another Hermes profile answers (see
@@ -3199,7 +3210,7 @@ class SidebandWorker:
         """What the task's Hermes session has done lately, in plain words, newest last: the voice's
         answer to "how's it going?" comes from the work itself, not only what the task chose to report."""
         try:
-            rows = threads.recent_steps(self.rt.state_db, session_id)
+            rows = threads.recent_steps(self.rt.db_for(session_id), session_id)
         except Exception:
             return []
         out: list[str] = []
@@ -4976,7 +4987,12 @@ class SidebandWorker:
         if source is None:  # the agent doesn't offer helpers to follow
             return
         try:
-            source.ensure_watch(self.store, backend.idem_key, session_of, on_flush=publish_soon, titler=title)
+            db = self.rt.db_for(session_of())
+            if db != self.rt.state_db:  # a chat on another Hermes profile (agents.py): that profile's state.db
+                subagents_mod.ensure_watch(self.store, backend.idem_key, db, session_of,
+                                           on_flush=publish_soon, titler=title)
+            else:
+                source.ensure_watch(self.store, backend.idem_key, session_of, on_flush=publish_soon, titler=title)
         except Exception:
             logger.debug("speakeasy: helper watch failed to start", exc_info=True)
 

@@ -136,16 +136,61 @@ class HermesAPI:
         # The profile's state.db: past conversations and helpers' transcripts are read from it
         # (optional agent features; see backends/hermes.py). None = not offered.
         self.state_db = Path(state_db) if state_db is not None else None
+        self.root, self.profile = root, profile
         self.base = f"{root}/p/{profile}" if profile else root
         self.key_fn, self.opener = key_fn, opener
+        # Agents (agents.py): a run or session started on another Hermes profile is reached at that
+        # profile's /p/<name> prefix. Remembered here per run/session, and asked of `agent_lookup`
+        # (the plugin's store) after a reload; "" or the own profile = this client's own base.
+        self.own_agent = ""
+        self.agent_lookup: Callable[[str, str], str | None] = lambda kind, ident: None
+        self._agents: dict[tuple[str, str], str] = {}
         self.last_error = ""  # Hermes' own message for the last failed background run
         # Whether Hermes reads images: "unknown" until the first check (refresh_image_support).
         self.image_support: dict[str, Any] = {"images": image_input_available(), "vision": "unknown"}
 
+    # -- agents (other Hermes profiles) ----------------------------------------------------------
+
+    def base_for(self, agent: str | None) -> str:
+        """The API base for *agent*: this client's own base for none/its own profile, else the
+        shared listener's ``/p/<agent>`` prefix."""
+        if not agent or agent in {self.own_agent, self.profile}:
+            return self.base
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", agent):
+            raise HermesError(400, "invalid agent")
+        return f"{self.root}/p/{agent}"
+
+    def remember_agent(self, kind: str, ident: str, agent: str | None) -> None:
+        if not ident or not agent or agent in {self.own_agent, self.profile}:
+            return
+        if len(self._agents) > 4000:
+            self._agents.pop(next(iter(self._agents)))
+        self._agents[(kind, ident)] = agent
+
+    def agent_of(self, kind: str, ident: str | None) -> str | None:
+        """Which agent a run (``kind`` "run") or session ("session") belongs to; None = own."""
+        if not ident:
+            return None
+        found = self._agents.get((kind, ident))
+        if found is None:
+            try:
+                found = self.agent_lookup(kind, ident) or None
+            except Exception:
+                found = None
+            if found:
+                self.remember_agent(kind, ident, found)
+        return found
+
+    def _run_base(self, run_id: str) -> str:
+        return self.base_for(self.agent_of("run", run_id))
+
+    def _session_base(self, session_id: str) -> str:
+        return self.base_for(self.agent_of("session", session_id))
+
     def _request(self, path: str, body: dict[str, Any] | None = None, method: str | None = None,
-                 headers: dict[str, str] | None = None) -> urllib.request.Request:
+                 headers: dict[str, str] | None = None, base: str | None = None) -> urllib.request.Request:
         data = None if body is None else json.dumps(body).encode()
-        req = urllib.request.Request(self.base + path, data=data, method=method or ("POST" if data else "GET"))
+        req = urllib.request.Request((base or self.base) + path, data=data, method=method or ("POST" if data else "GET"))
         key = self.key_fn()
         if key:
             req.add_header("Authorization", f"Bearer {key}")
@@ -155,8 +200,8 @@ class HermesAPI:
         return req
 
     def _json(self, method: str, path: str, body: dict[str, Any] | None = None,
-              headers: dict[str, str] | None = None, timeout: float = 30) -> dict[str, Any]:
-        req = self._request(path, body, method, headers)
+              headers: dict[str, str] | None = None, timeout: float = 30, base: str | None = None) -> dict[str, Any]:
+        req = self._request(path, body, method, headers, base)
         try:
             with self.opener(req, timeout=timeout) as response:
                 raw = response.read(MAX_BODY + 1)
@@ -223,8 +268,11 @@ class HermesAPI:
         if session_id:
             # A task's own Hermes session: tasks in separate sessions run at the same time.
             body["session_id"] = session_id
+        # The chat's agent (agents.py): its runs go to that Hermes profile's prefix, on its own model.
+        agent = (choice or {}).get("agent") or self.agent_of("session", session_id)
+        base = self.base_for(agent)
         for field in ("provider", "model", "model_options"):
-            if choice and choice.get(field):
+            if choice and choice.get(field) and base == self.base:
                 body[field] = choice[field]
         headers = {"Idempotency-Key": idem_key}
         if session_key:
@@ -233,21 +281,24 @@ class HermesAPI:
         # asked again with the same Idempotency-Key, so it is the same run, never a second one.
         timeout = START_IMAGES_TIMEOUT_S if images else 30
         try:
-            result = self._json("POST", "/v1/runs", body, headers, timeout=timeout)
+            result = self._json("POST", "/v1/runs", body, headers, timeout=timeout, base=base)
         except HermesError as exc:
             if exc.status != 504:
                 raise
-            result = self._json("POST", "/v1/runs", body, headers, timeout=timeout)
+            result = self._json("POST", "/v1/runs", body, headers, timeout=timeout, base=base)
         run_id = result.get("run_id")
         if not isinstance(run_id, str) or not ID_RE.fullmatch(run_id):
             raise HermesError(502, "Hermes returned an invalid run ID")
+        if base != self.base:
+            self.remember_agent("run", run_id, agent)
+            self.remember_agent("session", session_id or "", agent)
         return run_id
 
     def events(self, run_id: str, callback: Callable[[dict[str, Any]], None]) -> bool:
         """Stream one run's events; True when a terminal event arrived."""
         if not ID_RE.fullmatch(run_id):
             raise HermesError(400, "invalid run ID")
-        req = self._request(f"/v1/runs/{run_id}/events")
+        req = self._request(f"/v1/runs/{run_id}/events", base=self._run_base(run_id))
         try:
             with self.opener(req, timeout=RUN_EVENTS_TIMEOUT_S) as response:
                 total, terminal = 0, False
@@ -270,19 +321,19 @@ class HermesAPI:
     def get_run(self, run_id: str) -> dict[str, Any]:
         if not ID_RE.fullmatch(run_id):
             raise HermesError(400, "invalid run ID")
-        return self._json("GET", f"/v1/runs/{run_id}")
+        return self._json("GET", f"/v1/runs/{run_id}", base=self._run_base(run_id))
 
     def stop(self, run_id: str) -> dict[str, Any]:
         if not ID_RE.fullmatch(run_id):
             raise HermesError(400, "invalid run ID")
-        return self._json("POST", f"/v1/runs/{run_id}/stop", {})
+        return self._json("POST", f"/v1/runs/{run_id}/stop", {}, base=self._run_base(run_id))
 
     def steer(self, run_id: str, text: str) -> bool:
         """Add guidance to a run that is still working; False if it no longer accepts it."""
         if not ID_RE.fullmatch(run_id):
             raise HermesError(400, "invalid run ID")
         try:
-            return bool(self._json("POST", f"/v1/runs/{run_id}/steer", {"input": text}).get("accepted"))
+            return bool(self._json("POST", f"/v1/runs/{run_id}/steer", {"input": text}, base=self._run_base(run_id)).get("accepted"))
         except HermesError:
             return False
 
@@ -295,17 +346,20 @@ class HermesAPI:
             raise HermesError(400, "approval choice must be once, session or deny")
         if choice == "session" and "session" not in (offered or ()):
             raise HermesError(400, "this approval can only be allowed once or denied")
-        return self._json("POST", f"/v1/runs/{run_id}/approval", {"request_id": request_id, "choice": choice})
+        return self._json("POST", f"/v1/runs/{run_id}/approval", {"request_id": request_id, "choice": choice},
+                          base=self._run_base(run_id))
 
     def session_messages(self, session_id: str, limit: int = 60, timeout: float = 1.5) -> list[dict[str, Any]]:
         data = self._json("GET", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
-                                 f"?limit={limit}&order=latest", timeout=timeout)
+                                 f"?limit={limit}&order=latest", timeout=timeout,
+                          base=self._session_base(session_id))
         messages = data.get("data") or []
         return [m for m in messages if isinstance(m, dict)] if isinstance(messages, list) else []
 
     def session_title(self, session_id: str, timeout: float = 5) -> str | None:
         """A session's current title (None when untitled); HermesError 404 until the row exists."""
-        data = self._json("GET", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}", timeout=timeout)
+        data = self._json("GET", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}", timeout=timeout,
+                          base=self._session_base(session_id))
         session = data.get("session")
         title = session.get("title") if isinstance(session, dict) else None
         return title if isinstance(title, str) and title.strip() else None
@@ -315,12 +369,13 @@ class HermesAPI:
         the user's authority in Hermes, so its auto-titler leaves it alone. HermesError 400 when
         another session already has the title."""
         self._json("PATCH", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}", {"title": title},
-                   timeout=timeout)
+                   timeout=timeout, base=self._session_base(session_id))
 
     def patch_session(self, session_id: str, fields: dict[str, Any], timeout: float = 5) -> None:
         """Hermes' own ``PATCH /api/sessions/{id}`` (title, archived, pinned): the change every Hermes app
         shows (the desktop sidebar, the CLI's session list). HermesError on refusal."""
-        self._json("PATCH", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}", dict(fields), timeout=timeout)
+        self._json("PATCH", f"/api/sessions/{urllib.parse.quote(session_id, safe='')}", dict(fields), timeout=timeout,
+                   base=self._session_base(session_id))
 
     def run_to_completion(self, prompt: str, idem_key: str, session_id: str | None = None) -> tuple[str, str]:
         """Start a run and wait for its terminal event: (status, output). Used for background jobs."""

@@ -595,6 +595,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if store.schedules.backend == nil { store.schedules.backend = LiveScheduleBackend { [weak self] in self?.native.api } }
         store.supported = app.status?.capabilities?.history ?? false
         store.modelsSupported = app.status?.capabilities?.modelChoice ?? false
+        store.agentsSupported = app.status?.capabilities?.agents ?? false
         store.schedulesSupported = app.status?.capabilities?.schedules ?? false
         wireHermesTranscription(app.status?.capabilities?.transcribe ?? false)
         if store.board.backend == nil { store.board.backend = LiveBoardBackend { [weak self] in self?.native.api } }

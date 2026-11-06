@@ -29,6 +29,8 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
     public var archived: Bool
     /// Automated work nobody typed into (a Kanban board worker, a scheduled job): never unread or needs-you.
     public var automated: Bool
+    /// Servers with `agents`: the Hermes profile this chat talks to, when it isn't Speakeasy's own.
+    public var agent: AgentInfo?
 
     public init(id: String, title: String, source: String, sourceLabel: String, lastActivity: Date?,
                 preview: String = "", state: State = .idle, runIDs: [String] = [], match: String? = nil,
@@ -52,6 +54,7 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
                   unread: o["unread"] as? Bool ?? false, archived: o["archived"] as? Bool ?? false,
                   automated: o["automated"] as? Bool ?? false)
         if automated && state == .needsYou { state = .idle }
+        agent = AgentInfo(json: o["agent"])
     }
 
     /// The deep link that opens this conversation in any Speakeasy app.
@@ -371,6 +374,9 @@ public struct HistoryConversation: Equatable, Sendable {
     public var steered: [SteeredMessage] = []
     /// The server can steer or queue (the page lists `queued`, even empty): the composer offers the choice.
     public var messageModes = false
+    /// Servers with `agents`: the Hermes profile this chat talks to, when it isn't Speakeasy's own
+    /// (it runs on that agent's own model, so the model chip doesn't apply).
+    public var agent: AgentInfo?
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
@@ -405,6 +411,7 @@ public struct HistoryConversation: Equatable, Sendable {
             queued = held.compactMap(QueuedMessage.init(json:))
         }
         steered = (o["steered"] as? [Any] ?? []).compactMap(SteeredMessage.init(json:))
+        agent = AgentInfo(json: o["agent"])
     }
 
     /// The composer offers Steer now / When it's done: the server can, and a run is active.

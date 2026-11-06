@@ -386,6 +386,10 @@ class StateStore:
             self._db.execute("CREATE INDEX IF NOT EXISTS steered_messages_key ON steered_messages(idem_key, sent_at)")
             # A send cut off by a reload: held again (at least once beats silently never).
             self._db.execute("UPDATE queued_messages SET state='queued' WHERE state='sending'")
+            # The Hermes profile (agents.py) a chat ("session:<id>") or a new chat's first task
+            # ("task:<task id>") runs on. No row = Speakeasy's own profile.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS agent_choices (
+                scope TEXT PRIMARY KEY, agent TEXT NOT NULL, updated REAL NOT NULL)""")
             # Finished tasks that never had a Hermes run id (quick answers, home control) could not be
             # cleared: "Clear done" and the x address tasks by run id. Give them their local id.
             settled = sorted(RS.FINAL)
@@ -452,6 +456,38 @@ class StateStore:
             row = self._db.execute("SELECT model, reasoning, updated FROM model_choices WHERE scope=?",
                                    (scope,)).fetchone()
         return {"model": row[0], "reasoning": row[1], "updated": row[2]} if row else None
+
+    # -- agents (agents.py) ---------------------------------------------------------------------------
+
+    def set_agent(self, scope: str, agent: str | None) -> None:
+        with self._lock, self._db:
+            if agent:
+                self._db.execute("INSERT OR REPLACE INTO agent_choices (scope, agent, updated) VALUES (?,?,?)",
+                                 (scope, agent, time.time()))
+            else:
+                self._db.execute("DELETE FROM agent_choices WHERE scope=?", (scope,))
+
+    def agent(self, scope: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT agent FROM agent_choices WHERE scope=?", (scope,)).fetchone()
+        return row[0] if row else None
+
+    def agent_sessions(self) -> dict[str, str]:
+        """{session id: agent} for every chat Speakeasy started on another agent."""
+        with self._lock:
+            rows = self._db.execute("SELECT scope, agent FROM agent_choices WHERE scope LIKE 'session:%'").fetchall()
+        return {scope[8:]: agent for scope, agent in rows}
+
+    def agent_lookup(self, kind: str, ident: str) -> str | None:
+        """HermesAPI.agent_lookup: the agent of a session, or of a run (through its task's session)."""
+        if kind == "session":
+            return self.agent("session:" + ident)
+        if kind == "run":
+            with self._lock:
+                row = self._db.execute("SELECT session_id FROM runs WHERE run_id=? AND session_id IS NOT NULL",
+                                       (ident,)).fetchone()
+            return self.agent("session:" + row[0]) if row else None
+        return None
 
     def set_run_model(self, key: str, record: dict[str, Any]) -> None:
         with self._lock, self._db:

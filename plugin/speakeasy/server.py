@@ -564,6 +564,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/voice/secrets": lambda: self.service.secure_list(device_id),
                 "/voice/codex/login": self.service.codex_login_status,
                 "/voice/setup-check": self.service.setup_check,
+                "/voice/agents": self.service.agents,
             }
             if path in routes:
                 self._reply(200, routes[path]())

@@ -859,8 +859,8 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                   speakeasy_ids: Callable[[], set[str]] = set, live: Callable[[str], bool] = lambda sid: False,
                   folded: Callable[[], dict[str, str]] = dict,
                   marks: Callable[[], dict[str, dict[str, Any]]] = dict, archived: bool = False,
-                  include_archived: bool | None = None, automated: bool = True,
-                  now: float | None = None) -> dict[str, Any]:
+                   include_archived: bool | None = None, automated: bool = True,
+                   now: float | None = None, only: set[str] | None = None) -> dict[str, Any]:
     """``GET /voice/history``: conversations newest first, ``limit`` per page; pass ``next_cursor`` back
     as ``cursor`` for the next page.
 
@@ -917,6 +917,11 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
         links: dict[str, list[str]] = {}  # chat: its linked tasks' sessions
         for task_sid, chat_sid in fold.items():
             links.setdefault(chat_sid, []).append(task_sid)
+        if only is not None:
+            # Another agent's state.db (agents.py): only the chats Speakeasy started there.
+            ids = sorted(i for i in only if SAFE_ID_RE.fullmatch(i))[:500]
+            where.append(f"s.id IN ({','.join('?' * len(ids))})" if ids else "1=0")
+            params += ids
         mine = speakeasy_ids()
         sources = _source_counts(db, where, params, mine)
         auto = {"count": sum(c["count"] for c in sources if c["source"] in AUTOMATED_FILTERS), "hidden": not automated}

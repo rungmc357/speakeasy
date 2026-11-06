@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
+from . import agents as AG
 from . import attachments as A
 from . import runstate as RS
 from . import questions as Q
@@ -112,6 +113,9 @@ CAPABILITIES["push"] = True
 # GET /voice/models, model/reasoning on POST /voice/work + history messages, PUT /voice/history/{id}/model,
 # settings jobs.*, and "model" on tasks and session pages: which model works a chat (models.py).
 CAPABILITIES["model_choice"] = True
+# GET /voice/agents, "agent" on POST /voice/work, settings agents.allowed, "agent" on session pages and
+# history rows: which Hermes profile a chat talks to (agents.py).
+CAPABILITIES["agents"] = True
 # GET /voice/schedules (+ /{id}, preview, create, pause/resume/run, PATCH, DELETE): the Hermes scheduled
 # (cron) jobs of this profile, seen and managed from the apps through Hermes' own cron API (schedules.py).
 CAPABILITIES["schedules"] = True
@@ -336,6 +340,12 @@ class VoiceService(SecureInputMixin):
         self.catalog = MD.Catalog(self._fetch_model_options, self._hermes_reasoning)
         self._catalog_warming = threading.Lock()
         self.rt.choose_model = self.choose_model
+        # Agents (agents.py): runs and sessions on another Hermes profile go to its /p/<name> prefix,
+        # and its chats are read from its own state.db.
+        if hasattr(self.hermes, "agent_lookup"):
+            self.hermes.own_agent = self._own_agent()
+            self.hermes.agent_lookup = self.store.agent_lookup
+        self.rt.session_db = self._db_for
         self.store.describe_model = self.describe_model
         # A running task's live line (live_status.py): the side model words it at most every 40 s
         # per task; a deterministic line from its steps otherwise. A fresh summary republishes.
@@ -417,6 +427,17 @@ class VoiceService(SecureInputMixin):
     def sessions(self) -> Any:
         """The agent's past conversations (optional feature ``history``; agent_slot.session_catalog)."""
         return agent_slot.session_catalog(self.agent, self.rt.state_db)
+
+    def _sessions_at(self, state_db: Path) -> Any:
+        """The conversations in *state_db*: the agent's own catalog, or (a chat Speakeasy started on
+        another Hermes profile, agents.py) a Hermes catalog bound to that profile's state.db."""
+        if Path(state_db) == Path(self.rt.state_db):
+            return self.sessions
+        from .backends.hermes import HermesSessionCatalog
+        return HermesSessionCatalog(state_db)
+
+    def _sessions_for(self, session_id: str | None) -> Any:
+        return self._sessions_at(self._db_for(session_id))
 
     @property
     def agent_name(self) -> str:
@@ -1985,9 +2006,12 @@ class VoiceService(SecureInputMixin):
         notice's Update button). It runs like a job started on a call, on the voiceless worker, never
         through routing, and shows on the board. Idempotent on client_id."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "source", "client_id", "attachments", "model", "reasoning"}:
+                "text", "source", "client_id", "attachments", "model", "reasoning", "agent"}:
             raise ServiceError(400, "Send the job as text.")
-        choice = self._body_choice(body)
+        agent = self._body_agent(body)
+        choice = self._body_choice({k: v for k, v in body.items() if k != "agent"})
+        if agent:
+            choice = {"agent": agent}  # another agent runs on its own model and level
         text, source, client_id = body.get("text"), body.get("source") or "typed", body.get("client_id")
         ids = self._attachment_ids(body)
         if isinstance(text, str) and not text.strip() and ids:
@@ -2058,6 +2082,10 @@ class VoiceService(SecureInputMixin):
         run_id = (self.store.openable_run_id(key) if key else None) or run_id
         if key and link_to:
             self.store.link_history(key, link_to)
+        if key and new_chat and choice and choice.get("agent"):
+            own = self.store.session_for(key)
+            if own:  # the chat this became lives on that agent: its later messages go there too
+                self.store.set_agent("session:" + own, choice["agent"])
         if key and new_chat and choice and (choice.get("model") or choice.get("reasoning")):
             own = self.store.session_for(key)
             if own:  # "Use for this chat" on New chat: the chat it became keeps it
@@ -2264,7 +2292,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "Send model and/or reasoning.")
         if not H.valid_session_id(session_id):
             raise ServiceError(404, "I couldn't find that conversation.")
-        meta = self.sessions.session_meta(session_id)
+        meta = self._sessions_for(session_id).session_meta(session_id)
         if meta is None:
             raise ServiceError(404, "I couldn't find that conversation.")
         choice = self._body_choice(body) or {}
@@ -2327,9 +2355,57 @@ class VoiceService(SecureInputMixin):
             self.store.set_run_model(idem, record)
         except Exception:
             logger.debug("speakeasy: run model not recorded", exc_info=True)
+        agent = self._run_agent(task_id, idem, chain, sessions)
+        if agent:
+            # Another Hermes profile works it (agents.py): on that agent's own model, so no model fields.
+            if session_id:
+                self.store.set_agent("session:" + session_id, agent)
+            logger.info("speakeasy: a task runs on another agent")
+            return {"agent": agent}
         if choice:
             logger.info("speakeasy: a task runs on a chosen model (%s)", record["source"])
         return MD.run_fields(choice) or None
+
+    # -- agents: which Hermes profile a chat talks to (agents.py) -------------------------------------
+
+    def _own_agent(self) -> str:
+        return AG.own_agent(self.home, self.settings.get().get("hermes_profile", ""))
+
+    def _run_agent(self, task_id: str, idem: str, chain: list[str], sessions: list[str]) -> str | None:
+        """The agent a run goes to: the one picked for its new chat, else its chat's, else its parent
+        task's chat's. None = Speakeasy's own profile."""
+        found = self.store.agent("task:" + task_id)
+        for sid in sessions:
+            found = found or self.store.agent("session:" + sid)
+        for key in chain:
+            parent = self.store.session_for(key)
+            found = found or (self.store.agent("session:" + parent) if parent else None)
+        return found if found and found != self._own_agent() else None
+
+    def _db_for(self, session_id: str | None) -> Path:
+        """The state.db *session_id* lives in: its agent's for a chat on another profile."""
+        agent = self.store.agent("session:" + session_id) if session_id else None
+        if agent and agent != self._own_agent():
+            return AG.state_db(self.home, agent)
+        return self.rt.state_db
+
+    def agents(self) -> dict[str, Any]:
+        """``GET /voice/agents``: the agent picker's list (agents.roster)."""
+        return AG.roster(self.home, self.settings.get())
+
+    def _body_agent(self, body: dict[str, Any]) -> str | None:
+        agent = body.get("agent")
+        if agent is None or agent == "":
+            return None
+        if not isinstance(agent, str) or agent not in AG.offered(self.home, self.settings.get()):
+            raise ServiceError(400, "That agent isn't one you allowed on the Mac.", reason="agent")
+        return None if agent == self._own_agent() else agent
+
+    def _agent_info(self, sid: str) -> dict[str, Any] | None:
+        agent = self.store.agent("session:" + sid)
+        if not agent or agent == self._own_agent():
+            return None
+        return AG.describe(self.home, agent, self._own_agent())
 
     def describe_model(self, record: dict[str, Any] | None) -> dict[str, Any] | None:
         raw = self.catalog.peek()
@@ -2639,20 +2715,54 @@ class VoiceService(SecureInputMixin):
         self.sweep_questions()
         args = tuple(sorted((k, str(v)) for k, v in (query or {}).items()))
         stamp = self.sessions.fingerprint()
+        if stamp is not None:
+            for agent, ids in sorted(self._other_agent_sessions().items()):
+                stamp = (stamp, agent, H.fingerprint(AG.state_db(self.home, agent), sorted(ids)))
         return self._cached(("list", args), None if stamp is None else (stamp, self.store.revision),
                             self.LIST_CACHE_S, lambda: self._history(query))
 
+    def _other_agent_sessions(self) -> dict[str, set[str]]:
+        """{agent: its chat session ids} for chats Speakeasy started on other Hermes profiles."""
+        own, out = self._own_agent(), {}
+        for sid, agent in self.store.agent_sessions().items():
+            if agent != own:
+                out.setdefault(agent, set()).add(sid)
+        return out
+
     def _history(self, query: dict[str, str]) -> dict[str, Any]:
+        page = self._history_one(query, self.rt.state_db, None)
+        others = self._other_agent_sessions()
+        if not others:
+            return page
+        # Chats on other agents live in those profiles' state.db: list them in the same feed, by time.
+        limit = max(1, min(int(query.get("limit") or H.PAGE), H.MAX_PAGE))
+        rows, more = list(page["sessions"]), page["next_cursor"] is not None
+        for agent, ids in sorted(others.items()):
+            got = self._history_one(query, AG.state_db(self.home, agent), ids)
+            info = AG.describe(self.home, agent, self._own_agent())
+            rows += [{**r, "agent": info} for r in got["sessions"]]
+            more = more or got["next_cursor"] is not None
+        first = not query.get("cursor")
+        rows.sort(key=lambda r: (not (first and r.get("pinned")), -float(r.get("last_activity") or 0), r["id"]),
+                  reverse=False)
+        kept = rows[:limit]
+        tail = next((r for r in reversed(kept) if not r.get("pinned")), None)
+        more = more or len(rows) > limit
+        page["sessions"] = kept
+        page["next_cursor"] = f"{float(tail['last_activity'] or 0)!r}|{tail['id']}" if more and tail else page["next_cursor"]
+        return page
+
+    def _history_one(self, query: dict[str, str], state_db: Path, only: set[str] | None) -> dict[str, Any]:
         try:
             limit = int(query.get("limit") or H.PAGE)
         except ValueError:
             raise ServiceError(400, "limit must be a number") from None
         q = (query.get("q") or "").strip()[:200]
         try:
-            return self.sessions.list_sessions(cursor=query.get("cursor") or None, q=q, source=query.get("source") or "",
+            return self._sessions_at(state_db).list_sessions(cursor=query.get("cursor") or None, q=q, source=query.get("source") or "",
                                    limit=limit, linked=self._linked_with_continuations,
                                    speakeasy_ids=self.store.speakeasy_sessions, folded=self.store.folded_sessions,
-                                   marks=self.store.session_marks,
+                                   marks=self.store.session_marks, only=only,
                                    archived=str(query.get("archived") or "") in {"1", "true"},
                                    automated=str(query.get("automated") or "") not in {"0", "false", "hide"},
                                    include_archived=(None if query.get("include_archived") in (None, "")
@@ -2666,7 +2776,7 @@ class VoiceService(SecureInputMixin):
         if not H.valid_session_id(session_id):
             raise ServiceError(404, "I couldn't find that conversation.")
         linked = [s for s in (self.store.session_for(k) for k in self._continuations(session_id)) if s]
-        stamp = self.sessions.fingerprint([session_id, *linked])
+        stamp = self._sessions_for(session_id).fingerprint([session_id, *linked])
         return self._cached(("session", session_id, str((query or {}).get("before") or "")),
                             None if stamp is None else (stamp, self.store.revision, self._approvals_stamp()),
                             self.SESSION_CACHE_S, lambda: self._history_session(session_id, query))
@@ -2686,7 +2796,7 @@ class VoiceService(SecureInputMixin):
         return tuple(sorted(out))
 
     def _history_session(self, session_id: str, query: dict[str, str]) -> dict[str, Any]:
-        meta = self.sessions.session_meta(session_id)
+        meta = self._sessions_for(session_id).session_meta(session_id)
         if meta is None:
             raise ServiceError(404, "I couldn't find that conversation.")
         sid = meta["id"]
@@ -2695,7 +2805,7 @@ class VoiceService(SecureInputMixin):
         except ValueError:
             raise ServiceError(400, "before must be a number") from None
         try:
-            page = self.sessions.session_messages(sid, before=before)
+            page = self._sessions_for(sid).session_messages(sid, before=before)
         except H.HistoryError as exc:
             raise ServiceError(exc.status, exc.message) from None
         link = self._linked(sid)
@@ -2715,12 +2825,12 @@ class VoiceService(SecureInputMixin):
                 if linked_sid and linked_sid not in seen:
                     seen.add(linked_sid)
                     try:
-                        got = self.sessions.session_messages(linked_sid)["entries"]
+                        got = self._sessions_for(linked_sid).session_messages(linked_sid)["entries"]
                     except H.HistoryError:
                         got = []
                     more += [{**e, "id": f"{linked_sid[-6:]}-{e['id']}"} for e in got]
-            lower = self.sessions.message_time(page["before"]) if page["has_more"] else None
-            upper = self.sessions.message_time(before) if before is not None else None
+            lower = self._sessions_for(sid).message_time(page["before"]) if page["has_more"] else None
+            upper = self._sessions_for(sid).message_time(before) if before is not None else None
             if before is not None and upper is None:
                 more = []  # can't place this page's span: linked entries stay on the newest page
             entries = H.merge_linked(entries, more, lower=lower, upper=upper)
@@ -2771,7 +2881,8 @@ class VoiceService(SecureInputMixin):
             **({"pinned": True} if (self.store.session_marks().get(sid) or {}).get("pinned") else {}),
             "entries": entries, "has_more": page["has_more"], "before": page["before"],
             "jobs": jobs, "approvals": self._session_approvals(keys), **self._session_models(sid, meta, jobs),
-            "queued": self.queued_for(keys, sid), "steered": self.steered_for(keys, sid)}}
+            "queued": self.queued_for(keys, sid), "steered": self.steered_for(keys, sid),
+            **({"agent": agent} if (agent := self._agent_info(sid)) else {})}}
 
     @staticmethod
     def _speakeasy_owned(meta: dict[str, Any], link: H.Linked | None) -> bool:
@@ -2806,10 +2917,10 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "client_id must be an id.")
         if not H.valid_session_id(session_id):
             raise ServiceError(404, "I couldn't find that conversation.")
-        meta = self.sessions.session_meta(session_id)
+        meta = self._sessions_for(session_id).session_meta(session_id)
         if meta is None:
             raise ServiceError(404, "I couldn't find that conversation.")
-        if choice is not None:
+        if choice is not None and self._agent_info(meta["id"]) is None:
             self._save_chat_choice(meta["id"], choice)  # a message carrying a choice: Use for this chat
         voice = body.get("source") == "voice_message"
         answers = body.get("answers")
@@ -2983,7 +3094,7 @@ class VoiceService(SecureInputMixin):
                     "delivered_as": "follow_up", "task": got.get("task")}
         label = H.source_label(meta["source"], meta.get("display_name"), meta.get("chat_type"), False)
         title = (meta.get("title") or "").strip() or "this conversation"
-        context = self.sessions.linked_context(sid, title, label, text)
+        context = self._sessions_for(sid).linked_context(sid, title, label, text)
         got = self._start_job(text, staged, context=context, link_to=sid)
         logger.info("speakeasy: a message to a %s session started a linked task", meta["source"])
         return {"ok": True, "session_id": sid, "via": "linked", "run_id": got.get("run_id"),
@@ -2997,7 +3108,7 @@ class VoiceService(SecureInputMixin):
         published on ``/voice/history/events`` at once."""
         if not isinstance(body, dict):
             raise ServiceError(400, "Send a JSON object.")
-        if not H.valid_session_id(session_id) or self.sessions.session_meta(session_id) is None:
+        if not H.valid_session_id(session_id) or self._sessions_for(session_id).session_meta(session_id) is None:
             raise ServiceError(404, "I couldn't find that conversation.")
         allowed = {"rename": {"title"}, "pin": {"pinned"}, "archive": {"archived"}, "read": {"at"}}[action]
         if not set(body) <= allowed:

@@ -10,8 +10,11 @@ protocol HistoryBackend: AnyObject {
     func page(_ query: HistoryQuery) async throws -> HistoryPage
     func conversation(_ sessionID: String) async throws -> HistoryConversation
     func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply
-    /// New chat; returns the new task's run id (or a session id).
-    func startChat(text: String, clientID: String, choice: ModelChoice?) async throws -> String?
+    /// New chat; returns the new task's run id (or a session id). `agent`: the Hermes profile it
+    /// talks to (servers with `agents`; nil = Speakeasy's own).
+    func startChat(text: String, clientID: String, choice: ModelChoice?, agent: String?) async throws -> String?
+    /// Servers with `agents`: the agent picker's list.
+    func agents() async throws -> AgentRoster
     func answerApproval(sessionID: String, runID: String, choice: String) async throws
     /// ✕ on a decision card: close (or, `undo`, reopen) one task's question everywhere; tells the agent nothing.
     func dismissQuestion(runID: String, undo: Bool) async throws
@@ -38,6 +41,7 @@ extension HistoryBackend {
     func dismissQuestion(runID: String, undo: Bool) async throws {}
     func cancelQueued(sessionID: String, clientID: String) async throws {}
     func steerQueued(sessionID: String, clientID: String) async throws {}
+    func agents() async throws -> AgentRoster { AgentRoster(agents: []) }
 }
 
 @MainActor
@@ -47,9 +51,10 @@ final class LiveHistoryBackend: HistoryBackend {
     func page(_ query: HistoryQuery) async throws -> HistoryPage { try await api.historyPage(query) }
     func conversation(_ sessionID: String) async throws -> HistoryConversation { try await api.historySession(sessionID) }
     func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply { try await api.sendToSession(request) }
-    func startChat(text: String, clientID: String, choice: ModelChoice?) async throws -> String? {
-        try await api.startChat(text: text, clientID: clientID, choice: choice)
+    func startChat(text: String, clientID: String, choice: ModelChoice?, agent: String?) async throws -> String? {
+        try await api.startChat(text: text, clientID: clientID, choice: choice, agent: agent)
     }
+    func agents() async throws -> AgentRoster { try await api.agents() }
     func answerApproval(sessionID: String, runID: String, choice: String) async throws {
         try await api.answerSessionApproval(sessionID: sessionID, runID: runID, choice: choice)
     }
@@ -118,6 +123,11 @@ final class HistoryStore: ObservableObject {
     /// New chat's pick (its first job runs on it, and the chat keeps it).
     @Published var newChatModel: ModelChoice?
     @Published private(set) var modelError: String?
+    /// The server has `capabilities.agents`: New chat's agent chip, when more than one is allowed.
+    @Published var agentsSupported = false { didSet { if agentsSupported && !oldValue { loadAgents() } } }
+    @Published private(set) var roster: AgentRoster?
+    /// New chat's agent (nil = Speakeasy's own); the chat it becomes stays with it.
+    @Published var newChatAgent: String?
     /// Scheduled (Hermes cron jobs; servers with `schedules`): the sidebar row and its pane.
     let schedules = SchedulesModel()
     let scheduleDictation = ScheduleDictation()
@@ -146,6 +156,7 @@ final class HistoryStore: ObservableObject {
         guard supported, backend != nil else { return }
         if list.sessions.isEmpty && !list.loading { run(list.reset()) }
         if modelsSupported { loadModels() }
+        if agentsSupported { loadAgents() }
         if schedulesSupported, !schedules.loaded { Task { await schedules.reload() } }
         if boardsSupported, !board.loaded { Task { await board.reload() } }
         if showingBoard { board.startRefreshing() }
@@ -307,6 +318,8 @@ final class HistoryStore: ObservableObject {
         target = .newChat
         newChatError = nil
         newChatModel = nil
+        newChatAgent = nil
+        if agentsSupported { loadAgents() }   // the allowlist may have changed in Settings
         focusComposer += 1
     }
 
@@ -448,7 +461,8 @@ final class HistoryStore: ObservableObject {
             startingChat = true; newChatError = nil
             Task { [weak self] in
                 do {
-                    let ref = try await backend.startChat(text: text, clientID: clientID, choice: self?.newChatModel)
+                    let ref = try await backend.startChat(text: text, clientID: clientID, choice: self?.newChatModel,
+                                                          agent: self?.pickedAgent?.id)
                     await self?.openStarted(ref)
                 } catch {
                     self?.startingChat = false
@@ -625,9 +639,10 @@ final class HistoryStore: ObservableObject {
         }
     }
 
-    /// The chip's state for what's open now; nil hides the chip.
+    /// The chip's state for what's open now; nil hides the chip. A chat on another agent runs on that
+    /// agent's own model, so it has no model chip.
     var picker: ModelPickerState? {
-        guard modelsSupported, let catalog, catalog.available else { return nil }
+        guard modelsSupported, let catalog, catalog.available, openAgent == nil else { return nil }
         return ModelPickerState(catalog: catalog, chatChoice: chatModel)
     }
 
@@ -672,6 +687,45 @@ final class HistoryStore: ObservableObject {
     }
 
     func preview(catalog: ModelCatalog?) { self.catalog = catalog; modelsSupported = catalog != nil }
+
+    // MARK: Agents (servers with `agents`)
+
+    func loadAgents() {
+        guard let backend else { return }
+        Task { [weak self] in
+            guard let r = try? await backend.agents() else { return }
+            self?.roster = r
+            if let picked = self?.newChatAgent, r.agent(picked) == nil { self?.newChatAgent = nil }  // no longer allowed
+        }
+    }
+
+    /// New chat's agent chip shows (more than one agent allowed).
+    var showsAgentChip: Bool { agentsSupported && roster?.showsPicker == true && target == .newChat }
+
+    /// What New chat's chip names: the picked agent, else Speakeasy's own.
+    var newChatAgentInfo: AgentInfo? { roster?.agent(newChatAgent) }
+
+    /// New chat's pick when it isn't Speakeasy's own agent.
+    var pickedAgent: AgentInfo? {
+        guard let info = newChatAgentInfo, !info.isDefault, info.id != roster?.defaultID else { return nil }
+        return info
+    }
+
+    /// The agent the open page talks to, when it isn't Speakeasy's own.
+    var openAgent: AgentInfo? {
+        switch target {
+        case .session(let id): return conversations[id]?.agent
+        case .newChat: return pickedAgent
+        default: return nil
+        }
+    }
+
+    func pickAgent(_ id: String?) {
+        newChatAgent = id == roster?.defaultID ? nil : id
+        focusComposer += 1
+    }
+
+    func preview(roster: AgentRoster?) { self.roster = roster; agentsSupported = roster != nil }
 
     // MARK: Voice messages
 

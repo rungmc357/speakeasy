@@ -898,6 +898,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     /// One server-owned question state (`question_state` on work) and answers by run id with no call
     /// (`POST /voice/tasks/{run_id}/question/answer`).
     public var questionState: Bool = false
+    /// Which Hermes profile a chat talks to (`GET /voice/agents`, AgentChoice.swift).
+    public var agents: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -913,7 +915,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
-        case messageModes = "message_modes", questionState = "question_state"
+        case messageModes = "message_modes", questionState = "question_state", agents
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -934,5 +936,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         questionState = (try? c.decodeIfPresent(Bool.self, forKey: .questionState)) ?? false
         transcribe = (try? c.decodeIfPresent(Bool.self, forKey: .transcribe)) ?? false
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
+        agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
     }
 }
