@@ -649,9 +649,8 @@ struct ToolCallRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.text).font(.system(size: 12.5, weight: live ? .semibold : .regular))
                         .foregroundStyle(.primary).lineLimit(open ? nil : 2).fixedSize(horizontal: false, vertical: true)
-                    if let tool = item.tool {
-                        Text(tool).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
-                    } else if let detail = item.detail, !open {
+                    // Plain words only: the step's own description, never the raw tool name.
+                    if let detail = ToolCallLog.subline(item, open: open) {
                         Text(detail).font(item.kind == .run ? .system(size: 10.5, design: .monospaced) : .system(size: 11))
                             .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
@@ -689,9 +688,9 @@ struct ToolCallRow: View {
 
     private var expanded: some View {
         VStack(alignment: .leading, spacing: 7) {
-            if let args = item.args { block("Arguments", args) }
+            if let args = item.args { block("Input", args) }
             else if let detail = item.detail { block(item.kind == .run ? "Command" : "Detail", detail) }
-            if let result = item.result { block(item.status == .failed ? "Error" : "Result", result) }
+            if let result = item.result { block(item.status == .failed ? "Error" : "Output", result) }
         }
         .transition(.opacity)
     }

@@ -152,4 +152,13 @@ final class JobLiveTests: XCTestCase {
         XCTAssertEqual(BoardGreeting.summary(JobBoard.sections([], seen: [], now: now)), "")
         XCTAssertFalse(BoardGreeting.suggestions.isEmpty)
     }
+    func testExpandedStepShowsPlainWordsNeverTheToolName() {
+        let withDetail = JobActivityItem(id: "1", kind: .read, text: "Read the release notes", detail: "notes.md", tool: "read_file")
+        XCTAssertEqual(ToolCallLog.subline(withDetail, open: false), "notes.md")
+        XCTAssertNil(ToolCallLog.subline(withDetail, open: true), "opened, the detail moves into the opened part")
+        let bare = JobActivityItem(id: "2", kind: .browse, text: "Read a web page", tool: "web_extract")
+        XCTAssertNil(ToolCallLog.subline(bare, open: false), "no raw tool name under the step")
+        let echo = JobActivityItem(id: "3", kind: .run, text: "Ran a command", detail: "terminal", tool: "terminal")
+        XCTAssertNil(ToolCallLog.subline(echo, open: false))
+    }
 }

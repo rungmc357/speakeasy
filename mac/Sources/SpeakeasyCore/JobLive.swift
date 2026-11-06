@@ -65,6 +65,13 @@ public enum ToolCallLog {
         item.args != nil || item.result != nil || item.detail != nil
     }
 
+    /// The small line under a call's words, folded: its detail (a file, a command), never the raw
+    /// tool name ("terminal", "web_extract"). Opened, nothing (the detail moves into the opened part).
+    public static func subline(_ item: JobActivityItem, open: Bool) -> String? {
+        guard !open, let detail = item.detail, detail != item.tool else { return nil }
+        return detail
+    }
+
     /// The disclosure under the pinned call: "All 15 tool calls".
     public static func allLabel(_ count: Int) -> String {
         count == 1 ? "1 tool call" : "All \(count) tool calls"
