@@ -30,6 +30,7 @@ monday tuesday wednesday thursday friday saturday sunday january february march 
 july august september october november december gpt live jev typesafe openrouter wifi bluetooth
 app apps jan feb mar apr jun jul aug sep sept oct nov dec mon tue tues wed thu thurs fri sat sun
 okay ok yeah yep nope hey hi hello thanks api url ssh usb pdf
+plugin plugins xcode testflight kanban
 """.split())
 
 
