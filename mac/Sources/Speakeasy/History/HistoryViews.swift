@@ -1082,11 +1082,10 @@ struct HistoryTaskCard: View {
         .accessibilityIdentifier("history-task-card")
     }
 
+    /// A finished card says when: "Done 9:05 PM".
     private var word: String {
         switch job.status {
-        case "completed": return "Done"
-        case "failed": return "Didn't finish"
-        case "cancelled": return "Stopped"
+        case "completed", "failed", "cancelled": return TaskLineCopy.outcome(job)
         case "waiting_for_approval": return "Needs your OK"
         default: return "Working"
         }
