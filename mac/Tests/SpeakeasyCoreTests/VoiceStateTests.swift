@@ -293,8 +293,8 @@ final class VoiceStateTests: XCTestCase {
     /// A drop while pausing is a pause: no dropped-call banner (ours or the server's wording).
     func testDropWhilePausingLeavesNoDroppedBanner() {
         for event in [VoiceEvent.transportLost, .serverClosed(.incomplete, error: "Voice connection lost.")] {
-            var s = live()
-            s.pausing = true
+            var s = reduce(live(), .pauseRequested, now: t0)
+            XCTAssertTrue(s.pausing)
             s = reduce(s, event, now: t0 + 1)
             XCTAssertEqual(s.connection, .paused)
             XCTAssertNil(s.lastError)

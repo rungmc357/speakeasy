@@ -701,7 +701,10 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
             s.phase = .ended(.incomplete)
             s.lastError = VoiceState.callDropped
             s.speech = .idle
-        default: break   // .ending / .pausing: wait for api finalization or the deadline
+        case .pausing(let id, let reason):
+            s.phase = .paused(id: id, reason: reason)   // the close we asked for happened: a pause, no dropped banner
+            s.speech = .idle
+        default: break   // .ending: wait for api finalization or the deadline
         }
 
     case .failed(let message):
