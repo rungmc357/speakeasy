@@ -72,8 +72,8 @@ struct ClipClock<Content: View>: View {
     private var reduceMotion: Bool { systemReduceMotion || ProcessInfo.processInfo.arguments.contains("--welcome-reduce-motion") }
 
     var body: some View {
-        if let frozen = WelcomeCapture.frozenTime { content(frozen) }
-        else if reduceMotion { content(still) }
+        if reduceMotion { content(still) }
+        else if let frozen = WelcomeCapture.frozenTime { content(frozen) }
         else {
             TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
                 content(ctx.date.timeIntervalSince(start).truncatingRemainder(dividingBy: loop))

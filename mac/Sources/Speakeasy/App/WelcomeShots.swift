@@ -9,7 +9,7 @@ enum WelcomeShots {
         do { try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true) }
         catch { print(error); exit(1) }
         keyboardCheck(dir: dir)
-        var count = 0
+        var count = 2 // The privacy sheets captured during interaction checks.
         for dark in [false, true] {
             for large in [false, true] {
                 let size = NSSize(width: large ? 800 : 540, height: large ? 720 : 480)
@@ -115,6 +115,10 @@ enum WelcomeShots {
         guard flow.welcome.route == .intro && flow.welcome.page == 3 else { exit(1) }
         press("See how it works")
         guard window.attachedSheet != nil else { exit(1) }
+        press("Watch again")
+        press("Close")
+        guard window.attachedSheet == nil else { exit(1) }
+        press("See how it works")
         press("Connect your agent")
         guard flow.welcome.route == .setup else { exit(1) }
         flow.welcome = WelcomeJourney(seen: true)
