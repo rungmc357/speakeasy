@@ -22,6 +22,7 @@ goes through the call router. Which door it uses depends on who owns the session
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import re
@@ -218,6 +219,36 @@ def redact_text(text: Any) -> str:
 def _one_line(text: str, limit: int = PREVIEW_CHARS) -> str:
     line = " ".join(text.split())
     return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
+
+
+def said_key(text: str) -> str:
+    """A short hash of a message's words (case and spacing ignored): how the page knows which of
+    its messages were voice messages without keeping the words twice."""
+    norm = " ".join((text or "").lower().split())[:400]
+    return hashlib.sha1(norm.encode("utf-8")).hexdigest()[:16]
+
+
+_CALL_TRANSCRIPT = re.compile(r"Recent timestamped voice transcript[^\n]*:\n", re.I)
+_CALL_LINE = re.compile(r"^(?:\[[^\]]{1,40}\]\s*)?(User|You|Assistant)\s*:\s*(.+)$")
+CALL_LINES = 40
+
+
+def call_transcript(content: str) -> list[dict[str, str]] | None:
+    """What was said on the call a Speakeasy task came from (its brief's transcript), as
+    ``[{"who": "you"|"agent", "text": …}]``: the page shows the call as one card with this behind a
+    tap. None when the row isn't a call brief."""
+    if not isinstance(content, str) or not _SPEAKEASY_BRIEF.search(content[:2000]):
+        return None
+    m = _CALL_TRANSCRIPT.search(content)
+    if not m:
+        return None
+    lines: list[dict[str, str]] = []
+    for raw in content[m.end():].splitlines():
+        got = _CALL_LINE.match(raw.strip())
+        if got and got.group(2).strip():
+            who = "agent" if got.group(1) == "Assistant" else "you"
+            lines.append({"who": who, "text": redact_text(_one_line(got.group(2), 400))})
+    return lines[-CALL_LINES:] or None
 
 
 def user_words(content: str) -> tuple[str, str]:
@@ -731,8 +762,12 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
             flush()
             kind, text = user_words(content)
             if text.strip():
-                entries.append({"kind": kind, "id": f"m{row['id']}", "at": at,
-                                "text": redact_text(text) if kind == "user" else text})
+                entry = {"kind": kind, "id": f"m{row['id']}", "at": at,
+                         "text": redact_text(text) if kind == "user" else text}
+                said = call_transcript(content) if kind == "user" else None
+                if said:
+                    entry["call"] = {"lines": said}
+                entries.append(entry)
         elif role == "assistant" and assistant_text(content):
             flush()
             entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(assistant_text(content))})

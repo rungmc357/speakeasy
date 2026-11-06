@@ -169,7 +169,10 @@ enum DemoHistory {
         let t0 = ago(9)
         add("s_flaky", "Fix the flaky checkout test", "speakeasy", "Speakeasy", ago(0.5), "Rerunning the checkout test 50 times",
             state: "running", entries: [
-                user("m1", t0, "The checkout test keeps failing on CI. Find out why and fix it."),
+                user("m1", t0, "The checkout test keeps failing on CI. Find out why and fix it.").merging(["call": ["lines": [
+                    ["who": "you", "text": "The build went red again this morning."],
+                    ["who": "agent", "text": "Which part, the checkout test again?"],
+                    ["who": "you", "text": "The checkout test keeps failing on CI. Find out why and fix it."]]]]) { $1 },
                 tools("t1", [call(1, "search", "Searched the files for “checkout”", "search_files", t0 + 10, 1.8, args: "checkout",
                                   result: "3 matches\ncheckout.spec.ts:12  test('checkout', …)\npayment-mock.ts:1  // payment mock"),
                              call(2, "read", "Read checkout.spec.ts", "read_file", t0 + 14, 0.6, args: "checkout.spec.ts",
@@ -179,7 +182,7 @@ enum DemoHistory {
                                   result: "10 passed, 2 failed (1.2m)\n  checkout.spec.ts:43  Timed out waiting for “Order placed”", failed: true),
                              call(4, "read", "Read payment-mock.ts", "read_file", t0 + 90, 0.5)]),
                 bot("m2", ago(6), "It's a race: the test clicks **Pay** before the payment mock is listening, so it fails about 1 run in 6. A fixed 500 ms wait was standing in for “mock ready”."),
-                user("m3", ago(5), "Wait on the mock's ready signal instead of the timeout, then run it 50 times."),
+                user("m3", ago(5), "Wait on the mock's ready signal instead of the timeout, then run it 50 times.").merging(["voice": true]) { $1 },
                 tools("t2", [call(5, "edit", "Edited payment-mock.ts", "patch", ago(4.8), 0.7, args: "payment-mock.ts",
                                   result: "+  export const mockReady = new Promise(r => server.on('listening', r))"),
                              call(6, "edit", "Edited checkout.spec.ts", "patch", ago(4.6), 0.6, args: "checkout.spec.ts",
@@ -199,7 +202,7 @@ enum DemoHistory {
                 tools("t1", [call(1, "run", "Built the site", "terminal", ago(40), 64, args: "npm run build")]),
                 bot("m2", ago(31), "The build passed. Uploading needs your OK because it overwrites the staging site."),
                 ["kind": "note", "id": "m3", "text": "Continued in Speakeasy · not posted to Discord"],
-                user("m4", ago(30), "Go ahead and upload it."),
+                user("sk0001-m4", ago(30), "Go ahead and upload it."),
             ], jobs: [["run_id": "run_0011", "status": "waiting_for_approval", "title": "Upload the pricing page",
                        "detail": "Run rsync -az --delete dist/ staging:/srv/site"]],
             approvals: [["run_id": "run_0011", "description": "Run rsync -az --delete dist/ staging:/srv/site",
@@ -285,7 +288,7 @@ enum HistoryShots {
             await shot("1-session-tool-calls") {
                 store.open("s_flaky")
                 try? await Task.sleep(nanoseconds: 300_000_000)
-                store.openSections = ["s_flaky|m4", "s_flaky|m4|b2"]
+                store.openSections = ["s_flaky|m4", "s_flaky|m4|b2", "s_flaky|call|m1"]
             }
             await shot("2-approval") { store.openSections = []; store.open("s_deploy") }
             await shot("3-question-search") {

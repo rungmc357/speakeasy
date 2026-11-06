@@ -217,6 +217,8 @@ def test_session_page_shows_the_words_not_the_speakeasy_brief(server, state):
     _, body = get(server, f"/voice/history/{sid}")
     entries = body["session"]["entries"]
     assert entries[0] == {**entries[0], "kind": "user", "text": "Find a quiet cafe near the river"}
+    # A task from a call shows the call: what was said, behind a tap.
+    assert entries[0]["call"] == {"lines": [{"who": "you", "text": "Find a quiet cafe near the river"}]}
     _, listing = get(server, "/voice/history?source=speakeasy")
     row = next(s for s in listing["sessions"] if s["id"] == sid)
     assert row["source_label"] == "Speakeasy" and row["title"] == "Find a quiet cafe near the river"
@@ -263,6 +265,21 @@ def test_send_to_another_api_session_starts_a_job_in_that_session(server, hermes
     assert status == 200, body
     assert body["via"] == "session_job" and body["run_id"]
     assert hermes.calls[-1]["session_id"] == "api_other"
+
+
+def test_a_voice_message_shows_as_one_on_the_page_and_typed_ones_do_not(server, service, hermes, state):
+    add_session(state, "api_voice", "api_server", title="Shelf plan", at=NOW - 5)
+    add_msg(state, "api_voice", "user", "Plan a shelf for the hallway", at=NOW - 9)
+    assert post(server, "/voice/history/api_voice/message",
+                {"text": "Make it  oak, not pine", "source": "voice_message"})[0] == 200
+    assert post(server, "/voice/history/api_voice/message", {"text": "Add a hook rail"})[0] == 200
+    add_msg(state, "api_voice", "user", "Make it oak, not pine", at=NOW - 4)
+    add_msg(state, "api_voice", "user", "Add a hook rail", at=NOW - 3)
+    _, page = get(server, "/voice/history/api_voice")
+    voice = {e["text"]: bool(e.get("voice")) for e in page["session"]["entries"] if e["kind"] == "user"}
+    assert voice == {"Plan a shelf for the hallway": False, "Make it oak, not pine": True, "Add a hook rail": False}
+    # Only a short hash is kept, never the words.
+    assert "oak" not in (service.store.get_meta("voice_said:api_voice") or "")
 
 
 def test_send_to_a_discord_thread_starts_a_linked_task_and_never_posts_back(server, service, hermes, state):

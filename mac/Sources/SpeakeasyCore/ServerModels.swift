@@ -434,8 +434,10 @@ public struct TaskItem: Equatable, Sendable, Identifiable {
     /// What the task list calls this task: its short title, else what the user said.
     public var name: String { info.title ?? info.request ?? "Earlier request" }
 
-    /// Finished one way or another: can be cleared from the list.
-    public var isSettled: Bool { info.isTerminal || info.status == "rejected" }
+    /// Finished one way or another: can be cleared from the list. An unconfirmed run ("ambiguous":
+    /// the stream dropped before its final event) counts too; it shows as stopped and nothing is
+    /// waiting on it, so it must be clearable (the plugin settles it from its session later).
+    public var isSettled: Bool { info.isTerminal || info.status == "rejected" || info.status == "ambiguous" }
 
     /// Still in flight: counts toward "N tasks" and can be stopped.
     public var isActive: Bool { !info.isTerminal && info.status != "rejected" && info.status != "ambiguous" }

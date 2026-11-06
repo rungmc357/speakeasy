@@ -24,6 +24,9 @@ INTERRUPTED_NOTE = "Lost track of this after a restart; whatever happened is in 
 NEVER_STARTED = "The thread never started working on this."
 
 
+UNCONFIRMED_QUIET_S = 5 * 60    # an unconfirmed run's session has gone quiet: its last reply is final
+UNCONFIRMED_NOTE = "Lost track of this while it ran; whatever happened is in its session."
+
 LIVE_WAIT_MAX_S = 35 * 60  # a wait older than its own timeout has been orphaned (the call ended)
 
 
@@ -60,7 +63,34 @@ def sweep(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]
             store.progress(key, "result", NEVER_STARTED if never else INTERRUPTED_NOTE)
             store.update_run(key, None, "interrupted")
             settled.append((key, "interrupted"))
+    settled += _settle_unconfirmed(store, state_db, image_roots, now)
     if settled:
-        logger.info("speakeasy: settled %d stuck thread task(s): %s", len(settled),
+        logger.info("speakeasy: settled %d stuck task(s): %s", len(settled),
                     ", ".join(outcome for _, outcome in settled))
+    return settled
+
+
+def _settle_unconfirmed(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]],
+                        now: float) -> list[tuple[str, str]]:
+    """Settle Hermes runs left unconfirmed (the stream dropped before the run's final event) from
+    their session: the session's final reply once it has gone quiet, else interrupted after hours."""
+    settled = []
+    for task in store.unconfirmed_runs():
+        key, session_id = task["key"], task.get("session_id")
+        last = (T.session_last_at(state_db, session_id) if session_id else None) or task["updated"]
+        if now - last < UNCONFIRMED_QUIET_S:
+            continue  # the session is still writing: the run may still be working
+        # A later task in the same session owns the session's newest reply.
+        answer = (T.session_answer(state_db, session_id, since=task.get("created"))
+                  if session_id and not task.get("superseded") else None)
+        if answer is not None:
+            result = split_result(P.without_voice_header(answer), image_roots())
+            store.set_result(key, result)
+            store.progress(key, "result", (result or {}).get("full") or "Done")
+            store.update_run(key, None, "completed")
+            settled.append((key, "completed"))
+        elif task.get("superseded") or now - last > NO_ANSWER_AFTER_S:
+            store.progress(key, "result", UNCONFIRMED_NOTE)
+            store.update_run(key, None, "interrupted")
+            settled.append((key, "interrupted"))
     return settled

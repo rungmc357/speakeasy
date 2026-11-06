@@ -1005,10 +1005,15 @@ def working_status(request: str, timeout: float = TITLE_TIMEOUT_S) -> str | None
 
 _PLAN_PROMPT = (
     "You lay out the plan for a task a user just handed to their AI assistant, as the short steps a person "
-    "would see on a progress line. Give 3 to 5 steps in order, each 2 to 4 words, starting with a verb "
-    "(\"Find the cause\", \"Fix and test\", \"Deploy\", \"Compare options\"). The last step is the hand-back "
-    "to the user (\"Your review\", \"Try it\", \"Pick one\"). Plain words, no numbering, no punctuation at the "
-    "end, nothing the request doesn't need. Reply with JSON only: {\"steps\": [\"...\"]}"
+    "would see on a progress line. Give 3 to 5 steps in order, each 2 to 5 words, starting with a verb. "
+    "Every step names the actual thing from this request (the app, screen, feature, file, place, person or "
+    "product it is about), so the plan could only belong to this task: for \"the checkout test keeps "
+    "failing on the CI\" write \"Find why checkout fails\", \"Fix the checkout test\", \"Rerun CI on the "
+    "branch\", not \"Find the cause\", \"Fix and test\". Never a stock step that fits any task "
+    "(\"Find the cause\", \"Trace the issue\", \"Fix and test\", \"Gather info\", \"Do the work\"). The last step "
+    "is the hand-back to the user, naming what they get (\"Try the new button\", \"Pick a hotel\", \"Read the "
+    "summary\"). Plain words, no numbering, no punctuation at the end, nothing the request doesn't need. "
+    "Reply with JSON only: {\"steps\": [\"...\"]}"
 )
 
 

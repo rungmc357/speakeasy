@@ -231,6 +231,10 @@ def test_generic_plans_are_not_shown(st):
     # A concrete plan is only ever "Started with": never a list of steps to tick off.
     assert st.work(idem_key="k2")["plan"] == []
     assert st.work(idem_key="k2")["started_with"] == "Find the issue; Fix and test; Ship it"
+    # Four stock steps planned for a bug report: nothing in them says what the bug is.
+    _run(st, "k4", "s_other4", "running", "Fix the flaky checkout test",
+         plan=["Find the cause", "Trace the stuck state", "Fix and test", "Your review"])
+    assert st.work(idem_key="k4")["plan"] == []
 
 
 def test_unrelated_requests_in_one_chat_thread_are_separate_jobs(st):
