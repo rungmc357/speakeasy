@@ -11,12 +11,15 @@ import SpeakeasyCore
 public final class PendingPicks: ObservableObject {
     /// The app's store. Inside a unit-test run every caller gets its own unsaved store, so one
     /// test's picks never leak into the next (tests that check sharing pass one store around).
+    /// Demo and screenshot runs (`-demo`) keep picks in memory: their fixtures reuse the same
+    /// question ids, so a saved pick from one run would hide the card in the next.
     public static var shared: PendingPicks {
         if isUnitTestRun { return PendingPicks(defaults: nil) }
         return app
     }
-    private static let app = PendingPicks()
+    private static let app = PendingPicks(defaults: isDemoRun ? nil : .standard)
     private nonisolated static let isUnitTestRun = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    private nonisolated static let isDemoRun = ProcessInfo.processInfo.arguments.contains("-demo")
     public nonisolated static let defaultsKey = "speakeasy.pendingPicks"
 
     @Published public private(set) var store: PickStore
