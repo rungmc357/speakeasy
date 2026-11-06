@@ -81,6 +81,14 @@ def test_without_the_routing_model_the_rules_still_join_and_split():
     assert d.parts[0].kind == "new"
 
 
+def test_with_several_tasks_running_the_routing_model_says_which_one_it_is():
+    pricing = task("Update the pricing page copy", 9.0, task_id="t0")
+    asked = []
+    d = router.decide("make it shorter", [pricing, task("Book the team lunch for Friday", 3.0)], None, [],
+                      lambda m: asked.append(m) or '{"follow_up_task_id": "t0", "parts": []}')
+    assert asked and d.parts[0].task_id == "t0"
+
+
 def test_a_marked_task_elsewhere_wins():
     other = task("Find a taco spot open near me", 300.0, task_id="t0")
     d = router.decide("Can you set it to 75", [other, THERMOSTAT], "t0", [], never_called)

@@ -218,8 +218,9 @@ def leans_on_newest(request: str, tasks: list[OpenTask]) -> OpenTask | None:
         return None
     if _ALTERNATIVE.search(request.strip()) and len(words) <= 8:
         return newest  # "or using the menu bar": never an ask of its own
-    if _LEANS.search(request) and len(new_subject) <= 2:
-        return newest
+    others_live = any(t.status in _LIVE for t in tasks[:-1])
+    if _LEANS.search(request) and len(new_subject) <= 2 and not others_live:
+        return newest  # with several tasks running, which one "it" is goes to the routing model
     return None
 
 
