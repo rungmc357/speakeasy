@@ -18,9 +18,18 @@ def test_status_rule_narrates_steps_and_background_work_without_filler():
     assert "parallel sessions" not in rule and "delegated workers" not in rule
     # No filler, no repeats, and still no raw reasoning, credentials or tool arguments.
     assert "Skip a pair that would only repeat the last one" in rule and "still working" in rule
-    assert "no step-by-step reasoning, credentials, or raw tool arguments" in rule
+    assert "never how you weigh it: no credentials or raw tool arguments" in rule
     # Placeholders were rendered, never left raw.
     assert "{user_name" not in rule and "Sam" in rule
+
+
+def test_status_rule_never_asks_for_the_models_thinking():
+    """Anthropic's filter refuses prompts that look like they pull out a model's reasoning
+    (stop_reason=refusal, category reasoning_extraction). The task brief's status rule asks for the
+    work and what was found, in words that never point at the model's own thinking."""
+    rule = P.status_rule(P.Names("Ava", "Sam")).lower()
+    for phrase in ("thinking", "reasoning", "deliberat", "thought"):
+        assert phrase not in rule, phrase
 
 
 def test_every_task_prompt_carries_the_status_rule():

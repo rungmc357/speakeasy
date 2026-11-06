@@ -203,6 +203,12 @@ MAX_INPUT_TEXT = 1000
 TYPED_ECHO_S = 6.0
 # What one typed turn's delivery came to (SidebandWorker.input_text / forward_typed).
 STEER_RETRIES = 4                    # a just-admitted run refusing guidance: ask again (steer_follow_up)
+# A run the model provider's safety filter refused (Anthropic stop_reason=refusal, e.g. its
+# "reasoning_extraction" false positive on an ordinary follow-up) is usually let through when the
+# same turn is sent again: try it once more on the same session, quietly, before calling it failed.
+REFUSAL_RETRIES = 1
+REFUSAL_RETRY_DELAY_S = 1.5
+_REFUSAL_CATEGORY_RE = re.compile(r"category[\"']?\s*[:=]\s*[\"']?([a-z][a-z_]{2,40})|\b(reasoning_extraction)\b")
 STEER_RETRY_S = 1.5
 TYPED_SENT = "sent"                   # the voice took it; it is in the transcript
 TYPED_NOT_CONNECTED = "not_connected"  # the call (or its voice connection) is gone
@@ -563,6 +569,11 @@ class BackendRun:
     blocked_by: str | None = None
     released: bool = False
     held_words: list[str] = dataclasses.field(default_factory=list)  # added while it waited to start
+    # A safety-filter refusal tried once more (REFUSAL_RETRIES): set by the run's own start path
+    # (run_on_hermes), which then starts the same turn again instead of settling it failed.
+    refusal_retries: int = 0
+    retry_refused: bool = False
+    can_retry: bool = False
 
     @property
     def say_id(self) -> str:
@@ -4212,23 +4223,15 @@ class SidebandWorker:
             items, bool(images), session_id if continuing else None, shared.capture is not None), room=room)
         try:
             choice = await self.model_choice(task_id, idem, session_id, request)
-            run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,
-                                             **({"images": images} if images else {}),
-                                             **({"choice": choice} if choice else {}))
+            extra: dict[str, Any] = {**({"images": images} if images else {}), **({"choice": choice} if choice else {})}
+
+            def started() -> None:
+                if voice_id is None:
+                    shared.forget_bytes()  # the run has them; a split request's parts still share theirs
+                self.title_session(idem)
+
+            await self.run_on_hermes(backend, prompt, session_id, extra, started)
             images = []
-            if voice_id is None:
-                shared.forget_bytes()  # the run has them; a split request's parts still share theirs
-            self.store.update_run(idem, run_id, "running")
-            self.title_session(idem)
-            with self.interaction.lock:
-                backend.run_id, backend.status = run_id, "running"
-            self.publish()
-            loop = asyncio.get_running_loop()
-            terminal_seen = await in_own_thread(
-                self.hermes.events, run_id,
-                lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
-            if not terminal_seen:
-                await self.reconcile_stream_end(backend)
         except Exception as exc:
             if backend.run_id:
                 try:
@@ -4261,6 +4264,64 @@ class SidebandWorker:
             backend.status, backend.error = "failed", str(exc)[:240]
         self.publish()
         return failed_as
+
+    async def run_on_hermes(self, backend: BackendRun, prompt: str, session_id: str,
+                            extra: dict[str, Any] | None = None,
+                            started: Callable[[], None] | None = None) -> None:
+        """Start the task's turn on Hermes and follow its events to the end. *started* runs once,
+        after Hermes took the first run. A turn the provider's safety filter refused is started once
+        more on the same session (REFUSAL_RETRIES; _retry_refusal decides, on the run's last event)
+        instead of settling the task failed: the card stays on the work, no failure shows."""
+        idem = backend.idem_key
+        with self.interaction.lock:
+            backend.can_retry = True
+        first = True
+        while True:
+            # Hermes keeps each Idempotency-Key's run: a retry asks under its own key, or it would get
+            # the refused run back.
+            key = idem if not backend.refusal_retries else f"{idem}:retry{backend.refusal_retries}"
+            run_id = await asyncio.to_thread(self.hermes.start_run, prompt, key, session_id, **(extra or {}))
+            if first and started is not None:
+                started()
+            with self.interaction.lock:
+                old, backend.run_id, backend.status = backend.run_id, run_id, "running"
+                backend.retry_refused = False
+            if old and old != run_id:
+                self.store.add_run_alias(old, idem)  # the refused run's id still opens this task
+            self.store.update_run(idem, run_id, "running")
+            first = False
+            self.publish()
+            loop = asyncio.get_running_loop()
+            terminal_seen = await in_own_thread(
+                self.hermes.events, run_id,
+                lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
+            with self.interaction.lock:
+                again = backend.retry_refused
+            if again:
+                await asyncio.sleep(REFUSAL_RETRY_DELAY_S)
+                continue
+            if not terminal_seen:
+                await self.reconcile_stream_end(backend)
+            return
+
+    def _retry_refusal(self, backend: BackendRun, event: dict[str, Any]) -> bool:
+        """The run's ``run.failed`` was the provider's safety filter refusing the turn: whether to try
+        it once more (and, if so, take it: nothing is settled, said or shown). Logged either way with
+        the provider's refusal category, so false positives can be counted in errors.log."""
+        output, error = event.get("output"), event.get("error")
+        kind = failures.failure_kind(error) or failures.failure_kind(failures.provider_line(output))
+        if kind != "content_refused":
+            return False
+        found = _REFUSAL_CATEGORY_RE.search(f"{error or ''} {output or ''}".lower())
+        category = (found.group(1) or found.group(2)) if found else "no category given"
+        with self.interaction.lock:
+            retry = backend.can_retry and backend.refusal_retries < REFUSAL_RETRIES
+            if retry:
+                backend.refusal_retries += 1
+                backend.retry_refused = True
+        logger.warning("speakeasy: the model's safety filter refused Hermes run %s (%s)%s", backend.run_id, category,
+                       "; trying it once more" if retry else "")
+        return retry
 
     async def start_continuity_task(self, task_id: str, revision: int, context: str, request: str,
                                     conv: continuity.Conversation, joins: "BackendRun | None" = None,
@@ -4543,19 +4604,8 @@ class SidebandWorker:
         self.publish()
         try:
             choice = await self.model_choice(backend.delegation_id, idem, session_id, request)
-            run_id = await asyncio.to_thread(self.hermes.start_run, prompt, idem, session_id,
-                                             **({"choice": choice} if choice else {}))
-            self.store.update_run(idem, run_id, "running")
-            self.title_session(idem)
-            with self.interaction.lock:
-                backend.run_id = run_id
-            self.publish()
-            loop = asyncio.get_running_loop()
-            terminal_seen = await in_own_thread(
-                self.hermes.events, run_id,
-                lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
-            if not terminal_seen:
-                await self.reconcile_stream_end(backend)
+            await self.run_on_hermes(backend, prompt, session_id, {"choice": choice} if choice else {},
+                                     lambda: self.title_session(idem))
         except Exception as exc:
             if backend.run_id:
                 try:
@@ -4887,6 +4937,8 @@ class SidebandWorker:
                               P.approval_note(self.names, description, choices))
         elif kind and kind.startswith("run."):
             status = kind.split(".", 1)[1]
+            if status == "failed" and self._retry_refusal(backend, event):
+                return  # run_on_hermes starts the same turn again: nothing settles, nothing is said
             if status in TERMINAL and not backend.run_id:
                 # A task that ran in a Discord/Telegram thread has no Hermes run id, and review cards,
                 # image routes, dismissals and "show" are all addressed by one: give it a local id

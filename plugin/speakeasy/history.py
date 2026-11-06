@@ -70,6 +70,18 @@ AUTOMATED_FILTERS = ("kanban", "scheduled")
 
 # A context-compaction handoff (as a user or an assistant row): one quiet divider per page at most.
 COMPACTED = "Earlier messages were summarized"
+# The row Hermes writes to close a turn that failed before any reply (a provider refusal, an error):
+# ``messages.display_kind = 'failed_turn'``, or on older Hermes only its exact text
+# (agent/turn_failure_copy.py FAILED_TURN_NOTICE and friends). It is Hermes' bookkeeping, not the
+# assistant's words: never a message bubble or a preview. A resend right after it reads as one
+# message; a failed turn nothing followed yet shows as this quiet note.
+FAILED_TURN_NOTICES = frozenset({
+    "Your request was not processed. Send it again if you still want me to carry it out.",
+    "This turn did not complete. Some actions may already have run; verify their effects before resending.",
+    "An automated delivery was interrupted and was not run again. Some actions may already have run; "
+    "verify their effects.",
+})
+FAILED_TURN_NOTE = "That didn't go through"
 _COMPACTION = re.compile(r"^\s*(?:\[[^\]\n]{1,60}\]\s*)?\[(?:CONTEXT COMPACTION|PRIOR CONTEXT)|_compressed_summary")
 
 
@@ -337,6 +349,8 @@ def assistant_text(text: str) -> str:
         return ""
     if text.strip() == SILENT or _COMPACTION.match(text):
         return ""   # a scheduled job's "nothing to report", a compaction handoff (shown as a divider)
+    if text.strip() in FAILED_TURN_NOTICES:
+        return ""   # Hermes' "your request was not processed" boundary: never the assistant's reply
     out = _MACHINE_BLOCK.sub("", gateway_reply_text(text))
     status, detail = _STATUS.search(out), _DETAIL.search(out)
     if status or detail:
@@ -1071,8 +1085,9 @@ def session_messages(state_db: Path, session_id: str, *, before: int | None = No
         cols = _columns(db, "messages")
         active = " AND coalesce(active,1)=1" if "active" in cols else ""
         hidden = " AND coalesce(display_kind,'') != 'hidden'" if "display_kind" in cols else ""
+        kind_col = ", display_kind" if "display_kind" in cols else ""
         rows = db.execute(
-            f"SELECT id, role, content, tool_calls, tool_call_id, tool_name, timestamp FROM messages "
+            f"SELECT id, role, content, tool_calls, tool_call_id, tool_name, timestamp{kind_col} FROM messages "
             f"WHERE session_id IN ({marks}){active}{hidden} AND id < ? ORDER BY id DESC LIMIT ?",
             (*chain, int(before) if before else 1 << 62, int(limit) + 1)).fetchall()
     except sqlite3.Error as exc:
@@ -1127,6 +1142,13 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
         role, content = row["role"], row["content"] or ""
         at = float(row["timestamp"]) if isinstance(row["timestamp"], (int, float)) else None
         calls = row["tool_calls"]
+        if role == "assistant" and _failed_turn_row(row, content):
+            flush()
+            pending.clear()
+            # Hermes' failed-turn boundary: kept only while nothing came after it (dropped below).
+            entries.append({"kind": "note", "id": f"m{row['id']}", "at": at, "text": FAILED_TURN_NOTE,
+                            "_failed_turn": True})
+            continue
         if role == "assistant" and isinstance(content, str) and _COMPACTION.match(content):
             flush()
             divider(row["id"], at)
@@ -1219,7 +1241,29 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
             flush()
             entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(assistant_text(content))})
     flush()
-    return dedupe_entries(entries)
+    return dedupe_entries(_drop_answered_failures(entries))
+
+
+def _failed_turn_row(row: Any, content: str) -> bool:
+    """Hermes' row closing a failed turn (``display_kind`` failed_turn, or its exact notice text)."""
+    try:
+        kind = row["display_kind"]
+    except (IndexError, KeyError):
+        kind = None
+    return kind == "failed_turn" or (isinstance(content, str) and content.strip() in FAILED_TURN_NOTICES)
+
+
+def _drop_answered_failures(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A failed turn followed by anything (a resend, a retry's reply) leaves no trace: its note goes,
+    and a resend of the same words then folds into one message (dedupe_entries). Only a failed turn
+    nothing has followed yet keeps its quiet note."""
+    out: list[dict[str, Any]] = []
+    for i, e in enumerate(entries):
+        if e.pop("_failed_turn", False) and any(
+                later.get("kind") in ("user", "assistant") for later in entries[i + 1:]):
+            continue
+        out.append(e)
+    return out
 
 
 # A raw shell command in a step's words ("Running cd app && make"): never a live line.

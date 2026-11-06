@@ -216,15 +216,28 @@ class FakeHermes(BaseHTTPRequestHandler):
                               {"event": "run.completed", "output": output, "completed": True, "partial": False,
                                "interrupted": False, "runtime": served}]}
             if self.state.fail_with is not None:
+                with self.state.lock:
+                    if self.state.fail_left is not None:
+                        self.state.fail_left -= 1
+                        if self.state.fail_left <= 0:
+                            self.state.fail_left = None
+                            fail_line, self.state.fail_with = self.state.fail_with, None
+                        else:
+                            fail_line = self.state.fail_with
+                    else:
+                        fail_line = self.state.fail_with
+            else:
+                fail_line = None
+            if fail_line is not None:
                 # Hermes' shape for a turn that failed (api_server_runs._execute_run): no output, the
                 # provider's redacted error line in ``error`` on the event and on GET /v1/runs/{id}.
                 # ``fail_reply`` instead gives the session chat stream's shape: the reply is Hermes'
                 # failure message and there is no error field.
                 reply = self.state.fail_reply
-                run.update(status="failed", output=reply or "", error=None if reply else self.state.fail_with,
+                run.update(status="failed", output=reply or "", error=None if reply else fail_line,
                            events=[{"event": "run.failed", "completed": False, "partial": False,
                                     "interrupted": False, **({"output": reply} if reply else
-                                                             {"error": self.state.fail_with})}])
+                                                             {"error": fail_line})}])
             if self.state.drop_terminal:
                 run["events"] = [e for e in run["events"] if not e["event"].startswith("run.")]
             if self.state.approval_first:
@@ -288,6 +301,7 @@ class FakeHermesServer:
         self.live_events: list[dict[str, Any]] = []  # streamed while a held run is still working
         self.steers: list[tuple[str, str]] = []
         self.fail_with: str | None = None  # every run fails with this Hermes error line
+        self.fail_left: int | None = None  # …only the next N runs (then fail_with clears)
         self.fail_reply: str | None = None  # …or with this failure reply and no error (session chat shape)
         self.drop_terminal = False          # the event stream ends without its run.* event
         self.model_options: dict[str, Any] | None = model_options_payload()  # GET /api/model/options (None = 500)
