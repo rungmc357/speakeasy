@@ -2,8 +2,9 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
+## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
 
+- **Setup check.** Tapping Start a call before setup is finished opens a Setup check instead of dialing into an error: each thing a call needs (Speakeasy on your Hermes, a restart after an update, Hermes' connection for Speakeasy, your voice sign-in) shows as ready or not, with one button to fix it: sign in to ChatGPT right there, turn Grok voice on, copy /restart, or copy a short request to paste into your chat with Hermes. Nothing on it asks you to open a terminal, and the list comes from your Hermes, so new checks arrive with plugin updates.
 - **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
 - **Honest waits.** One long step says what it's waiting on and for how long ("Waiting on the tests · 4 min"); a task that has gone quiet says so ("No new steps · 3 min"); the handoff line stops posing as "now" after a minute with nothing reported.
 - **No spoken "Sent."** A message or picture you type to a task during a call is delivered silently; the voice only speaks about it if you ask.

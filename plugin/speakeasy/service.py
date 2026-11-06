@@ -109,6 +109,9 @@ CAPABILITIES["schedules"] = True
 # device-code login (codex_login.py). The plugin first looks for a working sign-in in every Codex
 # copy on the machine, and installs Codex when there is none; the app asks only when nothing works.
 CAPABILITIES["codex_login"] = True
+# GET /voice/setup-check (+ POST /voice/setup-check/{id}): every requirement a first call needs as
+# ready / not-ready rows with one fix each, which the apps show instead of dialing into a failure.
+CAPABILITIES["setup_check"] = True
 
 
 
@@ -3108,6 +3111,19 @@ class VoiceService(SecureInputMixin):
             # What this server supports from the UX contract; a missing flag means an older server.
             "capabilities": dict(CAPABILITIES),
         }
+
+    def setup_check(self) -> dict[str, Any]:
+        """The Setup check screen's rows (setup_check.py), from the same facts as status()."""
+        from . import setup_check
+        return setup_check.check(self.status())
+
+    def setup_check_fix(self, row_id: str) -> dict[str, Any]:
+        """Do one row's plugin-side fix (e.g. turn Grok voice on), then answer the fresh rows."""
+        from . import setup_check
+        if not setup_check.run_fix(row_id, self.status(),
+                                   turn_on_grok=lambda: self.settings.patch({"beta": {"grok_voice": True}})):
+            raise ServiceError(409, "That item has nothing Speakeasy can fix by itself right now.")
+        return setup_check.check(self.status())
 
     def attachment_status(self) -> dict[str, Any]:
         """Whether Hermes reads images (``images``: the input path exists; ``vision``: native,

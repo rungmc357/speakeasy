@@ -537,6 +537,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/voice/endpoints": self.service.endpoints,
                 "/voice/secrets": lambda: self.service.secure_list(device_id),
                 "/voice/codex/login": self.service.codex_login_status,
+                "/voice/setup-check": self.service.setup_check,
             }
             if path in routes:
                 self._reply(200, routes[path]())
@@ -681,6 +682,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/routing":
                 self._reply(200, self.service.choose_routing(self._body()))
+                return
+            setup_fix = re.fullmatch(r"/voice/setup-check/([a-z_]{1,32})", path)
+            if setup_fix:  # a Setup check row's own fix, done by the plugin (setup_check.py)
+                self._reply(200, self.service.setup_check_fix(setup_fix.group(1)))
                 return
             aside = re.fullmatch(rf"/voice/tasks/{_ID}/set-aside", path)
             if aside:
