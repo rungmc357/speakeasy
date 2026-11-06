@@ -563,6 +563,9 @@ class BackendRun:
     blocked_by: str | None = None
     released: bool = False
     held_words: list[str] = dataclasses.field(default_factory=list)  # added while it waited to start
+    # How the run ended for follow-ups: Hermes' handed-back steer text and whether it reports one at
+    # all, kept so a follow-up recorded just after the end is settled on the same evidence.
+    ended_steer: tuple[Any, bool] | None = None
 
     @property
     def say_id(self) -> str:
@@ -4022,6 +4025,15 @@ class SidebandWorker:
         milestone = f"You added: {notice_text(words, 200)}"
         self.store.progress(key, "milestone", milestone)
         self.store.add_follow_up(key, words, text, milestone, after)
+        with self.interaction.lock:
+            ended = target.status if target.status in TERMINAL else None
+        if ended:
+            # The run ended while Hermes was taking this: its own settling has already passed, so the
+            # receipt would stay "queued" for good. Settle it on the same evidence and say so.
+            pending, modern = target.ended_steer or (None, False)
+            unread = await self.settle_follow_ups(target, pending, ended, modern=modern)
+            await self.tell_unread(target.say_id, unread, ended)
+            return True
         loop = asyncio.get_running_loop()
         watch = loop.create_task(self.watch_follow_ups(target))
         self.dispatch_tasks.add(watch)
@@ -4932,6 +4944,7 @@ class SidebandWorker:
                 "interrupted": "Work interrupted"}.get(status, "Work ended")))
             with self.interaction.lock:
                 backend.status, backend.approval = status, None
+                backend.ended_steer = (event.get("pending_steer"), "interrupted" in event or "pending_steer" in event)
             # ``interrupted`` rides on every terminal event from a Hermes that also hands back unread steer
             # text (pending_steer); without it, "nothing handed back" proves nothing.
             unread = await self.settle_follow_ups(backend, event.get("pending_steer"), status,
@@ -5031,12 +5044,15 @@ class SidebandWorker:
                 await self.append("session.commentary.append", delegation_id, P.FAILED_SPOKEN)
             else:
                 await self.append("session.commentary.append", delegation_id, P.ended_without_result(status))
-            if unread:
-                # What they added never reached it: say so (after its outcome) and offer it as new work.
-                await self.append("session.thinking.append", delegation_id, P.follow_up_not_read_note(unread))
-                await self.append("session.commentary.append", delegation_id,
-                                  P.follow_up_not_read_spoken(unread, status == "completed"))
+            await self.tell_unread(delegation_id, unread, status)
             await self.release_fenced(backend, status)
+
+    async def tell_unread(self, delegation_id: str, unread: list[str], status: str) -> None:
+        """What they added never reached the run: say so (after its outcome) and offer it as new work."""
+        if unread:
+            await self.append("session.thinking.append", delegation_id, P.follow_up_not_read_note(unread))
+            await self.append("session.commentary.append", delegation_id,
+                              P.follow_up_not_read_spoken(unread, status == "completed"))
 
 
 LATE_RESULT_S = 20.0  # the user spoke in the last 20 s of a task that took longer: say what it answers
