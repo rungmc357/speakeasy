@@ -83,7 +83,7 @@ final class CallPhaseTests: XCTestCase {
     func testMacEndsADroppedCallAsBefore() {
         let s = reduce(live(reconnects: false), .transportLost, now: t0)
         XCTAssertEqual(s.phase, .ended(.incomplete))
-        XCTAssertEqual(s.lastError, "Voice connection lost; final usage confirmation unavailable")
+        XCTAssertEqual(s.lastError, VoiceState.callDropped)  // SPK-153: plain words, tasks keep running
     }
 
     func testMicRefusalNeverReconnects() {
