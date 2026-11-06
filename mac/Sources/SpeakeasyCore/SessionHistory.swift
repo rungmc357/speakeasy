@@ -349,6 +349,9 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
     public var tools: [JobActivityItem]
     /// `user`: the words went in as a voice message (shown as waveform + transcript).
     public var voice: Bool
+    /// `user` voice notes: the sending device's clip id (play it from `VoiceClipStore`) and its length.
+    public var voiceClip: String?
+    public var voiceDuration: TimeInterval?
     /// `user`: the request came from a call; what was said on it, oldest first (one card, transcript on tap).
     public var call: [HistoryCallLine]?
     /// `note`: the Kanban card a board worker was started with (a compact header, instructions folded away).
@@ -368,10 +371,15 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
         let tools = kind == .tools
             ? (o["items"] as? [Any] ?? []).enumerated().compactMap { JobActivityItem(json: $0.element, index: $0.offset) } : []
         let text = nonEmpty(o["text"]) ?? ""
-        if kind == .tools ? tools.isEmpty : text.isEmpty { return nil }
-        self.init(id: id, kind: kind, at: decodeDate(o["at"]), text: text, tools: tools, voice: (o["voice"] as? Bool) ?? false,
+        let voice = (o["voice"] as? Bool) ?? false
+        // A voice note whose words Hermes couldn't write down still shows (as a voice message).
+        if kind == .tools ? tools.isEmpty : (text.isEmpty && !(voice && kind == .user)) { return nil }
+        self.init(id: id, kind: kind, at: decodeDate(o["at"]), text: text, tools: tools, voice: voice,
                   call: ((o["call"] as? [String: Any])?["lines"] as? [Any]).map { $0.compactMap(HistoryCallLine.init(json:)) }.flatMap { $0.isEmpty ? nil : $0 },
                   card: kind == .note ? HistoryWorkerTask(json: o["task"]) : nil, update: o["update"] as? Bool ?? false)
+        // The recording behind a voice row is named by the sending device's client id (SPK-80's id).
+        voiceClip = nonEmpty(o["voice_clip"]) ?? (voice ? nonEmpty(o["client_id"]) : nil)
+        voiceDuration = (o["voice_duration"] as? NSNumber)?.doubleValue
     }
 }
 

@@ -285,6 +285,12 @@ public struct HistoryThreadMessage: Equatable, Sendable, Identifiable {
     public var clientID: String?
     /// `note`: a board worker's card, drawn as a compact header (the instructions folded away).
     public var card: HistoryWorkerTask? = nil
+    /// A voice note: its clip on this device (play it from `VoiceClipStore`) and its length. Its
+    /// `text` is what Hermes heard ("" while sending, or when it couldn't write it down).
+    public var voiceClip: String? = nil
+    public var voiceDuration: TimeInterval? = nil
+    /// A voice note is drawn as one (play, waveform, length, the words under it).
+    public var isVoiceNote: Bool { voice && (voiceClip != nil || voiceDuration != nil || text.isEmpty) }
 
     public init(id: String, role: Role, text: String, at: Date? = nil, voice: Bool = false, tools: [JobActivityItem] = [],
                 delivery: Delivery? = nil, clientID: String? = nil, call: [HistoryCallLine]? = nil) {
@@ -344,7 +350,9 @@ public struct HistoryThread: Equatable, Sendable {
                     out.append(HistoryThreadMessage(id: "tools-\(e.id)", role: .assistant, text: "", at: pendingAt, tools: pending))
                     pending = []; pendingAt = nil
                 }
-                out.append(HistoryThreadMessage(id: e.id, role: .user, text: e.text, at: e.at, voice: e.voice, call: e.call))
+                var m = HistoryThreadMessage(id: e.id, role: .user, text: e.text, at: e.at, voice: e.voice, call: e.call)
+                m.voiceClip = e.voiceClip; m.voiceDuration = e.voiceDuration
+                out.append(m)
             }
         }
         if !pending.isEmpty { out.append(HistoryThreadMessage(id: "tools-end", role: .assistant, text: "", at: pendingAt, tools: pending)) }
@@ -379,6 +387,10 @@ public struct HistoryOutbox: Equatable, Sendable {
         public var request: HistoryMessageRequest
         public var at: Date
         public var delivery: HistoryThreadMessage.Delivery
+        /// A voice note: the recording that is the message (Retry sends the same clip and id).
+        public var voiceNote: VoiceNoteRequest? = nil
+        /// What Hermes heard, once it answered.
+        public var transcript: String? = nil
     }
     public private(set) var items: [Item] = []
     public init() {}
@@ -386,6 +398,16 @@ public struct HistoryOutbox: Equatable, Sendable {
     public mutating func add(_ request: HistoryMessageRequest, at: Date) {
         items.removeAll { $0.id == request.clientID }
         items.append(Item(request: request, at: at, delivery: .sending))
+    }
+    /// A voice note on its way (the recording itself is the message).
+    public mutating func add(voiceNote: VoiceNoteRequest, session: String, at: Date) {
+        guard let placeholder = HistoryMessageRequest(sessionID: session, text: "Voice message", source: .voiceMessage,
+                                                      clientID: voiceNote.clientID) else { return }
+        items.removeAll { $0.id == voiceNote.clientID }
+        items.append(Item(request: placeholder, at: at, delivery: .sending, voiceNote: voiceNote))
+    }
+    public mutating func heard(_ clientID: String, _ transcript: String?) {
+        if let i = items.firstIndex(where: { $0.id == clientID }) { items[i].transcript = transcript ?? "" }
     }
     public mutating func mark(_ clientID: String, _ delivery: HistoryThreadMessage.Delivery) {
         if let i = items.firstIndex(where: { $0.id == clientID }) { items[i].delivery = delivery }
@@ -401,9 +423,12 @@ public struct HistoryOutbox: Equatable, Sendable {
         var used = Set<String>()
         for item in items where item.request.sessionID == session {
             if item.delivery == .sent, let echo = Self.echo(of: item, in: messages, skipping: used) { used.insert(echo); continue }
-            shown.append(HistoryThreadMessage(id: "local-\(item.id)", role: .user, text: item.request.text, at: item.at,
-                                              voice: item.request.source == .voiceMessage, delivery: item.delivery,
-                                              clientID: item.id))
+            var m = HistoryThreadMessage(id: "local-\(item.id)", role: .user,
+                                         text: item.voiceNote == nil ? item.request.text : item.transcript ?? "", at: item.at,
+                                         voice: item.request.source == .voiceMessage, delivery: item.delivery,
+                                         clientID: item.id)
+            if let note = item.voiceNote { m.voiceClip = note.clientID; m.voiceDuration = note.duration }
+            shown.append(m)
         }
         return shown
     }
@@ -420,9 +445,15 @@ public struct HistoryOutbox: Equatable, Sendable {
 
     static func echo(of item: Item, in messages: [HistoryThreadMessage], skipping used: Set<String>) -> String? {
         messages.first { m in
-            m.role == .user && m.delivery == nil && !used.contains(m.id)
-                && m.text.trimmingCharacters(in: .whitespacesAndNewlines) == item.request.text
-                && (m.at.map { $0 >= item.at.addingTimeInterval(-60) } ?? true)
+            guard m.role == .user, m.delivery == nil, !used.contains(m.id),
+                  m.at.map({ $0 >= item.at.addingTimeInterval(-60) }) ?? true else { return false }
+            if item.voiceNote != nil {   // a voice note: by its clip (the message's client id)
+                if let clip = m.voiceClip { return clip == item.id }   // another recording, even with the same words
+                // A server that doesn't name the clip: by what Hermes heard.
+                guard let words = item.transcript, !words.isEmpty else { return false }
+                return m.text.trimmingCharacters(in: .whitespacesAndNewlines) == words
+            }
+            return m.text.trimmingCharacters(in: .whitespacesAndNewlines) == item.request.text
         }?.id
     }
 }
@@ -438,6 +469,13 @@ public struct MacVoiceMessage: Equatable, Sendable {
     public init() {}
 
     public var micVisible: Bool { !callLive }
+
+    /// Voice notes (servers with `voice_notes`, an open session): stop sends the recording itself.
+    public var sendsOnStop: Bool { flow.sendsOnStop }
+    public mutating func setVoiceNotes(_ on: Bool, wholeClip: Bool) {
+        flow.setSendsOnStop(on)
+        flow.setWholeClip(on || wholeClip)
+    }
     /// The words go out as a voice message (they came from the mic and are being reviewed).
     public var reviewing: Bool { flow.phase == .reviewing }
 

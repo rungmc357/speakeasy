@@ -934,6 +934,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var approvalRules: Bool = false
     /// Add the OpenAI API key for the API-key voice from the app (`POST /voice/openai-key`, OpenAIKey.swift).
     public var openaiKey: Bool = false
+    /// Voice notes: the recording itself is the message (`POST …/voice-message`), like a Telegram voice note.
+    public var voiceNotes: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -952,6 +954,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
         case messageModes = "message_modes", questionState = "question_state", agents
         case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
+        case voiceNotes = "voice_notes"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -971,6 +974,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         messageModes = (try? c.decodeIfPresent(Bool.self, forKey: .messageModes)) ?? false
         questionState = (try? c.decodeIfPresent(Bool.self, forKey: .questionState)) ?? false
         transcribe = (try? c.decodeIfPresent(Bool.self, forKey: .transcribe)) ?? false
+        voiceNotes = (try? c.decodeIfPresent(Bool.self, forKey: .voiceNotes)) ?? false
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false

@@ -1145,13 +1145,34 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
   are `assistant` entries with `update: true`; Kanban bookkeeping calls are never tool steps.
 - `live: {now, so_far?}`: a running session without a running Speakeasy task (a Kanban worker, a
   chat mid-turn) gets a live line from its own steps, like a task card's (SPK-32).
+### POST /voice/history/{session_id}/voice-message · POST /voice/work/{run_id}/voice-message
+
+Servers with `capabilities.voice_notes`. A voice note, the way Telegram and Discord send one: the
+recording itself is the message. Raw body = the audio (m4a, wav, ogg, webm, caf, flac or mp3, as for `POST /voice/transcribe`;
+same size cap), the message's fields as headers:
+`X-Speakeasy-Client-Id` (idempotency, as `client_id`), `X-Speakeasy-Duration` (seconds, for the
+bubble), optional `X-Speakeasy-Mode` (`steer`/`queue`), `X-Speakeasy-Answers` (session route only, as
+`answers`) and `X-Speakeasy-Attachments` (comma-separated staged ids). Checked and authenticated
+before the body is read.
+
+The clip is kept in Hermes' own audio cache and transcribed on arrival with the user's configured
+speech-to-text (and its local fallback), exactly as the gateway does for a Telegram voice note
+(`gateway/run_inbound_transcription.py`): the agent gets the transcript as one quoted line, or the
+gateway's own note when it came through empty or couldn't be transcribed (then with the clip's path
+so the agent can still use the audio). The text then goes exactly like `…/message` with
+`source: "voice_message"` (steer, answer, queue, follow-up, linked task). A retry with the same client
+id is never transcribed or sent twice. Reply: the `…/message` reply plus
+`voice: {transcript, duration}` (`transcript` null when Hermes couldn't write it down). On the page the
+entry has `voice: true`, its words unquoted (`""` when unknown) and, when known, `voice_clip` (the
+sending device's client id, to play the clip it kept) and `voice_duration`.
+
 ### POST /voice/history/{session_id}/message
 
 Optional `answers`: a task's `run_id` — the message is that question's answer ("Reply…" on a decision card), delivered to the task that asked even when a newer task exists (`via: "answer"`); a task this conversation doesn't hold is `404`.
 
 Body `{"text": "...", "source": "typed" | "voice_message", "client_id": "<uuid>", "attachments"?: [...]}` (`text` trimmed,
-1–4,000 characters; `voice_message` is text the app transcribed on the device from a recorded voice
-message, no audio is sent). Idempotent on `client_id` (10 minutes), like task messages. The session
+1–4,000 characters; `voice_message` is the words of a recorded voice message, transcribed before sending
+— servers with `voice_notes` take the recording itself instead, below). Idempotent on `client_id` (10 minutes), like task messages. The session
 named gets it, by id:
 
 - **A Speakeasy task's session** (`via: "task"`): exactly `POST /voice/work/{run_id}/message` to its

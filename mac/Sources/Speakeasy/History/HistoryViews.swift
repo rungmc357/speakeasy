@@ -908,6 +908,10 @@ struct HistoryMessageView: View {
     private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 4) {
             if let via { Text("You, in \(via)").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.tertiary) }
+            if message.isVoiceNote && via == nil {
+                MacVoiceNoteBubble(message: message, shape: bubble(mine: true))
+                    .help(exactTime ?? "")
+            } else {
             VStack(alignment: .leading, spacing: 6) {
                 if message.voice {
                     HStack(spacing: 2) {
@@ -927,6 +931,7 @@ struct HistoryMessageView: View {
             .background(bubble(mine: true).fill(via == nil ? AnyShapeStyle(Live.brass) : AnyShapeStyle(ChatInk.otherApp)))
             .opacity(message.delivery == .sending ? 0.7 : 1)
             .help(exactTime ?? "")
+            }
             if message.voice || message.delivery != nil { caption }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -947,7 +952,7 @@ struct HistoryMessageView: View {
                         .buttonStyle(.plain).foregroundStyle(Live.brassText).fontWeight(.semibold)
                 }
             default:
-                if message.voice { Image(systemName: "mic.fill").font(.system(size: 8.5)); Text("Voice message") }
+                if message.voice && !message.isVoiceNote { Image(systemName: "mic.fill").font(.system(size: 8.5)); Text("Voice message") }
                 if message.delivery == .sent { Image(systemName: "checkmark").font(.system(size: 8.5, weight: .bold)); Text("Sent") }
                 if let receipt = store.steerReceipt(message.text, at: message.at, session: sessionID) {
                     Image(systemName: receipt.symbol).font(.system(size: 8.5, weight: .bold))
@@ -1634,7 +1639,8 @@ struct HistoryComposer: View {
         let finishing = phase == .transcribing
         let asking = phase == .asking
         return VStack(alignment: .leading, spacing: 8) {
-            Text(heard.isEmpty ? (asking ? "Asking for the microphone…" : "Listening… say your message.") : heard)
+            Text(store.voice.sendsOnStop ? (asking ? "Asking for the microphone…" : "Recording… press Send (↩) when you're done.")
+                 : heard.isEmpty ? (asking ? "Asking for the microphone…" : "Listening… say your message.") : heard)
                 .font(.system(size: 13.5)).foregroundStyle(heard.isEmpty ? Color.secondary : Color.primary.opacity(0.92))
                 .italic(heard.isEmpty).lineLimit(5).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1649,7 +1655,8 @@ struct HistoryComposer: View {
                 Spacer(minLength: 6)
                 circle("xmark", help: "Discard (esc)", fill: Color.primary.opacity(0.08), ink: .secondary) { store.cancelVoice() }
                     .keyboardShortcut(.cancelAction)
-                circle("stop.fill", help: "Stop (↩)", fill: Live.brass, ink: JobLook.brassInk) { store.tapMic() }
+                circle(store.voice.sendsOnStop ? "arrow.up" : "stop.fill", help: store.voice.sendsOnStop ? "Send voice message (↩)" : "Stop (↩)",
+                       fill: Live.brass, ink: JobLook.brassInk) { store.tapMic() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(!flow.isRecording)
                     .accessibilityIdentifier("history-stop")
@@ -1767,5 +1774,69 @@ struct LevelBars: View {
         }
         .onAppear { if level > 0 { history = (0..<28).map { i in Float(0.15 + 0.7 * abs(sin(Double(i) * 0.7))) * level } } }
         .accessibilityHidden(true)
+    }
+}
+
+
+/// A voice note on the Mac, like a Telegram/Discord one: play, waveform, length, and what Hermes
+/// heard under it once written down. Plays only where it was recorded (the clip stays on this Mac).
+struct MacVoiceNoteBubble<S: Shape>: View {
+    let message: HistoryThreadMessage
+    let shape: S
+    @ObservedObject private var player = VoiceClipPlayer.shared
+
+    private static var fallback: [Double] { [0.35, 0.6, 0.9, 0.5, 0.75, 1, 0.65, 0.4, 0.8, 0.55, 0.95, 0.45, 0.7, 0.3, 0.6, 0.85, 0.5, 0.35, 0.7, 0.9, 0.45, 0.6] }
+    private var clip: String? { message.voiceClip }
+    private var playable: Bool { clip.flatMap { VoiceClipStore.audioURL($0) } != nil }
+    private var playing: Bool { clip != nil && player.playing == clip }
+    private var bars: [Double] {
+        let saved = clip.flatMap { VoiceClipStore.meta($0)?.levels } ?? []
+        return saved.count >= 8 ? saved : Self.fallback
+    }
+    private var sending: Bool { message.delivery == .sending }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 9) {
+                if playable, let clip {
+                    Button { player.toggle(clip) } label: {
+                        Image(systemName: playing ? "pause.fill" : "play.fill").font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Live.brass).frame(width: 24, height: 24).background(Circle().fill(ChatInk.onBrass))
+                    }
+                    .buttonStyle(.plain).help(playing ? "Pause" : "Play").accessibilityLabel(playing ? "Pause voice message" : "Play voice message")
+                    .accessibilityIdentifier("history-voice-play")
+                } else {
+                    Image(systemName: "mic.fill").font(.system(size: 9, weight: .bold)).foregroundStyle(ChatInk.onBrass)
+                        .frame(width: 24, height: 24).background(Circle().fill(ChatInk.onBrass.opacity(0.14)))
+                }
+                HStack(spacing: 2) {
+                    ForEach(Array(bars.enumerated()), id: \.offset) { i, h in
+                        Capsule().fill(ChatInk.onBrass.opacity(playing && Double(i) / Double(bars.count) < player.progress ? 0.95 : 0.55))
+                            .frame(width: 2, height: 3 + 14 * CGFloat(max(0, min(1, h))))
+                    }
+                }
+                .accessibilityHidden(true)
+                if let d = message.voiceDuration {
+                    Text(VoiceMessageFlow.clock(playing ? d * player.progress : d))
+                        .font(.system(size: 11, weight: .semibold).monospacedDigit()).foregroundStyle(ChatInk.onBrass.opacity(0.8))
+                }
+            }
+            if !message.text.isEmpty {
+                Text(message.text).font(.system(size: 13.5)).foregroundStyle(ChatInk.onBrass)
+                    .lineSpacing(2).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            } else if sending {
+                Text("Writing it down…").font(.system(size: 12)).foregroundStyle(ChatInk.onBrass.opacity(0.65))
+            } else if message.delivery == nil || message.delivery == .sent {
+                Text("Your Hermes got the recording but couldn't write it down.").font(.system(size: 12))
+                    .foregroundStyle(ChatInk.onBrass.opacity(0.7)).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 13).padding(.vertical, 9)
+        .frame(minWidth: 180, alignment: .leading)
+        .background(shape.fill(Live.brass))
+        .opacity(sending ? 0.7 : 1)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(message.text.isEmpty ? "You, voice message" : "You, voice message: \(message.text)")
+        .accessibilityIdentifier("history-voice-note")
     }
 }

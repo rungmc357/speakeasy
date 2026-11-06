@@ -155,6 +155,41 @@ final class HistoryBrowsingTests: XCTestCase {
         XCTAssertNil(HistoryTarget.newChat.outgoing(" ", source: .typed))
     }
 
+    func testTwoVoiceNotesWithTheSameWordsEachKeepTheirOwnRecordingAfterAReload() throws {
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        var box = HistoryOutbox()
+        let first = VoiceNoteRequest(target: .session("s"), audio: Data([1]), clientID: "vm-a", duration: 2)
+        let second = VoiceNoteRequest(target: .session("s"), audio: Data([2]), clientID: "vm-b", duration: 7)
+        box.add(voiceNote: first, session: "s", at: t0)
+        box.add(voiceNote: second, session: "s", at: t0 + 5)
+        for id in ["vm-a", "vm-b"] { box.heard(id, "Yes, go ahead"); box.mark(id, .sent) }
+        func row(_ id: String, _ clip: String?, _ at: TimeInterval) -> HistoryThreadMessage {
+            var m = HistoryThreadMessage(id: id, role: .user, text: "Yes, go ahead", at: t0 + at, voice: true)
+            m.voiceClip = clip; return m
+        }
+        // Only the second recording's row is on the page so far: the first stays on its way, and
+        // the second never claims a row of the first.
+        let onlySecond = [row("m2", "vm-b", 6)]
+        var shown = box.merged(into: onlySecond, session: "s")
+        XCTAssertEqual(shown.map(\.id), ["m2", "local-vm-a"])
+        XCTAssertEqual(shown.last?.voiceClip, "vm-a")
+        XCTAssertEqual(shown.last?.voiceDuration, 2)
+        box.prune(onlySecond, session: "s")
+        XCTAssertEqual(box.items.map(\.id), ["vm-a"], "same words, different recording: still on its way")
+        // After a reload both rows are there, each with its own clip.
+        let both = [row("m1", "vm-a", 1), row("m2", "vm-b", 6)]
+        shown = box.merged(into: both, session: "s")
+        XCTAssertEqual(shown.map(\.id), ["m1", "m2"])
+        XCTAssertEqual(shown.map(\.voiceClip), ["vm-a", "vm-b"])
+        box.prune(both, session: "s")
+        XCTAssertTrue(box.items.isEmpty)
+        // Rows from the server carry the clip as voice_clip, or only as the client id.
+        let entry = try XCTUnwrap(HistoryEntry(json: ["id": "m3", "kind": "user", "text": "Yes, go ahead", "voice": true,
+                                                      "client_id": "vm-c"]))
+        XCTAssertEqual(entry.voiceClip, "vm-c")
+        XCTAssertNil(HistoryEntry(json: ["id": "m4", "kind": "user", "text": "typed", "client_id": "c9"])?.voiceClip)
+    }
+
     func testOutboxShowsPendingUntilEchoed() throws {
         var box = HistoryOutbox()
         let t0 = Date(timeIntervalSince1970: 1_000_000)

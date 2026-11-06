@@ -161,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.modelsSupported = caps?.modelChoice ?? false
                     self.history.store.schedulesSupported = caps?.schedules ?? false
                     self.wireHermesTranscription(caps?.transcribe ?? false)
+                    self.history.store.voiceNotesSupported = caps?.voiceNotes ?? false
                     self.history.store.boardsSupported = caps?.boards ?? false
                     self.history.store.skillsSupported = caps?.slashSkills ?? false
                     self.history.store.filesSupported = caps?.files ?? false
@@ -604,6 +605,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.agentsSupported = app.status?.capabilities?.agents ?? false
         store.schedulesSupported = app.status?.capabilities?.schedules ?? false
         wireHermesTranscription(app.status?.capabilities?.transcribe ?? false)
+        store.voiceNotesSupported = app.status?.capabilities?.voiceNotes ?? false
         if store.board.backend == nil { store.board.backend = LiveBoardBackend { [weak self] in self?.native.api } }
         store.boardsSupported = app.status?.capabilities?.boards ?? false
         store.skillsSupported = app.status?.capabilities?.slashSkills ?? false
