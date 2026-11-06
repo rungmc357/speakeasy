@@ -391,6 +391,95 @@ def test_update_without_a_change_does_not_write(tmp_path):
     assert path.stat().st_mtime_ns == mtime
 
 
+# A brand-new Hermes: its config template leaves sections with only comments under them, which
+# load as empty (None) rather than as groups of settings.
+NEW_HERMES_CONFIG = """\
+# Hermes configuration
+plugins:
+  # Deadline for each Git clone during plugin install.
+  clone_timeout_seconds: 300
+
+model:
+  default: some-model
+
+gateway:
+  # Post-interrupt grace for running agents.
+  # signal_interrupt_grace_timeout: 1
+
+  # Let platform adapters honor proxy settings.
+  # trust_env: true
+
+display:
+  compact: false
+"""
+
+
+def test_setup_turns_voice_on_in_a_brand_new_hermes_config(home):
+    from fakes import yaml
+    (home / "config.yaml").write_text(NEW_HERMES_CONFIG)
+    before = yaml.safe_load(NEW_HERMES_CONFIG)
+    assert before["gateway"] is None  # the shape that used to make setup write nothing
+    fake = Fake()
+    rc, _ = run_setup(fake, yes=True)
+    assert rc == 0
+    saved = yaml.safe_load((home / "config.yaml").read_text())
+    voice = saved["gateway"]["platforms"]["voice"]
+    assert voice["enabled"] is True and voice["extra"]["port"]
+    assert saved["plugins"] == {"clone_timeout_seconds": 300, "enabled": ["speakeasy"]}
+    assert saved["model"] == before["model"] and saved["display"] == before["display"]
+    assert cli.voice_platform_problem(home) == ""
+    assert any("Speakeasy is enabled" in line for line in fake.lines)
+
+
+@pytest.mark.parametrize("cfg", [
+    {"gateway": {"platforms": None}},
+    {"gateway": {"platforms": {"voice": None}}},
+    {"gateway": {"platforms": {"voice": {"enabled": False, "extra": None}}}},
+    {"plugins": None},
+    {"plugins": {"enabled": None}},
+])
+def test_empty_sections_anywhere_on_the_path_are_filled_in(home, cfg):
+    from fakes import yaml
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+    assert cli.enable_voice_platform(home, 8790) is True
+    assert cli.voice_platform_problem(home) == ""
+    assert cli.enable_voice_platform(home, 8790) is False  # second run changes nothing
+
+
+@pytest.mark.parametrize("cfg, why, untouched", [
+    ({"gateway": "off"}, "'gateway'", True),
+    ({"gateway": {"platforms": ["voice"]}}, "'gateway.platforms'", True),
+    ({"plugins": {"enabled": "speakeasy"}}, "plugins.enabled", False),  # voice itself was added
+])
+def test_setup_says_plainly_when_voice_could_not_be_turned_on(home, cfg, why, untouched):
+    """A config Speakeasy can't fully add to: no ✓, a plain reason, exit 1, nothing removed."""
+    from fakes import yaml
+    from speakeasy.hermes_config import _lost_paths
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+    before = (home / "config.yaml").read_text()
+    fake = Fake()
+    rc, opened = run_setup(fake, yes=True, no_open=False)
+    assert rc == 1 and not opened
+    text = "\n".join(fake.lines)
+    assert "Speakeasy is enabled" not in text and "✓ Voice server" not in text
+    assert "Couldn't turn Speakeasy on" in text and why in text
+    after = (home / "config.yaml").read_text()
+    assert (after == before) if untouched else _lost_paths(cfg, yaml.safe_load(after)) == []
+    assert never_restarts(fake)
+
+
+def test_setup_says_so_when_the_config_write_is_refused(home, monkeypatch):
+    from speakeasy import hermes_config
+    (home / "config.yaml").write_text(NEW_HERMES_CONFIG)
+    monkeypatch.setattr(hermes_config, "_write_full", lambda path, data: None)  # write silently lost
+    fake = Fake()
+    rc, _ = run_setup(fake, yes=True)
+    assert rc == 1
+    assert not any("Speakeasy is enabled" in line for line in fake.lines)
+    assert any("voice platform is still missing" in line for line in fake.lines)
+    assert (home / "config.yaml").read_text() == NEW_HERMES_CONFIG
+
+
 def _fake_app(home, rel):
     path = home / "Applications" / rel
     path.parent.mkdir(parents=True, exist_ok=True)
