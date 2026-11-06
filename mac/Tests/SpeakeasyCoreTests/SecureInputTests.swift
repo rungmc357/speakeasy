@@ -38,7 +38,9 @@ final class SecureInputTests: XCTestCase {
           "reason":"The Tidepool skill needs this key for reading tide charts. Your agent asked for it because this task uses that skill.",
           "skip_label":"Skip — the agent has another way"}]}
         """
-        let [card] = SecureInputRequest.list(Data(json.utf8))
+        let list = SecureInputRequest.list(Data(json.utf8))
+        XCTAssertEqual(list.count, 1)
+        guard let card = list.first else { return }
         XCTAssertEqual(card.askedBy, "Tidepool skill · Tide times for Saturday")
         XCTAssertTrue(card.reason.hasPrefix("The Tidepool skill needs this key for reading tide charts."))
         XCTAssertEqual(card.skipButton, "Skip — the agent has another way")
