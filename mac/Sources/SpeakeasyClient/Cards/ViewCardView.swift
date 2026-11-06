@@ -7,9 +7,19 @@ import SpeakeasyCore
 /// list. Remote images (logos, art, photos) load through `CardImage`, https only.
 public struct ViewCardView: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     public init(_ card: ViewCard) { self.card = card }
 
     public var body: some View {
+        Group {
+            // One row (a small call screen): never a question, whose answers are the point.
+            if fit == .line, card.kind != "question" { CardLine(card: card) } else { kindView }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(CardAccessibility(card: card))
+    }
+
+    @ViewBuilder private var kindView: some View {
         Group {
             switch card.kind {
             case "quote": QuoteCard(card: card)
@@ -53,8 +63,6 @@ public struct ViewCardView: View {
             default: EmptyView()
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(CardAccessibility(card: card))
     }
 }
 
