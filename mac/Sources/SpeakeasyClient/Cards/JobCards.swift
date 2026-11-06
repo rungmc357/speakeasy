@@ -246,9 +246,20 @@ public struct AnswerGlance: View {
                     }
                 }
             case "chart":
-                MiniBars(values: Array((card["series"].array.first?["values"].doubles ?? []).suffix(14)),
-                         line: card["style"].string == "line")
-                    .frame(width: 76, height: 28)
+                let facts = ChartFacts(card)
+                if facts.ranked, let top = facts.rows.first, let v = top.values.first ?? nil {
+                    // A ranking's glance is its first row in words (bars out of context would
+                    // suggest an order the card doesn't claim).
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text(top.label).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                        Text(facts.text(v)).font(.system(size: 14, weight: .semibold).monospacedDigit()).lineLimit(1)
+                    }
+                    .fixedSize()
+                } else {
+                    MiniBars(values: Array((card["series"].array.first?["values"].doubles ?? []).suffix(14)),
+                             line: card["style"].string == "line")
+                        .frame(width: 76, height: 28)
+                }
             case "quote":
                 VStack(alignment: .trailing, spacing: 0) {
                     Text(card["price"].double.map { ViewCard.money($0, currency: card["currency"].string) } ?? "")

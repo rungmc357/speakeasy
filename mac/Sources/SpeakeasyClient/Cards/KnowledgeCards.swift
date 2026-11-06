@@ -305,61 +305,243 @@ struct ListCard: View {
 @MainActor public enum ChartPreview { public static var selection: String? }
 
 struct ChartCard: View {
-    #if os(macOS)
-    static let chartHint = "Hover or drag to read values"
-    #else
-    static let chartHint = "Drag across to read values"
-    #endif
     let card: ViewCard
     struct Point: Identifiable { let id: Int; let series: String; let label: String; let value: Double }
-    /// The x label under the pointer (hover or drag): its values show above the chart.
+    /// The x label under the pointer (hover or drag on a plot): its values replace the rest line.
     @State private var selected: String?
+    /// The plot's value table, one tap away.
+    @State private var showsValues = false
     @Environment(\.cardFit) private var fit
+    @ScaledMetric(relativeTo: .caption) private var small: CGFloat = 11.5
+
     var body: some View {
-        let labels = card["labels"].strings
-        let series = card["series"].array
-        let points: [Point] = series.enumerated().flatMap { s, entry in
-            entry["values"].doubles.enumerated().map { i, v in
-                Point(id: s * 1000 + i, series: entry["name"].string ?? "Series \(s + 1)",
-                      label: i < labels.count ? labels[i] : "\(i + 1)", value: v)
+        let facts = ChartFacts(card)
+        CardBox {
+            CardHeader(icon: facts.ranked ? "chart.bar.fill" : "chart.xyaxis.line", title: facts.title, lines: 2)
+            // What the numbers are and which order the bars stand in (the bars really do).
+            if let subtitle = facts.subtitle {
+                Text(subtitle).font(.system(size: small)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("chart-subtitle")
+            }
+            if facts.ranked {
+                ChartRows(facts: facts, shown: fit.rows(ChartFacts.maxRankedRows))
+                MoreRows(total: facts.rows.count, shown: fit.rows(ChartFacts.maxRankedRows))
+            } else {
+                plot(facts)
+            }
+            // Only what the card says about its data: source, as-of time, delayed. Never invented.
+            if let fresh = facts.freshness {
+                // Old data says so with its date and a mark, in the card's quiet text color.
+                Label(fresh, systemImage: facts.stale ? "exclamationmark.circle" : "clock")
+                    .font(.system(size: small - 0.5)).foregroundStyle(Color.secondary)
+                    .labelStyle(FreshnessLabel())
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("chart-freshness")
             }
         }
+    }
+
+    @ViewBuilder private func plot(_ facts: ChartFacts) -> some View {
+        let points: [Point] = facts.rows.enumerated().flatMap { i, row in
+            row.values.enumerated().compactMap { s, v in
+                v.map { Point(id: s * 1000 + i, series: facts.seriesNames[s], label: row.label, value: $0) }
+            }
+        }
+        let multi = facts.seriesNames.count > 1
         let style = card["style"].string ?? "bar"
-        CardBox {
-            HStack {
-                CardHeader(icon: "chart.xyaxis.line", title: card["title"].string ?? "Chart")
-                if let unit = card["unit"].string { Text(unit).font(.system(size: 11)).foregroundStyle(.secondary) }
-            }
-            // Hover (Mac) or drag (iPhone/iPad) across the chart to read exact values.
-            let unit = card["unit"].string.map { ["%", "°", "x", "×"].contains($0) ? $0 : " \($0)" } ?? ""
-            Text(selected.map { label in
-                let vals = points.filter { $0.label == label }
-                return "\(label): " + vals.map { (series.count > 1 ? "\($0.series) " : "") + CardText.number($0.value) + unit }.joined(separator: " · ")
-            } ?? Self.chartHint)
-                .font(.system(size: 11.5, weight: selected == nil ? .regular : .semibold).monospacedDigit())
+        let short = Dictionary(zip(facts.rows.map(\.label), ChartFacts.shortLabels(facts.rows.map(\.label), max: 6)),
+                               uniquingKeysWith: { a, _ in a })
+        // The numbers at rest (latest, high, low); the one under the finger or pointer while dragging.
+        let line = selected.flatMap { label in facts.rows.first { $0.label == label } }.map { "\($0.label): \(facts.text($0))" }
+            ?? facts.restLine
+        if let line {
+            Text(line)
+                .font(.system(size: small, weight: selected == nil ? .regular : .semibold).monospacedDigit())
                 .foregroundStyle(selected == nil ? Color.secondary : Color.primary)
-                .lineLimit(1)
-            Chart(points) { p in
-                if style == "line" {
-                    LineMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
-                        .interpolationMethod(.monotone)
-                } else {
-                    BarMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
-                        .position(by: .value("s", p.series))
-                        .opacity(selected == nil || selected == p.label ? 1 : 0.45)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("chart-readout")
+        }
+        Chart(points) { p in
+            if style == "line" {
+                LineMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
+                    .interpolationMethod(.monotone)
+                    .accessibilityLabel(multi ? "\(p.series), \(p.label)" : p.label)
+                    .accessibilityValue(facts.text(p.value))
+            } else {
+                BarMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
+                    .position(by: .value("s", p.series))
+                    .opacity(selected == nil || selected == p.label ? 1 : 0.45)
+                    .accessibilityLabel(multi ? "\(p.series), \(p.label)" : p.label)
+                    .accessibilityValue(facts.text(p.value))
+            }
+            if let selected, selected == p.label, style == "line" {
+                PointMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
+            }
+            if let selected, p.id % 1000 == 0 || !multi, selected == p.label {
+                RuleMark(x: .value("x", selected)).foregroundStyle(Color.primary.opacity(0.25))
+            }
+        }
+        .chartXSelection(value: $selected)
+        // Axis labels stay distinct when cut (GOOG and GOOGL never both read "GO…").
+        .chartXAxis {
+            AxisMarks { value in
+                AxisValueLabel { if let s = value.as(String.self) { Text(short[s] ?? s) } }
+            }
+        }
+        .modifier(OneSeriesTint(on: JobLook.touch && !multi))
+        .chartLegend(multi ? .visible : .hidden)
+        .frame(height: fit == .compact ? 88 : 150)
+        .onAppear { if let p = ChartPreview.selection, facts.rows.contains(where: { $0.label == p }) { selected = p } }
+        // Every value one tap away (and the table is what VoiceOver reads row by row).
+        if fit == .full {
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) { showsValues.toggle() }
+            } label: {
+                Label(showsValues ? "Hide values" : "Show values", systemImage: showsValues ? "chevron.up" : "list.number")
+                    .font(.system(size: small, weight: .semibold))
+                    .frame(minHeight: JobLook.touch ? 44 : 24).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(minHeight: JobLook.touch ? 44 : 24)
+            .foregroundStyle(JobLook.touch ? JobLook.brass : Color.accentColor)
+            .accessibilityIdentifier("chart-show-values")
+            if showsValues { ChartValueTable(facts: facts) }
+        }
+    }
+}
+
+/// A ranked chart as rows: label, bar and value side by side, every value readable at rest.
+/// Labels get their own column (tickers are never cut); at the largest text sizes each row
+/// stacks its label and value over the bar.
+struct ChartRows: View {
+    let facts: ChartFacts
+    let shown: Int
+    @ScaledMetric(relativeTo: .footnote) private var font: CGFloat = 12.5
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// The widest label and value (the columns line up across rows).
+    @State private var labelWidth: CGFloat = 0
+    @State private var valueWidth: CGFloat = 0
+
+    static func tint(_ series: Int) -> Color {
+        if series == 0 { return JobLook.touch ? JobLook.brass : Color.accentColor }
+        return [Color.teal, Color.purple, Color.pink][(series - 1) % 3]
+    }
+
+    var body: some View {
+        let rows = Array(facts.rows.prefix(shown))
+        let scale = max(facts.rows.flatMap { $0.values.compactMap { $0 }.map(abs) }.max() ?? 1, .ulpOfOne)
+        let multi = facts.seriesNames.count > 1
+        VStack(alignment: .leading, spacing: 6) {
+            if multi {
+                HStack(spacing: 10) {
+                    ForEach(Array(facts.seriesNames.enumerated()), id: \.offset) { i, name in
+                        HStack(spacing: 4) {
+                            Circle().fill(Self.tint(i)).frame(width: 7, height: 7)
+                            Text(name).font(.system(size: font - 1)).foregroundStyle(.secondary)
+                        }
+                    }
                 }
-                if let selected, selected == p.label, style == "line" {
-                    PointMark(x: .value("x", p.label), y: .value("y", p.value)).foregroundStyle(by: .value("s", p.series))
+                .accessibilityHidden(true)
+            }
+            if typeSize.isAccessibilitySize {
+                ForEach(rows) { row in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(row.label).font(.system(size: font, weight: .semibold))
+                            Spacer(minLength: 6)
+                            Text(facts.text(row)).font(.system(size: font).monospacedDigit())
+                        }
+                        bars(row, scale: scale)
+                    }
+                    .rowAccessibility(row, facts: facts)
                 }
-                if let selected, p.id % 1000 == 0 || series.count == 1, selected == p.label {
-                    RuleMark(x: .value("x", selected)).foregroundStyle(Color.primary.opacity(0.25))
+            } else {
+                // One element per row for VoiceOver (a Grid row applies its modifiers to each cell),
+                // so the label column is lined up by measuring the widest label instead.
+                ForEach(rows) { row in
+                    HStack(alignment: .center, spacing: 8) {
+                        Text(row.label).font(.system(size: font, weight: .semibold))
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                            .frame(width: labelWidth > 0 ? labelWidth : nil, alignment: .leading)
+                            // Its one-line width, measured unseen (a long name wraps past 130 pt).
+                            .background(alignment: .leading) {
+                                Text(row.label).font(.system(size: font, weight: .semibold)).lineLimit(1).fixedSize()
+                                    .hidden().accessibilityHidden(true)
+                                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { w in
+                                        if min(w, 130) > labelWidth { labelWidth = min(w, 130) }
+                                    }
+                            }
+                        bars(row, scale: scale)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            ForEach(Array(row.values.enumerated()), id: \.offset) { _, v in
+                                Text(v.map { facts.text($0) } ?? "–").font(.system(size: font).monospacedDigit())
+                                    .lineLimit(1).fixedSize()
+                            }
+                        }
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { w in
+                            if w > valueWidth { valueWidth = w }
+                        }
+                        .frame(width: valueWidth > 0 ? valueWidth : nil, alignment: .trailing)
+                    }
+                    .rowAccessibility(row, facts: facts)
                 }
             }
-            .chartXSelection(value: $selected)
-            .modifier(OneSeriesTint(on: JobLook.touch && series.count == 1))
-            .chartLegend(series.count > 1 ? .visible : .hidden)
-            .frame(height: fit == .compact ? 88 : 150)
-            .onAppear { if let p = ChartPreview.selection, labels.contains(p) { selected = p } }
+        }
+    }
+
+    private func bars(_ row: ChartFacts.Row, scale: Double) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(row.values.enumerated()), id: \.offset) { s, v in
+                GeometryReader { g in
+                    Capsule()
+                        .fill((v ?? 0) < 0 ? toneColor("bad") : Self.tint(s))
+                        .frame(width: max(3, g.size.width * abs(v ?? 0) / scale), height: 8)
+                        .frame(maxHeight: .infinity)
+                }
+                .frame(height: font * 1.25)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityHidden(true)
+    }
+}
+
+private extension View {
+    /// One VoiceOver element per row: its label, then its value(s).
+    func rowAccessibility(_ row: ChartFacts.Row, facts: ChartFacts) -> some View {
+        accessibilityElement(children: .ignore)
+            .accessibilityLabel(row.label)
+            .accessibilityValue(facts.text(row))
+            .accessibilityIdentifier("chart-row")
+    }
+}
+
+/// A plot's values as a table (the "Show values" tap).
+struct ChartValueTable: View {
+    let facts: ChartFacts
+    @ScaledMetric(relativeTo: .footnote) private var font: CGFloat = 12
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(facts.rows) { row in
+                HStack(alignment: .firstTextBaseline) {
+                    Text(row.label).font(.system(size: font, weight: .medium))
+                    Spacer(minLength: 8)
+                    Text(facts.text(row)).font(.system(size: font).monospacedDigit()).multilineTextAlignment(.trailing)
+                }
+                .rowAccessibility(row, facts: facts)
+            }
+        }
+        .accessibilityIdentifier("chart-values")
+    }
+}
+
+/// The freshness line's icon sits on its first line, small.
+private struct FreshnessLabel: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            configuration.icon.imageScale(.small)
+            configuration.title
         }
     }
 }

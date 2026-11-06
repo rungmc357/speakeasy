@@ -103,3 +103,25 @@ def test_task_prompt_never_offers_a_progress_card_for_counts():
     from speakeasy.prompt import builder as P
     assert "progress {" not in P.VIEWS_RULE
     assert "never draw a progress bar" in P.VIEWS_RULE and "unit once" in P.VIEWS_RULE
+
+def test_chart_keeps_metric_order_and_freshness_fields():
+    raw = {"kind": "chart", "title": "Five large stocks", "style": "bar", "unit": "$",
+           "labels": ["AAA", "BBB"], "series": [{"name": "Share price", "values": [120.5, 98]}],
+           "metric": "Share price", "sort": "High-First", "order_by": "index weight",
+           "source": "Example Exchange", "as_of": "2026-11-06T15:42:00-05:00", "delayed": True}
+    view = views.clean(raw)
+    assert view["metric"] == "Share price" and view["sort"] == "high_first" and view["order_by"] == "index weight"
+    assert view["source"] == "Example Exchange" and view["as_of"].startswith("2026-11-06") and view["delayed"] is True
+
+
+def test_chart_drops_an_unknown_sort_and_never_adds_freshness():
+    view = views.clean({"kind": "chart", "title": "Runs", "labels": ["Mon"], "series": [{"values": [3]}], "sort": "by vibes"})
+    assert "sort" not in view
+    assert not {"source", "as_of", "delayed"} & set(view)
+
+
+def test_views_rule_asks_charts_for_metric_order_and_real_freshness_only():
+    from speakeasy.prompt import builder as P
+    rule = P.VIEWS_RULE
+    assert "metric" in rule and "high_first|low_first|as_listed" in rule and "order_by" in rule
+    assert "source/as_of only from the data, never guessed" in rule

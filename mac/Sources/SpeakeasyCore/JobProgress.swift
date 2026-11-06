@@ -116,12 +116,8 @@ public enum CardText {
         if let t = c["title"].string ?? c["name"].string ?? c["place"].string { lines.append(t) }
         switch c.kind {
         case "chart":
-            let labels = c["labels"].strings
-            for s in c["series"].array {
-                let vals = s["values"].doubles
-                let pairs = zip(labels, vals).map { "\($0): \(number($1))" }
-                lines.append(([s["name"].string].compactMap { $0 } + [pairs.joined(separator: ", ")]).joined(separator: " — "))
-            }
+            // Title, what's plotted and its order, every value in drawn order, then freshness.
+            return ChartFacts(c).plainText
         case "stats", "nutrition":
             for i in c["items"].array { lines.append("\(i["label"].string ?? ""): \(i["value"].string ?? "")") }
         case "list", "steps":

@@ -84,7 +84,10 @@ CATALOG: dict[str, dict[str, Any]] = {
     "list": {"title": S, "items": ({"text": S, "done": B, "detail": S, "url": URL}, 20)},
     "steps": {"title": S, "items": (S, 12)},
     "stats": {"title": S, "items": ({"label": S, "value": S, "delta": S, "good": B}, 8)},
-    "chart": {"title": S, "style": S, "unit": S, "labels": (S, 60), "series": ({"name": S, "values": (N, 60)}, 4)},
+    # metric: what the numbers are; sort: high_first | low_first | as_listed (order_by names what
+    # decided a listed order); source / as_of / delayed only when the data says so (never guessed).
+    "chart": {"title": S, "style": S, "unit": S, "labels": (S, 60), "series": ({"name": S, "values": (N, 60)}, 4),
+              "metric": S, "sort": S, "order_by": S, "source": S, "as_of": S, "delayed": B},
     "progress": {"label": S, "value": N, "total": N, "unit": S, "detail": S},
     "news": {"title": S, "items": ({"headline": S, "source": S, "when": S, "url": URL, "image_url": URL}, 6)},
     # Home
@@ -106,6 +109,7 @@ CATALOG: dict[str, dict[str, Any]] = {
 }
 
 TONES = {"good", "warn", "bad", "info", "neutral"}
+CHART_SORTS = {"high_first", "low_first", "as_listed"}
 TAG_TONES = {"good", "warn", "bad", "neutral"}
 RISKS = {"low", "medium", "high"}
 OPTION = {"text": S, "detail": S, "tags": ({"text": S, "tone": S}, 4), "risk": S, "reversible": B}
@@ -310,6 +314,12 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
     for rows in ("nodes", "items"):
         if kind in ("flow", "devices") and body.get(rows):
             body[rows] = [_tone(row) for row in body[rows]]
+    if kind == "chart" and "sort" in body:
+        word = str(body["sort"]).lower().replace("-", "_")
+        if word not in CHART_SORTS:
+            body.pop("sort")
+        else:
+            body["sort"] = word
     if kind == "before_after" and not ("before" in body or "after" in body):
         return {}
     return body

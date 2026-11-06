@@ -157,7 +157,7 @@ final class UXOverhaulTests: XCTestCase {
         XCTAssertTrue(MapsLink.url(route)?.absoluteString.contains("daddr=Airport") ?? false)
         let chart = ViewCard(kind: "chart", data: ["title": "Latency", "labels": ["Mon", "Tue"],
                                                    "series": [["name": "p95", "values": [420, 180.5]]]])
-        XCTAssertEqual(CardText.plain(chart), "Latency\np95 — Mon: 420, Tue: 180.50")
+        XCTAssertEqual(CardText.plain(chart), "Latency\np95\nMon: 420.0\nTue: 180.5")
     }
 
     // MARK: Capabilities and lighter pages

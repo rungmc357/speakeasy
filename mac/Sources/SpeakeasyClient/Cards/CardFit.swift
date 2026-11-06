@@ -107,6 +107,7 @@ struct CardLine: View {
         case "places": return count(card["items"].array.count, "place", "places")
         case "calendar_day": return count(card["events"].array.count, "event", "events") ?? "Nothing scheduled"
         case "agenda": return count(card["days"].array.count, "day", "days")
+        case "chart": return ChartFacts(card).subtitle
         case "message_draft":
             return card["to"].string.map { "To \($0)" } ?? card["body"].string?.split(separator: "\n").first.map(String.init)
         default: return nil

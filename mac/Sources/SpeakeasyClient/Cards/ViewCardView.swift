@@ -77,6 +77,11 @@ struct CardAccessibility: ViewModifier {
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Question")
                 .accessibilityIdentifier("question-card")
+        } else if card.kind == "chart" {
+            // Each row (label and value) stays its own element; the card is named by its title.
+            content
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(card.summary)
         } else {
             content
                 .accessibilityElement(children: .combine)
@@ -90,8 +95,14 @@ struct CardAccessibility: ViewModifier {
 struct CardBox<Content: View>: View {
     var tint: Color? = nil
     @ViewBuilder var content: Content
+    @Environment(\.cardCloseRoom) private var closeRoom
+    /// The card's header keeps the corner clear itself (`CardHeader`); without one the whole
+    /// content keeps clear of the close button.
+    @State private var hasHeader = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) { content }
+            .onPreferenceChange(CardHeaderShown.self) { hasHeader = $0 }
+            .padding(.trailing, closeRoom > 0 && !hasHeader ? closeRoom : 0)
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
@@ -107,15 +118,37 @@ struct CardHeader: View {
     let icon: String
     let title: String
     var trailing: String? = nil
+    /// Lines the title may take (a chart's title says what is compared, so it wraps rather than cuts).
+    var lines: Int = 1
+    @Environment(\.cardCloseRoom) private var closeRoom
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
             Text(title.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.4).foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(lines).fixedSize(horizontal: false, vertical: lines > 1)
             Spacer(minLength: 0)
             if let trailing { Text(trailing).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1) }
+            // Clear of the card's close button (inside the corner, `cardCloseRoom`).
+            if closeRoom > 0 { Color.clear.frame(width: closeRoom, height: 1) }
         }
+        .preference(key: CardHeaderShown.self, value: true)
     }
+}
+
+/// Room a card keeps at its top-right corner for a close button drawn inside it (the pinned call
+/// card's ×: a 30 pt circle in a 44 pt tap area). 0: no close button.
+public struct CardCloseRoomKey: EnvironmentKey { public static let defaultValue: CGFloat = 0 }
+public extension EnvironmentValues {
+    var cardCloseRoom: CGFloat {
+        get { self[CardCloseRoomKey.self] }
+        set { self[CardCloseRoomKey.self] = newValue }
+    }
+}
+
+/// A `CardHeader` is drawn in this card (it keeps the close button's corner clear).
+struct CardHeaderShown: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }
 
 /// An https image (logo, album art, photo). Nothing loads for other schemes.
