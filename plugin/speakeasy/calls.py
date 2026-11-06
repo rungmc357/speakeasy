@@ -1478,9 +1478,8 @@ class SidebandWorker:
             # A short question names its card as asked; a long one gets a clean cut, never an ellipsis.
             whole = notice_text(question, 200) or ""
             self.store.set_title(idem, (whole if len(whole) <= 60 else short_title(question)) or "A quick choice")
-            self.store.update_run(idem, None, "completed")
-            self.store.set_result(idem, {"spoken": question, "full": f"**{question}**\n{listed}",
-                                         "question": view, "views": [view]})
+            self.store.transition(idem, "completed", result={"spoken": question, "full": f"**{question}**\n{listed}",
+                                                             "question": view, "views": [view]})
         except Exception:
             logger.warning("speakeasy: could not record the spoken choice card")
             return None
@@ -3159,11 +3158,10 @@ class SidebandWorker:
             # Named for what the house did ("Office lamp off · Bedroom lamps on"), else the ask itself.
             self.store.set_title(idem, (home_title(reply.spoken) if reply.ok else None) or short_title(request) or "Home")
             self.store.progress(idem, "request", request)
-            self.store.update_run(idem, None, backend.status)
             result = split_result(reply.spoken, ()) or {}
             if cards:
                 result["views"] = cards
-            self.store.set_result(idem, result or None)
+            self.store.transition(idem, backend.status, result=result or None)
             self.store.progress(idem, "result", reply.spoken)
             if reply.ok:
                 # "Lights off" -> "Done": heard on the call, nothing to read, so no new-answer badge.
@@ -3239,11 +3237,10 @@ class SidebandWorker:
             self.store.set_title(idem, short_title(request) or "Quick answer")
             self.retitle(idem, request)
             self.store.progress(idem, "request", request)
-            self.store.update_run(idem, None, "completed")
             result = split_result(spoken, ()) or {"spoken": spoken, "full": spoken}
             if shown:
                 result["views"] = shown
-            self.store.set_result(idem, result)
+            self.store.transition(idem, "completed", result=result)
             self.store.progress(idem, "result", spoken)
         except Exception:
             logger.warning("speakeasy: could not record the quick-answer card")
