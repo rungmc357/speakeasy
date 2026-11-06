@@ -67,7 +67,7 @@ def test_user_rows_show_only_the_persons_words(raw, shown):
     ("[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.", "note",
      H.COMPACTED),
     ("[System note: Your previous turn was interrupted mid-run.]", "hidden", ""),
-    ("# Kanban task t_abc123: Repaint the fence\n\nBody text", "note", "Kanban task: Repaint the fence"),
+    ("# Kanban task t_abc123: Repaint the fence\n\nBody text", "note", "Repaint the fence"),
 ])
 def test_scheduled_compaction_and_system_rows(raw, kind, shown):
     assert H.user_words(raw) == (kind, shown)

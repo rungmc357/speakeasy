@@ -9,6 +9,12 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Asked twice, shown once.** Tasks with the same name or the same ask fold into one line.
 - **Earlier tasks in one row.** When the page doesn't reach back far enough to show where a task was asked, a single collapsed "N tasks finished in this chat" row at the top lists them.
 
+## Plugin 0.3.37 + Mac · iPhone (next build) — Board workers in the conversation list
+
+- **Show or hide automated work.** One switch at the top of the conversation list shows or hides sessions nobody typed into: Kanban board workers and scheduled jobs. Each device remembers your choice; Kanban workers also get their own source filter.
+- **Never "unread".** Automated sessions never get the unread dot or Needs you.
+- **A board worker opens on its card.** Instead of the long instructions it was started with, a worker's chat starts with a compact header (issue number, title, a link to the issue and its one-line goal); the full instructions sit behind a collapsed Instructions row. The worker's own updates read as messages, a live line on top says what it's doing now and what it has done so far, and bookkeeping steps stay out of its work.
+
 ## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
 
 - **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.

@@ -991,6 +991,12 @@ titles and chat names; `search` says which ran (`fts`, or `like` when the index 
   these as source filters and hide the filter row when there's one source (added after plugin 0.3.33;
   older plugins don't send it and the apps fall back to the sources of the rows they've loaded).
 
+- `automated=0` hides automated work (Kanban board workers, `kanban`; scheduled jobs, `cron`) from
+  the list, the search and `sources`, unless `source` names one of them (`source=kanban`). The reply's
+  `automated: {count, hidden}` says how many automated sessions there are (the apps offer their
+  show/hide switch only when `count` > 0) and whether they were hidden. Automated rows carry
+  `automated: true` and are never `unread` or `needs_you` (added in plugin 0.3.37).
+
 - `source`: `speakeasy` for a Hermes API session one of Speakeasy's tasks ran in, else Hermes'
   source (`discord`, `telegram`, `cli`, `gui`, `cron`, …). `source_label` is ready to show
   (`Discord · #channel` when the chat name has one).
@@ -1036,6 +1042,15 @@ The conversation, oldest first, in pages of 300 rows (`has_more`; pass `before` 
 - `send_via`: which door `POST …/message` will use: `task`, `session_job` or `linked`.
 - `404 "I couldn't find that conversation."`
 
+
+- A Kanban worker's session (`automated: true`): the card it was dispatched with is a `note` entry
+  whose text is the card's heading (`"LAN-12 · Lantern wick burns too fast"`) and whose `task` is
+  `{title, issue?, url?, goal?, instructions}` (the card body for a collapsed disclosure; the skill
+  files loaded with it never show). A retry's card is a plain `"Picked up again"` note. The worker's
+  own updates (Kanban comments/completion summaries, `linear comment|status|waiting` lines it ran)
+  are `assistant` entries with `update: true`; Kanban bookkeeping calls are never tool steps.
+- `live: {now, so_far?}`: a running session without a running Speakeasy task (a Kanban worker, a
+  chat mid-turn) gets a live line from its own steps, like a task card's (SPK-32).
 ### POST /voice/history/{session_id}/message
 
 Body `{"text": "...", "source": "typed" | "voice_message", "client_id": "<uuid>", "attachments"?: [...]}` (`text` trimmed,

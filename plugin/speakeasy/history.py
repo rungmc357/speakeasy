@@ -57,10 +57,16 @@ FILTERS: dict[str, tuple[str, ...] | None] = {
     "speakeasy": None,
     "discord": ("discord",), "telegram": ("telegram",), "slack": ("slack",),
     "terminal": ("cli", "tui"), "desktop": ("gui", "local", "desktop"),
-    "scheduled": ("cron",), "api": ("api_server",),
+    "scheduled": ("cron",), "kanban": ("kanban",), "api": ("api_server",),
 }
 FILTER_LABELS = {"speakeasy": "Speakeasy", "discord": "Discord", "telegram": "Telegram", "slack": "Slack",
-                 "terminal": "Terminal", "desktop": "Desktop", "scheduled": "Scheduled", "api": "Hermes API"}
+                 "terminal": "Terminal", "desktop": "Desktop", "scheduled": "Scheduled", "kanban": "Kanban",
+                 "api": "Hermes API"}
+# Automated work: sessions nobody typed into (Kanban board workers, scheduled jobs). Listed like any
+# other unless ``?automated=0`` hides them (one switch in the apps, remembered per device); never
+# unread and never "needs you" (they belong to their board card / job, not to the person's inbox).
+AUTOMATED_SOURCES = ("kanban", "cron")
+AUTOMATED_FILTERS = ("kanban", "scheduled")
 
 # A context-compaction handoff (as a user or an assistant row): one quiet divider per page at most.
 COMPACTED = "Earlier messages were summarized"
@@ -447,6 +453,9 @@ def user_words(content: str) -> tuple[str, str]:
     the plain step the reply's work shows for it ("A helper finished") or empty."""
     if not isinstance(content, str):
         return "user", ""
+    card = _kanban_head(content)
+    if card:
+        return "note", kanban_heading(card.group(1))
     text = strip_gateway(content)
     if _COMPACTION.match(text):
         return "note", COMPACTED
@@ -468,7 +477,7 @@ def user_words(content: str) -> tuple[str, str]:
         return "hidden", ""
     card = _KANBAN_TASK.match(text.lstrip())
     if card:
-        return "note", "Kanban task: " + _one_line(card.group(1), 120)
+        return "note", kanban_heading(card.group(1))
     relayed = relayed_words(text[:TEXT_CHARS])
     if relayed is not None:
         return ("user", relayed) if relayed else ("note", "Request from Speakeasy")
@@ -480,6 +489,98 @@ def user_words(content: str) -> tuple[str, str]:
         words = _SHARED.sub("", added.group(1))
         return "user", _LOOKING_AT.sub("", words).strip()
     return "user", text
+
+
+# -- a Kanban worker's session: its card as a compact header, its updates as messages -------------
+_ISSUE_ID = re.compile(r"^\s*([A-Z][A-Z0-9]{1,9}-\d{1,6})\s*[:\-\u2013\u2014\u00b7]\s*(.+)$")
+_CARD_BODY = re.compile(r"(?m)^## Body[ \t]*$")
+_CARD_URL = re.compile(r"https://[^\s<>()\"'`]{4,300}")
+_CARD_FIELD = re.compile(r"(?m)^[ \t]*(?:Assignee|Status|Workspace|Max runtime|Terminal timeout|Tenant|Priority|Skills)\s*:.*$")
+_CARD_TAIL = re.compile(r"(?s)\n\s*work kanban task \S+\s*$")
+_ISSUE_LINE = re.compile(r"(?im)^[ \t]*(?:\w+ )?issue [A-Z][A-Z0-9]{1,9}-\d{1,6}\b.*$")
+INSTRUCTIONS_CHARS = 8000
+# Kanban lifecycle calls: bookkeeping, never a step of the work.
+KANBAN_QUIET = {"kanban_show", "kanban_heartbeat", "kanban_list", "kanban_attachments", "kanban_link"}
+# Lifecycle calls whose words are the worker's own update to the person: (tool, the argument).
+KANBAN_UPDATES = {"kanban_comment": "body", "kanban_complete": "summary", "kanban_block": "reason",
+                  "kanban_request_review": "summary"}
+# A tracker CLI update in a shell command: `linear comment|status|waiting ABC-12 "words"` (the CLI may
+# sit in a shell variable: `$L comment ABC-12 "words"`). The command stays a step of the work too.
+_TRACKER_UPDATE = re.compile(r"""(?:\blinear(?:\.py)?["']?|\$\{?[A-Za-z_]\w{0,20}\}?)\s+(?:comment|status|waiting)\s+[A-Z][A-Z0-9]{1,9}-\d{1,6}\s+"""
+                             r"""(?:"((?:[^"\\]|\\.){4,4000})"|'([^']{4,4000})')""")
+
+
+def _kanban_head(content: str) -> re.Match[str] | None:
+    """The ``# Kanban task …`` heading of a worker's dispatch prompt: at the start, or right after the
+    skill files the worker was started with (never one quoted later in a conversation)."""
+    head = _KANBAN_TASK.search(content, 0, 400) if not _SKILL_OPEN.match(content) else None
+    if head is None and _SKILL_OPEN.match(content):
+        head = _KANBAN_TASK.search(content)
+        if head is not None and _SKILL_OPEN.search(content[head.start():]):
+            head = None
+    if head is None or content[:head.start()].strip() and not _SKILL_OPEN.match(content):
+        return None
+    return head
+
+
+def kanban_heading(title: str) -> str:
+    """A Kanban card's one-line heading: "SPK-43 · Keyboard sometimes covers content"."""
+    title = _one_line(title, 160)
+    m = _ISSUE_ID.match(title)
+    return f"{m.group(1)} \u00b7 {m.group(2).strip()}" if m else title
+
+
+def kanban_card(content: str) -> dict[str, Any] | None:
+    """The card a Kanban worker was dispatched with, for a compact header: {title, issue?, url?, goal?,
+    instructions}. ``instructions`` is the card body (the brief, bases, board snapshot), redacted,
+    for a collapsed disclosure; the skill files loaded with it are never included."""
+    if not isinstance(content, str):
+        return None
+    head = _kanban_head(content)
+    if not head:
+        return None
+    title = _one_line(head.group(1), 160)
+    rest = content[head.end():]
+    body_at = _CARD_BODY.search(rest)
+    body = rest[body_at.end():] if body_at else _CARD_FIELD.sub("", rest)
+    body = _CARD_TAIL.sub("", body).strip()
+    issue = _ISSUE_ID.match(title)
+    out: dict[str, Any] = {"title": issue.group(2).strip() if issue else title}
+    if issue:
+        out["issue"] = issue.group(1)
+    url = _CARD_URL.search(body[:2000])
+    if url:
+        out["url"] = url.group(0).rstrip(".,;:")
+    goal = ""
+    for para in re.split(r"\n\s*\n", body[:6000]):
+        para = _ISSUE_LINE.sub("", _CARD_URL.sub("", para)).strip()
+        if para and not para.startswith(("#", "---", "Integration bases", "Follow the")):
+            goal = para
+            break
+    if goal:
+        first = re.split(r"(?<=[.!?])\s+", " ".join(goal.split()), maxsplit=1)[0]
+        out["goal"] = _one_line(redact_text(first), 200)
+    out["instructions"] = redact_text(body)[:INSTRUCTIONS_CHARS].strip()
+    return out
+
+
+def tracker_update(name: str, args: Any) -> str | None:
+    """The worker's own words to the person in one tool call (a Kanban comment / completion summary,
+    a tracker comment or status line run from the shell), else None."""
+    if not isinstance(args, dict):
+        return None
+    key = KANBAN_UPDATES.get(name)
+    if key:
+        text = args.get(key) or args.get("result")
+        return text.strip() if isinstance(text, str) and text.strip() else None
+    if name in {"terminal", "bash", "shell", "run_command", "exec_command"}:
+        cmd = args.get("command") or args.get("cmd")
+        m = _TRACKER_UPDATE.search(cmd) if isinstance(cmd, str) else None
+        if m:
+            text = m.group(1) if m.group(1) is not None else m.group(2)
+            text = text.replace('\\"', '"').replace("\\n", "\n").strip()
+            return text or None
+    return None
 
 
 def source_label(source: str, display_name: str | None, chat_type: str | None, speakeasy: bool) -> str:
@@ -689,7 +790,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                   speakeasy_ids: Callable[[], set[str]] = set, live: Callable[[str], bool] = lambda sid: False,
                   folded: Callable[[], dict[str, str]] = dict,
                   marks: Callable[[], dict[str, dict[str, Any]]] = dict, archived: bool = False,
-                  include_archived: bool | None = None,
+                  include_archived: bool | None = None, automated: bool = True,
                   now: float | None = None) -> dict[str, Any]:
     """``GET /voice/history``: conversations newest first, ``limit`` per page; pass ``next_cursor`` back
     as ``cursor`` for the next page.
@@ -701,7 +802,12 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
     *marks*: {session: {pinned, read_at}} (the plugin's, shared by every device): rows carry ``pinned``
     and ``unread``; the first page lists pinned rows first. *archived*: list only archived conversations
     (Hermes' own ``archived`` flag, set by any Hermes app). *include_archived*: list archived ones too,
-    marked ``archived`` (default: when searching, so an archived thread is still found)."""
+    marked ``archived`` (default: when searching, so an archived thread is still found).
+
+    *automated*: False hides automated work (``AUTOMATED_SOURCES``: Kanban workers, scheduled jobs) from
+    the list, the search and the ``sources`` facet, unless ``source`` asks for one of them by name. The
+    reply's ``automated`` says how many such sessions there are (so an app offers the switch only when
+    there is something to hide) and whether they're hidden. Automated rows are never unread or needs-you."""
     after = parse_cursor(cursor)
     now = time.time() if now is None else now
     limit = max(1, min(int(limit or PAGE), MAX_PAGE))
@@ -710,7 +816,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
     db = _open(state_db)
     if db is None:
         return {"sessions": [], "next_cursor": None, "filters": _filters(), "sources": [],
-                "search": "none" if q else None}
+                "automated": {"count": 0, "hidden": not automated}, "search": "none" if q else None}
     try:
         cols = _columns(db, "sessions")
         fold = {k: v for k, v in (folded() or {}).items() if k != v and SAFE_ID_RE.fullmatch(k) and SAFE_ID_RE.fullmatch(v)}
@@ -741,6 +847,12 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             params += list(fold)
         mine = speakeasy_ids()
         sources = _source_counts(db, where, params, mine)
+        auto = {"count": sum(c["count"] for c in sources if c["source"] in AUTOMATED_FILTERS), "hidden": not automated}
+        if not automated:
+            sources = [c for c in sources if c["source"] not in AUTOMATED_FILTERS]
+            if source not in AUTOMATED_FILTERS:
+                where.append(f"s.source NOT IN ({','.join('?' * len(AUTOMATED_SOURCES))})")
+                params += list(AUTOMATED_SOURCES)
         if source == "speakeasy":
             ids = sorted(mine | set())
             where.append(f"(s.id LIKE '{SPEAKEASY_PREFIX}%'" + (f" OR s.id IN ({','.join('?' * len(ids))}))" if ids else ")"))
@@ -767,7 +879,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
                 snippets.setdefault(tip, hits.get(sid, ""))
             if not snippets:
                 return {"sessions": [], "next_cursor": None, "filters": _filters(), "sources": sources,
-                        "search": search_kind}
+                        "automated": auto, "search": search_kind}
             where.append(f"s.id IN ({','.join('?' * len(snippets))})")
             params += list(snippets)
         if after is not None:
@@ -804,21 +916,25 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             speakeasy = bool(link and link.keys) or sid.startswith(SPEAKEASY_PREFIX)
             preview, first = _preview(db, sid)
             running = bool(link and link.running) or live(sid) or (link is None and _pending_turn(db, sid, now))
+            automated_row = row["source"] in AUTOMATED_SOURCES and not speakeasy
             entry: dict[str, Any] = {
                 "id": sid, "title": (link.name if link and link.name and not (row["title"] or "").strip() else None)
                 or _title_from(row, first),
                 "source": "speakeasy" if speakeasy else row["source"],
                 "source_label": source_label(row["source"], row["display_name"], row["chat_type"], speakeasy),
                 "last_activity": round(float(row["last"] or 0), 3), "preview": preview,
-                "state": "needs_you" if link and link.needs_you else ("running" if running else "idle"),
+                "state": "needs_you" if link and link.needs_you and not automated_row else ("running" if running else "idle"),
             }
+            if automated_row:
+                entry["automated"] = True
             mark = marked.get(sid) or {}
             if row["pin"]:
                 entry["pinned"] = True
             if archived or row["arch"]:
                 entry["archived"] = True
             read_at = mark.get("read_at")
-            if read_at is not None and float(row["last"] or 0) > float(read_at) + 1 and entry["state"] != "running":
+            if (read_at is not None and float(row["last"] or 0) > float(read_at) + 1 and entry["state"] != "running"
+                    and not automated_row):
                 entry["unread"] = True
             if link and link.run_ids:
                 entry["run_ids"] = link.run_ids[:5]
@@ -827,7 +943,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             out.append(entry)
         next_cursor = f"{float(tail['last'] or 0)!r}|{tail['id']}" if tail is not None else None
         return {"sessions": out, "next_cursor": next_cursor, "filters": _filters(), "sources": sources,
-                "search": search_kind}
+                "automated": auto, "search": search_kind}
     except sqlite3.Error as exc:
         logger.warning("speakeasy: history list failed (%s)", type(exc).__name__)
         raise HistoryError(502, "I couldn't read the Hermes history.") from None
@@ -945,6 +1061,9 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
     # the reply it fed (the next tool group, or a small one right before an answer with no tools).
     pending: list[tuple[str, float | None, int]] = []
     compacted = False
+    quiet: set[str] = set()          # lifecycle/update calls: never steps (their results neither)
+    updates_seen: set[str] = set()   # one update per text (a status line re-posted as is)
+    card_seen = False
 
     def flush() -> None:
         nonlocal tracker, group_id
@@ -1004,6 +1123,18 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
                     args = raw
                 from .threads import _arg_preview
                 cid = call.get("id") or call.get("call_id")
+                said = tracker_update(name, args)
+                if said and said not in updates_seen:
+                    updates_seen.add(said)
+                    flush()
+                    fold_pending()
+                    flush()
+                    entries.append({"kind": "assistant", "id": f"m{row['id']}-u{len(entries)}", "at": at,
+                                    "text": redact_text(assistant_text(said)), "update": True})
+                if name in KANBAN_QUIET or name in KANBAN_UPDATES:
+                    if isinstance(cid, str) and cid:
+                        quiet.add(cid)
+                    continue
                 fold_pending()
                 if tracker is None:
                     tracker, group_id = A.JobActivity(), row["id"]
@@ -1014,7 +1145,7 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
                 tracker.observe(event, now=at)
         elif role == "tool":
             name = row["tool_name"] or names.get(row["tool_call_id"] or "") or ""
-            if tracker is None or not name:
+            if tracker is None or not name or (row["tool_call_id"] or "") in quiet or name in KANBAN_QUIET:
                 continue
             from .threads import TOOL_RESULT_CHARS, _tool_failed
             event = {"event": "tool.completed", "tool": name, "preview": content[:TOOL_RESULT_CHARS],
@@ -1035,6 +1166,12 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
             elif text.strip():
                 entry: dict[str, Any] = {"kind": kind, "id": f"m{row['id']}", "at": at,
                                          "text": redact_text(text) if kind == "user" else text}
+                card = kanban_card(content) if kind == "note" else None
+                if card and card_seen:
+                    entry["text"] = "Picked up again"   # a retry's dispatch: the header shows once
+                elif card:
+                    entry["task"] = card
+                    card_seen = True
                 quote = reply_quote(content) if kind == "user" else None
                 if quote:
                     entry["reply_to"] = quote
@@ -1049,6 +1186,47 @@ def build_entries(rows: list[Any]) -> list[dict[str, Any]]:
             entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(assistant_text(content))})
     flush()
     return dedupe_entries(entries)
+
+
+# A raw shell command in a step's words ("Running cd app && make"): never a live line.
+_SHELLISH = re.compile(r"&&|;|(?:^|\s)--?[A-Za-z]|=|^Running (?:cd|git|python3?|nice|env|ls|grep|sed|cat|rm|mkdir)\b")
+
+
+def session_live(state_db: Path, session_id: str, entries: list[dict[str, Any]],
+                 now: float | None = None) -> dict[str, str] | None:
+    """A running session's live line without a Speakeasy task (a Kanban worker, a chat mid-turn):
+    {now, so_far?} from its real steps (``live_status.deterministic``), or None when no turn is under way."""
+    from . import live_status
+    now = time.time() if now is None else now
+    db = _open(state_db)
+    if db is None:
+        return None
+    try:
+        tip = _tips(db, {session_id}).get(session_id, session_id)
+        if not _pending_turn(db, tip, now):
+            return None
+        started = db.execute("SELECT min(timestamp) FROM messages WHERE session_id=?", (tip,)).fetchone()[0]
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
+    items = [i for e in entries if e.get("kind") == "tools" for i in (e.get("items") or [])]
+    line = live_status.deterministic({"items": items[-200:]}, now=now,
+                                     started=float(started) if isinstance(started, (int, float)) else None)
+    said = next((e for e in reversed(entries) if e.get("kind") in ("assistant", "user", "note")), None)
+    if (said and said.get("kind") == "assistant" and not said.get("update") and isinstance(said.get("at"), (int, float))
+            and now - float(said["at"]) <= live_status.WINDOW_S and (not line or line.get("source") != "idle")):
+        # What the worker just said it's doing ("Fixing the test.") beats "Running a command".
+        first = re.split(r"(?<=[.!?])\s+", " ".join(_MD_MARKS.sub("", said.get("text") or "").split()), maxsplit=1)[0]
+        mine = live_status._clean(first.rstrip("."), live_status.NOW_CHARS)
+        if mine:
+            line = {**(line or {}), "now": mine}
+    if not line or not line.get("now"):
+        return None
+    now_line = (None if _SHELLISH.search(str(line["now"])) else live_status._clean(line["now"], live_status.NOW_CHARS)) or (
+        "Running a command" if str(line["now"]).startswith("Running") else "Working on it")
+    so_far = live_status._clean(line.get("so_far"), live_status.SO_FAR_CHARS) if line.get("so_far") else None
+    return {"now": now_line, **({"so_far": so_far} if so_far else {})}
 
 
 def _norm(text: str) -> str:
