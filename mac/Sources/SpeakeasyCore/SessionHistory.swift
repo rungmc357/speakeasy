@@ -365,6 +365,12 @@ public struct HistoryConversation: Equatable, Sendable {
     public var live: HistoryLive?
     /// A board worker's card (the first entry's), for the page's header.
     public var card: HistoryWorkerTask? { entries.first(where: { $0.card != nil })?.card }
+    /// Messages held until the running task finishes, oldest first (servers with `message_modes`).
+    public var queued: [QueuedMessage] = []
+    /// What became of messages steered into its running tasks (sent / waiting / seen / follow_up / unused).
+    public var steered: [SteeredMessage] = []
+    /// The server can steer or queue (the page lists `queued`, even empty): the composer offers the choice.
+    public var messageModes = false
 
     public init(id: String, title: String, source: String, sourceLabel: String, state: HistorySession.State = .idle,
                 sendVia: SendVia = .linked, entries: [HistoryEntry] = [], hasMore: Bool = false, before: Int? = nil,
@@ -394,7 +400,15 @@ public struct HistoryConversation: Equatable, Sendable {
         automated = o["automated"] as? Bool ?? false
         live = HistoryLive(json: o["live"])
         if automated && state == .needsYou { state = .running }
+        if let held = o["queued"] as? [Any] {
+            messageModes = true
+            queued = held.compactMap(QueuedMessage.init(json:))
+        }
+        steered = (o["steered"] as? [Any] ?? []).compactMap(SteeredMessage.init(json:))
     }
+
+    /// The composer offers Steer now / When it's done: the server can, and a run is active.
+    public var offersMessageModes: Bool { messageModes && isWorking }
 
     /// The jobs whose question (a decision card) waits on the user, as the plugin decides it
     /// (`question_open`; answered, dismissed or moved on anywhere, superseded or a repeat of an
@@ -437,13 +451,17 @@ public struct HistoryMessageRequest: Equatable, Sendable {
     /// Servers with `question_actions`: the run id of the task whose question this answers (a
     /// decision card's button or its "Reply…"); delivered to that task even when a newer one exists.
     public var answers: String?
+    /// Servers with `message_modes`, while a run is active: steer or queue (nil = not sent; a steer).
+    public var mode: MessageMode?
 
     public init?(sessionID: String, text: String, source: Source = .typed, clientID: String = UUID().uuidString,
-                 attachments: [String] = [], choice: ModelChoice? = nil, answers: String? = nil) {
+                 attachments: [String] = [], choice: ModelChoice? = nil, answers: String? = nil,
+                 mode: MessageMode? = nil) {
         let clean = TaskMessageRequest.clean(text)
         guard clean != nil || !attachments.isEmpty else { return nil }
         self.sessionID = sessionID; self.text = clean ?? ""; self.source = source; self.clientID = clientID
         self.attachments = attachments; self.choice = choice; self.answers = answers
+        self.mode = mode
     }
 
     public var path: String { HistoryConversation.path(sessionID) + "/message" }
@@ -452,6 +470,7 @@ public struct HistoryMessageRequest: Equatable, Sendable {
         if !attachments.isEmpty { out["attachments"] = attachments }
         if let answers, !answers.isEmpty { out["answers"] = answers }
         if let choice, !choice.isEmpty { out.merge(choice.body()) { _, new in new } }
+        if let mode { out["mode"] = mode.rawValue }
         return out
     }
 }
@@ -460,15 +479,22 @@ public struct HistoryMessageReply: Equatable, Sendable {
     public var via: HistoryConversation.SendVia
     /// The task to follow like a job.
     public var runID: String?
+    /// How it went: `steer`, `answer`, `follow_up`, or `queued` (held until the task finishes).
+    public var deliveredAs: TaskMessageDelivery
+    /// A queued message: 1 = sent next.
+    public var queuePosition: Int?
 
-    public init(via: HistoryConversation.SendVia, runID: String?) {
-        self.via = via; self.runID = runID
+    public init(via: HistoryConversation.SendVia, runID: String?, deliveredAs: TaskMessageDelivery = .unknown,
+                queuePosition: Int? = nil) {
+        self.via = via; self.runID = runID; self.deliveredAs = deliveredAs; self.queuePosition = queuePosition
     }
 
     public init?(json: Any?) {
         guard let o = json as? [String: Any], o["ok"] as? Bool == true,
               let via = (o["via"] as? String).flatMap(HistoryConversation.SendVia.init(rawValue:)) else { return nil }
-        self.init(via: via, runID: nonEmpty(o["run_id"]))
+        self.init(via: via, runID: nonEmpty(o["run_id"]),
+                  deliveredAs: (o["delivered_as"] as? String).flatMap(TaskMessageDelivery.init(rawValue:)) ?? .unknown,
+                  queuePosition: (o["queue_position"] as? NSNumber)?.intValue)
     }
 }
 

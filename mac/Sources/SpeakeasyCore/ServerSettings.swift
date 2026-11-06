@@ -889,6 +889,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var schedules: Bool = false
     /// Sign in to ChatGPT from the app (`/voice/codex/login`, CodexLogin.swift).
     public var codexLogin: Bool = false
+    /// Steer a running task or queue a message for when it's done (`mode`, docs/API.md "Steer or queue").
+    public var messageModes: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -904,6 +906,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login"
+        case messageModes = "message_modes"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -920,5 +923,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         modelChoice = (try? c.decodeIfPresent(Bool.self, forKey: .modelChoice)) ?? false
         schedules = (try? c.decodeIfPresent(Bool.self, forKey: .schedules)) ?? false
         codexLogin = (try? c.decodeIfPresent(Bool.self, forKey: .codexLogin)) ?? false
+        messageModes = (try? c.decodeIfPresent(Bool.self, forKey: .messageModes)) ?? false
     }
 }

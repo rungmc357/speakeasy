@@ -500,6 +500,16 @@ public final class ServerClient: @unchecked Sendable {
         return parsed
     }
 
+    /// Cancel a message the server holds for when the session's task finishes (`message_modes`).
+    public func cancelQueued(sessionID: String, clientID: String) async throws {
+        _ = try await json(QueuedMessage.path(session: sessionID, clientID: clientID), method: "DELETE")
+    }
+
+    /// Send a held message now, as a steer (`message_modes`).
+    public func steerQueued(sessionID: String, clientID: String) async throws -> TaskMessageReply? {
+        TaskMessageReply(json: try await post(QueuedMessage.path(session: sessionID, clientID: clientID) + "/steer", [:]))
+    }
+
     /// Answer the approval one of the session's Speakeasy tasks waits on (`once`, `session`, `deny`).
     public func answerSessionApproval(sessionID: String, runID: String, choice: String) async throws {
         _ = try await post(HistoryConversation.path(sessionID) + "/approval", ["run_id": runID, "choice": choice])

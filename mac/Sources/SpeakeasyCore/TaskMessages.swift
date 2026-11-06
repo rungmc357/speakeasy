@@ -17,7 +17,58 @@ public enum TaskMessageDelivery: String, Equatable, Sendable {
     case answer
     /// The job had finished: a linked follow-up job started.
     case followUp = "follow_up"
+    /// Held until the job finishes ("Send when it's done", servers with `message_modes`).
+    case queued
     case unknown
+}
+
+/// Steer a running task now, or hold the message for its next turn (`mode` on both message routes,
+/// servers with `message_modes`; docs/API.md "Steer or queue"). Only offered while a run is active.
+public enum MessageMode: String, Equatable, Sendable, CaseIterable {
+    /// Into the running turn now (the default, and what older servers always do).
+    case steer
+    /// Held by Speakeasy and sent as the next turn once the task completes or fails.
+    case queue
+
+    public var other: MessageMode { self == .steer ? .queue : .steer }
+    /// The choice's short label (the composer's toggle).
+    public var label: String { self == .steer ? "Steer now" : "When it's done" }
+    /// One line on what it does (the toggle's accessibility hint / tooltip).
+    public var hint: String {
+        self == .steer ? "Goes into the task now." : "Sends next, when this finishes."
+    }
+}
+
+/// A message the server holds until its task finishes (`queued` on a session page or task).
+public struct QueuedMessage: Equatable, Sendable, Identifiable {
+    public var clientID: String
+    public var text: String
+    public var at: Date?
+    public var position: Int
+    /// A send was tried and failed; it is tried again.
+    public var error: String?
+    public var id: String { clientID }
+    public init(clientID: String, text: String, at: Date? = nil, position: Int = 1, error: String? = nil) {
+        self.clientID = clientID; self.text = text; self.at = at; self.position = position; self.error = error
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = o["client_id"] as? String, !id.isEmpty,
+              let text = o["text"] as? String else { return nil }
+        self.init(clientID: id, text: text, at: (o["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
+                  position: (o["position"] as? NSNumber)?.intValue ?? 1, error: o["error"] as? String)
+    }
+    public static let label = "Queued · sends when this finishes"
+
+    /// The path under a session page (`DELETE` cancels, `POST …/steer` sends it now).
+    public static func path(session sessionID: String, clientID: String) -> String {
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        return HistoryConversation.path(sessionID) + "/queued/" + (clientID.addingPercentEncoding(withAllowedCharacters: allowed) ?? clientID)
+    }
+    public static func path(run runID: String, clientID: String) -> String {
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        return "/voice/work/\(runID.addingPercentEncoding(withAllowedCharacters: allowed) ?? runID)/queued/"
+            + (clientID.addingPercentEncoding(withAllowedCharacters: allowed) ?? clientID)
+    }
 }
 
 /// `POST /voice/work/{run_id}/message`.
@@ -34,11 +85,15 @@ public struct TaskMessageRequest: Equatable, Sendable {
     /// Ids of pictures and files this device staged (`POST /voice/attachments`, servers with
     /// `attachments`), at most `AttachmentPolicy.maxAttachments`. With any, `text` may be empty.
     public var attachments: [String]
+    /// Servers with `message_modes`: steer or queue (nil = not sent; the server steers).
+    public var mode: MessageMode?
 
     public init(runID: String, text: String, source: TaskMessageSource = .typed, clientID: String = UUID().uuidString,
-                interactionID: String? = nil, choiceTaskID: String? = nil, attachments: [String] = []) {
+                interactionID: String? = nil, choiceTaskID: String? = nil, attachments: [String] = [],
+                mode: MessageMode? = nil) {
         self.runID = runID; self.text = text; self.source = source; self.clientID = clientID
         self.interactionID = interactionID; self.choiceTaskID = choiceTaskID; self.attachments = attachments
+        self.mode = mode
     }
 
     /// The text as it is sent: trimmed, at most 4000 characters; nil when there's nothing to send.
@@ -57,6 +112,7 @@ public struct TaskMessageRequest: Equatable, Sendable {
         if let interactionID { b["interaction_id"] = interactionID }
         if let choiceTaskID { b["choice_task_id"] = choiceTaskID }
         if !attachments.isEmpty { b["attachments"] = attachments }
+        if let mode { b["mode"] = mode.rawValue }
         return b
     }
 }
@@ -65,11 +121,16 @@ public struct TaskMessageRequest: Equatable, Sendable {
 public struct TaskMessageReply: Equatable, Sendable {
     public var runID: String?
     public var deliveredAs: TaskMessageDelivery
-    public init(runID: String?, deliveredAs: TaskMessageDelivery) { self.runID = runID; self.deliveredAs = deliveredAs }
+    /// A queued message: 1 = sent next.
+    public var queuePosition: Int?
+    public init(runID: String?, deliveredAs: TaskMessageDelivery, queuePosition: Int? = nil) {
+        self.runID = runID; self.deliveredAs = deliveredAs; self.queuePosition = queuePosition
+    }
     public init?(json: [String: Any]) {
         guard json["ok"] as? Bool != false else { return nil }
         runID = json["run_id"] as? String
         deliveredAs = (json["delivered_as"] as? String).flatMap(TaskMessageDelivery.init(rawValue:)) ?? .unknown
+        queuePosition = (json["queue_position"] as? NSNumber)?.intValue
     }
 }
 

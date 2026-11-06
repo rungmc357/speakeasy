@@ -113,6 +113,15 @@ CAPABILITIES["codex_login"] = True
 # Decision cards: POST /voice/tasks/{run_id}/question/{dismiss|undo}, history messages may name the
 # question they answer ("answers": run_id), and work carries question_closed (dismissed | moved_on).
 CAPABILITIES["question_actions"] = True
+# mode "steer" | "queue" on POST /voice/work/{id}/message and /voice/history/{id}/message: a message to a
+# running task goes into it now (steer, the default) or waits and is sent as the next turn once it is done
+# (queue). Session pages and tasks list held messages (``queued``); DELETE cancels one, .../steer sends it now.
+CAPABILITIES["message_modes"] = True
+# A task can take a queued message while it is in one of these (else the message is simply sent).
+QUEUE_BEHIND = ACTIVE_RUN_STATES - {"cancel_requested"}
+QUEUE_SENDS_AFTER = {"completed", "failed"}  # a stopped task keeps its queue (shown; Steer now or Cancel)
+STEER_WAITING_AFTER_S = 60  # a steered message not read by then: "Waiting for the current step to finish"
+STEER_UNREAD_GRACE_S = 8    # a finished task with no receipt for it this long after: it was never read
 
 
 
@@ -309,6 +318,11 @@ class VoiceService(SecureInputMixin):
         self._message_replies: dict[str, tuple[float, threading.Event, dict[str, Any] | None]] = {}
         self._message_lock = threading.Lock()
         self._text_worker: Any = None
+        # Messages sent "when it's done" (mode queue): held in the store, sent when the task they wait
+        # on completes or fails (docs/API.md "Steer or queue"). One drain at a time.
+        self._drain_lock = threading.Lock()
+        self.store.settle_listeners.append(self._queue_settled)
+        self.store.follow_up_listeners.append(self._follow_up_settled)
         # Device-wide live changes to the history (GET /voice/history/events): every client's list,
         # session page, board, widgets and Live Activity refresh within ~1-2 s of a change anywhere.
         self.history_events = HistoryEvents(self._history_stamp)
@@ -902,6 +916,7 @@ class VoiceService(SecureInputMixin):
     def _idle_loop(self) -> None:
         ticks = 0
         self.settle_stuck_tasks()
+        self._drain_quietly()  # held messages from before a reload
         self._check_image_support_soon()
         self.prune_shared()
         next_image_check = time.monotonic() + IMAGE_SUPPORT_EVERY_S
@@ -911,6 +926,7 @@ class VoiceService(SecureInputMixin):
             except Exception as exc:
                 logger.warning("speakeasy: idle check failed: %s", type(exc).__name__)
             ticks += 1
+            self._drain_quietly()  # held messages whose task settled while nothing was listening
             if ticks % 4 == 0:  # about once a minute
                 self.settle_stuck_tasks()
                 self.expire_staged()
@@ -1498,8 +1514,12 @@ class VoiceService(SecureInputMixin):
         if not ID_RE.fullmatch(run_id):
             raise ServiceError(404, "not found")
         # One task by id: its whole tool-call log (args and result previews), not the stream's summary.
-        return {"work": self.store.work(run_id, assistant_name=self.settings.get()["assistant_name"],
-                                        activity_detail=True)}
+        work = self.store.work(run_id, assistant_name=self.settings.get()["assistant_name"], activity_detail=True)
+        key = self.store.key_for_run(run_id) or self.store.key_for_task(run_id)
+        if work is not None and key:
+            work["queued"] = self.queued_for([key, *([work["idem_key"]] if work.get("idem_key") else [])])
+            work["steered"] = self.steered_for([key])
+        return {"work": work}
 
     # -- messages sent to one task on purpose (docs/API.md "Messages to a task") -------------------
     MESSAGE_REPLAY_S = 600
@@ -1510,8 +1530,9 @@ class VoiceService(SecureInputMixin):
         once it has finished. Idempotent on client_id. ``attachments``: ids this device staged
         (POST /voice/attachments), carried the way the Mac's panel attachments are."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "source", "client_id", "interaction_id", "choice_task_id", "attachments"}:
+                "text", "source", "client_id", "interaction_id", "choice_task_id", "attachments", "mode"}:
             raise ServiceError(400, "Send the message as text.")
+        mode = self._message_mode(body)
         text, source = body.get("text"), body.get("source") or "typed"
         client_id, interaction_id = body.get("client_id"), body.get("interaction_id")
         choice_task_id = body.get("choice_task_id")
@@ -1531,8 +1552,289 @@ class VoiceService(SecureInputMixin):
                 raise ServiceError(400, f"{name} must be an id.")
         if not ID_RE.fullmatch(run_id or ""):
             raise ServiceError(404, "I couldn't find that task.")
-        return self._once(client_id, lambda: self._with_staged(
+        if mode == "queue" and not choice_task_id:
+            held = self._queued_reply(client_id) if client_id else None
+            if held is not None:
+                return held  # the same message again (a retry, or after a reload): never held twice
+            key, row = self._message_target(run_id)
+            if row["status"] in QUEUE_BEHIND:
+                if ids:
+                    raise ServiceError(409, "Pictures and files can't wait for the task to finish. Send them "
+                                            "now, or add them when it's done.", reason="not_now")
+                return self._queue(client_id, "task", run_id, self.store.session_for(key), key, text)
+        got = self._once(client_id, lambda: self._with_staged(
             device_id, ids, lambda staged: self._task_message(run_id, text, interaction_id, choice_task_id, staged)))
+        self._note_steered(client_id, got, None, text)
+        return got
+
+    # -- steer or queue (docs/API.md "Steer or queue") ----------------------------------------------
+
+    @staticmethod
+    def _message_mode(body: dict[str, Any]) -> str:
+        mode = body.get("mode") or "steer"
+        if mode not in {"steer", "queue"}:
+            raise ServiceError(400, "mode must be steer or queue.")
+        return mode
+
+    def _queue(self, client_id: str | None, kind: str, target: str, page_session: str | None,
+               watch_key: str, text: str) -> dict[str, Any]:
+        cid = client_id or ("q_" + secrets.token_hex(8))
+        self.store.queue_message(cid, kind, target, page_session, watch_key, text)
+        logger.info("speakeasy: a typed message waits for its task to finish")
+        self.publish_all(watch_key)
+        reply = self._queued_reply(cid)
+        assert reply is not None
+        return reply
+
+    def _queued_reply(self, client_id: str) -> dict[str, Any] | None:
+        """The reply for a held message (the first send's reply, again, on a retry)."""
+        row = self.store.queued_message(client_id)
+        if row is None:
+            return None
+        run_row = self.store.run_row(row["watch_key"]) or {}
+        run_id = self.store.openable_run_id(row["watch_key"]) or run_row.get("run_id")
+        out: dict[str, Any] = {"ok": True, "run_id": run_id, "delivered_as": "queued", "client_id": client_id,
+                               "queue_position": self.store.queue_position(client_id), "queue_state": row["state"]}
+        if row["kind"] == "session":
+            out["session_id"] = row["target"]
+            out["via"] = self._send_via(row["target"])
+        if row["state"] == "sent" and row["reply"]:
+            out["sent_as"] = row["reply"].get("delivered_as")
+            out["sent_run_id"] = row["reply"].get("run_id")
+        return out
+
+    @staticmethod
+    def _queued_public(row: dict[str, Any], position: int) -> dict[str, Any]:
+        return {"client_id": row["client_id"], "text": row["text"], "at": row["created"], "position": position,
+                **({"error": "That didn't go through yet; it will be tried again."} if row.get("error") else {})}
+
+    def queued_for(self, keys: list[str], page_session: str | None = None) -> list[dict[str, Any]]:
+        """Held messages for a page: waiting on any of *keys* or sent from *page_session*, oldest first."""
+        rows = self.store.queued_messages(keys, page_session)
+        counts: dict[str, int] = {}
+        out = []
+        for row in rows:
+            counts[row["watch_key"]] = counts.get(row["watch_key"], 0) + 1
+            out.append(self._queued_public(row, counts[row["watch_key"]]))
+        return out
+
+    def cancel_queued(self, client_id: str) -> dict[str, Any]:
+        """``DELETE /voice/{work/{run_id}|history/{session_id}}/queued/{client_id}``."""
+        if not ID_RE.fullmatch(client_id or ""):
+            raise ServiceError(404, "That message isn't waiting any more.")
+        row = self.store.queued_message(client_id)
+        state = self.store.cancel_queued(client_id)
+        if state is None:
+            raise ServiceError(404, "That message isn't waiting any more.")
+        if state != "cancelled":
+            raise ServiceError(409, "That message was already sent.", reason="sent")
+        if row:
+            self.publish_all(row["watch_key"])
+        return {"ok": True, "client_id": client_id, "cancelled": True}
+
+    def steer_queued(self, client_id: str) -> dict[str, Any]:
+        """``POST /voice/{work/{run_id}|history/{session_id}}/queued/{client_id}/steer``: send a held
+        message now, the way a steer is sent (into the running task, or as the next turn if it's done)."""
+        if not ID_RE.fullmatch(client_id or ""):
+            raise ServiceError(404, "That message isn't waiting any more.")
+        row = self.store.queued_message(client_id)
+        if row is None or row["state"] == "cancelled":
+            raise ServiceError(404, "That message isn't waiting any more.")
+        if row["state"] == "sent" and row["reply"]:
+            return {**row["reply"], "client_id": client_id}  # already sent (a retry)
+        if not self.store.claim_queued(client_id):
+            raise ServiceError(409, "That message is being sent now.", reason="sending")
+        return self._send_held(row, steered=True)
+
+    def _send_held(self, row: dict[str, Any], steered: bool = False) -> dict[str, Any]:
+        """Send one claimed held message (state sending) through the normal path; sent or back in the queue."""
+        cid = row["client_id"]
+        try:
+            if row["kind"] == "session":
+                meta = H.session_meta(self.rt.state_db, row["target"])
+                if meta is None:
+                    raise ServiceError(404, "I couldn't find that conversation.")
+                got = self._history_message(meta, row["text"])
+            else:
+                got = self._task_message(row["target"], row["text"], None, None)
+        except Exception as exc:
+            self.store.release_queued(cid, type(exc).__name__)
+            self.publish_all(row["watch_key"])
+            raise
+        reply = {k: v for k, v in got.items() if k != "task"}
+        reply["client_id"] = cid
+        if steered:
+            self._note_steered(cid, got, row["page_session"], row["text"])
+        self.store.finish_queued(cid, reply)
+        new_key = self.store.key_for_run(got["run_id"]) if got.get("run_id") else None
+        if new_key and new_key != row["watch_key"]:
+            # The rest of the queue waits for the turn this one started, then goes next.
+            self.store.rewatch_queued(row["watch_key"], new_key)
+        self.publish_all(row["watch_key"])
+        if new_key:
+            self.publish_all(new_key)
+        logger.info("speakeasy: a queued message was sent (%s, %s)", "steer now" if steered else "after its task",
+                    got.get("delivered_as"))
+        return {**got, "client_id": cid}
+
+    def _queue_settled(self, key: str, status: str) -> None:
+        """store.update_run listener: a task with held messages finished; send the next one shortly
+        (off the worker's loop: sending waits on it)."""
+        if status in QUEUE_SENDS_AFTER and self.store.queued_messages([key]):
+            timer = threading.Timer(0.3, self._drain_quietly)
+            timer.daemon = True
+            timer.start()
+        elif self.store.queued_messages([key]):
+            self.publish_all(key)  # stopped: the queue stays, shown on the page
+
+    def _drain_quietly(self) -> None:
+        try:
+            self.drain_queued()
+        except Exception as exc:
+            logger.warning("speakeasy: sending a queued message failed (%s)", type(exc).__name__)
+        try:
+            self.sweep_steered()
+        except Exception as exc:
+            logger.warning("speakeasy: checking steered messages failed (%s)", type(exc).__name__)
+
+    # -- what became of a steered message (docs/API.md "Steer or queue": receipts) --------------------
+
+    def _note_steered(self, client_id: str | None, got: dict[str, Any], page_session: str | None, text: Any) -> None:
+        """A typed message went into a running task: follow it (sent -> seen | follow_up | unused)."""
+        if not client_id or not isinstance(got, dict) or got.get("delivered_as") != "steer" or not isinstance(text, str):
+            return
+        key = self.store.key_for_run(got["run_id"]) if got.get("run_id") else None
+        if key is None:
+            return
+        self.store.add_steered(client_id, key, page_session or got.get("session_id"), text.strip())
+
+    @staticmethod
+    def _paraphrase(text: str, words: int = 6) -> str:
+        parts = " ".join(str(text or "").split()).split(" ")
+        short = " ".join(parts[:words]).rstrip(".,;:!?")
+        return short + ("…" if len(parts) > words else "")
+
+    def _follow_up_settled(self, key: str, follow_up_id: str, state: str) -> None:
+        """store.settle_follow_up listener: a steered message's receipt settled."""
+        for row in self.store.steered_messages([key], states=("sent",)):
+            receipt = self.store.follow_up_receipt(key, row["text"], row["sent_at"])
+            if receipt is None or receipt["id"] != follow_up_id:
+                continue
+            if state == "landed":
+                self._steer_seen(row, receipt.get("settled"))
+            else:
+                timer = threading.Timer(0.2, self._sweep_quietly)
+                timer.daemon = True
+                timer.start()
+
+    def _sweep_quietly(self) -> None:
+        try:
+            self.sweep_steered()
+        except Exception as exc:
+            logger.warning("speakeasy: checking steered messages failed (%s)", type(exc).__name__)
+
+    def _steer_seen(self, row: dict[str, Any], at: float | None) -> None:
+        if not self.store.settle_steered(row["client_id"], "seen", seen_at=at or time.time()):
+            return
+        self.store.adjusting(row["idem_key"], "Adjusting: " + self._paraphrase(row["text"]))
+        self._steer_changed(row, "seen")
+
+    def _steer_changed(self, row: dict[str, Any], state: str) -> None:
+        events = getattr(self, "history_events", None)
+        if events is not None:
+            events.publish("message_updated", {"session_id": row.get("page_session") or self.store.session_for(row["idem_key"]),
+                                               "client_id": row["client_id"], "state": state})
+        self.publish_all(row["idem_key"])
+
+    def sweep_steered(self) -> int:
+        """Settle steered messages whose task read them, or ended without reading them (then sent again
+        as the next turn, or kept as unused when the task was stopped). Returns how many changed."""
+        changed = 0
+        now = time.time()
+        for row in self.store.steered_messages(states=("sent",), limit=200):
+            key = row["idem_key"]
+            receipt = self.store.follow_up_receipt(key, row["text"], row["sent_at"])
+            if receipt and receipt["state"] == "landed":
+                self._steer_seen(row, receipt.get("settled"))
+                changed += 1
+                continue
+            run = self.store.run_row(key) or {}
+            ended = run.get("status") in TERMINAL
+            unread = (receipt and receipt["state"] == "not_read") or (
+                ended and receipt is None and now - row["sent_at"] > STEER_UNREAD_GRACE_S)
+            if not unread or not ended:
+                continue
+            if run.get("status") not in QUEUE_SENDS_AFTER:
+                if self.store.settle_steered(row["client_id"], "unused"):
+                    self._steer_changed(row, "unused")
+                    changed += 1
+                continue
+            target = self.store.openable_run_id(key) or run.get("run_id")
+            try:
+                got = self._task_message(target, row["text"], None, None)
+            except Exception as exc:
+                logger.warning("speakeasy: a steered message the task never read could not be resent (%s)",
+                               type(exc).__name__)
+                continue
+            if self.store.settle_steered(row["client_id"], "follow_up", follow_up_run=got.get("run_id")):
+                logger.info("speakeasy: a steered message the task never read went as a follow-up")
+                self._steer_changed(row, "follow_up")
+                changed += 1
+        return changed
+
+    def steered_for(self, keys: list[str], page_session: str | None = None) -> list[dict[str, Any]]:
+        """What became of messages steered into this page's tasks, oldest first."""
+        name = self.settings.get()["assistant_name"]
+        now = time.time()
+        out = []
+        for row in self.store.steered_messages(keys, page_session):
+            state = row["state"]
+            if state == "sent":
+                run = self.store.run_row(row["idem_key"]) or {}
+                if run.get("status") in QUEUE_BEHIND and now - row["sent_at"] >= STEER_WAITING_AFTER_S:
+                    state = "waiting"
+            label = {"sent": "Sent to the running task",
+                     "waiting": "Waiting for the current step to finish",
+                     "seen": f"Seen by {name}",
+                     "follow_up": "It finished first · sent as a follow-up",
+                     "unused": "The task stopped before reading this"}[state]
+            item: dict[str, Any] = {"client_id": row["client_id"], "text": row["text"], "at": row["sent_at"],
+                                    "state": state, "label": label}
+            if row["seen_at"]:
+                item["seen_at"] = row["seen_at"]
+            if row["follow_up_run"]:
+                item["run_id"] = row["follow_up_run"]
+            out.append(item)
+        return out
+
+    def drain_queued(self) -> int:
+        """Send the next held message of every task that has completed or failed (one per task; the
+        rest wait for the turn it starts). Run on each settle and on the idle check. Returns how many went."""
+        if not self._drain_lock.acquire(blocking=False):
+            return 0
+        sent = 0
+        try:
+            done: set[str] = set()
+            for row in self.store.queued_messages():
+                watch = row["watch_key"]
+                if watch in done:
+                    continue
+                done.add(watch)
+                run = self.store.run_row(watch)
+                if run is None:
+                    continue
+                if run["status"] not in QUEUE_SENDS_AFTER:
+                    continue  # still running, or stopped (kept, shown)
+                if not self.store.claim_queued(row["client_id"]):
+                    continue
+                try:
+                    self._send_held(row)
+                    sent += 1
+                except Exception as exc:
+                    logger.warning("speakeasy: a queued message could not be sent yet (%s)", type(exc).__name__)
+        finally:
+            self._drain_lock.release()
+        return sent
 
     def _once(self, client_id: str | None, send: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         """Run ``send`` once per client_id (MESSAGE_REPLAY_S); a retry gets the first reply."""
@@ -2280,7 +2582,8 @@ class VoiceService(SecureInputMixin):
             **({"archived": True} if meta.get("archived") else {}),
             **({"pinned": True} if (self.store.session_marks().get(sid) or {}).get("pinned") else {}),
             "entries": entries, "has_more": page["has_more"], "before": page["before"],
-            "jobs": jobs, "approvals": self._session_approvals(keys), **self._session_models(sid, meta, jobs)}}
+            "jobs": jobs, "approvals": self._session_approvals(keys), **self._session_models(sid, meta, jobs),
+            "queued": self.queued_for(keys, sid), "steered": self.steered_for(keys, sid)}}
 
     @staticmethod
     def _speakeasy_owned(meta: dict[str, Any], link: H.Linked | None) -> bool:
@@ -2296,8 +2599,9 @@ class VoiceService(SecureInputMixin):
         ``attachments``: ids this device staged, claimed all or nothing and given back if the send fails
         (exactly as on /voice/work[/{id}/message])."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "client_id", "source", "attachments", "model", "reasoning", "answers"}:
+                "text", "client_id", "source", "attachments", "model", "reasoning", "answers", "mode"}:
             raise ServiceError(400, "Send the message as text.")
+        mode = self._message_mode(body)
         choice = self._body_choice(body)
         text, client_id = body.get("text"), body.get("client_id")
         if (body.get("source") or "typed") not in {"typed", "voice_message"}:
@@ -2324,13 +2628,29 @@ class VoiceService(SecureInputMixin):
         if answers is not None and (not isinstance(answers, str) or not ID_RE.fullmatch(answers)):
             raise ServiceError(400, "answers must be a task's run id.")
 
+        if mode == "queue" and not answers:
+            held = self._queued_reply(client_id) if client_id else None
+            if held is not None:
+                return held
+            busy = self._session_running_key(meta)
+            if busy is not None:
+                if ids:
+                    raise ServiceError(409, "Pictures and files can't wait for the task to finish. Send them "
+                                            "now, or add them when it's done.", reason="not_now")
+                held = self._queue(client_id, "session", meta["id"], meta["id"], busy, text)
+                if voice:
+                    self._note_voice_message(meta["id"], text)
+                return held
+
         def deliver(staged: list[A.Attachment] | None) -> dict[str, Any]:
             got = (self._answer_question(meta, answers, text, staged) if answers
                    else self._history_message(meta, text, staged))
             if voice:
                 self._note_voice_message(meta["id"], text)
             return got
-        return self._once(client_id, lambda: self._with_staged(device_id, ids, deliver))
+        got = self._once(client_id, lambda: self._with_staged(device_id, ids, deliver))
+        self._note_steered(client_id, got, meta["id"], text)
+        return got
 
     _VOICE_SAID_KEEP = 60
 
@@ -2389,6 +2709,27 @@ class VoiceService(SecureInputMixin):
         got = self._task_message(run_id, text, None, None, staged)
         return {"ok": True, "session_id": sid, "via": "answer", "run_id": got.get("run_id"),
                 "delivered_as": got.get("delivered_as") or "answer", "task": got.get("task")}
+
+    def _send_via(self, session_id: str) -> str:
+        """How a message to this session is sent (the session page's ``send_via``)."""
+        meta = H.session_meta(self.rt.state_db, session_id)
+        if meta is None:
+            return "linked"
+        link = self._linked(meta["id"])
+        if self._speakeasy_owned(meta, link) and link is not None:
+            return "task"
+        return "session_job" if meta["source"] == "api_server" else "linked"
+
+    def _session_running_key(self, meta: dict[str, Any]) -> str | None:
+        """The task a message to this session would wait on: its newest Speakeasy task still running."""
+        sid = meta["id"]
+        link = self._linked(sid)
+        keys = list(reversed(self._continuations(sid))) + (list(link.keys) if link else [])
+        for key in keys:
+            row = self.store.run_row(key)
+            if row is not None and not row["dismissed"] and row["status"] in QUEUE_BEHIND:
+                return key
+        return None
 
     def _continue_linked(self, meta: dict[str, Any], text: str,
                          staged: list[A.Attachment] | None = None) -> dict[str, Any]:

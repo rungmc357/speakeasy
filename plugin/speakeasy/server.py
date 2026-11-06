@@ -624,6 +624,11 @@ class Handler(BaseHTTPRequestHandler):
             if schedule_action:
                 self._reply(200, self.service.schedule_call(schedule_action.group(2), schedule_action.group(1)))
                 return
+            queued_steer = (re.fullmatch(rf"/voice/history/{_SESSION}/queued/{_ID}/steer", path)
+                            or re.fullmatch(rf"/voice/work/{_ID}/queued/{_ID}/steer", path))
+            if queued_steer:  # a held message, sent now (docs/API.md "Steer or queue")
+                self._reply(200, self.service.steer_queued(queued_steer.group(2)))
+                return
             history_message = re.fullmatch(rf"/voice/history/{_SESSION}/message", path)
             if history_message:
                 # By session id only: never the call router (docs/API.md "History").
@@ -750,6 +755,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/codex/login":
                 self._reply(200, self.service.codex_login_cancel())
+                return
+            queued = (re.fullmatch(rf"/voice/history/{_SESSION}/queued/{_ID}", path)
+                      or re.fullmatch(rf"/voice/work/{_ID}/queued/{_ID}", path))
+            if queued:  # cancel a held message
+                self._reply(200, self.service.cancel_queued(queued.group(2)))
                 return
             staged = re.fullmatch(rf"/voice/attachments/{_ID}", path)
             if staged:
