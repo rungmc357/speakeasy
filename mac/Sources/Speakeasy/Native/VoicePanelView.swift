@@ -1708,16 +1708,9 @@ struct WorkDetailView: View {
     }
 
     private func linkified(_ text: String) -> AttributedString {
-        var attributed = AttributedString(text)
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return attributed }
-        let ns = text as NSString
-        for match in detector.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            guard let url = match.url, let range = Range(match.range, in: text),
-                  let lower = AttributedString.Index(range.lowerBound, within: attributed),
-                  let upper = AttributedString.Index(range.upperBound, within: attributed) else { continue }
-            attributed[lower..<upper].link = url
-            attributed[lower..<upper].foregroundColor = Tokens.blue
-        }
+        // Agent text is Markdown: render it (bold, links, bullets) instead of showing the marks.
+        var attributed = AgentMarkdown.attributed(text)
+        for run in attributed.runs where run.link != nil { attributed[run.range].foregroundColor = Tokens.blue }
         return attributed
     }
 }

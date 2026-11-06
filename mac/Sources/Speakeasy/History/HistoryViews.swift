@@ -669,7 +669,7 @@ struct HistoryMessageView: View {
     }
 
     private func markdown(_ s: String) -> AttributedString {
-        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+        AgentMarkdown.attributed(s)
     }
 }
 

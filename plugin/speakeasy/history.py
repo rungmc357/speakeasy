@@ -71,7 +71,13 @@ _SYSTEM_RES = (
 # A Speakeasy task prompt: the person's words are the last "User:" line of its transcript.
 _SPEAKEASY_BRIEF = re.compile(r"Recent timestamped voice transcript|handling one task .{0,80} gave you by voice", re.S)
 _USER_LINE = re.compile(r"^(?:\[[^\]]{1,40}\]\s*)?(?:User|You)\s*:\s*(.+)$", re.M)
-_ADDED = re.compile(r"^\S+ just added to this task (?:by voice|by typing)?:?\s*(.+?)(?: Fold it into the work.*)?$", re.S)
+_ADDED = re.compile(r"^\S+ (?:just added to this task(?: by voice| by typing)?|typed to this task):?\s*(.+?)"
+                    r"(?: Fold it into the work.*)?$", re.S)
+# Hermes' wrapper around guidance sent into a running turn.
+_OUT_OF_BAND = re.compile(r"^\s*\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*|\s*\[/OUT-OF-BAND USER MESSAGE\]\s*$")
+# What Speakeasy adds after the words when something was shared: "Geo shared the picture x.jpg
+# (saved at /path). Open the images with vision_analyze. Use them to understand what they mean."
+_SHARED_TAIL = re.compile(r"\s*\S+ shared (?:the |a |an )?(?:picture|file|screenshot|photo)\b.*$", re.S)
 
 
 # -- what a message shows: never Speakeasy's own plumbing ----------------------------------------
@@ -238,9 +244,10 @@ def user_words(content: str) -> tuple[str, str]:
     if _SPEAKEASY_BRIEF.search(content[:2000]) or (len(content) > 3000 and _USER_LINE.search(content)):
         said = _USER_LINE.findall(content)
         return ("user", said[-1].strip()) if said else ("note", "Task brief from Speakeasy")
-    added = _ADDED.match(content.strip())
+    added = _ADDED.match(_OUT_OF_BAND.sub("", content).strip())
     if added:
-        return "user", _LOOKING_AT.sub("", added.group(1)).strip()
+        words = _SHARED_TAIL.sub("", _LOOKING_AT.sub("", added.group(1))).strip()
+        return ("user", words) if words else ("note", "You shared a picture")
     return "user", content
 
 

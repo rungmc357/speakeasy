@@ -3789,9 +3789,10 @@ class SidebandWorker:
                 # which it opens itself (vision_analyze, its file tools).
                 shared = await self.collect_shared(delegation_id, key)
                 items = self.save_shared(shared, key) if shared else []
-            text = (P.shared_steer_text(self.names, part.request, P.shared_block(self.names, items, attached=False))
+            typed = delegation_id.startswith(messages_mod.TYPED_PREFIX)
+            text = (P.shared_steer_text(self.names, part.request, P.shared_block(self.names, items, attached=False), typed=typed)
                     if items else P.typed_steer_text(self.names, part.request)
-                    if delegation_id.startswith(messages_mod.TYPED_PREFIX) else P.steer_text(self.names, part.request))
+                    if typed else P.steer_text(self.names, part.request))
             nameable = all(i["path"] for i in items)  # an image with no saved copy can't be pointed at
             accepted = nameable and await self.steer_follow_up(target, key, part.request, text)
             if accepted:

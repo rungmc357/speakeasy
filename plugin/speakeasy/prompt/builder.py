@@ -632,10 +632,11 @@ def stale_screen_line(at: float) -> str:
     return f"No new screenshot with this message; the last one is from {time.strftime('%H:%M', time.localtime(at))}."
 
 
-def shared_steer_text(names: Names, request: str, block: str) -> str:
+def shared_steer_text(names: Names, request: str, block: str, typed: bool = False) -> str:
     """Guidance into a running task that brings what the user shared: the saved copies are named,
     so the task opens them itself (a running task can't take new image parts)."""
-    return (f"{names.user_cap} just added to this task by voice: {request} {block} "
+    how = "typed to this task" if typed else "just added to this task by voice"
+    return (f"{names.user_cap} {how}: {request} {block} "
             "Fold it into the work you are doing; do not start over.")
 
 
