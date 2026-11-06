@@ -686,6 +686,10 @@ class Handler(BaseHTTPRequestHandler):
             if aside:
                 self._reply(200, self.service.set_aside(aside.group(1), self._body()))
                 return
+            question = re.fullmatch(rf"/voice/tasks/{_ID}/question/(dismiss|undo)", path)
+            if question:
+                self._reply(200, self.service.question_action(question.group(1), question.group(2), self._body()))
+                return
             review = re.fullmatch(rf"/voice/reviews/{_ID}/dismiss", path)
             if review:
                 self._reply(200, self.service.dismiss_review(review.group(1), self._body()))

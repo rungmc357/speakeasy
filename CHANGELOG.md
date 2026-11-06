@@ -2,6 +2,13 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Mac · iPhone (next build) · Plugin 0.3.37 — Questions that don't hang around
+
+- **Old questions clear themselves.** When the conversation moves on (you write something else, the chat gets a newer reply, or a newer task takes over), a task's open question stops waiting on you: it leaves the bottom of the page, Needs you, notifications and the Live Activity, and stays in the thread as a quiet "Question · moved on" line.
+- **Dismiss.** Every decision card has a ✕ that clears it on every device, with Undo for a few seconds. Dismissing tells the agent nothing.
+- **Reply in your own words.** "Reply…" on a decision card opens the message box for that question; what you type or say is delivered to the task as its answer.
+- **Two questions, two cards.** Questions from two separate pieces of work stay independent: answering or dismissing one leaves the other.
+
 ## Mac · iPhone (next build) — Finished tasks stay where they were asked
 
 - **No pile of Done cards.** On a session page, a finished task is one quiet line in the conversation, right after the reply to the message that asked for it ("✓ Fixed the login redirect · 9:41 PM"); tap it to jump to that reply, or to open the task's own chat when it ran in another one.
