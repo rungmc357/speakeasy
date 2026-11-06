@@ -562,6 +562,9 @@ def public_result(result: Any) -> Any:
     if not isinstance(result, dict):
         return result
     clean = {k: v for k, v in result.items() if not k.startswith("_")}
+    if isinstance(clean.get("views"), list):
+        from .views import settled_all
+        clean["views"] = settled_all(clean["views"])   # a stored result is a finished task: no progress bars
     if isinstance(clean.get("cards"), list):
         clean["cards"] = [{k: v for k, v in card.items() if k != "path"} if isinstance(card, dict) else card
                           for card in clean["cards"]]

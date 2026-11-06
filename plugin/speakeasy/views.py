@@ -225,8 +225,10 @@ def clean_actions(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
-def clean(raw: Any) -> dict[str, Any] | None:
-    """One validated view, or None for an unknown kind or an empty view."""
+def clean(raw: Any, running: bool = False) -> dict[str, Any] | None:
+    """One validated view, or None for an unknown kind or an empty view. Views are a task's answer, so
+    they belong to a finished task unless ``running`` says otherwise: a progress bar is only kept for
+    work still under way; on a finished task it becomes a plain count (``settled``)."""
     if not isinstance(raw, dict):
         return None
     kind = raw.get("kind")
@@ -236,7 +238,42 @@ def clean(raw: Any) -> dict[str, Any] | None:
     body = _tidy(kind, _object(shape, raw))
     if body and (actions := clean_actions(raw.get("actions"))):
         body["actions"] = actions
-    return {"kind": kind, **body} if body else None
+    view = {"kind": kind, **body} if body else None
+    if view is None or running:
+        return view
+    view = settled(view)
+    return view if len(view) > 1 else None
+
+
+def _count(n: float) -> str:
+    return str(int(n)) if float(n).is_integer() else f"{n:g}"
+
+
+def settled(view: dict[str, Any]) -> dict[str, Any]:
+    """A finished task's card. A progress bar means "x of y done so far" and only while the work runs;
+    a count or breakdown ("5 of 13 crashes had reports") on a done task is a fact, never a bar: the
+    label stays the title, the numbers read "5 of 13" with the unit said once, no percent. Other kinds
+    pass through; the card count never changes (card buttons are addressed by position)."""
+    if view.get("kind") != "progress":
+        return view
+    value, total = _num(view.get("value")), _num(view.get("total"))
+    fact: dict[str, Any] = {"kind": "fact"}
+    if _str(view.get("label")):
+        fact["title"] = _str(view["label"])
+    if value is not None:
+        fact["value"] = f"{_count(value)} of {_count(total)}" if total and total > 0 else _count(value)
+    if value is not None and _str(view.get("unit")):
+        fact["unit"] = _str(view["unit"])
+    if _str(view.get("detail")):
+        fact["subtitle"] = _str(view["detail"])
+    return fact
+
+
+def settled_all(views: Any) -> Any:
+    """``settled`` over a stored result's views (results saved before this kept their progress bars)."""
+    if not isinstance(views, list):
+        return views
+    return [settled(x) if isinstance(x, dict) else x for x in views]
 
 
 def _tone(row: dict[str, Any], allowed: set[str] = TONES) -> dict[str, Any]:
