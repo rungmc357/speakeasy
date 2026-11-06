@@ -123,7 +123,9 @@ _MACHINE_BLOCK = re.compile(r"(?s)\n?```speakeasy-[\w-]+[ \t]*\n.*?(?:\n```|\Z)"
 _RELAYED = re.compile(r"^\s*(?:\[[^\]\n]{1,60}\]\s*)?\[Voice(?: request)?,? from [^\]\n]{1,60}\]\s*", re.I)
 _RELAY_TAIL = re.compile(r"\n\s*\n\s*(?:Begin your reply with exactly one line|Recent voice conversation for context)", re.I)
 # The note Speakeasy adds to a request: "(Geo is looking at: Find previous sessions)", "(following up: ...)".
-_LOOKING_AT = re.compile(r"\s*\((?:[^():\n]{0,40}\bis looking at|following up)\s*:[^\n]*\)\s*$", re.I | re.M)
+# A follow-up of a follow-up nests them, cut short before any ")": "(following up: A (following up: B…".
+_LOOKING_AT = re.compile(r"\s*\((?:(?:[^():\n]{0,40}\bis looking at|following up)\s*:[^\n]*\)|following up\s*:[^\n]*)\s*$",
+                         re.I | re.M)
 # The echo line a relayed request asks for: "Voice: <the request>" first.
 _VOICE_LINE = re.compile(r"^\s*Voice:[^\n]*(?:\n+|$)")
 _STATUS = re.compile(r"(?im)^[ \t]*STATUS:[ \t]*(.+?)[ \t]*$")
@@ -517,7 +519,8 @@ def user_words(content: str) -> tuple[str, str]:
         return ("user", relayed) if relayed else ("note", "Request from Speakeasy")
     if _SPEAKEASY_BRIEF.search(text[:2000]) or (len(text) > 3000 and _USER_LINE.search(text)):
         said = _USER_LINE.findall(text)
-        return ("user", said[-1].strip()) if said else ("note", "Task brief from Speakeasy")
+        return (("user", _LOOKING_AT.sub("", said[-1]).strip() or said[-1].strip()) if said
+                else ("note", "Task brief from Speakeasy"))
     added = _ADDED.match(text.strip())
     if added:
         words = _SHARED.sub("", added.group(1))

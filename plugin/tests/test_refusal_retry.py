@@ -117,6 +117,25 @@ def test_a_resent_turn_after_a_failure_reads_as_one_message(tmp_path):
         ("user", "Which soil should I buy?"), ("assistant", "The loam blend: it drains best.")]
 
 
+def test_a_follow_up_of_a_follow_up_shows_only_the_words(tmp_path):
+    """Answering a failed task's question asks it as a follow-up of a follow-up: the notes nest and
+    are cut short before any ")". The bubble shows the words alone, and a resend folds into one."""
+    path = tmp_path / "state.db"
+    make_db(path)
+    add_session(path, "s_beds", "api_server")
+    def brief(said):
+        return ("You are Ava, handling one task Sam gave you by voice from Speakeasy on their Mac.\n\n"
+                f"Recent voice conversation:\nUser: {said}\n\nDo the task.")
+
+    nested = ("Order the loam blend (following up: Compare two soil suppliers? "
+              "(following up: Which beds need new soil this spring, the raised ones or the long")
+    add_msg(path, "s_beds", "user", brief("Order the loam blend"), at=100)
+    add_msg(path, "s_beds", "assistant", NOTICE, at=101)
+    add_msg(path, "s_beds", "user", brief(nested), at=110)
+    entries = H.session_messages(path, "s_beds")["entries"]
+    assert [(e["kind"], e["text"]) for e in entries] == [("user", "Order the loam blend")]
+
+
 def test_a_failed_turn_nothing_followed_is_a_quiet_note_not_a_reply(tmp_path):
     path = tmp_path / "state.db"
     make_db(path)
