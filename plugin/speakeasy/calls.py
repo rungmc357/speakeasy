@@ -4254,7 +4254,7 @@ class SidebandWorker:
         """A run that never got going on Hermes (or whose stream broke beyond repair): mark it failed
         with the reason Speakeasy can name, and return its failures kind (UNKNOWN when it can't name
         one). Callers pick the on-screen (reason_text) or spoken (voice_text) sentence from it."""
-        # Logged so errors.log (which the app points to for an unknown reason) has the cause.
+        # Logged so Hermes' errors.log has the cause; the app only says it stopped without a reason.
         logger.warning("speakeasy: %s failed to run on Hermes (%s: %s)", what, type(exc).__name__, str(exc)[:200])
         idem = backend.idem_key
         failed_as = failures.start_failure_kind(exc) or failures.UNKNOWN
@@ -4965,13 +4965,13 @@ class SidebandWorker:
             failed_as = None  # a failures.py kind
             if status == "failed":
                 # Hermes' error line maps to Speakeasy's own sentence; with neither a known reason nor
-                # an answer, the app points at Hermes' errors.log instead.
+                # an answer, the app says it stopped without saying why (the cause is logged below).
                 failed_as = failures.failure_kind(error) or (None if result else failures.UNKNOWN)
                 self.store.set_failure(idem, failed_as, None if failed_as in failures.REASONS else failures.failure_hint(error))
                 if failed_as in failures.REASONS:
                     logger.info("speakeasy: Hermes run %s failed (%s)", backend.run_id, failed_as)
                 else:
-                    # WARNING so it lands in errors.log, where the app sends the user for the details.
+                    # WARNING so it lands in Hermes' errors.log for whoever looks after the machine.
                     logger.warning("speakeasy: Hermes run %s failed, reason not recognized: %s", backend.run_id,
                                    str(error or "no error given")[:200])
             reason = failures.reason_text(failed_as)

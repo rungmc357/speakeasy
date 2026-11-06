@@ -131,8 +131,8 @@ def explain_run_failure(status: str, error: str) -> str:
     secrets; they are trimmed, and anything that looks like a credential is cut."""
     lowered = error.lower()
     if "credential" in lowered or "authentication" in lowered or "not logged in" in lowered or "auth" in lowered:
-        return ("Your Hermes isn't signed in to its model provider, so it couldn't write the brief. "
-                "Fix that with `hermes model`, then press Rewrite.")
+        return ("Your Hermes's AI account needs signing in again, so it couldn't write the brief. "
+                "Send /model to your Hermes to sign in, then press Rewrite.")
     if error:
         text = re.sub(r"\s+", " ", error).strip()
         text = re.sub(r"(sk-|ghp_|xox[bp]-)[A-Za-z0-9_-]+", "[hidden]", text)

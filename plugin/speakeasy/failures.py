@@ -4,7 +4,7 @@ Hermes puts the provider's one-line error on a failed run: the ``error`` field o
 ``run.failed`` event and of ``GET /v1/runs/{id}``, e.g. ``"HTTP 402: Insufficient USD or Diem
 balance"`` (its ``_summarize_api_error``, redacted before it leaves the API server). Only shapes
 known to mean one thing are mapped to a fixed sentence, like ``codex_transport.explain_codex_error``;
-the provider's own words are never stored, shown, or spoken. They stay in Hermes' errors.log.
+the provider's own words are never stored, shown, or spoken. They stay in Hermes' own log.
 """
 from __future__ import annotations
 
@@ -13,54 +13,59 @@ import urllib.error
 from pathlib import Path
 from typing import Any
 
-# kind -> (short label for the task row, what happened and what to do, for the detail and the voice)
+# kind -> (short label for the task row, what happened and what to do, for the detail and the chat
+# notice). Plain words only: never a terminal command, a file path or "the Hermes machine". When a
+# fix needs Hermes itself, it is a chat command the user sends their Hermes (/model, /restart) from
+# wherever they talk to it; the app's own buttons (Try again, Switch model) cover the rest.
 REASONS: dict[str, tuple[str, str]] = {
     "billing": ("Out of credits",
-                "Hermes's model provider is out of credits. Top up that account, or run hermes model "
-                "on the Hermes machine to switch providers."),
-    "auth": ("Provider sign-in rejected",
-             "Hermes's model provider rejected its API key or sign-in. Run hermes model on the "
-             "Hermes machine to sign in again."),
-    "rate_limit": ("Rate-limited",
-                   "Hermes's model provider is rate-limiting it. Wait a minute and try again, or run "
-                   "hermes model on the Hermes machine to switch providers."),
+                "Your Hermes's AI account is out of credits. Add credits there, or switch model in "
+                "this chat."),
+    "auth": ("Needs signing in again",
+             "Your Hermes's AI account needs signing in again. Send /model to your Hermes to sign in, "
+             "or switch model here."),
+    "rate_limit": ("Too many requests",
+                   "Your Hermes's AI account is busy (too many requests). Try again in a minute, or "
+                   "switch model."),
     # The provider's safety filter refused this request (Hermes' content_policy_blocked). Often a false
     # positive on ordinary work; the fix is a retry or another model, never the key, credits or a firewall.
     "content_refused": ("Refused by the model's safety filter",
                         "The model's safety filter refused this request. Try again, or switch model for "
                         "this chat."),
     "model_not_found": ("Model unavailable",
-                        "Hermes's model provider doesn't offer the model Hermes is set to use. Run "
-                        "hermes model on the Hermes machine to pick another."),
+                        "That AI model isn't available any more. Pick another for this chat."),
     # Speakeasy -> Hermes API server (POST /v1/runs), not the model provider. Our own messages.
-    "hermes_key": ("Hermes rejected Speakeasy's key",
-                   "Hermes's API server rejected Speakeasy's key. Restart Hermes; if that doesn't fix "
-                   "it, run hermes voice setup again."),
-    "hermes_unreachable": ("Hermes unreachable",
-                           "Speakeasy couldn't reach Hermes's API server. Restart Hermes; if that "
-                           "doesn't fix it, run hermes voice setup again."),
+    "hermes_key": ("Hermes didn't accept Speakeasy",
+                   "Your Hermes didn't accept Speakeasy's key. Send /restart to your Hermes. If that "
+                   "doesn't fix it, ask it to set up Speakeasy again."),
+    "hermes_unreachable": ("Couldn't reach your Hermes",
+                           "Speakeasy couldn't get through to your Hermes. Send /restart to your Hermes, "
+                           "then try again."),
 }
 # kind -> what the voice says. The voice never reads a command aloud (it can't be copied from speech
 # and sounds like noise), so these name the fix in words and send the user to the app, whose task
-# detail and chat notice carry the REASONS text with the command.
+# detail and chat notice carry the REASONS text.
 SPOKEN: dict[str, str] = {
-    "billing": "Hermes's model provider is out of credits. Top up that account or switch Hermes to "
-               "another provider; the steps are in the app.",
-    "auth": "Hermes's model provider rejected its sign-in, so Hermes needs to sign in to it again; "
-            "the steps are in the app.",
-    "rate_limit": "Hermes's model provider is rate-limiting it. Wait a minute and try again, or switch "
-                  "providers; the steps are in the app.",
+    "billing": "Your Hermes's AI account is out of credits. Add credits there, or switch this chat to "
+               "another model in the app.",
+    "auth": "Your Hermes's AI account needs signing in again. The steps are in the app, or you can "
+            "switch model there.",
+    "rate_limit": "Your Hermes's AI account is busy with too many requests. Try again in a minute, or "
+                  "switch model in the app.",
     "content_refused": "The model's safety filter refused that request. You can try again, or switch this "
                        "chat to another model in the app.",
-    "model_not_found": "Hermes's model provider doesn't offer the model Hermes is set to use, so it needs "
-                       "a different model; the steps are in the app.",
-    "hermes_key": "Hermes rejected Speakeasy's key. Restarting Hermes usually fixes it; if not, Speakeasy "
-                  "needs setting up again. The steps are in the app.",
-    "hermes_unreachable": "Speakeasy couldn't reach Hermes. Restarting Hermes usually fixes it; if not, "
-                          "Speakeasy needs setting up again. The steps are in the app.",
+    "model_not_found": "That AI model isn't available any more, so this chat needs another one. You can "
+                       "pick it in the app.",
+    "hermes_key": "Your Hermes didn't accept Speakeasy's key. Restarting your Hermes usually fixes it; "
+                  "the steps are in the app.",
+    "hermes_unreachable": "Speakeasy couldn't get through to your Hermes. Restarting your Hermes usually "
+                          "fixes it; the steps are in the app.",
 }
 assert set(SPOKEN) == set(REASONS)
-UNKNOWN = "unknown"  # failed with no reason Speakeasy recognizes and no answer: point at the log
+UNKNOWN = "unknown"  # failed with no reason Speakeasy recognizes and no answer
+# What an unknown failure says, on screen and spoken. No log path or "error log": the app offers Try
+# again, and the cause stays in Hermes' own log for whoever looks after the machine.
+UNKNOWN_TEXT = "Your Hermes stopped without saying why."
 
 # "HTTP 402: ..." is Hermes' own prefix; "Error code: 402 - {...}" is the OpenAI SDK's str(error),
 # which Hermes passes on when the error has no parsed body.
@@ -181,16 +186,10 @@ def start_failure_kind(exc: BaseException) -> str | None:
     return None
 
 
-def unknown_text(hermes_home: Path | None) -> str:
-    """No recognized reason: say where Hermes keeps the real one (errors.log under its home)."""
-    if hermes_home is None:
-        return "Hermes didn't say why. Its error log on the Hermes machine has the details."
-    log = Path(hermes_home) / "logs" / "errors.log"
-    try:
-        shown = "~/" + str(log.relative_to(Path.home()))
-    except ValueError:
-        shown = str(log)
-    return f"Hermes didn't say why. Its error log on the Hermes machine has the details: {shown}"
+def unknown_text(hermes_home: Path | None = None) -> str:
+    """No recognized reason: say so plainly. ``hermes_home`` is accepted for older callers and unused:
+    a log path is no use to someone on a phone."""
+    return UNKNOWN_TEXT
 
 
 def public_failure(kind: str | None, hermes_home: Path | None = None) -> dict[str, str] | None:
@@ -204,17 +203,16 @@ def public_failure(kind: str | None, hermes_home: Path | None = None) -> dict[st
 
 
 def reason_text(kind: str | None) -> str | None:
-    """The on-screen sentence for a known kind (task detail, chat notice), command included; None for
-    unknown or no kind. The voice uses voice_text instead."""
+    """The on-screen sentence for a known kind (task detail, chat notice); None for unknown or no kind.
+    The voice uses voice_text instead."""
     return REASONS[kind][1] if kind in REASONS else None
 
 
 def voice_text(kind: str | None) -> str | None:
     """What the voice says about a failed task (spoken now, or in its background notes on a later
-    call): the SPOKEN sentence, never a command, or for an unknown reason a pointer to the log
-    without its path (a file path is no use read aloud)."""
+    call): the SPOKEN sentence, never a command."""
     if kind == UNKNOWN:
-        return "Hermes didn't say why; its error log on the Hermes machine has the details."
+        return UNKNOWN_TEXT
     return SPOKEN.get(kind) if kind else None
 
 
@@ -239,7 +237,7 @@ HINT_REASONS = {
     "provider_error": "Hermes's model provider had a server error.",
     "start": "Speakeasy couldn't start it on Hermes.",
 }
-NO_REASON = "Hermes stopped with an error and didn't say why."
+NO_REASON = UNKNOWN_TEXT
 INTERRUPTED_REASON = "Speakeasy restarted while it was running, so it lost track of it."
 
 
