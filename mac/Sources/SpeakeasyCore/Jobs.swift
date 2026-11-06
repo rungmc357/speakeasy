@@ -170,15 +170,45 @@ public enum JobAnswer {
         return n > 1 ? "\(n) pictures to look at" : "Pictures to look at"
     }
 
-    /// The report's headline, else the result's label, else the first sentence of what was said.
+    /// What came of it: the report's headline, else the api's outcome headline, else the result's
+    /// label, else the first sentence of what was said that isn't an opener ("Okay, I'm dropping it.").
     public static func headline(_ info: WorkInfo) -> String? {
         if let h = info.result?.shape?.headline.trimmingCharacters(in: .whitespacesAndNewlines), !h.isEmpty { return h }
+        if let h = info.result?.headline?.trimmingCharacters(in: .whitespacesAndNewlines), !h.isEmpty { return h }
         if let l = info.result?.label?.trimmingCharacters(in: .whitespacesAndNewlines), !l.isEmpty { return l }
         guard let spoken = info.result?.spoken?.trimmingCharacters(in: .whitespacesAndNewlines), !spoken.isEmpty else { return nil }
-        var first = spoken
-        if let r = spoken.range(of: #"[.!?](\s|$)"#, options: .regularExpression) { first = String(spoken[..<r.upperBound]) }
-        first = first.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sentences = spoken.split(whereSeparator: { $0 == "\n" }).flatMap { line -> [String] in
+            var out: [String] = []
+            var rest = Substring(line)
+            while let r = rest.range(of: #"[.!?](\s|$)"#, options: .regularExpression) {
+                out.append(String(rest[..<r.upperBound]).trimmingCharacters(in: .whitespaces))
+                rest = rest[r.upperBound...]
+            }
+            let tail = rest.trimmingCharacters(in: .whitespaces)
+            if !tail.isEmpty { out.append(tail) }
+            return out
+        }
+        // Every sentence an opener or a question: no headline (the job's name stands instead).
+        guard var first = sentences.first(where: { !isOpener($0) && !$0.hasSuffix("?") }) else { return nil }
+        if let r = first.range(of: openerLead, options: [.regularExpression, .caseInsensitive]) {
+            first = String(first[r.upperBound...])
+            first = first.prefix(1).uppercased() + first.dropFirst()
+        }
         return first.count > 140 ? String(first.prefix(139)) + "…" : first
+    }
+
+    static let openerLead = #"^(?:(?:okay|ok|alright|all right|sure(?: thing)?|got it|you got it|on it|right|yes|yeah|yep|so|well|great|perfect|cool|understood|absolutely|of course|no problem|will do|done|all done|here you go)\b[\s,.!:;—–-]*)+"#
+
+    /// A sentence that only acknowledges or promises ("Okay, I'm dropping it.", "Sure thing.").
+    public static func isOpener(_ sentence: String) -> Bool {
+        var rest = sentence
+        if let r = rest.range(of: openerLead, options: [.regularExpression, .caseInsensitive]) { rest = String(rest[r.upperBound...]) }
+        rest = rest.trimmingCharacters(in: CharacterSet(charactersIn: " .!,;:-"))
+        let words = rest.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "'" && $0 != "’" })
+        if words.count < 2 { return true }
+        let promise = rest.range(of: #"^(?:i'?m|i am|i'?ll|i will|let me|let's|going to|gonna|here'?s|on it|working on|looking into|checking|starting)\b"#,
+                                 options: [.regularExpression, .caseInsensitive]) != nil
+        return promise && rest.split(separator: " ").count <= 7
     }
 
     /// Kinds a board tile can draw small, best first.

@@ -118,6 +118,9 @@ public struct WorkResult: Equatable, Sendable {
     public var shape: ResultShape?
     /// Up to four short key points (plugin `summary_points`); empty from older plugins.
     public var summaryPoints: [String] = []
+    /// What came of the task as one short fact (plugin `headline`), never the voice's opener; nil
+    /// from older plugins and on results that ask a question.
+    public var headline: String?
     public init(spoken: String?, full: String?, label: String? = nil, products: [ProductCard] = [],
                 images: [ImageCard] = [], views: [ViewCard] = []) {
         self.spoken = spoken; self.full = full; self.label = label; self.products = products; self.images = images
@@ -262,8 +265,11 @@ public struct WorkInfo: Equatable, Sendable {
     public static let terminalStatuses: Set<String> = ["completed", "failed", "cancelled", "interrupted"]
     public var isTerminal: Bool { Self.terminalStatuses.contains(status) }
 
-    /// Request text the user actually said, if the api recorded it.
-    public var request: String? { events.first { $0.kind == "request" }?.text }
+    /// Request text the user actually said: the api's `request` (kept even once the request event
+    /// has scrolled out of `events`), else the request event.
+    public var request: String? { askedText ?? events.first { $0.kind == "request" }?.text }
+    /// The api's `request` field (plugin 0.3.37+).
+    public var askedText: String?
 
     /// What the user asked, as one clean sentence (rewritten by the api); the raw speech
     /// fragment is the fallback.
@@ -301,6 +307,7 @@ public struct WorkInfo: Equatable, Sendable {
         }
         title = nonEmpty(object["title"])
         summary = nonEmpty(object["summary"])
+        askedText = nonEmpty(object["request"]).map { String($0.prefix(400)) }
         emailDrafts = EmailDraft.list(json: object["email_drafts"])
         job = JobRef(json: object["job"])
         sessionID = nonEmpty(object["session_id"])
@@ -343,6 +350,7 @@ public struct WorkInfo: Equatable, Sendable {
                                    label: nonEmpty(raw["label"]), products: products, images: images, views: views)
             value.shape = ResultShape(json: raw["shape"])
             value.summaryPoints = Array((raw["summary_points"] as? [Any] ?? []).compactMap { nonEmpty($0) }.prefix(4))
+            value.headline = nonEmpty(raw["headline"]).map { String($0.prefix(160)) }
             // Cards alone are still a result: never drop cards because the text is empty.
             result = (value.spoken == nil && value.full == nil && products.isEmpty && images.isEmpty && views.isEmpty)
                 ? nil : value
