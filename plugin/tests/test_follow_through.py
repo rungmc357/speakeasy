@@ -96,7 +96,8 @@ def test_an_answer_to_a_thread_tasks_question_reaches_its_thread(server, service
     wait_for(lambda: runner.posted)
     platform, thread_id, message = runner.posted[0]
     assert (platform, thread_id) == ("discord", "777") and "Go with the 4:15" in message
-    assert any(n.startswith("Delivered") for n in notes(worker, "session.thinking.append"))
+    # The voice's "Delivered" note follows the post.
+    wait_for(lambda: any(n.startswith("Delivered") for n in notes(worker, "session.thinking.append")))
     assert hermes.calls == []  # never a fresh task asking "what does 4:15 refer to?"
     runner.release = True
 
