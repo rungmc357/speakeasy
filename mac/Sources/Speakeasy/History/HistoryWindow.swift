@@ -448,6 +448,25 @@ enum HistoryShots {
                 box.mark("c2", .failed("Couldn't reach your Hermes."))
                 store.preview(outbox: box)
             }
+            await shot("8-voice-note") {
+                // Stop = sent: one voice note Hermes already wrote down, one still on its way, one that failed (Retry).
+                store.setSource(nil)
+                store.open("s_flaky")
+                var box = HistoryOutbox()
+                let wave = (0..<32).map { i in 0.25 + 0.6 * abs(sin(Double(i) * 0.55)) }
+                for (id, length) in [("8f0c2a1e-0000-4000-8000-000000000001", 9.0),
+                                     ("8f0c2a1e-0000-4000-8000-000000000002", 4.0),
+                                     ("8f0c2a1e-0000-4000-8000-000000000003", 6.0)] {
+                    let note = VoiceNoteRequest(target: .session("s_flaky"), audio: Data(), clientID: id, duration: length)
+                    VoiceClipStore.save(id, audio: Data([0]), meta: .init(duration: length, levels: wave))
+                    box.add(voiceNote: note, session: "s_flaky", at: Date())
+                }
+                box.heard("8f0c2a1e-0000-4000-8000-000000000001",
+                          "Also check the refund spec, it has the same five hundred millisecond wait. Then rerun the checkout tests.")
+                box.mark("8f0c2a1e-0000-4000-8000-000000000001", .sent)
+                box.mark("8f0c2a1e-0000-4000-8000-000000000003", .failed("Couldn't reach your Hermes."))
+                store.preview(outbox: box)
+            }
             await shot("9-scheduled-list") {
                 store.setCallLive(false)
                 store.preview(outbox: HistoryOutbox())

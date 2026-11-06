@@ -36,7 +36,11 @@ public enum VoiceClipStore {
     public static func save(_ id: String, audio: Data, meta: Meta) {
         guard valid(id) else { return }
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try? audio.write(to: folder.appendingPathComponent(id + ".m4a"), options: [.atomic, .completeFileProtection])
+        let url = folder.appendingPathComponent(id + ".m4a")
+        // File protection exists on iPhone/iPad only; the Mac refuses the option, so fall back to a plain write.
+        if (try? audio.write(to: url, options: [.atomic, .completeFileProtection])) == nil {
+            try? audio.write(to: url, options: .atomic)
+        }
         if let json = try? JSONEncoder().encode(meta) {
             try? json.write(to: folder.appendingPathComponent(id + ".json"), options: .atomic)
         }
