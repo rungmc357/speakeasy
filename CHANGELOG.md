@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.38 — Messages on a chat's page answer that chat
+
+Works with the current Mac and iPhone apps; no app update needed.
+
+- **A message on a chat's page goes to that chat.** On a Discord or Telegram conversation you had continued in Speakeasy before, a new message could be answered by the older Speakeasy follow-up instead, replying to its own earlier question. Now a follow-up only takes the message while it is the newest part of the conversation; once the chat has moved on, the reply starts from the chat's latest messages.
+- **Typed messages are labelled typed.** A message typed on a session page with no call no longer shows as "From a call", including ones already in your history.
+- **Tool text isn't shown as a reply.** Comments the agent posts to a tracker from the shell stay steps of the work in chats instead of appearing as its answer to you.
+
 ## Plugin 0.3.37 · Mac 0.3.20 · iPhone build 66 — Steer or queue, honest task cards, clean session chats
 
 The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.20 or iPhone build 66. The apps also read every session as a messaging thread: bubbles, day dividers and times, finished tasks as one quiet line after the reply they belong to, and the Mac opens every task in its session page.
