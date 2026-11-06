@@ -128,7 +128,8 @@ def _register_routing_task(ctx) -> None:
 
 def _register_secure_input_hook(ctx) -> None:
     """Sudo from a Speakeasy secure card is allowed once: after that tool call, Hermes' cached
-    password for the run is dropped (secure_input.after_tool_call)."""
+    password for the run is dropped (secure_input.after_tool_call). A skill's key note rides on
+    its skill_view result (secure_input.transform_tool_result)."""
     register = getattr(ctx, "register_hook", None)
     if not callable(register):
         return
@@ -137,3 +138,10 @@ def _register_secure_input_hook(ctx) -> None:
         register("post_tool_call", after_tool_call)
     except Exception as exc:
         logger.warning("speakeasy: could not register the secure input hook: %s", type(exc).__name__)
+    try:
+        # A skill's key is only asked for once the task needs it; this hook tells the agent so.
+        from . import secure_input
+        register("transform_tool_result", secure_input.transform_tool_result)
+        secure_input._ACTIVE["notes"] = True
+    except Exception as exc:
+        logger.warning("speakeasy: could not register the skill key note hook: %s", type(exc).__name__)

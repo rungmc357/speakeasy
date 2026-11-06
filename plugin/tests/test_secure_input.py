@@ -441,3 +441,213 @@ def test_real_hermes_secret_and_sudo_paths(tmp_path):
     # The card view never carried a value; stdout/stderr never printed one.
     assert FAKE_KEY not in proc.stdout.replace(f"OPENWEATHER_API_KEY={FAKE_KEY}", "") and FAKE_PASSWORD not in proc.stdout
     assert FAKE_KEY not in proc.stderr and FAKE_PASSWORD not in proc.stderr
+
+
+# -- a skill's key: asked for only when the task needs it (invented "tidepool" skill) ----------
+
+TIDE_VAR = "TIDEPOOL_API_TOKEN"
+TIDE_META = {"skill_name": "tidepool", "required_for": "Reading tide charts", "help": "Make one at tidepool.example/keys."}
+
+
+@pytest.fixture
+def wired():
+    """The bridge as a live Speakeasy job sees it: our inputs, a resolver that names job k1, and the
+    note hook registered (what plugin __init__ does)."""
+    inputs = S.SecureInputs()
+    target = _target(key="k1")
+    old = dict(S._ACTIVE)
+    S._ACTIVE.update(inputs=inputs, resolve=lambda session_key, session_id: target, notes=True)
+    yield inputs, target
+    S._ACTIVE.clear()
+    S._ACTIVE.update(old)
+
+
+def _call_in_thread(cb, *args):
+    out: dict = {}
+    t = threading.Thread(target=lambda: out.update(r=cb(*args)), daemon=True)
+    t.start()
+    return t, out
+
+
+def test_opening_a_skill_does_not_pop_the_box_and_tells_the_agent_to_use_another_way(wired):
+    inputs, target = wired
+    cb = S.secret_callback(target)
+    result = cb(TIDE_VAR, "Tidepool API token", TIDE_META)
+    assert result["skipped"] is True and result["reason"] == "deferred"
+    assert inputs.visible("dev1") == [] and inputs.visible("") == [], "no box just for loading the skill"
+    view = json.dumps({"success": True, "name": "tidepool", "setup_needed": True})
+    out = json.loads(S.transform_tool_result(tool_name="skill_view", args={"name": "tidepool"}, result=view))
+    note = out["speakeasy_note"]
+    assert TIDE_VAR in note and "another way" in note and "skill_view for tidepool again" in note
+    assert "Never ask them to say" in note
+    assert out["setup_needed"] is True and out["name"] == "tidepool"  # Hermes' own fields kept
+    # The note is delivered once.
+    assert S.transform_tool_result(tool_name="skill_view", args={"name": "tidepool"}, result=view) is None
+
+
+def test_asking_again_opens_a_box_that_names_the_skill_and_why_and_skip_lets_the_task_carry_on(wired):
+    inputs, target = wired
+    cb = S.secret_callback(target)
+    cb(TIDE_VAR, "Tidepool API token", TIDE_META)
+    inputs.take_notes(target.key)
+    t, out = _call_in_thread(cb, TIDE_VAR, "Tidepool API token", TIDE_META)
+    [card] = wait_for(lambda: inputs.visible("dev1"))
+    assert card["skill"] == "tidepool" and card["env_var"] == TIDE_VAR
+    assert card["reason"] == ("The Tidepool skill needs this key for reading tide charts. "
+                              "Your agent asked for it because this task uses that skill.")
+    assert card["skip_label"] == "Skip — the agent has another way"
+    assert inputs.answer(card["id"], "dev1", _body(action="skip")) == {"ok": True, "outcome": "skipped"}
+    t.join(5)
+    assert out["r"]["skipped"] is True
+    note = json.loads(S.transform_tool_result(tool_name="skill_view", args={}, result="{}"))["speakeasy_note"]
+    assert "skipped" in note and "Carry on with the task" in note and "don't treat the skip as a failure" in note
+    # Never asked again in this job: no box, the same carry-on note.
+    again = cb(TIDE_VAR, "Tidepool API token", TIDE_META)
+    assert again["skipped"] is True and again["reason"] == "skipped_earlier"
+    assert inputs.visible("dev1") == []
+    assert "Carry on" in json.loads(S.transform_tool_result(tool_name="skill_view", result="{}"))["speakeasy_note"]
+
+
+def test_a_key_typed_on_the_second_ask_is_saved_and_the_next_job_starts_fresh(wired, monkeypatch):
+    inputs, target = wired
+    saved: dict = {}
+    import types
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", types.SimpleNamespace(
+        save_env_value_secure=lambda name, value: saved.update({name: value}) or {"success": True, "stored_as": name}))
+    cb = S.secret_callback(target)
+    cb(TIDE_VAR, "Tidepool API token", TIDE_META)
+    t, out = _call_in_thread(cb, TIDE_VAR, "Tidepool API token", TIDE_META)
+    [card] = wait_for(lambda: inputs.visible("dev1"))
+    inputs.answer(card["id"], "dev1", _body(value=FAKE_KEY))
+    t.join(5)
+    assert out["r"]["skipped"] is False and saved == {TIDE_VAR: FAKE_KEY}
+    assert FAKE_KEY not in json.dumps(out["r"])
+    # Another job opening the same skill is deferred again (the decision is per job).
+    other = S.secret_callback(_target(key="k2"))
+    assert other(TIDE_VAR, "Tidepool API token", TIDE_META)["reason"] == "deferred"
+
+
+def test_an_unanswered_box_is_not_reopened_and_the_agent_is_told(wired):
+    inputs, target = wired
+    inputs.timeout = 0.3
+    cb = S.secret_callback(target)
+    cb(TIDE_VAR, "Tidepool API token", TIDE_META)
+    inputs.take_notes(target.key)
+    assert cb(TIDE_VAR, "Tidepool API token", TIDE_META)["skipped"] is True  # expired
+    note = json.loads(S.transform_tool_result(tool_name="skill_view", result="{}"))["speakeasy_note"]
+    assert "didn't answer" in note
+    assert cb(TIDE_VAR, "Tidepool API token", TIDE_META)["reason"] == "skipped_earlier"
+
+
+def test_without_the_note_hook_the_box_opens_as_before(wired):
+    inputs, target = wired
+    S._ACTIVE["notes"] = False  # an older Hermes with no transform_tool_result: never hide the need
+    t, out = _call_in_thread(S.secret_callback(target), TIDE_VAR, "Tidepool API token", TIDE_META)
+    [card] = wait_for(lambda: inputs.visible("dev1"))
+    inputs.answer(card["id"], "dev1", _body(action="skip"))
+    t.join(5)
+    assert out["r"]["skipped"] is True
+
+
+def test_the_note_hook_leaves_other_tools_and_other_turns_alone(wired):
+    inputs, target = wired
+    S.secret_callback(target)(TIDE_VAR, "Tidepool API token", TIDE_META)
+    assert S.transform_tool_result(tool_name="terminal", args={}, result='{"output": "ok"}') is None
+    S._ACTIVE["resolve"] = lambda session_key, session_id: None   # not a Speakeasy job
+    assert S.transform_tool_result(tool_name="skill_view", args={}, result="{}") is None
+    S._ACTIVE["resolve"] = lambda session_key, session_id: target
+    plain = S.transform_tool_result(tool_name="skill_view", args={}, result="not json")
+    assert plain.startswith("not json") and "[Speakeasy]" in plain
+
+
+def test_reason_reads_well_without_details():
+    assert S.secret_reason("") == ("A skill your agent is using needs this key. "
+                                   "Your agent asked for it because this task uses that skill.")
+    assert S.secret_reason("tide-pool_charts").startswith("The Tide pool charts skill needs this key.")
+
+
+def test_plugin_registers_the_note_hook():
+    import speakeasy
+    hooks: dict = {}
+
+    class Ctx:
+        def register_hook(self, name, fn):
+            hooks[name] = fn
+    old = S._ACTIVE.get("notes")
+    try:
+        S._ACTIVE["notes"] = False
+        speakeasy._register_secure_input_hook(Ctx())
+        assert hooks["transform_tool_result"] is S.transform_tool_result and S._ACTIVE["notes"] is True
+        assert hooks["post_tool_call"] is S.after_tool_call
+    finally:
+        S._ACTIVE["notes"] = old
+
+
+_SKILL_SCRIPT = textwrap.dedent(r'''
+    import json, os, sys, threading, time
+    sys.path.insert(0, os.environ["PLUGIN_DIR"]); sys.path.append(os.environ["HERMES_AGENT"])
+    from speakeasy import secure_input as S
+    from gateway.session_context import set_session_vars
+    inputs = S.SecureInputs()
+    target = S.Target(key="k1", run_id="run_live", session_id="s1", title="Tide times", device_id="")
+    S.install(inputs, lambda session_key, session_id: target if session_key == "run_live" else None)
+    S._ACTIVE["notes"] = True
+    set_session_vars(platform="api_server", session_key="run_live", session_id="s1")
+    from tools.skills_tool import skill_view
+
+    def view():
+        raw = skill_view("tidepool")
+        return json.loads(S.transform_tool_result(tool_name="skill_view", args={"name": "tidepool"}, result=raw) or raw)
+
+    first = view()
+    print("FIRST", json.dumps({"boxes": len(inputs.visible("")), "note": first.get("speakeasy_note", ""),
+                               "setup_needed": first.get("setup_needed"), "has_content": bool(first.get("content"))}))
+    seen = {}
+    def skip():
+        for _ in range(300):
+            v = inputs.visible("")
+            if v:
+                seen.update(v[0]); inputs.answer(v[0]["id"], "", bytearray(b'{"action":"skip"}')); return
+            time.sleep(0.02)
+    threading.Thread(target=skip, daemon=True).start()
+    second = view()
+    print("SECOND", json.dumps({"card": seen, "note": second.get("speakeasy_note", "")}))
+    third = view()
+    print("THIRD", json.dumps({"boxes": len(inputs.visible("")), "note": third.get("speakeasy_note", "")}))
+    S.uninstall(inputs)
+''')
+
+
+def test_real_hermes_skill_view_asks_only_when_needed_and_skip_carries_on(tmp_path):
+    if not (HERMES_AGENT / "tools" / "skills_tool_setup.py").exists():
+        pytest.skip("Hermes not installed here")
+    home = tmp_path / "hermes"
+    skill = home / "skills" / "tidepool"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(textwrap.dedent("""\
+        ---
+        name: tidepool
+        description: Read tide charts from an invented tide service.
+        required_environment_variables:
+          - name: TIDEPOOL_API_TOKEN
+            prompt: Tidepool API token
+            required_for: reading tide charts
+        ---
+        # Tidepool
+        Call the tide service with the token.
+        """))
+    env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin", "HERMES_HOME": str(home), "HERMES_DISABLE_LAZY_INSTALLS": "1",
+           "PLUGIN_DIR": str(Path(__file__).resolve().parents[1]), "HERMES_AGENT": str(HERMES_AGENT), "TMPDIR": str(tmp_path)}
+    proc = subprocess.run([sys.executable, "-c", _SKILL_SCRIPT], env=env, capture_output=True, text=True, timeout=120)
+    lines = {ln.split(" ", 1)[0]: ln.split(" ", 1)[1] for ln in proc.stdout.splitlines() if " " in ln}
+    if "FIRST" not in lines:
+        pytest.skip(f"Hermes not importable here: {proc.stderr[-400:]}")
+    first = json.loads(lines["FIRST"])
+    assert first["boxes"] == 0 and first["has_content"] is True, "the skill still loads, with no box"
+    assert "TIDEPOOL_API_TOKEN" in first["note"] and "another way" in first["note"]
+    second = json.loads(lines["SECOND"])
+    assert second["card"]["skill"] == "tidepool" and "reading tide charts" in second["card"]["reason"]
+    assert second["card"]["skip_label"] == "Skip — the agent has another way"
+    assert "Carry on with the task" in second["note"]
+    third = json.loads(lines["THIRD"])
+    assert third["boxes"] == 0 and "Carry on" in third["note"]

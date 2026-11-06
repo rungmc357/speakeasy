@@ -27,6 +27,10 @@ public struct SecureInputRequest: Equatable, Sendable, Identifiable {
     /// login: the page origin the login is saved for; login / code: the site's host.
     public var origin: String
     public var site: String
+    /// secret: which skill asked and why, in the plugin's words ("The Tidepool skill needs this key…").
+    public var reason: String
+    /// secret: the plugin's Skip wording ("Skip — the agent has another way"); "" = plain Skip.
+    public var skipLabel: String
     /// Where it goes, in the plugin's words.
     public var storedWhere: String
     public var expiresAt: Date
@@ -37,11 +41,12 @@ public struct SecureInputRequest: Equatable, Sendable, Identifiable {
     public init(id: String, kind: Kind, job: String, runID: String? = nil, sessionID: String? = nil, envVar: String = "",
                 label: String = "", prompt: String = "", help: String = "", skill: String = "", command: String = "",
                 origin: String = "", site: String = "", storedWhere: String = "", expiresAt: Date,
-                userStarted: Bool = false) {
+                userStarted: Bool = false, reason: String = "", skipLabel: String = "") {
         self.id = id; self.kind = kind; self.job = job; self.runID = runID; self.sessionID = sessionID
         self.envVar = envVar; self.label = label; self.prompt = prompt; self.help = help; self.skill = skill
         self.command = command; self.origin = origin; self.site = site
         self.storedWhere = storedWhere; self.expiresAt = expiresAt; self.userStarted = userStarted
+        self.reason = reason; self.skipLabel = skipLabel
     }
 
     /// One entry of `requests` / `secure_inputs`; nil when it isn't a valid request.
@@ -54,7 +59,8 @@ public struct SecureInputRequest: Equatable, Sendable, Identifiable {
         self.init(id: id, kind: kind, job: s("job"), runID: object["run_id"] as? String,
                   sessionID: object["session_id"] as? String, envVar: s("env_var"), label: s("label"),
                   prompt: s("prompt"), help: s("help"), skill: s("skill"), command: s("command"),
-                  origin: s("origin"), site: s("site"), storedWhere: s("stored_where"), expiresAt: expires)
+                  origin: s("origin"), site: s("site"), storedWhere: s("stored_where"), expiresAt: expires,
+                  reason: s("reason"), skipLabel: s("skip_label"))
         if kind == .secret && envVar.isEmpty { return nil }
         if kind == .login && site.isEmpty { return nil }
     }
@@ -106,7 +112,13 @@ public struct SecureInputRequest: Equatable, Sendable, Identifiable {
     public var primaryButton: String {
         switch kind { case .secret, .login: return "Save securely"; case .sudo: return "Allow once"; case .code: return "Send code" }
     }
-    public var skipButton: String { userStarted ? "Cancel" : kind == .sudo ? "Don't allow" : "Skip" }
+    public var skipButton: String {
+        if userStarted { return "Cancel" }
+        if kind == .sudo { return "Don't allow" }
+        return kind == .secret && !skipLabel.isEmpty ? skipLabel : "Skip"
+    }
+    /// A long Skip ("Skip — the agent has another way") gets its own full-width row under Save.
+    public var stacksButtons: Bool { skipButton.count > 12 }
     public var fieldPlaceholder: String {
         switch kind {
         case .secret: return label.isEmpty ? "Key" : label
