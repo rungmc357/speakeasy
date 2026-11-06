@@ -1473,6 +1473,27 @@ def early_request_note(names: Names, text: str) -> str:
         "greeting or small talk, just answer it briefly.")
 
 
+def typed_work_note(names: Names, text: str, pictures: int, files: int) -> str:
+    """A message typed on the call screen with pictures or files attached. The plugin already started
+    the work with them (the voice can't see them), so the voice only acknowledges it, in its own words,
+    and never reads the message back or says it can't see the picture."""
+    parts = [f"{n} {word}{'s' if n != 1 else ''}" for n, word in ((pictures, "picture"), (files, "file")) if n]
+    return render("{user_name_cap} just sent a typed message with " + _listed(parts) + " attached: \u201c",
+                  names) + text.strip()[:1000] + (
+        "\u201d\nIt has already been handed off, with what they attached, and work on it has started: do NOT "
+        "hand it off again. You can't see what they attached: never describe it, guess what it shows or say "
+        "you can't see it. Acknowledge it now " + ACK_STYLE + ", without repeating their message back, then "
+        "stop talking. Don't read this note out or mention that it was typed.")
+
+
+def typed_turn_cue(names: Names) -> str:
+    """Codex: sent just before a typed turn's text goes in as the user's words, so the voice treats it
+    like speech instead of answering it with a filler sound or reading it back."""
+    return render("{user_name_cap} is typing their next message in the app instead of saying it. Treat it "
+                  "exactly as if they had just said it out loud: answer it, ask what you need to know, or hand it "
+                  "off if it needs work. Never repeat their words back to them.", names)
+
+
 def typed_turn_note(names: Names, text: str) -> str:
     """GPT-Live: a turn the user typed on the call screen instead of saying it. The sideband takes no
     user text, so the note quotes the words and asks for the same reply as if they had been spoken."""

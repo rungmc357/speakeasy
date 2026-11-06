@@ -30,7 +30,7 @@ from . import history as H
 from . import messages as M
 from . import models as MD
 from .brief import BriefInvalid, BriefManager
-from .calls import (ACTIVE_RUN_STATES, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_BOARD, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
+from .calls import (ACTIVE_RUN_STATES, SHARE_NOTE_KEY, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_BOARD, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
                     TYPED_SENT, BackendRun, ServiceError,
                     Interaction, Notices, Runtime, SidebandWorker, end_shared, interaction_tasks, publish_state,
                     typed_text)
@@ -2612,8 +2612,10 @@ class VoiceService(SecureInputMixin):
 
     @staticmethod
     def _speak_notes(interaction: Interaction, worker: Any) -> None:
+        # Background only: on voices that answer every note out loud (Codex) they're held for the next
+        # message, so dropping a picture in the tray never makes the voice say anything before Send.
         for kind, value in interaction.attachments.take_notes():
-            worker.speak_from_thread("session.thinking.append", P.sharing_note(kind, value))
+            worker.quiet_from_thread(SHARE_NOTE_KEY + kind, P.sharing_note(kind, value))
 
     def _live_shared_paths(self) -> set[str]:
         with self.lock:

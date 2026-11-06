@@ -8,6 +8,7 @@ tasks; every task goes to the user's Hermes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib
 import json
 import logging
@@ -378,6 +379,10 @@ class CodexSidebandWorker(SidebandWorker):
                     if params.get("role") == "user":
                         await self._user_turn(params.get("text"))
                     elif params.get("role") == "assistant" and isinstance(params.get("text"), str):
+                        if self.typed_said_back(params["text"]):
+                            # The voice read the user's typed words back: never shown as its reply.
+                            logger.info("speakeasy: the voice repeated a typed turn; not shown as its line")
+                            continue
                         await self.handle_event({"type": "session.output_transcript.delta", "delta": params["text"],
                                                  "start_ms": self.offset, "end_ms": self.offset})
                 elif method == "thread/realtime/closed":
@@ -439,6 +444,12 @@ class CodexSidebandWorker(SidebandWorker):
         echo = [text, time.monotonic()]
         self.typed_echoes.append(echo)
         try:
+            # A user text item alone draws "Mm-hmm" or the words read back: say first that it's a turn
+            # to act on, like speech. Best effort: the turn itself is what must arrive.
+            with contextlib.suppress(RuntimeError, TimeoutError, OSError):
+                await asyncio.to_thread(self.transport.request, "thread/realtime/appendText",
+                                        {"threadId": self.transport.thread_id, "role": "developer",
+                                         "text": self.take_quiet_notes() + P.typed_turn_cue(self.names)}, 10)
             await asyncio.to_thread(self.transport.request, "thread/realtime/appendText",
                                     {"threadId": self.transport.thread_id, "text": text, "role": "user"}, 10)
         except (RuntimeError, TimeoutError, OSError) as exc:
@@ -452,6 +463,20 @@ class CodexSidebandWorker(SidebandWorker):
             self._drop_echo(echo)
             raise
         echo[1] = time.monotonic()  # the echo window runs from when Codex took it
+        return TYPED_SENT
+
+    async def forward_typed_work(self, note: str) -> str:
+        """A typed message with pictures or files, whose work the plugin starts itself: the voice gets
+        a developer note to acknowledge it (never appendSpeech, which would read the note out)."""
+        if self.transport.closed:
+            return TYPED_NOT_CONNECTED
+        try:
+            await asyncio.to_thread(self.transport.request, "thread/realtime/appendText",
+                                    {"threadId": self.transport.thread_id, "role": "developer",
+                                     "text": (self.take_quiet_notes() + note)[-2000:]}, 10)
+        except (RuntimeError, TimeoutError, OSError) as exc:
+            logger.warning("speakeasy: Codex did not take a typed message (%s)", type(exc).__name__)
+            return TYPED_NOT_CONNECTED if self.transport.closed else TYPED_NOT_DELIVERED
         return TYPED_SENT
 
     def _drop_echo(self, echo: list) -> None:
@@ -475,6 +500,11 @@ class CodexSidebandWorker(SidebandWorker):
             return
         handoff_id = item.get("handoff_id")
         request = item.get("input_transcript")
+        if (isinstance(request, str) and not clean_transcript(request).strip()
+                and (typed := self.typed_handoff_words())):
+            # Codex only carries spoken words: a handoff for a typed turn arrives empty. It is that turn.
+            logger.info("speakeasy: Codex handoff for a typed turn; using the typed words")
+            request = typed
         if (not isinstance(handoff_id, str) or not ID_RE.fullmatch(handoff_id)
                 or not isinstance(request, str) or not clean_transcript(request).strip()
                 or len(request.encode()) > 8192 or handoff_id in self.delegations):
