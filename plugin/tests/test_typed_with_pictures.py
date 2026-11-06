@@ -90,6 +90,22 @@ def test_the_voice_handing_the_same_words_off_again_starts_no_twin(server, servi
     assert len(hermes.calls) == 1
 
 
+def test_a_spoken_correction_after_a_typed_picture_note_is_its_own_request(server, service, hermes, fast):
+    # "on" typed under a picture, then "off" said out loud: one word apart, never the same request.
+    iid, worker = open_call(server, service, "req_typed_correction")
+    assert upload_attachment(server.base_url, server.token, iid, PICTURE)[0] == 200
+    assert typed(server, iid, "turn the bedroom heater on")[0] == 200
+    wait_for(lambda: hermes.calls)
+    worker.feed({"type": "session.output_transcript.delta", "delta": "On it.",
+                 "start_ms": 1 << 38, "end_ms": (1 << 38) + 1})
+    worker.feed({"type": "session.input_transcript.delta", "delta": "Turn the bedroom heater off.",
+                 "start_ms": 1 << 39, "end_ms": (1 << 39) + 1})
+    worker.feed({"type": "session.delegation.created", "offset_ms": 1 << 40,
+                 "delegation": {"id": "call_off", "target": "client"}})
+    wait_for(lambda: len(hermes.calls) == 2)
+    assert "heater off" in text_of(hermes.calls[1]["input"]).lower()
+
+
 def test_a_one_word_note_under_a_picture_is_still_work(server, service, hermes, fast):
     iid, worker = open_call(server, service, "req_typed_short")
     assert upload_attachment(server.base_url, server.token, iid, PICTURE)[0] == 200
@@ -111,7 +127,8 @@ def test_a_typed_turn_without_pictures_is_left_to_the_voice(server, service, her
 @pytest.mark.parametrize("said", [
     "Also, the forecast card pushes the buttons off the screen.",
     "the forecast card pushes the buttons off the screen",
-    "Okay, so the forecast card pushes buttons off the screen.",
+    "Okay, so the forecast card pushes the buttons off the screen.",
+    "You typed: the forecast card pushes the buttons off the screen!",
 ])
 def test_reading_the_typed_words_back_is_caught(said):
     assert said_back(NOTE, said)
@@ -121,9 +138,36 @@ def test_reading_the_typed_words_back_is_caught(said):
     "Got it, I'll look at why that card is pushing things off screen.",
     "On it.",
     "Which screen is the forecast card on?",
+    # A near read-back with a word dropped stays visible: only exact read-backs are hidden.
+    "Okay, so the forecast card pushes buttons off the screen.",
 ])
 def test_a_real_reply_is_not_a_read_back(said):
     assert not said_back(NOTE, said)
+
+
+@pytest.mark.parametrize("typed_words, said", [
+    # an answer that reorders the question's words
+    ("is the front door locked", "The front door is locked."),
+    ("is the garage door open", "Okay, the garage door is open."),
+    # one word changes the meaning
+    ("turn the bedroom heater on", "Turn the bedroom heater off."),
+    ("the porch light is on", "The porch light is not on."),
+    ("move the meeting to friday", "Move the meeting to Thursday."),
+])
+def test_a_near_match_that_means_something_else_is_never_an_echo(typed_words, said):
+    assert not said_back(typed_words, said)
+
+
+def test_a_reply_to_a_typed_question_is_shown_while_the_read_back_is_hidden(server, codex_call):
+    interaction, worker, transport = codex_call
+    assert typed(server, interaction.interaction_id, "is the front door locked")[0] == 200
+    for text in ("Is the front door locked?", "The front door is locked."):
+        transport.notifications.put({"method": "thread/realtime/transcript/done",
+                                     "params": {"threadId": "thr_fake", "role": "assistant", "text": text}})
+    transport.notifications.put({"method": "thread/realtime/closed", "params": {"threadId": "thr_fake"}})
+    run_on(worker, worker.run())
+    assert worker.turns() == [{"role": "user", "text": "is the front door locked"},
+                              {"role": "assistant", "text": "The front door is locked."}]
 
 
 def test_short_words_need_an_exact_match():

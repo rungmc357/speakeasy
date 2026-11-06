@@ -154,21 +154,18 @@ _SAID_BACK_LEADS = {"also", "and", "okay", "ok", "so", "right", "got", "it", "yo
 
 
 def said_back(typed: str, said: str) -> bool:
-    """Is a voice line only the user's typed words read back? The line's words, after any short lead-in
-    ("Also,", "Okay, so"), are the typed words (or at least 80% the same, in order, for four words
-    or more) with nothing of its own added. A real answer that quotes them adds its own words."""
+    """Is a voice line only the user's typed words read back? Only when the line's words, after any
+    short lead-in ("Also,", "Okay, so"), are exactly the typed words: same words, same order, nothing
+    added or dropped (case and punctuation aside). Never by similarity: hiding a line loses it, and a
+    near match is often a real reply ("the front door is locked" answering "is the front door
+    locked") or a correction that changes one word ("heater off" vs "heater on")."""
     a = _words(typed).replace("'", "").split()
     b = _words(said).replace("'", "").split()
     if not a or not b:
         return False
     while b and b[0] in _SAID_BACK_LEADS and b[0] not in a[:1]:
         b = b[1:]
-    if b == a:
-        return True
-    if min(len(a), len(b)) < 4 or len(b) > len(a) + 2:
-        return False
-    import difflib
-    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= 0.8
+    return b == a
 
 
 def is_greeting(request: str) -> bool:
