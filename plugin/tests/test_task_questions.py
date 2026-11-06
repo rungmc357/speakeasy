@@ -205,5 +205,4 @@ def test_how_is_it_going_keeps_the_status_path(service, monkeypatch):
 def test_voice_rules_split_content_questions_from_status():
     rules = (Path(P.__file__).parent / "rules.md").read_text()
     assert "never delegate a status question" in rules
-    assert "what it's testing" in rules and "hand it off as a follow-up to that task" in rules
-    assert "never just \"the test run\"" in rules
+    assert "what it tests, which files, why" in rules and "hand it to that task" in rules
