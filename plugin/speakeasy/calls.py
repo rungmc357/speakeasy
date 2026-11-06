@@ -4058,7 +4058,9 @@ class SidebandWorker:
         self.drop_capture(delegation_id)
         self.handoff_at.pop(delegation_id, None)
         if fix.wrong is None:
-            # Said again after the task took it: confirmed, never sent twice.
+            # Said again after the task took it: confirmed, never sent twice (a typed repeat: silently).
+            if typed:
+                return True
             right = next((c.get("right") for c in reversed(self.store.corrections(key)) if c.get("right")), None) \
                 or fix.right or ""
             if self.call_connected():
@@ -4077,7 +4079,8 @@ class SidebandWorker:
         logger.info("speakeasy: a correction rewrote a task's request%s", " and title" if new_title else "")
         if new_title:
             self.title_session(key)
-        steer = P.correction_steer_text(self.names, fix.wrong, fix.right, fix.request, typed=typed)
+        words = text_mod.request_notes(part.request)[0]
+        steer = P.correction_steer_text(self.names, fix.wrong, fix.right, fix.request, words, typed=typed)
         delivered = False
         if status == "waiting_on_task":
             with self.interaction.lock:
@@ -4106,7 +4109,8 @@ class SidebandWorker:
         with self.interaction.lock:
             self.interaction.latest_delegation_id = target.delegation_id
         if self.call_connected():
-            await self.append("session.thinking.append", delegation_id, P.correction_note(fix.wrong, fix.right, fix.request))
+            await self.append("session.thinking.append", delegation_id,
+                              P.correction_note(fix.wrong, fix.right, fix.request, typed=typed))
         return True
 
     async def steer_now(self, target: BackendRun, text: str) -> bool:

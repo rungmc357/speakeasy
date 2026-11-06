@@ -175,7 +175,7 @@ def test_a_spoken_correction_rewrites_the_task_and_steers_it_now(server, service
     steers_before = len(hermes.steers)
     _say(worker, "call_fix", words, **({"task_id": "call_plan"} if marked else {}))
     steer = wait_for(lambda: hermes.steers[steers_before:])[0][1]
-    assert steer.startswith("Correction from the user:") and '"Man Pros" was a mishearing of "Mac Pro"' in steer
+    assert steer.startswith("Correction from the user, who said:") and '"Man Pros" was a mishearing of "Mac Pro"' in steer
     assert "Redo anything you based on" in steer and "The second Mac Pro gets here Friday" in steer
     # The task's request and title now say what was meant.
     assert service.store.request_text(run.idem_key).startswith("The second Mac Pro gets here Friday")
@@ -201,7 +201,9 @@ def test_a_typed_fix_on_the_tasks_page_is_a_correction(server, service, hermes):
     status, body = typed_to_job(server, run.run_id, "mac pro", iid=worker.interaction.interaction_id)
     assert status == 200, body
     steer = wait_for(lambda: hermes.steers[steers_before:])[0][1]
-    assert "was a mishearing of \"Mac Pro\" (the user typed so)" in steer
+    assert steer.startswith('Correction from the user, who typed: "mac pro". "Man Pros" was a mishearing of "Mac Pro".')
+    assert any(n.startswith("Background, not a request: the task was corrected") for n in _notes(worker))
+    assert not any(n.startswith("Corrected:") for n in _notes(worker))  # typed: delivered silently
     assert service.store.title(run.idem_key) == "Plan the second Mac Pro"
     # Typed again: taken as already done (typed words are never spoken over), never sent twice or queued.
     status, _ = typed_to_job(server, run.run_id, "Mac pro", iid=worker.interaction.interaction_id)
@@ -253,3 +255,12 @@ def test_saying_it_again_is_confirmed_once_and_never_sent_again(server, service,
     assert '"Mac Pro"' in note and "Man Pro" not in note
     assert len(hermes.steers) == steers
     assert not any(n.startswith("Queued:") for n in _notes(worker))
+
+
+def test_a_session_page_shows_only_the_words_of_a_correction():
+    from speakeasy import history
+    steer = P.correction_steer_text(P.Names("Hermes", "Sam"), "Man Pros", "Mac Pro", "Plan the Mac Pro", "No, not Man Pros, Mac Pro")
+    marker = ("[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; "
+              "not tool output and not a new delivery when replayed from conversation history]")
+    assert history.user_words(f"{marker}\n{steer}\n[/OUT-OF-BAND USER MESSAGE]") == ("user", "No, not Man Pros, Mac Pro")
+    assert history.user_words(steer) == ("user", "No, not Man Pros, Mac Pro")

@@ -620,22 +620,29 @@ def task_vocabulary_line(names: Names, terms: list[str]) -> str:
                   names) + ", ".join(terms)[:700] + ". If a name in the request matches nothing, it may be a mishearing of one of these. "
 
 
-def correction_steer_text(names: Names, wrong: str | None, right: str | None, request: str, typed: bool = False) -> str:
-    """A correction to the running task's words: urgent, and it changes what the task is for."""
+def correction_steer_text(names: Names, wrong: str | None, right: str | None, request: str, words: str,
+                          typed: bool = False) -> str:
+    """A correction to the running task's words: urgent, and it changes what the task is for. Starts
+    with the user's own words, which is all a session page shows of it (history.user_words)."""
     how = "typed" if typed else "said"
+    said = notice_text(words, 300) or (right or "")
+    lead = f"Correction from {names.user}, who {how}: \"{said}\". "
     if wrong and right:
-        lead = (f"Correction from {names.user}: \"{wrong}\" was a mishearing of \"{right}\" ({names.user} {how} so). "
-                f"Your request now reads: {request} ")
+        lead += f"\"{wrong}\" was a mishearing of \"{right}\". Your request now reads: {request} "
     else:
-        lead = (f"Correction from {names.user}: \"{wrong}\" was a mishearing; there is no such thing. Work out what "
-                f"they meant from the rest of the request and the call (or ask), never \"{wrong}\". ")
+        lead += (f"\"{wrong}\" was a mishearing; there is no such thing. Work out what they meant from the rest of "
+                 f"the request and the call (or ask), never \"{wrong}\". ")
     return (lead + f"Redo anything you based on \"{wrong}\" (searches, findings, plans), drop what doesn't hold, "
             "and don't mention the misheard words again. Carry on with the corrected request; do not start over "
             "on work that still holds.")
 
 
-def correction_note(wrong: str | None, right: str | None, request: str) -> str:
+def correction_note(wrong: str | None, right: str | None, request: str, typed: bool = False) -> str:
     """For the voice: the task was corrected in place (not a queued follow-up)."""
+    if typed:
+        # Typed to the task: delivered silently, like any typed message; this is context only.
+        return (f"Background, not a request: the task was corrected (now \"{notice_text(request, 200)}\") and told at "
+                "once. Say nothing about it. From now on use only the corrected words, never the misheard ones.")
     if right:
         return (f"Corrected: the task now reads \"{notice_text(request, 200)}\" (\"{right}\", not the misheard words). "
                 f"The task was told at once. Confirm once, in a few words, using only the corrected words (for example "
