@@ -216,11 +216,12 @@ public enum HistoryTarget: Equatable, Sendable {
     /// ride on a session message; a New chat's caller passes the same ids to `startJob` (with any,
     /// the words may be empty).
     public func outgoing(_ text: String, source: HistoryMessageRequest.Source,
-                         clientID: String = UUID().uuidString, attachments: [String] = []) -> Outgoing? {
+                         clientID: String = UUID().uuidString, attachments: [String] = [],
+                         answers: String? = nil) -> Outgoing? {
         switch self {
         case .session(let id):
             return HistoryMessageRequest(sessionID: id, text: text, source: source, clientID: clientID,
-                                         attachments: attachments).map(Outgoing.message)
+                                         attachments: attachments, answers: answers).map(Outgoing.message)
         case .newChat:
             if let clean = TaskMessageRequest.clean(text) { return .newChat(text: clean, clientID: clientID) }
             return attachments.isEmpty ? nil : .newChat(text: "", clientID: clientID)
@@ -269,11 +270,13 @@ public struct HistoryWaiting: Equatable, Sendable, Identifiable {
     /// Neither: a task's question, answered by a message to the session (the server hands it to the
     /// waiting task as the answer).
     public var runID: String?
+    /// A task's question: the task that asked (its buttons and "Reply…" answer that task, ✕ dismisses it).
+    public var questionRunID: String?
 
     public init(id: String, kind: Kind, text: String, command: String? = nil, choices: [String],
-                runID: String? = nil) {
+                runID: String? = nil, questionRunID: String? = nil) {
         self.id = id; self.kind = kind; self.text = text; self.command = command; self.choices = choices
-        self.runID = runID
+        self.runID = runID; self.questionRunID = questionRunID
     }
 }
 
@@ -317,7 +320,7 @@ public struct HistoryThread: Equatable, Sendable {
         for job in c.waitingQuestions {
             guard let d = job.decision else { continue }
             waiting.append(HistoryWaiting(id: "job-\(job.runID ?? d.question)", kind: .question, text: d.question,
-                                          choices: d.options.map(\.text)))
+                                          choices: d.options.map(\.text), questionRunID: job.runID))
         }
         var seen = Set<String>()
         self.helpers = c.jobs.flatMap(\.subagents).filter { seen.insert($0.id).inserted }

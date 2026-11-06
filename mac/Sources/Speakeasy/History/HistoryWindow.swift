@@ -121,6 +121,19 @@ final class DemoHistoryBackend: HistoryBackend {
     }
 
     func answerApproval(sessionID: String, runID: String, choice: String) async throws { answers.append((sessionID, runID, choice)) }
+
+    /// ✕ / Undo, as a real Hermes records it: the job's question closes (a quiet line) or reopens.
+    var dismissedQuestions: [String] = []
+    func dismissQuestion(runID: String, undo: Bool) async throws {
+        dismissedQuestions.append((undo ? "undo:" : "") + runID)
+        for (id, var c) in conversations {
+            guard let i = c.jobs.firstIndex(where: { $0.runID == runID }) else { continue }
+            c.jobs[i].questionClosed = undo ? nil : "dismissed"
+            c.jobs[i].setAside = !undo
+            c.jobs[i].questionOpen = undo
+            conversations[id] = c
+        }
+    }
 }
 
 enum DemoHistory {
@@ -227,6 +240,31 @@ enum DemoHistory {
                              call(3, "run", "Checked the load time", "terminal", ago(236), 38, result: "p50 0.8 s (was 6.1 s)")]),
                 bot("m2", ago(232), "The dashboard loads in 0.8 seconds now, down from 6. One query was scanning every order; it has an index on created_at now.\n\n```sql\nCREATE INDEX orders_created_at_idx ON orders (created_at);\n```"),
             ], pinned: true)
+        // Two open questions from separate tasks, and an older one the chat moved on from.
+        func asking(_ run: String, _ title: String, _ q: String, _ options: [[String: Any]], at: Double,
+                    open: Bool, closed: String? = nil) -> [String: Any] {
+            var o: [String: Any] = ["run_id": run, "status": "completed", "title": title, "question_open": open,
+                                    "started_at": at - 60, "finished_at": at,
+                                    "result": ["views": [["kind": "question", "question": q, "recommended": 0, "options": options]]]]
+            if let closed { o["question_closed"] = closed; o["set_aside"] = true }
+            return o
+        }
+        add("s_porch", "Porch makeover", "discord", "Discord · #house", ago(4), "Paint the shed green or grey?",
+            state: "needs_you", entries: [
+                user("m1", ago(95), "Should the porch light be on a timer or a motion sensor?"),
+                bot("m2", ago(92), "Want me to set up the timer now, or wait until the new bulb arrives?"),
+                user("m3", ago(60), "Never mind the light. Let's plan the shed and the cedar order instead."),
+                bot("m4", ago(8), "Two things need your call before I go on: the shed color and whether to order the boards now."),
+            ], jobs: [
+                asking("run_shed", "Shed paint color", "Paint the shed green or grey?",
+                       [["text": "Sage green", "detail": "Matches the fence trim"], ["text": "Slate grey", "detail": "Hides dirt better"]],
+                       at: ago(7), open: true),
+                asking("run_cedar", "Cedar board order", "Order the 10 cedar boards now, or wait for the sale on the 15th?",
+                       [["text": "Order now", "detail": "$238, arrives Tuesday"], ["text": "Wait for the sale", "detail": "About $200, arrives the 18th"]],
+                       at: ago(6), open: true),
+                asking("run_light", "Porch light timer", "Set up the timer now, or wait for the new bulb?",
+                       [["text": "Set it up now"], ["text": "Wait for the bulb"]], at: ago(91), open: false, closed: "moved_on"),
+            ])
         // A long session where several tasks finished along the way (two of them asked twice) and one still runs.
         func job(_ run: String, _ title: String, _ status: String, _ start: Double, _ end: Double? = nil,
                  now: String? = nil) -> [String: Any] {
@@ -427,6 +465,19 @@ enum HistoryShots {
             await shot("14-long-session-tasks") {
                 c.window?.setContentSize(NSSize(width: 1040, height: 720))
                 store.open("s_long")
+            }
+            await shot("15-two-questions") { store.open("s_porch") }
+            await shot("16-question-reply") {
+                store.open("s_porch")
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                if let c = store.conversations["s_porch"], let w = store.thread(c).waiting.last { store.reply(to: w) }
+                store.draft = "Order six now and the rest on sale day"
+            }
+            await shot("17-question-dismissed") {
+                store.cancelReply(); store.drafts = [:]
+                store.open("s_porch")
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                if let c = store.conversations["s_porch"], let w = store.thread(c).waiting.first { store.dismiss(w) }
             }
             exit(0)
         }
