@@ -151,8 +151,12 @@ _CORRECTION = re.compile(r'^Correction from .{1,60}?, who (?:said|typed): "(.+?)
 _FOLLOW_UP = re.compile(r"^(?:\[Speakeasy follow-up\] )?.{1,60}? (?:said on the call|typed in the Speakeasy app|"
                         r"answered by tapping): ([^\n]+)(?=.*\nSame rules as the first message in this session)", re.S)
 # What a steer says about pictures/files the person shared (saved copies the task opens itself).
-_SHARED = re.compile(r"(?s)\s*\S+ shared (?:the |a )?(?:picture|pictures|file|files|screenshot|images?)\b.*?"
-                     r"Use them to understand what they mean\.\s*")
+_SHARED = re.compile(r"(?s)\s*(?:The user|\S+) shared (?:the |a )?(?:picture|pictures|file|files|screenshot|images?)\b.*?"
+                     r"Use them to understand what they mean\.\s*"
+                     # Video preparation is appended to this generated block, never user speech.
+                     # Only consume it after the complete shared-block signature, not a quoted
+                     # 'Video MIME' phrase in an ordinary message.
+                     r"(?:Video MIME: video/(?:mp4|quicktime)\. Original retained at .*\Z)?")
 
 
 # -- what a message shows: never Speakeasy's own plumbing ----------------------------------------
