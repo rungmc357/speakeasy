@@ -690,6 +690,9 @@ class BackendRun:
     # A question the user asked this task about its own work (ask_task): (question, the handoff that
     # asked it, monotonic time asked). Its next STATUS/DETAIL is spoken as the answer.
     asked: tuple[str, str, float] | None = None
+    # The task's own interim texts already handled (normalized), so one read from its stream and
+    # again from its transcript (threads.SessionCommentary) counts once.
+    interim_seen: set[str] = dataclasses.field(default_factory=set)
 
     @property
     def say_id(self) -> str:
@@ -5185,6 +5188,8 @@ class SidebandWorker:
             # Hermes keeps each Idempotency-Key's run: a retry asks under its own key, or it would get
             # the refused run back.
             key = idem if not backend.refusal_retries else f"{idem}:retry{backend.refusal_retries}"
+            # Read before the run starts: the transcript rows it writes are the ones after this.
+            commentary = await asyncio.to_thread(self._commentary_reader, session_id)
             run_id = await asyncio.to_thread(self.hermes.start_run, messages_mod.identified_text(prompt), key, session_id, **(extra or {}))
             if first and started is not None:
                 started()
@@ -5202,9 +5207,15 @@ class SidebandWorker:
             first = False
             self.publish()
             loop = asyncio.get_running_loop()
-            terminal_seen = await in_own_thread(
-                self.hermes.events, run_id,
-                lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
+
+            def on_run_event(event: dict[str, Any]) -> None:
+                if commentary is not None and event.get("event") in {"tool.started", "tool.start"}:
+                    # The lines the agent wrote beside this tool call (STATUS/DETAIL) are in its
+                    # transcript already; the run stream may never carry them (SessionCommentary).
+                    for text in commentary.new():
+                        on_loop(self.handle_hermes_event(backend, {"event": "message.interim", "text": text}), loop)
+                on_loop(self.handle_hermes_event(backend, event), loop)
+            terminal_seen = await in_own_thread(self.hermes.events, run_id, on_run_event)
             with self.interaction.lock:
                 again = backend.retry_refused
             if again:
@@ -5699,7 +5710,31 @@ class SidebandWorker:
                            exc_info=True)
             return None
 
+    def _commentary_reader(self, session_id: str | None) -> threads.SessionCommentary | None:
+        """The task's interim lines from its transcript (threads.SessionCommentary); None when this
+        Hermes has no readable state.db (a remote or fake one)."""
+        if not session_id:
+            return None
+        try:
+            db = self.rt.db_for(session_id)
+            if not db or not Path(db).is_file():
+                return None
+            return threads.SessionCommentary(Path(db), session_id)
+        except Exception:
+            logger.debug("speakeasy: commentary reader not started", exc_info=True)
+            return None
+
     async def handle_hermes_event(self, backend: BackendRun, event: dict[str, Any]) -> None:
+        if event.get("event") == "message.interim" and isinstance(event.get("text"), str):
+            # Once per text: the same lines can come off the run stream and off the transcript.
+            seen = " ".join(event["text"].split()).lower()
+            with self.interaction.lock:
+                if seen in backend.interim_seen:
+                    return
+                backend.interim_seen.add(seen)
+                if len(backend.interim_seen) > 400:
+                    backend.interim_seen.clear()
+                    backend.interim_seen.add(seen)
         self.observe_activity(backend, event)
         runtime = event.get("runtime")
         if isinstance(runtime, dict) and str(event.get("event") or "").startswith("run."):

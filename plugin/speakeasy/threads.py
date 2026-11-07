@@ -544,6 +544,43 @@ class SessionToolWatch:
         self.poll()
 
 
+class SessionCommentary:
+    """A running task's interim commentary (the ``STATUS:`` / ``DETAIL:`` lines its brief asks for),
+    read from its session transcript. Hermes stores the assistant message that carries a tool call,
+    commentary included, before the tool runs, but its admitted API runs (``/v1/runs`` turns through
+    the session runtime) stream only tool events, so the run stream never carried those lines: they
+    were paid for and never reached the live line. ``new()`` is called when a tool starts and returns
+    the commentary written since the last read, oldest first. Read-only; [] when anything is off."""
+
+    def __init__(self, state_db: Path | None, session_id: str | None, after_id: int | None = None):
+        self.state_db, self.session_id = state_db, session_id
+        self.cursor = int(after_id) if after_id is not None else (last_message_id(state_db) if state_db else 0)
+        self._lock = threading.Lock()
+
+    def new(self, limit: int = 50) -> list[str]:
+        if not self.state_db or not self.session_id:
+            return []
+        with self._lock:
+            try:
+                db = sqlite3.connect(f"file:{self.state_db}?mode=ro", uri=True, timeout=2)
+            except sqlite3.Error:
+                return []
+            try:
+                rows = db.execute("SELECT id, coalesce(content,'') FROM messages WHERE session_id=? AND id>? "
+                                  "AND role='assistant' ORDER BY id LIMIT ?",
+                                  (self.session_id, self.cursor, int(limit))).fetchall()
+            except sqlite3.Error:
+                rows = []
+            finally:
+                db.close()
+            out = []
+            for row_id, content in rows:
+                self.cursor = max(self.cursor, int(row_id))
+                if isinstance(content, str) and content.strip():
+                    out.append(content)
+            return out
+
+
 def last_message_id(state_db: Path) -> int:
     """The newest message row id in Hermes' state.db (ids are global), so a turn written after it can be told apart."""
     try:

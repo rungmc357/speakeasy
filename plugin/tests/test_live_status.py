@@ -63,6 +63,62 @@ def test_recent_tests_after_edits_read_as_one_line():
     assert got["now"] == "Running the tests after editing calls.py"
 
 
+def test_the_side_model_is_off_unless_the_user_picked_one():
+    """Left on "auto" the side model is the user's MAIN model: no summaries at all, whatever reads."""
+    calls = []
+    s = L.Summarizer(lambda m: calls.append(m) or None, clock=lambda: 1000.0, spawn=lambda fn: fn())
+    st = state(item(1, "Read SessionPage.swift", "read", 990.0))
+    for _ in range(5):
+        assert s.line("k", st, request="x", started=900.0, ask=True)["source"] == "activity"
+    assert calls == []
+    from speakeasy.router import side_model_picked
+    assert side_model_picked({}) is False
+    assert side_model_picked({"auxiliary": {"speakeasy_router": {"provider": "auto"}}}) is False
+    assert side_model_picked({"auxiliary": {"speakeasy_router": {"provider": "auto", "model": " "}}}) is False
+    assert side_model_picked({"auxiliary": {"speakeasy_router": {"provider": "openrouter", "model": "small"}}}) is True
+    assert side_model_picked({"auxiliary": {"speakeasy_router": {"model": "local-small"}}}) is True
+
+
+def test_background_reads_never_ask_the_side_model():
+    """The app's liveness loop and every push read the card: only a real open (ask=True) may ask."""
+    calls = []
+    clock = [1000.0]
+    s = L.Summarizer(lambda m: calls.append(m) or None, clock=lambda: clock[0], spawn=lambda fn: fn(),
+                     enabled=lambda: True)
+    st = state(item(1, "Read SessionPage.swift", "read", 990.0))
+    for i in range(30):  # ten minutes of a 20 s liveness loop, steps piling up
+        clock[0] += 20
+        st["items"].append(item(i + 2, f"Read file{i}.swift", "read", clock[0] - 1))
+        s.line("k", st, request="x", started=900.0)
+    assert calls == []
+
+
+def test_the_side_model_runs_once_per_phase_and_under_an_hourly_cap():
+    calls = []
+    clock = [1000.0]
+    s = L.Summarizer(lambda m: calls.append(m) or None, clock=lambda: clock[0], spawn=lambda fn: fn(),
+                     enabled=lambda: True)
+    st = state(item(1, "Read SessionPage.swift", "read", 990.0))
+    s.line("k", st, request="x", started=900.0, ask=True)
+    assert len(calls) == 1
+    clock[0] += 120
+    st["items"].append(item(2, "Read History.swift", "read", clock[0] - 1))
+    s.line("k", st, request="x", started=900.0, ask=True)
+    assert len(calls) == 1                     # one new step is the same phase
+    for n in (3, 4):
+        st["items"].append(item(n, f"Edited file{n}.swift", "edit", clock[0] - 1))
+    s.line("k", st, request="x", started=900.0, ask=True)
+    assert len(calls) == 2                     # three new steps since the last ask: a new phase
+    # Many tasks opened over and over: never more than HOURLY_CAP asks in any hour, all tasks together.
+    at = []
+    s.call = lambda m: at.append(clock[0]) or None
+    for t in range(200):
+        clock[0] += 61
+        st2 = state(*[item(n, f"Read f{n}.swift", "read", clock[0] - 1) for n in range(1, 4 + 3 * t)])
+        s.line(f"t{t % 9}", st2, request="x", started=clock[0] - 50, ask=True)
+    assert at and max(sum(1 for b in at if a <= b < a + 3600) for a in at) <= L.HOURLY_CAP
+
+
 def test_the_side_model_words_it_rate_limited_and_vetted():
     calls = []
     clock = [1000.0]
@@ -71,19 +127,20 @@ def test_the_side_model_words_it_rate_limited_and_vetted():
         calls.append(messages)
         return '{"now": "Reading the session page code to find why old messages show last", "so_far": "Found the cause; fixing it"}'
 
-    s = L.Summarizer(model, clock=lambda: clock[0], spawn=lambda fn: fn())
+    s = L.Summarizer(model, clock=lambda: clock[0], spawn=lambda fn: fn(), enabled=lambda: True)
     st = state(item(1, "Read SessionPage.swift", "read", 990.0))
-    first = s.line("k", st, request="Why do old messages show last?", started=900.0)
+    first = s.line("k", st, request="Why do old messages show last?", started=900.0, ask=True)
     assert len(calls) == 1 and first["source"] == "activity"        # asked; this read uses the steps
     again = s.line("k", st, request="Why do old messages show last?", started=900.0)
     assert again["now"].startswith("Reading the session page code") and again["source"] == "model"
     assert len(calls) == 1                                           # nothing new: not asked again
-    st["items"].append(item(2, "Read History.swift", "read", 1010.0))
+    for n in (2, 3, 4):
+        st["items"].append(item(n, f"Read History{n}.swift", "read", 1010.0))
     clock[0] = 1020.0
-    s.line("k", st, request="", started=900.0)
-    assert len(calls) == 1                                           # under 40 s since the last ask
-    clock[0] = 1045.0
-    s.line("k", st, request="", started=900.0)
+    s.line("k", st, request="", started=900.0, ask=True)
+    assert len(calls) == 1                                           # under a minute since the last ask
+    clock[0] = 1065.0
+    s.line("k", st, request="", started=900.0, ask=True)
     assert len(calls) == 2
     # no tool names, no step counts, no paths from the model
     assert L.parse_model('{"now": "Running read_file on the code"}') is None

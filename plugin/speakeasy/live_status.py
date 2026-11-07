@@ -11,9 +11,14 @@ hour while the task edited files and ran tests. This module reads the task's act
 - ``so_far``: one growing recap of the whole run, oldest first ("Read the code, edited 3 files, ran
   the tests"), rebuilt from the activity every time, never from the opening plan.
 
-``deterministic`` needs no model. ``Summarizer`` adds the plugin's side model on top (Hermes'
-auxiliary client, router.aux_call): at most one call per task every ``MODEL_EVERY_S`` and only when
-something new happened; its words are vetted and used while fresh, else the deterministic line.
+``deterministic`` needs no model. ``Summarizer`` can add the plugin's side model on top (Hermes'
+auxiliary client, router.aux_call), but it is off unless the user picked their own model for
+Speakeasy's side tasks (``auxiliary.speakeasy_router``): left on "auto" that is their MAIN model, and
+asking it on every read of a running task (the app's liveness loop included) cost one main-model
+call per task every 40 s. When on, it is asked only when someone really opened the task
+(``ask=True``: the task view or its session page), once per phase (``PHASE_STEPS`` new steps since
+the last ask, at least ``MODEL_EVERY_S`` apart) and at most ``HOURLY_CAP`` times an hour in all;
+its words are vetted and used while fresh by every read, else the deterministic line.
 Never a step count, never a raw tool name, never a path beyond a file's own name.
 """
 from __future__ import annotations
@@ -31,7 +36,9 @@ WINDOW_S = 120.0          # "now" reads the last two minutes of steps
 IDLE_AFTER_S = 120.0      # no step for this long: say it's quiet, with for how long
 LONG_CALL_S = 60.0        # one call running this long: "Waiting on ..."
 HANDOFF_STALE_S = 60.0    # the handoff guess stops being shown as "now" after this
-MODEL_EVERY_S = 40.0      # at most one side-model summary per task this often
+MODEL_EVERY_S = 60.0      # at most one side-model summary per task this often
+PHASE_STEPS = 3           # ... and only once this many new steps happened since the last ask
+HOURLY_CAP = 20           # side-model summaries in all, per rolling hour
 MODEL_FRESH_S = 150.0     # a model summary older than this (or behind the feed) isn't used
 NOW_CHARS = 90
 SO_FAR_CHARS = 160
@@ -56,6 +63,17 @@ _WAIT_ON = (
 )
 _BAD = re.compile(r"[`{}<>$|\\]|https?://|~/|/Users/|\b[a-z_]+\(", re.I)
 _TOOLISH = re.compile(r"\b[a-z]+_[a-z_]+\b")  # raw tool names (read_file, web_search)
+# The agent talking to itself about a hiccup ("Using patch instead", "That didn't work, trying
+# again", "Hmm, wrong file"): its own words, but never what the job is doing.
+RECOVERY = re.compile(
+    r"\binstead\b|\b(?:try|trying|tried) (?:again|another|a different)|\bretry(?:ing)?\b|\bdidn'?t work\b"
+    r"|\bdoesn'?t work\b|\bthat failed\b|^(?:hmm|oops|whoops|sorry|ah|actually|wait|my mistake|apologies)\b"
+    r"|\bwrong (?:file|path|command|tool|place)\b|\btypo\b|\bfix(?:ing)? (?:my|the) (?:mistake|typo|command|call)\b",
+    re.I)
+
+
+def recovery_talk(text: Any) -> bool:
+    return isinstance(text, str) and bool(RECOVERY.search(" ".join(text.split())))
 
 
 def _clean(text: Any, limit: int) -> str | None:
@@ -242,17 +260,29 @@ class Summarizer:
     used only while fresh and not behind the feed. ``call`` is router.aux_call-shaped."""
 
     def __init__(self, call: Callable[[list[dict[str, str]]], str | None] | None,
-                 clock: Callable[[], float] = time.time, spawn: Callable[[Callable[[], None]], Any] | None = None):
+                 clock: Callable[[], float] = time.time, spawn: Callable[[Callable[[], None]], Any] | None = None,
+                 enabled: Callable[[], bool] | None = None):
         self.call = call
         self.clock = clock
+        # Off unless told otherwise: whether the user picked a side model of their own (service.py).
+        self.enabled = enabled or (lambda: False)
+        self._spent: list[float] = []  # when each side-model ask went out, the last hour
         self.spawn = spawn or (lambda fn: threading.Thread(target=fn, daemon=True).start())
         self._lock = threading.Lock()
         self._cache: dict[str, dict[str, Any]] = {}
         self._asked: dict[str, tuple[float, int]] = {}
         self._busy: set[str] = set()
 
+    def _allowed(self) -> bool:
+        try:
+            return bool(self.enabled())
+        except Exception:
+            return False
+
     def line(self, key: str, state: dict[str, Any] | None, *, request: str | None, started: float | None,
-             on_ready: Callable[[], None] | None = None) -> dict[str, Any] | None:
+             on_ready: Callable[[], None] | None = None, ask: bool = False) -> dict[str, Any] | None:
+        """The task's live line. *ask*: someone opened the task just now (not a background or
+        liveness read), so a fresh side-model line may be asked for if the side model is on."""
         now = self.clock()
         base = deterministic(state, now=now, started=started)
         if base is None or base["source"] != "activity":
@@ -260,16 +290,20 @@ class Summarizer:
         with self._lock:
             cached = self._cache.get(key)
             asked = self._asked.get(key)
-            due = (self.call is not None and key not in self._busy
-                   and (asked is None or (base["basis"] != asked[1] and now - asked[0] >= MODEL_EVERY_S)))
+            self._spent = [t for t in self._spent if now - t < 3600.0]
+            due = (ask and self.call is not None and key not in self._busy and len(self._spent) < HOURLY_CAP
+                   and (asked is None or (base["basis"] - asked[1] >= PHASE_STEPS
+                                          and now - asked[0] >= MODEL_EVERY_S)))
+            due = due and self._allowed()
             if due:
                 self._busy.add(key)
                 self._asked[key] = (now, base["basis"])
+                self._spent.append(now)
         if due:
             items = list((state or {}).get("items") or [])
             findings = list((state or {}).get("findings") or [])
             self.spawn(lambda: self._ask(key, request, items, findings, base["basis"], on_ready))
-        if cached and now - cached["at"] <= MODEL_FRESH_S and base["basis"] - cached["basis"] <= 3:
+        if cached and now - cached["at"] <= MODEL_FRESH_S and base["basis"] - cached["basis"] <= PHASE_STEPS:
             return {**base, "now": cached["now"], "so_far": cached["so_far"] or base["so_far"], "source": "model"}
         return base
 

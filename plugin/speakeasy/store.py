@@ -2672,7 +2672,8 @@ class StateStore:
         # Live activity (capability job_activity): activity, findings, touched, hero; each only when known.
         activity_state = self.activity_state(key)
         work.update(activity_mod.public(activity_state, detail=activity_detail))
-        self._live_line(work, key, activity_state, created, authored_at, status_source, progress_updated, title)
+        self._live_line(work, key, activity_state, created, authored_at, status_source, progress_updated, title,
+                        opened=activity_detail)
         self._drop_misheard(work, key)
         live = self.public_live_image(key)
         if live is not None:
@@ -2697,10 +2698,12 @@ class StateStore:
     # -- the live line (live_status.py) -------------------------------------------------------
     def _live_line(self, work: dict[str, Any], key: str, state: dict[str, Any] | None, created: float | None,
                    authored_at: float | None, status_source: str | None, progress_updated: float | None,
-                   title: str | None) -> None:
+                   title: str | None, opened: bool = False) -> None:
         """A running task's ``now_line`` / ``so_far`` from what it really did (live_status.py), and its
         ``short_status`` / ``detail`` from them unless the task itself wrote a status recently. The
-        handoff guess ("Investigating the stopped task") stops reading as "now" after a minute."""
+        handoff guess ("Investigating the stopped task") stops reading as "now" after a minute.
+        *opened*: the read is someone opening the task (its view or session page), the only read
+        that may ask the side model for a line; liveness loops and pushes never do."""
         if work["status"] in TERMINAL or work["status"] in NOT_STARTED or work["status"] in {
                 "waiting_for_approval", "cancel_requested"} or work.get("queued_behind") or work.get("waiting"):
             return
@@ -2710,7 +2713,7 @@ class StateStore:
         try:
             if summarizer is not None:
                 live = summarizer.line(key, state, request=request, started=created,
-                                       on_ready=(lambda: on_ready(key)) if on_ready else None)
+                                       on_ready=(lambda: on_ready(key)) if on_ready else None, ask=opened)
             else:
                 live = live_status.deterministic(state, now=time.time(), started=created)
         except Exception:

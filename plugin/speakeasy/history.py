@@ -406,6 +406,18 @@ _MD_LEAD = re.compile(r"(?m)^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d{1,2}[.)]\s+)")
 _MD_LINK = re.compile(r"!?\[([^\]\n]{1,200})\]\([^)\s]{1,500}\)")
 
 
+def _status_line(status: str, detail: str) -> str:
+    """A progress note's STATUS and DETAIL as one line, never the same words twice ("Checking the
+    wiki — Checking the wiki for the trip"): a DETAIL that restates its STATUS shows alone."""
+    status, detail = status.strip().rstrip("."), detail.strip().rstrip(".")
+    s, d = _norm(status), _norm(detail)
+    if not d or d == s or d in s:
+        return status or detail
+    if not s or s in d:
+        return detail
+    return f"{status} — {detail}"
+
+
 def assistant_text(text: str, *, brief: bool = False) -> str:
     """An assistant message as shown: no machine blocks (question/views JSON), no "Voice: …" echo line,
     a progress note (STATUS:/DETAIL:) as its plain words.
@@ -424,7 +436,7 @@ def assistant_text(text: str, *, brief: bool = False) -> str:
     status, detail = _STATUS.search(out), _DETAIL.search(out)
     if status or detail:
         rest = _DETAIL.sub("", _STATUS.sub("", out)).strip()
-        said = " — ".join(m.group(1).strip().rstrip(".") for m in (status, detail) if m)
+        said = _status_line(status.group(1) if status else "", detail.group(1) if detail else "")
         out = (said + ("\n\n" + rest if rest else "")) if said else rest
     if label := _REPORT_LABEL.search(out):
         spoken = _SPOKEN.search(out)
@@ -1508,9 +1520,11 @@ def session_live(state_db: Path, session_id: str, entries: list[dict[str, Any]],
     said = next((e for e in reversed(entries) if e.get("kind") in ("assistant", "user", "note")), None)
     if (said and said.get("kind") == "assistant" and not said.get("update") and isinstance(said.get("at"), (int, float))
             and now - float(said["at"]) <= live_status.WINDOW_S and (not line or line.get("source") != "idle")):
-        # What the worker just said it's doing ("Fixing the test.") beats "Running a command".
-        first = re.split(r"(?<=[.!?])\s+", " ".join(_MD_MARKS.sub("", said.get("text") or "").split()), maxsplit=1)[0]
-        mine = live_status._clean(first.rstrip("."), live_status.NOW_CHARS)
+        # What the worker just said it's doing ("Fixing the test.") beats "Running a command"; a
+        # STATUS — DETAIL note gives its STATUS. Talk about a hiccup ("Using patch instead") never.
+        text = " ".join(_MD_MARKS.sub("", said.get("text") or "").split()).split(" — ", 1)[0]
+        first = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+        mine = None if live_status.recovery_talk(first) else live_status._clean(first.rstrip("."), live_status.NOW_CHARS)
         if mine:
             line = {**(line or {}), "now": mine}
     if not line or not line.get("now"):

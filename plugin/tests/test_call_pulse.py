@@ -43,7 +43,8 @@ def setup(service, clock, key="idem_p1", delegation="t_p1", request="Find why th
           title=None, model=None):
     """A running task with a real store row (the card the pulse reads), on a fake call. `model`: the
     side model's reply for the card's live line (None: the deterministic line from its steps)."""
-    service.store.live_summarizer = LS.Summarizer(model, clock=clock.wall, spawn=lambda fn: fn())
+    service.store.live_summarizer = LS.Summarizer(model, clock=clock.wall, spawn=lambda fn: fn(),
+                                                  enabled=lambda: model is not None)
     worker = _progress_worker(service)
     worker.connected_at = clock.t
     service.store.reserve_run(key, "int_x", "call_" + key, 1)
@@ -111,7 +112,8 @@ def test_the_side_models_card_line_is_what_is_said(service, clock):
     worker, backend = setup(service, clock, model=lambda messages: reply)
     tool(service, backend, clock, "read_file", "/srv/shop/logs/checkout.log", "c1")
     tool(service, backend, clock, "terminal", "pytest -q tests/test_checkout.py", "c2", done=False)
-    card(service, backend)  # the app drew the card: the side model's words are in
+    # The user opened the task (the only read that may ask the side model): its words are in.
+    service.store.work(idem_key=backend.idem_key, activity_detail=True)
     clock.t += calls.PULSE_EVERY_S + 1
     assert card(service, backend)["now_line"] == "Rerunning the checkout test to confirm the timeout"
     assert tick(worker)

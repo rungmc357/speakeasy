@@ -182,6 +182,7 @@ def thread_commentary(text: Any) -> str | None:
 
 def interim_progress(event: dict[str, Any]) -> tuple[str, str] | None:
     """Parse only explicitly user-facing STATUS/DETAIL commentary; never summarize tools."""
+    from .live_status import recovery_talk as _recovery_talk
     short_status = event.get("short_status")
     detail = event.get("detail")
     text = event.get("text")
@@ -191,7 +192,9 @@ def interim_progress(event: dict[str, Any]) -> tuple[str, str] | None:
         if status_match:
             short_status = status_match.group("status")
             detail = detail_match.group("detail") if detail_match else short_status
-        elif valid_short_status(text):
+        elif valid_short_status(text) and not _recovery_talk(text):
+            # A bare "-ing" sentence counts, but never the agent's talk about a hiccup
+            # ("Using patch instead"): that is how it fixes its own step, not what the job is doing.
             short_status, detail = text, text
     safe_status = valid_short_status(short_status)
     safe_detail = safe_user_text(detail, 500)

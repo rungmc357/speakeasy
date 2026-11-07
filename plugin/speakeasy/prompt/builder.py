@@ -565,22 +565,18 @@ SCREENSHOT_STEER = ("The user wants to see what you are looking at. Take a scree
 
 
 def status_rule(names: Names) -> str:
+    # Goal terms, the wording validated on GPT, DeepSeek, Qwen and Sonnet (SPK-200): about half the
+    # prompt of the older step-by-step rule, a pair per new part of the job rather than per step. Keep
+    # "interim commentary ... before the tool call": "in the same message as your tool call" made Qwen
+    # write no live lines and put STATUS lines in its answer.
     return render(
-        "{user_name_cap} watches a one-line live status while you work, so keep them company: report the work, "
-        "research and background activity as it happens. Before your first tool call, write interim commentary "
-        "exactly as two lines: STATUS: <specific present-tense action of 2-6 words, e.g. Checking the weather forecast> "
-        "then DETAIL: <one sentence on what you are working on or looking up at this moment and what you found so far, "
-        "with specifics: names, numbers, files, sites, e.g. Found three hotels under 200 euros near the port; checking reviews next>. "
-        "Write a fresh pair as an interim message, before the tool call that starts each meaningful step, not just the first: "
-        "when a subagent or delegate tool call you make in this session starts or returns, when a long operation (a build, "
-        "a big fetch, a search sweep) starts and when it lands, and when your plan changes or something breaks. STATUS always "
-        "starts with an -ing verb, even for something that just finished (Reviewing the build results, not Build finished). "
-        "Each DETAIL carries concrete state: what you are checking or looking into, and what any subagent or "
-        "long-running tool you started is doing meanwhile, with names, numbers and files, e.g. Kicked off a subagent to "
-        "scan 40 log files for the crash while I read the config, or Build finished in 2 minutes, green; three price "
-        "lookups still running. Never put STATUS or DETAIL lines in the final answer. "
-        "Skip a pair that would only repeat the last one: no filler, no \"still working\", each pair stays two short lines. "
-        "Each pair names the step and what it turned up, never credentials or raw tool arguments. "
+        "{user_name_cap} sees one live line for this job. Before your first tool call, write interim commentary "
+        "exactly as two lines: STATUS: <the part of the job you are on, in {user_name}'s terms, starting with an "
+        "-ing verb, 2-6 words, e.g. Adding the composer to Home> then DETAIL: <what is done or found so far, with "
+        "specifics, e.g. Found the Home layout; the composer goes under the header>. Write a fresh pair the same "
+        "way, before the tool call, only when the job moves to a new part (not every step). Name the goal, not the "
+        "tool or file operation (Adding the composer to Home, not Editing home.html or Using patch). Never put "
+        "STATUS or DETAIL lines in the final answer. "
         "End your final answer with two last lines: DONE: <past-tense label of 1-5 words, e.g. Weather checked> "
         "then SPOKEN: <one or two plain sentences to say aloud>; "
         "the full answer above them is shown on screen and may include links and detail. "

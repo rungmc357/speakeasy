@@ -1436,6 +1436,25 @@ def _decide_with_focus(request: str, open_tasks: list[OpenTask], topics: list[To
     return dataclasses.replace(decision, latency_ms=latency)
 
 
+def side_model_picked(config: dict[str, Any] | None = None) -> bool:
+    """Whether the user chose a model of their own for Speakeasy's side tasks
+    (``auxiliary.speakeasy_router``). Left on "auto" it is their main model: extras that only
+    polish (the live-line summarizer) stay off then, so they never bill the main model."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly  # type: ignore
+            config = load_config_readonly()
+        except Exception:
+            return False
+    aux = (config or {}).get("auxiliary") if isinstance(config, dict) else None
+    block = aux.get(AUX_TASK) if isinstance(aux, dict) else None
+    if not isinstance(block, dict):
+        return False
+    provider = str(block.get("provider") or "auto").strip().lower() or "auto"
+    model = str(block.get("model") or "").strip()
+    return bool(model) or provider != "auto"
+
+
 def routing_model(config: dict[str, Any] | None = None) -> str:
     """Which model routing uses, for display: auxiliary.speakeasy_router in the user's config."""
     if config is None:

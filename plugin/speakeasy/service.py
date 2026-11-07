@@ -395,10 +395,11 @@ class VoiceService(SecureInputMixin):
             self.hermes.agent_lookup = self.store.agent_lookup
         self.rt.session_db = self._db_for
         self.store.describe_model = self.describe_model
-        # A running task's live line (live_status.py): the side model words it at most every 40 s
-        # per task; a deterministic line from its steps otherwise. A fresh summary republishes.
+        # A running task's live line (live_status.py): a deterministic line from its steps, plus the
+        # task's own STATUS/DETAIL. The side model words it only when the user picked their own side
+        # model (never their main model), on a real open, once per phase, capped per hour.
         from . import live_status as LS
-        self.store.live_summarizer = LS.Summarizer(self._live_summary_call)
+        self.store.live_summarizer = LS.Summarizer(self._live_summary_call, enabled=self._side_model_on)
         self.store.live_publish = lambda key: self.publish_all(key)
         # Messages sent to a task by id (POST /voice/work/{id}/message): replies by client_id for
         # MESSAGE_REPLAY_S, and the voiceless worker for tasks whose call is gone.
@@ -1272,6 +1273,18 @@ class VoiceService(SecureInputMixin):
     def _live_summary_call(messages: list[dict[str, str]]) -> str | None:
         from .router import aux_call
         return aux_call(messages, 8.0, 120)
+
+    _side_model_seen: tuple[float, bool] = (0.0, False)
+
+    def _side_model_on(self) -> bool:
+        """router.side_model_picked, read from the user's config at most once a minute."""
+        at, on = self._side_model_seen
+        now = time.monotonic()
+        if now - at >= 60.0 or not at:
+            from .router import side_model_picked
+            on = side_model_picked()
+            self._side_model_seen = (now, on)
+        return on
 
     def publish_all(self, key: str | None = None) -> None:
         events = getattr(self, "history_events", None)
