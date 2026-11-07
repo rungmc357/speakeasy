@@ -2,12 +2,53 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.42 · Mac 0.3.22 · iPhone build 68 — A new Home screen, and calmer, clearer pages
+
+The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.22 or iPhone build 68.
+
+**New**
+
+- **Home.** One screen for everything: what's live and what's new, in one ordered list, with anything that needs you at the top. A call happens right there on Home instead of on a separate screen, and the call's buttons sit in one bar along the bottom; tap the keyboard button to type a message, and tap it again or send to put it away. On iPad, Home sits beside the open conversation. On the Mac, the menu bar opens Home, the main window shows it between the sidebar and the conversation, and a small floating bar holds the call's controls. The widgets read the same list. *(apps)*
+- **A calm first run.** iPhone, iPad and Mac open with four short screens about what Speakeasy does, then setup. "See how it works" plays a short demo; no sample call is needed. *(apps)*
+- **Who hears what.** A plain privacy screen in setup (Mac: right after the voice; iPhone and iPad: from the You're connected screen) and in Settings (top of Voice, and About). It says what stays on your computer (your agent, sessions, files and tools) and what the call voice hears (with the ChatGPT voice, OpenAI hears the call itself and a short note about you and your running tasks' names, but not your sessions, files, tools or attachments). It follows your voice setting, and adds a line about Cloudflare, notifications or listening mode only when you use them. *(apps)*
+- **Code you can copy.** Every code block in an answer shows as code with a one-tap Copy that copies exactly what's in the block. *(apps)*
+- **Email drafts and pictures on the Mac's chat page.** Review a draft there (Send, Deny or Revise) and look at the pictures a task sent, as on the iPhone. *(apps)*
+- **Usage numbers are opt-in.** Tokens, context and cost on task cards and chat pages are off until you turn them on in Settings, per device. *(apps)*
+
+**Pages and cards** *(apps)*
+
+- **Session pages say each thing once.** The bar says where the chat lives and that it's working; the task card says what it's doing now; the task's start time stands in for the day line under it. Your own messages have one look, notes and tool steps one pill style, and the page header sits on its own band so messages no longer scroll up into the title.
+- **"Didn't finish" says why,** right under it, so its buttons never stand alone.
+- **"Needs you" looks the same everywhere,** with one brass mark.
+- **Question cards have one close button, inside the card.** On the home card it replaces the separate "Not needed" link; on a call the pinned card's close button no longer hangs off the corner.
+- **Chart cards say what is plotted and in which order,** and the bars follow it; values are readable and an old reading says so.
+- **Easier to read.** Secondary text, recessed surfaces and every colour pairing now meet contrast checks in light and dark.
+- **Top bars match:** three button styles, and a conversation's title gets more room.
+
+**Calls**
+
+- **The call buttons stay whole on screen** and match the message box, on every iPhone and iPad. *(apps)*
+- **"Thinking…" and "Speaking" no longer draw on top of each other** while the state changes. *(apps)*
+- **Landscape with the keyboard open:** the work tray no longer covers the message box and call controls. *(apps)*
+- **Pinned weather on iPad** shows its whole hourly row. *(apps)*
+- **A message typed just as a paused call resumes** stays in the transcript.
+- **A call that drops while paused stays paused,** instead of ending as "Didn't finish".
+- **A spoken correction right after typing** is heard, not dropped as an echo of the typed words.
+- **A finished task's answer, question and pictures are saved before it says "done",** so they are always there when you open it.
+
+**Setup**
+
+- **You're connected** shows your computer's name rather than an address, and makes Sign in the main button while the voice isn't signed in. *(apps)*
+- **No Tailscale?** Setup's note now talks to you when you run it yourself, and no longer points at a file you don't have.
+- **Install docs** match the real first run, including Hermes 0.22.0 or newer.
+
+**Fixes**
+
+- Session pages no longer show Speakeasy's own task notes inside your words.
+- Swiping a card away on the board has a steady reveal and a readable delete colour. *(apps)*
+- Test and reliability fixes across the plugin and apps.
+
 ## Plugin 0.3.41 — Commands and code from a finished task show in the conversation
-## Apps (unreleased) — Who hears what
-
-- **Who hears what.** A plain privacy screen in setup (Mac: right after the voice; iPhone and iPad: from the You're connected screen) and in Settings (top of Voice, and About). It says what stays on your computer (your agent, sessions, files and tools) and what the call voice hears (with the ChatGPT voice, OpenAI hears the call itself and a short note about you and your running tasks' names, but not your sessions, files, tools or attachments). It follows your voice setting, and adds a line about Cloudflare, notifications or listening mode only when you use them.
-
-## Plugin 0.3.36 (unreleased) — Task cards say what the task is really doing
 
 - **The written answer shows, not just the spoken line.** When a task finishes, its conversation page now shows the full answer, with commands and code blocks intact, so the line the voice told you to paste is really there. The conversation list keeps the short line as its preview.
 - **"On screen" means on screen.** The voice only says a command is on screen when it is; a command the voice had but the written answer didn't is added to the answer.
