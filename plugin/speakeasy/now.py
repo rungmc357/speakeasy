@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -30,7 +31,10 @@ from .failures import UNKNOWN, failure_reason
 
 ROLLOVER_HOUR = 4
 OPENED_GRACE_S = 6 * 3600       # a seen answer opened in the 6 h before a rollover stays to the next one
-UNREAD_KEPT_S = 3 * 86400       # an answer nobody opened leaves Home after three days (it stays unread in Earlier)
+UNREAD_KEPT_S = 3 * 86400       # how far back Home looks for candidates
+ANSWER_KEPT_S = 12 * 3600       # a finished answer leaves Home once opened, or 12 h after it finished (it stays in Earlier)
+BASELINE_GRACE_S = 3600         # first use of Home: answers older than this count as seen, so an upgrade never floods it
+DISMISS_KEPT_S = 7 * 86400
 ROLLOVER_NOTICES = 3            # "Moved 3 seen answers to Earlier." on the first three mornings that move any
 MAX_ITEMS = 60
 BACKGROUND_ITEMS = 5
@@ -72,6 +76,34 @@ def _plural(n: int, one: str, many: str) -> str:
 def _clip(text: Any, limit: int) -> str:
     words = " ".join(str(text or "").split())
     return words if len(words) <= limit else words[:limit - 1].rstrip(" ,;:.") + "\u2026"
+
+
+def full_title(name: str | None, full: str | None) -> str | None:
+    """A job's whole title when its short name is the start of it ("Check email for pressing" ->
+    "Check email for pressing messages"): Home never shows a phrase cut mid-way."""
+    if not name:
+        return full
+    norm = lambda t: " ".join(re.sub(r"[\"\u201c\u201d]", "", t or "").split()).lower()
+    whole = " ".join(re.sub(r"[\"\u201c\u201d]", "", full or "").split()).strip(" ,.:;-")
+    if whole and len(whole) <= TITLE_CHARS and norm(whole).startswith(norm(name)) and len(whole) > len(name):
+        return whole
+    return name
+
+
+def origin(at: float, now: float, tz: dt.tzinfo) -> dict[str, Any] | None:
+    """Where a card came from, by real calendar days in the phone's zone: "From yesterday · 8:13 PM",
+    "From Wednesday · 8:13 PM" within the week, else "From Nov 4". None for today."""
+    day = dt.datetime.fromtimestamp(at, tz)
+    today = dt.datetime.fromtimestamp(now, tz).date()
+    ago = (today - day.date()).days
+    if ago <= 0:
+        return None
+    clock = day.strftime("%I:%M %p").lstrip("0")
+    if ago == 1:
+        return {"kind": "yesterday", "at": at, "label": f"From yesterday \u00b7 {clock}"}
+    if ago < 7:
+        return {"kind": "earlier_day", "at": at, "label": f"From {day.strftime('%A')} \u00b7 {clock}"}
+    return {"kind": "earlier_day", "at": at, "label": f"From {day.strftime('%b')} {day.day}"}
 
 
 def _cap(text: str) -> str:
@@ -192,27 +224,55 @@ class NowModel:
     def call_summary(self, call: Any, now: float) -> dict[str, Any] | None:
         """The "Your call · 6 min" card: what the call did, and the decisions said on it."""
         with call.lock:
-            runs = [(t, r.idem_key, r.status) for t, r in call.runs.items()
-                    if r.idem_key and r.status != "rejected" and r.idem_key not in call.carried_keys]
-        things, decisions = [], []
-        for task_id, key, _status in runs:
-            if task_id.startswith("choice_"):
-                answer = self.store.question_answer(key)
-                if answer:
-                    decisions.append(_clip(answer, 80))
-                continue
-            title = self.store.title(key) or self.store.request_text(key)
-            if title:
-                things.append(_clip(title, TITLE_CHARS))
+            runs = [(t, r.idem_key, r.idem_key in call.carried_keys) for t, r in call.runs.items()
+                    if r.idem_key and r.status != "rejected"]
+        things, decisions, answered, asking = [], [], [], []
+        keys = [k for t, k, _ in runs if not t.startswith("choice_")]
+        try:
+            open_keys = set(self.svc._open_questions(keys, now)) if keys else set()
+        except Exception:
+            open_keys = set()
+        for task_id, key, carried in runs:
             answer = self.store.question_answer(key)
             if answer:
                 decisions.append(_clip(answer, 80))
+            if task_id.startswith("choice_"):
+                continue
+            title = _clip(self.store.title(key) or self.store.request_text(key) or "", TITLE_CHARS)
+            if not title:
+                continue
+            if not carried:
+                things.append(title)
+            status, settled = self.store.run_settled(key)
+            if key in open_keys:
+                asking.append(title)
+            elif status == "completed" and settled and call.started_at - 1 <= settled <= call.ended_at + 5:
+                answered.append(title)
         minutes = max(1, round((call.ended_at - call.started_at) / 60))
         return {"id": f"call:{call.interaction_id}", "interaction_id": call.interaction_id,
                 "title": f"Your call \u00b7 {minutes} min", "started_at": round(call.started_at, 3),
                 "ended_at": round(call.ended_at, 3), "minutes": minutes,
                 "session_id": getattr(call, "live_session_id", None), "things": things[:4],
-                "more_things": max(0, len(things) - 4), "decisions": decisions[:3]}
+                "more_things": max(0, len(things) - 4), "decisions": decisions[:3],
+                "line": call_line(things, answered, asking, decisions)}
+
+    def _raw_cards(self, run_id: str | None) -> list[Any] | None:
+        """The stored cards (with their file paths, which the public result leaves out)."""
+        try:
+            return self.store.result_cards(run_id) if run_id else None
+        except Exception:
+            return None
+
+    def _title(self, work: dict[str, Any]) -> str:
+        job = work.get("job") or {}
+        name = job.get("name") or work.get("title") or "A task"
+        full = None
+        if job.get("id") and job.get("name"):
+            try:
+                full = self.store.job_full_title(job["id"])
+            except Exception:
+                full = None
+        return _clip(full_title(name, full) or name, TITLE_CHARS)
 
     def call_state(self, call: Any, now: float) -> dict[str, Any]:
         """What Home needs from a live call: which task the voice is on (and since when), which
@@ -252,12 +312,13 @@ class NowModel:
         status = work.get("status") or row["status"]
         run_id = work.get("run_id") or row["run_id"]
         result = work.get("result") or {}
-        title = _clip((work.get("job") or {}).get("name") or work.get("title") or "A task", TITLE_CHARS)
+        title = self._title(work)
         session = row.get("linked_source") or work.get("session_id") or row.get("session_id")
         finished = float(row["settled_at"]) if row.get("settled_at") else None
         started = float(row["created"] or work.get("started_at") or 0) or None
         seen = bool(row["seen"]) or bool(work.get("seen")) or (
-            read_at is not None and finished is not None and read_at + 1 >= finished)
+            read_at is not None and finished is not None and read_at + 1 >= finished) or (
+            finished is not None and finished < getattr(self, "_baseline", 0) - BASELINE_GRACE_S) or delivered_elsewhere(row)
         item: dict[str, Any] = {"session_id": session, "run_id": run_id, "title": title, "source": "speakeasy",
                                 "started_at": started, "updated_at": float(row.get("updated") or started or now)}
         if finished is not None:
@@ -292,7 +353,7 @@ class NowModel:
                 f"Starts when \u201c{behind}\u201d finishes." if behind else "Waiting for another task."), LINE_CHARS))
             item["waiting_on"] = _clip(behind, 60) if behind else "another task"
         elif status in {RS.RunState.FAILED, RS.RunState.INTERRUPTED}:
-            if seen:
+            if seen or (finished or now) < max(edge, cleared):
                 return None  # opened: it lives in its conversation (Earlier) from here
             item.update(kind=STOPPED, line=_clip(work.get("failure_reason") or failure_reason(
                 status, row.get("failure")) or "It stopped.", 240))
@@ -305,20 +366,23 @@ class NowModel:
                     return None
                 item.update(kind=WAITING, line="Paused. Its question is in the conversation.",
                             dismissed_question=True)
-            elif not seen:
-                if now - (finished or now) > UNREAD_KEPT_S:
-                    return None
-                item.update(kind=NEW_ANSWER, line=line, unread=True)
             else:
-                if (finished or 0) < cleared or not seen_stays(finished or 0, read_at, edge):
+                # Home is what's live or new: an answer leaves once it's opened, at the 4 AM rollover
+                # after it finished (read or not), 12 h after it finished, or on Clear. A seen one
+                # stays only while the call it belongs to is on.
+                on_this_call = call_info is not None and row["key"] in call_info.get("keys", {})
+                at = finished or now
+                if not on_this_call and (seen or at < max(edge, cleared) or now - at > ANSWER_KEPT_S):
                     return None
-                item.update(kind=SEEN_ANSWER, line=line)
+                item.update(kind=SEEN_ANSWER if seen else NEW_ANSWER, line=line, unread=not seen)
         else:
             return None  # cancelled, rejected: nothing to look at
         item.setdefault("id", f"s:{session}" if session else f"t:{run_id or row['key']}")
         item.setdefault("unread", False)
-        if finished is not None and finished < edge and item["kind"] in {NEW_ANSWER, SEEN_ANSWER, STOPPED}:
-            item["provenance"] = {"kind": "yesterday", "at": finished}
+        came = origin(finished, now, self._zone) if finished is not None and item["kind"] in {
+            NEW_ANSWER, SEEN_ANSWER, STOPPED} else None
+        if came is not None:
+            item["provenance"] = came
         elif call is not None and row.get("interaction_id") != call.interaction_id and item["kind"] in {
                 NEW_ANSWER, QUESTION, STOPPED} and (finished or 0) >= 0:
             started_call = getattr(call, "started_at", None)
@@ -337,7 +401,7 @@ class NowModel:
                 item.update(on_call="asking", say_ok=not risky, asking_label="Asking now",
                             **({"lock_line": "Can't be undone \u00b7 Needs a tap"} if risky else {}))
             item["_task_id"] = task_id
-        thumbs = _thumbs(result, run_id)
+        thumbs = _thumbs(result, run_id, self._raw_cards(run_id) if (result.get("cards")) else None)
         if thumbs:
             item["thumbs"] = thumbs
         return item
@@ -348,6 +412,12 @@ class NowModel:
         zone_ = zone(tz)
         edge = rollover(now, zone_)
         cleared = self._meta_float("now_cleared_at")
+        self._zone = zone_
+        self._baseline = self._meta_float("now_baseline_at")
+        if not self._baseline:
+            # First use of Home (or of this rule, after an upgrade): older answers count as seen.
+            self._baseline = now
+            self.store.set_meta("now_baseline_at", repr(now))
         svc = self.svc
         marks = self.store.session_marks()
         call = self.live_call()
@@ -408,10 +478,13 @@ class NowModel:
                 line = self._session_line(sid) if lines_left > 0 else None
                 lines_left -= 1
                 items.append({**base, "kind": WORKING, "line": _clip(line or "Working on it", LINE_CHARS)})
-            elif s.get("unread") and now - float(s.get("last_activity") or 0) <= 86400:
+            elif s.get("unread") and str(s.get("source") or "").lower() not in OTHER_SURFACES and float(
+                    s.get("last_activity") or 0) >= max(
+                    edge, cleared, self._baseline - BASELINE_GRACE_S, now - ANSWER_KEPT_S):
                 items.append({**base, "kind": NEW_ANSWER, "line": _clip(s.get("preview"), 240), "unread": True,
                               "finished_at": s.get("last_activity")})
         items = self._apply_later(items, now)
+        items = self._apply_dismissed(items, now)
         items = order(items, self._first_seen(items, now))
         # On a call: the question the voice is asking right now goes first (tier 0).
         items.sort(key=lambda i: 0 if i.get("on_call") == "asking" else 1)
@@ -502,6 +575,35 @@ class NowModel:
         for item_id, mark in later.items():
             if mark["woke_at"] and now - float(mark["woke_at"]) > LATER_KEPT_S:
                 self.store.clear_later(item_id)
+        return out
+
+    # -- Dismiss -------------------------------------------------------------------------------
+    @staticmethod
+    def dismiss_signature(item: dict[str, Any]) -> str:
+        """What a dismissed card must change for it to come back: a new answer, a new question, a
+        new run (a working card's line changing doesn't count)."""
+        return hashlib.sha256(json.dumps([item.get("kind"), item.get("finished_at"), item.get("run_id"),
+                                          (item.get("question") or {}).get("prompt")],
+                                         sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+    def dismissed(self) -> dict[str, dict[str, Any]]:
+        try:
+            marks = json.loads(self.store.get_meta("now_dismissed") or "{}")
+        except ValueError:
+            marks = {}
+        return marks if isinstance(marks, dict) else {}
+
+    def set_dismissed(self, marks: dict[str, dict[str, Any]]) -> None:
+        self.store.set_meta("now_dismissed", json.dumps(marks, sort_keys=True))
+
+    def _apply_dismissed(self, items: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
+        marks = self.dismissed()
+        if not marks:
+            return items
+        out = [i for i in items if (marks.get(i["id"]) or {}).get("sig") != self.dismiss_signature(i)]
+        kept = {k: v for k, v in marks.items() if now - float(v.get("at") or 0) <= DISMISS_KEPT_S}
+        if kept != marks:
+            self.set_dismissed(kept)
         return out
 
     def find(self, item_id: str, tz: str | None = None) -> dict[str, Any] | None:
@@ -610,12 +712,58 @@ def public_question(view: dict[str, Any], run_id: str | None, asked_at: float) -
     return out
 
 
-def _thumbs(result: dict[str, Any], run_id: str | None) -> list[dict[str, Any]]:
-    """The newest two pictures a task produced (never file chips)."""
+def call_line(things: list[str], answered: list[str], asking: list[str], decisions: list[str]) -> str:
+    """The "Your call" card's line: what the call started, what got answered, what's asking you,
+    and what you said. "Short call, nothing started." when it did none of that."""
+    def join(xs: list[str]) -> str:
+        xs = xs[:3]
+        return xs[0] if len(xs) == 1 else ", ".join(xs[:-1]) + " and " + xs[-1]
+    started = [t for t in things if t not in answered and t not in asking]
+    parts = []
+    if started:
+        parts.append(f"Started {join(started)}.")
+    if answered:
+        parts.append(f"Answered {join(answered)}.")
+    if asking:
+        parts.append(f"{join(asking)} {'has a question' if len(asking) == 1 else 'have questions'} for you.")
+    if decisions:
+        parts.append(f"You said: {'; '.join(decisions[:2])}.")
+    return _cap(" ".join(parts)) if parts else "Short call, nothing started."
+
+
+# Chat surfaces an answer is delivered to (a Discord thread, a Telegram chat): read there, not new here.
+OTHER_SURFACES = frozenset({"discord", "telegram", "slack", "whatsapp", "signal", "imessage", "bluebubbles", "sms",
+                            "email", "matrix", "mattermost", "feishu", "dingtalk", "wecom", "weixin", "homeassistant"})
+
+
+def delivered_elsewhere(row: dict[str, Any]) -> bool:
+    """A task whose answer went to another surface (``continued.platform``) counts as read."""
+    raw = row.get("continued")
+    try:
+        cont = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return False
+    return isinstance(cont, dict) and str(cont.get("platform") or "").lower() in OTHER_SURFACES
+
+
+def _image_there(card: dict[str, Any]) -> bool:
+    """A picture Home can actually show: its file is still on disk, or it has a web address."""
+    path = card.get("path")
+    if isinstance(path, str):
+        return os.path.isfile(os.path.expanduser(path))
+    url = card.get("image_url")
+    return isinstance(url, str) and url.startswith(("https://", "http://"))
+
+
+def _thumbs(result: dict[str, Any], run_id: str | None, raw: list[Any] | None = None) -> list[dict[str, Any]]:
+    """The newest two pictures a task produced that can still be shown (never file chips, never a
+    picture whose file is gone: the app would draw an empty tile)."""
     cards = result.get("cards") if isinstance(result, dict) else None
     if not run_id or not isinstance(cards, list):
         return []
-    nums = [n + 1 for n, c in enumerate(cards[:8]) if isinstance(c, dict) and c.get("kind") == "image"]
+    raw = raw if isinstance(raw, list) else cards
+    nums = [n + 1 for n, c in enumerate(cards[:8]) if isinstance(c, dict) and c.get("kind") == "image"
+            and n < len(raw) and isinstance(raw[n], dict) and _image_there(raw[n])]
     return [{"url": f"/voice/card-image/{run_id}/{n}"} for n in nums[-2:]]
 
 

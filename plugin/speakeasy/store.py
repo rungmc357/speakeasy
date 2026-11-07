@@ -785,6 +785,19 @@ class StateStore:
                 (session_id, session_id, time.time() + 1 if at is None else at + 1))
             return cur.rowcount
 
+    def job_full_title(self, job_id: str) -> str | None:
+        """The whole title a job's short name was cut from (its naming task's own title)."""
+        with self._lock:
+            row = self._db.execute("SELECT coalesce(r.own_title, r.title) FROM jobs j JOIN runs r ON r.idem_key = j.from_key "
+                                   "WHERE j.job_id=?", (job_id,)).fetchone()
+        return row[0] if row and row[0] else None
+
+    def run_settled(self, key: str) -> tuple[str | None, float | None]:
+        """A task's status and when it settled."""
+        with self._lock:
+            row = self._db.execute("SELECT status, settled_at FROM runs WHERE idem_key=?", (key,)).fetchone()
+        return (row[0], row[1]) if row else (None, None)
+
     def now_runs(self, since: float, limit: int = 120) -> list[dict[str, Any]]:
         """Home's candidates (now.py): every task that isn't finished, and every one that settled
         since *since*, newest first, helpers (a task's own parts) left to the task they belong to."""
@@ -792,12 +805,13 @@ class StateStore:
             rows = self._db.execute(
                 "SELECT r.idem_key, r.run_id, r.status, r.created, r.settled_at, r.session_id, r.interaction_id, "
                 "coalesce(r.dismissed,0), coalesce(r.seen,0), r.set_aside, r.question_closed, r.answered, "
-                "r.failure, r.updated, h.source_session FROM runs r LEFT JOIN history_links h ON h.idem_key = r.idem_key "
+                "r.failure, r.updated, h.source_session, r.continued FROM runs r LEFT JOIN history_links h ON h.idem_key = r.idem_key "
                 "WHERE r.status != 'rejected' AND (r.settled_at IS NULL OR r.settled_at >= ? OR r.status NOT IN "
                 "('completed','failed','cancelled','interrupted')) ORDER BY r.rowid DESC LIMIT ?",
                 (since, limit)).fetchall()
         names = ("key", "run_id", "status", "created", "settled_at", "session_id", "interaction_id", "dismissed",
-                 "seen", "set_aside", "question_closed", "answered", "failure", "updated", "linked_source")
+                 "seen", "set_aside", "question_closed", "answered", "failure", "updated", "linked_source",
+                 "continued")
         return [dict(zip(names, r)) for r in rows]
 
     def later_items(self) -> dict[str, dict[str, Any]]:

@@ -176,6 +176,7 @@ CAPABILITIES["agent_model"] = True
 # approval, /voice/now/clear-seen, the ``now`` {rev} event on /voice/history/events, Earlier's
 # ``?kinds=`` filter menu with counts, and one read state (a read conversation's answers are seen).
 CAPABILITIES["now"] = True
+CAPABILITIES["now_dismiss"] = True  # build 69: POST/DELETE /voice/now/{id}/dismiss, DELETE /voice/now/clear-seen (Undo)
 CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking/heard), call_summary
 
 
@@ -3011,15 +3012,43 @@ class VoiceService(SecureInputMixin):
         self._now_changed()
         return {"ok": True, "id": item_id, "later": {"until": until, "on_change": on_change}}
 
-    def now_clear_seen(self, body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /voice/now/clear-seen``: every seen answer moves to Earlier now."""
+    def now_clear_seen(self, body: dict[str, Any], undo: bool = False) -> dict[str, Any]:
+        """``POST /voice/now/clear-seen``: every finished answer, seen or not, moves to Earlier now
+        (Home's Clear). ``DELETE`` undoes the last Clear. Shared by every device."""
         if body:
             raise ServiceError(400, "body must be empty")
+        if undo:
+            prev = self.store.get_meta("now_cleared_prev")
+            if prev is not None:
+                self.store.set_meta("now_cleared_at", prev)
+            self._now_changed()
+            return {"ok": True, "undone": prev is not None}
         before = self.now_model.build(peek=True)
+        self.store.set_meta("now_cleared_prev", self.store.get_meta("now_cleared_at") or "0")
         self.store.set_meta("now_cleared_at", repr(time.time()))
-        moved = sum(1 for i in before["items"] if i["kind"] == "seen_answer")
+        moved = sum(1 for i in before["items"] if i["kind"] in {"seen_answer", "new_answer"})
         self._now_changed()
-        return {"ok": True, "moved": moved}
+        return {"ok": True, "moved": moved, "undo": True}
+
+    def now_dismiss(self, item_id: str, body: dict[str, Any], undo: bool = False) -> dict[str, Any]:
+        """``POST /voice/now/{id}/dismiss``: the card moves to Earlier on every device (nothing is
+        deleted; it comes back if it changes: a new answer or a new question). ``DELETE`` undoes."""
+        if body:
+            raise ServiceError(400, "body must be empty")
+        model = self.now_model
+        marks = model.dismissed()
+        if undo:
+            marks.pop(item_id, None)
+            model.set_dismissed(marks)
+            self._now_changed()
+            return {"ok": True, "id": item_id, "dismissed": False}
+        item = model.find(item_id)
+        if item is None:
+            raise ServiceError(404, "That card isn't on Home.")
+        marks[item_id] = {"sig": model.dismiss_signature(item), "at": time.time()}
+        model.set_dismissed(marks)
+        self._now_changed()
+        return {"ok": True, "id": item_id, "dismissed": True}
 
     def now_answer(self, item_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /voice/now/{id}/answer {option_id} | {text}``: one way to answer a question card,

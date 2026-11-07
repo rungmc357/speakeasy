@@ -800,10 +800,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/now/clear-seen":
                 self._reply(200, self.service.now_clear_seen(self._body()))
                 return
-            now_act = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/(later|answer|approval)", path)
+            now_act = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/(later|answer|approval|dismiss)", path)
             if now_act:
                 item_id, act = unquote(now_act.group(1)), now_act.group(2)
-                if act == "later":
+                if act == "dismiss":
+                    self._reply(200, self.service.now_dismiss(item_id, self._body()))
+                elif act == "later":
                     self._reply(200, self.service.now_later(item_id, self._body()))
                 elif act == "answer":
                     self._reply(200, self.service.now_answer(item_id, self._body()))
@@ -947,6 +949,13 @@ class Handler(BaseHTTPRequestHandler):
             now_later = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/later", path)
             if now_later:  # bring a put-off item back now
                 self._reply(200, self.service.now_later(unquote(now_later.group(1)), {}, undo=True))
+                return
+            if path == "/voice/now/clear-seen":  # undo the last Clear
+                self._reply(200, self.service.now_clear_seen({}, undo=True))
+                return
+            now_undismiss = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/dismiss", path)
+            if now_undismiss:  # undo a swipe-dismiss
+                self._reply(200, self.service.now_dismiss(unquote(now_undismiss.group(1)), {}, undo=True))
                 return
             staged = re.fullmatch(rf"/voice/attachments/{_ID}", path)
             if staged:

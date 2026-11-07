@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from fakes import wait_for
+from fakes import http, wait_for
 from speakeasy import history as H
 from speakeasy import now as N
 from test_history import NOW, add_msg, add_session, get, make_db, never_routed, post, state  # noqa: F401
@@ -132,8 +132,9 @@ def test_home_orders_questions_stopped_working_new_then_seen(server, service, st
     store.mark_seen("s1")
     status, body = get(server, "/voice/now?tz=America/New_York")
     assert status == 200, body
-    assert [i["kind"] for i in body["items"]] == ["question", "stopped", "working", "new_answer", "seen_answer"]
-    assert [i["tier"] for i in body["items"]] == [1, 2, 3, 4, 6]
+    # The answer already seen (s1) is off Home: Home is what's live or new.
+    assert [i["kind"] for i in body["items"]] == ["question", "stopped", "working", "new_answer"]
+    assert [i["tier"] for i in body["items"]] == [1, 2, 3, 4]
     assert body["sentence"] == "One question for you, one thing stopped, one thing in the works, and one new answer."
     assert body["counts"] == {"needs_you": 1, "stopped": 1, "working": 1, "waiting": 0, "finished_unread": 1,
                               "on_its_own_running": 0}
@@ -166,24 +167,187 @@ def test_a_working_card_never_moves_while_it_keeps_working(service):
     assert [i["id"] for i in service.now({})["items"]] == ids
 
 
-def test_old_seen_answers_leave_at_the_rollover_and_clear_seen_moves_the_rest(server, service):
+def _clock(service, at):
+    service.now_model.clock = lambda: at
+    service.store.set_meta("now_baseline_at", repr(at - 30 * 86400))  # not a first use
+
+
+NY = "America/New_York"
+
+
+def test_answers_leave_at_the_rollover_read_or_not_and_clear_moves_the_rest_with_undo(server, service):
     store = service.store
-    now = time.time()
-    edge = N.rollover(now, N.zone("UTC"))
+    now = _at(NY, 2026, 11, 6, 22, 23)
+    _clock(service, now)
+    edge = N.rollover(now, N.zone(NY))
     task(store, "old", "completed", session="s_old", request="Old one", result={"spoken": "x", "headline": "Old."},
          settled=edge - 3 * 3600)
-    store.mark_seen("old")
+    task(store, "older", "completed", session="s_older", request="Older one", result={"spoken": "x"},
+         settled=now - 2 * 86400)
+    task(store, "seen", "completed", session="s_seen", request="Seen one", result={"spoken": "x"}, settled=now - 60)
+    store.mark_seen("seen")
     task(store, "new", "completed", session="s_new", request="New one", result={"spoken": "y", "headline": "New."},
-         settled=max(edge + 1, now - 5))
-    store.mark_seen("new")
-    body = service.now({"tz": "UTC"})
-    assert [i["title"] for i in body["items"]] == ["New one"]
-    assert body["notice"] == {"kind": "rollover", "moved": 1, "text": "Moved one seen answer to Earlier."}
-    assert service.now({"tz": "UTC"})["notice"] is None, "shown once"
+         settled=now - 5)
+    body = service.now({"tz": NY})
+    assert [i["title"] for i in body["items"]] == ["New one"], "unread but before 4 AM: Earlier"
+    assert body["sentence"] == "New one has a new answer."
     status, moved = post(server, "/voice/now/clear-seen", {})
-    assert status == 200 and moved["moved"] == 1
-    assert service.now({"tz": "UTC"})["items"] == []
-    assert service.now({"tz": "UTC"})["sentence"] == "All quiet."
+    assert status == 200 and moved["moved"] == 1 and moved["undo"] is True
+    assert service.now({"tz": NY})["items"] == []
+    assert service.now({"tz": NY})["sentence"] == "All quiet."
+    status, _ = _delete(server, "/voice/now/clear-seen")
+    assert status == 200
+    assert [i["title"] for i in service.now({"tz": NY})["items"]] == ["New one"], "Undo brings it back"
+
+
+def _delete(server, path):
+    return http(server.base_url, "DELETE", path, token=server.token)
+
+
+def test_an_unread_answer_leaves_home_twelve_hours_after_it_finished(service):
+    now = _at(NY, 2026, 11, 6, 22, 0)
+    _clock(service, now)
+    task(service.store, "a", "completed", session="s_a", request="Thirteen hours ago", result={"spoken": "x"},
+         settled=now - 13 * 3600)
+    task(service.store, "b", "completed", session="s_b", request="Eleven hours ago", result={"spoken": "x"},
+         settled=now - 11 * 3600)
+    assert [i["title"] for i in service.now({"tz": NY})["items"]] == ["Eleven hours ago"]
+
+
+def test_first_use_counts_older_answers_as_seen_so_an_upgrade_never_floods_home(service):
+    now = _at(NY, 2026, 11, 6, 22, 0)
+    service.now_model.clock = lambda: now
+    task(service.store, "a", "completed", session="s_a", request="Two hours before the upgrade", result={"spoken": "x"},
+         settled=now - 2 * 3600)
+    task(service.store, "b", "completed", session="s_b", request="Just before the upgrade", result={"spoken": "x"},
+         settled=now - 120)
+    assert [i["title"] for i in service.now({"tz": NY})["items"]] == ["Just before the upgrade"]
+    assert float(service.store.get_meta("now_baseline_at")) == now
+    service.now_model.clock = lambda: now + 60
+    assert [i["title"] for i in service.now({"tz": NY})["items"]] == ["Just before the upgrade"], "set once"
+
+
+def test_an_answer_delivered_to_a_chat_thread_counts_as_read(service):
+    now = _at(NY, 2026, 11, 6, 22, 0)
+    _clock(service, now)
+    task(service.store, "a", "completed", session="s_a", request="Answered in the thread", result={"spoken": "x"},
+         settled=now - 60)
+    with service.store._lock, service.store._db:
+        service.store._db.execute("UPDATE runs SET continued=? WHERE idem_key='a'",
+                                  (json.dumps({"platform": "discord", "thread_id": "1", "label": "a thread"}),))
+    assert service.now({"tz": NY})["items"] == []
+
+
+@pytest.mark.parametrize("ago_days,label", [
+    (0, None), (1, "From yesterday \u00b7 8:13 PM"), (2, "From Wednesday \u00b7 8:13 PM"), (9, "From Oct 28")])
+def test_where_a_card_came_from_uses_real_calendar_days(ago_days, label):
+    now = _at(NY, 2026, 11, 6, 22, 23)
+    at = _at(NY, 2026, 11, 6, 20, 13) - ago_days * 86400
+    got = N.origin(at, now, N.zone(NY))
+    assert (got or {}).get("label") == label
+    if label:
+        assert got["kind"] == ("yesterday" if ago_days == 1 else "earlier_day")
+
+
+def test_a_card_from_just_before_midnight_says_yesterday_after_midnight(service):
+    now = _at(NY, 2026, 11, 7, 1, 30)  # before the 4 AM rollover, after midnight
+    _clock(service, now)
+    task(service.store, "a", "completed", session="s_a", request="Late one", result={"spoken": "x"},
+         settled=_at(NY, 2026, 11, 6, 23, 50))
+    item = service.now({"tz": NY})["items"][0]
+    assert item["provenance"]["kind"] == "yesterday" and item["provenance"]["label"] == "From yesterday \u00b7 11:50 PM"
+
+
+def _title(store, key, title):
+    with store._lock, store._db:
+        store._db.execute("UPDATE runs SET own_title=?, title=? WHERE idem_key=?", (title, title, key))
+
+
+def test_home_titles_are_whole_phrases_never_cut_mid_way(service):
+    now = _at(NY, 2026, 11, 6, 22, 0)
+    _clock(service, now)
+    task(service.store, "a", "completed", session="s_a", request="x", result={"spoken": "x"}, settled=now - 60)
+    _title(service.store, "a", "Check the garden hose for leaks")
+    assert service.now({"tz": NY})["items"][0]["title"] == "Check the garden hose for leaks"
+    assert N.full_title("Check the garden", "Check the garden hose for leaks") == "Check the garden hose for leaks"
+    assert N.full_title("Desk hunt", "Something else entirely") == "Desk hunt"
+    long = "Plan " + "a very long " * 10 + "trip"
+    assert N.full_title("Plan a very", long) == "Plan a very", "too long for a card: the short name"
+
+
+def test_a_picture_whose_file_is_gone_is_never_sent(service, tmp_path):
+    now = _at(NY, 2026, 11, 6, 22, 0)
+    _clock(service, now)
+    real = tmp_path / "desk.png"
+    real.write_bytes(b"\x89PNG\r\n\x1a\n")
+    task(service.store, "a", "completed", session="s_a", request="Dead picture", settled=now - 60,
+         result={"spoken": "x", "cards": [{"kind": "image", "path": str(tmp_path / "gone.png")}]})
+    task(service.store, "b", "completed", session="s_b", request="Live picture", settled=now - 30,
+         result={"spoken": "x", "cards": [{"kind": "image", "path": str(tmp_path / "gone.png")},
+                                          {"kind": "image", "path": str(real)}]})
+    items = {i["title"]: i for i in service.now({"tz": NY})["items"]}
+    assert "thumbs" not in items["Dead picture"]
+    assert items["Live picture"]["thumbs"] == [{"url": "/voice/card-image/run_b/2"}]
+
+
+@pytest.mark.parametrize("args,line", [
+    (([], [], [], []), "Short call, nothing started."),
+    ((["Desk hunt"], [], [], []), "Started Desk hunt."),
+    ((["Desk hunt", "Seed list"], ["Seed list"], [], ["the wider desk"]),
+     "Started Desk hunt. Answered Seed list. You said: the wider desk."),
+    (([], ["Weather"], ["Cabin trip"], []), "Answered Weather. Cabin trip has a question for you."),
+])
+def test_the_call_card_says_what_the_call_did(args, line):
+    assert N.call_line(*args) == line
+
+
+def test_swipe_dismiss_moves_a_card_off_home_everywhere_with_undo(server, service):
+    now = _at(NY, 2026, 11, 6, 22, 0)
+    _clock(service, now)
+    task(service.store, "a", "completed", session="s_a", request="Desk hunt", result={"spoken": "x"}, settled=now - 60)
+    status, body = post(server, "/voice/now/s:s_a/dismiss", {})
+    assert status == 200 and body["dismissed"] is True
+    assert service.now({"tz": NY})["items"] == []
+    assert post(server, "/voice/now/s:nope/dismiss", {})[0] == 404
+    assert _delete(server, "/voice/now/s:s_a/dismiss")[0] == 200
+    assert [i["id"] for i in service.now({"tz": NY})["items"]] == ["s:s_a"]
+    # Dismissed again; a new answer in the same conversation brings the card back.
+    post(server, "/voice/now/s:s_a/dismiss", {})
+    task(service.store, "a2", "completed", session="s_a", request="Desk hunt again", result={"spoken": "y"},
+         settled=now - 10)
+    assert [i["id"] for i in service.now({"tz": NY})["items"]] == ["s:s_a"]
+    from speakeasy.service import CAPABILITIES
+    assert CAPABILITIES["now_dismiss"] is True
+
+
+def test_home_on_two_weeks_of_mostly_unopened_work_shows_only_todays(service, tmp_path):
+    """Shaped like a heavy user's data (invented): ~300 tasks over two weeks, most never opened,
+    long titles, some pointing at pictures whose files are gone."""
+    now = _at(NY, 2026, 11, 6, 22, 23)
+    words = ["Compare", "standing", "desks", "under", "four", "hundred", "for", "the", "small", "office", "corner"]
+    edge = N.rollover(now, N.zone(NY))
+    start = now - 14 * 86400
+    for n in range(300):
+        # 297 before this morning's 4 AM, three today.
+        settled = start + n * (edge - 60 - start) / 296 if n < 297 else now - (300 - n) * 1800
+        cards = [{"kind": "image", "path": str(tmp_path / f"gone{n}.png")}] if n % 7 == 0 else []
+        task(service.store, f"k{n}", "completed", session=f"s{n % 40}", request="x",
+             result={"spoken": "Done.", "headline": "Done.", "cards": cards}, settled=settled)
+        _title(service.store, f"k{n}", " ".join(words[: 5 + n % 6]) + f" {n}")
+        if n % 10 == 0:
+            service.store.mark_seen(f"k{n}")
+    for first_use in (False, True):
+        if first_use:
+            service.store.set_meta("now_baseline_at", "0")
+            service.now_model.clock = lambda: now
+        else:
+            _clock(service, now)
+        body = service.now({"tz": NY})
+        assert 1 <= len(body["items"]) <= 3, [i["title"] for i in body["items"]]
+        assert all(i["finished_at"] >= edge for i in body["items"]), "only today's"
+        assert all("provenance" not in i for i in body["items"])
+        assert all("thumbs" not in i for i in body["items"]), "no dead pictures"
+        assert not any(i["title"].endswith((" for", " the", " under")) for i in body["items"])
 
 
 def test_dismissed_tasks_and_cancelled_ones_are_not_on_home(service):
@@ -203,8 +367,7 @@ def test_reading_a_conversation_marks_its_answer_seen_on_home(server, service, s
          result={"spoken": "Done.", "headline": "Brandywine."}, settled=time.time() - 5)
     assert service.now({})["items"][0]["kind"] == "new_answer"
     assert post(server, "/voice/history/s_r1/read", {})[0] == 200
-    item = service.now({})["items"][0]
-    assert item["kind"] == "seen_answer" and item["unread"] is False
+    assert service.now({})["items"] == [], "opened: it moves to Earlier"
     assert service.store.is_seen("r1")
 
 
@@ -215,7 +378,7 @@ def test_opening_an_answer_reads_its_conversation_in_the_list(server, service, s
          result={"spoken": "Sunny.", "headline": "Sunny."}, settled=time.time() - 5)
     assert post(server, "/voice/tasks/run_r2/seen", {})[0] == 200
     assert (service.store.session_marks().get("s_r2") or {}).get("read_at")
-    assert service.now({})["items"][0]["kind"] == "seen_answer"
+    assert service.now({})["items"] == []
 
 
 # -- Later ------------------------------------------------------------------------------------------

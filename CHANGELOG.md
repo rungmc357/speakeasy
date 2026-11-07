@@ -2,6 +2,15 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.43 — Home shows only what's live or new
+
+- **Old answers no longer flood Home.** An answer leaves Home once you've opened it, at 4 AM, or 12 hours after it finished, whichever comes first, whether or not you opened it (it stays in Earlier). Answers you heard on a call or got in a chat thread count as read. After an upgrade, older answers start out as seen.
+- **"From yesterday" means yesterday.** Older cards say the weekday or the date.
+- **Whole titles on Home,** never a phrase cut in the middle.
+- **No empty picture tiles:** a picture whose file is gone isn't sent.
+- **The call card says what the call did:** what it started, answered and asked, or "Short call, nothing started."
+- **Dismiss and Clear sync:** a dismissed card moves to Earlier on every device, with Undo. *(needs iPhone build 69 to swipe)*
+
 ## Plugin 0.3.42 · Mac 0.3.22 · iPhone build 68 — A new Home screen, and calmer, clearer pages
 
 The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.22 or iPhone build 68.

@@ -1071,12 +1071,26 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
   marked seen everywhere and listed as `seen_answer` with `on_call: "heard"`, line "Told you on the call.".
 - `call_summary` (off a call): the call that just ended, until Clear-seen, the next 4 AM or 6 hours:
   `{id: "call:<interaction>", title: "Your call · 6 min", minutes, started_at, ended_at, session_id,
-  things: [what it started, up to 4], more_things, decisions: [the user's own answers, up to 3]}`.
+  things: [what it started, up to 4], more_things, decisions: [the user's own answers, up to 3],
+  line: "Started X. Answered Y. Z has a question for you. You said: …" | "Short call, nothing started."}`
+  (0.3.43; apps show `line` when present).
 - `sentence`: one clause for every kind of card shown, in list order (questions, stopped, in the
   works, new answers, waiting), so nothing below it goes unmentioned; one to nine as words, the item named when it's the only one. "All quiet." / "All caught up.".
-- There are no pins. A seen answer leaves Home at the next 4:00 AM in the phone's zone (or the one
-  after, if it was opened in the six hours before); questions, stopped and working never leave on
-  their own. An answer nobody opened leaves after three days (still unread in Earlier).
+- There are no pins. Home is what's live or new (0.3.43): a finished answer leaves Home once it's
+  opened, at the next 4:00 AM in the phone's zone, or 12 hours after it finished, whichever comes
+  first, read or not (it stays in Earlier, unread if never opened). An answer told on a call or
+  delivered to a chat thread (`continued.platform`) counts as read. The first `/voice/now` after an
+  upgrade stores `now_baseline_at`; answers finished more than an hour before it count as seen.
+  Questions, stopped and working never leave on their own.
+- `provenance`: `{kind: "yesterday" | "earlier_day" | "earlier_call" | "later", at, label?}`, by real
+  calendar days in the phone's zone; `label` is the finished line ("From yesterday · 8:13 PM",
+  "From Wednesday · 8:13 PM", "From Oct 28").
+- `title` is a whole short phrase (the job's full title when its short name was cut from it); `thumbs`
+  lists only pictures whose file or web address still exists.
+- Dismiss (capability `now_dismiss`): `POST /voice/now/{id}/dismiss` moves a card to Earlier on every
+  device (never deletes; it comes back if it gets a new answer or question); `DELETE` the same path
+  undoes. `POST /voice/now/clear-seen` moves every finished answer (seen or not) to Earlier; `DELETE
+  /voice/now/clear-seen` undoes the last Clear.
 - `rev` moves only when something shown changes. Clients that open `GET /voice/history/events?now=1`
   also get `now` {rev} events (older apps never see them).
 - One read state: `POST /voice/history/{id}/read` marks that conversation's answers seen, and
