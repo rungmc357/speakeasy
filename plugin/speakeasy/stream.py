@@ -38,6 +38,12 @@ def stretch(at: float, now: float, tz: dt.tzinfo) -> tuple[str, str]:
     return day, when.date().isoformat()
 
 
+def thread_key(item: dict[str, Any]) -> str:
+    """One stable key per job: Home's own item id changes with the card's kind (``q:`` while it asks,
+    ``s:`` after), the run does not, so the thread entry keeps one id from question to answer."""
+    return str(item.get("run_id") or item["id"])
+
+
 def widget_state(item: dict[str, Any], answered: bool) -> str | None:
     """open (waiting on you) -> confirmed (you answered, the work goes on) -> done (it finished)."""
     kind = item.get("kind")
@@ -75,9 +81,9 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
         started = float(item.get("started_at") or _at(item))
         ask = asks.get(item["id"])
         if ask:
-            entries.append({"id": f"a:{item['id']}", "kind": "ask", "at": started, "text": _clip(ask, ASK_CHARS),
+            entries.append({"id": f"a:{thread_key(item)}", "kind": "ask", "at": started, "text": _clip(ask, ASK_CHARS),
                             "item_id": item["id"]})
-        entry: dict[str, Any] = {"id": f"c:{item['id']}", "kind": "card", "at": max(started, _at(item)) if ask
+        entry: dict[str, Any] = {"id": f"c:{thread_key(item)}", "kind": "card", "at": max(started, _at(item)) if ask
                                  else _at(item), "item_id": item["id"], "state": item.get("kind")}
         widget = widget_state(item, item.get("_run_key") in answered or item["id"] in answered)
         if widget:

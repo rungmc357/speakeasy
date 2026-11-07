@@ -114,14 +114,14 @@
   "entries": [
    {
     "at": 1794036212.847745,
-    "id": "a:q:run_c_q",
+    "id": "a:run_c_q",
     "item_id": "q:run_c_q",
     "kind": "ask",
     "text": "Desk hunt"
    },
    {
     "at": 1794036212.847745,
-    "id": "c:q:run_c_q",
+    "id": "c:run_c_q",
     "item_id": "q:run_c_q",
     "kind": "card",
     "state": "question",
@@ -129,42 +129,42 @@
    },
    {
     "at": 1794036212.8487418,
-    "id": "a:s:s_cf",
+    "id": "a:run_c_f",
     "item_id": "s:s_cf",
     "kind": "ask",
     "text": "Book the cabin"
    },
    {
     "at": 1794036212.8487418,
-    "id": "c:s:s_cf",
+    "id": "c:run_c_f",
     "item_id": "s:s_cf",
     "kind": "card",
     "state": "stopped"
    },
    {
     "at": 1794036212.8495739,
-    "id": "a:s:s_cw",
+    "id": "a:run_c_w",
     "item_id": "s:s_cw",
     "kind": "ask",
     "text": "Sort the garden photos"
    },
    {
     "at": 1794036212.849943,
-    "id": "c:s:s_cw",
+    "id": "c:run_c_w",
     "item_id": "s:s_cw",
     "kind": "card",
     "state": "working"
    },
    {
     "at": 1794036212.8500412,
-    "id": "a:s:s_ca",
+    "id": "a:run_c_a",
     "item_id": "s:s_ca",
     "kind": "ask",
     "text": "Compare tomato seeds"
    },
    {
     "at": 1794036212.8500412,
-    "id": "c:s:s_ca",
+    "id": "c:run_c_a",
     "item_id": "s:s_ca",
     "kind": "card",
     "state": "new_answer"

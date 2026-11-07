@@ -100,3 +100,12 @@ def test_recent_lists_previous_tasks_newest_first_even_after_they_left_home(serv
     rec = service.now_recent({"tz": NY})["items"]
     assert [i["at"] for i in rec] == sorted((i["at"] for i in rec), reverse=True) and len(rec) == 2
     assert {i["state"] for i in rec} == {"completed"}
+
+
+def test_a_question_card_keeps_its_thread_id_when_it_becomes_a_working_card():
+    asking = {"id": "q:run_1", "run_id": "run_1", "kind": "question", "started_at": NOON - 90, "updated_at": NOON - 60}
+    going = {"id": "s:s_1", "run_id": "run_1", "kind": "working", "started_at": NOON - 90, "updated_at": NOON - 10}
+    before = S.build_stream([asking], {"q:run_1": "Order a desk"}, set(), NOON, TZ)["entries"]
+    after = S.build_stream([going], {"s:s_1": "Order a desk"}, {"s:s_1"}, NOON, TZ)["entries"]
+    assert [e["id"] for e in before] == [e["id"] for e in after] == ["a:run_1", "c:run_1"]
+    assert before[1]["widget"] == "open" and after[1]["widget"] == "confirmed"
