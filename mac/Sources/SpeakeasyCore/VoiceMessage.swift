@@ -170,7 +170,9 @@ public struct VoiceMessageFlow: Equatable, Sendable {
 /// `voice_notes`): the recording itself as the message, raw body, the message's fields as headers.
 /// Hermes transcribes it on arrival like a Telegram voice note; the reply adds `voice.transcript`.
 public struct VoiceNoteRequest: Equatable, Sendable {
-    public enum Target: Equatable, Sendable { case session(String), task(String) }
+    /// `newJob`: no conversation yet — the recording starts a new job and chat (Home's composer,
+    /// `POST /voice/work/voice-message`, servers with `new_voice_notes`).
+    public enum Target: Equatable, Sendable { case session(String), task(String), newJob }
     public var target: Target
     public var audio: Data
     public var mimeType: String
@@ -178,25 +180,29 @@ public struct VoiceNoteRequest: Equatable, Sendable {
     public var duration: TimeInterval
     public var mode: MessageMode?
     public var answers: String?
+    /// Staged attachment ids that go with the recording.
+    public var attachments: [String]
 
     public init(target: Target, audio: Data, mimeType: String = "audio/mp4", clientID: String = UUID().uuidString,
-                duration: TimeInterval, mode: MessageMode? = nil, answers: String? = nil) {
+                duration: TimeInterval, mode: MessageMode? = nil, answers: String? = nil, attachments: [String] = []) {
         self.target = target; self.audio = audio; self.mimeType = mimeType; self.clientID = clientID
-        self.duration = duration; self.mode = mode; self.answers = answers
+        self.duration = duration; self.mode = mode; self.answers = answers; self.attachments = attachments
     }
 
     public var path: String {
         switch target {
         case .session(let id): return HistoryConversation.path(id) + "/voice-message"
         case .task(let run): return "/voice/work/\(run)/voice-message"
+        case .newJob: return "/voice/work/voice-message"
         }
     }
 
     public var headers: [String: String] {
         var out = ["Content-Type": mimeType, "X-Speakeasy-Client-Id": clientID,
                    "X-Speakeasy-Duration": String(format: "%.1f", max(0, min(duration, 600)))]
-        if let mode { out["X-Speakeasy-Mode"] = mode.rawValue }
+        if let mode, target != .newJob { out["X-Speakeasy-Mode"] = mode.rawValue }
         if let answers, !answers.isEmpty, case .session = target { out["X-Speakeasy-Answers"] = answers }
+        if !attachments.isEmpty { out["X-Speakeasy-Attachments"] = attachments.joined(separator: ",") }
         return out
     }
 }
@@ -207,16 +213,20 @@ public struct VoiceNoteReply: Equatable, Sendable {
     public var transcript: String?
     public var deliveredAs: TaskMessageDelivery
     public var runID: String?
-    public init(transcript: String?, deliveredAs: TaskMessageDelivery = .unknown, runID: String? = nil) {
-        self.transcript = transcript; self.deliveredAs = deliveredAs; self.runID = runID
+    /// The chat a new job became (`newJob` target).
+    public var sessionID: String?
+    public init(transcript: String?, deliveredAs: TaskMessageDelivery = .unknown, runID: String? = nil, sessionID: String? = nil) {
+        self.transcript = transcript; self.deliveredAs = deliveredAs; self.runID = runID; self.sessionID = sessionID
     }
     public init?(json: [String: Any]) {
         guard json["ok"] as? Bool == true else { return nil }
         let voice = json["voice"] as? [String: Any]
         let words = (voice?["transcript"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let session = (json["session_id"] as? String) ?? ((json["task"] as? [String: Any])?["session_id"] as? String)
         self.init(transcript: words,
                   deliveredAs: (json["delivered_as"] as? String).flatMap(TaskMessageDelivery.init(rawValue:)) ?? .unknown,
-                  runID: (json["run_id"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+                  runID: (json["run_id"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                  sessionID: session.flatMap { $0.isEmpty ? nil : $0 })
     }
 }
 

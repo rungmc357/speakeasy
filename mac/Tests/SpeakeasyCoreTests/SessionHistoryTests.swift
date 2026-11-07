@@ -261,6 +261,22 @@ final class VoiceNoteFlowTests: XCTestCase {
         XCTAssertNil(task.headers["X-Speakeasy-Answers"])
     }
 
+    /// Home's composer (SPK-198): a recording with no conversation yet starts a new job and chat.
+    func testANewJobVoiceNoteStartsItsOwnChat() throws {
+        let note = VoiceNoteRequest(target: .newJob, audio: Data([1]), clientID: "vm-home", duration: 6.5,
+                                    mode: .steer, answers: "run_9", attachments: ["att_1", "att_2"])
+        XCTAssertEqual(note.path, "/voice/work/voice-message")
+        XCTAssertNil(note.headers["X-Speakeasy-Mode"])      // nothing runs in a chat that doesn't exist yet
+        XCTAssertNil(note.headers["X-Speakeasy-Answers"])
+        XCTAssertEqual(note.headers["X-Speakeasy-Attachments"], "att_1,att_2")
+        let reply = try XCTUnwrap(VoiceNoteReply(json: ["ok": true, "run_id": "r2", "delivered_as": "new_run",
+                                                        "session_id": "speakeasy_task_1",
+                                                        "voice": ["transcript": "Find a quiet cafe", "duration": 6.5]]))
+        XCTAssertEqual(reply.sessionID, "speakeasy_task_1")
+        XCTAssertEqual(reply.runID, "r2")
+        XCTAssertEqual(reply.deliveredAs, .newRun)
+    }
+
     func testReplyAndPageEntries() throws {
         let reply = VoiceNoteReply(json: ["ok": true, "via": "session_job", "run_id": "r1", "delivered_as": "steer",
                                           "voice": ["transcript": " Order the cedar boards ", "duration": 4.0]])
