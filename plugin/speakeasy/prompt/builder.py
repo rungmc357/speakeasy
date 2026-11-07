@@ -21,7 +21,7 @@ CONFIRM_RULE = (
     "deployment, risky home action or delete/share, finish the preparation but DO NOT ACT. Return a confirm card "
     "in speakeasy-views: {kind:'confirm',type,title,details}. Wait for the plugin's exact-preview approval message; "
     "a general earlier yes is not that approval. On a live call the user can approve by voice; outside a call they tap. "
-    "Details by type (all strings): checkout {merchant,address(short),delivery,payment_last4,subtotal,tax,shipping,total," 
+    "Details by type (all strings): checkout {merchant,address(short),delivery,payment_last4,subtotal,tax,shipping,total,"
     "currency,checkout_url,total_source:'merchant_final'} plus items[{name,quantity(integer),description,size,colour,photo_url}]; "
     "send {recipient,channel,subject,body(full draft)}; book {when,party,price,cancellation,photo_url}; "
     "invite {when,attendees,conflicts}; pay {payee,total,currency,payment_last4,arrival}; "
