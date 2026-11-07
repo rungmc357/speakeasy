@@ -36,6 +36,8 @@ public struct ReplyWorkCard: View {
             if expanded {
                 Divider().padding(.horizontal, 14)
                 VStack(alignment: .leading, spacing: 12) {
+                    Text("How it got there").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("reply-work-steps")
                     if !images.isEmpty {
                         PictureGallery(images: images, identity: imageIdentity, load: loadImage)
                     }
@@ -70,7 +72,7 @@ public struct ReplyWorkCard: View {
                             }
                         }
                     }
-                }.padding(14).accessibilityIdentifier("reply-work-steps")
+                }.padding(14)
             }
         }
         .background(RoundedRectangle(cornerRadius: 16).fill(Color.primary.opacity(0.045)))
