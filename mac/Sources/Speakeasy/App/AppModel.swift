@@ -44,11 +44,14 @@ enum Prefs {
     static let renameThreadsWithAI = "renameThreadsWithAI"
     /// When the last automatic rename sweep ran (throttle: one per six hours).
     static let lastAITitleSweep = "lastAITitleSweep"
+    /// Token counts, context and estimated cost on session pages and task cards (Settings › General ›
+    /// Display; off by default — most people use a subscription, so usage readouts are noise).
+    static let showUsage = UsageDisplay.key
 
     static func register() {
         UserDefaults.standard.register(defaults: [showPanelOnStart: true, followSystemAudio: true, startMuted: false, startSlim: false,
                                                  showCaptions: true, notifyWhenDone: true, panelOnAllSpaces: true,
-                                                 showInDock: true, renameThreadsWithAI: false])
+                                                 showInDock: true, renameThreadsWithAI: false, showUsage: false])
     }
 
     /// The call shortcut (default ⌃⌥Space). Stored as e.g. `ctrl+opt+space`.

@@ -557,6 +557,8 @@ struct HistoryDetailPane: View {
 struct HistorySessionView: View {
     @ObservedObject var store: HistoryStore
     let conversation: HistoryConversation
+    /// Token counts, context and cost are opt-in (Settings › General › Display).
+    @AppStorage(Prefs.showUsage) private var showUsage = false
 
     var body: some View {
         let c = conversation
@@ -695,13 +697,13 @@ struct HistorySessionView: View {
                     .foregroundStyle(Color.primary.opacity(0.55))
                     .accessibilityIdentifier("history-task-times")
             }
-            if let ctx = c.context {
+            if showUsage, let ctx = c.context {
                 // One line names the model and how full its context got; the model only when the
                 // composer chip doesn't already say it.
                 let showsModel = c.model.map { b in store.modelsSupported && (store.picker?.headerShows(b) ?? true) } ?? true
                 ContextUseLine(context: ctx, text: showsModel ? ctx.modelAndUse : ctx.useSentence)
             } else if let badge = c.model, store.modelsSupported, store.picker?.headerShows(badge) ?? true { ModelWorkedLine(badge: badge) }
-            if let usage = c.usage { HistoryUsageLine(usage: usage, sessionID: c.id, store: store) }
+            if showUsage, let usage = c.usage { HistoryUsageLine(usage: usage, sessionID: c.id, store: store) }
         }
         .padding(.bottom, 4)
     }
@@ -1215,6 +1217,8 @@ struct HistoryFinishedRow: View {
 
 struct HistoryTaskCard: View {
     let job: WorkInfo
+    /// Token counts, context and cost are opt-in (Settings › General › Display).
+    @AppStorage(Prefs.showUsage) private var showUsage = false
     private var running: Bool { !["completed", "failed", "cancelled"].contains(job.status) }
 
     var body: some View {
@@ -1241,7 +1245,7 @@ struct HistoryTaskCard: View {
             if job.status == "failed", let why = job.failureReason ?? job.failure?.text {
                 Text(why).font(.system(size: 12)).foregroundStyle(Live.red).lineLimit(3)
             }
-            if let ctx = job.context { ContextUseLine(context: ctx, text: ctx.line, size: 10.5) }
+            if showUsage, let ctx = job.context { ContextUseLine(context: ctx, text: ctx.line, size: 10.5) }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Live.card))
