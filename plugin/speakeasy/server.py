@@ -134,7 +134,18 @@ def same_machine(peer: str, headers: Any) -> bool:
 _ID = r"([A-Za-z0-9_-]+)"
 # A Hermes session id (percent-encoded in the path; history.SAFE_ID_RE checks it once decoded).
 _SESSION = r"([A-Za-z0-9_:@.+=%-]{1,200})"
-_NOW_ITEM = r"([qstc]:[A-Za-z0-9_:@.+=%-]{1,200})"  # a Home item id (now.py): q:/s:/t:/c: + its id
+# A Home item id (now.py: q:/s:/t:/call:/g:stopped: + its id), as one path segment. The apps
+# percent-encode it (build 69 sends "s%3A..."), so the route takes any segment and the id is
+# checked after unquote (_now_id); an unknown id is the service's 404 "That card isn't on Home."
+_NOW_ITEM = r"([^/]{1,600})"
+_NOW_ID = re.compile(r"(?:[qstcg]|call):[^\x00-\x1f\x7f]{1,400}")
+
+
+def _now_id(segment: str) -> str:
+    item_id = unquote(segment)
+    if not _NOW_ID.fullmatch(item_id):
+        raise ServiceError(404, "That card isn't on Home.")
+    return item_id
 
 
 def upload_read_s(length: int) -> float:
@@ -802,7 +813,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             now_act = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/(later|answer|approval|dismiss)", path)
             if now_act:
-                item_id, act = unquote(now_act.group(1)), now_act.group(2)
+                item_id, act = _now_id(now_act.group(1)), now_act.group(2)
                 if act == "dismiss":
                     self._reply(200, self.service.now_dismiss(item_id, self._body()))
                 elif act == "later":
@@ -948,14 +959,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             now_later = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/later", path)
             if now_later:  # bring a put-off item back now
-                self._reply(200, self.service.now_later(unquote(now_later.group(1)), {}, undo=True))
+                self._reply(200, self.service.now_later(_now_id(now_later.group(1)), {}, undo=True))
                 return
             if path == "/voice/now/clear-seen":  # undo the last Clear
                 self._reply(200, self.service.now_clear_seen({}, undo=True))
                 return
             now_undismiss = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/dismiss", path)
             if now_undismiss:  # undo a swipe-dismiss
-                self._reply(200, self.service.now_dismiss(unquote(now_undismiss.group(1)), {}, undo=True))
+                self._reply(200, self.service.now_dismiss(_now_id(now_undismiss.group(1)), {}, undo=True))
                 return
             staged = re.fullmatch(rf"/voice/attachments/{_ID}", path)
             if staged:

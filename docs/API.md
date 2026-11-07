@@ -1091,7 +1091,9 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
   lists only pictures whose file or web address still exists.
 - Dismiss (capability `now_dismiss`): `POST /voice/now/{id}/dismiss` moves a card to Earlier on every
   device (never deletes; it comes back if it gets a new answer or question); `DELETE` the same path
-  undoes. `POST /voice/now/clear-seen` moves every finished answer (seen or not) to Earlier; `DELETE
+  undoes. Any id `GET /voice/now` returns works here (cards, `call_summary`, `g:stopped:` groups,
+  `earlier.today.items`), raw or percent-encoded (`s%3Aabc`, as the apps send it; plugin 0.3.46).
+  `POST /voice/now/clear-seen` moves every finished answer (seen or not) to Earlier; `DELETE
   /voice/now/clear-seen` undoes the last Clear.
 - `rev` moves only when something shown changes. Clients that open `GET /voice/history/events?now=1`
   also get `now` {rev} events (older apps never see them).

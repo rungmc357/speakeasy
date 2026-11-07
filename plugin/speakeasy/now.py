@@ -465,7 +465,7 @@ class NowModel:
         return item
 
     # -- the whole list --------------------------------------------------------------------------
-    def build(self, tz: str | None = None, *, peek: bool = False) -> dict[str, Any]:
+    def build(self, tz: str | None = None, *, peek: bool = False, every: bool = False) -> dict[str, Any]:
         now = self.clock()
         zone_ = zone(tz)
         edge = rollover(now, zone_)
@@ -577,6 +577,7 @@ class NowModel:
         items = group_stopped(items)
         items = self._apply_later(items, now)
         items = self._apply_dismissed(items, now)
+        everything = list(items)  # what find() searches: also what folds into "Earlier today"
         items, earlier_today = fold_earlier(items, now)
         items = order(items, self._first_seen(items, now))
         # On a call: the question the voice is asking right now goes first (tier 0).
@@ -605,7 +606,7 @@ class NowModel:
             "call": ({"interaction_id": call.interaction_id, "started_at": getattr(call, "started_at", None),
                       "focus": focus, "focus_label": "Talking about this" if focus else None}
                      if call is not None else None),
-            "call_summary": self.call_summary(ended, now) if ended is not None else None,
+            "call_summary": self._undismissed_call(self.call_summary(ended, now) if ended is not None else None),
             "items": items, "background": {"running": len(background), "items": background[:BACKGROUND_ITEMS]},
             # "Earlier today · N": answers more than 4 h old, one row instead of N cards. Outside
             # ``items`` so a build 68 app (which knows no such row) simply doesn't show it.
@@ -613,6 +614,8 @@ class NowModel:
         }
         body["rev"] = self._rev(body)
         body["as_of"] = round(now, 3)
+        if every:
+            body["_everything"] = everything  # find() only; never sent
         body["notice"] = None if peek else self._notice(rows, marks, edge, cleared)
         self._last_sessions = {i["session_id"] for i in items if i.get("session_id")}
         return body
@@ -708,11 +711,23 @@ class NowModel:
         if later is not None:
             self.store.clear_later(item_id)
         try:
-            body = self.build(tz, peek=True)
+            body = self.build(tz, peek=True, every=True)
         finally:
             if later is not None:
                 self.store.set_later(item_id, later["until"], later["on_change"], later["seen_sig"])
-        return next((i for i in body["items"] if i["id"] == item_id), None)
+        # Every id /voice/now hands out: the cards, the call card, and the answers folded into the
+        # "Earlier today · N" row (build 69 swipes those too). Not only body["items"].
+        pool = [*body["items"], *body.get("_everything", [])]
+        if body.get("call_summary"):
+            pool.append(body["call_summary"])
+        return next((i for i in pool if i.get("id") == item_id), None)
+
+    def _undismissed_call(self, card: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The call card, unless it was swiped away (and hasn't changed since)."""
+        if not card:
+            return card
+        mark = self.dismissed().get(card["id"]) or {}
+        return None if mark.get("sig") == self.dismiss_signature(card) else card
 
     # -- rev, notice -----------------------------------------------------------------------------
     def _rev(self, body: dict[str, Any]) -> int:
