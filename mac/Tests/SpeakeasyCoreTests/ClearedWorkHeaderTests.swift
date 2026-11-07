@@ -8,7 +8,7 @@ final class ClearedWorkHeaderTests: XCTestCase {
 
     private func failed(_ run: String = "run_f1", dismissed: Bool = false, seen: Bool = false) -> WorkInfo {
         var info = WorkInfo(runID: run, status: "failed", updated: t0)
-        info.failure = WorkFailure(kind: "unknown", label: "Refused by the model's safety filter",
+        info.failure = WorkFailure(kind: "unknown", label: "AI model declined",
                                    text: "The model declined to work on this request.")
         info.dismissed = dismissed
         info.seen = seen
@@ -27,12 +27,12 @@ final class ClearedWorkHeaderTests: XCTestCase {
 
     func testFailedTaskShowsInTheHeaderUntilDismissed() {
         var s = boardWithFailure(at: t0)
-        XCTAssertEqual(header(s), "Work failed · Refused by the model's safety filter")
+        XCTAssertEqual(header(s), "Didn't finish · AI model declined")
         s = reduce(s, .tasksDismissed(["run_f1"]), now: t0 + 1)
         XCTAssertTrue(s.tasks.isEmpty)
         XCTAssertNil(s.workInfo)
         XCTAssertEqual(s.work, WorkPhase.none)
-        XCTAssertFalse(header(s).contains("Work failed"))
+        XCTAssertFalse(header(s).contains("Didn't finish"))
     }
 
     func testTheBoardsNextPollOfTheSameRunDoesNotBringItBack() {
@@ -43,7 +43,7 @@ final class ClearedWorkHeaderTests: XCTestCase {
         s = reduce(s, .work(failed()), now: t0 + 5)
         s = reduce(s, .tasks([TaskItem(id: "t1", info: failed())]), now: t0 + 5)
         XCTAssertNil(s.workInfo)
-        XCTAssertFalse(header(s).contains("Work failed"))
+        XCTAssertFalse(header(s).contains("Didn't finish"))
     }
 
     func testClearingTheBoardEmptiesTheHeader() {
@@ -62,14 +62,14 @@ final class ClearedWorkHeaderTests: XCTestCase {
         // Another device cleared it: the next row from the server says so.
         s = reduce(s, .work(failed(dismissed: true)), now: t0 + 2)
         XCTAssertNil(s.workInfo)
-        XCTAssertFalse(header(s).contains("Work failed"))
+        XCTAssertFalse(header(s).contains("Didn't finish"))
     }
 
     func testAFailureTheUserOpenedNoLongerDrivesTheHeader() {
         var s = boardWithFailure(at: t0)
         s = reduce(s, .tasks([TaskItem(id: "t1", info: failed(seen: true))]), now: t0 + 2)
         XCTAssertNil(s.workInfo)
-        XCTAssertFalse(header(s).contains("Work failed"))
+        XCTAssertFalse(header(s).contains("Didn't finish"))
         // The task itself stays on the board until cleared.
         XCTAssertEqual(s.tasks.map(\.id), ["t1"])
     }
@@ -83,7 +83,7 @@ final class ClearedWorkHeaderTests: XCTestCase {
         s = reduce(s, .interaction(InteractionSnapshot(status: "failed", runID: "run_f1")), now: t0 + 2)
         s = reduce(s, .tasks([TaskItem(id: "t1", info: failed())]), now: t0 + 3)
         s = reduce(s, .work(failed()), now: t0 + 3)
-        XCTAssertTrue(header(s).hasPrefix("Work failed"))
+        XCTAssertTrue(header(s).hasPrefix("Didn't finish"))
         s = reduce(s, .tasksDismissed(["run_f1"]), now: t0 + 4)
         s = reduce(s, .interaction(InteractionSnapshot(status: "failed", runID: "run_f1")), now: t0 + 5)
         s = reduce(s, .tick, now: t0 + 4 + VoiceState.notReceivedAfter + 30)
@@ -91,7 +91,7 @@ final class ClearedWorkHeaderTests: XCTestCase {
         XCTAssertEqual(s.work, WorkPhase.none)
         XCTAssertFalse(header(s).contains("didn't get that"))
         XCTAssertFalse(header(s).contains("Waiting for"))
-        XCTAssertFalse(header(s).contains("Work failed"))
+        XCTAssertFalse(header(s).contains("Didn't finish"))
     }
 
     func testANewRunAfterAClearedFailureShowsNormally() {
@@ -110,7 +110,7 @@ final class ClearedWorkHeaderTests: XCTestCase {
         s = reduce(s, .sessionAdmitted(interactionID: "vi_2"), now: t0 + 10)
         s = reduce(s, .sessionStarted, now: t0 + 11)
         XCTAssertNil(s.workInfo)
-        XCTAssertFalse(header(s).contains("Work failed"))
+        XCTAssertFalse(header(s).contains("Didn't finish"))
         let next = WorkInfo(runID: "run_n3", status: "working", updated: t0 + 12,
                             shortStatus: "Looking up flights", updatedAt: t0 + 12)
         s = reduce(s, .delegationCreated, now: t0 + 12)
@@ -122,7 +122,7 @@ final class ClearedWorkHeaderTests: XCTestCase {
     func testAnUnclearedFailureStillShows() {
         let s = boardWithFailure(at: t0)
         XCTAssertEqual(s.workInfo?.runID, "run_f1")
-        XCTAssertEqual(header(s), "Work failed · Refused by the model's safety filter")
+        XCTAssertEqual(header(s), "Didn't finish · AI model declined")
     }
 
     func testDecodesDismissed() {

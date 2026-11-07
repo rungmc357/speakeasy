@@ -19,19 +19,18 @@ from typing import Any
 # wherever they talk to it; the app's own buttons (Try again, Switch model) cover the rest.
 REASONS: dict[str, tuple[str, str]] = {
     "billing": ("Out of credits",
-                "Your Hermes's AI account is out of credits. Add credits there, or switch model in "
+                "The AI account your Hermes uses is out of credits. Add credits there, or switch model in "
                 "this chat."),
     "auth": ("Needs signing in again",
-             "Your Hermes's AI account needs signing in again. Send /model to your Hermes to sign in, "
+             "The AI account your Hermes uses needs signing in again. Send /model to your Hermes to sign in, "
              "or switch model here."),
     "rate_limit": ("Too many requests",
-                   "Your Hermes's AI account is busy (too many requests). Try again in a minute, or "
+                   "The AI account your Hermes uses is busy (too many requests). Try again in a minute, or "
                    "switch model."),
     # The provider's safety filter refused this request (Hermes' content_policy_blocked). Often a false
     # positive on ordinary work; the fix is a retry or another model, never the key, credits or a firewall.
-    "content_refused": ("Refused by the model's safety filter",
-                        "The model's safety filter refused this request. Try again, or switch model for "
-                        "this chat."),
+    "content_refused": ("AI model declined",
+                        "The AI model declined this one. Try again, or switch model for this chat."),
     "model_not_found": ("Model unavailable",
                         "That AI model isn't available any more. Pick another for this chat."),
     # Speakeasy -> Hermes API server (POST /v1/runs), not the model provider. Our own messages.
@@ -46,13 +45,13 @@ REASONS: dict[str, tuple[str, str]] = {
 # and sounds like noise), so these name the fix in words and send the user to the app, whose task
 # detail and chat notice carry the REASONS text.
 SPOKEN: dict[str, str] = {
-    "billing": "Your Hermes's AI account is out of credits. Add credits there, or switch this chat to "
+    "billing": "The AI account your Hermes uses is out of credits. Add credits there, or switch this chat to "
                "another model in the app.",
-    "auth": "Your Hermes's AI account needs signing in again. The steps are in the app, or you can "
+    "auth": "The AI account your Hermes uses needs signing in again. The steps are in the app, or you can "
             "switch model there.",
-    "rate_limit": "Your Hermes's AI account is busy with too many requests. Try again in a minute, or "
+    "rate_limit": "The AI account your Hermes uses is busy with too many requests. Try again in a minute, or "
                   "switch model in the app.",
-    "content_refused": "The model's safety filter refused that request. You can try again, or switch this "
+    "content_refused": "The AI model declined that one. You can try again, or switch this "
                        "chat to another model in the app.",
     "model_not_found": "That AI model isn't available any more, so this chat needs another one. You can "
                        "pick it in the app.",
@@ -230,11 +229,11 @@ _HINT_RES: list[tuple[str, re.Pattern[str]]] = [
                                   r"|internal server error|bad gateway|service unavailable")),
 ]
 HINT_REASONS = {
-    "blocked": "A firewall in front of Hermes's model provider blocked the request.",
+    "blocked": "Your AI provider's website blocked the request. Try again later, or switch model.",
     "context": "The work got too long for the model to keep in view.",
-    "timeout": "It timed out waiting on Hermes's model provider.",
-    "offline": "Hermes couldn't reach its model provider.",
-    "provider_error": "Hermes's model provider had a server error.",
+    "timeout": "The AI model took too long. Try again.",
+    "offline": "Your Hermes couldn't reach its AI model. Check its internet, then try again.",
+    "provider_error": "The AI model had a problem on its side. Try again in a minute.",
     "start": "Speakeasy couldn't start it on Hermes.",
 }
 NO_REASON = UNKNOWN_TEXT

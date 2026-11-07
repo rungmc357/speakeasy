@@ -6,14 +6,14 @@ import XCTest
 /// the task row, the task detail, the call's status line and the failure notifications.
 final class RunFailureTests: XCTestCase {
     let t0 = Date(timeIntervalSince1970: 1_800_000_000)
-    let credits = "Hermes's model provider is out of credits. Top up that account, or run hermes model on the Hermes machine to switch providers."
+    let credits = "The AI account your Hermes uses is out of credits. Add credits there, or switch model in this chat."
 
     /// One task exactly as the plugin's `GET /voice/work/latest` returns it after Venice's HTTP 402.
     var outOfCreditsJSON: String {
         """
         {"task_id":"call_weather","run_id":"run_0001","status":"failed","stale":false,"updated":1800000000,
          "events":[{"kind":"request","text":"What's the weather in Lisbon?","at":1800000000},
-                   {"kind":"result","text":"Work failed: \(credits)","at":1800000001}],
+                   {"kind":"result","text":"Didn't finish: \(credits)","at":1800000001}],
          "short_status":null,"detail":null,"result":null,"title":"Lisbon weather",
          "failure":{"kind":"billing","label":"Out of credits","text":"\(credits)"}}
         """
@@ -46,12 +46,12 @@ final class RunFailureTests: XCTestCase {
 
     func testRowNamesTheReason() {
         let row = taskStatusLine(failedTask(WorkFailure(kind: "billing", label: "Out of credits", text: credits)).info, now: t0)
-        XCTAssertEqual(row.0, "Work failed · Out of credits")
+        XCTAssertEqual(row.0, "Didn't finish · Out of credits")
         XCTAssertEqual(row.1, .error)
         // No known reason (or an older api): the row stays as it was.
         XCTAssertEqual(taskStatusLine(failedTask(WorkFailure(kind: "unknown", text: "Hermes didn't say why.")).info, now: t0).0,
-                       "Work failed")
-        XCTAssertEqual(taskStatusLine(failedTask(nil).info, now: t0).0, "Work failed")
+                       "Didn't finish")
+        XCTAssertEqual(taskStatusLine(failedTask(nil).info, now: t0).0, "Didn't finish")
     }
 
     func testDetailExplainsOnlyFailedTasks() {
@@ -69,7 +69,7 @@ final class RunFailureTests: XCTestCase {
         var info = WorkInfo(runID: "run_a", status: "failed", updated: t0)
         info.failure = WorkFailure(kind: "rate_limit", label: "Rate-limited", text: "Wait a minute and try again.")
         s = reduce(s, .work(info), now: t0)
-        XCTAssertEqual(present(s).secondary, "Work failed · Rate-limited")
+        XCTAssertEqual(present(s).secondary, "Didn't finish · Rate-limited")
         XCTAssertEqual(present(s).tone, .error)
     }
 

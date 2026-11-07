@@ -1,6 +1,6 @@
 """Reinstalling the plugin into a running gateway leaves old and new code mixed (live: every
 handoff died with 'Runtime.route() takes 4 positional arguments but 6 were given'). Calls
-must refuse with a plain 'restart Hermes' instead of silently waiting forever."""
+must refuse with a plain 'send /restart to your Hermes' instead of silently waiting forever."""
 import sys
 import types
 
@@ -25,5 +25,5 @@ def test_reinstall_into_a_running_gateway_asks_for_a_restart(service, monkeypatc
     assert status["restart_needed"] is True and status["voice_ready"] is False
     with pytest.raises(ServiceError) as err:
         service.create_session({"sdp": SDP}, "req_restart_1")
-    assert err.value.args[0] == 503 or "Restart" in str(err.value)
-    assert "restart" in RESTART_NEEDED.lower()
+    assert str(err.value) == RESTART_NEEDED
+    assert "Send /restart to your Hermes" in RESTART_NEEDED

@@ -99,7 +99,7 @@ def test_route_needs_a_device_token_and_capability_is_advertised(server):
 @pytest.mark.parametrize("key,label", [
     ("git reset --hard (destroys uncommitted changes)", "Throwing away unsaved code changes"),
     ("SQL DELETE without WHERE", "Deleting database tables or rows"),
-    ("in-place edit of Hermes config/env", "Changing Hermes' own settings or keys"),
+    ("in-place edit of Hermes config/env", "Changing your Hermes settings or keys"),
     ("docker restart/stop/kill (container lifecycle)", "Managing containers"),
     ("registry delete (reg delete)", "Changing Windows system settings"),
     ("sudo with privilege flag (stdin/askpass/shell/list)", "Running commands as administrator"),

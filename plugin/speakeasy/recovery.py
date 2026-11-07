@@ -153,7 +153,7 @@ def sweep_orphans(store: Any, hermes: Any, live: set[str], image_roots: Callable
                                 **({"result": result} if result else {})):
                 store.progress(key, "result", (result or {}).get("full") or {
                     "completed": "Work complete", "cancelled": "Work stopped",
-                    "failed": "Work failed", "interrupted": "Work interrupted"}[final])
+                    "failed": "Didn't finish", "interrupted": "Didn't finish"}[final])
                 settled.append((key, final))
         elif store.transition(key, "ambiguous", expect={status}):
             settled.append((key, "ambiguous"))

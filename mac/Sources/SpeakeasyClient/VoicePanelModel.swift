@@ -642,7 +642,7 @@ public final class VoicePanelModel: ObservableObject {
         switch orbState {
         case .failed(let needs):
             let failed = jobs.filter { $0.stage == .failed }.count
-            return ("\(max(failed, 1)) failed" + (needs > 0 ? " · \(needs) need\(needs == 1 ? "s" : "") you" : ""), .error)
+            return ("\(max(failed, 1)) didn't finish" + (needs > 0 ? " · \(needs) need\(needs == 1 ? "s" : "") you" : ""), .error)
         case .needsYou(let n):
             return ("\(n) need\(n == 1 ? "s" : "") you", .attention)
         case .working:

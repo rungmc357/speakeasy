@@ -102,7 +102,7 @@ public struct SetupCheck: Equatable, Sendable {
                             + "Paste this request into your chat with Hermes.",
                         fix: Fix(kind: .copy, label: "Copy a request for Hermes", payload: updateRequest))]
         let apiOK = status.hermesAPIOK == true
-        rows.append(Row(id: "hermes_api", ok: apiOK, title: apiOK ? "Speakeasy can reach Hermes" : "Hermes' connection for Speakeasy is off",
+        rows.append(Row(id: "hermes_api", ok: apiOK, title: apiOK ? "Speakeasy can reach Hermes" : "Speakeasy's connection on your Hermes is off",
                         detail: "Send /restart in your chat with Hermes. If that doesn't do it, paste a setup request instead.",
                         fix: Fix(kind: .copy, label: "Copy /restart", payload: restartCommand)))
         let voice = status.checks.first { $0.id == "voice" }

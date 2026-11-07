@@ -56,7 +56,7 @@ RELAY_FIELDS = ("device_token", "environment", "kind", "nonce", "collapse_id", "
 # without being able to read it; the phone's Notification Service Extension opens it. A relay that
 # doesn't know the field yet gets the old body (the extension then fetches the words as before).
 SEALED_MAX = 2400
-PREFIX = {"finished": "Done", "needs_you": "Needs you", "failed": "Failed", "reply": "New reply"}
+PREFIX = {"finished": "Done", "needs_you": "Needs you", "failed": "Didn't finish", "reply": "New reply"}
 
 
 def signature(secret: str, install_id: str, timestamp: str, body: bytes) -> str:

@@ -725,7 +725,7 @@ class Handler(BaseHTTPRequestHandler):
                 local = self.local
                 if not local and not self.server.pair_limiter.allow(self.client_ip):  # type: ignore[attr-defined]
                     logger.warning("speakeasy: pairing attempts from %s rate-limited", self.client_ip)
-                    raise ServiceError(429, "too many pairing attempts; wait and try again", reason="too_many")
+                    raise ServiceError(429, "Too many tries. Wait a minute, then try again.", reason="too_many")
                 try:
                     self._reply(201, self.service.pair(self._body(), self.headers))
                 except ServiceError as exc:

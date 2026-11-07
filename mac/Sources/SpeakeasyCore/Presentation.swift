@@ -110,7 +110,7 @@ public func formatElapsed(_ seconds: TimeInterval) -> String {
     return "\(total / 3600)h \(String(format: "%02d", (total % 3600) / 60))m"
 }
 
-/// `failure` names why a failed task failed ("Work failed · Out of credits"); pass the task's
+/// `failure` names why a failed task failed ("Didn't finish · Out of credits"); pass the task's
 /// `WorkInfo.failure`.
 public func workStatusLine(_ work: WorkPhase, now: Date,
                            assistantName: String = VoiceState.defaultAssistantName,
@@ -133,8 +133,8 @@ public func workStatusLine(_ work: WorkPhase, now: Date,
             return ("Done", .success)
         case "cancelled": return ("Work stopped", .plain)
         case "failed":
-            if let label = failure?.label { return ("Work failed · \(label)", .error) }
-            return ("Work failed", .error)
+            if let label = failure?.label { return ("Didn't finish · \(label)", .error) }
+            return ("Didn't finish", .error)
         default: return ("Work ended · \(status)", .warning)
         }
     }
@@ -157,7 +157,7 @@ public func taskStatusLine(_ info: WorkInfo, now: Date,
                           failure: info.failure) ?? ("Working", .plain)
 }
 
-/// The task detail's explanation under "Work failed": what happened and what to do, or nil when
+/// The task detail's explanation under "Didn't finish": what happened and what to do, or nil when
 /// the task didn't fail (or the api gave no reason).
 public func failureDetail(_ info: WorkInfo?) -> String? {
     guard let info, info.status == "failed" else { return nil }
@@ -238,7 +238,7 @@ public func present(_ s: VoiceState) -> PillPresentation {
         case .ended(.complete): secondary = "Call again any time"
         case .ended(.incomplete): secondary = "Connection dropped"
         case .failed(let message): secondary = message; tone = .error
-        case .idle: secondary = s.workOnly ? "No recent work" : s.callShortcutHint
+        case .idle: secondary = s.workOnly ? "Nothing running" : s.callShortcutHint
         }
     }
     if case .failed = s.connection, let error = s.lastError { secondary = error; tone = .error }

@@ -1656,7 +1656,7 @@ struct WorkDetailView: View {
                         }
                     }
                     if info == nil && s.workOnly && s.approval == nil {
-                        Text("No recent work.").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text("Nothing running.").font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                 }
                 .padding(.trailing, 6)
@@ -1687,7 +1687,7 @@ struct WorkDetailView: View {
         case .active(_, let detail, _, _): return detail
         case .done: return failureDetail(model.state.workInfo)
         case .stale: return model.state.workInfo?.detail ?? "No verified update has arrived recently."
-        case .notReceived: return "The request never reached \(model.state.assistantName). Say it again; if it keeps happening, restart Hermes."
+        case .notReceived: return "The request never reached \(model.state.assistantName). Say it again. If it keeps happening, send /restart to your Hermes."
         default: return nil
         }
     }

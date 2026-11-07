@@ -102,9 +102,9 @@ public struct SecureInputRequest: Equatable, Sendable, Identifiable {
     public var whereItGoes: String {
         if !storedWhere.isEmpty { return storedWhere }
         switch kind {
-        case .secret: return "Saved to your Hermes's private settings as \(envVar). The AI never sees it."
+        case .secret: return "Saved to the private settings on your Hermes as \(envVar). The AI never sees it."
         case .sudo: return "Used once for this command, then forgotten. Speakeasy never stores it."
-        case .login: return "Saved in your Hermes's encrypted vault for \(site). The AI can fill it in on that site but never sees the password."
+        case .login: return "Saved in the encrypted vault on your Hermes for \(site). The AI can fill it in on that site but never sees the password."
         case .code: return "Typed into the page once. Never saved."
         }
     }

@@ -94,7 +94,7 @@ final class IdleContinuity: NSObject, UNUserNotificationCenterDelegate {
             guard self.authorization == true else { self.onBadge?(true); return }
             let content = UNMutableNotificationContent()
             content.title = "Speakeasy plugin update available"
-            content.body = "Version \(version) is available for Hermes. Ask your agent to update it; restart Hermes yourself when prompted."
+            content.body = "Speakeasy \(version) is available for your Hermes. Open Settings to update it."
             content.categoryIdentifier = Self.pluginUpdateCategory
             content.sound = .default
             do {

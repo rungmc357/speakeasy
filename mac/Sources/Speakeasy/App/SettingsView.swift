@@ -1245,7 +1245,7 @@ struct JobModelSection: View {
     private func commit() {
         let value = defaults
         error = nil
-        Task { do { try await save(value) } catch { self.error = "Couldn't save: \(error.localizedDescription)" } }
+        Task { do { try await save(value) } catch { NSLog("Speakeasy: couldn't save: %@", String(describing: error)); self.error = PlainFailure.saveFailed } }
     }
 }
 
@@ -1298,7 +1298,7 @@ struct AgentAllowSection: View {
     private func commit() {
         let value = allowed
         error = nil
-        Task { do { try await save(value) } catch { self.error = "Couldn't save: \(error.localizedDescription)" } }
+        Task { do { try await save(value) } catch { NSLog("Speakeasy: couldn't save: %@", String(describing: error)); self.error = PlainFailure.saveFailed } }
     }
 }
 

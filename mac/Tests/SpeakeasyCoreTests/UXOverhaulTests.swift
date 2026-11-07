@@ -65,7 +65,7 @@ final class UXOverhaulTests: XCTestCase {
         s = VoiceState(); s.connection = .failed("Microphone access is off — enable Speakeasy in System Settings")
         XCTAssertEqual(CallProblem.of(s)?.fix, .openMicSettings)
         XCTAssertEqual(CallProblem.of(s)?.fixLabel, "Open Settings")
-        s.connection = .failed("Not connected to Hermes — open Settings › Connection to pair")
+        s.connection = .failed("Not paired yet. Pair in Settings › Connection.")
         XCTAssertNil(CallProblem.of(s), "pairing says where to go already")
         s.connection = .failed("Couldn't connect to Hermes. Tap to try again.")
         XCTAssertEqual(CallProblem.of(s)?.fix, .retry)
