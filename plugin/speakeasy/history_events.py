@@ -47,6 +47,11 @@ def event_for(row):
     state = structured.get("state") or (header[2] if header else None)
     task_id = task_id if isinstance(task_id, str) else None
     state = state if isinstance(state, str) else None
+    if kind == "internal_notification" and not header and not structured and meta.get("submission_id"):
+        # Hermes persists every API-server run input (each Speakeasy task brief, follow-up and steer)
+        # as internal_notification with its run submission id. That is the user's own message
+        # carried by the plugin, not an automatic event: leave it to the normal user-row handling.
+        return None
     if state and state.startswith("blocked;"):
         state = "blocked"
     if state and state.startswith("gave up"):
