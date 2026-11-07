@@ -216,6 +216,17 @@ def test_a_still_running_or_unreachable_run_falls_back_to_its_session(tmp_path):
     assert sorted(hermes.asked) == ["run_gone", "run_live"]
 
 
+def test_positive_liveness_does_not_complete_a_quiet_retry_from_an_older_answer(tmp_path):
+    db = tmp_path / "state.db"
+    hermes_db(db, [("retry_s", None, [("assistant", "Earlier attempt finished.", None)])])
+    store = StateStore(tmp_path / "se.sqlite3")
+    unconfirmed_run(store, "retry", "run_retry", "retry_s", age_s=4 * 3600)
+    hermes = FakeHermes({"run_retry": {"status": "running"}})
+    assert recovery.sweep(store, db, lambda: (), {}, hermes=hermes) == []
+    assert status(store, "retry") == "ambiguous"
+    assert not store.work(idem_key="retry").get("result")
+
+
 def test_a_run_settled_meanwhile_is_not_overwritten_from_hermes(tmp_path):
     db = tmp_path / "state.db"
     hermes_db(db, [])

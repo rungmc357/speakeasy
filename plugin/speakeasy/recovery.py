@@ -81,9 +81,9 @@ def sweep(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]
     return settled
 
 
-def _hermes_final(hermes: Any, run_id: str | None) -> tuple[str, str | None] | None:
-    """Hermes' own word on a run: (final status, output) once it ended, else None (still running,
-    retrying, forgotten, unreachable). Hermes keeps a run's final record after its stream is gone."""
+def _hermes_state(hermes: Any, run_id: str | None) -> tuple[str, str | None] | None:
+    """Hermes' own word on a run: (known live/final status, output), else None.
+    A positive live record also matters: quiet time must not finish a retry still in flight."""
     if hermes is None or not run_id or not ID_RE.fullmatch(run_id):
         return None
     try:
@@ -92,7 +92,7 @@ def _hermes_final(hermes: Any, run_id: str | None) -> tuple[str, str | None] | N
         logger.info("speakeasy: an unconfirmed task's run could not be checked (%s)", type(exc).__name__)
         return None
     final = reply.get("status") if isinstance(reply, dict) else None
-    if final not in RS.TERMINAL:
+    if final not in RS.TERMINAL and final not in RS.LIVE:
         return None
     output = reply.get("output")
     return final, output if isinstance(output, str) and output.strip() else None
@@ -111,9 +111,11 @@ def _settle_unconfirmed(store: Any, state_db: Path, image_roots: Callable[[], tu
         key, session_id = task["key"], task.get("session_id")
         if asked < limit and hermes is not None:
             asked += 1
-            known = _hermes_final(hermes, task.get("run_id"))
+            known = _hermes_state(hermes, task.get("run_id"))
             if known is not None:
                 final, output = known
+                if final in RS.LIVE:
+                    continue  # positive liveness beats age or an earlier reply during a retry
                 result = split_result(P.without_voice_header(output), image_roots()) if output else None
                 if store.transition(key, final, expect={"ambiguous"}, orphaned=True,
                                     **({"result": result} if result else {})):

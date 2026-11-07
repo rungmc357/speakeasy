@@ -398,13 +398,17 @@ final class HistoryStore: ObservableObject {
         open(file.sessionID)
     }
 
+    private var detailGenerations: [String: Int] = [:]
+
     func load(_ sessionID: String) {
         guard let backend else { return }
         let revision = modelEpoch
+        detailGenerations[sessionID, default: 0] += 1
+        let generation = detailGenerations[sessionID]
         Task { [weak self] in
             do {
                 let c = try await backend.conversation(sessionID)
-                guard let self else { return }
+                guard let self, self.detailGenerations[sessionID] == generation else { return }
                 guard self.modelEpoch == revision, self.pendingModels.isEmpty else { return }
                 self.conversations[sessionID] = c
                 self.modelConfirmed[sessionID] = revision
@@ -418,7 +422,8 @@ final class HistoryStore: ObservableObject {
                 self.outbox.prune(HistoryThread(c).messages, session: sessionID)
                 self.outbox.reconcile(c)
             } catch {
-                self?.detailErrors[sessionID] = Self.message(error)
+                guard let self, self.detailGenerations[sessionID] == generation else { return }
+                self.detailErrors[sessionID] = Self.message(error)
             }
         }
     }

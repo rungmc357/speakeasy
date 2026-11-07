@@ -28,6 +28,26 @@ final class SessionTaskLayoutTests: XCTestCase {
          user("u3", "Now add a dark mode toggle", 300), reply("a3", 320)]
     }
 
+    func testEveryTerminalOutcomeLeavesBottomAcrossLaterUnrelatedTurns() {
+        for status in ["completed", "failed", "cancelled", "interrupted", "rejected"] {
+            let old = job("old", "Fix the login redirect", status: status, started: 1, finished: 55)
+            let layout = SessionTaskLayout(jobs: [old], messages: thread, hasMore: false)
+            XCTAssertTrue(layout.pinned.isEmpty, status)
+            XCTAssertEqual(layout.after["a1"]?.map(\.runID), ["old"], status)
+            XCTAssertNil(layout.after["a3"], status)
+        }
+        let interrupted = job("old", "Fix redirect", status: "interrupted", started: 1)
+        XCTAssertTrue(TaskLineCopy.outcome(interrupted).hasPrefix("Didn't finish"))
+    }
+
+    func testRetryKeepsOnlyNewAttemptLive() {
+        let old = job("old", "Fix the login redirect", status: "interrupted", started: 1)
+        let retry = job("retry", "Fix the login redirect", status: "running", started: 301)
+        let layout = SessionTaskLayout(jobs: [retry, old], messages: thread, hasMore: false)
+        XCTAssertEqual(layout.pinned.map(\.runID), ["retry"])
+        XCTAssertTrue(layout.finished.isEmpty)
+    }
+
     func testFinishedTasksSitAfterTheirAskNotAtTheBottom() {
         // Newest first, as the server sends them.
         let jobs = [job("r2", "Bigger export button", status: "completed", started: 121, finished: 190),
