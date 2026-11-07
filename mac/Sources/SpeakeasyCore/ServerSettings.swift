@@ -960,6 +960,9 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var voiceNotes: Bool = false
     /// A voice note can start a brand-new job and chat (`POST /voice/work/voice-message`): Home's mic.
     public var newVoiceNotes: Bool = false
+    /// Home is a chat (SPK-208): `POST /voice/home/message` (+ `/voice/home/voice-message`) reaches a
+    /// coordinator that replies in the thread and starts jobs only for real work.
+    public var homeChat: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -979,7 +982,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case messageModes = "message_modes", questionState = "question_state", agents
         case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
         case voiceNotes = "voice_notes", newVoiceNotes = "new_voice_notes"
-        case now
+        case now, homeChat = "home_chat"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1001,6 +1004,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         transcribe = (try? c.decodeIfPresent(Bool.self, forKey: .transcribe)) ?? false
         voiceNotes = (try? c.decodeIfPresent(Bool.self, forKey: .voiceNotes)) ?? false
         newVoiceNotes = (try? c.decodeIfPresent(Bool.self, forKey: .newVoiceNotes)) ?? false
+        homeChat = (try? c.decodeIfPresent(Bool.self, forKey: .homeChat)) ?? false
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false

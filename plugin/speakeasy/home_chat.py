@@ -212,6 +212,8 @@ class HomeChat:
             out["voice"] = row["voice"]
         if row.get("run_id"):
             out["run_id"] = row["run_id"]
+        if row.get("client_id") and row["role"] == "user":
+            out["client_id"] = row["client_id"]   # the app swaps its own "sending" bubble for this one
         return out
 
     # -- the coordinator turn --------------------------------------------------------------------

@@ -349,7 +349,9 @@ public struct EarlierKind: Equatable, Sendable, Identifiable {
 /// updates in place; older seen stretches arrive folded ("This morning · 6 done").
 public struct NowStream: Equatable, Sendable {
     public struct Entry: Equatable, Sendable, Identifiable {
-        public enum Kind: String, Sendable { case ask, card, group }
+        /// `message`: Home's chat (plugins with `home_chat`): your words or the coordinator's reply.
+        public enum Kind: String, Sendable { case ask, card, group, message }
+        public enum Role: String, Sendable { case user, assistant }
         /// A question, confirm or checkout is a widget in the thread: open -> confirmed -> done.
         public enum Widget: String, Sendable { case open, confirmed, done }
         public var id: String
@@ -363,21 +365,38 @@ public struct NowStream: Equatable, Sendable {
         /// group: the plain line ("This morning · 6 done") and the items it folds.
         public var line: String?
         public var itemIDs: [String]
+        /// message: who said it, which model wrote a reply, a voice note's length, the job it started.
+        public var role: Role?
+        public var attribution: ReplyAttribution?
+        public var voiceDuration: TimeInterval?
+        public var runID: String?
+        /// message (yours): the client id it was sent with, so the app's "sending" bubble gives way to it.
+        public var clientID: String?
         public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
-                    line: String? = nil, itemIDs: [String] = []) {
+                    line: String? = nil, itemIDs: [String] = [], role: Role? = nil, attribution: ReplyAttribution? = nil,
+                    voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil) {
             self.id = id; self.kind = kind; self.at = at; self.text = text; self.itemID = itemID; self.widget = widget
             self.line = line; self.itemIDs = itemIDs
+            self.role = role; self.attribution = attribution; self.voiceDuration = voiceDuration; self.runID = runID
+            self.clientID = clientID
         }
-        init?(json: Any?) {
+        public init?(json: Any?) {
             guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
                   let kind = (o["kind"] as? String).flatMap(Kind.init(rawValue:)),
                   let at = (o["at"] as? NSNumber)?.doubleValue else { return nil }
+            let role = (o["role"] as? String).flatMap(Role.init(rawValue:))
+            if kind == .message && (role == nil || nonEmpty(o["text"]) == nil) { return nil }
             self.init(id: id, kind: kind, at: Date(timeIntervalSince1970: at), text: nonEmpty(o["text"]),
                       itemID: nonEmpty(o["item_id"]), widget: (o["widget"] as? String).flatMap(Widget.init(rawValue:)),
-                      line: nonEmpty(o["line"]), itemIDs: (o["item_ids"] as? [Any] ?? []).compactMap(nonEmpty))
+                      line: nonEmpty(o["line"]), itemIDs: (o["item_ids"] as? [Any] ?? []).compactMap(nonEmpty),
+                      role: role, attribution: role == .assistant ? ReplyAttribution(json: o["model"]) : nil,
+                      voiceDuration: ((o["voice"] as? [String: Any])?["duration"] as? NSNumber)?.doubleValue,
+                      runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]))
         }
     }
     public var entries: [Entry]
+    /// Home's chat has messages (plugins with `home_chat`): the thread shows even with no cards.
+    public var hasMessages: Bool { entries.contains { $0.kind == .message } }
     /// Item ids waiting on the user, for the count on the work strip.
     public var needsYou: [String]
     public init(entries: [Entry] = [], needsYou: [String] = []) { self.entries = entries; self.needsYou = needsYou }
@@ -385,6 +404,27 @@ public struct NowStream: Equatable, Sendable {
         guard let o = json as? [String: Any] else { return nil }
         self.init(entries: (o["entries"] as? [Any] ?? []).compactMap(Entry.init(json:)),
                   needsYou: (o["needs_you"] as? [Any] ?? []).compactMap(nonEmpty))
+    }
+}
+
+/// `POST /voice/home/message`'s reply: your message, the coordinator's reply (none when it only
+/// started a job and had nothing to add), what it did and the job it started or followed up.
+public struct HomeChatReply: Equatable, Sendable {
+    public enum Action: String, Sendable { case none, start, followUp = "follow_up", cancel, failed }
+    public var message: NowStream.Entry?
+    public var reply: NowStream.Entry?
+    public var action: Action
+    public var runID: String?
+    public var sessionID: String?
+    public init(message: NowStream.Entry? = nil, reply: NowStream.Entry? = nil, action: Action = .none,
+                runID: String? = nil, sessionID: String? = nil) {
+        self.message = message; self.reply = reply; self.action = action; self.runID = runID; self.sessionID = sessionID
+    }
+    public init?(json: [String: Any]) {
+        guard json["ok"] as? Bool == true else { return nil }
+        self.init(message: NowStream.Entry(json: json["message"]), reply: NowStream.Entry(json: json["reply"]),
+                  action: (json["action"] as? String).flatMap(Action.init(rawValue:)) ?? .none,
+                  runID: nonEmpty(json["run_id"]), sessionID: nonEmpty(json["session_id"]))
     }
 }
 

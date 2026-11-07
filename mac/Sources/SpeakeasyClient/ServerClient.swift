@@ -552,6 +552,20 @@ public final class ServerClient: @unchecked Sendable {
 
     // MARK: History (servers with `history`; docs/API.md "History")
 
+    /// Home's chat (servers with `home_chat`): the coordinator replies, and starts or follows up a job
+    /// only for real work. Idempotent on *clientID*.
+    public func homeMessage(text: String, attachments: [String] = [], clientID: String = UUID().uuidString,
+                            choice: ModelChoice? = nil) async throws -> HomeChatReply {
+        var body: [String: Any] = ["text": text.trimmingCharacters(in: .whitespacesAndNewlines), "client_id": clientID]
+        if !attachments.isEmpty { body["attachments"] = attachments }
+        if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
+        let reply = try await post("/voice/home/message", body)
+        guard let parsed = HomeChatReply(json: reply) else {
+            throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't take that message.")
+        }
+        return parsed
+    }
+
     /// One page of every Hermes session, newest first.
     public func history(query: String = "", source: String? = nil, cursor: String? = nil) async throws -> HistoryPage {
         HistoryPage(json: try await json(HistoryPage.path(query: query, source: source, cursor: cursor)))

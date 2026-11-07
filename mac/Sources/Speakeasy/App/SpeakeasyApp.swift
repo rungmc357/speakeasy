@@ -181,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.wireHermesTranscription(caps?.transcribe ?? false)
                     self.history.store.voiceNotesSupported = caps?.voiceNotes ?? false
                     MacHomeComposerModel.shared.voiceNotesSupported = caps?.newVoiceNotes ?? false
+                    MacHomeComposerModel.shared.homeChat = caps?.homeChat ?? false
                     self.history.store.boardsSupported = caps?.boards ?? false
                     self.history.store.skillsSupported = caps?.slashSkills ?? false
                     self.history.store.filesSupported = caps?.files ?? false

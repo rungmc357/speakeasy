@@ -15,6 +15,10 @@ struct MacNowThread: View {
             switch entry.kind {
             case .ask:
                 if let text = entry.text, let id = entry.itemID, byID[id] != nil { ask(text) }
+            case .message:
+                if let text = entry.text {
+                    if entry.role == .user { ask(text) } else { reply(text, entry.attribution) }
+                }
             case .card:
                 if let id = entry.itemID, let item = byID[id] { card(item) }
             case .group:
@@ -44,6 +48,20 @@ struct MacNowThread: View {
             Text(text).font(.callout).padding(12)
                 .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
         }.accessibilityIdentifier("mac-now-ask")
+    }
+    /// The coordinator's reply in Home's chat: plain text on the left, the model under it.
+    private func reply(_ text: String, _ attribution: ReplyAttribution?) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(AgentMarkdown.attributed(text)).font(.callout).textSelection(.enabled)
+                if let attribution {
+                    Text(attribution.label).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .padding(12)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16))
+            Spacer(minLength: 32)
+        }.accessibilityIdentifier("mac-now-reply")
     }
     private func card(_ item: NowItem) -> some View {
         MacNowCard(item: item, now: now, focused: now.home?.call?.focus == item.id) {

@@ -26,6 +26,8 @@ final class MacHomeComposerModel: ObservableObject {
     @Published private(set) var level: Float = 0
     /// Servers with `new_voice_notes`: the mic shows.
     @Published var voiceNotesSupported = false
+    /// Plugins with `home_chat`: Home is a chat with a coordinator (it replies; jobs only for real work).
+    var homeChat = false
 
     struct Pick: Identifiable {
         let id = UUID()
@@ -142,6 +144,10 @@ final class MacHomeComposerModel: ObservableObject {
         let title = String((clean.isEmpty ? "Review attached media" : clean).prefix(80))
         notice = nil
         draft = ""
+        if homeChat && !demo {
+            sendToChat(clean, attachments: attachments, clientID: clientID)
+            return
+        }
         now.addPending(id: clientID, title: title)
         if demo { return }
         sending = true
@@ -163,6 +169,25 @@ final class MacHomeComposerModel: ObservableObject {
     }
 
     // MARK: Voice message (stop = sent)
+
+    /// Home's chat: the words show at once as your bubble; the coordinator's reply (and the card of
+    /// any job it started) arrives with the next Home refresh.
+    private func sendToChat(_ clean: String, attachments: [String], clientID: String) {
+        sending = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.sending = false }
+            do {
+                guard let api = self.api() else { throw URLError(.notConnectedToInternet) }
+                _ = try await api.homeMessage(text: clean, attachments: attachments, clientID: clientID)
+                self.picks.removeAll(); self.sendID = nil
+                await self.now.refresh()
+            } catch {
+                if self.draft.isEmpty { self.draft = clean }
+                self.notice = HistoryStore.message(error)
+            }
+        }
+    }
 
     func tapMic() {
         guard voiceNotesSupported, !recording, !sending else { return }

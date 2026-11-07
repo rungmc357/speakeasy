@@ -172,7 +172,8 @@ public struct VoiceMessageFlow: Equatable, Sendable {
 public struct VoiceNoteRequest: Equatable, Sendable {
     /// `newJob`: no conversation yet — the recording starts a new job and chat (Home's composer,
     /// `POST /voice/work/voice-message`, servers with `new_voice_notes`).
-    public enum Target: Equatable, Sendable { case session(String), task(String), newJob }
+    /// `home`: Home's chat coordinator (`POST /voice/home/voice-message`, servers with `home_chat`).
+    public enum Target: Equatable, Sendable { case session(String), task(String), newJob, home }
     public var target: Target
     public var audio: Data
     public var mimeType: String
@@ -194,6 +195,7 @@ public struct VoiceNoteRequest: Equatable, Sendable {
         case .session(let id): return HistoryConversation.path(id) + "/voice-message"
         case .task(let run): return "/voice/work/\(run)/voice-message"
         case .newJob: return "/voice/work/voice-message"
+        case .home: return "/voice/home/voice-message"
         }
     }
 
