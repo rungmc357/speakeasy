@@ -600,6 +600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func openHistory(session: String?) {
         let store = history.store
         if store.backend == nil, let api = native.api { store.backend = LiveHistoryBackend(api: api) }
+        store.panel = native.model
         if store.schedules.backend == nil { store.schedules.backend = LiveScheduleBackend { [weak self] in self?.native.api } }
         store.supported = app.status?.capabilities?.history ?? false
         store.modelsSupported = app.status?.capabilities?.modelChoice ?? false

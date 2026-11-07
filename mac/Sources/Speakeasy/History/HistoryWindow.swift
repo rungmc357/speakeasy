@@ -367,6 +367,20 @@ enum DemoHistory {
         add("s_invoice", "Chase the March invoices", "discord", "Discord · #finance", daysAgo(4, 15, 10), "Couldn't log in to the billing portal.",
             entries: [user("m1", daysAgo(4, 15), "Find which March invoices are still unpaid."),
                       bot("m2", daysAgo(4, 15, 10), "Couldn't log in to the billing portal: it wants a new 2FA code.")])
+        // A task that drafted an email to send and another that made pictures to look at: both are
+        // reviewed on the session page (the cards come from the panel's state, see DemoReviewPanel).
+        add("s_dinner", "Team dinner on Friday", "speakeasy", "Speakeasy", ago(3), "The email to the restaurant is ready to send.",
+            state: "needs_you", entries: [
+                user("m1", ago(14), "Book a table for eight on Friday at the Corner Café and draft the email to them."),
+                tools("t1", [call(1, "read", "Checked the café's booking page", "browser", ago(13), 6)]),
+                bot("m2", ago(11), "They take groups by email. The draft is below: eight people, Friday at 7 PM, one vegetarian."),
+                user("m3", ago(9), "Also sketch three ways to seat everyone so I can pick."),
+                tools("t2", [call(2, "make", "Drew three seating plans", "image_generate", ago(8), 40)]),
+                bot("m4", ago(3), "Three seating plans to look at."),
+            ], jobs: [["run_id": "run_0030", "status": "completed", "title": "Email the café about Friday's table",
+                       "started_at": ago(14), "finished_at": ago(11)],
+                      ["run_id": "run_0031", "status": "completed", "title": "Three seating plans for Friday",
+                       "started_at": ago(9), "finished_at": ago(3)]])
         add("s_gift", "Pick the shop for the gift", "speakeasy", "Speakeasy", daysAgo(6, 19, 9), "Lark Home: 60-day returns, free label.")
         add("s_rename", "Rename the staging buckets", "cli", "Terminal", daysAgo(9, 14, 20), "Renamed 4 buckets; updated the deploy config.")
         add("s_reading", "Reading list for the team", "speakeasy", "Speakeasy", daysAgo(12, 10, 4), "Six picks on pricing strategy.")
@@ -382,6 +396,71 @@ enum DemoHistory {
 }
 
 // MARK: - Screenshots (`--history-shots <dir>`)
+
+/// The panel state behind the demo dinner chat's review cards: one task with an email draft, one
+/// with three pictures (drawn here; invented data, no network).
+@MainActor
+enum DemoReviewPanel {
+    static let model: VoicePanelModel = {
+        let m = VoicePanelModel()
+        let now = Date().timeIntervalSince1970
+        let draft: [String: Any] = ["draft_id": "d_dinner", "sha256": "demo", "from": "you@example.com",
+                                    "to": ["hello@cornercafe.example"], "subject": "Table for eight on Friday",
+                                    "body": "Hi,\n\nCould we book a table for eight this Friday at 7 PM? One of us is vegetarian.\n\nThanks!",
+                                    "status": "pending"]
+        let tasks: [[String: Any]] = [
+            ["task_id": "t_mail", "run_id": "run_0030", "status": "completed", "title": "Email the café about Friday's table",
+             "session_id": "s_dinner", "updated_at": now - 660, "email_drafts": [draft],
+             "result": ["spoken": "The email is ready for you to send.", "full": "The email is ready for you to send."]],
+            ["task_id": "t_seats", "run_id": "run_0031", "status": "completed", "title": "Three seating plans for Friday",
+             "session_id": "s_dinner", "updated_at": now - 180,
+             "review": ["images": [1, 2, 3], "settled_at": now - 180],
+             "result": ["spoken": "Three seating plans to look at.", "full": "Three seating plans to look at.",
+                        "cards": [["kind": "image", "name": "one-long-table.png"], ["kind": "image", "name": "two-tables.png"],
+                                  ["kind": "image", "name": "round-table.png"]]]],
+        ]
+        m.state.tasks = tasks.compactMap(TaskItem.init(json:))
+        m.loadCardImage = { _, n in picture(n) }
+        m.loadProductImage = { _, n in picture(n) }
+        return m
+    }()
+
+    /// A simple seating plan: tables as rounded shapes, seats as dots.
+    nonisolated static func picture(_ n: Int) -> Data? {
+        let size = NSSize(width: 960, height: 600)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor(calibratedRed: 0.95, green: 0.93, blue: 0.89, alpha: 1).setFill()
+        NSRect(origin: .zero, size: size).fill()
+        let wood = NSColor(calibratedRed: 0.62, green: 0.47, blue: 0.32, alpha: 1)
+        let seat = NSColor(calibratedRed: 0.29, green: 0.42, blue: 0.55, alpha: 1)
+        func table(_ r: NSRect, round: Bool = false) {
+            wood.setFill()
+            (round ? NSBezierPath(ovalIn: r) : NSBezierPath(roundedRect: r, xRadius: 18, yRadius: 18)).fill()
+        }
+        func seats(_ points: [NSPoint]) {
+            seat.setFill()
+            for p in points { NSBezierPath(ovalIn: NSRect(x: p.x - 22, y: p.y - 22, width: 44, height: 44)).fill() }
+        }
+        switch n {
+        case 1:
+            table(NSRect(x: 180, y: 250, width: 600, height: 100))
+            seats((0..<4).flatMap { i in [NSPoint(x: 255 + Double(i) * 150, y: 395), NSPoint(x: 255 + Double(i) * 150, y: 205)] })
+        case 2:
+            table(NSRect(x: 130, y: 240, width: 280, height: 120)); table(NSRect(x: 550, y: 240, width: 280, height: 120))
+            seats([200, 340, 620, 760].flatMap { x in [NSPoint(x: x, y: 405), NSPoint(x: x, y: 195)] })
+        default:
+            table(NSRect(x: 330, y: 150, width: 300, height: 300), round: true)
+            seats((0..<8).map { i in
+                let a = Double(i) / 8 * 2 * .pi
+                return NSPoint(x: 480 + cos(a) * 200, y: 300 + sin(a) * 200)
+            })
+        }
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+}
 
 @MainActor
 enum HistoryShots {
@@ -435,6 +514,12 @@ enum HistoryShots {
                 store.open("s_flaky")
             }
             await shot("2-approval") { store.openSections = []; store.open("s_deploy") }
+            await shot("2b-draft-and-pictures") {
+                // An email to send and pictures to look at, reviewed right on the session page.
+                store.openSections = []
+                store.panel = DemoReviewPanel.model
+                store.open("s_dinner")
+            }
             await shot("3-question-search") {
                 store.searchNow("annual")
                 store.open("s_pricing")

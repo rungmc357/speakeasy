@@ -15,6 +15,8 @@ struct EmailDraftCard: View {
 
     var draft: EmailDraft
     @ObservedObject var model: VoicePanelModel
+    /// "Or just say what to change." — the call panel's hint; a session page (no call needed) hides it.
+    var voiceHint = true
     private var bodyExpanded: Bool { model.expandedDraftIDs.contains(draft.id) }
     @State private var revising = false
     @State private var instructions = ""
@@ -102,7 +104,7 @@ struct EmailDraftCard: View {
                 }
             } else {
                 HStack(spacing: 8) {
-                    Text(actionable ? "Or just say what to change." : "").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(actionable && voiceHint ? "Or just say what to change." : "").font(.system(size: 11)).foregroundStyle(.secondary)
                     Spacer()
                     PillButton(title: "Deny", destructive: true, action: { model.onDraftAction(draft, .deny, nil) })
                         .accessibilityLabel("Deny: discard this email")
