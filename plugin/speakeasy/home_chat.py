@@ -1,25 +1,26 @@
 """Home is a chat (SPK-208): one ongoing conversation with a coordinator.
 
 Typing on Home used to start a job for every message, so "yo" became a task card. Now each message
-goes to the coordinator first: one fast model call (Hermes' auxiliary client, task
-``speakeasy_home``) that sees the recent Home conversation and the jobs on Home, and answers with
-strict JSON::
+goes to the coordinator first: one model call that sees the recent Home conversation and the jobs on
+Home. It answers like a chat model does:
 
-    {"reply": "...", "action": "none" | "start" | "follow_up" | "cancel", "job": "j2" | null,
-     "request": "self-contained words for the job" | null}
-
-- ``none``: chat. The reply is the whole answer ("yo", "thanks", a question it can answer from the
-  conversation or a job's result). No job, no card.
-- ``start``: real work. A short reply, then a job through the same machinery as ``POST /voice/work``;
-  its card appears in the thread right after the reply and updates in place.
-- ``follow_up``: words for an existing job (steer while it runs, the answer while it asks, a
+- plain text: chat. The text is the whole answer ("yo", "thanks", a question it can answer from the
+  conversation, general knowledge or a job's result). No job, no card.
+- a ``start_job`` tool call: real work. A short reply, then a job through the same machinery as
+  ``POST /voice/work``; its card appears in the thread right after the reply and updates in place.
+- ``message_job``: words for an existing job (steer while it runs, the answer while it asks, a
   follow-up once it finished), through the job's own message route.
-- ``cancel``: stop a running job.
+- ``cancel_job``: stop a running job.
 
-The coordinator is not a Hermes session: it has no tools and never does work itself, which keeps
-it fast. Its model: ``auxiliary.speakeasy_home`` when the user set one, else the Speakeasy routing
-model (``auxiliary.speakeasy_router``, already picked to be fast), else Hermes' own auxiliary
-choice. Live calls keep their own routing; this is only Home's composer.
+Tool calls instead of a JSON reply format: real fast models answered questions in prose about half
+the time when asked for strict JSON, and prose is the right answer for chat anyway. A legacy JSON
+reply (``{"reply", "action", "job", "request"}``) is still understood.
+
+The coordinator is not a Hermes session: it has no real tools and never does work itself, which
+keeps it fast. Its model: ``auxiliary.speakeasy_home`` when the user set one, else the user's main
+model (their agent's own voice: fast routing models wrote noticeably worse chat and misrouted
+requests in the real-model acceptance run), else the Speakeasy routing model. Live calls keep their
+own routing; this is only Home's composer.
 """
 from __future__ import annotations
 
@@ -61,39 +62,59 @@ def small_talk(text: str) -> bool:
 
 
 _PROMPT = """You are {name}, the user's own AI assistant, chatting with them on the Home screen of the \
-Speakeasy app. Home is one ongoing conversation. Behind you, separate jobs (full agent sessions with \
-tools, the user's computer, files, accounts and the web) do real work; you decide when to use them.
+Speakeasy app. Home is one ongoing conversation. Behind you, jobs (full agent sessions with tools, the \
+user's computer, files, accounts and the web) do real work.
 
-Reply with JSON only, no other text:
-{{"reply": "...", "action": "none|start|follow_up|cancel", "job": "<job id or null>", "request": "<words for the job or null>"}}
+Answer in plain text yourself for greetings, thanks, small talk, and anything you can answer from \
+general knowledge, this conversation, or the jobs listed below (their status and results). Keep it \
+conversational: usually one to three sentences, no headings, no lists unless asked.
 
-Choose the action:
-- "none": greetings, thanks, small talk, and questions you can answer from general knowledge, from this \
-conversation, or from the jobs listed below (their status and results). The reply is the whole answer.
-- "start": anything that needs doing or live information: searching, booking, buying, writing or \
-changing files, code, email, calendar, messages, the user's machines or accounts, weather, prices, news, \
-or anything about the user you don't already know. "request" is the task in self-contained words (resolve \
-"it", "that", "the one you mentioned" from the conversation). The reply is one short line in your own \
-words about what you'll do ("Looking for a quiet cafe near the river."). Never say "Starting task".
-- "follow_up": the message changes, adds to, corrects, or answers an existing job, or asks that job to \
-do more ("make it shorter", "actually Friday", "also check the price"). "job" is its id; "request" is \
-the new instruction in self-contained words. Reply in one short line.
-- "cancel": the user wants a running job stopped. "job" is its id. Reply in one short line.
+Use a tool instead when the message needs doing or live or personal information: searching, booking, \
+buying, files, code, email, calendar, messages, the user's machines or accounts, weather, prices, news, \
+or anything about the user you don't already know.
+- start_job for new work. "request" is the task in self-contained words (resolve "it", "that", "the one \
+you mentioned" from the conversation); "reply" is one short line in your own words about what you're \
+doing ("Looking for a quiet cafe near the river."). Never "Starting task".
+- message_job when the message changes, corrects, answers or adds to an existing job, or asks it to do \
+more with its result ("make it shorter", "actually Friday", "also check the price"). "job" is its id.
+- cancel_job to stop a running job. "job" is its id.
 
 Rules:
-- Plain conversational text, usually one or two sentences. No headings, no lists unless asked.
-- Never repeat or paraphrase the user's message back to them. Never narrate routing ("I'll send this \
-to a job", "a task will handle it"): just say what you're doing.
+- Never repeat or paraphrase the user's message back to them. Never narrate routing ("I'll send this to \
+a job", "a task will handle it"): just say what you're doing.
+- Never say you can't access something live or can't do something: start a job, which can.
 - Never invent facts about the user, their files, accounts or anything live. If you'd have to guess, \
 start a job instead.
-- To answer "what did it find?" / "what's going on?", use the jobs below. Name a job by what it is about, \
-never by its id.
-- When the user refers to a job ("that", "the cafe one"), pick it from the list; if unclear, use the \
-newest one the conversation was about.
+- Name a job by what it is about, never by its id. When the user refers to a job ("that", "the cafe \
+one"), pick it from the list; if unclear, the newest one the conversation was about.
 {attachments}
 Now: {now}.
 Jobs on Home (newest first):
 {jobs}"""
+
+_REPLY = {"type": "string", "description": "One short line to the user, in your own words, about what you're doing."}
+_JOB = {"type": "string", "description": "The job's id from the list (j1, j2, ...)."}
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "start_job",
+        "description": "Start a new job: real work, the user's computer or accounts, or live information.",
+        "parameters": {"type": "object", "properties": {
+            "request": {"type": "string", "description": "The task in self-contained words."},
+            "reply": _REPLY}, "required": ["request", "reply"]}}},
+    {"type": "function", "function": {
+        "name": "message_job",
+        "description": "Send words to an existing job: a change, a correction, the answer to its question, "
+                       "or more work on its result.",
+        "parameters": {"type": "object", "properties": {
+            "job": _JOB, "request": {"type": "string", "description": "The new instruction in self-contained words."},
+            "reply": _REPLY}, "required": ["job", "request", "reply"]}}},
+    {"type": "function", "function": {
+        "name": "cancel_job",
+        "description": "Stop a running job.",
+        "parameters": {"type": "object", "properties": {"job": _JOB, "reply": _REPLY},
+                       "required": ["job", "reply"]}}},
+]
+_TOOL_ACTION = {"start_job": "start", "message_job": "follow_up", "cancel_job": "cancel"}
 
 
 def _clip(text: Any, limit: int) -> str:
@@ -101,30 +122,59 @@ def _clip(text: Any, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "\u2026"
 
 
-def parse(raw: Any, aliases: dict[str, str]) -> dict[str, Any] | None:
-    """The coordinator's JSON, checked: a known action, a known job for follow_up/cancel, a reply.
-    None when it isn't usable (the caller falls back)."""
-    if not isinstance(raw, str):
+def _job_id(job: Any, aliases: dict[str, str], titles: dict[str, str]) -> str | None:
+    """A job the model named: its alias (``j2``, even with stray characters), else its title."""
+    if not isinstance(job, str) or not job.strip():
         return None
-    text = raw.strip()
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    try:
-        data = json.loads(text[start:end + 1])
-    except ValueError:
-        return None
-    if not isinstance(data, dict):
-        return None
+    job = job.strip()
+    if job in aliases:
+        return aliases[job]
+    m = re.match(r"(?i)\W*j\s*(\d+)", job)
+    if m and f"j{m.group(1)}" in aliases:
+        return aliases[f"j{m.group(1)}"]
+    want = " ".join(re.findall(r"[a-z0-9]+", job.lower()))
+    for alias, title in titles.items():
+        have = " ".join(re.findall(r"[a-z0-9]+", (title or "").lower()))
+        if want and have and (want == have or want in have or have in want):
+            return aliases.get(alias)
+    return None
+
+
+def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = None) -> dict[str, Any] | None:
+    """The coordinator's answer, checked: a tool call (``{"tool", "args", "text"}``), a legacy JSON reply,
+    or plain text (chat). A follow-up/cancel must name a known job. None when it isn't usable (the caller
+    falls back)."""
+    titles = titles or {}
+    if isinstance(raw, dict) and raw.get("tool"):
+        name = str(raw["tool"]).rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+        action = _TOOL_ACTION.get(name)
+        args = raw.get("args") if isinstance(raw.get("args"), dict) else {}
+        if action is None:
+            return None
+        data = {"action": action, "reply": args.get("reply") or raw.get("text") or "",
+                "job": args.get("job"), "request": args.get("request")}
+    else:
+        text = raw.get("text") if isinstance(raw, dict) else raw
+        if not isinstance(text, str) or not text.strip():
+            return None
+        text = text.strip()
+        bare = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
+        data = None
+        if bare.startswith("{") and bare.endswith("}"):
+            try:
+                data = json.loads(bare)
+            except ValueError:
+                data = None
+            if not isinstance(data, dict) or "action" not in data and "reply" not in data:
+                data = None
+        if data is None:
+            return {"reply": text[:REPLY_CHARS], "action": "none", "run_id": None, "request": None}
     action = str(data.get("action") or "none").strip().lower()
     if action not in ACTIONS:
         return None
     reply = data.get("reply")
     reply = reply.strip() if isinstance(reply, str) else ""
-    job = data.get("job")
-    job = job.strip() if isinstance(job, str) else None
-    run_id = aliases.get(job or "")
+    run_id = _job_id(data.get("job"), aliases, titles)
     request = data.get("request")
     request = " ".join(request.split()) if isinstance(request, str) and request.strip() else None
     if action in {"follow_up", "cancel"} and not run_id:
@@ -144,6 +194,7 @@ class HomeChat:
         self.clock = clock
         self._lock = threading.Lock()
         self._busy: dict[str, threading.Event] = {}
+        self._titles: dict[str, str] = {}
         with self.store._lock, self.store._db:
             self.store._db.execute("""CREATE TABLE IF NOT EXISTS home_messages (
                 id TEXT PRIMARY KEY, client_id TEXT, role TEXT NOT NULL, text TEXT NOT NULL, at REAL NOT NULL,
@@ -376,11 +427,13 @@ class HomeChat:
             items = []
         lines: list[str] = []
         aliases: dict[str, str] = {}
+        titles: dict[str, str] = {}
         now = self.clock()
         ordered = sorted((i for i in items if i.get("run_id")), key=lambda i: -float(i.get("started_at") or 0))
         for n, item in enumerate(ordered[:JOBS], 1):
             alias = f"j{n}"
             aliases[alias] = item["run_id"]
+            titles[alias] = str(item.get("title") or "")
             state = {"working": "running", "waiting": "waiting on another job", "question": "waiting on the user",
                      "new_answer": "finished", "seen_answer": "finished", "stopped": "stopped"}.get(
                          str(item.get("kind")), str(item.get("kind")))
@@ -397,6 +450,7 @@ class HomeChat:
                 if answer:
                     line += f"\n  Result: {answer}"
             lines.append(line)
+        self._titles = titles
         return ("\n".join(lines) or "(none)"), aliases
 
     def _answer(self, run_id: str) -> str:
@@ -425,40 +479,79 @@ class HomeChat:
         except Exception as exc:
             logger.info("speakeasy: Home's coordinator didn't answer (%s)", type(exc).__name__)
             return None, None
-        decided = parse(raw, aliases)
+        decided = parse(raw, aliases, self._titles)
         if decided is None:
             logger.info("speakeasy: Home's coordinator reply wasn't usable")
         return decided, model
 
-    def _model_call(self, messages: list[dict[str, str]]) -> tuple[str | None, dict | None]:
+    def _model_call(self, messages: list[dict[str, str]]) -> tuple[Any, dict | None]:
+        """One coordinator turn. Returns the answer (plain text, or ``{"tool", "args", "text"}`` for a
+        tool call) and the model that wrote it, as the reply's attribution badge."""
         if self._call is not None:
             got = self._call(messages)
-            return (got if isinstance(got, str) or got is None else got[0]), (
-                None if isinstance(got, str) or got is None else got[1])
+            if isinstance(got, tuple):
+                return got[0], got[1]
+            return got, None
         call_llm, extract = host_mod.aux_client()
         if extract is None:
             return None, None
-        task = self.task()
         from .router import _profile_scope
+        route = self.route()
+        kwargs: dict[str, Any] = dict(messages=messages, temperature=0.3, max_tokens=MAX_TOKENS,
+                                      timeout=TIMEOUT_S, tools=TOOLS)
         with _profile_scope():
-            response = call_llm(task=task, messages=messages, temperature=0.3, max_tokens=MAX_TOKENS,
-                                timeout=TIMEOUT_S)
-        return extract(response), self._served(response, task)
+            try:
+                if route.get("task"):
+                    response = call_llm(task=route["task"], **kwargs)
+                else:
+                    response = call_llm(provider=route["provider"], model=route["model"], **kwargs)
+            except Exception as exc:
+                if route.get("task") == FALLBACK_TASK:
+                    raise
+                # The main model didn't answer (offline, a provider this client can't reach): the routing
+                # model still gives the user a reply.
+                logger.info("speakeasy: Home's coordinator model failed (%s); using the routing model",
+                            type(exc).__name__)
+                route = {"task": FALLBACK_TASK}
+                response = call_llm(task=FALLBACK_TASK, **kwargs)
+        return self._answer_of(response, extract), self._served(response, route)
 
-    def task(self) -> str:
-        """``speakeasy_home`` when the user configured it, else the routing model's task when that is
-        set (the fast model they already picked for Speakeasy), else ``speakeasy_home`` (Hermes' auto)."""
+    @staticmethod
+    def _answer_of(response: Any, extract: Callable[[Any], str | None]) -> Any:
+        try:
+            message = response.choices[0].message
+            calls = list(getattr(message, "tool_calls", None) or [])
+        except Exception:
+            message, calls = None, []
+        text = (getattr(message, "content", None) or "") if message is not None else ""
+        if calls:
+            fn = getattr(calls[0], "function", None)
+            raw = getattr(fn, "arguments", None) or "{}"
+            try:
+                args = json.loads(raw) if isinstance(raw, str) else dict(raw)
+            except (ValueError, TypeError):
+                args = {}
+            return {"tool": getattr(fn, "name", ""), "args": args if isinstance(args, dict) else {},
+                    "text": text.strip() if isinstance(text, str) else ""}
+        return extract(response)
+
+    def route(self) -> dict[str, Any]:
+        """Which model answers: ``{"task": "speakeasy_home"}`` when the user configured it, else the
+        main model ``{"provider", "model"}``, else the routing model's task."""
         cfg = self._config()
         aux = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
+        block = aux.get(AUX_TASK)
+        if isinstance(block, dict) and (str(block.get("provider") or "auto") != "auto" or block.get("model")):
+            return {"task": AUX_TASK}
+        main = cfg.get("model")
+        if isinstance(main, dict) and main.get("default") and main.get("provider"):
+            return {"provider": str(main["provider"]), "model": str(main["default"])}
+        return {"task": FALLBACK_TASK}
 
-        def configured(name: str) -> bool:
-            block = aux.get(name)
-            return isinstance(block, dict) and (str(block.get("provider") or "auto") != "auto" or bool(block.get("model")))
-        if configured(AUX_TASK):
-            return AUX_TASK
-        if configured(FALLBACK_TASK):
-            return FALLBACK_TASK
-        return AUX_TASK
+    def task(self) -> str:
+        """The aux task name in use (kept for older callers): the routing model's task unless the user
+        configured ``speakeasy_home``."""
+        return self.route().get("task") or AUX_TASK
 
     def _config(self) -> dict[str, Any]:
         try:
@@ -474,16 +567,20 @@ class HomeChat:
                 cfg = {}
         return cfg if isinstance(cfg, dict) else {}
 
-    def _served(self, response: Any, task: str) -> dict | None:
+    def _served(self, response: Any, route: dict[str, Any] | str) -> dict | None:
         """Which model wrote the reply, as the existing per-message attribution badge."""
         from . import reply_models as RM
+        route = {"task": route} if isinstance(route, str) else route
         model = getattr(response, "model", None)
         if model is None and isinstance(response, dict):
             model = response.get("model")
-        aux = self._config().get("auxiliary") or {}
-        block = aux.get(task) if isinstance(aux, dict) else None
-        block = block if isinstance(block, dict) else {}
-        provider = block.get("provider")
+        provider = route.get("provider")
+        if route.get("task"):
+            aux = self._config().get("auxiliary") or {}
+            block = aux.get(route["task"]) if isinstance(aux, dict) else None
+            block = block if isinstance(block, dict) else {}
+            provider = block.get("provider")
+            model = model or block.get("model")
+        model = model or route.get("model")
         provider = provider if provider and provider != "auto" else None
-        model = model or block.get("model")
         return RM.badge({"model": model, "provider": provider}, "message") if model else None

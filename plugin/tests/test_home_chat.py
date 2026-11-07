@@ -1,6 +1,9 @@
 """SPK-208: Home is a chat. The composer talks to a coordinator that replies in the thread and starts
 or follows up jobs only for real work. The coordinator model is faked here (its JSON contract);
-the real-model run is the acceptance recording. Invented data only."""
+the real-model run is the acceptance recording. Invented data only.
+
+The real coordinator answers as a chat model: plain text for chat, a tool call for work. Scripted
+answers here are either a dict (the legacy JSON contract), a ``{"tool": ...}`` call, or plain text."""
 from __future__ import annotations
 
 import json
@@ -21,7 +24,9 @@ def coordinator(service, *answers):
     def call(messages):
         seen.append(messages)
         nxt = queue.pop(0)
-        return (json.dumps(nxt) if isinstance(nxt, dict) else nxt), {"model": "fast-chat-1", "label": "Fast chat"}
+        if isinstance(nxt, dict) and "tool" not in nxt:
+            nxt = json.dumps(nxt)
+        return nxt, {"model": "fast-chat-1", "label": "Fast chat"}
     service.home_chat._call = call
     return seen
 
@@ -93,14 +98,81 @@ def test_follow_up_goes_to_the_named_job_and_the_coordinator_sees_its_result(ser
     assert not [t for t in tasks(server) if t.get("run_id") not in {first["run_id"], body["run_id"]}]
 
 
-def test_an_unknown_job_or_bad_json_never_invents_a_reply(server, service, hermes):
+def test_an_unknown_job_never_invents_a_reply(server, service, hermes):
     coordinator(service, {"reply": "Sure.", "action": "follow_up", "job": "j9"})
     status, body = post(server, {"text": "make it shorter", "client_id": "c_bad"})
     # No usable decision: anything that isn't small talk runs as a job, as Home always did.
     assert status == 200 and body["action"] == "start" and body["reply"] is None
-    coordinator(service, "not json at all")
+    coordinator(service, None)          # no answer at all
     status, body = post(server, {"text": "thanks", "client_id": "c_thx"})
     assert body["action"] == "none" and body["reply"]["text"]
+
+
+def test_a_plain_text_answer_is_the_chat_reply(server, service, hermes):
+    coordinator(service, "About 384,400 km on average.")
+    body = post(server, {"text": "how far is the moon?", "client_id": "c_moon"})[1]
+    assert body["action"] == "none" and body["reply"]["text"] == "About 384,400 km on average."
+    assert not hermes.calls and not tasks(server)
+
+
+def test_a_start_job_tool_call_starts_one_job(server, service, hermes):
+    coordinator(service, {"tool": "mcp__start_job", "text": "",
+                          "args": {"request": "Find tomorrow's forecast for the user's town",
+                                   "reply": "Checking tomorrow's forecast."}})
+    body = post(server, {"text": "weather tomorrow?", "client_id": "c_wx"})[1]
+    assert body["action"] == "start" and body["run_id"]
+    assert body["reply"]["text"] == "Checking tomorrow's forecast."
+    call = wait_for(lambda: hermes.calls)[0]
+    assert "forecast for the user's town" in json.dumps(call["input"])
+
+
+def test_tool_calls_find_the_job_by_a_sloppy_id_or_its_title(server, service, hermes, monkeypatch):
+    coordinator(service, {"reply": "Looking.", "action": "start", "request": "Compare two standing desks"})
+    first = post(server, {"text": "compare two standing desks", "client_id": "c_s1"})[1]
+    wait_for(lambda: hermes.calls)
+    stopped: list[str] = []
+    monkeypatch.setattr(service, "stop_task", lambda run_id: stopped.append(run_id) or {"ok": True})
+    coordinator(service, {"tool": "cancel_job", "args": {"job": "j1\u0159", "reply": "Stopped it."}})
+    assert post(server, {"text": "stop that", "client_id": "c_s2"})[1]["action"] == "cancel"
+    title = service.home_chat._titles["j1"]
+    coordinator(service, {"tool": "functions.cancel_job", "args": {"job": title, "reply": "Stopped it."}})
+    assert post(server, {"text": "stop the desk one", "client_id": "c_s3"})[1]["action"] == "cancel"
+    assert stopped == [first["run_id"], first["run_id"]]
+
+
+class _Fn:
+    def __init__(self, name, arguments):
+        self.name, self.arguments = name, arguments
+
+
+class _Msg:
+    def __init__(self, content, calls=()):
+        self.content = content
+        self.tool_calls = [type("C", (), {"function": _Fn(*c)})() for c in calls]
+
+
+class _Resp:
+    def __init__(self, msg, model="chat-model-2"):
+        self.choices = [type("Ch", (), {"message": msg})()]
+        self.model = model
+
+
+def test_answer_of_reads_tool_calls_and_text():
+    got = HC.HomeChat._answer_of(_Resp(_Msg("\n\n", [("start_job", '{"request":"x","reply":"y"}')])), lambda r: None)
+    assert got == {"tool": "start_job", "args": {"request": "x", "reply": "y"}, "text": ""}
+    assert HC.HomeChat._answer_of(_Resp(_Msg("Hey!")), lambda r: r.choices[0].message.content) == "Hey!"
+
+
+def test_the_main_model_answers_unless_home_chat_has_its_own(service, monkeypatch):
+    chat = service.home_chat
+    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"},
+                                                  "auxiliary": {"speakeasy_router": {"provider": "acme", "model": "tiny"}}})
+    assert chat.route() == {"provider": "acme", "model": "big-model-3"}
+    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"},
+                                                  "auxiliary": {"speakeasy_home": {"provider": "acme", "model": "mid"}}})
+    assert chat.route() == {"task": "speakeasy_home"}
+    monkeypatch.setattr(chat, "_config", lambda: {})
+    assert chat.route() == {"task": "speakeasy_router"}
 
 
 def test_cancel_stops_the_named_running_job(server, service, hermes, monkeypatch):
@@ -143,6 +215,11 @@ def test_clear_hides_old_chat(server, service):
     ('{"reply":"x","action":"explode"}', False),
     ('{"reply":"x","action":"cancel","job":"j1"}', True),
     ('{"reply":"x","action":"cancel"}', False),
+    ("Plain words are a chat reply.", True),
+    ("   ", False),
+    ({"tool": "start_job", "args": {"request": "x", "reply": "On it."}}, True),
+    ({"tool": "cancel_job", "args": {"job": "j7", "reply": "x"}}, False),
+    ({"tool": "delete_everything", "args": {}}, False),
 ])
 def test_parse(raw, ok):
     assert (HC.parse(raw, {"j1": "run_1"}) is not None) is ok
