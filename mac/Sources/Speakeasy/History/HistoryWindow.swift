@@ -8,6 +8,8 @@ import SpeakeasyClient
 @MainActor
 final class HistoryWindowController: NSObject, NSWindowDelegate {
     let store = HistoryStore()
+    var voice: VoicePanelModel?
+    var onFrontmostChanged: (Bool) -> Void = { _ in }
     private(set) var window: NSWindow?
 
     func show() {
@@ -24,7 +26,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
-        w.title = "Speakeasy History"
+        w.title = "Speakeasy"
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.isMovableByWindowBackground = true
@@ -35,7 +37,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         }
         w.minSize = NSSize(width: 720, height: 480)
         w.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: HistoryRootView(store: store))
+        let host = NSHostingView(rootView: HistoryRootView(store: store, voice: voice))
         host.sizingOptions = []   // the window keeps its size; the lists scroll inside it
         w.contentView = host
         w.center()
@@ -44,8 +46,11 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         return w
     }
 
-    func windowWillClose(_ notification: Notification) { store.stop() }
+    func windowWillClose(_ notification: Notification) { store.stop(); onFrontmostChanged(false) }
+    func windowDidResignKey(_ notification: Notification) { onFrontmostChanged(false) }
+    func windowDidMiniaturize(_ notification: Notification) { onFrontmostChanged(false) }
     func windowDidBecomeKey(_ notification: Notification) {
+        onFrontmostChanged(true)
         // Back in front: pick up what changed while it was away.
         if store.supported, store.backend != nil, !store.list.loading { store.refresh() }
         if let id = store.target?.sessionID { store.load(id) }

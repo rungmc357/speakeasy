@@ -70,10 +70,12 @@ final class MacNowModel: ObservableObject {
 struct MacNowColumn: View {
     @ObservedObject var now: MacNowModel
     @ObservedObject var store: HistoryStore
+    var voice: VoicePanelModel? = nil
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
+                if let voice { MacNowHomeCall(voice: voice) }
                 Text(now.home?.sentence ?? (now.failed ? "Can't reach Hermes right now." : "All quiet."))
                     .font(.title2.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
@@ -167,18 +169,24 @@ struct MacNowCard: View {
             }
             .controlSize(.small)
         } else {
-            HStack(spacing: 6) {
-                ForEach(Array(q.options.prefix(3).enumerated()), id: \.element.id) { i, option in
-                    if i == (q.recommended ?? -1) {
-                        Button(option.text) { now.answer(item, option: option) }.buttonStyle(.borderedProminent).tint(JobLook.brass)
-                    } else {
-                        Button(option.text) { now.answer(item, option: option) }.buttonStyle(.bordered)
-                    }
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) { optionButtons(q) }.fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: 6) { optionButtons(q) }
             }
-            .controlSize(.small).lineLimit(1)
+            .controlSize(.small)
             if let lock = item.lockLine {
                 Label(lock, systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private func optionButtons(_ q: NowQuestion) -> some View {
+        ForEach(Array(q.options.prefix(3).enumerated()), id: \.element.id) { i, option in
+            if i == (q.recommended ?? -1) {
+                Button(option.text) { now.answer(item, option: option) }
+                    .buttonStyle(.borderedProminent).tint(JobLook.brass)
+            } else {
+                Button(option.text) { now.answer(item, option: option) }.buttonStyle(.bordered)
             }
         }
     }

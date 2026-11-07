@@ -59,12 +59,27 @@ enum HistoryLook {
 
 struct HistoryRootView: View {
     @ObservedObject var store: HistoryStore
+    var voice: VoicePanelModel? = nil
+    @State private var earlierOpen = false
 
     var body: some View {
         GeometryReader { geo in
             // Home (SPK-124 phase 4b): sidebar · Now · conversation; under 1,000 wide, Now · conversation.
-            let wide = !store.nowSupported || geo.size.width >= 1000
-            columns(sidebar: wide)
+            let wide = MacNowLayout.showsSidebar(width: geo.size.width, nowSupported: store.nowSupported)
+            columns(sidebar: wide, width: geo.size.width)
+                .overlay(alignment: .topLeading) {
+                    if !wide {
+                        Button { earlierOpen.toggle() } label: {
+                            Label("Earlier", systemImage: "sidebar.left")
+                        }
+                        .buttonStyle(.borderless).padding(.leading, 84).padding(.top, 9)
+                        .accessibilityIdentifier("mac-now-earlier")
+                        .popover(isPresented: $earlierOpen, arrowEdge: .bottom) {
+                            HistorySidebar(store: store).frame(width: 288, height: 560)
+                                .background(HistoryLook.sidebar)
+                        }
+                    }
+                }
         }
     }
 
@@ -72,7 +87,7 @@ struct HistoryRootView: View {
         Rectangle().fill(Color.adaptive(dark: Color.black.opacity(0.45), light: Color.black.opacity(0.08))).frame(width: 1)
     }
 
-    private func columns(sidebar: Bool) -> some View {
+    private func columns(sidebar: Bool, width: CGFloat) -> some View {
         HStack(spacing: 0) {
             if sidebar {
                 HistorySidebar(store: store)
@@ -81,8 +96,8 @@ struct HistoryRootView: View {
                 divider
             }
             if store.nowSupported {
-                MacNowColumn(now: MacNowModel.shared, store: store)
-                    .frame(width: 420)
+                MacNowColumn(now: MacNowModel.shared, store: store, voice: voice)
+                    .frame(width: sidebar ? 420 : MacNowLayout.nowWidth(windowWidth: width))
                     .background(HistoryLook.sidebar.opacity(0.5))
                 divider
             }
@@ -98,7 +113,10 @@ struct HistoryRootView: View {
 
     /// ⌘F search (⌘N lives on the New chat button).
     private var shortcuts: some View {
-        Button("") { store.focusSearch += 1 }.keyboardShortcut("f", modifiers: .command).opacity(0).allowsHitTesting(false)
+        Button("") {
+            if store.nowSupported { earlierOpen = true }
+            store.focusSearch += 1
+        }.keyboardShortcut("f", modifiers: .command).opacity(0).allowsHitTesting(false)
             .accessibilityHidden(true)
     }
 }
