@@ -331,3 +331,35 @@ def test_a_run_that_continues_a_chat_job_stays_in_the_chat(service):
                        (key, "i_" + key, "d_" + key, 1, run, parent, "completed", 0))
     assert service.now_model._chat_children({"run_job"}) == {"run_answer", "run_more"}
     assert service.now_model._chat_children(set()) == set()
+
+
+def test_a_listed_model_that_fails_falls_back_and_auto_skips_it(service, monkeypatch):
+    """Hermes can list a model whose sign-in doesn't work. A real message that fails on it falls back
+    to the main model, and Auto skips it afterwards; learned from use, never from a test call."""
+    chat = service.home_chat
+    monkeypatch.setattr(chat, "_call", None)
+    monkeypatch.setattr(service, "catalog", _Catalog(_entries("acme/big-model-3", "anthropic/claude-haiku-5-5",
+                                                              "openai-api/gpt-5-mini")))
+    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"}})
+    called: list[str] = []
+
+    class _M:
+        content, tool_calls = "Hi!", None
+
+    class _R:
+        choices = [type("C", (), {"message": _M()})()]
+        model = "big-model-3"
+
+    def call_llm(provider=None, model=None, task=None, **kw):
+        called.append(model or task)
+        if model == "claude-haiku-5-5":
+            raise PermissionError("not signed in")
+        return _R()
+    monkeypatch.setattr(HC.host_mod, "aux_client", lambda: (call_llm, lambda r: r.choices[0].message.content))
+    answer, served = chat._model_call([{"role": "user", "content": "hi"}])
+    assert answer == "Hi!" and called == ["claude-haiku-5-5", "big-model-3"]
+    assert chat.route() == {"provider": "openai-api", "model": "gpt-5-mini", "source": "auto"}
+    # A chosen model that fails keeps the choice but says so on the chip.
+    service.store.set_meta(HC.CHOICE_META, "anthropic/claude-haiku-5-5")
+    status = chat.model_status()
+    assert status["source"] == "chosen" and "didn't answer" in status["note"]

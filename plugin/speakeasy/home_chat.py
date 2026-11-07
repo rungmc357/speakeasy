@@ -57,6 +57,8 @@ JOBS = 8
 ACTIONS = {"none", "start", "follow_up", "cancel"}
 EXTRA_JOBS = 3                # "two asks in one message are two jobs": at most this many more per message
 CHOICE_META = "home_model"    # the Home chip's pick, a catalog id ("provider/model"); unset = Auto
+FAILED_META = "home_model_failed"   # {model id: when it last failed}: listed in Hermes but not answering
+FAILED_S = 24 * 3600          # Auto skips a model that failed in real use for this long (never probed)
 
 # Approved coordinator models, best first. Home's coordinator answers chat and decides "reply, start
 # a job, message a job"; it needs to be quick, good at plain conversation and reliable with tool
@@ -123,7 +125,8 @@ doing ("Looking for a quiet cafe near the river."). Never "Starting task".
 more with its result ("make it shorter", "actually Friday", "also check the price"). "job" is its id.
 - cancel_job to stop a running job. "job" is its id.
 - One message that asks for two separate things gets two start_job calls, one per job ("Book the \
-dentist and find a birthday gift" is two jobs). Never merge unrelated asks into one job.
+dentist and find a birthday gift" is two jobs). Never merge unrelated asks into one job, and never \
+drop one: each ask is either answered in your reply or gets its own job.
 
 Rules:
 - Use US units first (miles, °F, pounds, inches).
@@ -610,6 +613,8 @@ class HomeChat:
                     response = call_llm(task=route["task"], **kwargs)
                 else:
                     response = call_llm(provider=route["provider"], model=route["model"], **kwargs)
+                    if route.get("source") == "chosen":
+                        self._mark_failed(f"{route['provider']}/{route['model']}", failed=False)
             except Exception as exc:
                 if route.get("task") == FALLBACK_TASK:
                     raise
@@ -617,6 +622,8 @@ class HomeChat:
                 # the user's main model, then the routing model, still give the user a reply.
                 logger.info("speakeasy: Home's coordinator model failed (%s); falling back",
                             type(exc).__name__)
+                if route.get("model"):
+                    self._mark_failed(f"{route['provider']}/{route['model']}")
                 main = self._config().get("model")
                 tried = (route.get("provider"), route.get("model"))
                 response = None
@@ -676,7 +683,7 @@ class HomeChat:
         block = aux.get(AUX_TASK)
         if isinstance(block, dict) and (str(block.get("provider") or "auto") != "auto" or block.get("model")):
             return {"task": AUX_TASK, "source": "configured"}
-        auto = pick_auto(entries or {})
+        auto = pick_auto({k: v for k, v in (entries or {}).items() if k not in self._failed()})
         if auto:
             provider, _, model = auto.partition("/")
             return {"provider": provider, "model": model, "source": "auto"}
@@ -684,6 +691,28 @@ class HomeChat:
         if isinstance(main, dict) and main.get("default") and main.get("provider"):
             return {"provider": str(main["provider"]), "model": str(main["default"]), "source": "main"}
         return {"task": FALLBACK_TASK, "source": "routing"}
+
+    def _failed(self) -> dict[str, float]:
+        """Models that failed to answer a real Home message lately (a sign-in Hermes lists but that
+        doesn't work). Learned from real use only; nothing is ever test-called."""
+        try:
+            got = json.loads(self.store.get_meta(FAILED_META) or "{}")
+        except ValueError:
+            return {}
+        now = self.clock()
+        return {k: float(v) for k, v in got.items() if isinstance(v, (int, float)) and now - float(v) < FAILED_S}
+
+    def _mark_failed(self, mid: str | None, failed: bool = True) -> None:
+        if not mid:
+            return
+        got = self._failed()
+        if failed:
+            got[mid] = self.clock()
+        elif mid not in got:
+            return
+        else:
+            got.pop(mid)
+        self.store.set_meta(FAILED_META, json.dumps(got))
 
     def _entries(self) -> dict[str, dict[str, Any]] | None:
         """The user's connected models from the cached Hermes list (None until it has been read; a
@@ -732,7 +761,11 @@ class HomeChat:
             e = entries.get(mid) or {}
             return {"id": mid, "name": e.get("name") or MD.friendly_name(mid.partition("/")[2] or mid),
                     "provider_name": e.get("provider_name") or mid.partition("/")[0]}
-        auto = pick_auto(entries)
+        failed = self._failed()
+        auto = pick_auto({k: v for k, v in entries.items() if k not in failed})
+        note = None
+        if current and current in failed:
+            note = f"{row(current)['name']} didn't answer last time, so another model replied."
         rows: list[dict[str, Any]] = []
         for mid in options:
             r = row(mid)
@@ -740,7 +773,7 @@ class HomeChat:
                 rows.append(r)
         rows = rows[:4] + [r for r in rows[4:] if r["id"] in {current, f"{(self._config().get('model') or {}).get('provider')}/{(self._config().get('model') or {}).get('default')}"}]
         return {"model": row(current) if current else None, "source": route.get("source"),
-                "auto": row(auto) if auto else None, "options": rows}
+                "auto": row(auto) if auto else None, "options": rows, "note": note}
 
     def choose_model(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /voice/home/model {"model": "provider/model" | null}``: the chip's pick (null = Auto)."""
