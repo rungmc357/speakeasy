@@ -619,7 +619,8 @@ class NowModel:
             "call": ({"interaction_id": call.interaction_id, "started_at": getattr(call, "started_at", None),
                       "focus": focus, "focus_label": "Talking about this" if focus else None}
                      if call is not None else None),
-            "call_summary": self._undismissed_call(self.call_summary(ended, now) if ended is not None else None),
+            "call_summary": self._undismissed_call(
+                self._latered_call(self.call_summary(ended, now) if ended is not None else None, now)),
             "items": items, "background": {"running": len(background), "items": background[:BACKGROUND_ITEMS]},
             # "Earlier today · N": answers more than 4 h old, one row instead of N cards. Outside
             # ``items`` so a build 68 app (which knows no such row) simply doesn't show it.
@@ -730,10 +731,19 @@ class NowModel:
     @staticmethod
     def dismiss_signature(item: dict[str, Any]) -> str:
         """What a dismissed card must change for it to come back: a new answer, a new question, a
-        new run (a working card's line changing doesn't count)."""
-        return hashlib.sha256(json.dumps([item.get("kind"), item.get("finished_at"), item.get("run_id"),
-                                          (item.get("question") or {}).get("prompt")],
-                                         sort_keys=True, default=str).encode()).hexdigest()[:16]
+        new run (a working card's line changing doesn't count).
+
+        A call recap has no kind, finished_at, run_id or question, so its own material is what it
+        comes back on: what the call did, what it answered, what it was asked, and what it still
+        asks. That is how an answer landing a few seconds after hang-up brings the card back
+        (SPK-221); with the usual four fields it was the same four nulls forever."""
+        if "kind" not in item and item.get("interaction_id"):
+            material: list[Any] = [item.get("things"), item.get("answers"), item.get("decisions"),
+                                   item.get("line"), item.get("more_things")]
+        else:
+            material = [item.get("kind"), item.get("finished_at"), item.get("run_id"),
+                        (item.get("question") or {}).get("prompt")]
+        return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
     def dismissed(self) -> dict[str, dict[str, Any]]:
         try:
@@ -778,6 +788,14 @@ class NowModel:
             return card
         mark = self.dismissed().get(card["id"]) or {}
         return None if mark.get("sig") == self.dismiss_signature(card) else card
+
+    def _latered_call(self, card: dict[str, Any] | None, now: float) -> dict[str, Any] | None:
+        """The call card takes Later like any other card (SPK-221): off Home until its time or until
+        it changes, waking with the same "put off" provenance, and back at once when undone."""
+        if not card:
+            return card
+        kept = self._apply_later([card], now)
+        return kept[0] if kept else None
 
     # -- rev, notice -----------------------------------------------------------------------------
     def _rev(self, body: dict[str, Any]) -> int:

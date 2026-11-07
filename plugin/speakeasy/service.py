@@ -3224,7 +3224,13 @@ class VoiceService(SecureInputMixin):
         if not isinstance(body, dict) or len(body) != 1 or not ({"option_id"} == set(body) or {"text"} == set(body)):
             raise ServiceError(400, "Send option_id or text.")
         item = self.now_model.find(item_id)
-        if item is None or item["kind"] != "question" or (item.get("question") or {}).get("shape") == "approval":
+        # Guard the card's shape before reading it: a call recap has no kind (SPK-221 used to turn
+        # that into a 500). Anything that isn't an open question card is the same clean 404, with no
+        # task submitted and no answer recorded.
+        if item is None:
+            raise ServiceError(404, "That question has closed.")
+        question = item.get("question")
+        if item.get("kind") != "question" or (question if isinstance(question, dict) else {}).get("shape") == "approval":
             raise ServiceError(404, "That question has closed.")
         text = N.option_text(item, body["option_id"]) if "option_id" in body else body.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > M.MAX_TEXT:

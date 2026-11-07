@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.47 — Putting a call card off works
+
+- **"Later" on the call card works.** Putting the card from an ended call off now takes it off Home until its time (or until it changes), and Undo brings it straight back, the same as any other card. *(plugin)*
+- **A dismissed call card comes back when it has more to say.** If a task from the call finishes a few seconds after you hang up, the card returns with that answer instead of staying hidden. *(plugin)*
+- **Answering a call card is refused cleanly** instead of failing, and no task is started by it. *(plugin)*
+
 ## Plugin 0.3.46 — Swipe to dismiss works
 
 - **Swiping a Home card away works again.** On iPhone build 69 every swipe said "That didn't go through." The plugin now accepts the card ids exactly as the apps send them, including the call card, a group of stopped jobs, and answers in the "Earlier today" row. *(plugin)*
