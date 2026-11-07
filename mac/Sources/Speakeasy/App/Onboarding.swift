@@ -420,6 +420,7 @@ struct PrivacyStepLayout: View {
 
 
 private struct ReadyStep: View {
+    @State private var customize = false
     @ObservedObject var flow: OnboardingFlow
     @EnvironmentObject var app: AppModel
 
@@ -430,11 +431,13 @@ private struct ReadyStep: View {
                 LabeledContent("Microphone") { MicrophoneRow() }
                 TextField("Your name", text: $flow.userName, prompt: Text("Optional"))
                 TextField("Assistant\u{2019}s name", text: $flow.assistantName, prompt: Text(VoiceState.defaultAssistantName))
-                DeliveryPicker(target: $flow.target, destinations: app.destinations)
-                if let home = app.home, home.available {
-                    Toggle(isOn: $flow.homeOn) {
-                        Text("Control your home by voice")
-                        Text(homeDetail(home))
+                DisclosureGroup("Optional settings", isExpanded: $customize) {
+                    DeliveryPicker(target: $flow.target, destinations: app.destinations)
+                    if let home = app.home, home.available {
+                        Toggle(isOn: $flow.homeOn) {
+                            Text("Control your home by voice")
+                            Text(homeDetail(home))
+                        }
                     }
                 }
                 Toggle("Show in the Dock", isOn: $flow.showInDock)
@@ -443,7 +446,7 @@ private struct ReadyStep: View {
                 }
             }
             .formStyle(.grouped)
-            .scrollDisabled(true)
+            .scrollDisabled(false)
             .scrollContentBackground(.hidden)
             .padding(.horizontal, -20)
             if let problem = app.callShortcutProblem { Text(problem).font(.callout).foregroundStyle(.orange) }
