@@ -273,6 +273,12 @@ class HistoryEvents:
         with self.cond:
             self.listeners += 1
             if self._watcher is None or not self._watcher.is_alive():
+                # Establish the baseline before accepting the listener. If the new thread did this,
+                # a change immediately after opened() could become its baseline and disappear.
+                try:
+                    self._last = self._stamp()
+                except Exception:
+                    self._last = None
                 self._watcher = threading.Thread(target=self._watch, daemon=True, name="speakeasy-history-watch")
                 self._watcher.start()
 
@@ -281,10 +287,6 @@ class HistoryEvents:
             self.listeners = max(0, self.listeners - 1)
 
     def _watch(self) -> None:
-        try:
-            self._last = self._stamp()
-        except Exception:
-            self._last = None
         while True:
             time.sleep(self.POLL_S)
             with self.cond:
