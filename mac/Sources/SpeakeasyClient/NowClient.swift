@@ -18,6 +18,12 @@ extension ServerClient {
         SavedCall(json: try await json("/voice/calls/" + Self.esc(interactionID)))
     }
 
+    /// `GET /voice/now/recent`: previous tasks for Home's Recent button (plugin 0.3.46+, `home_stream`).
+    public func nowRecent(timeZone: TimeZone = .current) async throws -> [NowRecentItem] {
+        let reply = try await json("/voice/now/recent?tz=" + Self.esc(timeZone.identifier))
+        return (reply["items"] as? [Any] ?? []).compactMap(NowRecentItem.init(json:))
+    }
+
     /// "Later": off Home until *until*, or until it changes.
     public func nowLater(_ itemID: String, until: Date?, onChange: Bool) async throws {
         var body: [String: Any] = [:]

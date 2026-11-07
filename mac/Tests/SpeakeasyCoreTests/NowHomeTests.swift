@@ -109,4 +109,34 @@ final class NowHomeTests: XCTestCase {
         XCTAssertFalse(h.caughtUp)
         XCTAssertEqual(h.clearable.map(\.id), ["s:a"])
     }
+
+    // SPK-208: Home as one stream.
+    func testDecodesTheStreamAsAsksAndCardsInTimeOrder() throws {
+        let home = NowHome(json: try contract())
+        let stream = try XCTUnwrap(home.stream)
+        XCTAssertEqual(stream.entries.map(\.at), stream.entries.map(\.at).sorted())
+        let ids = Set(home.items.map(\.id))
+        for entry in stream.entries where entry.kind != .group { XCTAssertTrue(ids.contains(try XCTUnwrap(entry.itemID))) }
+        let asks = stream.entries.filter { $0.kind == .ask }
+        XCTAssertEqual(asks.first?.text, "Desk hunt")
+        let question = try XCTUnwrap(stream.entries.first { $0.kind == .card && $0.itemID == home.items.first?.id })
+        XCTAssertEqual(question.widget, .open)
+        XCTAssertEqual(stream.needsYou, [try XCTUnwrap(home.items.first?.id)])
+    }
+
+    func testAnOlderPluginHasNoStreamAndAGroupDecodes() {
+        XCTAssertNil(NowHome(json: ["rev": 1]).stream)
+        let group = NowStream(json: ["entries": [["id": "g:morning", "kind": "group", "at": 100, "line": "This morning \u{00B7} 6 done",
+                                                  "item_ids": ["a", "b"]]], "needs_you": []])
+        XCTAssertEqual(group?.entries.first?.line, "This morning \u{00B7} 6 done")
+        XCTAssertEqual(group?.entries.first?.itemIDs, ["a", "b"])
+        XCTAssertNil(NowStream.Entry(json: ["id": "x", "kind": "mystery", "at": 1]), "an unknown kind is dropped, not shown")
+    }
+
+    func testRecentRowsSayDoneStoppedOrInProgress() throws {
+        let rows = ["completed", "failed", "running"].compactMap {
+            NowRecentItem(json: ["id": "t:\($0)", "title": "Plan the trip", "state": $0, "at": 5])
+        }
+        XCTAssertEqual(rows.map(\.statusWords), ["Done", "Stopped", "In progress"])
+    }
 }
