@@ -2,6 +2,11 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.41 — Commands and code from a finished task show in the conversation
+
+- **The written answer shows, not just the spoken line.** When a task finishes, its conversation page now shows the full answer, with commands and code blocks intact, so the line the voice told you to paste is really there. The conversation list keeps the short line as its preview.
+- **"On screen" means on screen.** The voice only says a command is on screen when it is; a command the voice had but the written answer didn't is added to the answer.
+
 ## Plugin 0.3.40 · Mac 0.3.21 · iPhone build 67 — Voice notes, agents, skills, files, and calls that keep the whole conversation
 
 The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.21 or iPhone build 67.
