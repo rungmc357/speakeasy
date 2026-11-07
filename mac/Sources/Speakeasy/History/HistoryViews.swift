@@ -591,7 +591,8 @@ struct HistorySessionView: View {
 
     var body: some View {
         let c = conversation
-        let thread = store.thread(c)
+        let workThread = ReplyWorkThread(entries: c.entries, running: c.isWorking, failed: c.jobs.first?.status == "failed")
+        let thread = store.thread(workThread.conversation(c))
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -608,13 +609,16 @@ struct HistorySessionView: View {
                             HistoryFinishedRow(jobs: layout.finished, key: "\(c.id)|finished", store: store) { open($0, c, thread, proxy) }
                         }
                         ForEach(layout.top, id: \.lineID) { job in
-                            HistoryTaskLine(job: job, now: store.now, openable: Self.opensElsewhere(job, c)) { open(job, c, thread, proxy) }
+                            workCard(ReplyWorkLayout.fallback(job), job: job)
                         }
                         let messages = thread.messages
                         let via = ChatLabel.platform(source: c.source, label: c.sourceLabel)
                         // Quiet times: a day divider when the day changes, a time after a pause.
                         let marks = ChatTimeline.marks(messages.map { ($0.id, ChatTimeline.began($0.at, tools: $0.tools)) }, now: store.now)
                         ForEach(Array(messages.enumerated()), id: \.element.id) { i, m in
+                            ForEach(workThread.before[m.id] ?? []) { work in
+                                workCard(work, job: ReplyWorkLayout.job(for: work, in: c))
+                            }
                             let next = i + 1 < messages.count ? messages[i + 1] : nil
                             let mark = marks[m.id]
                             VStack(spacing: 12) {
@@ -627,15 +631,18 @@ struct HistorySessionView: View {
                                 .padding(.top, mark == nil && i > 0 && messages[i - 1].role == m.role && m.role != .note ? -12 : 0)
                                 .id(m.id)
                             ForEach(layout.after[m.id] ?? [], id: \.lineID) { job in
-                                HistoryTaskLine(job: job, now: store.now, openable: Self.opensElsewhere(job, c)) { open(job, c, thread, proxy) }
+                                workCard(ReplyWorkLayout.fallback(job), job: job)
                                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                             }
                         }
+                        ForEach(workThread.tail) { work in
+                            workCard(work, job: ReplyWorkLayout.job(for: work, in: c))
+                        }
                         ForEach(layout.pinned, id: \.lineID) { job in
-                            HistoryTaskCard(job: job).transition(.opacity)
+                            workCard(ReplyWorkLayout.fallback(job), job: job).transition(.opacity)
                         }
                         if let panel = store.panel { HistoryReviewCards(panel: panel, conversation: c) }
-                        if !thread.helpers.isEmpty { HistoryHelpersCard(helpers: thread.helpers, sessionID: c.id, store: store) }
+
                         ForEach(store.waiting(thread)) { HistoryWaitingCard(waiting: $0, store: store) }
                         ForEach(c.queued) { HistoryQueuedBubble(message: $0, store: store) }
                         if let error = store.queuedError {
@@ -673,9 +680,17 @@ struct HistorySessionView: View {
     static func layout(_ c: HistoryConversation, _ thread: HistoryThread) -> SessionTaskLayout {
         // A task waiting on an approval or a question shows as that card only (no twin above it).
         let asking = Set(c.approvals.map(\.runID) + c.waitingQuestions.compactMap(\.runID))
-        return SessionTaskLayout(jobs: c.jobs, messages: thread.messages.map {
+        return SessionTaskLayout(jobs: c.jobs.filter { !ReplyWorkLayout.represents($0, in: c) }, messages: thread.messages.map {
             .init(id: $0.id, isUser: $0.role == .user, at: $0.at, text: $0.text)
         }, hasMore: c.hasMore, asking: asking)
+    }
+
+    private func workCard(_ work: ReplyWork, job: WorkInfo?) -> some View {
+        ReplyWorkCard(work: work, images: job?.images ?? [], imageIdentity: job?.runID ?? work.id,
+                      helpers: job?.subagents ?? []) { number in
+            guard let run = job?.runID, let live = store.backend as? LiveHistoryBackend else { return nil }
+            return try? await live.api.image(runID: run, index: number)
+        }
     }
 
     /// The task ran in its own session (a chat continued from Discord, Telegram…): its line opens that.

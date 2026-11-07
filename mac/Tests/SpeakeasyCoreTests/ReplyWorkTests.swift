@@ -83,4 +83,21 @@ final class ReplyWorkTests: XCTestCase {
     func testOneSentenceDoesNotGlueDetail() {
         XCTAssertEqual(ReplyWork.sentence("Checking the report — reading its log"), "Checking the report")
     }
+    func testCurrentThreadProjectionPreservesAnswersAndAnchorsOneCard() {
+        let p = ReplyWorkThread(entries: exchange)
+        XCTAssertEqual(p.entries.map(\.id), ["u", "a"])
+        XCTAssertEqual(p.before["a"]?.count, 1)
+        XCTAssertTrue(p.tail.isEmpty)
+        XCTAssertEqual(p.entries.last?.text, exchange.last?.text)
+        let live = ReplyWorkThread(entries: Array(exchange.dropLast()), running: true)
+        XCTAssertEqual(live.tail.count, 1)
+        XCTAssertTrue(live.tail.first?.running == true)
+    }
+    func testWorkerUpdateRemainsAnActualMessage() {
+        var entry = HistoryEntry(id: "update", kind: .assistant, text: "The checks finished.")
+        entry.update = true
+        let p = ReplyWorkThread(entries: [entry], running: true)
+        XCTAssertEqual(p.entries, [entry])
+        XCTAssertTrue(p.tail.isEmpty)
+    }
 }

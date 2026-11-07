@@ -12,11 +12,12 @@ public struct ReplyWork: Equatable, Sendable, Identifiable {
     public var sections: [Section]
     public var running: Bool
     public var failed: Bool
+    public var summary: String? = nil
     public var calls: [JobActivityItem] { sections.flatMap(\.calls) }
     public var line: String {
         if running, let heading = sections.last?.heading, !heading.isEmpty { return Self.sentence(heading) }
-        let summary = ToolCallLog.plainSummary(calls)
-        return summary.isEmpty ? (running ? "Working on your request" : "Looked into it") : summary
+        let plain = ToolCallLog.plainSummary(calls)
+        return plain.isEmpty ? (summary ?? (running ? "Working on your request" : "Looked into it")) : plain
     }
     public static func sentence(_ text: String) -> String {
         let first = text.components(separatedBy: " — ").first ?? text
@@ -31,6 +32,14 @@ public struct ReplyWorkRow: Equatable, Sendable, Identifiable {
 }
 
 public enum ReplyWorkLayout {
+    public static func fallback(_ job: WorkInfo) -> ReplyWork {
+        let running = !["completed", "failed", "cancelled"].contains(job.status)
+        let line = running ? (job.nowLine ?? job.shortStatus ?? "Working on your request") : (job.failureReason ?? "")
+        let id = job.runID ?? job.sessionID ?? "work"
+        return ReplyWork(id: id, sections: [.init(id: id, heading: ReplyWork.sentence(line),
+            detail: job.soFar, calls: job.activity.filter(\.isToolCall))], running: running,
+            failed: job.status == "failed", summary: job.title)
+    }
     /// A separate task summary is needed only when its work is absent from the visible thread.
     /// Older calls in a long conversation must not hide a newly started task.
     public static func represents(_ job: WorkInfo, in conversation: HistoryConversation) -> Bool {
@@ -71,7 +80,8 @@ public enum ReplyWorkLayout {
         for (index, entry) in entries.enumerated() {
             let beforeTools = index + 1 < entries.count && entries[index + 1].kind == .tools
             let liveCommentary = running && index == entries.count - 1
-            let narration = entry.kind == .assistant && (entry.narration || beforeTools || liveCommentary)
+            let narration = entry.kind == .assistant && entry.files.isEmpty && !entry.update
+                && (entry.narration || beforeTools || liveCommentary)
             if narration {
                 firstID = firstID ?? entry.id
                 sections.append(.init(id: entry.id, heading: entry.text, detail: entry.workDetail, calls: []))

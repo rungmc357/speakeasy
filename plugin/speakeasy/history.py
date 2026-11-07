@@ -1369,6 +1369,8 @@ def _reply_entry(row: Any, at: float | None, *, with_tools: bool = False) -> dic
                              "text": redact_text(assistant_text(content))}
     if narration:
         entry["narration"] = True
+        if status:
+            entry["text"] = redact_text(status.group(1).strip())
         if detail:
             entry["work_detail"] = redact_text(detail.group(1).strip())
     return entry

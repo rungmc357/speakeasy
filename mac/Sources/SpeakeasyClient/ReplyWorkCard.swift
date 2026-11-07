@@ -8,12 +8,13 @@ public struct ReplyWorkCard: View {
     public let images: [ImageCard]
     public let imageIdentity: String
     public let loadImage: (Int) async -> Data?
+    public let helpers: [JobSubagent]
     @State private var expanded = false
     @State private var open: Set<String> = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    public init(work: ReplyWork, images: [ImageCard] = [], imageIdentity: String = "",
+    public init(work: ReplyWork, images: [ImageCard] = [], imageIdentity: String = "", helpers: [JobSubagent] = [],
                 loadImage: @escaping (Int) async -> Data? = { _ in nil }) {
-        self.work = work; self.images = images; self.imageIdentity = imageIdentity; self.loadImage = loadImage
+        self.work = work; self.images = images; self.imageIdentity = imageIdentity; self.loadImage = loadImage; self.helpers = helpers
     }
 
     public var body: some View {
@@ -38,6 +39,18 @@ public struct ReplyWorkCard: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("How it got there").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         .accessibilityIdentifier("reply-work-steps")
+                    if work.calls.isEmpty {
+                        Text(work.running ? "No recorded steps yet." : "No recorded steps.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    ForEach(helpers) { helper in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(AgentMarkdown.attributed(helper.title)).font(.footnote.weight(.medium))
+                            if let line = helper.isRunning ? helper.now : (helper.summary ?? helper.note), !line.isEmpty {
+                                Text(AgentMarkdown.attributed(line)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }.accessibilityIdentifier("helper-\(helper.id)")
+                    }
                     if !images.isEmpty {
                         PictureGallery(images: images, identity: imageIdentity, load: loadImage)
                     }
