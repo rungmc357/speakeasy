@@ -741,7 +741,7 @@ public final class NativeVoiceClient: VoiceCallClient {
                     // anyway: a server that can't take it answers 400 and the call falls back below.
                     let supported = await Self.firstAnswer(of: roomSupport, within: 1)
                     if supported == false {
-                        self.dropRoomContext("This Speakeasy plugin can't use what listening mode heard. Update it on the Hermes machine, then run hermes voice reload.")
+                        self.dropRoomContext("This needs a newer Speakeasy on your Hermes. Update it from Settings.")
                     } else {
                         room = context
                     }
