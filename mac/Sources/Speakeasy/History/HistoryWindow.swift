@@ -934,7 +934,7 @@ enum MacDemoNow {
                                           options: [.init(id: "o1", text: "Oakline 60 in."), .init(id: "o2", text: "Birch Lift 55 in."),
                                                     .init(id: "o3", text: "Ridge Pro 58 in.")], recommended: 0)),
             NowItem(id: "s:s_cabin", kind: .stopped, sessionID: "s_deploy", title: "Cabin for next weekend",
-                    line: "Your Hermes's AI account is out of credits.", finishedAt: ago(9), fix: .credits),
+                    line: "Your AI account is out of credits.", finishedAt: ago(9), fix: .credits),
             NowItem(id: "s:s_flaky", kind: .working, sessionID: "s_flaky", title: "Sort this week's photos",
                     line: "Grouping 214 photos by place", startedAt: ago(12)),
             NowItem(id: "s:s_seeds", kind: .newAnswer, sessionID: "s_seeds", title: "Tomato seeds for shade",
