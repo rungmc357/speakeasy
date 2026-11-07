@@ -148,3 +148,18 @@ def test_progress_and_completion_do_not_move_an_older_card_past_a_newer_ask():
     old.update(kind="new_answer", finished_at=NOON)
     after = S.build_stream([old, newer], asks, set(), NOON, TZ)["entries"]
     assert [e["id"] for e in first] == [e["id"] for e in after] == ["a:old", "c:old", "a:new", "c:new"]
+
+
+def test_other_chats_stay_out_of_the_thread_unless_they_need_you():
+    """A Discord chat that's running, or an unread CLI reply, is in the Work strip and Recent; Home's
+    thread is the user's own conversation. A question from one of them still enters it."""
+    items = [{"id": "t:1", "run_id": "run_1", "kind": "working", "started_at": NOON - 60},
+             {"id": "s:chat_a", "session_id": "chat_a", "kind": "working", "source": "discord",
+              "started_at": NOON - 50},
+             {"id": "s:cli_b", "session_id": "cli_b", "kind": "new_answer", "source": "cli",
+              "started_at": NOON - 40, "finished_at": NOON - 30},
+             {"id": "s:chat_c", "session_id": "chat_c", "kind": "question", "source": "discord",
+              "started_at": NOON - 20}]
+    out = S.build_stream(items, {}, set(), NOON, TZ)
+    assert [e["item_id"] for e in out["entries"] if e["kind"] == "card"] == ["t:1", "s:chat_c"]
+    assert out["needs_you"] == ["s:chat_c"]

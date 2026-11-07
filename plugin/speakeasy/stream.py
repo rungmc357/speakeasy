@@ -54,6 +54,11 @@ def widget_state(item: dict[str, Any], answered: bool) -> str | None:
     return "done" if kind in {"new_answer", "seen_answer"} else "confirmed" if kind == "working" else None
 
 
+def _elsewhere(item: dict[str, Any]) -> bool:
+    """A Hermes conversation Speakeasy didn't start: no task of ours behind it."""
+    return str(item.get("id") or "").startswith("s:") and not item.get("run_id")
+
+
 def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: set[str], now: float,
                  tz: dt.tzinfo, messages: list[dict[str, Any]] | None = None,
                  from_chat: set[str] | None = None) -> dict[str, Any]:
@@ -62,6 +67,10 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
     already a ``message`` entry; *from_chat*: run ids a chat message started or followed up, whose
     card needs no "you asked" bubble (the message itself shows)."""
     from_chat = from_chat or set()
+    # Conversations Speakeasy didn't start (a Discord chat, a CLI session) stay in the Work strip and
+    # Recent: Home's thread is the user's own conversation, and other chats enter it only when they
+    # need the user. ``items`` keeps them for the work counts and older apps.
+    items = [i for i in items if not _elsewhere(i) or i.get("kind") == "question"]
     folds: dict[str, list[dict[str, Any]]] = {}
     labels: dict[str, str] = {}
     for item in items:
