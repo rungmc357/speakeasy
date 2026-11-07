@@ -585,6 +585,35 @@ def status_rule(names: Names) -> str:
         "cleanly. The SPOKEN line never contains a command, path, URL or code: say what it does and that it's "
         "ready to copy.", names)
 
+# What the user already has booked or planned lives in their calendar and confirmations; trip notes
+# are plans. A partial source never gets to say "only one".
+LOOKUP_SOURCES_RULE = (
+    "For questions about what {user_name} is booked for, where they are staying, or when something is "
+    "(reservations, dinners, flights, hotels, appointments), check the calendar and any confirmation "
+    "emails or messages first, and use notes and shortlists only to fill gaps. Never say there is "
+    "\"only one\", \"none\" or \"everything else is a maybe\" until you have checked the calendar and "
+    "confirmations as well, and say which sources you checked. When you list stays or bookings, give the "
+    "dates and the city for each. "
+)
+
+_OPENER_FILLER = re.compile(
+    r"(?i)^(?:(?:good|great|nice) catch|you(?:'|\u2019)re (?:right|absolutely right)|thanks(?: for [^.!?]{0,30})?|"
+    r"thank you|got it|sure thing|of course|absolutely|okay|ok|right)\b[\s,.!\u2014-]*")
+
+
+def tidy_spoken(text: str | None) -> str:
+    """A reply fit to read or say: no stray leading punctuation (a reply that began \", I'll add
+    hotels\") and no stacked filler openers (\"Good catch. Thanks. You're right\")."""
+    out = re.sub(r"\s+", " ", text or "").strip()
+    for _ in range(4):
+        out = out.lstrip(" ,;:.\u2014-")
+        stripped = _OPENER_FILLER.sub("", out, count=1)
+        if stripped == out or not stripped.strip():
+            break
+        out = stripped
+    out = out.lstrip(" ,;:.\u2014-")
+    return out[:1].upper() + out[1:] if out else out
+
 
 # The header over a typed task's messages (history.py tells it apart from a call's transcript).
 TYPED_MESSAGES = "Recent messages typed in the Speakeasy app"
@@ -656,7 +685,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         "another board or session. "
         + truthfulness(names) + " "
         "Do not auto-approve consequential actions. Return concise verified facts and status suitable for speech. "
-        + PRODUCT_CARDS_RULE + VIEWS_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
+        + render(LOOKUP_SOURCES_RULE, names) + PRODUCT_CARDS_RULE + VIEWS_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
         + render(EMAIL_DRAFT_RULE, names)
         + (render("Your task: ", names) + f"{focus} " + render(
             "Other parts of what {user_name} said run as separate tasks; do not do them, and do not "
@@ -1298,6 +1327,7 @@ def unfinished_note(names: "Names") -> str:
 
 def late_result(asked: str, spoken: str) -> str:
     """A result that lands after the user has moved on: say what it answers before giving it."""
+    spoken = tidy_spoken(spoken)
     return (f"A result just arrived for their earlier request \"{asked}\". They have said something else since. "
             "If you still owe an answer to what they just said, answer that first. Then, in one short line, say this "
             f"is about \"{asked}\" (in a few words) and give it: {spoken}")[:2000]
@@ -1451,6 +1481,7 @@ def draft_outcome_note(action: str) -> str:
 
 
 def result_for_part(part: str, spoken: str, more: bool) -> str:
+    spoken = tidy_spoken(spoken)
     return f"Result for the part \"{part}\": {spoken}" + (" The other part is still working." if more else "")
 
 
