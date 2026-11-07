@@ -401,7 +401,9 @@ class NowModel:
                 f"Starts when \u201c{behind}\u201d finishes." if behind else "Waiting for another task."), LINE_CHARS))
             item["waiting_on"] = _clip(behind, 60) if behind else "another task"
         elif status in {RS.RunState.FAILED, RS.RunState.INTERRUPTED}:
-            if seen or (finished or now) < max(edge, cleared):
+            # Clear is an answers-only cutoff: unread stopped work is not an answer, so only the
+            # rollover (not Clear) moves it to Earlier.
+            if seen or (finished or now) < edge:
                 return None  # opened: it lives in its conversation (Earlier) from here
             kind = row.get("failure") or (UNKNOWN if status == RS.RunState.FAILED else None)
             fix = "retry" if status == RS.RunState.INTERRUPTED else FIX.get(kind or "", "open")
@@ -428,7 +430,9 @@ class NowModel:
                 if seen and from_a_call(row):
                     left = self._opened(row["key"]) or (read_at is not None and finished is not None
                                                         and read_at + 1 >= finished)
-                if not on_this_call and (left or at < max(edge, cleared) or now - at > ANSWER_KEPT_S):
+                # Clear is explicit: it moves the call's answers too. Hearing one only keeps it under
+                # the call card when Clear was not used.
+                if at < cleared or (not on_this_call and (left or at < edge or now - at > ANSWER_KEPT_S)):
                     return None
                 if from_a_call(row) and self._last_call_id == row.get("interaction_id"):
                     item["call_id"] = f"call:{row['interaction_id']}"

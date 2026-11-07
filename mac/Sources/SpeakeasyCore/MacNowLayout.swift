@@ -20,11 +20,13 @@ public enum MacNowLayout {
     public static let callBarSize = (width: 320.0, height: 56.0)
 
     /// Keep server order within each group. A compact menu must not become a second board:
-    /// up to 2 questions and 2 working rows, plus (off a call only) 2 new answers.
+    /// up to 2 questions and 2 working rows, plus (off a call only) 2 new answers and one stopped
+    /// row, so stopped work is never invisible here (no counting header: one card, its own line).
     public static func menuItems(_ items: [NowItem], onCall: Bool = false) -> [NowItem] {
         Array(items.filter { $0.kind == .question }.prefix(2))
             + Array(items.filter { $0.kind == .working || $0.kind == .waiting }.prefix(2))
-            + (onCall ? [] : Array(items.filter { $0.kind == .newAnswer }.prefix(2)))
+            + (onCall ? [] : Array(items.filter { $0.kind == .newAnswer }.prefix(2))
+                + Array(items.filter { $0.kind == .stopped }.prefix(1)))
     }
 
     /// The call bar's timer: "0:42", "12:05", "1:02:09".
