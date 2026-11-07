@@ -1492,14 +1492,18 @@ public struct ReportBoard: View {
                     .font(.system(size: 11 * s)).foregroundStyle(.secondary)
             }
             if let full {
+                // What there is to copy stays visible while the report is folded (SPK-187).
+                if !expanded { AnswerCodeBlocks(full) }
                 Button(action: toggle) {
                     Text(expanded ? "Hide full report" : "Full report ›").font(.system(size: 11 * s, weight: .semibold))
                         .foregroundStyle(JobStyle.blueInk).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 if expanded {
-                    Text(linkedText(full)).font(.system(size: 11.5 * s)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        .tint(JobStyle.blueInk)
+                    AnswerText(full) { prose in
+                        Text(linkedText(prose)).font(.system(size: 11.5 * s)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            .tint(JobStyle.blueInk)
+                    }
                         .padding(9).frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.06)))
                 }
@@ -1821,13 +1825,31 @@ public struct CollapsedText: View {
     public init(text: String, label: String = "Details", open: Bool, toggle: @escaping () -> Void) {
         self.text = text; self.label = label; self.open = open; self.toggle = toggle
     }
-    /// Short enough to show whole.
-    public static func isShort(_ text: String) -> Bool { text.count <= 180 && !text.contains("\n\n") }
+    /// Short enough to show whole (an answer with a code block always goes through the code renderer).
+    public static func isShort(_ text: String) -> Bool { text.count <= 180 && !text.contains("\n\n") && !text.contains("```") }
     public var body: some View {
         VStack(alignment: .leading, spacing: 5) {
+            if text.contains("```") {
+                // Code is never folded away: folded, the prose shows three lines and every block
+                // stays below with its Copy; open, the whole answer in order (SPK-187).
+                if open {
+                    AnswerText(text) { prose in
+                        Text(linkedText(prose)).font(.system(size: 12 * s)).foregroundStyle(Color.primary)
+                            .textSelection(.enabled).tint(JobStyle.blueInk).fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    let prose = MessageBlock.prose(in: text)
+                    if !prose.isEmpty {
+                        Text(linkedText(prose)).font(.system(size: 12 * s)).foregroundStyle(Color.secondary)
+                            .textSelection(.enabled).tint(JobStyle.blueInk).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    }
+                    AnswerCodeBlocks(text)
+                }
+            } else {
             Text(linkedText(text)).font(.system(size: 12 * s)).foregroundStyle(open ? Color.primary : Color.secondary)
                 .textSelection(.enabled).tint(JobStyle.blueInk)
                 .lineLimit(open ? nil : 3).fixedSize(horizontal: false, vertical: true)
+            }
             Button(action: toggle) {
                 Text(open ? "Less" : "\(label) ›").font(.system(size: 11.5 * s, weight: .semibold))
                     .foregroundStyle(JobStyle.blueInk).contentShape(Rectangle())

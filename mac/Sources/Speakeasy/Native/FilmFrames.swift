@@ -26,9 +26,9 @@ enum FilmFrames {
             FileHandle.standardError.write("film: task\n".data(using: .utf8)!)
             let set = ProcessInfo.processInfo.environment["SPEAKEASY_FILM_SET"]
             let site = set == "site"
-            cleanShots = site || set == "ux" || set == "typing" || set == "redesign" || set == "plugin-update" || set == "board-notice"
+            cleanShots = site || set == "ux" || set == "typing" || set == "redesign" || set == "plugin-update" || set == "board-notice" || set == "code-answer"
             stillMotion = set == "redesign"
-            let shots: [Shot] = set == "board-notice" ? boardNoticeBeats() : set == "plugin-update" ? pluginUpdateBeats() : set == "redesign" ? redesignBeats() : set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
+            let shots: [Shot] = set == "code-answer" ? codeAnswerBeats() : set == "board-notice" ? boardNoticeBeats() : set == "plugin-update" ? pluginUpdateBeats() : set == "redesign" ? redesignBeats() : set == "typing" || set == "typing-old" ? typingBeats(old: set == "typing-old") : set == "ux" ? uxBeats() : site ? siteBeats().map { Shot($0.0, $0.1, $0.2) } : beats().map { Shot($0.0, $0.1, nil) }
             for shot in shots {
                 let (name, state, open) = (shot.name, shot.state, shot.open)
                 let m = client.model
@@ -398,6 +398,36 @@ enum FilmFrames {
         return out
     }
 
+
+    /// An answer with code blocks (`SPEAKEASY_FILM_SET=code-answer`, SPK-187): the job page with the
+    /// report folded (code still shown with Copy) and opened. Invented data.
+    static func codeAnswerBeats() -> [Shot] {
+        let now = Date()
+        let full = """
+        The build box answers on the network, but it won't take the helper's key yet. One paste in Terminal on the build box fixes it:
+
+        ```bash
+        mkdir -p ~/.ssh && echo 'ssh-ed25519 AAAAC3NzaExampleExampleExampleExampleKey helper@build-box' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+        ```
+
+        Then restart the sync job so it picks up the key:
+        ```
+        sudo launchctl kickstart -k system/com.example.sync
+        ```
+
+        After that I can finish the setup from here.
+        """
+        var t = task("b", "completed", "Get the build box connected", title: "Connect the build box", short: "Done", age: 60, now: now,
+                     result: WorkResult(spoken: "The build box won't take the key yet. There's a command for you to run. It's on screen, ready to copy.",
+                                        full: full, label: "Needs one paste"))
+        t.info.finishedAt = now - 60
+        var s = VoiceState(); s.now = now; s.workOnly = true
+        s.tasks = [t]; s.work = deriveWork(s, now: now); s.workInfo = t.info
+        return [
+            Shot("code-answer-01-folded", s, "task:b") { m in m.panelWidth = 460 },
+            Shot("code-answer-02-open", s, "task:b") { m in m.panelWidth = 460; m.openSections = ["b|details"] },
+        ]
+    }
 
     /// The plugin-update notice (`SPEAKEASY_FILM_SET=plugin-update`) on the board between calls, as
     /// a tile under the greeting: available, updating, updated, didn't take; then the same notice

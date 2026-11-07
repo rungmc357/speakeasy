@@ -1639,8 +1639,10 @@ struct WorkDetailView: View {
                     }
                     if let full = info?.result?.full ?? info?.result?.spoken {
                         section("Result") {
-                            Text(linkified(full)).font(.system(size: 12)).textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
+                            AnswerText(full) { prose in
+                                Text(linkified(prose)).font(.system(size: 12)).textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                                 .padding(10)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.06)))
