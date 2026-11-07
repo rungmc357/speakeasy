@@ -363,3 +363,16 @@ def test_a_listed_model_that_fails_falls_back_and_auto_skips_it(service, monkeyp
     service.store.set_meta(HC.CHOICE_META, "anthropic/claude-haiku-5-5")
     status = chat.model_status()
     assert status["source"] == "chosen" and "didn't answer" in status["note"]
+
+
+def test_more_jobs_in_one_call_start_their_own_jobs(server, service, hermes):
+    coordinator(service, {"tool": "start_job", "text": "",
+                          "args": {"request": "Find the farmers' market's Saturday hours",
+                                   "more_jobs": ["Find a rain jacket under $100"],
+                                   "reply": "Checking the market's hours and looking for a jacket."}})
+    body = post(server, {"text": "market hours on saturday and a rain jacket under 100", "client_id": "c_more"})[1]
+    assert body["action"] == "start"
+    calls = wait_for(lambda: len(hermes.calls) >= 2 and hermes.calls)
+    sent = json.dumps([c["input"] for c in calls])
+    assert "Saturday hours" in sent and "rain jacket under $100" in sent
+    assert HC.TOOLS[0]["function"]["parameters"]["required"] == ["request", "more_jobs", "reply"]

@@ -126,7 +126,9 @@ more with its result ("make it shorter", "actually Friday", "also check the pric
 - cancel_job to stop a running job. "job" is its id.
 - One message that asks for two separate things gets two start_job calls, one per job ("Book the \
 dentist and find a birthday gift" is two jobs). Never merge unrelated asks into one job, and never \
-drop one: each ask is either answered in your reply or gets its own job.
+drop one: each ask is either answered in your reply or gets its own job. When you start a job and \
+the same message also asks something you can answer yourself, answer it in that job's reply too \
+("Looking for a hardware store open Sunday. A soft-boiled egg takes about 6 minutes.").
 
 Rules:
 - Use US units first (miles, °F, pounds, inches).
@@ -143,6 +145,8 @@ Jobs on Home (newest first):
 {jobs}"""
 
 _REPLY = {"type": "string", "description": "One short line to the user, in your own words, about what you're doing."}
+_START_REPLY = {"type": "string", "description": "One short line to the user, in your own words, about what you're "
+                "doing, plus the answer to any other part of the message you can answer yourself."}
 _JOB = {"type": "string", "description": "The job's id from the list (j1, j2, ...)."}
 TOOLS = [
     {"type": "function", "function": {
@@ -150,7 +154,11 @@ TOOLS = [
         "description": "Start a new job: real work, the user's computer or accounts, or live information.",
         "parameters": {"type": "object", "properties": {
             "request": {"type": "string", "description": "The task in self-contained words."},
-            "reply": _REPLY}, "required": ["request", "reply"]}}},
+            "more_jobs": {"type": "array", "items": {"type": "string"}, "maxItems": EXTRA_JOBS,
+                          "description": "Every OTHER separate ask in the same message that needs its own "
+                                         "job, each in self-contained words; empty when there is only one. An ask "
+                                         "you don't answer in the reply goes here."},
+            "reply": _START_REPLY}, "required": ["request", "more_jobs", "reply"]}}},
     {"type": "function", "function": {
         "name": "message_job",
         "description": "Send words to an existing job: a change, a correction, the answer to its question, "
@@ -204,6 +212,9 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
         data = {"action": action, "reply": args.get("reply") or raw.get("text") or "",
                 "job": args.get("job"), "request": args.get("request")}
         extra = []
+        for words in (args.get("more_jobs") or []) if name == "start_job" and isinstance(args.get("more_jobs"), list) else []:
+            if isinstance(words, str) and words.strip():
+                extra.append({"request": " ".join(words.split()), "reply": ""})
         for more in raw.get("more") or []:
             mname = str(more.get("tool") or "").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
             margs = more.get("args") if isinstance(more.get("args"), dict) else {}
