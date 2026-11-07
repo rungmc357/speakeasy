@@ -1780,6 +1780,12 @@ class VoiceService(SecureInputMixin):
                 self.store.progress(key, "milestone", reply.spoken)
             self.publish_all(key)
             return {"ok": True, "message": reply.spoken}
+        from .views import follow_up
+        words = follow_up(view, action)
+        if words:
+            # The agent does the sending (a draft) or carries on (a pick); nothing goes out from here.
+            self.task_message(run_id, {"text": words, "source": "typed"})
+            return {"ok": True, "message": "Sent to the task."}
         raise ServiceError(400, "this server doesn't do that action yet")
 
     def work(self, run_id: str) -> dict[str, Any]:

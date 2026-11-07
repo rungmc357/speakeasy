@@ -479,6 +479,24 @@ VIEWS_RULE = (
     "the full answer, and as `url` on that card or row. "
 )
 
+ARTIFACTS_RULE = (
+    "Four richer card kinds go in the same `speakeasy-views` block; pick at most two, and prefer them over the older "
+    "kinds when they fit. explore (the answer is about several things the user may open: places, stays, "
+    "reservations, flights, events, products, media, people, articles, pull requests, listings) {title, "
+    "sections[{label, entity (place|stay|reservation|flight|event|product|media|person|article|pr|listing|"
+    "generation|task), items[{name, sub, when, facts[], price, rating, state, photo_url, url, address, city, lat, "
+    "lon, phone, creator, media_kind (album|song|playlist|podcast|artist|show|book), ids{apple_music, spotify}}]}]}; "
+    "compare (options and a winner you can name) {title, options[2-6]{name, sub, price, why (one line vs the "
+    "pick), url, photo_url, facts[]}, winner (index), why (80 characters max), reasons[up to 3], caveat}; "
+    "status (several things, each with a state) {scope, items[{name, role, state (ok|warn|bad|off|on|needs_you|"
+    "info), value, unit, note, history[numbers], url}]}; draft (a message for the user to send) {channel "
+    "(email|imessage|sms|slack|discord|telegram|x|linkedin|whatsapp), to, subject, body, send_as}. "
+    "Give ids and https URLs (an Apple Music or Spotify id, the venue's own page, a product page, a GitHub URL), "
+    "never app links or layout. photo_url only from the thing's own site, store or catalog. Every name, price and "
+    "number on these cards must also be written in your answer text, or the card is dropped. No winner you can "
+    "name means no compare card; nothing to send means no draft card; never send a draft yourself. "
+)
+
 QUESTION_RULE = (
     "When you can't go on without a decision from {user_name} (which option, which file, go ahead or not), "
     "don't guess on anything that matters: do everything you can first, then end your answer with a fenced block "
@@ -685,7 +703,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         "another board or session. "
         + truthfulness(names) + " "
         "Do not auto-approve consequential actions. Return concise verified facts and status suitable for speech. "
-        + render(LOOKUP_SOURCES_RULE, names) + PRODUCT_CARDS_RULE + VIEWS_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
+        + render(LOOKUP_SOURCES_RULE, names) + PRODUCT_CARDS_RULE + VIEWS_RULE + ARTIFACTS_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
         + render(EMAIL_DRAFT_RULE, names)
         + (render("Your task: ", names) + f"{focus} " + render(
             "Other parts of what {user_name} said run as separate tasks; do not do them, and do not "

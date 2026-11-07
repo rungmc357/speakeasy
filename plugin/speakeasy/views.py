@@ -106,7 +106,32 @@ CATALOG: dict[str, dict[str, Any]] = {
     # Options are strings, or objects (OPTION below) when the model explained them; checked in clean_options.
     "question": {"question": S, "recommended": N, "task_id": S, "images": (N, 4),
                  "context": S, "why": S, "affects": S, "expires_in": N},
+    # Artifacts (v1): the agent fills typed fields, never layout; `shape` checks each against the
+    # answer and drops a card rather than show a wrong one. Apps that don't know these skip them.
+    "explore": {"title": S, "sections": ({"label": S, "entity": S, "items": (None, 10)}, 6)},
+    "compare": {"title": S, "options": ({"name": S, "sub": S, "price": S, "why": S, "url": URL, "photo_url": URL,
+                                         "facts": (S, 3)}, 6),
+                "winner": N, "why": S, "reasons": (S, 3), "caveat": S},
+    "status": {"scope": S, "items": ({"name": S, "role": S, "state": S, "value": S, "unit": S, "note": S,
+                                      "history": (N, 24), "url": URL}, 12)},
+    "draft": {"channel": S, "to": S, "subject": S, "body": S, "send_as": S, "thread": S, "revision": N,
+              "changes": S},
 }
+
+# One thing in an explore section (a place, a stay, an album, a pull request…). The app draws the
+# layout and builds the deep links from `ids` / `url` / `lat`+`lon` / `address`; the agent never
+# names a scheme.
+ENTITIES = {"place", "stay", "reservation", "flight", "event", "product", "media", "person", "article", "pr",
+            "listing", "generation", "task"}
+ENTITY_ITEM = {"name": S, "sub": S, "when": S, "facts": (S, 3), "price": S, "rating": N, "state": S,
+               "photo_url": URL, "url": URL, "address": S, "city": S, "lat": N, "lon": N, "phone": S,
+               "creator": S, "media_kind": S, "ids": {"apple_music": S, "spotify": S}}
+CATALOG["explore"]["sections"][0]["items"] = (ENTITY_ITEM, 10)
+ARTIFACTS = {"explore", "compare", "status", "draft"}
+STATUS_STATES = {"ok", "warn", "bad", "off", "on", "needs_you", "info"}
+DRAFT_CHANNELS = {"email", "imessage", "sms", "slack", "discord", "telegram", "x", "linkedin", "whatsapp"}
+MEDIA_KINDS = {"album", "song", "playlist", "podcast", "artist", "show", "book"}
+MAX_ARTIFACTS = 2
 
 TONES = {"good", "warn", "bad", "info", "neutral"}
 CHART_SORTS = {"high_first", "low_first", "as_listed"}
@@ -323,7 +348,147 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             body["sort"] = word
     if kind == "before_after" and not ("before" in body or "after" in body):
         return {}
+    if kind in ARTIFACTS:
+        return _artifact(kind, body)
     return body
+
+
+def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
+    """The artifact kinds' required fields and bounds (catalog.md). A failed item is dropped, and a
+    card left without its required parts is dropped whole: no card beats a wrong card."""
+    if kind == "explore":
+        sections = []
+        for sec in body.get("sections") or []:
+            if sec.get("entity") not in ENTITIES or not sec.get("label"):
+                continue
+            items = [_entity_item(sec["entity"], it) for it in sec.get("items") or [] if it.get("name")]
+            if items:
+                sections.append({**sec, "items": items})
+        return {**body, "sections": sections} if sections else {}
+    if kind == "compare":
+        options = [o for o in body.get("options") or [] if o.get("name")]
+        winner = body.get("winner")
+        if not 2 <= len(options) <= 6 or winner is None or not float(winner).is_integer() \
+                or not 0 <= int(winner) < len(options) or not body.get("why") or len(body["why"]) > 80:
+            return {}
+        return {**body, "options": options, "winner": int(winner)}
+    if kind == "status":
+        items = [{**i, "state": i["state"].lower()} for i in body.get("items") or []
+                 if i.get("name") and str(i.get("state", "")).lower() in STATUS_STATES]
+        return {**body, "items": items} if body.get("scope") and items else {}
+    if kind == "draft":
+        channel = str(body.get("channel", "")).lower()
+        if channel not in DRAFT_CHANNELS or not body.get("to") or not body.get("body"):
+            return {}
+        return {**body, "channel": channel}
+    return body
+
+
+def _entity_item(entity: str, item: dict[str, Any]) -> dict[str, Any]:
+    """Ids that look wrong are dropped (the app then falls back to a search link)."""
+    ids = dict(item.get("ids") or {})
+    if ids.get("apple_music") and not re.fullmatch(r"\d{4,15}", ids["apple_music"]):
+        ids.pop("apple_music")
+    if ids.get("spotify") and not re.fullmatch(r"[A-Za-z0-9]{22}", ids["spotify"]):
+        ids.pop("spotify")
+    out = {k: v for k, v in item.items() if k != "ids"}
+    if ids and entity == "media":
+        out["ids"] = ids
+    if "media_kind" in out and (entity != "media" or out["media_kind"].lower() not in MEDIA_KINDS):
+        out.pop("media_kind")
+    elif "media_kind" in out:
+        out["media_kind"] = out["media_kind"].lower()
+    if "lat" in out and not -90 <= out["lat"] <= 90 or "lon" in out and not -180 <= out["lon"] <= 180:
+        out.pop("lat", None)
+        out.pop("lon", None)
+    return out
+
+
+# -- shaping artifacts against the answer -----------------------------------------------------------
+
+def _norm(text: str) -> str:
+    return " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip() + " "
+
+
+_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _numbers(text: str) -> set[str]:
+    out = set()
+    for raw in _NUM_RE.findall(text or ""):
+        n = raw.replace(",", "")
+        out.add(n.rstrip("0").rstrip(".") if "." in n else n)
+    return out
+
+
+def _grounded_name(name: str, said: str) -> bool:
+    return bool(name) and _norm(name).strip() != "" and _norm(name) in said
+
+
+def _grounded_value(value: Any, said_numbers: set[str]) -> bool:
+    return _numbers(str(value)) <= said_numbers
+
+
+def grounded(view: dict[str, Any], answer: str) -> bool:
+    """Every name and number on an artifact appears in the answer text. One miss and the card goes
+    (it is never repaired: repaired cards were how wrong content got through)."""
+    said, nums = _norm(answer), _numbers(answer)
+    kind = view.get("kind")
+    names: list[str] = []
+    values: list[Any] = []
+    if kind == "explore":
+        for sec in view["sections"]:
+            for it in sec["items"]:
+                names.append(it["name"])
+                values += [it.get(k) for k in ("price", "rating") if it.get(k) is not None]
+    elif kind == "compare":
+        for o in view["options"]:
+            names.append(o["name"])
+            values += [o.get("price")] if o.get("price") else []
+    elif kind == "status":
+        for i in view["items"]:
+            names.append(i["name"])
+            values += [i.get("value")] if i.get("value") else []
+    elif kind == "draft":
+        names.append(view["to"])
+    return all(_grounded_name(n, said) for n in names) and all(_grounded_value(v, nums) for v in values)
+
+
+def _artifact_actions(view: dict[str, Any]) -> dict[str, Any]:
+    """Buttons are set here, never by the agent: Send on a draft and Go with on a compare reach the
+    task as a follow-up, and both always confirm first."""
+    view.pop("actions", None)
+    if view["kind"] == "draft":
+        view["actions"] = [{"id": "send", "label": "Send", "style": "primary", "confirm": True}]
+    elif view["kind"] == "compare":
+        label = _str("Go with " + view["options"][view["winner"]]["name"], 24) or "Go with this"
+        view["actions"] = [{"id": "go", "label": label, "style": "primary", "confirm": True}]
+    return view
+
+
+def shape(views: list[dict[str, Any]], answer: str) -> list[dict[str, Any]]:
+    """Artifacts (the v1 kinds) kept only when grounded in the answer text; at most two, in the
+    order given. Other kinds pass through unchanged (older apps keep their cards)."""
+    out, kept = [], 0
+    for view in views:
+        if view.get("kind") not in ARTIFACTS:
+            out.append(view)
+            continue
+        if kept >= MAX_ARTIFACTS or not grounded(view, answer):
+            continue
+        out.append(_artifact_actions(view))
+        kept += 1
+    return out
+
+
+def follow_up(view: dict[str, Any], action: str) -> str | None:
+    """What an artifact's button says to its task, in plain words (the agent does the sending)."""
+    if view.get("kind") == "draft" and action == "send":
+        channel = {"email": "email", "x": "post"}.get(view["channel"], "message")
+        return f"Send the {channel} to {view['to']} exactly as drafted on the card."
+    if view.get("kind") == "compare" and action == "go":
+        return f"Go with {view['options'][view['winner']]['name']}."
+    return None
 
 
 def view_images(views: list[dict[str, Any]]) -> list[str]:
