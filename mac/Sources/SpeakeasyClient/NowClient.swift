@@ -13,6 +13,11 @@ extension ServerClient {
         NowHome(json: try await json("/voice/now?tz=" + Self.esc(timeZone.identifier)))
     }
 
+    /// The saved call, not the voice provider's (non-Hermes) session.
+    public func savedCall(_ interactionID: String) async throws -> SavedCall {
+        SavedCall(json: try await json("/voice/calls/" + Self.esc(interactionID)))
+    }
+
     /// "Later": off Home until *until*, or until it changes.
     public func nowLater(_ itemID: String, until: Date?, onChange: Bool) async throws {
         var body: [String: Any] = [:]
