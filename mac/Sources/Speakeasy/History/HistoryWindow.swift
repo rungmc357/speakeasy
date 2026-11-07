@@ -524,6 +524,18 @@ enum HistoryShots {
                 catch { print("history shot FAILED \(name): \(error)") }
             }
             try? await Task.sleep(nanoseconds: 600_000_000)
+            if only == "15-work" {
+                do {
+                    try await ReplyWorkCheck.run(c, backend: backend, dir: dir)
+                    exit(0)
+                } catch {
+                    let receipt: [String: Any] = ["passed": false, "error": error.localizedDescription]
+                    if let data = try? JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]) {
+                        try? data.write(to: URL(fileURLWithPath: dir + "/work-check.json"))
+                    }
+                    exit(1)
+                }
+            }
             await shot("1-session-tool-calls") {
                 store.open("s_flaky")
                 try? await Task.sleep(nanoseconds: 300_000_000)
