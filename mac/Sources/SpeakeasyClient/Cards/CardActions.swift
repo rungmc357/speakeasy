@@ -74,7 +74,7 @@ public struct CardActionBar: View {
     }
 
     /// The question a confirming button asks: what will happen, in plain words.
-    static func confirmTitle(_ action: CardAction, _ card: ViewCard) -> String {
+    public static func confirmTitle(_ action: CardAction, _ card: ViewCard) -> String {
         if card.kind == "draft", action.id == "send" {
             return "Send this \(card["channel"].string == "email" ? "email" : "message") to \(card["to"].string ?? "them")?"
         }
