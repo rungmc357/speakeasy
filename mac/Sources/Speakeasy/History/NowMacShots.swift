@@ -39,19 +39,24 @@ enum NowMacShots {
                 panel.show()
                 precondition(!panel.isVisible, "A finished call must not leave a floating bar")
                 voice.state.connection = .live
+                MacNowPresentation.shared.callStartedAt = Date().addingTimeInterval(-185)
                 for appearance in ["light", "dark"] {
                     NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
                     try await shot(MacNowPopover(now: now, voice: voice, open: { _ in }, more: {}),
-                                   size: NSSize(width: 400, height: 560), path: "\(dir)/popover-\(appearance).png")
-                    try await shot(MacNowCallControls(voice: voice, openHome: {}),
-                                   size: NSSize(width: 420, height: 76), path: "\(dir)/callbar-\(appearance).png")
+                                   size: NSSize(width: 360, height: 560), path: "\(dir)/popover-\(appearance).png")
+                    let idle = VoicePanelModel()
+                    try await shot(MacNowPopover(now: now, voice: idle, open: { _ in }, more: {}),
+                                   size: NSSize(width: 360, height: 560), path: "\(dir)/popover-offcall-\(appearance).png")
+                    try await shot(MacNowCallControls(voice: voice, openHome: {}, floating: true)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14)),
+                                   size: NSSize(width: 320, height: 56), path: "\(dir)/callbar-\(appearance).png")
                     try await shot(HistoryRootView(store: store, voice: voice),
                                    size: NSSize(width: 720, height: 640), path: "\(dir)/home-narrow-\(appearance).png")
                     try await shot(HistoryRootView(store: store, voice: voice),
                                    size: NSSize(width: 1400, height: 700), path: "\(dir)/home-wide-\(appearance).png")
                 }
                 store.stop(); now.stop(); panel.hide()
-                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; 8 screenshots")
+                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; 10 screenshots")
                 NSApp.terminate(nil)
             } catch {
                 print("NOW_MAC_SMOKE FAILED: \(error)")

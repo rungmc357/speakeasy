@@ -198,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .removeDuplicates()
             .sink { [weak self] open in
                 DispatchQueue.main.async {
+                    MacNowPresentation.shared.callStartedAt = open ? (MacNowPresentation.shared.callStartedAt ?? Date()) : nil
                     guard let self, MacNowPresentation.shared.enabled else { return }
                     if open { self.native.panel.show() } else { self.native.panel.hide() }
                 }

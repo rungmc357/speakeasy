@@ -32,7 +32,29 @@ final class MacNowLayoutTests: XCTestCase {
         let items = [item("finished", .newAnswer), item("q1", .question), item("w1", .working),
                      item("q2", .question), item("q3", .question), item("w2", .waiting),
                      item("w3", .working), item("stopped", .stopped)]
-        XCTAssertEqual(MacNowLayout.menuItems(items).map(\.id), ["q1", "q2", "w1", "w2"])
+        XCTAssertEqual(MacNowLayout.menuItems(items, onCall: true).map(\.id), ["q1", "q2", "w1", "w2"])
         XCTAssertTrue(MacNowLayout.menuItems([]).isEmpty)
+    }
+
+    func testPopoverOffACallAlsoShowsTwoNewAnswers() {
+        func item(_ id: String, _ kind: NowItem.Kind) -> NowItem {
+            NowItem(id: id, kind: kind, title: "Example", line: "Example activity.")
+        }
+        let items = [item("a1", .newAnswer), item("q1", .question), item("w1", .working),
+                     item("a2", .newAnswer), item("a3", .newAnswer), item("s1", .stopped)]
+        XCTAssertEqual(MacNowLayout.menuItems(items).map(\.id), ["q1", "w1", "a1", "a2"])
+    }
+
+    func testCallClock() {
+        XCTAssertEqual(MacNowLayout.callClock(seconds: 42), "0:42")
+        XCTAssertEqual(MacNowLayout.callClock(seconds: 725), "12:05")
+        XCTAssertEqual(MacNowLayout.callClock(seconds: 3729), "1:02:09")
+        XCTAssertEqual(MacNowLayout.callClock(seconds: -3), "0:00")
+    }
+
+    func testCallBarAndPopoverMatchTheDesign() {
+        XCTAssertEqual(MacNowLayout.callBarSize.width, 320)
+        XCTAssertEqual(MacNowLayout.callBarSize.height, 56)
+        XCTAssertEqual(MacNowLayout.popoverWidth, 360)
     }
 }

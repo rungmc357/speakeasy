@@ -581,7 +581,7 @@ final class VoicePanelController {
 
     private func resize(animated: Bool) {
         let compact = MacNowPresentation.shared.enabled && model.state.connection.isOpen && !model.state.workOnly
-        let width = compact ? 420 : model.displayWidth
+        let width = compact ? CGFloat(MacNowLayout.callBarSize.width) : model.displayWidth
         // Lay the measurer out at the first answer, then ask again: content hosted inside the
         // board's scroll view (its own SwiftUI host, e.g. the plugin-update card) only catches up
         // in a layout pass. Measuring once returned its height from one change earlier, so the
@@ -593,7 +593,8 @@ final class VoicePanelController {
         let height = max(56, ceil(fitting.height))
         let frame = Self.placement(height: height, width: width, userTopLeft: userTopLeft,
                                    screens: NSScreen.screens.map(\.visibleFrame),
-                                   fallback: (panel.screen ?? NSScreen.main)?.visibleFrame)
+                                   fallback: (panel.screen ?? NSScreen.main)?.visibleFrame,
+                                   topCenter: compact)
         guard let frame, frame != panel.frame, !panel.isDraggingPanel else { return }
         let animated = animated && !panel.isResizingPanel
         // `animator().setFrame` on this non-activating panel reported completion
@@ -609,11 +610,13 @@ final class VoicePanelController {
     /// extends downward and never snaps back), clamped fully onto the visible
     /// frame of whichever screen holds most of the panel.
     static func placement(height: CGFloat, width: CGFloat = Tokens.width, userTopLeft: NSPoint?,
-                          screens: [NSRect], fallback: NSRect?) -> NSRect? {
+                          screens: [NSRect], fallback: NSRect?, topCenter: Bool = false) -> NSRect? {
         guard let userTopLeft else {
             guard let visible = fallback else { return nil }
-            return NSRect(x: round(visible.midX - width / 2), y: visible.minY + 14,
-                          width: width, height: min(height, visible.height - 40))
+            let h = min(height, visible.height - 40)
+            // Home's floating call bar defaults to top-center, just below the menu bar.
+            return NSRect(x: round(visible.midX - width / 2), y: topCenter ? visible.maxY - h - 8 : visible.minY + 14,
+                          width: width, height: h)
         }
         let wanted = NSRect(x: userTopLeft.x, y: userTopLeft.y - height, width: width, height: height)
         let visible = screens.max { $0.intersection(wanted).area < $1.intersection(wanted).area }
