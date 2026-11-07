@@ -42,4 +42,14 @@ public enum MessageBlock: Equatable, Sendable {
         if inCode { flushCode() } else { flushProse() }
         return blocks
     }
+
+    /// The fenced code blocks of an answer, in order (what each Copy button copies, exactly).
+    public static func code(in message: String) -> [String] {
+        split(message).compactMap { if case .code(let code, _) = $0 { return code } else { return nil } }
+    }
+
+    /// The answer's prose without its code blocks (a folded answer's preview lines).
+    public static func prose(in message: String) -> String {
+        split(message).compactMap { if case .text(let t) = $0 { return t } else { return nil } }.joined(separator: "\n\n")
+    }
 }
