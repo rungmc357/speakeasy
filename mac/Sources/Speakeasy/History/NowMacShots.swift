@@ -75,10 +75,12 @@ enum NowMacShots {
                     precondition(composer.draft.isEmpty, "Sending must empty the box")
                     try await shot(HistoryRootView(store: store, voice: idleVoice),
                                    size: NSSize(width: 720, height: 640), path: "\(dir)/home-sent-\(appearance).png")
+                    #if DEBUG
                     composer.previewRecording(seconds: 7, level: 0.6)
                     try await shot(HistoryRootView(store: store, voice: idleVoice),
                                    size: NSSize(width: 720, height: 640), path: "\(dir)/home-memo-\(appearance).png")
                     composer.cancelRecording()
+                    #endif
                     for p in now.pending { now.dropPending(p.id) }
                     now.demo = MacDemoNow.home()
                     await now.refresh()
