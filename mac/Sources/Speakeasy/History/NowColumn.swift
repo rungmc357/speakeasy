@@ -99,35 +99,16 @@ final class MacNowModel: ObservableObject {
         }
     }
 
-    @Published var responseError: String?
-
-    private func respond(_ item: NowItem, line: String, _ send: @escaping (ServerClient) async throws -> Void) {
-        let original = home?.items.first { $0.id == item.id }
-        if let index = home?.items.firstIndex(where: { $0.id == item.id }) {
-            home?.items[index].kind = .working
-            home?.items[index].line = line
-            home?.items[index].question = nil
-            if let entry = home?.stream?.entries.firstIndex(where: { $0.itemID == item.id && $0.kind == .card }) {
-                home?.stream?.entries[entry].widget = .confirmed
-            }
-        }
-        if demo != nil { demo = home; return }
-        Task {
-            do {
-                guard let api = api() else { throw URLError(.notConnectedToInternet) }
-                try await send(api); await refresh()
-            } catch {
-                if let original, let index = home?.items.firstIndex(where: { $0.id == item.id }) { home?.items[index] = original }
-                responseError = "That didn't go through. Try again."
-            }
-        }
-    }
     func answer(_ item: NowItem, option: NowQuestion.Option) {
-        respond(item, line: "You chose \u{201C}\(option.text)\u{201D}. Continuing…") { try await $0.nowAnswer(item.id, optionID: option.id) }
+        hidden.insert(item.id)
+        guard demo == nil, let api = api() else { return }
+        Task { try? await api.nowAnswer(item.id, optionID: option.id); await refresh() }
     }
 
     func approve(_ item: NowItem, choice: String) {
-        respond(item, line: choice == "deny" ? "You didn't allow this." : "Allowed. Continuing…") { try await $0.nowApproval(item.id, choice: choice) }
+        hidden.insert(item.id)
+        guard demo == nil, let api = api() else { return }
+        Task { try? await api.nowApproval(item.id, choice: choice); await refresh() }
     }
 
     func clearSeen() {
@@ -142,20 +123,9 @@ struct MacNowColumn: View {
     @ObservedObject var store: HistoryStore
     var voice: VoicePanelModel? = nil
     @ObservedObject var composer = MacHomeComposerModel.shared
-    @State private var recentOpen = false
-    @State private var workOpen = false
-    @State private var focusID: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            if now.home?.stream != nil {
-                NowWorkStrip(items: now.visible, background: now.home?.background ?? [], onOpen: { item in
-                    if item.kind == .question { focusID = nil; focusID = item.id }
-                    else if let sid = item.sessionID { store.open(sid) }
-                }, onBackground: { store.open($0.sessionID) }, onBoard: { workOpen = true })
-                    .padding(.horizontal, 18).padding(.top, 12)
-            }
-            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     // No counting header (build 69): only "can't reach", or (SPK-198) a small, quiet
@@ -168,48 +138,27 @@ struct MacNowColumn: View {
                     if let summary = now.home?.callSummary {
                         callSummary(summary)
                     }
-                    if let stream = now.home?.stream {
-                        MacNowThread(stream: stream, now: now, store: store)
-                    } else {
-                        ForEach(now.visible) { item in
-                            MacNowCard(item: item, now: now, selected: isOpen(item), focused: now.home?.call?.focus == item.id) {
-                                if let sid = item.sessionID { store.open(sid) }
-                            }
+                    ForEach(now.visible) { item in
+                        MacNowCard(item: item, now: now, selected: isOpen(item), focused: now.home?.call?.focus == item.id) {
+                            if let sid = item.sessionID { store.open(sid) }
                         }
                     }
                     if now.visible.contains(where: { $0.kind == .seenAnswer || $0.kind == .newAnswer }) {
                         Button("Clear") { now.clearSeen() }
                             .buttonStyle(.link).font(.callout).padding(.top, 2)
                     }
-                    if now.home?.stream == nil, let n = now.home?.backgroundRunning, n > 0 {
+                    if let n = now.home?.backgroundRunning, n > 0 {
                         Label("\(n) running on \(n == 1 ? "its" : "their") own", systemImage: "gearshape.2")
                             .font(.callout).foregroundStyle(.secondary).padding(.top, 4)
                     }
                 }
-                    Button("Recent") { recentOpen = true }
-                        .buttonStyle(.link).accessibilityIdentifier("mac-now-recent")
-                .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 18)
-            }
-            .defaultScrollAnchor(now.home?.stream != nil ? .bottom : .top)
-            .onChange(of: focusID) { _, id in
-                if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
-            }
-            }
-            .overlay {
-                if workOpen {
-                    MacNowWorkList(now: now, store: store, onClose: { workOpen = false })
-                        .background(HistoryLook.window)
-                }
+                .padding(.horizontal, 18).padding(.top, 44).padding(.bottom, 18)
             }
             // Home's bottom bar (SPK-198): the composer with the round call button beside it; on a
             // call it becomes the call's dock.
             MacHomeBottomBar(voice: voice, composer: composer)
         }
         .onAppear { now.start() }
-        .sheet(isPresented: $recentOpen) { MacNowRecent(now: now, store: store) }
-        .alert("Couldn't send", isPresented: Binding(get: { now.responseError != nil }, set: { if !$0 { now.responseError = nil } })) {
-            Button("Close") { now.responseError = nil }
-        } message: { Text(now.responseError ?? "Try again.") }
         .accessibilityIdentifier("mac-now")
     }
 
@@ -245,21 +194,13 @@ struct MacNowCard: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: symbol).foregroundStyle(tint).frame(width: 18)
-                Text(AgentMarkdown.attributed(item.title)).font(.headline).lineLimit(1)
+                Text(item.title).font(.headline).lineLimit(1)
                 Spacer(minLength: 6)
                 if let meta { Text(meta).font(.caption).foregroundStyle(focused || item.onCall == .asking ? JobLook.brass : .secondary) }
             }
             if !item.line.isEmpty {
-                Text(AgentMarkdown.attributed(item.line)).font(.callout).foregroundStyle(.secondary).lineLimit(3)
+                Text(item.line).font(.callout).foregroundStyle(.secondary).lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true).padding(.leading, 26)
-            }
-            if let run = item.runID, !item.thumbs.isEmpty {
-                PictureGallery(images: Array(item.thumbs.prefix(6)).enumerated().compactMap { index, url in
-                    guard let number = Int(url.split(separator: "/").last ?? "") else { return nil }
-                    return ImageCard(number: number, name: "Picture \(index + 1)")
-                }, identity: run) { number in
-                    try? await now.api()?.image(runID: run, index: number)
-                }
             }
             if let q = item.question { choices(q).padding(.leading, 26).padding(.top, 2) }
         }

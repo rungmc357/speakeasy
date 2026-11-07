@@ -27,11 +27,20 @@ public struct NowWorkStrip: View {
     public var body: some View {
         if !keys.isEmpty {
             VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Circle().fill(needs > 0 ? Color.accentColor : Color.secondary).frame(width: 6, height: 6)
-                    Text(running > 0 ? "\(running) running" : "Work")
-                    if needs > 0 { Text("· \(needs) needs you").foregroundStyle(Color.accentColor) }
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        Text(running > 0 ? "\(running) running" : "Work").fixedSize()
+                        if needs > 0 { Text("· \(needs) needs you").foregroundStyle(Color.accentColor).fixedSize() }
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            Text(running > 0 ? "\(running) running" : "Work").fixedSize()
+                            Spacer(minLength: 0)
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
+                        }
+                        if needs > 0 { Text("\(needs) needs you").foregroundStyle(Color.accentColor).fixedSize(horizontal: false, vertical: true) }
+                    }.padding(.vertical, 6)
                 }
                 .font(.footnote.weight(.semibold)).padding(.horizontal, 16).frame(minHeight: 36)
                 .contentShape(Capsule())
