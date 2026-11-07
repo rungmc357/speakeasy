@@ -15,6 +15,9 @@ The plugin works with older apps too. Items marked *(apps)* need Mac 0.3.22 or i
 - **Email drafts and pictures on the Mac's chat page.** Review a draft there (Send, Deny or Revise) and look at the pictures a task sent, as on the iPhone. *(apps)*
 - **Usage numbers are opt-in.** Tokens, context and cost on task cards and chat pages are off until you turn them on in Settings, per device. *(apps)*
 
+- **One word for unfinished work.** Everything that stopped early now says "Didn't finish", on every screen and in notifications. Pairing and save problems read in plain words, with no error codes, and network trouble no longer tells you to restart Hermes.
+- **Every message lands where you sent it.** Each typed message carries its own id from the app to Hermes and back, so its bubble, its Sent / Steered / Queued receipt and its row on the session page always match, even when two messages say the same thing; a message held for a task that stops is marked as not sent instead of hanging. *(apps)*
+
 **Pages and cards** *(apps)*
 
 - **Session pages say each thing once.** The bar says where the chat lives and that it's working; the task card says what it's doing now; the task's start time stands in for the day line under it. Your own messages have one look, notes and tool steps one pill style, and the page header sits on its own band so messages no longer scroll up into the title.
