@@ -7,7 +7,9 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Home talks back.** What you type on Home now goes to your assistant first, and it answers right there in the thread. Saying hi, a quick question, or "thanks" gets a reply, not a task card. *(plugin; needs iPhone build 70 or the next Mac app to show the replies)*
 - **Real work still runs as a job.** When a message needs doing ("find a quiet cafe near the river"), you get a one-line reply and the job's card right under it, which updates in place until the answer lands. *(plugin)*
 - **Follow-ups go to the right job.** "Will I need an umbrella?" is answered from the forecast job you just ran; "actually, Portland, Oregon" corrects the running search; "cancel that" stops it. *(plugin)*
-- **Your own model answers.** Home's replies come from your main Hermes model, labelled under each reply. You can give Home its own model with `auxiliary.speakeasy_home` in your Hermes config. *(plugin)*
+- **Two asks, two jobs.** "Find a hardware store open Sunday and look up how long to boil an egg" starts two jobs, each with its own card. *(plugin)*
+- **A quick model answers, and you can change it.** Home picks a fast chat model you already have connected in Hermes (it only reads your list; it never tests your models or changes your settings), names it under each reply, and the chip above the Home composer lets you pick another. *(plugin; the chip needs the next iPhone build)*
+- **Voice memos to Home** get the same reply-or-job treatment, transcribed by your Hermes. *(plugin)*
 - **Other chats stay out of Home's thread.** A running Discord or Telegram conversation shows in the Work strip, and only joins the thread when it needs you. *(plugin)*
 
 - **"Later" on the call card works.** Putting the card from an ended call off now takes it off Home until its time (or until it changes), and Undo brings it straight back, the same as any other card. *(plugin)*
