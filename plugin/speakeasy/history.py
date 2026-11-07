@@ -1278,9 +1278,20 @@ def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
         chat = "chat_type" if "chat_type" in cols else "NULL AS chat_type"
         model = "model" if "model" in cols else "NULL AS model"  # the model Hermes ran the session on
         arch = "coalesce(archived,0) AS archived" if "archived" in cols else "0 AS archived"
-        row = db.execute(f"SELECT id, source, title, {display}, {chat}, {model}, {arch} FROM sessions WHERE id=?",
+        config = "model_config" if "model_config" in cols else "NULL AS model_config"
+        row = db.execute(f"SELECT id, source, title, {display}, {chat}, {model}, {arch}, {config} FROM sessions WHERE id=?",
                          (tip,)).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        result = dict(row)
+        result["model_session_ids"] = _chain(db, tip)
+        from .reply_models import object_value, clean
+        config_value = object_value(result.pop("model_config", None))
+        # Return only selection metadata, never endpoints or credentials in the config.
+        result["model_provider"] = clean(config_value.get("provider"), 80)
+        effort = config_value.get("reasoning_effort")
+        result["model_reasoning"] = effort if effort in {"none", "minimal", "low", "medium", "high", "xhigh", "max"} else None
+        return result
     except sqlite3.Error:
         return None
     finally:

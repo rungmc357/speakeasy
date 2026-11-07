@@ -2359,7 +2359,10 @@ class VoiceService(SecureInputMixin):
         *staged*: attachments claimed for this job (carried with its handoff). *choice*: the model /
         reasoning picked for it (models.parse_choice); a new chat (*new_chat*) keeps it as its own."""
         if choice is None and link_to:
-            choice = self.store.model_choice("session:" + link_to)  # the chat's choice works its linked task
+            resolved, _ = self._next_choice(link_to)
+            if resolved and (resolved.get("unavailable") or (resolved.get("model") and "/" not in resolved["model"])):
+                raise ServiceError(409, "This conversation's model is unavailable or unknown. Choose a model before sending.", reason="model")
+            choice = {k: resolved.get(k) for k in ("model", "reasoning")} if resolved else None
         worker = self.text_worker()
         future = asyncio.run_coroutine_threadsafe(
             M.start_job(worker, text, session_id=session_id, context=context, staged=staged or None,
@@ -2577,14 +2580,17 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, f"That model isn't one {self.agent_name} offers. Pick one from the list.", reason="model")
 
     def _save_chat_choice(self, session_id: str, choice: dict[str, Any]) -> None:
-        old = self.store.model_choice("session:" + session_id) or {}
+        canonical, _ = self._model_context(session_id)
+        session_id = canonical or session_id
+        old = self._chat_choice(session_id) or {}
         model = choice["model"] if "model" in choice else old.get("model")
         reasoning = choice["reasoning"] if "reasoning" in choice else old.get("reasoning")
         if "model" in choice and "reasoning" not in choice and model and reasoning:
             entries = self._entries()
             if entries and model in entries:  # a new model keeps the chat's level only if it takes it
                 reasoning = MD.clamp(reasoning, entries[model]["reasoning_levels"])
-        self.store.set_model_choice("session:" + session_id, model, reasoning)
+        # Explicitly following the default differs from an imported session with no Speakeasy pick.
+        self.store.set_model_choice("session:" + session_id, model or ("default" if reasoning is None else None), reasoning)
 
     def set_session_model(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """``PUT /voice/history/{session_id}/model {model?, reasoning?}``: Use for this chat ("default" or
@@ -2615,39 +2621,119 @@ class VoiceService(SecureInputMixin):
         jobs = self.settings.get().get("jobs") or {}
         return {"model": jobs.get("model") or None, "reasoning": jobs.get("reasoning") or None}
 
+    def _model_context(self, sid: str | None, idem: str | None = None) -> tuple[str | None, list[str]]:
+        """Linked task pages are the same conversation; unrelated sessions stay independent."""
+        keys = [idem] if idem else [k for k, _, _ in self.store.keys_for_session(sid)] if sid else []
+        meta = H.session_meta(self.rt.state_db, sid) if sid else None
+        if not keys and sid and meta and meta["source"] != "api_server":
+            keys = list(reversed(self._continuations(sid)))
+        chain = list(keys)
+        for key in list(keys):
+            for _ in range(6):
+                key = self.store.parent_of(key)
+                if not key or key in chain:
+                    break
+                chain.append(key)
+        source = next((s for k in chain if (s := self.store.linked_source(k))), None)
+        canonical = source or sid
+        if canonical:
+            meta = H.session_meta(self.rt.state_db, canonical)
+            canonical = (meta.get("model_session_ids") or [meta["id"]])[0] if meta else canonical
+        return canonical, chain
+
+    def _chat_choice(self, canonical: str | None) -> dict[str, Any] | None:
+        if not canonical:
+            return None
+        # Older builds saved picks on a linked child's id. Preserve the newest deliberate choice
+        # from that conversation family; new writes use only its canonical identity.
+        sessions = {canonical}
+        meta = H.session_meta(self.rt.state_db, canonical)
+        sessions.update((meta or {}).get("model_session_ids") or [])
+        for source in list(sessions):
+            for key in self.store.history_links(source):
+                if sid := self.store.session_for(key):
+                    sessions.add(sid)
+        choices = [c for sid in sessions if (c := self.store.model_choice("session:" + sid))]
+        return max(choices, key=lambda c: c["updated"]) if choices else None
+
+    def _next_choice(self, sid: str | None, *, idem: str | None = None, task_id: str | None = None,
+                     request: str | None = None) -> tuple[dict[str, Any] | None, str | None]:
+        """One prediction/dispatch resolver. Explicit preferences are never replaced by served fallback.
+
+        A chat pick newer than a task pick supersedes it; a newer task pick is local to that task.
+        Existing Hermes sessions retain their known route before new-chat defaults. A bare model is
+        qualified only by an unambiguous catalog match; unknown routes fail rather than silently switch.
+        """
+        canonical, chain = self._model_context(sid, idem)
+        chat = self._chat_choice(canonical)
+        raw = self.catalog.peek()
+        entries = self.catalog.entries(raw) if raw is not None else None
+        layers = []
+        kind, _ = MD.voice_preset(request)
+        if kind:
+            preset = MD.presets(self.settings.get(), entries, self.catalog.hermes_default(raw) if raw else None)[kind]
+            layers.append(("voice", {**preset, "preset": kind}))
+        task_ids = [task_id] if task_id else []
+        task_ids += [(self.store.run_row(k) or {}).get("delegation_id") for k in chain]
+        tasks = [t for tid in task_ids if tid and (t := self.store.model_choice("task:" + tid))]
+        task = max(tasks, key=lambda t: t["updated"]) if tasks else None
+        if task and (not chat or task["updated"] > chat["updated"]):
+            layers.append(("task", task))
+        follows_default = bool(chat and chat.get("model") == "default")
+        layers.append(("chat", None if follows_default else chat))
+        for key in chain:
+            earlier = self.store.run_model(key)
+            if earlier and earlier.get("source") in {"voice", "task"} and not chat:
+                layers.append((earlier["source"], earlier))
+        meta = H.session_meta(self.rt.state_db, canonical) if canonical else None
+        if not follows_default and not (chat or {}).get("model") and meta and meta.get("model"):
+            model, provider = meta["model"], meta.get("model_provider")
+            if provider:
+                mid = model if model.startswith(provider + "/") else MD.make_id(provider, model)
+            elif entries is not None and model in entries:
+                mid = model
+            else:
+                matches = [mid for mid, e in (entries or {}).items() if e["model"] == model]
+                mid = matches[0] if len(matches) == 1 else model
+            layers.append(("existing", {"model": mid, "reasoning": meta.get("model_reasoning")}))
+        # Persisted requested route is preferable to a fallback. Served evidence is the last resort.
+        if not follows_default and (not meta or not meta.get("model")):
+            for key in chain:
+                record = self.store.run_model(key) or {}
+                if record.get("model"):
+                    layers.append(("existing", {"model": record["model"], "reasoning": record.get("reasoning")}))
+                    break
+                served = record.get("served") or {}
+                if served.get("provider") and served.get("model"):
+                    layers.append(("historical", {"model": MD.make_id(served["provider"], served["model"])}))
+                    break
+        # An existing route with unknown effort must not borrow the new-chat effort.
+        if canonical and meta and not follows_default and not any(layer and layer.get("model") for _, layer in layers):
+            layers.append(("existing", {"model": "unknown"}))
+        has_existing = any(layer and layer.get("model") for _, layer in layers)
+        default = self._default_layer()
+        if has_existing:
+            default = {**default, "reasoning": None}
+        layers.append(("default", default))
+        choice = MD.resolve(layers, None)  # retain unknown/unavailable ids instead of falling through
+        if choice and choice.get("model"):
+            mid = choice["model"]
+            if entries is not None and mid not in entries:
+                choice["unavailable"] = True
+            elif entries and choice.get("reasoning"):
+                level = choice["reasoning"]
+                if level not in entries[mid]["reasoning_levels"]:
+                    choice["unavailable"] = True
+        return choice, canonical
+
     def choose_model(self, task_id: str, idem: str, session_id: str | None, request: str | None
                      ) -> dict[str, Any] | None:
         """The overrides a run starts with (Runtime.choose_model): the voice phrase, the task's own pick,
         its chat's (or the chat a linked task continues), what its earlier turn ran on, the default.
         Records what was asked on the task; never reads the catalog on this path (it may be cold)."""
-        settings = self.settings.get()
-        raw = self.catalog.peek()
-        entries = self.catalog.entries(raw) if raw is not None else None
-        layers: list[tuple[str, dict[str, Any] | None]] = []
-        kind, _ = MD.voice_preset(request)
-        if kind:
-            preset = MD.presets(settings, entries, self.catalog.hermes_default(raw) if raw else None)[kind]
-            layers.append(("voice", {**preset, "preset": kind}))
-        layers.append(("task", self.store.model_choice("task:" + task_id)))
-        chain, key = [], idem
-        for _ in range(6):
-            key = self.store.parent_of(key) if key else None
-            if not key or key in chain:
-                break
-            chain.append(key)
-        sessions = [session_id] if session_id else []
-        for k in [idem, *chain]:
-            src = self.store.linked_source(k)
-            if src and src not in sessions:
-                sessions.append(src)
-        for sid in sessions:
-            layers.append(("chat", self.store.model_choice("session:" + sid)))
-        for k in chain:  # a follow-up keeps what its task was asked to run on ("for this")
-            earlier = self.store.run_model(k)
-            if earlier and earlier.get("source") in {"voice", "task"}:
-                layers.append((earlier["source"], {kk: earlier.get(kk) for kk in ("model", "reasoning", "preset")}))
-        layers.append(("default", self._default_layer()))
-        choice, entries = self._resolved(layers)
+        choice, _ = self._next_choice(session_id, idem=idem, task_id=task_id, request=request)
+        if choice and (choice.get("unavailable") or (choice.get("model") and "/" not in choice["model"])):
+            raise ServiceError(409, "This conversation's model is unavailable or unknown. Choose a model before sending.", reason="model")
         record: dict[str, Any] = {"model": (choice or {}).get("model"), "reasoning": (choice or {}).get("reasoning"),
                                   "source": (choice or {}).get("source") or "hermes"}
         if choice and choice.get("preset"):
@@ -2717,7 +2803,8 @@ class VoiceService(SecureInputMixin):
     def _session_models(self, sid: str, meta: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, Any]:
         """``model`` (what did the chat's latest work), ``model_choice`` (its Use-for-this-chat pick, or
         null) and ``next_model`` (what the next message runs on) for a session page."""
-        chat = self.store.model_choice("session:" + sid)
+        canonical, _ = self._model_context(sid)
+        chat = self._chat_choice(canonical)
         did = next((j["model"] for j in jobs if isinstance(j.get("model"), dict)), None)
         if did is None and isinstance(meta.get("model"), str) and meta["model"]:
             # No Speakeasy task ran here: the model Hermes recorded for the session (no provider, no level).
@@ -2727,12 +2814,16 @@ class VoiceService(SecureInputMixin):
                    "provider": entries[found]["provider"] if found else "",
                    "provider_name": entries[found]["provider_name"] if found else "",
                    "reasoning": None, "reasoning_label": None, "source": "hermes", "served": True}
-        choice, _ = self._resolved([("chat", chat), ("default", self._default_layer())])
-        upcoming = self.describe_model({"model": (choice or {}).get("model"),
-                                        "reasoning": (choice or {}).get("reasoning"),
-                                        "source": (choice or {}).get("source") or "hermes"})
-        return {"model": did, "next_model": upcoming,
-                "model_choice": {"model": chat.get("model"), "reasoning": chat.get("reasoning")} if chat else None}
+        choice, canonical = self._next_choice(sid)
+        raw = self.catalog.peek()
+        entries = self.catalog.entries(raw) if raw is not None else {}
+        upcoming = MD.describe(choice, entries) if choice else MD.describe(
+            {"source": "hermes"}, entries, self.catalog.hermes_default(raw) if raw else None,
+            self.catalog.hermes_reasoning)
+        if upcoming and choice:
+            upcoming["unavailable"] = bool(choice.get("unavailable") or "/" not in upcoming["id"])
+        return {"model": did, "next_model": upcoming, "model_session_id": canonical,
+                "model_choice": {"model": chat.get("model"), "reasoning": chat.get("reasoning")} if chat and chat.get("model") != "default" else None}
 
     # -- history: every Hermes session, readable and writable by id (docs/API.md "History") ---------
 
@@ -3497,6 +3588,9 @@ class VoiceService(SecureInputMixin):
     def _history_message(self, meta: dict[str, Any], text: str,
                          staged: list[A.Attachment] | None = None, client_id: str | None = None) -> dict[str, Any]:
         sid = meta["id"]
+        resolved, _ = self._next_choice(sid)
+        if resolved and (resolved.get("unavailable") or (resolved.get("model") and "/" not in resolved["model"])):
+            raise ServiceError(409, "This conversation's model is unavailable or unknown. Choose a model before sending.", reason="model")
         link = self._linked(sid)
         if self._speakeasy_owned(meta, link) and link is not None:
             for run_id in link.run_ids:

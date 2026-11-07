@@ -176,6 +176,7 @@ public struct ModelBadge: Equatable, Sendable {
     public var source: String
     /// Hermes reported it ran on this model (not just what was asked).
     public var served: Bool
+    public var unavailable = false
 
     public init(id: String, name: String, providerName: String = "", reasoning: ReasoningLevel? = nil,
                 source: String = "hermes", served: Bool = false) {
@@ -188,6 +189,7 @@ public struct ModelBadge: Equatable, Sendable {
         self.init(id: id, name: nonEmpty(o["name"]) ?? id, providerName: nonEmpty(o["provider_name"]) ?? "",
                   reasoning: (o["reasoning"] as? String).flatMap(ReasoningLevel.init(rawValue:)),
                   source: nonEmpty(o["source"]) ?? "hermes", served: o["served"] as? Bool ?? false)
+        unavailable = o["unavailable"] as? Bool ?? false
     }
 
     /// "GPT-5.5 · Medium".

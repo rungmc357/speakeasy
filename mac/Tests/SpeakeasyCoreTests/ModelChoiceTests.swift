@@ -140,6 +140,53 @@ final class ModelChoiceTests: XCTestCase {
         XCTAssertEqual(work?.model?.name, "Claude Opus 5.5")
     }
 
+    func testAuthoritativeNextTargetDoesNotFallBackToAppDefault() {
+        let next = ModelBadge(id: "openai-codex/gpt-5.5", name: "GPT-5.5", reasoning: .high, source: "chat")
+        let picker = ModelPickerState(catalog: catalog, chatChoice: nil, nextModel: next, existingConversation: true)
+        XCTAssertEqual(picker.chipLabel, "GPT-5.5 · High")
+        XCTAssertEqual(picker.selection, ModelChoice(model: next.id, reasoning: .high))
+        XCTAssertFalse(picker.followsDefault)
+        XCTAssertFalse(picker.changed)
+        var changedDefault = catalog
+        changedDefault.defaultChoice = ModelChoice(model: "anthropic/claude-haiku-4-5", reasoning: .low)
+        XCTAssertEqual(ModelPickerState(catalog: changedDefault, chatChoice: nil, nextModel: next,
+            existingConversation: true).chipLabel, picker.chipLabel)
+    }
+
+    func testExistingUnknownAndUnavailableStayHonest() {
+        let unknown = ModelPickerState(catalog: catalog, chatChoice: nil, existingConversation: true)
+        XCTAssertEqual(unknown.chipLabel, "Model unknown")
+        XCTAssertNil(unknown.model)
+        var next = ModelBadge(id: "missing/model", name: "Missing model", source: "existing")
+        next.unavailable = true
+        let unavailable = ModelPickerState(catalog: catalog, chatChoice: nil, nextModel: next, existingConversation: true)
+        XCTAssertEqual(unavailable.chipLabel, "Missing model · Unavailable")
+        XCTAssertEqual(unavailable.model?.id, "missing/model")
+        XCTAssertNil(unavailable.reasoning)
+        XCTAssertEqual(ModelPickerState(catalog: catalog, chatChoice: nil).chipLabel, "Claude Opus 5.5 · Medium")
+    }
+
+    func testAuthoritativeOffAndUnknownEffortDoNotBorrowDefault() {
+        var next = ModelBadge(id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", reasoning: ReasoningLevel.none, source: "existing")
+        XCTAssertEqual(ModelPickerState(catalog: catalog, chatChoice: nil, nextModel: next).chipLabel, "Claude Opus 5.5 · Off")
+        next.reasoning = nil
+        let picker = ModelPickerState(catalog: catalog, chatChoice: nil, nextModel: next)
+        XCTAssertEqual(picker.chipLabel, "Claude Opus 5.5")
+        XCTAssertNil(picker.selection.reasoning)
+    }
+
+    func testDistinctConversationSwitchDoesNotRewriteEitherChoice() {
+        let a = ModelBadge(id: "openai-codex/gpt-5.5", name: "GPT-5.5", reasoning: .high, source: "chat")
+        let b = ModelBadge(id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", reasoning: .low, source: "chat")
+        let identities = ["garden", "garden-linked", "garden", "shelves", "garden"]
+        let expected = [a, a, a, b, a]
+        for (id, badge) in zip(identities, expected) {
+            let actual = id == "shelves" ? b : a
+            XCTAssertEqual(ModelPickerState(catalog: catalog, chatChoice: nil, nextModel: actual,
+                existingConversation: true).chipLabel, badge.label)
+        }
+    }
+
     func testCapabilityFlag() throws {
         let caps = try JSONDecoder().decode(ServerCapabilities.self, from: Data(#"{"model_choice": true}"#.utf8))
         XCTAssertTrue(caps.modelChoice)

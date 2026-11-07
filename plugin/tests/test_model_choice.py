@@ -1,6 +1,7 @@
 """Per-chat model and reasoning (docs/API.md "Models", speakeasy/models.py): Hermes' catalog, the
 choice saved per chat / task, and what each run is sent. Invented catalog (fakes.model_options_payload)."""
 import json
+import sqlite3
 import time
 
 import pytest
@@ -172,7 +173,7 @@ def test_use_for_this_chat_persists_and_threads_into_a_session_job(server, servi
     assert service.store.model_choice("session:api_other") == {
         **service.store.model_choice("session:api_other"), "model": "anthropic/claude-sonnet-5", "reasoning": "none"}
     put(server, "/voice/history/api_other/model", {"model": "default", "reasoning": "default"})
-    assert service.store.model_choice("session:api_other") is None
+    assert service.store.model_choice("session:api_other")["model"] == "default"
     assert get(server, "/voice/history/api_other")[1]["session"]["model_choice"] is None
 
 
@@ -183,10 +184,15 @@ def test_switching_model_clamps_the_chats_level(server, service, state, catalog)
 
 
 def test_a_message_carrying_a_choice_sets_it_for_the_chat(server, service, hermes, state, catalog):
+    # Existing Hermes model is known, but Speakeasy has never saved an override.
+    with sqlite3.connect(state) as db:
+        db.execute("ALTER TABLE sessions ADD COLUMN model TEXT")
+        db.execute("UPDATE sessions SET model='openai-codex/gpt-6.1-sol' WHERE id='api_other'")
     status, body = post(server, "/voice/history/api_other/message", {"text": "Halve it", "reasoning": "high"})
     assert status == 200, body
     call = wait_for(lambda: hermes.calls)[-1]
-    assert "model" not in call and call["model_options"] == {"reasoning": {"enabled": True, "effort": "high"}}
+    assert call["provider"] == "openai-codex" and call["model"] == "gpt-6.1-sol"
+    assert call["model_options"] == {"reasoning": {"enabled": True, "effort": "high"}}
     assert service.store.model_choice("session:api_other") == {
         **service.store.model_choice("session:api_other"), "model": None, "reasoning": "high"}
 
