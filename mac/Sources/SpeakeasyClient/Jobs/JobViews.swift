@@ -997,6 +997,7 @@ public struct DecisionBrief: View {
     var part: Part = .all
     @Environment(\.jobTextScale) private var s
     @Environment(\.jobReplyBarAnswers) private var replyBarAnswers
+    @Environment(\.needsYouShownAbove) private var shownAbove
     private var comparing: Binding<Bool> {
         let key = "\(task.id)|compare"
         return Binding(get: { model.openSections.contains(key) }, set: { on in
@@ -1012,10 +1013,10 @@ public struct DecisionBrief: View {
         let visuals = task.info.views.filter { $0.kind != "question" }
         VStack(alignment: .leading, spacing: 8) {
             if part != .options {
-                HStack(spacing: 6) {
-                    Circle().fill(answer == nil ? (JobLook.touch ? Color.orange : JobStyle.tileAmber) : JobStyle.green).frame(width: 7, height: 7)
-                    Text(answer == nil ? "Needs you" : "Answered").font(.system(size: 11.5 * s, weight: .semibold))
-                        .foregroundStyle(JobLook.touch && answer == nil ? Color.orange : Color.secondary)
+                if answer == nil {
+                    if !shownAbove { NeedsYouMark() }
+                } else {
+                    AnsweredMark()
                 }
                 Text(decision.question).font(.system(size: 14 * s, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                 if let context = decision.context {
@@ -1202,7 +1203,7 @@ public struct NotReadNotice: View {
     public init(items: [FollowUp], finished: Bool) { self.items = items; self.finished = finished }
     public var body: some View {
         HStack(alignment: .top, spacing: 7) {
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Color.orange).font(.system(size: 12 * s))
+            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(JobStyle.tileAmber).font(.system(size: 12 * s))
             VStack(alignment: .leading, spacing: 2) {
                 Text(finished ? "Finished before reading what you added" : "Stopped before reading what you added")
                     .font(.system(size: 11 * s, weight: .semibold)).foregroundStyle(.secondary)
@@ -1395,7 +1396,7 @@ public struct StepRow: View {
     private var subColor: Color {
         switch receipt {
         case .landed: return JobStyle.green
-        case .notRead: return Color.orange
+        case .notRead: return JobStyle.tileAmber
         default: return Color.secondary
         }
     }

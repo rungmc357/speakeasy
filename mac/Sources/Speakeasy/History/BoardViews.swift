@@ -8,7 +8,8 @@ import SpeakeasyClient
 // Blocked, Done); a card opens the session it ran in. Refreshes every few seconds while open.
 
 enum BoardLook {
-    /// The "Needs you" capsule: one deep red that keeps white text readable in light and dark.
+    /// The count badge for what needs you (a count only; the label itself is `NeedsYouMark`): one
+    /// deep red that keeps white text readable in light and dark.
     static let needsYou = Color(red: 0.72, green: 0.15, blue: 0.13)
     static func tint(_ column: KanbanCard.Column) -> Color {
         switch column {
@@ -317,11 +318,7 @@ struct BoardCardView: View {
     var body: some View {
         Button { if let id = card.sessionID { open(id) } } label: {
             VStack(alignment: .leading, spacing: 6) {
-                if card.needsYou {
-                    Text("Needs you").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
-                        .padding(.horizontal, 7).frame(height: 17)
-                        .background(Capsule().fill(BoardLook.needsYou))
-                }
+                if card.needsYou { NeedsYouMark() }
                 Text(card.title).font(.system(size: 12.5, weight: .semibold)).multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .opacity(card.column == .done ? 0.8 : 1)
@@ -348,7 +345,7 @@ struct BoardCardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(hover && card.sessionID != nil ? Live.card.opacity(0.7) : Live.card))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(card.needsYou ? Live.red.opacity(0.45) : Live.hairline, lineWidth: card.needsYou ? 1 : 0.5))
+                .strokeBorder(card.needsYou ? NeedsYouMark.color.opacity(0.45) : Live.hairline, lineWidth: card.needsYou ? 1 : 0.5))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
