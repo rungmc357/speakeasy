@@ -183,6 +183,9 @@ CAPABILITIES["now_dismiss"] = True  # build 69: POST/DELETE /voice/now/{id}/dism
 CAPABILITIES["saved_calls"] = True  # read-only call conversations, independent of provider sessions
 CAPABILITIES["home_stream"] = True  # SPK-208: `stream` on /voice/now (one thread, asks + cards) and GET /voice/now/recent
 CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking/heard), call_summary
+# SPK-208: POST /voice/home/message (+ /voice/home/voice-message): Home is a chat with a coordinator;
+# ``stream`` entries of kind ``message`` (user / assistant) interleave with the job cards.
+CAPABILITIES["home_chat"] = True
 
 
 
@@ -424,6 +427,8 @@ class VoiceService(SecureInputMixin):
         self.history_events = HistoryEvents(self._history_stamp)
         from .now import NowModel
         self.now_model = NowModel(self)
+        from .home_chat import HomeChat
+        self.home_chat = HomeChat(self)
         self.history_events.after_change = self._now_changed
         self.rt.history_events = self.history_events
         Q.wire(self.store, self.rt)  # every closed question: decision_resolved + the push withdrawn
@@ -4019,6 +4024,8 @@ class VoiceService(SecureInputMixin):
         fields = dict(upload["fields"])
         if target == "new":
             return self._voice_message_new(fields, upload, data, device_id)
+        if target == "home":
+            return self._voice_message_home(fields, upload, data, device_id)
         if target == "session":
             if not H.valid_session_id(target_id) or H.session_meta(self.rt.state_db, target_id) is None:
                 raise ServiceError(404, "I couldn't find that conversation.")
@@ -4049,6 +4056,28 @@ class VoiceService(SecureInputMixin):
         if isinstance(session, str) and session:
             self._note_voice_message(session, note)
             self._note_voice_clip(session, note, fields.get("client_id"), upload["duration"], sent_at)
+        return {**got, "voice": {"transcript": transcript, "duration": upload["duration"]}}
+
+    def home_message(self, body: dict[str, Any], device_id: str | None = None) -> dict[str, Any]:
+        """``POST /voice/home/message``: Home's composer talks to the coordinator (home_chat.py)."""
+        return self.home_chat.message(body, device_id)
+
+    def _voice_message_home(self, fields: dict[str, Any], upload: dict[str, Any], data: bytes,
+                            device_id: str | None) -> dict[str, Any]:
+        """``POST /voice/home/voice-message``: a voice note to Home's coordinator. Hermes writes it
+        down; the coordinator reads the words, and a job it starts gets the gateway's voice-note text."""
+        fields.pop("answers", None)
+        fields.pop("mode", None)
+        note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
+        if not transcript:  # nothing to read: the recording goes to a job, as Home's mic always did
+            return self._voice_message_new(fields, upload, data, device_id)
+        body = {k: v for k, v in fields.items() if k in {"client_id", "attachments", "model", "reasoning", "agent"}}
+        got = self.home_chat.message({**body, "text": transcript}, device_id,
+                                     voice={"duration": upload["duration"]}, job_text=note)
+        session = got.get("session_id")
+        if isinstance(session, str) and session and got.get("action") == "start":
+            self._note_voice_message(session, note)
+            self._note_voice_clip(session, note, fields.get("client_id"), upload["duration"], time.time())
         return {**got, "voice": {"transcript": transcript, "duration": upload["duration"]}}
 
     def _voice_note(self, client_id: str | None, suffix: str, data: bytes) -> tuple[str, str | None]:

@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -33,6 +34,7 @@ ROLLOVER_HOUR = 4
 OPENED_GRACE_S = 6 * 3600       # a seen answer opened in the 6 h before a rollover stays to the next one
 UNREAD_KEPT_S = 3 * 86400       # how far back Home looks for candidates
 ANSWER_KEPT_S = 12 * 3600       # a finished answer leaves Home once opened, or 12 h after it finished (it stays in Earlier)
+CHAT_KEPT_S = 24 * 3600         # a job started from Home's chat stays in that thread as long as its messages (home_chat.SHOWN_S)
 ANSWER_CARD_S = 4 * 3600        # an answer older than this folds into the one "Earlier today · N" row (earlier.today)
 EARLIER_TODAY_ITEMS = 20
 BASELINE_GRACE_S = 3600         # first use of Home: answers older than this count as seen, so an upgrade never floods it
@@ -404,7 +406,10 @@ class NowModel:
         elif status in {RS.RunState.FAILED, RS.RunState.INTERRUPTED}:
             # Clear is an answers-only cutoff: unread stopped work is not an answer, so only the
             # rollover (not Clear) moves it to Earlier.
-            if seen or (finished or now) < edge:
+            if self._in_chat(run_id):
+                if (finished or now) < cleared:
+                    return None
+            elif seen or (finished or now) < edge:
                 return None  # opened: it lives in its conversation (Earlier) from here
             kind = row.get("failure") or (UNKNOWN if status == RS.RunState.FAILED else None)
             fix = "retry" if status == RS.RunState.INTERRUPTED else FIX.get(kind or "", "open")
@@ -431,6 +436,12 @@ class NowModel:
                 if seen and from_a_call(row):
                     left = self._opened(row["key"]) or (read_at is not None and finished is not None
                                                         and read_at + 1 >= finished)
+                if self._in_chat(run_id):
+                    # Started from Home's chat: its result is a message in that thread, so it stays
+                    # while the thread does (seen or not), not by the leave rules for answers.
+                    if at < cleared or now - at > CHAT_KEPT_S:
+                        return None
+                    left, on_this_call = False, True
                 # Clear is explicit: it moves the call's answers too. Hearing one only keeps it under
                 # the call card when Clear was not used.
                 if at < cleared or (not on_this_call and (left or at < edge or now - at > ANSWER_KEPT_S)):
@@ -442,6 +453,8 @@ class NowModel:
             return None  # cancelled, rejected: nothing to look at
         item.setdefault("id", f"s:{session}" if session else f"t:{run_id or row['key']}")
         item.setdefault("unread", False)
+        if self._in_chat(run_id):
+            item["in_chat"] = True   # Home's chat started it: it lives in the thread beside its messages
         came = origin(finished, now, self._zone) if finished is not None and item["kind"] in {
             NEW_ANSWER, SEEN_ANSWER, STOPPED} else None
         if came is not None:
@@ -472,12 +485,20 @@ class NowModel:
         return item
 
     # -- the whole list --------------------------------------------------------------------------
+    def _in_chat(self, run_id: Any) -> bool:
+        return bool(run_id) and str(run_id) in getattr(self, "_chat_runs", set())
+
     def build(self, tz: str | None = None, *, peek: bool = False, every: bool = False) -> dict[str, Any]:
         now = self.clock()
         zone_ = zone(tz)
         edge = rollover(now, zone_)
         cleared = self._meta_float("now_cleared_at")
         self._zone = zone_
+        chat = getattr(self.svc, "home_chat", None)
+        try:
+            self._chat_runs = chat.started_runs() if chat is not None else set()
+        except Exception:
+            self._chat_runs = set()
         self._baseline = self._meta_float("now_baseline_at")
         if not self._baseline:
             # First use of Home (or of this rule, after an upgrade): older answers count as seen.
@@ -649,7 +670,16 @@ class NowModel:
                 if text:
                     asks[i["id"]] = text
         marked = {i["id"] for i in items if i.get("_run_key") in answered}
-        return build_stream(items, asks, marked, now, zone_)
+        chat = getattr(self.svc, "home_chat", None)
+        messages: list[dict[str, Any]] = []
+        from_chat: set[str] = set()
+        if chat is not None:
+            try:
+                messages = [chat.entry(r) for r in chat.shown(now)]
+                from_chat = chat.started_runs()
+            except Exception:
+                logging.getLogger(__name__).debug("speakeasy: Home's chat messages failed", exc_info=True)
+        return build_stream(items, asks, marked, now, zone_, messages=messages, from_chat=from_chat)
 
     def recent(self, tz: str | None = None, limit: int = 30) -> dict[str, Any]:
         """``GET /voice/now/recent``: the last tasks, finished or not, whatever Home's leave rules did to
@@ -970,7 +1000,8 @@ def fold_earlier(items: list[dict[str, Any]], now: float,
     keep, old = [], []
     for i in items:
         at = i.get("finished_at")
-        if i["kind"] in ANSWERS and not i.get("on_call") and not i.get("call_id") and at is not None \
+        if i["kind"] in ANSWERS and not i.get("on_call") and not i.get("call_id") and not i.get("in_chat") \
+                and at is not None \
                 and now - float(at) > keep_s:
             old.append(i)
         else:

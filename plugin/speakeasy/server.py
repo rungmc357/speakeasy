@@ -775,6 +775,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/work/voice-message":  # a voice note that starts a new job (Home's composer)
                 self._voice_message("new", "")
                 return
+            if path == "/voice/home/voice-message":  # a voice note to Home's coordinator (SPK-208)
+                self._voice_message("home", "")
+                return
             voice_note = (re.fullmatch(rf"/voice/history/{_SESSION}/voice-message", path)
                           or re.fullmatch(rf"/voice/work/{_ID}/voice-message", path))
             if voice_note:  # the recording itself is the message: same raw-body rules
@@ -804,6 +807,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/work":
                 self._reply(202, self.service.start_job(self._body(), device_id))
+                return
+            if path == "/voice/home/message":  # Home is a chat: the coordinator replies, maybe starts a job
+                self._reply(200, self.service.home_message(self._body(), device_id))
                 return
             if path == "/voice/schedules/preview":  # saves nothing: what the app shows to confirm
                 self._reply(200, self.service.schedule_call("preview", body=self._body()))

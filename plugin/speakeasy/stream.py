@@ -55,13 +55,18 @@ def widget_state(item: dict[str, Any], answered: bool) -> str | None:
 
 
 def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: set[str], now: float,
-                 tz: dt.tzinfo) -> dict[str, Any]:
+                 tz: dt.tzinfo, messages: list[dict[str, Any]] | None = None,
+                 from_chat: set[str] | None = None) -> dict[str, Any]:
     """*items* are Home's final cards, *asks* maps item id -> what the user asked, *answered* the item
-    ids whose question the user already answered."""
+    ids whose question the user already answered. *messages*: Home's chat (home_chat.py), each
+    already a ``message`` entry; *from_chat*: run ids a chat message started or followed up, whose
+    card needs no "you asked" bubble (the message itself shows)."""
+    from_chat = from_chat or set()
     folds: dict[str, list[dict[str, Any]]] = {}
     labels: dict[str, str] = {}
     for item in items:
-        if item.get("kind") == SEEN and not item.get("call_id") and now - _at(item) >= COLLAPSE_AFTER_S:
+        if (item.get("kind") == SEEN and not item.get("call_id") and now - _at(item) >= COLLAPSE_AFTER_S
+                and str(item.get("run_id") or "") not in from_chat):   # a chat's job stays beside its messages
             label, key = stretch(_at(item), now, tz)
             folds.setdefault(key, []).append(item)
             labels[key] = label
@@ -80,7 +85,7 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
             continue
         started = float(item.get("started_at") or _at(item))
         ask = asks.get(item["id"])
-        if ask:
+        if ask and str(item.get("run_id") or "") not in from_chat:
             entries.append({"id": f"a:{thread_key(item)}", "kind": "ask", "at": started, "text": _clip(ask, ASK_CHARS),
                             "item_id": item["id"]})
         # The card belongs to the ask, not to the latest progress tick. Otherwise each refresh moves
@@ -91,8 +96,10 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
         if widget:
             entry["widget"] = widget
         entries.append(entry)
-    # An ask sorts just before its card even when they share a second.
-    entries.sort(key=lambda e: (e["at"], 0 if e["kind"] == "ask" else 1, e["id"]))
+    entries.extend(messages or [])
+    # An ask (or the chat message and reply that started a job) sorts just before its card even
+    # when they share a second.
+    entries.sort(key=lambda e: (e["at"], 0 if e["kind"] in {"ask", "message"} else 1))
     return {"entries": entries,
             "needs_you": [i["id"] for i in items if i.get("kind") == "question"],
             "folded": sorted(folded)}
