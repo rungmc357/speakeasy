@@ -28,7 +28,7 @@ struct HistoryUsageLine: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("What this chat used, estimated from Hermes' records")
+            .help("What this chat used, estimated from the records on your Hermes")
             .accessibilityLabel(usage.accessibilityText)
             .accessibilityIdentifier("history-usage")
             if open { HistoryUsageDetails(usage: usage).transition(.opacity) }

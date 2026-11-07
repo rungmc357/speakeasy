@@ -140,7 +140,7 @@ def explain_run_failure(status: str, error: str) -> str:
     if says_no_model(error):
         return NO_MODEL_ERROR
     if "credential" in lowered or "authentication" in lowered or "not logged in" in lowered or "auth" in lowered:
-        return ("Your Hermes's AI account needs signing in again, so it couldn't write the brief. "
+        return ("The AI account your Hermes uses needs signing in again, so it couldn't write the brief. "
                 "Send /model to your Hermes to sign in, then press Rewrite.")
     if error:
         text = re.sub(r"\s+", " ", error).strip()

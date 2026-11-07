@@ -79,8 +79,8 @@ def test_a_safety_refusal_is_never_a_firewall(error):
     the key, or credits: the card says so and offers a retry or another model."""
     assert failures.failure_kind(error) == "content_refused"
     assert "firewall" not in failures.failure_reason("failed", "content_refused")
-    assert failures.failure_reason("failed", "content_refused") == "The model's safety filter refused this request."
-    assert failures.reason_text("content_refused") == ("The model's safety filter refused this request. "
+    assert failures.failure_reason("failed", "content_refused") == "The AI model declined this one."
+    assert failures.reason_text("content_refused") == ("The AI model declined this one. "
                                                        "Try again, or switch model for this chat.")
 
 
@@ -91,18 +91,19 @@ def test_a_safety_refusal_is_never_a_firewall(error):
     "<body><div class=\"cf-error-details\">Sorry, you have been blocked</div></body></html>",
     "HTTP 503: <html><body><form id=\"challenge-form\" action=\"/cdn-cgi/challenge-platform/h/b\"></form></body></html>",
 ])
-def test_only_a_real_challenge_page_is_called_a_firewall(error):
+def test_only_a_real_challenge_page_is_called_blocked(error):
     assert failures.failure_kind(error) is None
     assert failures.failure_hint(error) == "blocked"
-    assert "firewall" in failures.failure_reason("failed", None, failures.failure_hint(error))
+    assert failures.failure_reason("failed", None, failures.failure_hint(error)) == (
+        "Your AI provider's website blocked the request. Try again later, or switch model.")
 
 
 def test_plain_blocked_words_are_not_a_firewall():
     """No HTML page, no refusal marker: "request was blocked" alone isn't proof of a firewall."""
     for error in ("HTTP 403: Your request was blocked.", "HTTP 400: request blocked"):
         assert failures.failure_hint(error) != "blocked"
-        assert "firewall" not in failures.failure_reason("failed", failures.failure_kind(error),
-                                                         failures.failure_hint(error))
+        reason = failures.failure_reason("failed", failures.failure_kind(error), failures.failure_hint(error))
+        assert "firewall" not in reason and "website blocked" not in reason
 
 
 def test_a_refusal_reply_is_read_as_a_refusal():
@@ -122,7 +123,7 @@ def test_the_sentences_are_speakeasys_own():
     for kind, (label, text) in failures.REASONS.items():
         assert label and text and failures.reason_text(kind) == text
         assert failures.public_failure(kind) == {"kind": kind, "label": label, "text": text}
-    assert failures.reason_text("billing") == ("Your Hermes's AI account is out of credits. Add credits "
+    assert failures.reason_text("billing") == ("The AI account your Hermes uses is out of credits. Add credits "
                                                "there, or switch model in this chat.")
     unknown = failures.public_failure(failures.UNKNOWN)
     assert unknown == {"kind": failures.UNKNOWN, "text": "Your Hermes stopped without saying why."}
@@ -166,9 +167,9 @@ def test_no_reason_sends_anyone_to_a_terminal_or_a_log_file():
 
 
 def test_the_fixes_are_the_agreed_plain_words():
-    assert failures.reason_text("auth") == ("Your Hermes's AI account needs signing in again. Send /model "
+    assert failures.reason_text("auth") == ("The AI account your Hermes uses needs signing in again. Send /model "
                                             "to your Hermes to sign in, or switch model here.")
-    assert failures.reason_text("rate_limit") == ("Your Hermes's AI account is busy (too many requests). "
+    assert failures.reason_text("rate_limit") == ("The AI account your Hermes uses is busy (too many requests). "
                                                   "Try again in a minute, or switch model.")
     assert failures.reason_text("model_not_found") == "That AI model isn't available any more. Pick another for this chat."
     assert failures.reason_text("hermes_key").startswith("Your Hermes didn't accept Speakeasy's key. "
@@ -176,7 +177,7 @@ def test_the_fixes_are_the_agreed_plain_words():
     assert failures.reason_text("hermes_unreachable") == ("Speakeasy couldn't get through to your Hermes. "
                                                           "Send /restart to your Hermes, then try again.")
     # The card's one-line reason is the first sentence, without the fix.
-    assert failures.failure_reason("failed", "billing") == "Your Hermes's AI account is out of credits."
+    assert failures.failure_reason("failed", "billing") == "The AI account your Hermes uses is out of credits."
     assert failures.failure_reason("failed", "hermes_unreachable") == "Speakeasy couldn't get through to your Hermes."
 
 
@@ -279,7 +280,7 @@ def test_out_of_credits_reaches_the_task_and_the_voice(server, service, hermes):
     task = failed_task(server)
     reason, said = failures.reason_text("billing"), failures.voice_text("billing")
     assert task["failure"] == {"kind": "billing", "label": "Out of credits", "text": reason}
-    assert task["events"][-1] == {"kind": "result", "text": f"Work failed: {reason}", "at": task["events"][-1]["at"]}
+    assert task["events"][-1] == {"kind": "result", "text": f"Didn't finish: {reason}", "at": task["events"][-1]["at"]}
     wait_for(lambda: P.failed_because(said) in spoken(worker))
     assert not any("hermes model" in c or "/model" in c for c in spoken(worker))  # no command is spoken
     assert stopped == [("failed", reason)]
@@ -357,7 +358,7 @@ def test_safety_refusal_reaches_the_card_and_the_voice(server, service, hermes):
     worker.delegate("call_refused", "Tidy up the checkout tests")
     task = failed_task(server)
     assert task["failure"]["kind"] == "content_refused"
-    assert task["failure_reason"] == "The model's safety filter refused this request."
+    assert task["failure_reason"] == "The AI model declined this one."
     assert "firewall" not in json.dumps(task) and "automatic filter" not in json.dumps(task)
     wait_for(lambda: P.failed_because(failures.voice_text("content_refused")) in spoken(worker))
 

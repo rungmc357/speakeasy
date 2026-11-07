@@ -430,7 +430,7 @@ public enum OrbState: Equatable, Sendable {
         case .talking: return "Listening to you"
         case .working: return "Working"
         case .needsYou(let n): return n == 1 ? "1 thing needs you" : "\(n) things need you"
-        case .failed: return "A task failed"
+        case .failed: return "A task didn't finish"
         }
     }
 }

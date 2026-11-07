@@ -577,7 +577,7 @@ public struct JobTile: View {
         // A status, never a button look-alike: the actions are the buttons under it.
         // Touch: the board's "Needs you" section header already says it.
         case .needsYou: EmptyView()   // the board's "Needs you" label already says it
-        case .failed: JobPill(text: "Failed", style: .red)
+        case .failed: JobPill(text: "Didn't finish", style: .red)
         case .running:
             if job.activeTask?.info.status == "waiting_on_task" {
                 JobPill(text: "Waiting", style: .grey)   // held so two tasks don't edit one project at once
@@ -669,7 +669,7 @@ public struct JobTile: View {
             .padding(.top, 3)
         case .failed:
             let info = job.newest.info
-            Text(JobProgress.failureReason(info) ?? "Stopped with an error")
+            Text(JobProgress.failureReason(info) ?? "Didn't finish")
                 .font(.system(size: 11.5 * s)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
                 if model.canRetry { TileButton(title: "Retry", primary: true) { model.onRetry(job.newest.id) } }

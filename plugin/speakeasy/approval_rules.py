@@ -39,7 +39,7 @@ MODES = {
 _KINDS: list[tuple[str, str]] = [
     (r"hermes (?:gateway|launchd|upd)|start gateway|hermes/gateway|self-termination",
      "Stopping or restarting Hermes itself"),
-    (r"hermes config|hermes secrets", "Changing Hermes' own settings or keys"),
+    (r"hermes config|hermes secrets", "Changing your Hermes settings or keys"),
     (r"git force push", "Force-pushing over a project's shared history"),
     (r"git reset --hard", "Throwing away unsaved code changes"),
     (r"git clean", "Deleting files a project doesn't track"),

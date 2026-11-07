@@ -310,7 +310,7 @@ struct HistorySidebar: View {
         VStack(alignment: .leading, spacing: 8) {
             Image(systemName: "arrow.down.circle").font(.system(size: 18)).foregroundStyle(Live.brass)
             Text("Update Speakeasy on your Hermes").font(.system(size: 13, weight: .semibold))
-            Text("Your Hermes's Speakeasy plugin doesn't share history yet. Update it (Settings › Server) and your sessions show up here.")
+            Text("Speakeasy on your Hermes is too old to share history. Update it (Settings › Server) and your sessions show up here.")
                 .font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)

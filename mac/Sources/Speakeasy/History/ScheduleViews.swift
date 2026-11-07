@@ -74,8 +74,8 @@ struct ScheduledSidebarRow: View {
         if let next = schedules.nextUp, let at = next.nextRun {
             return "Next: \(ScheduleFormat.next(at, now: store.now))"
         }
-        if !schedules.loaded { return "Your Hermes's scheduled jobs" }
-        return schedules.jobs.isEmpty ? "Nothing scheduled" : "All paused"
+        if !schedules.loaded { return "Scheduled jobs on your Hermes" }
+        return schedules.jobs.isEmpty ? "Nothing scheduled yet" : "All paused"
     }
 }
 
@@ -188,7 +188,7 @@ struct ScheduleListView: View {
         VStack(spacing: 10) {
             Image(systemName: "clock.badge.checkmark").font(.system(size: 30, weight: .light)).foregroundStyle(Live.brass.opacity(0.85))
             Text("Nothing scheduled yet").font(.system(size: 14, weight: .semibold))
-            Text("Say what and when, like “every weekday at 8 summarize my inbox”. You'll see it before it's saved.")
+            Text("Ask your Hermes to do something every morning, like “a weather brief at 7 AM”.")
                 .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 360)
             Button { creating = true; schedules.startDraft() } label: {
                 Label("New schedule", systemImage: "plus").font(.system(size: 12, weight: .semibold))

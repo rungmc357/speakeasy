@@ -128,13 +128,13 @@ class Pending:
             out.update({"env_var": self.env_var, "label": self.label, "prompt": self.prompt, "help": self.help,
                         "skill": self.skill, "reason": secret_reason(self.skill, self.required_for),
                         "skip_label": SKIP_LABEL_SECRET,
-                        "stored_where": f"Saved to your Hermes's private settings as {self.env_var}. The AI never sees it."})
+                        "stored_where": f"Saved to the private settings on your Hermes as {self.env_var}. The AI never sees it."})
         elif self.kind == "sudo":
             out.update({"command": self.command, "label": "Your Mac's password",
                         "stored_where": "Used once for this command, then forgotten. Speakeasy never stores it."})
         elif self.kind == "login":
             out.update({"origin": self.origin, "site": self.site, "label": f"Your login for {self.site}",
-                        "stored_where": (f"Saved in your Hermes's encrypted vault for {self.site}. The AI can fill it "
+                        "stored_where": (f"Saved in the encrypted vault on your Hermes for {self.site}. The AI can fill it "
                                          "in on that site but never sees the password.")})
         else:  # code
             out.update({"site": self.site, "label": f"The code {self.site} sent you", "help": self.help,

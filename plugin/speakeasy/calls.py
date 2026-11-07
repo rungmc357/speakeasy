@@ -5078,8 +5078,8 @@ class SidebandWorker:
         reason = failures.reason_text(failed_as)
         self.store.update_run(idem, None, "failed")
         self.store.set_failure(idem, failed_as, failures.failure_hint(str(exc)) or "start")
-        self.store.progress(idem, "result", f"Work failed: {reason}" if reason else
-                            f"Work failed: {failures.failure_reason('failed', failed_as, failures.failure_hint(str(exc)) or 'start')}")
+        self.store.progress(idem, "result", f"Didn't finish: {reason}" if reason else
+                            f"Didn't finish: {failures.failure_reason('failed', failed_as, failures.failure_hint(str(exc)) or 'start')}")
         with self.interaction.lock:
             # Speakeasy's own sentence, never str(exc): that can be a bare exception name or key.
             backend.status, backend.error = "failed", reason or TASK_START_FAILED
@@ -5823,10 +5823,10 @@ class SidebandWorker:
                                    str(error or "no error given")[:200])
             reason = failures.reason_text(failed_as)
             safe_output = safe_user_text(result["full"], 4000) if result else None
-            self.store.progress(idem, "result", safe_output or (f"Work failed: {reason}" if reason else {
+            self.store.progress(idem, "result", safe_output or (f"Didn't finish: {reason}" if reason else {
                 "completed": "Work complete", "cancelled": "Work stopped",
-                "failed": f"Work failed: {failures.failure_reason('failed', failed_as, failures.failure_hint(error))}",
-                "interrupted": "Work interrupted"}.get(status, "Work ended")))
+                "failed": f"Didn't finish: {failures.failure_reason('failed', failed_as, failures.failure_hint(error))}",
+                "interrupted": "Didn't finish"}.get(status, "Work ended")))
             with self.interaction.lock:
                 backend.status, backend.approval = status, None
                 backend.ended_steer = (event.get("pending_steer"), "interrupted" in event or "pending_steer" in event)

@@ -260,11 +260,11 @@ final class AppModel: ObservableObject {
             throw ServerClient.HTTPError(status: 0, message: "That server address isn't allowed. Use this Mac (http://127.0.0.1:8795) or an https Tailscale address (*.ts.net).")
         }
         guard let code = normalizedPairingCode(code) else {
-            throw ServerClient.HTTPError(status: 0, message: "Enter the 6-digit code from hermes voice pair.")
+            throw ServerClient.HTTPError(status: 0, message: "Enter the 6-digit code from the pairing link your Hermes sent.")
         }
         let response = try await ServerClient.pair(server: base, code: code, deviceName: deviceName)
         guard Keychain.saveToken(response.token) else {
-            throw ServerClient.HTTPError(status: 0, message: "Couldn't save the device token to the Keychain.")
+            throw ServerClient.HTTPError(status: 0, message: "Couldn't save the pairing on this Mac. Try pairing again.")
         }
         UserDefaults.standard.set(base.absoluteString, forKey: Prefs.serverURL)
         UserDefaults.standard.set(deviceName, forKey: Prefs.deviceName)
@@ -393,7 +393,8 @@ final class AppModel: ObservableObject {
             lastError = nil
             return true
         } catch {
-            lastError = "Couldn't save: \(describe(error))"
+            NSLog("Speakeasy: couldn't save settings: %@", String(describing: error))
+            lastError = PlainFailure.saveFailed
             return false
         }
     }
@@ -421,7 +422,7 @@ final class AppModel: ObservableObject {
         do { tune = try await api.startTune() }
         catch let error as ServerClient.HTTPError where error.status == 409 {
             lastError = error.message.isEmpty ? "Can't tune yet" : error.message
-        } catch { lastError = "Couldn't start tuning: \(describe(error))" }
+        } catch { NSLog("Speakeasy: couldn't start tuning: %@", String(describing: error)); lastError = "Couldn't start tuning. Try again." }
     }
 
     func applyTune(_ accept: [String]) async {
@@ -483,7 +484,8 @@ final class AppModel: ObservableObject {
             lastError = nil
             return true
         } catch {
-            lastError = "Couldn't switch the routing model: \(describe(error))"
+            NSLog("Speakeasy: couldn't switch the routing model: %@", String(describing: error))
+            lastError = "Couldn't switch the routing model. Try again."
             return false
         }
     }
@@ -628,19 +630,19 @@ final class AppModel: ObservableObject {
     func describe(_ error: Error) -> String {
         if let http = error as? ServerClient.HTTPError {
             if http.status == 401 || http.status == 403 { return "This Mac isn't paired anymore. Pair again in Settings › Connection." }
-            if http.status == 404 {
-                return "Your Hermes has an older Speakeasy plugin that can't do this yet. Ask your agent to update Speakeasy, then restart Hermes."
-            }
-            return http.message
+            if http.status == 404 { return "This needs a newer Speakeasy on your Hermes." }
+            NSLog("Speakeasy: request failed: HTTP %d %@", http.status, http.message)
+            return PlainFailure.couldntDoThat
         }
         let ns = error as NSError
         if ns.domain == NSURLErrorDomain {
             if let host = config.serverURL?.host, host.hasSuffix(".ts.net") {
-                return "Can't reach your Hermes at \(host). It's on your Tailscale network: make sure Tailscale is installed and signed in on this Mac, with the same account as the computer running Hermes (tailscale.com/download)."
+                return "Can't reach your Hermes. Turn on Tailscale on this Mac and sign in with the same account as your Hermes computer."
             }
-            return "Can't reach the Speakeasy server at \(config.serverURL?.absoluteString ?? "?"). Is the Hermes gateway running?"
+            return "Couldn't reach your Hermes. Check that the Hermes machine is on and awake, then try again."
         }
-        return error.localizedDescription
+        NSLog("Speakeasy: request failed: %@", String(describing: error))
+        return PlainFailure.couldntDoThat
     }
 }
 

@@ -95,7 +95,7 @@ final class DemoHistoryBackend: HistoryBackend {
     }
 
     func conversation(_ sessionID: String) async throws -> HistoryConversation {
-        guard let c = conversations[sessionID] else { throw ServerClient.HTTPError(status: 404, message: "I couldn't find that conversation.") }
+        guard let c = conversations[sessionID] else { throw ServerClient.HTTPError(status: 404, message: "That conversation isn't on your Hermes any more.") }
         return c
     }
 

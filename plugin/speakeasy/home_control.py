@@ -696,7 +696,7 @@ class HomeControl:
 def _problem(exc: HomeAssistantError) -> str:
     return {
         "not_set_up": "Home Assistant isn't set up in Hermes.",
-        "auth": "Home Assistant refused Hermes' token.",
+        "auth": "Home Assistant didn't accept the sign-in your Hermes uses.",
         "timeout": "Home Assistant didn't answer in time.",
         "unreachable": "Home Assistant couldn't be reached.",
     }.get(exc.kind, f"Home Assistant returned an error ({exc.status}).")

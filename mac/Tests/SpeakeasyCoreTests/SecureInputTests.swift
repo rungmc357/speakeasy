@@ -6,7 +6,7 @@ final class SecureInputTests: XCTestCase {
     {"requests":[{"id":"sec_abcdefghijklmnopqrstuvwx","kind":"secret","job":"Weather for the trip","run_id":"run_1",
       "session_id":"s1","expires_at":4102444800,"seconds_left":118,"env_var":"OPENWEATHER_API_KEY",
       "label":"OpenWeather API key","prompt":"OpenWeather API key","help":"Get one free","skill":"weather",
-      "stored_where":"Saved to your Hermes's private settings as OPENWEATHER_API_KEY. The AI never sees it."},
+      "stored_where":"Saved to the private settings on your Hermes as OPENWEATHER_API_KEY. The AI never sees it."},
      {"id":"sec_zyxwvutsrqponmlkjihgfedc","kind":"sudo","job":"Fix SSH","command":"sudo launchctl kickstart -k system/com.openssh.sshd",
       "label":"Your Mac's password","stored_where":"Used once for this command, then forgotten. Speakeasy never stores it.",
       "expires_at":4102444800},

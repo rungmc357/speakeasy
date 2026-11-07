@@ -89,7 +89,7 @@ def rows(status: dict[str, Any]) -> list[dict[str, Any]]:
     if api_ok:
         out.append(_row("hermes_api", True, "Speakeasy can reach Hermes"))
     elif status.get("hermes_api_key_set"):
-        out.append(_row("hermes_api", False, "Hermes' connection for Speakeasy is off",
+        out.append(_row("hermes_api", False, "Speakeasy's connection on your Hermes is off",
                         "Setup turned it on, and it starts the next time Hermes starts. Send /restart in your chat "
                         "with Hermes.", _fix("copy", "Copy /restart", RESTART_COMMAND)))
     else:

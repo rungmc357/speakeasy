@@ -523,7 +523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         else { updateItem?.title = "Check for Updates…" }
         let name = app.assistantName
         if !app.isPaired {
-            statusLine?.title = "Not connected — open Settings to pair"
+            statusLine?.title = "Not paired yet"
         } else if let fix = app.status?.checks.first(where: { !$0.ok && $0.id != "brief" })?.fix {
             statusLine?.title = fix
         } else if app.status == nil {
@@ -1061,7 +1061,7 @@ extension PairingLink.ParseError {
         case .notSpeakeasy, .notPairing: return "This isn't a Speakeasy pairing link."
         case .missingServer: return "The link doesn't say which server to connect to."
         case .untrustedServer: return "The link points to a server Speakeasy won't trust. Use this Mac (127.0.0.1) or an https Tailscale address."
-        case .invalidCode: return "The link's pairing code isn't a 6-digit code. Run hermes voice pair for a new one."
+        case .invalidCode: return "That link's code is broken (it should have 6 digits). Ask your Hermes for a new one."
         }
     }
 }

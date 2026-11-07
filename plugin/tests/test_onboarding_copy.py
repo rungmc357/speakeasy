@@ -23,8 +23,9 @@ def test_restart_note_leads_with_the_chat_command():
 
 def test_app_facing_restart_text_says_send_restart():
     from speakeasy.service import RESTART_NEEDED
-    assert "/restart" in RESTART_NEEDED
-    assert RESTART_NEEDED.index("/restart") < RESTART_NEEDED.index("hermes gateway restart")
+    assert RESTART_NEEDED == ("Speakeasy was updated while your Hermes was running. "
+                              "Send /restart to your Hermes to finish the update.")
+    assert "restart Hermes" not in RESTART_NEEDED and "Restart Hermes" not in RESTART_NEEDED
 
 
 def test_docs_say_send_restart_wherever_they_say_gateway_restart():

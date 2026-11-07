@@ -357,7 +357,7 @@ def parse_choice(body: dict[str, Any], entries: Callable[[], dict[str, dict[str,
         else:
             known = entries()
             if not known:
-                raise ChoiceError("Hermes' model list is unavailable right now. Try again in a moment.")
+                raise ChoiceError("The model list on your Hermes isn't available right now. Try again in a moment.")
             if model not in known:
                 raise ChoiceError("That model isn't one Hermes offers. Pick one from the list.")
             choice["model"] = model

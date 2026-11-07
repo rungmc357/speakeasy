@@ -56,7 +56,7 @@ final class MultitaskTests: XCTestCase {
     func testTaskStatusLine() {
         XCTAssertEqual(taskStatusLine(task("a", "working", request: "x", short: "Ordering chips").info, now: t0 + 1).0,
                        "Ordering chips")
-        XCTAssertEqual(taskStatusLine(task("a", "failed", request: "x").info, now: t0).0, "Work failed")
+        XCTAssertEqual(taskStatusLine(task("a", "failed", request: "x").info, now: t0).0, "Didn't finish")
         XCTAssertEqual(taskStatusLine(task("a", "waiting_for_approval", request: "x").info, now: t0).0, "Needs your approval")
         XCTAssertEqual(taskStatusLine(task("a", "working", request: "x").info, now: t0 + 200).0, "Status unconfirmed")
     }
@@ -99,10 +99,10 @@ final class MultitaskTests: XCTestCase {
 
     func testPauseFailureStaysLive() {
         var s = reduce(live(), .pauseRequested, now: t0)
-        s = reduce(s, .pauseFailed("Couldn't pause: offline"), now: t0 + 1)
+        s = reduce(s, .pauseFailed("Couldn't pause. Try again."), now: t0 + 1)
         XCTAssertEqual(s.connection, .live)
         XCTAssertFalse(s.pausing)
-        XCTAssertEqual(s.lastError, "Couldn't pause: offline")
+        XCTAssertEqual(s.lastError, "Couldn't pause. Try again.")
     }
 
     func testResumeContinuesTheSameCall() {

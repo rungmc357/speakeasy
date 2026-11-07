@@ -674,7 +674,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         if followSystemAudio { watchAudioDevices() }
         #endif
         guard let api else {
-            dispatch(.failed(config.deviceToken == nil ? "Not connected to Hermes — open Settings › Connection to pair"
+            dispatch(.failed(config.deviceToken == nil ? "Not paired yet. Pair in Settings › Connection."
                              : "The server address isn't trusted — pair again in Settings › Connection"))
             return
         }
@@ -889,7 +889,8 @@ public final class NativeVoiceClient: VoiceCallClient {
                 self.sendClose()
             } catch {
                 self?.reconnectAfterPause = false
-                self?.dispatch(.pauseFailed("Couldn't pause: \(error.localizedDescription)"))
+                NSLog("Speakeasy: couldn't pause: %@", String(describing: error))
+                self?.dispatch(.pauseFailed("Couldn't pause. Try again."))
             }
         }
     }
@@ -1303,7 +1304,8 @@ public final class NativeVoiceClient: VoiceCallClient {
                 guard let self else { return }
                 self.model.draftLocalStatus[key] = nil
                 self.model.draftBusy.remove(draft.draftID)
-                self.model.draftNotice[draft.draftID] = "Couldn't \(action.rawValue): \(error.localizedDescription)"
+                NSLog("Speakeasy: couldn't %@ a draft: %@", action.rawValue, String(describing: error))
+                self.model.draftNotice[draft.draftID] = "Couldn't \(action.rawValue) that. Try again."
             }
         }
     }
@@ -1663,7 +1665,8 @@ public final class NativeVoiceClient: VoiceCallClient {
             do { try await api.dismissTasks(runIDs: runIDs); self?.workPoll.listChanged() }
             catch {
                 self?.workPoll.listChanged()
-                self?.dispatch(.error("Couldn't clear tasks: \(error.localizedDescription)"))
+                NSLog("Speakeasy: couldn't clear tasks: %@", String(describing: error))
+                self?.dispatch(.error("Couldn't clear tasks. Try again."))
             }
         }
     }
@@ -1678,7 +1681,10 @@ public final class NativeVoiceClient: VoiceCallClient {
         guard let api, !previewMode else { return }
         Task { [weak self] in
             do { try await api.dismissReview(runID: runID, cards: cards) }
-            catch { self?.dispatch(.error("Couldn't dismiss: \(error.localizedDescription)")) }
+            catch {
+                NSLog("Speakeasy: couldn't dismiss a review: %@", String(describing: error))
+                self?.dispatch(.error("Couldn't dismiss that. Try again."))
+            }
         }
     }
 
@@ -1769,9 +1775,10 @@ public final class NativeVoiceClient: VoiceCallClient {
                                                        action: action.id, value: value)
                 done(true, message ?? "Done")
             } catch let http as ServerClient.HTTPError {
-                done(false, http.message.isEmpty ? "That didn't work" : http.message)
+                NSLog("Speakeasy: card action refused: HTTP %d %@", http.status, http.message)
+                done(false, "That didn't go through. Try again.")
             } catch {
-                done(false, "Couldn't reach Hermes")
+                done(false, "Couldn't reach your Hermes. Try again.")
             }
         }
     }

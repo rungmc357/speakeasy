@@ -51,7 +51,7 @@ RELAY_TIMEOUT_S = 10.0
 SIGNATURE_VERSION = "v1"
 # What the relay is allowed to see. Anything else in a notify body is a bug (and the relay refuses it).
 RELAY_FIELDS = ("device_token", "environment", "kind", "nonce", "collapse_id", "event_id")
-PREFIX = {"finished": "Done", "needs_you": "Needs you", "failed": "Failed", "reply": "New reply"}
+PREFIX = {"finished": "Done", "needs_you": "Needs you", "failed": "Didn't finish", "reply": "New reply"}
 
 
 def signature(secret: str, install_id: str, timestamp: str, body: bytes) -> str:

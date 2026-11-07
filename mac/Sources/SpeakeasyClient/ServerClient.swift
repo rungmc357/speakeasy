@@ -318,10 +318,10 @@ public final class ServerClient: @unchecked Sendable {
         let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
+            // The server's own words and the status go to the log only; the person sees a plain line.
             let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-            let fallback = status == 403 || status == 400 ? "That code is wrong or expired. Run hermes voice pair for a new one."
-                : "Pairing failed (HTTP \(status))"
-            throw HTTPError(status: status, message: object?["error"] as? String ?? fallback)
+            NSLog("Speakeasy pairing: HTTP %d %@", status, (object?["error"] as? String) ?? "")
+            throw HTTPError(status: status, message: PlainFailure.pairing(status: status))
         }
         return try JSONDecoder().decode(PairResponse.self, from: data)
     }

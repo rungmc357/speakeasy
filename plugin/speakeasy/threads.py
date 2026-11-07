@@ -107,7 +107,7 @@ def capability(hermes_home: Path, source_supported: bool) -> dict[str, Any]:
         return {"supported": False, "reason": "This Hermes version can't open threads from Speakeasy yet."}
     if webhook_base(hermes_home) is None:
         return {"supported": False,
-                "reason": "Turn on Hermes' webhook platform (platforms.webhook.enabled in config.yaml) to open threads."}
+                "reason": "Turn on the webhook platform on your Hermes (platforms.webhook.enabled in config.yaml) to open threads."}
     return {"supported": True, "reason": ""}
 
 
