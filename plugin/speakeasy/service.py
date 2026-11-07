@@ -1628,6 +1628,8 @@ class VoiceService(SecureInputMixin):
         if key is None:
             raise ServiceError(404, "task not found")
         self.store.mark_seen(key)
+        # Opened in an app (not just heard on a call): Home lets a call's answer leave now.
+        self.store.set_meta(f"now_opened:{key}", repr(time.time()))
         # One read state: opening an answer reads its conversation (the list's unread dot) too.
         row = self.store.run_row(key) or {}
         place = self.store.linked_source(key) or row.get("session_id")
@@ -3026,7 +3028,8 @@ class VoiceService(SecureInputMixin):
         before = self.now_model.build(peek=True)
         self.store.set_meta("now_cleared_prev", self.store.get_meta("now_cleared_at") or "0")
         self.store.set_meta("now_cleared_at", repr(time.time()))
-        moved = sum(1 for i in before["items"] if i["kind"] in {"seen_answer", "new_answer"})
+        moved = sum(1 + int(i.get("folded") or 0) for i in before["items"] if i["kind"] in {"seen_answer", "new_answer"})
+        moved += int(((before.get("earlier") or {}).get("today") or {}).get("count") or 0)
         self._now_changed()
         return {"ok": True, "moved": moved, "undo": True}
 

@@ -211,7 +211,9 @@ def test_an_unread_answer_leaves_home_twelve_hours_after_it_finished(service):
          settled=now - 13 * 3600)
     task(service.store, "b", "completed", session="s_b", request="Eleven hours ago", result={"spoken": "x"},
          settled=now - 11 * 3600)
-    assert [i["title"] for i in service.now({"tz": NY})["items"]] == ["Eleven hours ago"]
+    body = service.now({"tz": NY})
+    # 0.3.45: more than 4 h old, so it sits in the "Earlier today" row rather than as a card.
+    assert body["items"] == [] and [i["title"] for i in body["earlier"]["today"]["items"]] == ["Eleven hours ago"]
 
 
 def test_first_use_counts_older_answers_as_seen_so_an_upgrade_never_floods_home(service):
@@ -292,10 +294,12 @@ def test_a_picture_whose_file_is_gone_is_never_sent(service, tmp_path):
 
 @pytest.mark.parametrize("args,line", [
     (([], [], [], []), "Short call, nothing started."),
-    ((["Desk hunt"], [], [], []), "Started Desk hunt."),
+    ((["Desk hunt"], [], [], []), "Started: Desk hunt."),
     ((["Desk hunt", "Seed list"], ["Seed list"], [], ["the wider desk"]),
-     "Started Desk hunt. Answered Seed list. You said: the wider desk."),
-    (([], ["Weather"], ["Cabin trip"], []), "Answered Weather. Cabin trip has a question for you."),
+     "Started: Desk hunt. Answered: Seed list. You said: the wider desk."),
+    (([], ["Weather"], ["Cabin trip"], []), "Answered: Weather. Cabin trip has a question for you."),
+    ((["Check the ferry time"], ["Check the ferry time"], [], [], ["The ferry leaves Sat 8:15 AM from Pier 11"]),
+     "The ferry leaves Sat 8:15 AM from Pier 11."),
 ])
 def test_the_call_card_says_what_the_call_did(args, line):
     assert N.call_line(*args) == line

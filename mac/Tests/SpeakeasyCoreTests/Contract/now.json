@@ -15,6 +15,7 @@
   "working": 1
  },
  "earlier": {
+  "today": null,
   "today_more": 0
  },
  "items": [
@@ -68,7 +69,7 @@
    },
    "id": "s:s_cf",
    "kind": "stopped",
-   "line": "Your AI account is out of credits.",
+   "line": "Book the cabin stopped: your AI account is out of credits. Add credits, then retry.",
    "run_id": "run_c_f",
    "session_id": "s_cf",
    "source": "speakeasy",

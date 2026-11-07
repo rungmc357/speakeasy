@@ -11,6 +11,11 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **The call card says what the call did,** in the plugin's own words. *(apps)*
 - **No empty picture tiles:** a picture shows only once it has loaded. *(iPhone build 69)*
 - **Plainer failure lines:** "Your AI account is out of credits." instead of naming the account after your Hermes. *(Plugin)*
+- **A stopped card says what stopped and why,** with the one next step ("Photo move stopped: the AI model declined this one. Retry or dismiss."), never a bare "It stopped.". With no reason at all it says "Stopped without finishing" and the task's name. *(Plugin)*
+- **A retry replaces its stopped card:** once a later run in the same conversation succeeds (or is running), the stopped card goes. Several jobs stopped by one cause are one card ("3 jobs stopped: …"). *(Plugin)*
+- **One card per conversation:** repeated answers in one conversation (a call's follow-ups, a run of lamp commands) fold into the newest. *(Plugin)*
+- **Earlier today · N:** answers more than 4 hours old leave the cards for one row (sent as `earlier.today`; build 68 ignores it, builds 69/70 draw it). *(Plugin)*
+- **A call's answers stay on Home** under the call card after you hang up (heard is read, not gone); opening one in the app lets it leave. The call card opens the conversation the call's task ran in (never a session the app can't find), says what was found in real sentences ("You leave Sat 8:15 AM from Pier 11."), and lists facts the voice said with no task behind them. *(Plugin)*
 
 ## Plugin 0.3.44 — Plain words on Home's live line
 

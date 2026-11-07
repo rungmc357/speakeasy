@@ -130,8 +130,68 @@ def test_an_ended_call_leaves_one_your_call_card_until_cleared(server, service, 
     assert body["call"] is None
     card = body["call_summary"]
     assert card["title"] == "Your call \u00b7 6 min" and card["minutes"] == 6
-    assert card["things"] == ["Compare tomato seeds"] and card["decisions"] == ["Oakline 60 in."]
-    assert card["session_id"] == "live_vi_call"
+    assert card["things"] == ["\u200b: Compare tomato seeds"] and card["decisions"] == ["Oakline 60 in."]
+    # Neither the realtime session nor the task's session is in Hermes' state DB: the card opens nothing.
+    assert card["session_id"] is None
     from test_history import post
     post(server, "/voice/now/clear-seen", {})
     assert get(server, "/voice/now")[1]["call_summary"] is None
+
+
+# -- 0.3.45: what a call leaves on Home (invented data) -------------------------------------------------
+
+def _ended_call(service, store, now):
+    from test_history import add_session
+    call = live_call(service, interaction_id="vi_ferry", started=now - 120)
+    add_session(service.rt.state_db, "s_ferry", "api_server", title="Ferry times", at=now - 60)
+    task(store, "k_f1", "completed", session="s_ferry", request="When does Mara's ferry get in", interaction="vi_ferry",
+         result={"spoken": "Mara's ferry gets in Friday at 6:40 PM at Pier 11.",
+                 "headline": "Mara's ferry gets in Fri 6:40 PM, Pier 11.", "views": [{"kind": "flight"}]},
+         settled=now - 90)
+    task(store, "k_f2", "completed", session="s_ferry", request="Check our ferry time after Mara arrives",
+         interaction="vi_ferry", result={"spoken": "You leave Saturday at 8:15 in the morning.",
+                                         "headline": "You leave Sat 8:15 AM from Pier 11."}, settled=now - 60)
+    on_call(call, "d_k_f1", "k_f1")
+    on_call(call, "d_k_f2", "k_f2")
+    with call.lock:
+        call.spoken_tasks.update({"d_k_f1": now - 85, "d_k_f2": now - 55})
+        call.history = [{"role": "user", "text": "Mara's ferry?"},
+                        {"role": "assistant", "text": "Pulling that up now. It gets in Friday at 6:40 PM."},
+                        {"role": "user", "text": "And the parking?"},
+                        {"role": "assistant", "text": "Checking. The garage closes at 11 PM, $24 a night."}]
+    store.mark_seen("k_f1")
+    store.mark_seen("k_f2")  # heard on the call
+    return call
+
+
+def test_a_calls_heard_answers_stay_on_home_under_the_call_card_after_hang_up(server, service, state):
+    store, now = service.store, time.time()
+    call = _ended_call(service, store, now)
+    during = get(server, "/voice/now")[1]
+    assert [i["title"] for i in during["items"]][:1] and during["items"][0]["kind"] == "seen_answer"
+    with call.lock:
+        call.call_closed, call.ended_at = True, now - 30
+    body = get(server, "/voice/now")[1]
+    answers = [i for i in body["items"] if i["kind"] in ("seen_answer", "new_answer")]
+    assert len(answers) == 1, "one card per conversation, the newest answer"
+    card = answers[0]
+    assert card["kind"] == "seen_answer" and card["unread"] is False and card["call_id"] == "call:vi_ferry"
+    assert card["folded"] == 1
+    # Opening it in an app is what lets it leave early.
+    from test_history import post
+    post(server, f"/voice/tasks/{card['run_id']}/seen", {})
+    assert [i for i in get(server, "/voice/now")[1]["items"] if i["run_id"] == card["run_id"]] == []
+
+
+def test_the_call_card_opens_a_conversation_that_exists_and_says_real_sentences(server, service, state):
+    store, now = service.store, time.time()
+    call = _ended_call(service, store, now)
+    with call.lock:
+        call.call_closed, call.ended_at = True, now - 30
+    card = get(server, "/voice/now")[1]["call_summary"]
+    assert card["session_id"] == "s_ferry", "never the realtime session id, which the app can't open"
+    assert card["line"].startswith("Mara's ferry gets in Fri 6:40 PM, Pier 11. You leave Sat 8:15 AM")
+    assert "Started Check" not in card["line"] and not card["line"].startswith("Started")
+    # The inline answer with no task behind it (the garage) leaves a line; the ferry time isn't repeated.
+    assert card["answers"] == ["Mara's ferry gets in Fri 6:40 PM, Pier 11.", "You leave Sat 8:15 AM from Pier 11.",
+                               "The garage closes at 11 PM, $24 a night."]

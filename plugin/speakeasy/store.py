@@ -805,13 +805,13 @@ class StateStore:
             rows = self._db.execute(
                 "SELECT r.idem_key, r.run_id, r.status, r.created, r.settled_at, r.session_id, r.interaction_id, "
                 "coalesce(r.dismissed,0), coalesce(r.seen,0), r.set_aside, r.question_closed, r.answered, "
-                "r.failure, r.updated, h.source_session, r.continued FROM runs r LEFT JOIN history_links h ON h.idem_key = r.idem_key "
+                "r.failure, r.updated, h.source_session, r.continued, r.parent, r.failure_hint FROM runs r LEFT JOIN history_links h ON h.idem_key = r.idem_key "
                 "WHERE r.status != 'rejected' AND (r.settled_at IS NULL OR r.settled_at >= ? OR r.status NOT IN "
                 "('completed','failed','cancelled','interrupted')) ORDER BY r.rowid DESC LIMIT ?",
                 (since, limit)).fetchall()
         names = ("key", "run_id", "status", "created", "settled_at", "session_id", "interaction_id", "dismissed",
                  "seen", "set_aside", "question_closed", "answered", "failure", "updated", "linked_source",
-                 "continued")
+                 "continued", "parent", "failure_hint")
         return [dict(zip(names, r)) for r in rows]
 
     def later_items(self) -> dict[str, dict[str, Any]]:
