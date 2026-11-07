@@ -2672,6 +2672,36 @@ class VoiceService(SecureInputMixin):
         choices = [c for sid in sessions if (c := self.store.model_choice("session:" + sid))]
         return max(choices, key=lambda c: c["updated"]) if choices else None
 
+    def _existing_route(self, model: str, provider: str | None, entries: dict[str, dict[str, Any]] | None,
+                        raw: dict[str, Any] | None) -> str:
+        """The catalog id an existing Hermes session ran on, from its recorded model and provider.
+
+        Real Hermes records the serving provider as ``billing_provider`` ("custom" for every
+        user-defined endpoint, whose catalog slugs are ``custom:<name>``), and one model name is often
+        offered by several providers. Narrow by the recorded provider, then by Hermes' configured
+        default provider; only a single remaining match qualifies. Anything else stays unresolved, so
+        the send asks for a model instead of silently switching it."""
+        if provider and model.startswith(provider + "/"):
+            return model
+        qualified = MD.make_id(provider, model) if provider else None
+        if entries is None:
+            return qualified or model
+        if qualified and qualified in entries:
+            return qualified
+        if not provider and model in entries:
+            return model
+        matches = [mid for mid, e in entries.items() if e["model"] == model]
+        if provider == "custom":
+            matches = [mid for mid in matches if entries[mid]["provider"].startswith("custom:")]
+        elif provider:
+            matches = []  # the recorded provider doesn't offer it now: unavailable, never another route
+        if len(matches) > 1:
+            default = self.catalog.hermes_default(raw) if raw else None
+            matches = [mid for mid in matches if mid == default] or matches
+        if len(matches) == 1:
+            return matches[0]
+        return qualified or model
+
     def _next_choice(self, sid: str | None, *, idem: str | None = None, task_id: str | None = None,
                      request: str | None = None) -> tuple[dict[str, Any] | None, str | None]:
         """One prediction/dispatch resolver. Explicit preferences are never replaced by served fallback.
@@ -2704,13 +2734,7 @@ class VoiceService(SecureInputMixin):
         meta = H.session_meta(self.rt.state_db, canonical) if canonical else None
         if not follows_default and not (chat or {}).get("model") and meta and meta.get("model"):
             model, provider = meta["model"], meta.get("model_provider")
-            if provider:
-                mid = model if model.startswith(provider + "/") else MD.make_id(provider, model)
-            elif entries is not None and model in entries:
-                mid = model
-            else:
-                matches = [mid for mid, e in (entries or {}).items() if e["model"] == model]
-                mid = matches[0] if len(matches) == 1 else model
+            mid = self._existing_route(model, provider, entries, raw)
             layers.append(("existing", {"model": mid, "reasoning": meta.get("model_reasoning")}))
         # Persisted requested route is preferable to a fallback. Served evidence is the last resort.
         if not follows_default and (not meta or not meta.get("model")):
