@@ -566,6 +566,16 @@ public final class ServerClient: @unchecked Sendable {
         return parsed
     }
 
+    /// Home chat's model (servers with `home_chat`).
+    public func homeModel() async throws -> HomeModelStatus {
+        HomeModelStatus(json: try await json("/voice/home/model"))
+    }
+
+    /// The Home chip's pick for the coordinator; nil goes back to Auto.
+    public func setHomeModel(_ id: String?) async throws -> HomeModelStatus {
+        HomeModelStatus(json: try await post("/voice/home/model", ["model": id.map { $0 as Any } ?? NSNull()]))
+    }
+
     /// One page of every Hermes session, newest first.
     public func history(query: String = "", source: String? = nil, cursor: String? = nil) async throws -> HistoryPage {
         HistoryPage(json: try await json(HistoryPage.path(query: query, source: source, cursor: cursor)))

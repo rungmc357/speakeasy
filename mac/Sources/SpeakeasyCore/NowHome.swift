@@ -428,6 +428,38 @@ public struct HomeChatReply: Equatable, Sendable {
     }
 }
 
+/// Home chat's model (servers with `home_chat`, `GET /voice/home/model`): the coordinator model in
+/// use, why (`chosen` on the Home chip, `auto` from the user's connected models, `main`...), and the
+/// chip's choices.
+public struct HomeModelStatus: Equatable, Sendable {
+    public struct Option: Equatable, Sendable, Identifiable {
+        public var id: String
+        public var name: String
+        public var providerName: String
+        public init(id: String, name: String, providerName: String = "") {
+            self.id = id; self.name = name; self.providerName = providerName
+        }
+        init?(json: Any?) {
+            guard let d = json as? [String: Any], let id = d["id"] as? String, !id.isEmpty else { return nil }
+            self.init(id: id, name: (d["name"] as? String) ?? id, providerName: (d["provider_name"] as? String) ?? "")
+        }
+    }
+    public var model: Option?
+    public var source: String
+    public var auto: Option?
+    public var options: [Option]
+    public init(model: Option?, source: String, auto: Option?, options: [Option]) {
+        self.model = model; self.source = source; self.auto = auto; self.options = options
+    }
+    public init(json: [String: Any]) {
+        self.init(model: Option(json: json["model"]), source: (json["source"] as? String) ?? "",
+                  auto: Option(json: json["auto"]),
+                  options: ((json["options"] as? [Any]) ?? []).compactMap { Option(json: $0) })
+    }
+    /// The user picked it on the chip (otherwise Auto or a fallback is in use).
+    public var chosen: Bool { source == "chosen" }
+}
+
 /// One row of Recent: a previous task, finished or not.
 public struct NowRecentItem: Equatable, Sendable, Identifiable {
     public var id: String

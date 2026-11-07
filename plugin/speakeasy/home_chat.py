@@ -706,6 +706,12 @@ class HomeChat:
         """``GET /voice/home/model``: the model Home's chat uses, why, and the chip's choices (the
         approved coordinator models the user has, then their main model and the current pick)."""
         from . import models as MD
+        catalog = getattr(self.svc, "catalog", None)
+        if catalog is not None and catalog.peek() is None:
+            try:   # the app asked: read Hermes' local model list now (a list, never a model call)
+                catalog.raw()
+            except Exception:
+                pass
         route = self.route()
         entries = self._entries() or {}
         current = (f"{route['provider']}/{route['model']}" if route.get("model") else None)
