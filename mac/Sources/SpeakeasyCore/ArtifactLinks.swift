@@ -80,6 +80,13 @@ public enum ArtifactLinks {
         return digits.filter(\.isNumber).count >= 5 ? URL(string: "tel:\(digits)") : nil
     }
 
+    /// A preview card as one openable thing (`name` is what Play searches for).
+    public static func previewItem(_ card: JSONValue) -> JSONValue {
+        var o: [String: JSONValue] = ["name": card["title"]]
+        for k in ["creator", "media_kind", "ids", "url", "photo_url"] where card[k] != .null { o[k] = card[k] }
+        return .object(o)
+    }
+
     /// The SF Symbol for an entity's icon tile (shown when there's no photo or it didn't load).
     public static func symbol(_ entity: String, item: JSONValue = .null) -> String {
         switch entity {
@@ -101,6 +108,20 @@ public enum ArtifactLinks {
         case "listing": return "house.fill"
         case "generation": return "photo.fill"
         case "task": return "checklist"
+        case "paper", "document", "page": return "doc.richtext.fill"
+        case "contract": return "signature"
+        case "file": return "doc.fill"
+        case "image": return "photo.fill"
+        case "recipe": return "fork.knife"
+        case "issue": return "exclamationmark.circle.fill"
+        case "email": return "envelope.fill"
+        case "todo": return "checkmark.circle"
+        case "bill": return "creditcard.fill"
+        case "package": return "shippingbox.fill"
+        case "alert": return "bell.fill"
+        case "note": return "note.text"
+        case "post": return "text.bubble.fill"
+        case "day": return "calendar"
         default: return "mappin.and.ellipse"
         }
     }

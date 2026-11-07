@@ -287,6 +287,16 @@ public struct AnswerGlance: View {
                         Circle().fill(StatusTile.color(i["state"].string)).frame(width: 8, height: 8)
                     }
                 }
+            case "metric":
+                let pts = card["points"].array.compactMap { $0["value"].double }
+                if pts.count >= 3 {
+                    HStack(spacing: 6) {
+                        MiniBars(values: Array(pts.suffix(14)), line: true).frame(width: 52, height: 24)
+                        value(card["value"].string ?? "", nil, tone: card["good"].bool.map { $0 ? "good" : "bad" })
+                    }
+                } else {
+                    value(card["value"].string ?? "", card["delta"].string, tone: card["good"].bool.map { $0 ? "good" : "bad" })
+                }
             case "stats":
                 let item = card["items"].array.first ?? .null
                 value(item["value"].string ?? "", item["label"].string, tone: item["good"].bool.map { $0 ? "good" : "warn" })

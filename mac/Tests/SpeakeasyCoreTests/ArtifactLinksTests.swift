@@ -90,4 +90,34 @@ final class ArtifactLinksTests: XCTestCase {
         XCTAssertTrue(JobAnswer.artifactKinds.isSuperset(of: ["explore", "compare", "status", "draft"]))
         XCTAssertTrue(ViewCard.drawn.isSuperset(of: JobAnswer.artifactKinds))
     }
+
+    func testTheOtherFourKindsSummariseAndCopyInPlainWords() {
+        let tl = ViewCard(kind: "timeline", data: ["title": "Porto trip", "days": [["label": "Fri 12", "items": [["when": "9:40 AM", "what": "Land"]]]]])
+        XCTAssertEqual(tl.summary, "Porto trip, Fri 12: 9:40 AM Land")
+        XCTAssertTrue(CardText.plain(tl).contains("9:40 AM · Land"))
+        let rows = ViewCard(kind: "rows", data: ["items": [["ref": "#41", "name": "Fix the login timeout", "state": "CI passing"]]])
+        XCTAssertEqual(rows.summary, "#41 Fix the login timeout CI passing")
+        let metric = ViewCard(kind: "metric", data: ["label": "Cloud spend", "value": "$1,260", "delta": "+18%"])
+        XCTAssertEqual(metric.summary, "Cloud spend, $1,260, +18%")
+        XCTAssertTrue(JobAnswer.hasGlance(metric))
+        XCTAssertFalse(JobAnswer.hasGlance(ViewCard(kind: "metric", data: ["label": "x"])))
+        let album = ViewCard(kind: "preview", data: ["entity": "media", "media_kind": "album", "title": "Night Garden",
+                                                     "creator": "The Paper Kites", "list": ["Opening"]])
+        XCTAssertEqual(album.summary, "Night Garden, by The Paper Kites")
+        XCTAssertTrue(CardText.plain(album).contains("1. Opening"))
+        for kind in ["timeline", "rows", "metric", "preview"] { XCTAssertTrue(JobAnswer.artifactKinds.contains(kind)) }
+    }
+
+    func testPreviewPlaysByItsTitleAndCreator() throws {
+        let card = ViewCard(kind: "preview", data: ["entity": "media", "media_kind": "album", "title": "Night Garden",
+                                                    "creator": "The Paper Kites", "ids": ["spotify": "4aawyAB9vmqN3uQ7FjRGTy"]])
+        let it = ArtifactLinks.previewItem(card.data)
+        XCTAssertTrue(ArtifactLinks.isMusic(it, entity: "media"))
+        XCTAssertEqual(ArtifactLinks.music(it, app: .spotify)?.absoluteString, "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy")
+        let search = try XCTUnwrap(ArtifactLinks.music(it, app: .appleMusic)?.absoluteString)
+        XCTAssertTrue(search.hasPrefix("https://music.apple.com/us/search?term=Night%20Garden%20The%20Paper%20Kites"), search)
+        for entity in ["paper", "contract", "file", "issue", "email", "bill", "alert", "day"] {
+            XCTAssertNotEqual(ArtifactLinks.symbol(entity), "mappin.and.ellipse", entity)
+        }
+    }
 }

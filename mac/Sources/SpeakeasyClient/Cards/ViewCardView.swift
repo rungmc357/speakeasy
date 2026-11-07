@@ -63,6 +63,10 @@ public struct ViewCardView: View {
             case "compare": CompareCard(card: card)
             case "status": StatusTilesCard(card: card)
             case "draft": ArtifactDraftCard(card: card)
+            case "timeline": ArtifactOpenerHost { TimelineCard(card: card) }
+            case "rows": RowsCard(card: card)
+            case "metric": MetricCard(card: card)
+            case "preview": ArtifactOpenerHost { PreviewCard(card: card) }
             default: EmptyView()
             }
         }
@@ -76,7 +80,7 @@ public struct ViewCardView: View {
 struct CardAccessibility: ViewModifier {
     let card: ViewCard
     func body(content: Content) -> some View {
-        if ["explore", "compare", "status"].contains(card.kind) {
+        if ["explore", "compare", "status", "timeline", "rows", "preview"].contains(card.kind) {
             // Each thing and its buttons (Play, Maps, Open) stay their own elements.
             content
                 .accessibilityElement(children: .contain)

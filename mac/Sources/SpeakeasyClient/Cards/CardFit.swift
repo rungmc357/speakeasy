@@ -89,6 +89,10 @@ struct CardLine: View {
         case "compare": return "star.fill"
         case "status": return "circle.grid.2x2.fill"
         case "draft": return "paperplane.fill"
+        case "timeline": return "calendar.day.timeline.left"
+        case "rows": return "checklist"
+        case "metric": return "chart.xyaxis.line"
+        case "preview": return "doc.richtext.fill"
         default: return "square.text.square"
         }
     }
@@ -99,6 +103,7 @@ struct CardLine: View {
         case "draft": return card["subject"].string ?? ArtifactDraftCard.channelName(card["channel"].string) + " draft"
         case "explore": return card["title"].string ?? card["sections"].array.first?["label"].string ?? "Ideas"
         case "status": return card["scope"].string ?? "Status"
+        case "metric": return card["label"].string ?? "Number"
         case "calendar_day": return card["title"].string ?? card["date"].string ?? "Today"
         default: return card.summary
         }

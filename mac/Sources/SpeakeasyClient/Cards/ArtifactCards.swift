@@ -12,10 +12,21 @@ private let gold = JobLook.brass
 struct ExploreCard: View {
     let card: ViewCard
     @Environment(\.cardFit) private var fit
+    @State private var byDay = false
     var body: some View {
-        let sections = card["sections"].array
+        let days = ExploreByDay.sections(card)
+        let sections = byDay ? (days ?? card["sections"].array) : card["sections"].array
         VStack(alignment: .leading, spacing: 18) {
-            ForEach(Array(sections.prefix(fit == .compact ? 1 : 6).enumerated()), id: \.offset) { _, section in
+            if let days, !days.isEmpty, fit != .compact {
+                // Things that name their day can be read day by day instead of kind by kind.
+                Picker("Show", selection: $byDay) {
+                    Text("By kind").tag(false)
+                    Text("By day").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 260)
+                .accessibilityIdentifier("explore-by-day")
+            }
+            ForEach(Array(sections.prefix(fit == .compact ? 1 : 10).enumerated()), id: \.offset) { _, section in
                 ExploreSection(section: section)
             }
         }
@@ -39,7 +50,7 @@ struct ExploreSection: View {
                 LazyHStack(spacing: 12) {
                     ForEach(Array(items.enumerated()), id: \.offset) { i, item in
                         // One thing fills the width; several peek the next one so the swipe is obvious.
-                        EntityTile(item: item, entity: entity)
+                        EntityTile(item: item, entity: item["_entity"].string ?? entity)
                             .containerRelativeFrame(.horizontal) { w, _ in items.count == 1 ? w : min(w * 0.82, 340) }
                             .id(i)
                     }

@@ -68,7 +68,7 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
         "message", "inbox", "media", "now_playing", "fact", "entity", "definition", "conversion", "math",
         "translation", "recipe", "nutrition", "comparison", "list", "steps", "stats", "chart", "news",
         "home", "thermostat", "camera", "question", "lanes", "before_after", "flow", "devices",
-        "explore", "compare", "status", "draft",
+        "explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview",
     ]
 
     /// Cards are a task's answer, so the task has finished: a "progress" card (older servers sent
@@ -139,6 +139,17 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
             return ([self["scope"].string].compactMap { $0 } + items.prefix(6)).joined(separator: ", ")
         case "draft":
             return ["Draft to " + (self["to"].string ?? ""), self["subject"].string].compactMap { $0 }.joined(separator: ", ")
+        case "timeline":
+            let days = self["days"].array.compactMap { d in d["label"].string.map { "\($0): " + d["items"].array.compactMap { [$0["when"].string, $0["what"].string].compactMap { $0 }.joined(separator: " ") }.prefix(3).joined(separator: "; ") } }
+            return ([self["title"].string].compactMap { $0 } + days.prefix(3)).joined(separator: ", ")
+        case "rows":
+            let items = self["items"].array.map { [$0["ref"].string, $0["name"].string, $0["state"].string].compactMap { $0 }.joined(separator: " ") }
+            return ([self["title"].string].compactMap { $0 } + items.prefix(5)).joined(separator: ", ")
+        case "metric":
+            return [self["label"].string, [self["value"].string, self["unit"].string].compactMap { $0 }.joined(separator: " "),
+                    self["delta"].string].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+        case "preview":
+            return [self["title"].string, self["creator"].string.map { "by \($0)" }, self["sub"].string].compactMap { $0 }.joined(separator: ", ")
         default:
             return self["title"].string ?? self["name"].string ?? self["word"].string ?? kind.replacingOccurrences(of: "_", with: " ").capitalized
         }
