@@ -165,6 +165,8 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     /// On a call: `asking` (the question the voice is asking now, first on Home) or `heard` (the voice
     /// read this answer out, so it's already read).
     public var onCall: OnCall?
+    /// Created or explicitly brought into the current call (other work stays in the capsule).
+    public var onCurrentCall = false
     /// Asking on a call: a spoken answer may pick a choice (false: a risky one, it needs a tap).
     public var sayOK: Bool = true
     /// Asking on a call with a risky choice: "Can't be undone · Needs a tap".
@@ -206,6 +208,7 @@ public struct NowItem: Equatable, Sendable, Identifiable {
                   provenance: prov, fix: (((o["fix"] as? [String: Any])?["kind"]) as? String).flatMap(Fix.init(rawValue:)),
                   question: NowQuestion(json: o["question"]))
         onCall = (o["on_call"] as? String).flatMap(OnCall.init(rawValue:))
+        onCurrentCall = o["on_current_call"] as? Bool ?? false
         sayOK = o["say_ok"] as? Bool ?? true
         lockLine = nonEmpty(o["lock_line"])
     }
