@@ -883,6 +883,8 @@ struct HistoryMessageView: View {
             } message: {
                 Text(ReplyAttribution.details(for: message.attribution, at: message.at))
             }
+        case .note where message.automaticEvent != nil:
+            AutomaticEventCard(event: message.automaticEvent!)
         case .note where message.card != nil:
             HistoryWorkerCard(card: message.card!, key: "\(sessionID)|\(message.id)|instructions", store: store)
         case .note:

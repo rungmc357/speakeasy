@@ -357,6 +357,7 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
     /// `note`: the Kanban card a board worker was started with (a compact header, instructions folded away).
     public var card: HistoryWorkerTask?
     /// `assistant`: the worker's own update to the person (a tracker comment or its finish summary).
+    public var automaticEvent: HistoryAutomaticEvent? = nil
     public var update = false
     /// `user`: the sending device's `client_id` (SPK-80): how an app knows this row is its message.
     public var clientID: String?
@@ -393,6 +394,7 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
         clientID = kind == .user ? nonEmpty(o["client_id"]) : nil
         self.files = files
         self.attribution = kind == .assistant ? ReplyAttribution(json: o["model"]) : nil
+        automaticEvent = kind == .note ? HistoryAutomaticEvent(json: o["event"]) : nil
     }
 }
 

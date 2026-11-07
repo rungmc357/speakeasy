@@ -909,7 +909,11 @@ def _preview(db: sqlite3.Connection, session_id: str, linked: Sequence[str] = ()
     older last message. The first user words (the title fallback) stay the chat's own."""
     preview, first = "", None
     try:
-        query = ("SELECT id, role, content, timestamp FROM messages WHERE session_id=? AND role IN ('user','assistant') "
+        from .history_events import event_for
+        columns = _columns(db, "messages")
+        display = ", display_kind" if "display_kind" in columns else ", NULL AS display_kind"
+        display += ", display_metadata" if "display_metadata" in columns else ", NULL AS display_metadata"
+        query = (f"SELECT id, role, content, timestamp{display} FROM messages WHERE session_id=? AND role IN ('user','assistant') "
                  "AND content IS NOT NULL AND content != '' ORDER BY id DESC LIMIT 12")
         rows = db.execute(query, (session_id,)).fetchall()
         others = [sid for sid in dict.fromkeys(linked) if sid != session_id]
@@ -920,14 +924,20 @@ def _preview(db: sqlite3.Connection, session_id: str, linked: Sequence[str] = ()
             rows.sort(key=lambda r: (r["timestamp"] if isinstance(r["timestamp"], (int, float)) else 0.0, r["id"]),
                       reverse=True)
         for row in rows:
+            notice = event_for(row)
+            if notice:
+                preview = preview_text(redact_text(f"{notice['label']}: {notice['title']} — {notice['summary']}"))
+                break
             kind, text = user_words(row["content"]) if row["role"] == "user" else ("assistant", assistant_text(row["content"], brief=True))
             if kind in ("user", "assistant") and text.strip():
                 preview = preview_text(redact_text(text))
                 break
-        head = db.execute("SELECT content FROM messages WHERE session_id=? AND role='user' AND content IS NOT NULL "
+        head = db.execute(f"SELECT id, role, content{display} FROM messages WHERE session_id=? AND role='user' AND content IS NOT NULL "
                           "ORDER BY id LIMIT 5", (session_id,)).fetchall()
-        for (content,) in head:
-            kind, text = user_words(content)
+        for row in head:
+            if event_for(row):
+                continue
+            kind, text = user_words(row["content"])
             if kind == "user" and text.strip():
                 first = redact_text(text)
                 break
@@ -1391,6 +1401,16 @@ def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, An
         role, content = row["role"], row["content"] or ""
         at = float(row["timestamp"]) if isinstance(row["timestamp"], (int, float)) else None
         calls = row["tool_calls"]
+        from .history_events import event_for
+        notice = event_for(row)
+        if notice:
+            flush()
+            pending.clear()
+            notice = {key: redact_text(value) if isinstance(value, str) and key in {"title", "summary"} else value
+                      for key, value in notice.items()}
+            entries.append({"kind": "note", "id": f"event:{notice['id']}", "at": at,
+                            "text": f"{notice['label']}: {notice['title']} — {notice['summary']}", "event": notice})
+            continue
         if role == "assistant" and _failed_turn_row(row, content):
             flush()
             pending.clear()
@@ -1494,7 +1514,8 @@ def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, An
             flush()
             entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(assistant_text(content))})
     flush()
-    return dedupe_entries(_drop_answered_failures(entries))
+    from .history_events import dedupe_events
+    return dedupe_entries(dedupe_events(_drop_answered_failures(entries)))
 
 
 def _failed_turn_row(row: Any, content: str) -> bool:
@@ -1574,6 +1595,9 @@ def dedupe_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     last_text: dict[str, str] = {}
     for e in entries:
         kind = e.get("kind")
+        if e.get("event"):
+            out.append(e)  # producer identity, not matching prose, owns event deduplication
+            continue
         if kind in {"assistant", "note", "user"}:
             text = _norm(e.get("text") or "")
             prev = last_text.get(kind)

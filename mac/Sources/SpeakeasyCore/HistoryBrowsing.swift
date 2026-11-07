@@ -297,6 +297,7 @@ public struct HistoryThreadMessage: Equatable, Sendable, Identifiable {
     public var files: [AgentFile] = []
     public var attribution: ReplyAttribution? = nil
     public var showsModel: Bool = false
+    public var automaticEvent: HistoryAutomaticEvent? = nil
 
     public init(id: String, role: Role, text: String, at: Date? = nil, voice: Bool = false, tools: [JobActivityItem] = [],
                 delivery: Delivery? = nil, clientID: String? = nil, call: [HistoryCallLine]? = nil) {
@@ -348,6 +349,7 @@ public struct HistoryThread: Equatable, Sendable {
             case .note:
                 var note = HistoryThreadMessage(id: e.id, role: .note, text: e.text, at: e.at)
                 note.card = e.card
+                note.automaticEvent = e.automaticEvent
                 out.append(note)
             case .assistant:
                 var answer = HistoryThreadMessage(id: e.id, role: .assistant, text: e.text, at: e.at, tools: pending)
