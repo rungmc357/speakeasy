@@ -13,7 +13,7 @@ enum NowMacShots {
             do {
                 try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
                 let now = MacNowModel.shared
-                now.demo = MacDemoNow.home()
+                now.demo = snapshotHome()
                 await now.refresh()
                 let voice = VoicePanelModel()
                 voice.state.connection = .live
@@ -62,6 +62,12 @@ enum NowMacShots {
                     composer.voiceNotesSupported = true
                     try await shot(HistoryRootView(store: store, voice: idleVoice),
                                    size: NSSize(width: 1400, height: 700), path: "\(dir)/home-composer-\(appearance).png")
+                    try await shot(VStack(spacing: 0) {
+                        MacNowWorkList(now: now, store: store, onClose: {})
+                        MacHomeBottomBar(voice: idleVoice, composer: composer)
+                    }, size: NSSize(width: 460, height: 600), path: "\(dir)/work-\(appearance).png")
+                    try await shot(MacNowRecent(now: now, store: store),
+                                   size: NSSize(width: 460, height: 500), path: "\(dir)/recent-\(appearance).png")
                     now.demo = NowHome(rev: 2, asOf: Date(), sentence: "All quiet.", counts: NowHome.Counts(), items: [],
                                        backgroundRunning: 0)
                     await now.refresh()
@@ -82,7 +88,7 @@ enum NowMacShots {
                     composer.cancelRecording()
                     #endif
                     for p in now.pending { now.dropPending(p.id) }
-                    now.demo = MacDemoNow.home()
+                    now.demo = snapshotHome()
                     await now.refresh()
                 }
                 store.stop(); now.stop(); panel.hide()
@@ -93,6 +99,21 @@ enum NowMacShots {
                 exit(1)
             }
         }
+    }
+
+    private static func snapshotHome() -> NowHome {
+        if let path = ProcessInfo.processInfo.environment["SPEAKEASY_NOW_FIXTURE"],
+           let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return NowHome(json: object)
+        }
+        var home = MacDemoNow.home()
+        home.stream = NowStream(entries: home.items.reversed().flatMap { item in
+            let at = item.startedAt ?? item.finishedAt ?? item.updatedAt ?? home.asOf
+            return [NowStream.Entry(id: "a:" + item.id, kind: .ask, at: at, text: item.title, itemID: item.id),
+                    NowStream.Entry(id: "c:" + item.id, kind: .card, at: at, itemID: item.id)]
+        }, needsYou: home.items.filter { $0.kind == .question }.map(\.id))
+        return home
     }
 
     private static func shot<V: View>(_ root: V, size: NSSize, path: String) async throws {

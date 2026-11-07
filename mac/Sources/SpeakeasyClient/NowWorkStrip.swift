@@ -10,6 +10,7 @@ public struct NowWorkStrip: View {
     public var onBoard: () -> Void
     @State private var expanded = false
     @State private var page: String?
+    @State private var pull: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
 
@@ -26,19 +27,34 @@ public struct NowWorkStrip: View {
     public var body: some View {
         if !keys.isEmpty {
             VStack(spacing: 8) {
-                Button { toggle() } label: {
-                    HStack(spacing: 8) {
-                        Circle().fill(needs > 0 ? Color.accentColor : Color.secondary).frame(width: 6, height: 6)
-                        Text(running > 0 ? "\(running) running" : "Work")
-                        if needs > 0 { Text("· \(needs) needs you").foregroundStyle(Color.accentColor) }
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
-                    }
-                    .font(.footnote.weight(.semibold)).padding(.horizontal, 16).frame(minHeight: 36)
-                    .contentShape(Capsule())
+                HStack(spacing: 8) {
+                    Circle().fill(needs > 0 ? Color.accentColor : Color.secondary).frame(width: 6, height: 6)
+                    Text(running > 0 ? "\(running) running" : "Work")
+                    if needs > 0 { Text("· \(needs) needs you").foregroundStyle(Color.accentColor) }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
                 }
-                .buttonStyle(.plain).accessibilityIdentifier("home-work-capsule")
+                .font(.footnote.weight(.semibold)).padding(.horizontal, 16).frame(minHeight: 36)
+                .contentShape(Capsule())
+                .onTapGesture { toggle() }
+                .gesture(DragGesture(minimumDistance: 10).onChanged { value in
+                    guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                    pull = max(0, min(value.translation.height, 156))
+                }.onEnded { value in
+                    let vertical = abs(value.translation.height) > abs(value.translation.width)
+                    let open = vertical && value.translation.height > 120
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.9)) {
+                        if open { expanded = false }
+                        else if vertical { expanded = value.translation.height > 35 }
+                        pull = 0
+                    }
+                    if open { onBoard() }
+                })
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { toggle() }
+                .accessibilityIdentifier("home-work-capsule")
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
-                if expanded {
+                if expanded || pull > 0 {
+                    VStack(spacing: 8) {
                     ScrollView(.horizontal) {
                         HStack(spacing: 0) {
                             ForEach(live) { item in
@@ -72,6 +88,9 @@ public struct NowWorkStrip: View {
                     Button("Open Work") { expanded = false; onBoard() }.font(.footnote.weight(.medium))
                         .buttonStyle(.plain).accessibilityIdentifier("home-work-board")
                         .padding(.bottom, 12)
+                    }
+                    .frame(height: expanded ? nil : pull, alignment: .top)
+                    .clipped()
                 }
             }
             .frame(maxWidth: .infinity)

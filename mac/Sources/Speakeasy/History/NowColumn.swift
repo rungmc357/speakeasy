@@ -195,13 +195,18 @@ struct MacNowColumn: View {
                 if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
             }
             }
+            .overlay {
+                if workOpen {
+                    MacNowWorkList(now: now, store: store, onClose: { workOpen = false })
+                        .background(HistoryLook.window)
+                }
+            }
             // Home's bottom bar (SPK-198): the composer with the round call button beside it; on a
             // call it becomes the call's dock.
             MacHomeBottomBar(voice: voice, composer: composer)
         }
         .onAppear { now.start() }
         .sheet(isPresented: $recentOpen) { MacNowRecent(now: now, store: store) }
-        .sheet(isPresented: $workOpen) { MacNowWorkList(now: now, store: store) }
         .alert("Couldn't send", isPresented: Binding(get: { now.responseError != nil }, set: { if !$0 { now.responseError = nil } })) {
             Button("Close") { now.responseError = nil }
         } message: { Text(now.responseError ?? "Try again.") }
