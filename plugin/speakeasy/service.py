@@ -2747,9 +2747,10 @@ class VoiceService(SecureInputMixin):
                 if served.get("provider") and served.get("model"):
                     layers.append(("historical", {"model": MD.make_id(served["provider"], served["model"])}))
                     break
+        # A conversation with no recorded model at all (older chats, many Discord/Telegram threads,
+        # sessions from before Hermes recorded one) runs on the default with its effort, exactly as
+        # build 69 did (SPK-228). Only a recorded route that is now unavailable or ambiguous asks.
         # An existing route with unknown effort must not borrow the new-chat effort.
-        if canonical and meta and not follows_default and not any(layer and layer.get("model") for _, layer in layers):
-            layers.append(("existing", {"model": "unknown"}))
         has_existing = any(layer and layer.get("model") for _, layer in layers)
         default = self._default_layer()
         if has_existing:
