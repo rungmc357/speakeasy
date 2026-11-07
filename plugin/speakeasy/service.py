@@ -2047,7 +2047,7 @@ class VoiceService(SecureInputMixin):
                 run = self.store.run_row(watch)
                 if run is None:
                     continue
-                if run["status"] not in QUEUE_SENDS_AFTER:
+                if run["status"] not in QUEUE_SENDS_AFTER or not run.get("settled_at"):
                     continue  # still running, or stopped (kept, shown)
                 if not self.store.claim_queued(row["client_id"]):
                     continue
