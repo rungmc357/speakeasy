@@ -362,10 +362,20 @@ public final class AgentFilesModel: ObservableObject {
 public enum AgentVideoPoster {
     public static func make(_ url: URL) async -> Data? {
         guard url.isFileURL else { return nil }
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 960, height: 960)
-        guard let frame = try? await generator.image(at: .zero) else { return nil }
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        // Recorded clips often begin with a blank transition. Sample just inside the clip,
+        // keeping very short videos in bounds, and fall back to the opening frame.
+        let duration = (try? await asset.load(.duration)).map(CMTimeGetSeconds) ?? 0
+        let seconds = duration.isFinite && duration > 0 ? min(0.5, duration / 2) : 0
+        let sample = CMTime(seconds: seconds, preferredTimescale: 600)
+        var frame = try? await generator.image(at: sample)
+        if frame == nil { frame = try? await generator.image(at: .zero) }
+        guard let frame else { return nil }
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(out, "public.png" as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(dest, frame.image, nil)
