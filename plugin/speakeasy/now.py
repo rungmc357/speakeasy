@@ -1134,7 +1134,7 @@ def _image_there(card: dict[str, Any]) -> bool:
 
 
 def _thumbs(result: dict[str, Any], run_id: str | None, raw: list[Any] | None = None) -> list[dict[str, Any]]:
-    """The newest two pictures a task produced that can still be shown (never file chips, never a
+    """Up to six pictures in answer order that can still be shown (never file chips, never a
     picture whose file is gone: the app would draw an empty tile)."""
     cards = result.get("cards") if isinstance(result, dict) else None
     if not run_id or not isinstance(cards, list):
@@ -1142,7 +1142,7 @@ def _thumbs(result: dict[str, Any], run_id: str | None, raw: list[Any] | None = 
     raw = raw if isinstance(raw, list) else cards
     nums = [n + 1 for n, c in enumerate(cards[:8]) if isinstance(c, dict) and c.get("kind") == "image"
             and n < len(raw) and isinstance(raw[n], dict) and _image_there(raw[n])]
-    return [{"url": f"/voice/card-image/{run_id}/{n}"} for n in nums[-2:]]
+    return [{"url": f"/voice/card-image/{run_id}/{n}"} for n in nums[:6]]
 
 
 def option_text(item: dict[str, Any], option_id: str) -> str | None:

@@ -139,7 +139,7 @@ CATALOG: dict[str, dict[str, Any]] = {
 ENTITIES = {"place", "stay", "reservation", "flight", "event", "product", "media", "person", "article", "pr",
             "listing", "generation", "task"}
 ENTITY_ITEM = {"name": S, "sub": S, "when": S, "facts": (S, 3), "price": S, "rating": N, "state": S,
-               "photo_url": URL, "url": URL, "address": S, "city": S, "lat": N, "lon": N, "phone": S,
+               "photo_url": URL, "image": IMG, "url": URL, "address": S, "city": S, "lat": N, "lon": N, "phone": S,
                "creator": S, "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "day": S}
 CATALOG["explore"]["sections"][0]["items"] = (ENTITY_ITEM, 10)
 ARTIFACTS = {"explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview"}
@@ -566,9 +566,23 @@ def follow_up(view: dict[str, Any], action: str) -> str | None:
 
 
 def view_images(views: list[dict[str, Any]]) -> list[str]:
-    """Every file path a before/after card named, in order (they go through the result-image vetting)."""
-    return [v[side]["image"] for v in views if v.get("kind") == "before_after"
-            for side in ("before", "after") if _is_path((v.get(side) or {}).get("image"))]
+    """Picture references use result-image vetting, never client-visible server paths."""
+    return [part["image"] for part in _image_parts(views) if isinstance(part.get("image"), str)]
+
+
+def _image_parts(views: list[dict[str, Any]]):
+    for view in views:
+        if view.get("kind") == "before_after":
+            yield from (view.get(side) or {} for side in ("before", "after")
+                        if _is_path((view.get(side) or {}).get("image")))
+        elif view.get("kind") == "explore":
+            for section in view.get("sections", []):
+                for item in section.get("items", []):
+                    # A catalog photo goes through the same bounded authenticated route as a render.
+                    if item.get("photo_url") and not item.get("image"):
+                        item["image"] = item["photo_url"]
+                    item.pop("photo_url", None)
+                    yield item
 
 
 def _is_path(value: Any) -> bool:
@@ -578,15 +592,13 @@ def _is_path(value: Any) -> bool:
 def number_view_images(views: list[dict[str, Any]], number: Any) -> None:
     """Swap each before/after file path for its card number (``number(path)`` -> int, 0 when the
     image was rejected). A rejected path is dropped, so no server path ever reaches a client."""
-    for v in views:
-        for side in ("before", "after") if v.get("kind") == "before_after" else ():
-            part = v.get(side) or {}
-            if _is_path(part.get("image")):
-                n = number(part["image"])
-                if n:
-                    part["image"] = n
-                else:
-                    part.pop("image")
+    for part in _image_parts(views):
+        if isinstance(part.get("image"), str):
+            n = number(part["image"])
+            if n:
+                part["image"] = n
+            else:
+                part.pop("image")
 
 
 def clean_all(raw: Any) -> list[dict[str, Any]]:

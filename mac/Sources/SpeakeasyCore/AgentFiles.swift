@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AVFoundation
 #if canImport(CoreGraphics)
 import CoreGraphics
 import ImageIO
@@ -309,9 +310,17 @@ public final class AgentFilesModel: ObservableObject {
     }
 
     public func thumbnail(for file: AgentFile) async {
-        guard file.kind == .image, thumbs[file.id] == nil, !thumbLoads.contains(file.id), let backend else { return }
+        guard file.kind == .image || file.kind == .video, thumbs[file.id] == nil,
+              !thumbLoads.contains(file.id), let backend else { return }
         thumbLoads.insert(file.id)
         defer { thumbLoads.remove(file.id) }
+        if file.kind == .video {
+            // Only authenticated, privately cached files; no remote URL or server path to AVFoundation.
+            guard let url = try? await backend.download(file),
+                  let data = await AgentVideoPoster.make(url) else { return }
+            thumbs[file.id] = data
+            return
+        }
         if let data = try? await backend.thumbnail(file), !data.isEmpty { thumbs[file.id] = data }
     }
 
@@ -347,6 +356,21 @@ public final class AgentFilesModel: ObservableObject {
         files = list.files; kinds = list.kinds; total = list.total; next = list.next
         serverScanning = list.loading; loaded = true; loading = false; error = nil
         self.thumbs = thumbs
+    }
+}
+
+public enum AgentVideoPoster {
+    public static func make(_ url: URL) async -> Data? {
+        guard url.isFileURL else { return nil }
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 960, height: 960)
+        guard let frame = try? await generator.image(at: .zero) else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, "public.png" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, frame.image, nil)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
     }
 }
 

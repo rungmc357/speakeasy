@@ -9,8 +9,8 @@ struct HistoryMessageFiles: View {
     let files: [AgentFile]
     @ObservedObject var files_: AgentFilesModel
 
-    private var pictures: [AgentFile] { files.filter { $0.kind == .image } }
-    private var others: [AgentFile] { files.filter { $0.kind != .image } }
+    private var pictures: [AgentFile] { files.filter { $0.kind == .image || $0.kind == .video } }
+    private var others: [AgentFile] { files.filter { $0.kind != .image && $0.kind != .video } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -37,6 +37,9 @@ struct HistoryMessageFiles: View {
                     Image(systemName: "photo").font(.system(size: 22, weight: .light)).foregroundStyle(.secondary)
                 }
                 if files_.opening == file.id { Color.black.opacity(0.25); ProgressView().controlSize(.small) }
+                if file.kind == .video {
+                    Image(systemName: "play.circle.fill").font(.system(size: 44)).foregroundStyle(.white).shadow(radius: 4)
+                }
             }
             .frame(height: height).frame(maxWidth: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -45,7 +48,7 @@ struct HistoryMessageFiles: View {
         .buttonStyle(.plain)
         .help(file.name)
         .task { await files_.thumbnail(for: file) }
-        .accessibilityLabel("Picture, \(file.name)")
+        .accessibilityLabel("\(file.typeWord), \(file.name)")
     }
 
     private func tile(_ file: AgentFile) -> some View {

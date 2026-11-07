@@ -84,7 +84,7 @@ struct EntityTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .bottomLeading) {
-                ArtifactPhoto(url: item["photo_url"].url, symbol: ArtifactLinks.symbol(entity, item: item))
+                ArtifactPhoto(url: item["photo_url"].url, symbol: ArtifactLinks.symbol(entity, item: item), number: item["image"].double.map { Int($0) })
                     .frame(height: 138).frame(maxWidth: .infinity).clipped()
                 LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .center, endPoint: .bottom)
                 Text(item["name"].string ?? "").font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
@@ -163,13 +163,29 @@ enum EntityActions {
 struct ArtifactPhoto: View {
     let url: URL?
     let symbol: String
+    var number: Int? = nil
+    @Environment(\.questionActions) private var actions
+    @State private var loaded: Image?
     var body: some View {
-        if let url {
+        Group {
+        if let loaded {
+            loaded.resizable().aspectRatio(contentMode: .fill)
+        } else if let number, actions.image != nil {
+            IconTile(symbol: symbol).task(id: number) {
+                guard let data = await actions.image?(number) else { return }
+                #if os(macOS)
+                if let image = NSImage(data: data) { loaded = Image(nsImage: image) }
+                #else
+                if let image = UIImage(data: data) { loaded = Image(uiImage: image) }
+                #endif
+            }
+        } else if let url {
             AsyncImage(url: url) { phase in
                 if let image = phase.image { image.resizable().aspectRatio(contentMode: .fill) } else { IconTile(symbol: symbol) }
             }
         } else {
             IconTile(symbol: symbol)
+        }
         }
     }
 }

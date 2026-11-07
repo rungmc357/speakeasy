@@ -1574,10 +1574,8 @@ struct WorkDetailView: View {
                     }
                     if let images = info?.images, !images.isEmpty, let runID = info?.runID {
                         section(images.count == 1 ? "Image" : "Images") {
-                            VStack(spacing: 8) {
-                                ForEach(images) { card in
-                                    ImageResultCard(runID: runID, card: card, all: images, model: model)
-                                }
+                            PictureGallery(images: images, identity: runID) { number in
+                                await model.loadProductImage(runID, number)
                             }
                         }
                     }

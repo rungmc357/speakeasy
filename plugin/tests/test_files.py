@@ -222,7 +222,7 @@ def test_thread_tags_keep_hermes_rules(service, made):
     clean, files = service.files.message_files(text, session_id="t1")
     assert files == []
     assert f"MEDIA:{home / '.env'}" in clean          # refused: left as it was, never served
-    assert "(Picture no longer available: gone.png)" in clean and "gone.png\n" not in clean.split("available")[0]
+    assert "gone.png" not in clean                 # missing pictures vanish; no path or dead tile
     assert f"MEDIA:{made['chart']}" in clean          # inside a code block: words, not a picture
 
 

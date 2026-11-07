@@ -200,6 +200,9 @@ class FileIndex:
             path = deliverable(raw, self.home)
             if path is None:
                 name = Path(raw).name
+                if kind_of(name) in {"image", "video"}:
+                    gone.append((match.start(), match.end(), "\n"))
+                    continue
                 if kind_of(name) and not os.path.lexists(os.path.expanduser(raw)):
                     # Gone (a pruned scratch folder): one plain line, never a dead path.
                     gone.append((match.start(), match.end(), f"\n({'Picture' if kind_of(name) == 'image' else 'File'}"
