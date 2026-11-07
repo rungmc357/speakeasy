@@ -152,6 +152,8 @@ def test_new_chat_reply_names_its_session_at_once(server, service, state):
 
 
 def test_linked_chat_replies_continue_one_session_and_fold_into_the_chat_row(server, service, hermes, state):
+    # This fixture predates recorded model metadata: explicitly choose Hermes' default.
+    service.store.set_model_choice("session:d1", "default", None)
     status, first = post(server, "/voice/history/d1/message", {"text": "Order them please"})
     assert status == 200 and first["via"] == "linked"
     key = service.store.key_for_run(first["run_id"])
@@ -177,6 +179,7 @@ def test_linked_chat_replies_continue_one_session_and_fold_into_the_chat_row(ser
 
 
 def test_a_linked_chat_whose_task_was_cleared_still_continues_its_session(server, service, hermes, state):
+    service.store.set_model_choice("session:t1", "default", None)
     _, first = post(server, "/voice/history/t1/message", {"text": "Which can go outside?"})
     key = service.store.key_for_run(first["run_id"])
     linked = wait_for(lambda: service.store.session_for(key))

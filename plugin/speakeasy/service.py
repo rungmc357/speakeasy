@@ -2732,6 +2732,15 @@ class VoiceService(SecureInputMixin):
         """The overrides a run starts with (Runtime.choose_model): the voice phrase, the task's own pick,
         its chat's (or the chat a linked task continues), what its earlier turn ran on, the default.
         Records what was asked on the task; never reads the catalog on this path (it may be cold)."""
+        canonical, chain = self._model_context(session_id, idem)
+        sessions = list(dict.fromkeys(s for s in [session_id, canonical,
+            *(self.store.linked_source(k) for k in [idem, *chain])] if s))
+        agent = self._run_agent(task_id, idem, chain, sessions)
+        if agent:
+            # Other agents own their model routing; never validate against this profile's catalog.
+            if session_id:
+                self.store.set_agent("session:" + session_id, agent)
+            return {"agent": agent}
         choice, _ = self._next_choice(session_id, idem=idem, task_id=task_id, request=request)
         if choice and (choice.get("unavailable") or (choice.get("model") and "/" not in choice["model"])):
             raise ServiceError(409, "This conversation's model is unavailable or unknown. Choose a model before sending.", reason="model")
@@ -2743,13 +2752,6 @@ class VoiceService(SecureInputMixin):
             self.store.set_run_model(idem, record)
         except Exception:
             logger.debug("speakeasy: run model not recorded", exc_info=True)
-        agent = self._run_agent(task_id, idem, chain, sessions)
-        if agent:
-            # Another Hermes profile works it (agents.py): on that agent's own model, so no model fields.
-            if session_id:
-                self.store.set_agent("session:" + session_id, agent)
-            logger.info("speakeasy: a task runs on another agent")
-            return {"agent": agent}
         if choice:
             logger.info("speakeasy: a task runs on a chosen model (%s)", record["source"])
         return MD.run_fields(choice) or None
