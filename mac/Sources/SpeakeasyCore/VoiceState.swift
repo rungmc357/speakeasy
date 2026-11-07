@@ -186,6 +186,16 @@ public struct VoiceState: Equatable, Sendable {
     public var phase: CallPhase = .idle
     /// The session of a call that has none open now (ended, failed): its last one.
     private var lastInteractionID: String?
+    /// Earlier sessions in this conversation whose accepted typed turns may still arrive.
+    /// Separate from `resumeFrom`: that is a connection request, not transcript ownership.
+    internal var transcriptSessionIDs: Set<String> = []
+
+    /// A delayed accepted turn belongs only to this still-open conversation.
+    public func acceptsTranscriptTurn(from sessionID: String) -> Bool {
+        connection.isOpen && (interactionID == sessionID || resumeFrom == sessionID
+                              || transcriptSessionIDs.contains(sessionID))
+    }
+
     /// Reconnect a live call that dropped by itself (iPhone) instead of ending it.
     public var reconnectsDroppedCalls = false
     /// Sessions the server admitted for attempts this call gave up on (a stalled connect): the
@@ -482,7 +492,10 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         guard case .connecting(var c) = s.phase else { break }
         c.deadline = now.addingTimeInterval(CallReconnect.connectStallAfter)
         c.admittedID = nil
-        if dropResume { c.resumeFrom = nil }
+        if dropResume {
+            c.resumeFrom = nil
+            s.transcriptSessionIDs.removeAll()
+        }
         s.phase = .connecting(c)
 
     case .reconnectDue(let attempt):
@@ -574,7 +587,10 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s.dismissedReviews.formUnion(cards.map { "\(runID)|\($0)" })
 
     case .sessionStarted:
-        if case .connecting(let c) = s.phase { s.phase = .live(id: c.admittedID ?? s.interactionID) }
+        if case .connecting(let c) = s.phase {
+            if let from = c.resumeFrom { s.transcriptSessionIDs.insert(from) }
+            s.phase = .live(id: c.admittedID ?? s.interactionID)
+        }
         s.lastActivityAt = now
 
     case .inputDelta(let text):
