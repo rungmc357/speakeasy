@@ -552,3 +552,42 @@ def test_the_now_reply_matches_the_contract_the_apps_decode(server, service, sta
     by_kind = {i["kind"]: i for i in saved["items"]}
     for item in body["items"]:
         assert set(item) <= set(by_kind[item["kind"]]) | {"provenance", "idle_seconds"}, item["kind"]
+
+
+@pytest.mark.parametrize("raw,status,shown", [
+    ("Running sleep 240 + 3 commands", None, "Working\u2026"),
+    ("Running sleep 240 + 3 commands", "Checking the garden photos", "Checking the garden photos"),
+    ("Running cd ~/garden && make", None, "Working\u2026"),
+    ("Running web_search", None, "Working\u2026"),
+    ("Running the tests after editing seeds.py", None, "Running the tests after editing seeds.py"),
+    ("Editing seeds.py and beds.py", None, "Editing seeds.py and beds.py"),
+    ("Comparing three desks", None, "Comparing three desks"),
+    (None, "Running ls -la", "Working\u2026"),
+])
+def test_home_live_lines_are_plain_words_never_raw_commands(raw, status, shown):
+    assert N.plain_line(raw, status) == shown
+
+
+def test_a_working_card_never_shows_raw_tool_text(service):
+    now = _at(NY, 2026, 11, 6, 22, 0)
+    _clock(service, now)
+    task(service.store, "w", "working", session="s_w", request="Sort the garden photos")
+    with service.store._lock, service.store._db:
+        service.store._db.execute("UPDATE runs SET short_status=? WHERE idem_key='w'", ("Running sleep 240 + 3 commands",))
+    item = service.now({"tz": NY})["items"][0]
+    assert item["kind"] == "working" and "sleep" not in item["line"] and "commands" not in item["line"]
+
+
+def test_a_conversation_and_the_task_it_started_are_one_home_item(service, state):
+    now = time.time()
+    service.store.set_meta("now_baseline_at", repr(now - 30 * 86400))
+    add_session(state, "s_conv", "discord", title="Plan the garden beds", at=now - 30)
+    add_msg(state, "s_conv", "assistant", "I'll have a task compare the seed lists.", at=now - 30)
+    add_session(state, "speakeasy_task_t1", "api_server", title="Compare seed lists", at=now - 10)
+    add_msg(state, "speakeasy_task_t1", "assistant", "Comparing.", at=now - 10)
+    task(service.store, "t1", "working", session="speakeasy_task_t1", request="Compare seed lists")
+    service.store.link_history("t1", "s_conv")
+    items = service.now({"tz": NY})["items"]
+    assert len(items) == 1, [(i["id"], i["title"]) for i in items]
+    assert items[0]["run_id"] == "run_t1" and items[0]["kind"] == "working"
+    assert "Plan the garden beds" in (items[0].get("source_label") or "")

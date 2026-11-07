@@ -343,7 +343,7 @@ class NowModel:
                         question={"shape": "approval", "prompt": "Hermes needs your OK to go on.",
                                   "asked_at": float(row.get("updated") or now)})
         elif status in RS.UNDER_WAY or status in {RS.RunState.CANCEL_REQUESTED, RS.RunState.AMBIGUOUS}:
-            line = work.get("now_line") or work.get("short_status") or "Working on it"
+            line = plain_line(work.get("now_line") or work.get("short_status"), work.get("short_status"))
             item.update(kind=WORKING, line=_clip(line, LINE_CHARS))
             if isinstance(work.get("quiet_s"), (int, float)) and work["quiet_s"] >= 120:
                 item["idle_seconds"] = int(work["quiet_s"])
@@ -453,6 +453,12 @@ class NowModel:
         # Hermes conversations Speakeasy didn't start: running ones, and replies nobody has read yet.
         background: list[dict[str, Any]] = []
         mine = {i["session_id"] for i in items if i.get("session_id")}
+        # A task's own Hermes session, and the conversation that started it, are that task's card:
+        # never a second card of their own (a conversation and the task it spawned are one item).
+        mine |= {r["session_id"] for r in rows if r.get("session_id")}
+        live_states = {str(getattr(x, "value", x)) for x in (*RS.UNDER_WAY, *RS.ASKING)}
+        mine |= {r["linked_source"] for r in rows if r.get("linked_source") and str(r.get("status")) in live_states}
+        spawned = {i["session_id"]: i for i in items if i.get("session_id") and i.get("run_id")}
         try:
             page = svc.history({"kinds": "conversations,scheduled,kanban", "limit": "40"}, for_now=True)
         except Exception:
@@ -460,6 +466,14 @@ class NowModel:
         lines_left = LIVE_LINES
         for s in page.get("sessions") or []:
             sid = s["id"]
+            if sid in spawned and s.get("source") != "speakeasy":
+                # The task's origin line names the conversation it came from.
+                task = spawned[sid]
+                where = s.get("source_label") or ""
+                origin = _clip(s.get("title"), TITLE_CHARS) if s.get("title") else None
+                if origin and origin != task.get("title"):
+                    task["source_label"] = f"{where} \u00b7 {origin}" if where else origin
+                    task["origin"] = {"session_id": sid, "title": origin, "label": where or None}
             if sid in mine or s.get("source") == "speakeasy":
                 continue
             if s.get("automated"):
@@ -467,7 +481,7 @@ class NowModel:
                     line = self._session_line(sid) if lines_left > 0 else None
                     lines_left -= 1
                     background.append({"session_id": sid, "title": _clip(s.get("title"), TITLE_CHARS),
-                                       "line": _clip(line or "Working on it", LINE_CHARS),
+                                       "line": _clip(plain_line(line), LINE_CHARS),
                                        "source": s.get("source"), "source_label": s.get("source_label"),
                                        "started_at": s.get("last_activity")})
                 continue
@@ -477,7 +491,7 @@ class NowModel:
             if s.get("state") == "running":
                 line = self._session_line(sid) if lines_left > 0 else None
                 lines_left -= 1
-                items.append({**base, "kind": WORKING, "line": _clip(line or "Working on it", LINE_CHARS)})
+                items.append({**base, "kind": WORKING, "line": _clip(plain_line(line), LINE_CHARS)})
             elif s.get("unread") and str(s.get("source") or "").lower() not in OTHER_SURFACES and float(
                     s.get("last_activity") or 0) >= max(
                     edge, cleared, self._baseline - BASELINE_GRACE_S, now - ANSWER_KEPT_S):
@@ -710,6 +724,29 @@ def public_question(view: dict[str, Any], run_id: str | None, asked_at: float) -
     if isinstance(exp, (int, float)) and not isinstance(exp, bool) and 60 <= exp <= 7 * 86400:
         out["expires_at"] = asked_at + float(exp)
     return out
+
+
+# Home's live line is plain words, never Hermes' raw tool text ("Running sleep 240 + 3 commands").
+_RAW_BITS = re.compile(r"[`$|<>&;={}\[\]\\]|(?<!\w)/\w|\+ ?\d+ (?:more )?(?:commands?|calls?|tools?)\b|(?:^|\s)--?[A-Za-z]"
+                       r"|\b[a-z]+_[a-z_]+\b|\w\(|\b(?:sudo|bash|zsh|curl|ssh|pkill|xcodebuild|pytest|npm|pip3?)\b")
+_PLAIN_AFTER_RUNNING = frozenset({"the", "a", "an", "your", "some", "tests", "test", "checks", "check", "it", "them",
+                                  "this", "that", "these", "those", "into", "through", "late", "now", "again", "low",
+                                  "out", "one", "two", "three", "every", "each", "all", "more", "its", "their"})
+
+
+def plain_line(line: str | None, fallback: str | None = None) -> str:
+    """A live line fit for Home: the line itself when it's plain words, else the task's last plain
+    status (*fallback*), else "Working…"."""
+    def ok(text: str | None) -> bool:
+        if not text or not text.strip() or _RAW_BITS.search(text):
+            return False
+        m = re.match(r"\s*Running\s+(\S+)", text)
+        return not m or m.group(1).lower().strip(",.") in _PLAIN_AFTER_RUNNING
+    if ok(line):
+        return line.strip()
+    if ok(fallback):
+        return fallback.strip()
+    return "Working\u2026"
 
 
 def call_line(things: list[str], answered: list[str], asking: list[str], decisions: list[str]) -> str:

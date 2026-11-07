@@ -2,6 +2,11 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.44 — Plain words on Home's live line
+
+- **One card per piece of work.** A conversation and the task it started show as one Home card: the task's card, with that conversation as its origin line.
+- **No raw commands on Home.** A working card's live line is always plain words: what the task last said it's doing, or "Working…", never a command or a tool's name.
+
 ## Plugin 0.3.43 — Home shows only what's live or new
 
 - **Old answers no longer flood Home.** An answer leaves Home once you've opened it, at 4 AM, or 12 hours after it finished, whichever comes first, whether or not you opened it (it stays in Earlier). Answers you heard on a call or got in a chat thread count as read. After an upgrade, older answers start out as seen.

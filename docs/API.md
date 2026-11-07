@@ -1085,6 +1085,8 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
 - `provenance`: `{kind: "yesterday" | "earlier_day" | "earlier_call" | "later", at, label?}`, by real
   calendar days in the phone's zone; `label` is the finished line ("From yesterday · 8:13 PM",
   "From Wednesday · 8:13 PM", "From Oct 28").
+- A working item's `line` is plain words (0.3.44): never a command, path, flag or tool name; it falls
+  back to the task's last plain status line, else "Working…".
 - `title` is a whole short phrase (the job's full title when its short name was cut from it); `thumbs`
   lists only pictures whose file or web address still exists.
 - Dismiss (capability `now_dismiss`): `POST /voice/now/{id}/dismiss` moves a card to Earlier on every
