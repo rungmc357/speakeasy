@@ -15,6 +15,10 @@ Tailscale).
 
 ## Quick start (Hermes on the Mac you talk from, ChatGPT plan)
 
+Needs **Hermes Agent 0.22.0 or newer** (`hermes --version`). If you don't have Hermes yet,
+[install it](https://hermes-agent.nousresearch.com/docs/getting-started/installation) with
+`curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`, then reload your shell.
+
 1. Download and open [Speakeasy.dmg](https://github.com/rungmc357/speakeasy/releases/latest/download/Speakeasy.dmg).
 2. In Terminal:
 
@@ -73,12 +77,19 @@ exact guide the agent follows.
 **By hand**, on the machine that runs Hermes:
 
     hermes plugins install rungmc357/speakeasy/plugin/speakeasy --enable
-    hermes voice setup --send telegram      # the chat that should get the link: discord, slack…
+    hermes voice setup --here --yes          # same Mac: opens the pairing link here
+    hermes voice setup --send telegram --yes # phone or another Mac: sends the link to that chat
 
 Setup turns on Hermes' local API, signs you in to GPT-Live-1 with your ChatGPT account through
-Codex OAuth (or asks for an OpenAI API key with `--api-key`), and sends the pairing link. If
-Hermes has to restart first, setup says so, and the link is sent once you've restarted it.
-When Hermes and the app are on the same Mac, setup opens the link directly.
+Codex OAuth (or asks for an OpenAI API key with `--api-key`), and sends the pairing link. Hermes
+needs to be running: on a brand-new install it isn't, and `hermes gateway install` starts it in
+the background and keeps it running. Setup never restarts Hermes; if it says Hermes needs a
+restart (first install only), send `/restart` in your chat, then run setup again. When Hermes and
+the app are on the same Mac, setup opens the link directly.
+
+> **The install prints a warning.** Installing from GitHub says "custom (unreviewed) source — not
+> from the Hermes catalog". That's expected for a plugin installed straight from its repo; nothing
+> is wrong.
 
 **Tailscale is picked up automatically.** When `tailscale` is installed and connected, setup
 serves the voice server to your tailnet only (`tailscale serve`, never Funnel), prints a

@@ -26,6 +26,17 @@ iOS app), follow the same steps with these differences:
   they can copy the link and paste it into the app's first screen.
 - To pair another phone later: `hermes voice pair --send <this chat>`.
 
+## Setting up from a terminal (no chat yet)
+
+Someone who just installed Hermes has no chat app connected: they talk to you in the terminal. You
+can tell from the session: no Telegram, Discord or Slack chat is attached. Then:
+
+- **Same Mac:** run `hermes voice setup --here --yes`. Setup opens the pairing link on this Mac.
+- **A phone or another Mac:** there's no chat to send to. Do step 2 (Tailscale, or Cloudflare mode
+  when there's no Tailscale), then run `hermes voice setup --yes` (no `--send`), then
+  `hermes voice pair` and show the user the printed pairing link and QR code: they scan it with the
+  iPhone or iPad camera, or copy the link. The link works once and expires after 30 minutes.
+
 ## 1. Install the plugin
 
 First check `hermes --version`. Speakeasy needs Hermes **0.22.0 or newer**; an older Hermes skips
@@ -187,6 +198,10 @@ Setup never restarts Hermes. Its exit code tells you where things stand:
   `No pairing link sent yet`, there's no connection the phone can use: turn on Cloudflare mode
   (step 2) and run setup again. Otherwise pass it on in one or two sentences. When it's fixed, run
   setup again.
+- **The gateway isn't running (a brand-new install).** Setup prints that nothing serves Speakeasy
+  yet and to start it once: `hermes gateway install` runs it in the background and keeps it
+  running (or run `hermes gateway` in a terminal and leave it open). Pass that on; once it's
+  running, run setup again. There's nothing to restart in this case.
 
 Do not paste pairing codes or links from setup's output into other chats. Each link works once and
 expires after 30 minutes, or 10 minutes once Cloudflare mode is on (the link and setup's output
@@ -268,7 +283,7 @@ an update). Brief sleep or a network drop keeps it. The app finds a new address 
    `cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:8797 --url http://127.0.0.1:8795`,
    logging to `<HERMES_HOME>/speakeasy/tunnel.log`, kept alive by launchd (macOS, `KeepAlive`) or a
    systemd user unit (Linux, `Restart=always`). The Speakeasy repo's
-   [`scripts/speakeasy-cloudflare.py`](../scripts/speakeasy-cloudflare.py) does steps 1-3 and waits
+   [`scripts/speakeasy-cloudflare.py`](https://github.com/rungmc357/speakeasy/blob/main/scripts/speakeasy-cloudflare.py) does steps 1-3 and waits
    for the address: `python3 speakeasy-cloudflare.py quick` (and `status`, `restart`, `remove`).
 3. `hermes voice config set server.tunnel cloudflare` (and `server.tunnel_metrics_port` if you
    used another port).
