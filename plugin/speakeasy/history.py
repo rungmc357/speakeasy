@@ -1288,7 +1288,8 @@ def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
 
 
 def session_messages(state_db: Path, session_id: str, *, before: int | None = None,
-                     limit: int = MESSAGES_PAGE, model_runs: dict[str, list[dict]] | None = None) -> dict[str, Any]:
+                     limit: int = MESSAGES_PAGE, model_runs: dict[str, list[dict]] | None = None,
+                     run_lookup: Callable[[str], dict[str, list[dict]]] | None = None) -> dict[str, Any]:
     """``GET /voice/history/{id}``'s transcript: entries oldest first. ``user`` / ``assistant`` text,
     ``note`` for system rows, and ``tools`` groups: the calls made between two messages, each item in
     the job tool log's shape (``activity.public(detail=True)``: text, tool, args, result, status,
@@ -1302,6 +1303,8 @@ def session_messages(state_db: Path, session_id: str, *, before: int | None = No
             raise HistoryError(404, "I couldn't find that conversation.")
         chain = _chain(db, session_id)
         marks = ",".join("?" * len(chain))
+        if run_lookup:
+            model_runs = {key: value for sid in chain for key, value in run_lookup(sid).items()}
         cols = _columns(db, "messages")
         active = " AND coalesce(active,1)=1" if "active" in cols else ""
         hidden = " AND coalesce(display_kind,'') != 'hidden'" if "display_kind" in cols else ""

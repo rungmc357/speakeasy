@@ -25,7 +25,9 @@ final class ReplyAttributionTests: XCTestCase {
     }
     func testUnknownDoesNotInheritKnownModel() {
         XCTAssertNil(ReplyAttribution(json: ["id": "unknown"]))
+        XCTAssertNil(ReplyAttribution(json: ["id": "example/unknown"]))
         XCTAssertNil(ReplyAttribution(json: [:]))
+        XCTAssertTrue(ReplyAttribution.details(for: nil, at: Date(timeIntervalSince1970: 100)).contains("Time:"))
         let c = conversation([
             HistoryEntry(id: "a", kind: .assistant, text: "First", attribution: model()),
             HistoryEntry(id: "b", kind: .assistant, text: "Not recorded"),

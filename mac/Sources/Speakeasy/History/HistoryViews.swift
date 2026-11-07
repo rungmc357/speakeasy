@@ -870,11 +870,19 @@ struct HistoryMessageView: View {
         return UnevenRoundedRectangle(topLeadingRadius: 16, bottomLeadingRadius: mine ? 16 : small,
                                       bottomTrailingRadius: mine ? small : 16, topTrailingRadius: 16, style: .continuous)
     }
+    @State private var showsDetails = false
 
     var body: some View {
         switch message.role {
         case .user: user
-        case .assistant: assistant
+        case .assistant:
+            assistant.contextMenu {
+                Button("Reply details") { showsDetails = true }
+            }.alert("Reply details", isPresented: $showsDetails) {
+                Button("Done", role: .cancel) { }
+            } message: {
+                Text(ReplyAttribution.details(for: message.attribution, at: message.at))
+            }
         case .note where message.card != nil:
             HistoryWorkerCard(card: message.card!, key: "\(sessionID)|\(message.id)|instructions", store: store)
         case .note:
@@ -1029,6 +1037,9 @@ struct HistoryMessageView: View {
                                 Image(systemName: "arrow.turn.down.right"); Text("Replied in \(via)")
                             }
                             .font(.system(size: 10.5)).foregroundStyle(.tertiary).padding(.leading, 6)
+                        }
+                        if message.showsModel, let attribution = message.attribution {
+                            Text(attribution.label).font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                 }

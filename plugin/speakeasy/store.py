@@ -597,17 +597,14 @@ class StateStore:
         from .reply_models import object_value
         with self._lock:
             rows = self._db.execute(
-                "SELECT model, created, updated, status FROM runs WHERE session_id=? ORDER BY created",
+                "SELECT model, created, coalesce(settled_at, updated), status FROM runs WHERE session_id=? ORDER BY created",
                 (session_id,)).fetchall()
         out = []
-        for i, row in enumerate(rows):
+        for row in rows:
             record, start, end, status = row
             if start is None:
                 continue
             end = float(end) if end is not None and status not in {'running', 'starting', 'waiting_for_approval', 'resolving_approval'} else None
-            if i + 1 < len(rows) and rows[i + 1][1] is not None:
-                next_start = float(rows[i + 1][1])
-                end = min(end, next_start) if end is not None else next_start
             out.append({'start': float(start), 'end': end, 'record': object_value(record)})
         return {session_id: out}
 

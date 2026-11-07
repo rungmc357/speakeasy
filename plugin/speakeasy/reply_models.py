@@ -46,6 +46,8 @@ def badge(record: dict, source: str) -> dict | None:
         requested_provider, requested_model = MD.split_id(requested)
         if not served:
             provider, model = requested_provider, requested_model
+    if not clean(model.rsplit('/', 1)[-1]):
+        return None
     mid = MD.make_id(provider, model) if provider else model
     requested_id = requested
     if requested and provider and "/" not in requested:
@@ -85,10 +87,15 @@ def attribute(rows: list[Any], entries: list[dict], sessions: dict[str, dict],
             # Each persisted run owns only its own time interval. Overlap is
             # ambiguous: never assign another parallel task's model to a reply.
             matches = [r for r in candidates if r["start"] <= at and (r.get("end") is None or at <= r["end"])]
+            if len(matches) > 1:
+                continue
             if len(matches) == 1:
                 model = badge(matches[0]["record"], "run")
         if model is None:
-            model = badge(sessions.get(sid, {}), "session")
+            known = [badge(r['record'], 'run') for r in (runs or {}).get(sid, [])]
+            identities = {b['id'] for b in known if b}
+            if len(identities) <= 1:
+                model = badge(sessions.get(sid, {}), "session")
         if model:
             entry["model"] = model
     return entries

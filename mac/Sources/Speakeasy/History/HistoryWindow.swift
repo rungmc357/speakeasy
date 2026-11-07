@@ -682,6 +682,19 @@ enum HistoryShots {
                 store.open("s_flaky")
                 store.load("s_flaky")
             }
+            await shot("12-reply-models") {
+                store.setCallLive(false)
+                c.window?.setContentSize(NSSize(width: 1040, height: 720))
+                let opus = ReplyAttribution(model: ModelBadge(id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", providerName: "Anthropic", reasoning: .high, source: "message", served: true))
+                let sol = ReplyAttribution(model: ModelBadge(id: "openai-codex/gpt-6.1-sol", name: "GPT-6.1 Sol", providerName: "OpenAI", reasoning: .high, source: "run", served: true), fallback: true)
+                backend.conversations["s_flaky"]?.entries = [
+                    .init(id: "r1", kind: .assistant, at: Date(), text: "The café opens at seven.", attribution: opus),
+                    .init(id: "r2", kind: .assistant, at: Date(), text: "There are outlets by the window.", attribution: opus),
+                    .init(id: "r3", kind: .assistant, at: Date(), text: "The patio is quiet before nine.", attribution: sol),
+                    .init(id: "r4", kind: .assistant, at: Date(), text: "The older reply has no model record.")]
+                store.open("s_flaky")
+                store.load("s_flaky")
+            }
             await shot("10-model-new-chat") {
                 store.preview(catalog: ModelCatalog.sample)
                 store.newChat()

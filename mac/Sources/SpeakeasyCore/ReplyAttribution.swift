@@ -9,10 +9,14 @@ public struct ReplyAttribution: Equatable, Sendable {
     }
     public init?(json: Any?) {
         guard let object = json as? [String: Any], let model = ModelBadge(json: object),
-              !["unknown", "default", "none", "null"].contains(model.id.lowercased()) else { return nil }
+              !["unknown", "default", "none", "null"].contains(model.id.lowercased().split(separator: "/").last.map(String.init) ?? "unknown") else { return nil }
         self.init(model: model, fallback: object["fallback"] as? Bool ?? false)
     }
     public var label: String { model.name + (fallback ? " · fallback" : "") }
+    public static func details(for attribution: Self?, at: Date?) -> String {
+        if let attribution { return attribution.details(at: at) }
+        return "Model not recorded" + (at.map { "\nTime: \($0.formatted(date: .abbreviated, time: .standard))" } ?? "")
+    }
     /// Effort/provider changes matter too; provenance alone does not create clutter.
     public func differs(from other: Self?) -> Bool {
         guard let other else { return true }

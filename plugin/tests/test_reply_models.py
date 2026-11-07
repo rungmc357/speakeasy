@@ -52,6 +52,7 @@ def test_unknown_never_inherits_current_picker_or_reasoning_text(tmp_path):
     add_msg(path, 's', 'assistant', 'Ready.', at=15)
     assert 'model' not in H.session_messages(path, 's')['entries'][0]
     assert R.badge({'model': 'unknown'}, 'session') is None
+    assert R.badge({'model': 'example/unknown'}, 'run') is None
     assert R.message_badge({'reasoning': 'private thought text'}) is None
     assert R.badge({'model': 'https://invalid.example/model'}, 'message') is None
 
@@ -89,6 +90,15 @@ def test_compaction_segments_keep_own_session_models(tmp_path):
         db.execute("UPDATE sessions SET model='first' WHERE id='root'")
         db.execute("UPDATE sessions SET model='second' WHERE id='tip'")
     assert [e['model']['id'] for e in H.session_messages(path, 'tip')['entries']] == ['first', 'second']
+    with sqlite3.connect(path) as db:
+        db.execute('UPDATE sessions SET model=NULL')
+    looked_up = []
+    def lookup(sid):
+        looked_up.append(sid)
+        return {sid: [{'start': 0, 'end': 50, 'record': {'model': 'example/' + sid}}]}
+    entries = H.session_messages(path, 'tip', run_lookup=lookup)['entries']
+    assert [e['model']['id'] for e in entries] == ['example/root', 'example/tip']
+    assert set(looked_up) == {'root', 'tip'}
 
 
 def test_run_timeline_from_store(service):
@@ -101,3 +111,14 @@ def test_run_timeline_from_store(service):
     runs = store.reply_model_runs('s')['s']
     assert [(r['start'], r['end']) for r in runs] == [(10, 20), (30, 40)]
     assert runs[0]['record']['model'] == 'example/first'
+    with store._lock, store._db:
+        store._db.execute("UPDATE runs SET settled_at=20, updated=1000 WHERE idem_key='a'")
+    assert store.reply_model_runs('s')['s'][0]['end'] == 20
+
+
+def test_overlap_never_borrows_another_turns_model():
+    rows = [{'id': 1, 'session_id': 's'}]
+    entries = [{'id': 'm1', 'kind': 'assistant', 'at': 15}]
+    runs = {'s': [{'start': 10, 'end': 20, 'record': {'model': 'example/first'}},
+                  {'start': 11, 'end': 30, 'record': {'model': 'example/second'}}]}
+    assert 'model' not in R.attribute(rows, entries, {'s': {'model': 'current'}}, runs)[0]

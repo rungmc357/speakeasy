@@ -340,6 +340,7 @@ public struct HistoryThread: Equatable, Sendable {
         var out: [HistoryThreadMessage] = []
         var pending: [JobActivityItem] = []
         var pendingAt: Date?
+        let modelLabels = c.replyModelLabels
         for e in c.entries {
             switch e.kind {
             case .tools:
@@ -352,7 +353,7 @@ public struct HistoryThread: Equatable, Sendable {
                 var answer = HistoryThreadMessage(id: e.id, role: .assistant, text: e.text, at: e.at, tools: pending)
                 answer.files = e.files
                 answer.attribution = e.attribution
-                answer.showsModel = c.replyModelLabels.contains(e.id)
+                answer.showsModel = modelLabels.contains(e.id)
                 out.append(answer)
                 pending = []; pendingAt = nil
             case .user:
