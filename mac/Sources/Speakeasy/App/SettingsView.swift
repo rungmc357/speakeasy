@@ -109,6 +109,7 @@ private struct GeneralSettings: View {
                 Text("The panel, History and Settings. System follows your Mac's Light or Dark setting.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            UsageDisplaySection()
             Section("Calls") {
                 Toggle("Start calls muted", isOn: $startMuted)
                 Toggle("Follow the system's audio devices (AirPods etc.)", isOn: $followSystemAudio)
@@ -1328,12 +1329,45 @@ struct CallLimitsSection: View {
     }
 }
 
+struct UsageDisplaySection: View {
+    @AppStorage(UsageDisplay.key) private var showUsage = false
+
+    var body: some View {
+        Section {
+            Toggle("Show usage", isOn: $showUsage)
+                .accessibilityIdentifier("settings-show-usage")
+        } header: { Text("Display") } footer: {
+            Text("Token counts, context and estimated cost. Saved on this device.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 /// `--settings-calls-snapshot <dir>`: the On calls section with invented values (default, and No
 /// limit), as PNGs. Development only; no server.
 @MainActor
 enum CallLimitsSnapshot {
     static func run(dir: String) {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if ProcessInfo.processInfo.environment["SETTINGS_SHOT"] == "usage" {
+            if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
+                NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
+            }
+            let host = NSHostingController(rootView: Form { UsageDisplaySection() }
+                .formStyle(.grouped).frame(width: 560, height: 210))
+            let window = NSWindow(contentViewController: host)
+            window.setContentSize(NSSize(width: 560, height: 210))
+            window.makeKeyAndOrderFront(nil)
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_200_000_000)
+                if let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "\(dir)/mac-settings-usage.png"))
+                }
+                exit(0)
+            }
+            return
+        }
         if ProcessInfo.processInfo.environment["SETTINGS_SHOT"] == "agents" {
             if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
                 NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
