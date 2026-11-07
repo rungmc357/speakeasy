@@ -5,7 +5,8 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 ## Plugin 0.3.45 · Mac 0.3.23 · iPhone build 69 — A tidier Home
 
 - **No counting headline.** Home no longer opens with a sentence counting your cards; the cards say it. An empty Home says "All caught up." *(apps)*
-- **Swipe to dismiss.** On iPhone and iPad, swipe a Home card left to move it to Earlier, with Undo. It moves on every device and is never deleted. *(iPhone build 69)*
+- **Swipe to dismiss.** On iPhone and iPad, swipe a Home card left to move it to Earlier, with Undo in the card's place. It moves on every device and is never deleted. *(iPhone build 69)*
+- **Ending a call returns to Home,** with the call's card and its answers there, instead of staying on the call's transcript. *(iPhone build 69)*
 - **Clear.** One tap moves every finished answer to Earlier, seen or not (on iPhone and iPad from the top bar, with Undo). *(apps)*
 - **The call card says what the call did,** in the plugin's own words. *(apps)*
 - **No empty picture tiles:** a picture shows only once it has loaded. *(iPhone build 69)*
