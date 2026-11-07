@@ -376,3 +376,16 @@ def test_more_jobs_in_one_call_start_their_own_jobs(server, service, hermes):
     sent = json.dumps([c["input"] for c in calls])
     assert "Saturday hours" in sent and "rain jacket under $100" in sent
     assert HC.TOOLS[0]["function"]["parameters"]["required"] == ["request", "more_jobs", "reply"]
+
+
+def test_a_voice_memo_with_two_asks_gives_each_job_only_its_own(service, monkeypatch):
+    started: list[dict] = []
+    monkeypatch.setattr(service, "start_job", lambda body, device_id=None: started.append(body) or
+                        {"run_id": f"run_{len(started)}", "session_id": None})
+    coordinator(service, {"tool": "start_job", "text": "",
+                          "args": {"request": "Find the farmers' market's Saturday hours",
+                                   "more_jobs": ["Find a rain jacket under $100"], "reply": "On both."}})
+    service.home_chat.message({"text": "market hours and a rain jacket", "client_id": "c_vm"}, None,
+                              voice={"duration": 6.0}, job_text='[The user sent a voice message] "market hours and a rain jacket"')
+    assert [b["text"] for b in started] == ["Find the farmers' market's Saturday hours", "Find a rain jacket under $100"]
+    assert all(b["source"] == "voice_message" for b in started)

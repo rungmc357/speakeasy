@@ -452,7 +452,11 @@ class HomeChat:
         action = decided["action"]
         try:
             if action == "start":
-                words = job_text or (decided.get("request") if not voice else None) or text
+                # A voice memo's job hears the memo itself (like a voice note in a chat), unless the
+                # memo held several asks: then each job gets only its own ask.
+                split = bool(decided.get("extra")) and decided.get("request")
+                words = (decided["request"] if split else None) or job_text \
+                    or (decided.get("request") if not voice else None) or text
                 job_body = {"text": words, "source": "voice_message" if voice else "typed"}
                 for k in ("model", "reasoning", "agent"):
                     if body.get(k) is not None:
