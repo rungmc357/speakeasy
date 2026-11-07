@@ -12,6 +12,7 @@ public struct ReplyWorkCard: View {
     @State private var expanded = false
     @State private var open: Set<String> = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
     public init(work: ReplyWork, images: [ImageCard] = [], imageIdentity: String = "", helpers: [JobSubagent] = [],
                 loadImage: @escaping (Int) async -> Data? = { _ in nil }) {
         self.work = work; self.images = images; self.imageIdentity = imageIdentity; self.loadImage = loadImage; self.helpers = helpers
@@ -24,11 +25,14 @@ public struct ReplyWorkCard: View {
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: work.failed ? "exclamationmark.circle" : work.running ? "sparkles" : "checkmark.circle")
+                        .font(.system(size: 18))
                         .foregroundStyle(work.failed ? Color.orange : Color.accentColor)
                     Text(AgentMarkdown.attributed(work.line)).font(.subheadline.weight(.medium))
-                        .multilineTextAlignment(.leading).lineLimit(expanded ? nil : 2)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(expanded || typeSize.isAccessibilitySize ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
-                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                    Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold))
                         .rotationEffect(.degrees(expanded ? 180 : 0)).foregroundStyle(.secondary)
                 }
                 .padding(14)
