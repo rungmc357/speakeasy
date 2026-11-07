@@ -280,7 +280,13 @@ def test_muted_still_speaks_results(server, service, hermes):
     assert status == 200 and body["muted"] is True and worker.interaction.mic_muted
     assert http(server.base_url, "POST", f"/voice/interactions/{iid}/mic", {"muted": "yes"}, server.token)[0] == 400
     worker.delegate("call_m", "What's the weather in Lisbon tomorrow")
-    wait_for(lambda: any("24 degrees" in c for c in spoken(worker)))
+    # The answer travels through the fake agent, the task store and the voice relay on worker threads;
+    # under a many-way parallel run that takes far longer than 10 s, so allow plenty and say what ran.
+    try:
+        wait_for(lambda: any("24 degrees" in c for c in spoken(worker)), timeout=60)
+    except AssertionError:
+        runs = [(r.delegation_id, r.status) for r in worker.interaction.runs.values()]
+        raise AssertionError(f"muted answer not spoken; runs={runs} spoken={spoken(worker)}")
 
 
 def test_muted_status_is_held_but_heads_up_is_not(service, clock):
