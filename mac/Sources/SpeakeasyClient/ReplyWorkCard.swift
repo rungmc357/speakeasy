@@ -30,7 +30,10 @@ public struct ReplyWorkCard: View {
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
                         .rotationEffect(.degrees(expanded ? 180 : 0)).foregroundStyle(.secondary)
-                }.contentShape(Rectangle()).padding(14)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("reply-work-toggle")
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
                 .accessibilityHint(expanded ? "Hides the work" : "Shows the work in this conversation")
@@ -77,7 +80,9 @@ public struct ReplyWorkCard: View {
                                         Spacer(minLength: 4)
                                         Image(systemName: open.contains(call.id) ? "chevron.up" : "chevron.down")
                                             .font(.caption2).foregroundStyle(.secondary)
-                                    }.contentShape(Rectangle())
+                                    }
+                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                    .contentShape(Rectangle())
                                 }.buttonStyle(.plain).accessibilityIdentifier("reply-work-step")
                                 if open.contains(call.id) {
                                     evidence(call).accessibilityIdentifier("reply-work-evidence")
