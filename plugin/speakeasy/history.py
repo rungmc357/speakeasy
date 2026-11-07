@@ -373,9 +373,14 @@ _MD_LEAD = re.compile(r"(?m)^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d{1,2}[.)]\s+)")
 _MD_LINK = re.compile(r"!?\[([^\]\n]{1,200})\]\([^)\s]{1,500}\)")
 
 
-def assistant_text(text: str) -> str:
+def assistant_text(text: str, *, brief: bool = False) -> str:
     """An assistant message as shown: no machine blocks (question/views JSON), no "Voice: …" echo line,
-    a progress note (STATUS:/DETAIL:) as its plain words."""
+    a progress note (STATUS:/DETAIL:) as its plain words.
+
+    A task's final report (a written answer, then ``DONE:`` / ``SPOKEN:`` lines) shows its written
+    answer: the prose, commands and code blocks the voice points at ("paste the line on screen"),
+    never only the spoken sentence (SPK-187). *brief* (a list row's preview) takes the spoken
+    sentence; a report with no written part shows the spoken sentence either way."""
     if not isinstance(text, str):
         return ""
     if text.strip() == SILENT or _COMPACTION.match(text):
@@ -388,9 +393,14 @@ def assistant_text(text: str) -> str:
         rest = _DETAIL.sub("", _STATUS.sub("", out)).strip()
         said = " — ".join(m.group(1).strip().rstrip(".") for m in (status, detail) if m)
         out = (said + ("\n\n" + rest if rest else "")) if said else rest
-    if _REPORT_LABEL.search(out):
+    if label := _REPORT_LABEL.search(out):
         spoken = _SPOKEN.search(out)
-        out = spoken.group(1).strip() if spoken and spoken.group(1).strip() else _REPORT_LABEL.sub("", out)
+        said = spoken.group(1).strip() if spoken and spoken.group(1).strip() else ""
+        written = _VOICE_LINE.sub("", out[:label.start()], count=1).strip()
+        if written and not brief:
+            out = written
+        else:
+            out = said or _REPORT_LABEL.sub("", out[label.start():]).strip() or written
     out = _VOICE_LINE.sub("", out, count=1)
     return out.strip()
 
@@ -842,7 +852,7 @@ def _preview(db: sqlite3.Connection, session_id: str, linked: Sequence[str] = ()
             rows.sort(key=lambda r: (r["timestamp"] if isinstance(r["timestamp"], (int, float)) else 0.0, r["id"]),
                       reverse=True)
         for row in rows:
-            kind, text = user_words(row["content"]) if row["role"] == "user" else ("assistant", assistant_text(row["content"]))
+            kind, text = user_words(row["content"]) if row["role"] == "user" else ("assistant", assistant_text(row["content"], brief=True))
             if kind in ("user", "assistant") and text.strip():
                 preview = preview_text(redact_text(text))
                 break

@@ -659,6 +659,28 @@ def summary_points(full: str | None) -> list[str] | None:
     return points if len(points) >= 2 else None
 
 
+# The voice pointing at something copyable it put on screen: "paste the one line on screen", "the three
+# commands are in chat, ready to copy".
+_SCREEN_PLACE_RE = re.compile(r"\b(?:on (?:your |the )?screen|in (?:the )?(?:chat|app)|(?:ready )?to copy)\b", re.I)
+_COPYABLE_RE = re.compile(r"\b(?:commands?|lines?|code|snippets?|scripts?|paste|copy)\b", re.I)
+
+
+def screen_claims_backed(spoken: str, full: str, has_cards: bool) -> str:
+    """*spoken* without any sentence saying a command or line is on screen / in chat when the written
+    answer (what the app shows) has no command or code block for it (SPK-187). A claim about the
+    answer in general ("the steps are on screen") stands when there is a written answer or cards."""
+    has_code = "```" in full or any(k == "command" for k, _ in split_commands(full))
+    kept = []
+    for sentence in re.split(r"(?<=[.!?])\s+", spoken.strip()):
+        claims = _SCREEN_PLACE_RE.search(sentence)
+        if claims and _COPYABLE_RE.search(sentence) and not has_code:
+            continue
+        if claims and not (full.strip() or has_cards):
+            continue
+        kept.append(sentence)
+    return " ".join(kept).strip()
+
+
 def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: str = "Done. The details are in the app.") -> dict[str, Any] | None:
     """Split a final answer into the spoken register and the full display register.
 
@@ -712,8 +734,20 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         spoken = safe_user_text(spoken_from(full), 500)
     if spoken and (any(k == "command" for k, _ in split_commands(spoken)) or SHELL_MARK_RE.search(spoken)
                    or "`" in spoken):
-        # Never hand the voice a command to read out; the pasteable copy is on screen and in chat.
-        spoken = "There's a command for you to run. It's in the app and in chat, ready to copy."
+        # Never hand the voice a command to read out; the pasteable copy goes on screen (added to
+        # the written answer when only the spoken line had it).
+        missing = [c for k, c in split_commands(spoken) if k == "command"] + re.findall(r"`([^`\n]+)`", spoken)
+        missing = [c for c in dict.fromkeys(c.strip() for c in missing) if c and c not in (full or "")]
+        if missing:
+            full = ((full or "") + "".join(f"\n\n```\n{c}\n```" for c in missing)).strip()
+        if any(k == "command" for k, _ in split_commands(full or "")):
+            spoken = "There's a command for you to run. It's on screen, ready to copy."
+        else:
+            spoken = safe_user_text(spoken_from(full).replace("`", ""), 500) if full else None
+            if spoken and SHELL_MARK_RE.search(spoken):
+                spoken = None   # the fallback line: the details are in the app
+    if spoken:
+        spoken = screen_claims_backed(spoken, full or "", bool(views or cards)) or None
     if not spoken:
         spoken = fallback_spoken
     if question:
