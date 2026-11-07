@@ -61,7 +61,9 @@ def test_an_answer_read_out_on_the_call_is_heard_and_counted_seen(server, servic
         call.spoken_tasks["d_k_h"] = time.time()
     item = get(server, "/voice/now")[1]["items"][0]
     assert item["kind"] == "seen_answer" and item["on_call"] == "heard" and item["unread"] is False
-    assert item["line"] == "Told you on the call."
+    # Marked read, but the card keeps the answer's own headline: never a stand-in like "Told you on the call."
+    assert item["line"] == "Open till 6 PM today."
+    assert "call" not in item["line"].lower()
 
 
 def test_the_worker_marks_a_spoken_answer_seen_and_lights_it(service):

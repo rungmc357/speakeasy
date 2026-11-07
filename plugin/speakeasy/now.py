@@ -391,8 +391,8 @@ class NowModel:
         task_id = (call_info or {}).get("keys", {}).get(row["key"])
         if task_id is not None:
             if item["kind"] in {NEW_ANSWER, SEEN_ANSWER} and task_id in call_info["spoken"]:
-                # Told on the call: already read, and says so.
-                item.update(kind=SEEN_ANSWER, unread=False, on_call="heard", line="Told you on the call.")
+                # Told on the call: already read; the card keeps its own answer line.
+                item.update(kind=SEEN_ANSWER, unread=False, on_call="heard")
             elif item["kind"] == QUESTION and (task_id == call_info["talking"] or float(
                     (item.get("question") or {}).get("asked_at") or 0) >= float(getattr(call, "started_at", 0) or 0)):
                 # Asked on this call: tier 0, the one card that moves during a call.

@@ -5,6 +5,7 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 ## Plugin 0.3.44 — Plain words on Home's live line
 
 - **One card per piece of work.** A conversation and the task it started show as one Home card: the task's card, with that conversation as its origin line.
+- **Answers you heard on a call keep their own line** on Home instead of "Told you on the call."
 - **No raw commands on Home.** A working card's live line is always plain words: what the task last said it's doing, or "Working…", never a command or a tool's name.
 
 ## Plugin 0.3.43 — Home shows only what's live or new
