@@ -55,6 +55,13 @@ public struct NowHome: Equatable, Sendable {
         callSummary = NowCallSummary(json: json["call_summary"])
     }
 
+    /// Nothing live or new: Home shows a quiet "All caught up." instead of a header (build 69 drops
+    /// the counting sentence from Home; widgets and the Live Activity keep `sentence`).
+    public var caughtUp: Bool { items.isEmpty && callSummary == nil }
+    public static let caughtUpLine = "All caught up."
+    /// What Clear moves to Earlier: every finished answer, seen or not.
+    public var clearable: [NowItem] { items.filter { $0.kind == .newAnswer || $0.kind == .seenAnswer } }
+
     /// The items of one kind, in the plugin's order.
     public func items(_ kind: NowItem.Kind) -> [NowItem] { items.filter { $0.kind == kind } }
 }
@@ -84,10 +91,12 @@ public struct NowCallSummary: Equatable, Sendable, Identifiable {
     public var things: [String]
     public var moreThings: Int
     public var decisions: [String]
+    /// The plugin's own line (0.3.43+): what the call started, answered and asked.
+    public var line: String?
     public init(id: String, title: String, minutes: Int, endedAt: Date, sessionID: String? = nil, things: [String] = [],
-                moreThings: Int = 0, decisions: [String] = []) {
+                moreThings: Int = 0, decisions: [String] = [], line: String? = nil) {
         self.id = id; self.title = title; self.minutes = minutes; self.endedAt = endedAt; self.sessionID = sessionID
-        self.things = things; self.moreThings = moreThings; self.decisions = decisions
+        self.things = things; self.moreThings = moreThings; self.decisions = decisions; self.line = line
     }
     public init?(json: Any?) {
         guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
@@ -95,11 +104,16 @@ public struct NowCallSummary: Equatable, Sendable, Identifiable {
         self.init(id: id, title: nonEmpty(o["title"]) ?? "Your call", minutes: (o["minutes"] as? NSNumber)?.intValue ?? 1,
                   endedAt: Date(timeIntervalSince1970: ended), sessionID: nonEmpty(o["session_id"]),
                   things: (o["things"] as? [Any] ?? []).compactMap(nonEmpty), moreThings: (o["more_things"] as? NSNumber)?.intValue ?? 0,
-                  decisions: (o["decisions"] as? [Any] ?? []).compactMap(nonEmpty))
+                  decisions: (o["decisions"] as? [Any] ?? []).compactMap(nonEmpty), line: nonEmpty(o["line"]))
     }
-    /// Line 2: what the call started, then the user's own decisions ("You said: the wider desk").
+    /// Line 2: the plugin's line when it sends one; else what the call started.
+    public var summaryLine: String {
+        if let line { return line }
+        return started + (youSaid.map { " You said: \($0)." } ?? "")
+    }
+    /// What the call started ("Short call, nothing started." when it started nothing).
     public var started: String {
-        guard !things.isEmpty else { return "Talked it through." }
+        guard !things.isEmpty else { return "Short call, nothing started." }
         let list = things.count == 1 ? things[0] : things.dropLast().joined(separator: ", ") + " and " + things.last!
         return "Started \(list)" + (moreThings > 0 ? " and \(moreThings) more." : ".")
     }
@@ -126,7 +140,7 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     public enum Kind: String, Sendable, CaseIterable {
         case question, stopped, working, waiting, newAnswer = "new_answer", seenAnswer = "seen_answer"
     }
-    public enum Provenance: Equatable, Sendable { case yesterday(Date), earlierCall(Date), later(Date) }
+    public enum Provenance: Equatable, Sendable { case yesterday(Date), earlierDay(Date), earlierCall(Date), later(Date) }
     public enum Fix: String, Sendable { case credits, signIn = "sign_in", retry, setup, open }
 
     public var id: String
@@ -174,6 +188,7 @@ public struct NowItem: Equatable, Sendable, Identifiable {
             let d = Date(timeIntervalSince1970: at)
             switch p["kind"] as? String {
             case "yesterday": prov = .yesterday(d)
+            case "earlier_day": prov = .earlierDay(d)
             case "earlier_call": prov = .earlierCall(d)
             case "later": prov = .later(d)
             default: prov = nil
@@ -193,11 +208,21 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     }
 
     /// The one footnote that says where a card came from ("From yesterday · 9:40 PM").
-    public func provenanceLine(calendar: Calendar = .current) -> String? {
+    /// By real calendar days in the phone's zone: "From yesterday · 8:13 PM" only for yesterday,
+    /// "From Wednesday · 8:13 PM" within the week, else "From Oct 28" (never "yesterday" for older).
+    public func provenanceLine(calendar: Calendar = .current, now: Date = Date()) -> String? {
         let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone
         f.locale = Locale(identifier: "en_US"); f.dateFormat = "h:mm a"
+        func day(_ d: Date) -> String? {
+            let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: d), to: calendar.startOfDay(for: now)).day ?? 0
+            if days <= 0 { return nil }
+            if days == 1 { return "From yesterday \u{00B7} \(f.string(from: d))" }
+            let w = DateFormatter(); w.calendar = calendar; w.timeZone = calendar.timeZone; w.locale = Locale(identifier: "en_US")
+            if days < 7 { w.dateFormat = "EEEE"; return "From \(w.string(from: d)) \u{00B7} \(f.string(from: d))" }
+            w.dateFormat = "MMM d"; return "From \(w.string(from: d))"
+        }
         switch provenance {
-        case .yesterday(let d)?: return "From yesterday · \(f.string(from: d))"
+        case .yesterday(let d)?, .earlierDay(let d)?: return day(d)
         case .earlierCall(let d)?: return "From the earlier call · \(f.string(from: d))"
         case .later?: return "Back from Later"
         case nil: return nil

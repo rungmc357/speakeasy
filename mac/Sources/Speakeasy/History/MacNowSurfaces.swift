@@ -123,9 +123,11 @@ struct MacNowPopover: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if !onCall {
-                        Text(now.home?.sentence ?? (now.failed ? "Can't reach Hermes right now." : "All quiet."))
-                            .font(.callout).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        if now.failed && now.home == nil {
+                            Text("Can't reach Hermes right now.").font(.callout).foregroundStyle(.secondary)
+                        } else if now.visible.isEmpty {
+                            Text(NowHome.caughtUpLine).font(.callout).foregroundStyle(.secondary)
+                        }
                     }
                     ForEach(MacNowLayout.menuItems(now.visible, onCall: onCall)) { item in
                         MacNowCard(item: item, now: now, focused: now.home?.call?.focus == item.id) {

@@ -61,7 +61,7 @@ final class MacNowModel: ObservableObject {
     }
 
     func clearSeen() {
-        for i in visible where i.kind == .seenAnswer { hidden.insert(i.id) }
+        for i in visible where i.kind == .seenAnswer || i.kind == .newAnswer { hidden.insert(i.id) }
         guard demo == nil, let api = api() else { return }
         Task { _ = try? await api.nowClearSeen(); await refresh() }
     }
@@ -76,11 +76,13 @@ struct MacNowColumn: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 if let voice { MacNowHomeCall(voice: voice) }
-                Text(now.home?.sentence ?? (now.failed ? "Can't reach Hermes right now." : "All quiet."))
-                    .font(.title2.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 4)
-                    .accessibilityAddTraits(.isHeader)
+                // No counting header (build 69): only "can't reach" or a quiet "All caught up."
+                if now.failed && now.home == nil {
+                    Text("Can't reach Hermes right now.").font(.title3.weight(.semibold)).padding(.bottom, 4)
+                } else if now.home?.caughtUp ?? false, now.visible.isEmpty {
+                    Text(NowHome.caughtUpLine).font(.title3).foregroundStyle(.secondary).padding(.vertical, 8)
+                        .accessibilityIdentifier("mac-now-caught-up")
+                }
                 if let summary = now.home?.callSummary {
                     callSummary(summary)
                 }
@@ -89,8 +91,8 @@ struct MacNowColumn: View {
                         if let sid = item.sessionID { store.open(sid) }
                     }
                 }
-                if now.visible.contains(where: { $0.kind == .seenAnswer }) {
-                    Button("Clear seen") { now.clearSeen() }
+                if now.visible.contains(where: { $0.kind == .seenAnswer || $0.kind == .newAnswer }) {
+                    Button("Clear") { now.clearSeen() }
                         .buttonStyle(.link).font(.callout).padding(.top, 2)
                 }
                 if let n = now.home?.backgroundRunning, n > 0 {
@@ -116,8 +118,7 @@ struct MacNowColumn: View {
                 Spacer()
                 Text("\(s.minutes) min").font(.callout).foregroundStyle(.secondary)
             }
-            (Text(s.started + " ").foregroundStyle(.secondary)
-             + (s.youSaid.map { Text("You said: " + $0).fontWeight(.medium) } ?? Text("")))
+            Text(s.summaryLine).foregroundStyle(.secondary)
                 .font(.callout).fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)

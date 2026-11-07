@@ -47,8 +47,9 @@ final class NowHomeTests: XCTestCase {
         var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "America/New_York")!
         let at = Date(timeIntervalSince1970: 1_794_000_000)  // invented
         let item = NowItem(id: "s:x", kind: .newAnswer, title: "Desk hunt", line: "Done.", provenance: .yesterday(at))
-        XCTAssertTrue(item.provenanceLine(calendar: cal)?.hasPrefix("From yesterday · ") == true)
-        XCTAssertFalse(item.provenanceLine(calendar: cal)?.contains("so far") == true)
+        let nextDay = at.addingTimeInterval(86400)
+        XCTAssertTrue(item.provenanceLine(calendar: cal, now: nextDay)?.hasPrefix("From yesterday · ") == true)
+        XCTAssertFalse(item.provenanceLine(calendar: cal, now: nextDay)?.contains("so far") == true)
     }
 
     func testCallFocusOnCallMarksAndTheCallSummaryDecode() {
@@ -73,5 +74,39 @@ final class NowHomeTests: XCTestCase {
         XCTAssertEqual(after.callSummary?.minutes, 6)
         XCTAssertEqual(after.callSummary?.started, "Started Desk hunt and Saturday plan.")
         XCTAssertEqual(after.callSummary?.youSaid, "The wider desk")
+    }
+
+    func testCallSummaryUsesThePluginsLineAndNeverSaysTalkedItThrough() {
+        let bare = NowCallSummary(json: ["id": "call:1", "ended_at": 1_800_000_000, "minutes": 1])!
+        XCTAssertEqual(bare.summaryLine, "Short call, nothing started.")
+        let lined = NowCallSummary(json: ["id": "call:1", "ended_at": 1_800_000_000, "things": ["Desk hunt"],
+                                          "line": "Started Desk hunt. Answered Seed list."])!
+        XCTAssertEqual(lined.summaryLine, "Started Desk hunt. Answered Seed list.")
+    }
+
+    func testProvenanceSaysYesterdayOnlyForRealYesterday() {
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "America/New_York")!
+        let now = cal.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 22, minute: 23))!
+        func line(_ day: Int, _ kind: String) -> String? {
+            let at = cal.date(from: DateComponents(year: 2026, month: 11, day: day, hour: 20, minute: 13))!
+            let item = NowItem(json: ["id": "s:x", "kind": "new_answer", "title": "T",
+                                      "provenance": ["kind": kind, "at": at.timeIntervalSince1970]])!
+            return item.provenanceLine(calendar: cal, now: now)
+        }
+        XCTAssertEqual(line(5, "yesterday"), "From yesterday \u{00B7} 8:13 PM")
+        XCTAssertEqual(line(4, "yesterday"), "From Wednesday \u{00B7} 8:13 PM", "an old plugin's 'yesterday' is checked")
+        XCTAssertEqual(line(4, "earlier_day"), "From Wednesday \u{00B7} 8:13 PM")
+        let old = cal.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 9))!
+        let item = NowItem(json: ["id": "s:x", "kind": "new_answer", "title": "T",
+                                  "provenance": ["kind": "earlier_day", "at": old.timeIntervalSince1970]])!
+        XCTAssertEqual(item.provenanceLine(calendar: cal, now: now), "From Oct 28")
+    }
+
+    func testCaughtUpAndClearable() {
+        XCTAssertTrue(NowHome(json: ["items": []]).caughtUp)
+        let h = NowHome(json: ["items": [["id": "s:a", "kind": "new_answer", "title": "A"],
+                                         ["id": "s:b", "kind": "working", "title": "B"]]])
+        XCTAssertFalse(h.caughtUp)
+        XCTAssertEqual(h.clearable.map(\.id), ["s:a"])
     }
 }

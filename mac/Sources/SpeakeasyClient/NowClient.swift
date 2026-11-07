@@ -41,6 +41,20 @@ extension ServerClient {
         (try await post("/voice/now/clear-seen", [:])["moved"] as? NSNumber)?.intValue ?? 0
     }
 
+    /// Undo the last Clear (plugin 0.3.43+, capability `now_dismiss`).
+    public func nowClearSeenUndo() async throws {
+        _ = try await json("/voice/now/clear-seen", method: "DELETE")
+    }
+
+    /// Swipe-dismiss: the card moves to Earlier on every device (plugin 0.3.43+, `now_dismiss`).
+    public func nowDismiss(_ itemID: String) async throws {
+        _ = try await post("/voice/now/\(Self.esc(itemID))/dismiss", [:])
+    }
+
+    public func nowDismissUndo(_ itemID: String) async throws {
+        _ = try await json("/voice/now/\(Self.esc(itemID))/dismiss", method: "DELETE")
+    }
+
     /// Earlier: one page of conversations for the checked kinds, never repeating Home, with the menu.
     public func earlier(kinds: Set<String>, query: String = "", cursor: String? = nil) async throws -> (HistoryPage, [EarlierKind]) {
         var path = "/voice/history?exclude_now=1&kinds=" + EarlierKind.query(kinds)
