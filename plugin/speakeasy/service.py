@@ -517,6 +517,25 @@ class VoiceService(SecureInputMixin):
                     index = self.__dict__["_files"] = F.FileIndex(self.rt.state_db, self.home, self.dir / "files.key")
         return index
 
+    def _thread_files(self, sid: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Pictures and files a reply handed over (``MEDIA:`` lines) ride on its entry as ``files``
+        (Files rows: ids, never paths) instead of showing as the raw tag text (SPK-214)."""
+        out = []
+        for e in entries:
+            text = e.get("text") if e.get("kind") == "assistant" else None
+            if isinstance(text, str) and "MEDIA:" in text:
+                try:
+                    clean, files = self.files.message_files(text, session_id=sid, at=e.get("at"))
+                except Exception as exc:   # a broken tag never costs the page
+                    logger.warning("speakeasy: thread files failed (%s)", type(exc).__name__)
+                    clean, files = text, []
+                if files:
+                    e = {**e, "text": clean, "files": files}
+                elif clean and clean != text:
+                    e = {**e, "text": clean}
+            out.append(e)
+        return out
+
     def files_list(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/files?kind=&q=&session_id=&cursor=&limit=``: newest first, no paths."""
         try:
@@ -3273,6 +3292,7 @@ class VoiceService(SecureInputMixin):
             ids = {id(e) for e in voiced}
             entries = [self._voice_entry(e, pairs.get(str(e.get("id")))) if id(e) in ids else e for e in entries]
         entries = self._bind_sent_rows(sid, entries)
+        entries = self._thread_files(sid, entries)
         typed = self._typed_requests(list(dict.fromkeys(continued + keys)))
         if typed:
             # A message typed in the app with no call is never "From a call" (its task's brief may still

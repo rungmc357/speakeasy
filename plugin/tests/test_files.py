@@ -198,3 +198,35 @@ def test_outside_the_media_caches_only_with_hermes_rules(service, monkeypatch, t
     (inside / "notes.txt").write_text("hi")
     assert F.deliverable(str(inside / "notes.txt"), service.home) is not None
     assert F.deliverable(str(inside / "script.py"), service.home) is None
+
+
+# -- pictures in a chat's thread (SPK-214) ---------------------------------------------------------
+
+def test_a_thread_reply_carries_its_pictures_not_the_tag_text(server, made):
+    status, body = get(server, "/voice/history/d1")
+    assert status == 200
+    replies = [e for e in body["session"]["entries"] if e["kind"] == "assistant"]
+    assert [e["text"] for e in replies] == ["Here's the chart.", "Updated chart."]
+    assert all("MEDIA:" not in json.dumps(e) for e in replies)
+    shot = replies[0]["files"][0]
+    assert shot["name"] == "porch-paint-chart.png" and shot["kind"] == "image" and shot["mime"] == "image/png"
+    assert str(made["chart"].parent) not in json.dumps(replies)   # an id, never a path
+    status, _ = get(server, f"/voice/files/{shot['id']}/thumb")
+    assert status == 200   # the same id the Files page uses
+
+
+def test_thread_tags_keep_hermes_rules(service, made):
+    home = service.home
+    text = (f"Saved.\nMEDIA:{home / '.env'}\nMEDIA:{home / 'cache' / 'images' / 'gone.png'}\n"
+            f"```\nMEDIA:{made['chart']}\n```")
+    clean, files = service.files.message_files(text, session_id="t1")
+    assert files == []
+    assert f"MEDIA:{home / '.env'}" in clean          # refused: left as it was, never served
+    assert "(Picture no longer available: gone.png)" in clean and "gone.png\n" not in clean.split("available")[0]
+    assert f"MEDIA:{made['chart']}" in clean          # inside a code block: words, not a picture
+
+
+def test_one_picture_named_twice_shows_once(service, made):
+    clean, files = service.files.message_files(f"Two views.\nMEDIA:{made['chart']}\n  MEDIA:`{made['chart']}`",
+                                               session_id="d1")
+    assert clean == "Two views." and len(files) == 1
