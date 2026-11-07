@@ -16,15 +16,22 @@ enum PanelSmoke {
     private static var retained: NativeVoiceClient?
 
     static func run(config: AppConfig, snapshotDir: String?) {
+        // SPEAKEASY_PANEL_SMOKE_ONLY=overflow,drag runs just those cases (unattended runs skip `drag`,
+        // whose press into transcript text can wait forever for a real mouse-up).
+        let selected: Set<String>
+        do {
+            selected = try PanelSmokeSelection.resolve(
+                only: ProcessInfo.processInfo.environment["SPEAKEASY_PANEL_SMOKE_ONLY"], snapshotDir: snapshotDir)
+        } catch {
+            print("panel-smoke FAILED: \(error)")
+            exit(1)
+        }
+        func want(_ name: String) -> Bool { selected.contains(name) }
         let client = NativeVoiceClient(config: config)
         retained = client
         // A remembered orb-mode preference (from a preview run) would fold every check below.
         let savedOrb = client.model.slim
         client.model.slim = false
-        // SPEAKEASY_PANEL_SMOKE_ONLY=overflow,drag runs just those cases (unattended runs skip `drag`,
-        // whose press into transcript text can wait forever for a real mouse-up).
-        let only = ProcessInfo.processInfo.environment["SPEAKEASY_PANEL_SMOKE_ONLY"]?.split(separator: ",").map(String.init)
-        func want(_ name: String) -> Bool { only?.contains(name) ?? true }
         Task { @MainActor in
             if want("work-scroll") { await workScroll(client) }
             if want("work-status") { await workStatusWraps(client) }
