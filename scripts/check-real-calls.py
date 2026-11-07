@@ -77,6 +77,10 @@ def is_english(w, english):
     """In the dictionary directly or as a plain inflection (bills, users, sharing, booked)."""
     if w in english:
         return True
+    # The system dictionary has "early" but omits these ordinary inflections.
+    # Do not generalize -ier -> -y: that also hides surnames such as Mercier.
+    if w in {"earlier", "earliest"} and "early" in english:
+        return True
     for suffix, back in (("ies", "y"), ("es", ""), ("s", ""), ("ing", ""), ("ing", "e"), ("ed", ""),
                          ("ed", "e"), ("ly", ""), ("er", ""), ("ers", "")):
         if w.endswith(suffix) and w[: -len(suffix)] + back in english:
