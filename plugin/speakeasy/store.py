@@ -229,6 +229,15 @@ def job_progress(status: str, created: float | None, settled_at: float | None, p
     return out
 
 
+def _current_steps(result: Any, status: Any) -> Any:
+    """A stored result's next steps as they read now (home_words.expire_steps)."""
+    if not isinstance(result, dict) or not isinstance(result.get("views"), list):
+        return result
+    from .home_words import expire_steps
+    from .runstate import TERMINAL
+    return {**result, "views": expire_steps(result["views"], status in TERMINAL, time.time())}
+
+
 class StateStore:
     def __init__(self, path: Path, hermes_home: Path | None = None):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2607,7 +2616,7 @@ class StateStore:
             "events": [{"kind": kind, "text": text, "at": created} for kind, text, created in reversed(events)],
             "short_status": display_status, "detail": display_detail,
             "source_run_id": actual_run_id, "updated_at": display_updated,
-            "status_source": source, "result": public_result(result),
+            "status_source": source, "result": _current_steps(public_result(result), status),
             "title": title, "summary": summary, "dismissed": bool(dismissed),
             "email_drafts": self.drafts_for(key),
             "plan": concrete_plan(self.plan(key), next((t for k, t, _ in reversed(events) if k == "request"), None),

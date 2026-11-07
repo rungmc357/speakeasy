@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import urllib.parse
 from pathlib import Path
@@ -568,9 +569,25 @@ def public_result(result: Any) -> Any:
         from .views import settled_all
         clean["views"] = settled_all(clean["views"])   # a stored result is a finished task: no progress bars
     if isinstance(clean.get("cards"), list):
-        clean["cards"] = [{k: v for k, v in card.items() if k != "path"} if isinstance(card, dict) else card
-                          for card in clean["cards"]]
+        clean["cards"] = [_public_card(card) if isinstance(card, dict) else card for card in clean["cards"]]
     return clean
+
+
+def _public_card(card: dict[str, Any]) -> dict[str, Any]:
+    """A result card for the apps: no server path. A picture whose file is gone says so
+    (``available: false``) so no surface draws a dead tile; its place in the list (and every other
+    card's ``/voice/card-image/<run>/<n>``) stays the same. A caption is a person's words, never the
+    file's name."""
+    out = {k: v for k, v in card.items() if k != "path"}
+    if card.get("kind") == "image":
+        path = card.get("path")
+        if isinstance(path, str) and not os.path.isfile(os.path.expanduser(path)) and not card.get("image_url"):
+            out["available"] = False
+        from .home_words import picture_caption
+        caption = picture_caption(card.get("caption"), card.get("title"), card.get("name"), card.get("alt"))
+        if caption:
+            out["caption"] = caption
+    return out
 
 
 def delivery_text(result: dict[str, Any] | None) -> str:
