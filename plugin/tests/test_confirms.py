@@ -30,7 +30,7 @@ def store(tmp_path, view):
 def test_exact_checkout_card():
     v = C.clean(checkout())
     assert v["state"] == "pending"
-    assert v["actions"][0]["label"] == "Buy for USD 86.40"
+    assert v["actions"][0]["label"] == "Buy for $86.40"
     assert v["actions"][0]["value"] == v["sha256"] == C.digest(v)
     assert v["details"]["payment_last4"] == "4242"
 

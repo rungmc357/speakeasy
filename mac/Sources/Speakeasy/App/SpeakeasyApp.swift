@@ -80,6 +80,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applyDockPolicy()
         MacAppearance.apply()
         let args = ProcessInfo.processInfo.arguments
+        #if DEBUG
+        if let i = args.firstIndex(of: "--confirm-shots"), i + 1 < args.count { ConfirmationShots.run(dir: args[i + 1]); return }
+        #endif
         if let i = args.firstIndex(of: "--welcome-shots"), i + 1 < args.count { DispatchQueue.main.async { WelcomeShots.run(dir: args[i + 1]) }; return }
         if let i = args.firstIndex(of: "--now-mac-shots"), i + 1 < args.count { NowMacShots.run(dir: args[i + 1]); return }
         if let i = args.firstIndex(of: "--history-shots"), i + 1 < args.count { HistoryShots.run(dir: args[i + 1]); return }

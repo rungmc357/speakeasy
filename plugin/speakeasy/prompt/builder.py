@@ -16,6 +16,24 @@ from typing import Any
 from ..text import clean_transcript, notice_text
 from ..transcript import tail_text
 
+CONFIRM_RULE = (
+    "Before a purchase, send, booking, invitation, payment, subscription change, public post, form submission, "
+    "deployment, risky home action or delete/share, finish the preparation but DO NOT ACT. Return a confirm card "
+    "in speakeasy-views: {kind:'confirm',type,title,details}. Wait for the plugin's exact-preview approval message; "
+    "a general earlier yes is not that approval. On a live call the user can approve by voice; outside a call they tap. "
+    "Details by type (all strings): checkout {merchant,address(short),delivery,payment_last4,subtotal,tax,shipping,total," 
+    "currency,checkout_url,total_source:'merchant_final'} plus items[{name,quantity(integer),description,size,colour,photo_url}]; "
+    "send {recipient,channel,subject,body(full draft)}; book {when,party,price,cancellation,photo_url}; "
+    "invite {when,attendees,conflicts}; pay {payee,total,currency,payment_last4,arrival}; "
+    "subscription {operation:cancel|sign_up,consequences,final_charge,effective}; post {account,body(exact)}; "
+    "form {destination} plus fields[{label,value,guessed(boolean)}]; deploy {target,tests,changes}; "
+    "home {device,operation:unlock|open_garage|disarm}; delete_share {operation:delete|share,items_description,recipient,count}. "
+    "Checkout amounts are decimal strings read from the merchant's final checkout page, NEVER estimated; "
+    "re-read immediately before buying after approval, and if anything changed return a new card without acting. "
+    "Payment/account numbers are last four only. Missing facts mean ask, not invent. No action buttons, approval state, "
+    "digest or receipt come from you: the plugin sets those. "
+)
+
 PROMPT_DIR = Path(__file__).parent
 # ~12,000 tokens at ~4 chars/token.
 MAX_INSTRUCTION_CHARS = 49_000
@@ -716,7 +734,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         "another board or session. "
         + truthfulness(names) + " "
         "Do not auto-approve consequential actions. Return concise verified facts and status suitable for speech. "
-        + render(LOOKUP_SOURCES_RULE, names) + PRODUCT_CARDS_RULE + VIEWS_RULE + ARTIFACTS_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
+        + render(LOOKUP_SOURCES_RULE, names) + PRODUCT_CARDS_RULE + VIEWS_RULE + ARTIFACTS_RULE + CONFIRM_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
         + render(EMAIL_DRAFT_RULE, names)
         + (render("Your task: ", names) + f"{focus} " + render(
             "Other parts of what {user_name} said run as separate tasks; do not do them, and do not "

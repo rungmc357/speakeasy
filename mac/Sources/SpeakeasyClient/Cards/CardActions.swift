@@ -144,7 +144,9 @@ public struct ActionableCard: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ViewCardView(card).environment(\.questionActions, model.questionActions(for: taskID))
-            if card.kind != "question", CardActionBar.hasActions(card, model: model) {
+            if card.kind == "confirm", model.capabilities?.cardActions == true {
+                ConfirmActionBar(taskID: taskID, card: card, model: model)
+            } else if card.kind != "question", CardActionBar.hasActions(card, model: model) {
                 CardActionBar(taskID: taskID, card: card, model: model)
             }
         }

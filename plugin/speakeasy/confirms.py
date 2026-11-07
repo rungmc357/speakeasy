@@ -55,7 +55,7 @@ def _money(value: Any) -> str | None:
 
 
 def clean(raw: Any) -> dict | None:
-    if not isinstance(raw, dict) or raw.get("type") not in KINDS or not _text(raw.get("title"), 160):
+    if not isinstance(raw, dict) or not isinstance(raw.get("type"), str) or raw["type"] not in KINDS or not _text(raw.get("title"), 160):
         return None
     kind = raw["type"]
     details = raw.get("details")
@@ -128,8 +128,9 @@ def clean(raw: Any) -> dict | None:
     view["sha256"] = digest(view)
     view["state"] = "pending"
     label = LABELS.get(kind, "Confirm")
+    label_amount = ("$" if out.get("currency") == "USD" else out.get("currency", "") + " ") + out.get("total", "")
     if kind in {"checkout", "pay"}:
-        label = ("Buy for " if kind == "checkout" else "Pay ") + out["currency"] + " " + out["total"]
+        label = ("Buy for " if kind == "checkout" else "Pay ") + label_amount
     elif kind == "subscription":
         label = "Cancel subscription" if out["operation"] == "cancel" else "Sign up"
     elif kind == "home":
@@ -169,13 +170,14 @@ def claim(store: Any, run_id: str, index: int, expected: str, action: str, *, so
         if not 0 <= index < len(views) or views[index].get("kind") != "confirm":
             raise Conflict("That confirmation is no longer available.")
         view = views[index]
-        if not isinstance(expected, str) or not hmac.compare_digest(expected, digest(view)) or expected != view.get("sha256"):
+        if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected) or not hmac.compare_digest(expected, digest(view)) or expected != view.get("sha256"):
             raise Conflict("The preview changed. Review it and approve again.")
         consumed = store._db.execute(
             "SELECT state FROM confirmation_claims WHERE run_id=? AND card_index=? AND sha256=?",
             (run_id, index, expected)).fetchone()
         if consumed:
             view["state"], view["actions"] = consumed[0], []
+            store._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?", (canonical(result), key))
             return key, view, False
         state = view.get("state")
         if state != "pending":
@@ -186,6 +188,56 @@ def claim(store: Any, run_id: str, index: int, expected: str, action: str, *, so
                           (run_id, index, expected, view["state"], source))
         store._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?", (canonical(result), key))
         return key, view, action == "approve"
+
+
+def edit(store: Any, run_id: str, index: int, payload: Any) -> str:
+    """Edit only the draft's body/subject; a stale edit cannot overwrite a newer approval."""
+    if not isinstance(payload, dict) or not _text(payload.get("body"), 20000):
+        raise Conflict("The draft is empty or too long.")
+    with store._lock, store._db:
+        row = store._db.execute("SELECT idem_key,result_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            raise Conflict("That draft is no longer available.")
+        key, encoded = row
+        result = json.loads(encoded or "{}")
+        views = result.get("views", [])
+        if not 0 <= index < len(views):
+            raise Conflict("That draft is no longer available.")
+        view = views[index]
+        if view.get("type") != "send" or view.get("state") != "pending" or view.get("sha256") != payload.get("sha256"):
+            raise Conflict("The draft changed. Review the current version.")
+        raw = {**view, "details": {**view["details"], "body": payload["body"]}}
+        if "subject" in payload:
+            if not _text(payload["subject"], 2000):
+                raise Conflict("The subject is empty or too long.")
+            raw["details"]["subject"] = payload["subject"]
+        replacement = clean(raw)
+        if replacement is None:
+            raise Conflict("The edited draft is incomplete.")
+        views[index] = replacement
+        store._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?", (canonical(result), key))
+        return key
+
+
+def recover(store: Any) -> int:
+    """After process loss, an accepted action is uncertain, never retryable automatically."""
+    changed = 0
+    with store._lock, store._db:
+        if not store._db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='confirmation_claims'").fetchone():
+            return 0
+        rows = store._db.execute("SELECT run_id,card_index,sha256 FROM confirmation_claims WHERE state='approved'").fetchall()
+        for run_id, index, expected in rows:
+            row = store._db.execute("SELECT idem_key,result_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if row:
+                result = json.loads(row[1] or "{}")
+                views = result.get("views", [])
+                if 0 <= index < len(views) and views[index].get("sha256") == expected:
+                    views[index].update(state="unverified", actions=[], error="Connection was interrupted after approval. Check the service before trying again.")
+                    store._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?", (canonical(result), row[0]))
+                    changed += 1
+            store._db.execute("UPDATE confirmation_claims SET state='unverified' WHERE run_id=? AND card_index=? AND sha256=?",
+                              (run_id, index, expected))
+    return changed
 
 
 def execution_message(view: dict) -> str:

@@ -350,6 +350,8 @@ class VoiceService(SecureInputMixin):
         self.settings = Settings(self.home)
         self.devices = DeviceStore(self.home)
         self.store = StateStore(self.dir / "state.sqlite3", hermes_home=self.home)
+        from .confirms import recover as recover_confirmations
+        recover_confirmations(self.store)
         # The host this server lives in (settings, secrets, side model, chat delivery, liveness) and
         # the agent that does the work. Both are Hermes today; ``hermes=`` is the older name.
         self.host = host or HermesHost(self.home)
@@ -364,6 +366,9 @@ class VoiceService(SecureInputMixin):
                           route_call=route_call, title_call=title_call, polish_call=polish_call, status_call=status_call,
                           threads=thread_runner or ThreadRunner(self.home, self.host.threads_supported),
                           host=self.host)
+        from .confirm_actions import decide as decide_confirmation
+        self.rt.confirm_card = lambda run, index, digest, action, call: decide_confirmation(
+            self, run, index, digest, action, source="voice", interaction=call)
         from .home_control import HomeAssistantClient, HomeControl, credentials
         self.home_control = HomeControl(self.settings.get, lambda: credentials(self.home),
                                         plan_call=home_plan_call or router_home_plan_call,
@@ -1770,8 +1775,10 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "view must be a card index")
         if not isinstance(action, str) or not action:
             raise ServiceError(400, "action must be an action id")
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float, str))):
-            raise ServiceError(400, "value must be a number or a short string")
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float, str, dict))):
+            raise ServiceError(400, "invalid card value")
+        if isinstance(value, dict) and action != "edit":
+            raise ServiceError(400, "only a draft edit accepts an object")
         found = self.store.run_result(run_id)
         if found is None:
             raise ServiceError(404, "not found")
@@ -1780,7 +1787,7 @@ class VoiceService(SecureInputMixin):
         if index >= len(views) or not isinstance(views[index], dict):
             raise ServiceError(404, "that card isn't on this task")
         view = views[index]
-        if action not in {a.get("id") for a in view.get("actions") or [] if isinstance(a, dict)}:
+        if view.get("kind") != "confirm" and action not in {a.get("id") for a in view.get("actions") or [] if isinstance(a, dict)}:
             raise ServiceError(400, "that card has no such button")
         if view.get("kind") == "home" and action == "toggle":
             devices = view.get("devices") or []
@@ -1802,6 +1809,13 @@ class VoiceService(SecureInputMixin):
                 self.store.progress(key, "milestone", reply.spoken)
             self.publish_all(key)
             return {"ok": True, "message": reply.spoken}
+        if view.get("kind") == "confirm":
+            from .confirm_actions import decide
+            from .confirms import Conflict
+            try:
+                return decide(self, run_id, index, value, action)
+            except Conflict as exc:
+                raise ServiceError(409, str(exc)) from None
         from .views import follow_up
         words = follow_up(view, action)
         if words:

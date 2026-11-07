@@ -537,6 +537,8 @@ class Runtime:
     # The state.db a session lives in (agents.py: a chat on another Hermes profile is in that
     # profile's). None = this profile's own for every session.
     session_db: Callable[[str | None], Path] | None = None
+    # Live speech answers a saved confirmation through the same single-use claim as an app tap.
+    confirm_card: Callable[..., dict[str, Any]] | None = None
 
     @property
     def names(self) -> P.Names:
@@ -2992,6 +2994,9 @@ class SidebandWorker:
         """"Approve", "approved", "no", "for the rest of this task" while an approval waits: answer it.
         Never "always" (refused here and in hermes_api.approve); "session" only when Hermes offered it
         for that request. With several approvals waiting and nothing naming one, ask which."""
+        from .confirm_voice import answer as answer_confirmation
+        if await answer_confirmation(self, delegation_id, revision, request, marked):
+            return True
         pending = self.pending_approvals()
         if not pending:
             return False
@@ -5997,6 +6002,12 @@ class SidebandWorker:
                 await self.append("session.thinking.append", delegation_id, P.retracted_result_note(
                     notice_text(self.store.request_text(idem), 140) or "an earlier request",
                     result["spoken"] if result and status == "completed" else f"it {status}"))
+            elif status == "completed" and result and any(v.get("kind") == "confirm" for v in result.get("views", [])):
+                from .confirm_voice import present as present_confirmation
+                for index, view in enumerate(result.get("views", [])):
+                    if view.get("kind") == "confirm" and view.get("state") == "pending":
+                        await present_confirmation(self, delegation_id, backend.delegation_id, index, view)
+                self.replied_task = backend.delegation_id
             elif status == "completed" and self.store.is_seen(idem):
                 # They already opened this answer in the app while the voice was busy: reading it out
                 # now would repeat what they've read. The voice knows it, and says it only if asked.

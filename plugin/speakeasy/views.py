@@ -280,6 +280,9 @@ def clean(raw: Any, running: bool = False) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     kind = raw.get("kind")
+    if kind == "confirm":
+        from .confirms import clean as clean_confirm
+        return clean_confirm(raw)
     shape = CATALOG.get(kind) if isinstance(kind, str) else None
     if shape is None:
         return None

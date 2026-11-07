@@ -68,7 +68,7 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
         "message", "inbox", "media", "now_playing", "fact", "entity", "definition", "conversion", "math",
         "translation", "recipe", "nutrition", "comparison", "list", "steps", "stats", "chart", "news",
         "home", "thermostat", "camera", "question", "lanes", "before_after", "flow", "devices",
-        "explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview",
+        "explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview", "confirm",
     ]
 
     /// Cards are a task's answer, so the task has finished: a "progress" card (older servers sent
