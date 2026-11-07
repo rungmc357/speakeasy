@@ -75,11 +75,14 @@ public struct CardActionBar: View {
 
     /// The question a confirming button asks: what will happen, in plain words.
     public static func confirmTitle(_ action: CardAction, _ card: ViewCard) -> String {
-        if card.kind == "draft", action.id == "send" {
+        confirmTitle(id: action.id, label: action.label, card)
+    }
+    public static func confirmTitle(id: String, label: String, _ card: ViewCard) -> String {
+        if card.kind == "draft", id == "send" {
             return "Send this \(card["channel"].string == "email" ? "email" : "message") to \(card["to"].string ?? "them")?"
         }
-        if card.kind == "compare", action.id == "go" { return action.label + "?" }
-        return action.label
+        if card.kind == "compare", id == "go" { return label + "?" }
+        return label
     }
 
     static func copy(_ text: String) {
