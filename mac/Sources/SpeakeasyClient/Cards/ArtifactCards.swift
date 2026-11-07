@@ -34,12 +34,14 @@ struct ExploreSection: View {
                     .frame(width: 26, height: 26).background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(gold.opacity(0.16)))
                 Text(section["label"].string ?? "").font(.system(size: 17, weight: .semibold))
                 Spacer(minLength: 4)
-                if items.count > 1 { Text("\(items.count)").font(.system(size: 13)).foregroundStyle(.secondary) }
             }
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 12) {
                     ForEach(Array(items.enumerated()), id: \.offset) { i, item in
-                        EntityTile(item: item, entity: entity).frame(width: items.count == 1 ? nil : 268).id(i)
+                        // One thing fills the width; several peek the next one so the swipe is obvious.
+                        EntityTile(item: item, entity: entity)
+                            .containerRelativeFrame(.horizontal) { w, _ in items.count == 1 ? w : min(w * 0.82, 340) }
+                            .id(i)
                     }
                 }
                 .scrollTargetLayout()
@@ -92,9 +94,20 @@ struct EntityTile: View {
                 if !facts.isEmpty { Text(facts.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2) }
                 let actions = EntityActions.of(item, entity: entity)
                 if !actions.isEmpty {
-                    HStack(spacing: 8) {
-                        ForEach(Array(actions.enumerated()), id: \.offset) { i, a in
-                            PillButton(title: a.title, icon: a.icon, primary: i == 0) { run(a) }
+                    // Every label when they fit; otherwise the first keeps its words and the rest
+                    // become round icon buttons (never a clipped "M…").
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(actions.enumerated()), id: \.offset) { i, a in
+                                PillButton(title: a.title, icon: a.icon, primary: i == 0) { run(a) }.fixedSize()
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        HStack(spacing: 8) {
+                            ForEach(Array(actions.enumerated()), id: \.offset) { i, a in
+                                PillButton(title: a.title, icon: a.icon, primary: i == 0, iconOnly: i > 0) { run(a) }.fixedSize()
+                            }
+                            Spacer(minLength: 0)
                         }
                     }
                     .padding(.top, 6)
@@ -166,14 +179,15 @@ struct PillButton: View {
     var title: String
     var icon: String
     var primary: Bool
+    var iconOnly = false
     var action: () -> Void
     var body: some View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: icon).font(.system(size: 12, weight: .semibold))
-                Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                if !iconOnly { Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1) }
             }
-            .padding(.horizontal, 14).frame(height: 34).frame(maxWidth: .infinity)
+            .padding(.horizontal, iconOnly ? 0 : 14).frame(minWidth: 34).frame(height: 34)
             .foregroundStyle(primary ? JobLook.brassInk : Color.primary)
             .background(Capsule().fill(primary ? AnyShapeStyle(gold) : AnyShapeStyle(Color.primary.opacity(0.09))))
             .contentShape(Capsule())
