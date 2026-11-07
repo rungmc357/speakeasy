@@ -225,3 +225,111 @@ def test_send_on_a_draft_reaches_the_task_as_a_follow_up_and_nothing_else():
                                     "source": "typed"})]
     with pytest.raises(Exception):
         VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "delete_all"})
+
+
+# -- timeline (P2), rows (P4), metric (P6), preview (P7) ---------------------------------------------------
+
+TRIP_DAYS = {"kind": "timeline", "title": "Porto trip", "days": [
+    {"label": "Fri 12", "sleep": "Casa do Rio", "items": [
+        {"when": "9:40 AM", "what": "Flight TP 1932", "where": "Porto airport", "state": "DONE"},
+        {"when": "8:00 PM", "what": "Dinner", "where": "Taberna Azul", "lat": 41.1, "state": "later"}]},
+    {"label": "Sat 13", "items": [{"when": "11:00 AM", "what": "Port tasting", "lat": 41.13, "lon": -8.61},
+                                  {"what": "no time"}]},
+    {"label": "Sun 14", "items": []}]}
+TRIP_DAYS_ANSWER = ("Friday 12: you land at Porto airport at 9:40 AM and stay at Casa do Rio; dinner is at "
+                    "Taberna Azul at 8:00 PM. Saturday 13: port tasting at 11:00 AM.")
+
+
+def test_planning_timeline_keeps_dated_rows_and_checks_states_and_coordinates():
+    card = _result(TRIP_DAYS_ANSWER, [TRIP_DAYS])["views"][0]
+    assert [d["label"] for d in card["days"]] == ["Fri 12", "Sat 13"]
+    fri, sat = card["days"]
+    assert fri["items"][0]["state"] == "done" and "state" not in fri["items"][1]
+    assert "lat" not in fri["items"][1]                          # half a coordinate pair is no pair
+    assert sat["items"] == [{"when": "11:00 AM", "what": "Port tasting", "lat": 41.13, "lon": -8.61}]
+
+
+def test_release_stages_timeline_drops_when_a_time_is_not_in_the_answer():
+    stages = {"kind": "timeline", "title": "Release 4.2", "days": [{"label": "Today", "items": [
+        {"when": "10:00", "what": "Tests passed", "state": "done"}, {"when": "14:30", "what": "Store review", "state": "now"}]}]}
+    assert _result("Tests passed at 10:00; store review started at 14:30.", [stages])["views"][0]["days"][0]["items"][1]["state"] == "now"
+    assert _result("Tests passed at 10:00; store review is under way.", [stages])["views"] == []
+
+
+ISSUES = {"kind": "rows", "title": "Needs review", "entity": "PR", "items": [
+    {"ref": "#41", "name": "Fix the login timeout", "state": "CI passing", "tone": "good",
+     "url": "https://github.com/acme/app/pull/41"},
+    {"ref": "#42", "name": "Add dark mode", "state": "CI failing", "tone": "loud"},
+    {"note": "no name"}]}
+ISSUES_ANSWER = "Two pull requests wait on you: #41 Fix the login timeout is green, #42 Add dark mode fails CI."
+
+
+def test_coding_rows_keep_named_items_and_allowed_tones():
+    card = _result(ISSUES_ANSWER, [ISSUES])["views"][0]
+    assert card["entity"] == "pr" and [i["name"] for i in card["items"]] == ["Fix the login timeout", "Add dark mode"]
+    assert card["items"][0]["tone"] == "good" and "tone" not in card["items"][1]
+    assert "actions" not in card                                 # rows open their links; nothing sends from here
+
+
+def test_messaging_inbox_rows_and_bills_need_their_amounts_said():
+    inbox = {"kind": "rows", "entity": "email", "items": [{"name": "Lease renewal", "note": "From the landlord"}]}
+    assert _result("One email needs you: Lease renewal.", [inbox])["views"][0]["entity"] == "email"
+    bills = {"kind": "rows", "entity": "bill", "items": [{"name": "Water", "amount": "$48.20", "when": "Due Nov 20"}]}
+    assert _result("Water is $48.20, due Nov 20.", [bills])["views"]
+    assert _result("Water is due soon.", [bills])["views"] == []
+
+
+def test_unknown_row_entity_is_dropped_but_the_rows_stay():
+    card = views.clean({"kind": "rows", "entity": "spaceship", "items": [{"name": "Water the plants"}]})
+    assert card == {"kind": "rows", "items": [{"name": "Water the plants"}]}
+
+
+SPEND = {"kind": "metric", "label": "Cloud spend this month", "value": "$1,260", "delta": "+18%", "good": False,
+         "threshold": 1500, "threshold_label": "Budget", "points": [
+             {"label": "Nov 1", "value": 40}, {"label": "Nov 2", "value": 95.5},
+             {"label": "Nov 3", "value": 310, "mark": "Load test"}]}
+
+
+def test_numbers_metric_grounds_the_hero_and_marked_points_only():
+    answer = "Cloud spend is $1,260 this month, up 18%, under the $1,500 budget. The spike was a 310 load test."
+    card = _result(answer, [SPEND])["views"][0]
+    assert card["value"] == "$1,260" and len(card["points"]) == 3 and card["good"] is False
+    assert _result(answer.replace("310", "300"), [SPEND])["views"] == []       # a marked point not said
+    assert _result(answer.replace("18%", "a lot"), [SPEND])["views"] == []     # the change not said
+
+
+def test_monitoring_metric_with_a_broken_series_keeps_the_number_only():
+    card = views.clean({"kind": "metric", "label": "Uptime", "value": "99.95%",
+                        "points": [{"label": "Mon", "value": 99.9}, {"value": 100}]})
+    assert "points" not in card and card["value"] == "99.95%"
+    assert views.clean({"kind": "metric", "label": "Uptime"}) is None
+
+
+def test_media_preview_with_ids_and_a_track_list():
+    album = {"kind": "preview", "entity": "Media", "media_kind": "album", "title": "Night Garden",
+             "creator": "The Paper Kites", "year": "2021", "ids": {"spotify": "4aawyAB9vmqN3uQ7FjRGTy"},
+             "list_label": "Tracks", "list": ["Opening", "Midnight Walk"], "url": "spotify:album:x"}
+    card = _result("Today's album is Night Garden by The Paper Kites.", [album])["views"][0]
+    assert card["entity"] == "media" and card["ids"] == {"spotify": "4aawyAB9vmqN3uQ7FjRGTy"} and "url" not in card
+    assert _result("Today's album is Night Garden.", [album])["views"] == []    # the artist must be said too
+
+
+def test_files_contract_preview_keeps_flags_and_drops_ids():
+    contract = {"kind": "preview", "entity": "contract", "title": "Office lease", "summary": "Three years, renews itself.",
+                "flags": ["Auto-renews unless cancelled 90 days ahead"], "ids": {"apple_music": "12345"},
+                "media_kind": "album", "url": "https://files.example/lease.pdf"}
+    card = _result("The Office lease runs three years and auto-renews.", [contract])["views"][0]
+    assert card["flags"] and "ids" not in card and "media_kind" not in card
+    assert views.clean({"kind": "preview", "entity": "spaceship", "title": "X"}) is None
+
+
+def test_research_explore_by_day_needs_the_day_said():
+    card = {"kind": "explore", "sections": [{"label": "Things to do", "entity": "event", "items": [
+        {"name": "Harbor Lights", "day": "Sat 13"}]}]}
+    assert _result("On Saturday 13, Harbor Lights.", [card])["views"]
+    assert _result("Harbor Lights is worth a look.", [card])["views"] == []
+
+
+def test_every_artifact_kind_is_in_the_brief():
+    for kind in views.ARTIFACTS:
+        assert kind + " (" in builder.ARTIFACTS_RULE

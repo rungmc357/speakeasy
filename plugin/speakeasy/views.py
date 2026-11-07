@@ -116,6 +116,21 @@ CATALOG: dict[str, dict[str, Any]] = {
                                       "history": (N, 24), "url": URL}, 12)},
     "draft": {"channel": S, "to": S, "subject": S, "body": S, "send_as": S, "thread": S, "revision": N,
               "changes": S},
+    # P2: what happens when (a trip by day, a calendar, a release's stages, a package's scans).
+    "timeline": {"title": S, "days": ({"label": S, "sleep": S, "items": ({"when": S, "what": S, "where": S, "note": S,
+                                                                         "state": S, "url": URL, "address": S,
+                                                                         "lat": N, "lon": N}, 10)}, 10)},
+    # P4: rows of things to act on (pull requests, inbox triage, to-dos, bills, alerts).
+    "rows": {"title": S, "entity": S, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S, "when": S,
+                                                 "amount": S, "url": URL}, 12)},
+    # P6: one number that matters, which way it moves, and the series behind it.
+    "metric": {"label": S, "value": S, "unit": S, "delta": S, "good": B,
+               "points": ({"label": S, "value": N, "mark": S}, 31),
+               "threshold": N, "threshold_label": S, "source": S, "as_of": S},
+    # P7: one thing to open (an album, an article, a paper, a contract, a file) with a short list.
+    "preview": {"entity": S, "title": S, "creator": S, "sub": S, "year": S, "photo_url": URL, "url": URL,
+                "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "summary": S, "list_label": S,
+                "list": (S, 10), "flags": (S, 4)},
 }
 
 # One thing in an explore section (a place, a stay, an album, a pull request…). The app draws the
@@ -125,9 +140,12 @@ ENTITIES = {"place", "stay", "reservation", "flight", "event", "product", "media
             "listing", "generation", "task"}
 ENTITY_ITEM = {"name": S, "sub": S, "when": S, "facts": (S, 3), "price": S, "rating": N, "state": S,
                "photo_url": URL, "url": URL, "address": S, "city": S, "lat": N, "lon": N, "phone": S,
-               "creator": S, "media_kind": S, "ids": {"apple_music": S, "spotify": S}}
+               "creator": S, "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "day": S}
 CATALOG["explore"]["sections"][0]["items"] = (ENTITY_ITEM, 10)
-ARTIFACTS = {"explore", "compare", "status", "draft"}
+ARTIFACTS = {"explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview"}
+ROW_ENTITIES = {"pr", "issue", "email", "todo", "bill", "package", "alert", "note", "item", "task", "post"}
+PREVIEW_ENTITIES = {"media", "article", "paper", "file", "document", "contract", "page", "image", "recipe"}
+TIMELINE_STATES = {"done", "now", "next"}
 STATUS_STATES = {"ok", "warn", "bad", "off", "on", "needs_you", "info"}
 DRAFT_CHANNELS = {"email", "imessage", "sms", "slack", "discord", "telegram", "x", "linkedin", "whatsapp"}
 MEDIA_KINDS = {"album", "song", "playlist", "podcast", "artist", "show", "book"}
@@ -381,7 +399,48 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         if channel not in DRAFT_CHANNELS or not body.get("to") or not body.get("body"):
             return {}
         return {**body, "channel": channel}
+    if kind == "timeline":
+        days = []
+        for day in body.get("days") or []:
+            items = [_coords(i) for i in day.get("items") or [] if i.get("when") and i.get("what")]
+            items = [i if str(i.get("state", "")).lower() in TIMELINE_STATES else {k: v for k, v in i.items() if k != "state"}
+                     for i in items]
+            items = [{**i, "state": i["state"].lower()} if "state" in i else i for i in items]
+            if day.get("label") and items:
+                days.append({**day, "items": items})
+        return {**body, "days": days} if days else {}
+    if kind == "rows":
+        items = [_tone(dict(i), TAG_TONES) for i in body.get("items") or [] if i.get("name")]
+        if not items:
+            return {}
+        out = {**body, "items": items}
+        if str(out.get("entity", "")).lower() in ROW_ENTITIES:
+            out["entity"] = out["entity"].lower()
+        else:
+            out.pop("entity", None)
+        return out
+    if kind == "metric":
+        if not body.get("label") or not body.get("value"):
+            return {}
+        out = dict(body)
+        points = out.get("points") or []
+        if points and (len(points) < 2 or any("label" not in pt or "value" not in pt for pt in points)):
+            out.pop("points")   # a series is all of it or none of it, never a chart cut short
+        return out
+    if kind == "preview":
+        entity = str(body.get("entity", "")).lower()
+        if entity not in PREVIEW_ENTITIES or not body.get("title"):
+            return {}
+        return _entity_item(entity, {**body, "entity": entity})
     return body
+
+
+def _coords(item: dict[str, Any]) -> dict[str, Any]:
+    """Coordinates come as a valid pair or not at all."""
+    if "lat" in item and not -90 <= item["lat"] <= 90 or "lon" in item and not -180 <= item["lon"] <= 180 \
+            or ("lat" in item) != ("lon" in item):
+        item = {k: v for k, v in item.items() if k not in ("lat", "lon")}
+    return item
 
 
 def _entity_item(entity: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -398,10 +457,7 @@ def _entity_item(entity: str, item: dict[str, Any]) -> dict[str, Any]:
         out.pop("media_kind")
     elif "media_kind" in out:
         out["media_kind"] = out["media_kind"].lower()
-    if "lat" in out and not -90 <= out["lat"] <= 90 or "lon" in out and not -180 <= out["lon"] <= 180:
-        out.pop("lat", None)
-        out.pop("lon", None)
-    return out
+    return _coords(out)
 
 
 # -- shaping artifacts against the answer -----------------------------------------------------------
@@ -451,6 +507,24 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
             values += [i.get("value")] if i.get("value") else []
     elif kind == "draft":
         names.append(view["to"])
+    elif kind == "timeline":
+        for day in view["days"]:
+            values.append(day["label"])
+            for it in day["items"]:
+                values.append(it["when"])
+                names += [it["where"]] if it.get("where") else []
+    elif kind == "rows":
+        for i in view["items"]:
+            names.append(i["name"])
+            values += [i[k] for k in ("ref", "amount") if i.get(k)]
+    elif kind == "metric":
+        # The line itself prints no numbers; only marked points show theirs, so only those are checked.
+        values += [view["value"]] + [view[k] for k in ("delta", "threshold") if view.get(k) is not None]
+        values += [pt["value"] for pt in view.get("points") or [] if pt.get("mark")]
+    elif kind == "preview":
+        names += [view["title"]] + ([view["creator"]] if view.get("creator") else [])
+    if kind == "explore":
+        values += [it["day"] for sec in view["sections"] for it in sec["items"] if it.get("day")]
     return all(_grounded_name(n, said) for n in names) and all(_grounded_value(v, nums) for v in values)
 
 
