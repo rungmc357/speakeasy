@@ -4603,6 +4603,13 @@ class SidebandWorker:
         index = next((i for i, c in enumerate(chats) if c.ref == decision.conversation), None)
         return candidates[index].conv if index is not None else None
 
+    def note_outcome(self, delegation_id: str, kind: str) -> None:
+        """Where a typed message handed to ``follow_up`` went (SPK-80), said by the branch that took it:
+        steer (into the running task, its thread, or held for a task not started yet), follow_up (a
+        run continuing the task), new_run. messages.deliver reads it instead of guessing from time."""
+        if delegation_id.startswith(messages_mod.TYPED_PREFIX):
+            self.__dict__.setdefault("delivery_outcomes", {})[delegation_id] = kind
+
     async def follow_up(self, delegation_id: str, revision: int, context: str, part: router.Part) -> None:
         """Add to an open task when its run still accepts guidance; otherwise continue in that
         task's own session with a run that knows the earlier request and result."""
@@ -4612,6 +4619,7 @@ class SidebandWorker:
             status = target.status if target else None
             key = target.idem_key if target else None
         if target is None or key is None:
+            self.note_outcome(delegation_id, "new_run")
             await self.start_task(delegation_id, revision, context, part.request)
             return
         if await self.correct_task(delegation_id, target, key, part):
@@ -4626,6 +4634,7 @@ class SidebandWorker:
         async def answered_home(why: str) -> None:
             # A new task that references the running one carries what was shared, answered home.
             logger.info("speakeasy: %s; starting a task that references it", why)
+            self.note_outcome(delegation_id, "follow_up")
             await self.start_task(delegation_id, revision, context, f"{part.request} (following up: {earlier})",
                                   focus=P.follow_up_focus(part.request, earlier, None, status), parent=key,
                                   words=part.request, continues=P.continues_line(earlier, None, status))
@@ -4638,8 +4647,9 @@ class SidebandWorker:
         if status == "waiting_on_task":
             # Not started yet (held behind another task): what they add goes in with it when it starts.
             with self.interaction.lock:
-                target.held_words.append(part.request)
+                target.held_words.append(messages_mod.identified_text(part.request))
                 self.interaction.latest_delegation_id = target.delegation_id
+            self.note_outcome(delegation_id, "steer")
             self.drop_capture(delegation_id)
             self.store.progress(key, "milestone", f"You added: {notice_text(part.request, 200)}")
             self.publish()
@@ -4647,6 +4657,7 @@ class SidebandWorker:
             await self.append("session.thinking.append", delegation_id, P.held_follow_up_note(earlier))
             return
         if status in ACTIVE_RUN_STATES and not run_id and await self.message_thread_task(delegation_id, target, part.request):
+            self.note_outcome(delegation_id, "steer")
             return
         opening_thread = placed is None and not run_id and status in ACTIVE_RUN_STATES and target.deliver_to
         waited = 0.0
@@ -4659,6 +4670,7 @@ class SidebandWorker:
             if conv is not None:
                 # Only the user's own DM takes what was shared (start_continuity_task decides).
                 joins = status in ACTIVE_RUN_STATES
+                self.note_outcome(delegation_id, "follow_up")
                 await self.start_continuity_task(delegation_id, revision, context, part.request, conv,
                                                  joins=target if joins else None, parent=key)
                 return
@@ -4687,6 +4699,7 @@ class SidebandWorker:
             nameable = all(i["path"] for i in items)  # an image with no saved copy can't be pointed at
             accepted = nameable and await self.steer_follow_up(target, key, part.request, text)
             if accepted:
+                self.note_outcome(delegation_id, "steer")
                 self.__dict__.get("screen_notes", {}).pop(delegation_id, None)
                 if items:
                     self.store.add_shared(key, items)
@@ -4717,6 +4730,7 @@ class SidebandWorker:
             # It continues that chat's session or posts to the task's channel (topical or named, it can't
             # tell): no riding-along capture, as with a new request routed to a topical channel.
             self.forgo_capture(delegation_id)
+        self.note_outcome(delegation_id, "follow_up")
         await self.start_task(delegation_id, revision, context, f"{part.request} (following up: {earlier})",
                               focus=focus, session_id=None if carrying and placed else self.store.session_for(key),
                               replaces=target.delegation_id, deliver_to=None if carrying else target.deliver_to,
@@ -4765,6 +4779,7 @@ class SidebandWorker:
         self.handoff_at.pop(delegation_id, None)
         if fix.wrong is None:
             # Said again after the task took it: confirmed, never sent twice (a typed repeat: silently).
+            self.note_outcome(delegation_id, "steer")
             if typed:
                 return True
             right = next((c.get("right") for c in reversed(self.store.corrections(key)) if c.get("right")), None) \
@@ -4804,6 +4819,7 @@ class SidebandWorker:
             if run_id:
                 delivered = await self.steer_now(target, steer)
         self.publish()
+        self.note_outcome(delegation_id, "steer" if delivered else "follow_up")
         if not delivered:
             # Finished (or it no longer takes guidance): the corrected request runs again in its session.
             earlier = notice_text(text_mod.request_notes(fix.request)[0], 200) or "an earlier request"
@@ -4823,7 +4839,7 @@ class SidebandWorker:
         """Steer a running task, asking again for a few seconds while a just-admitted run refuses."""
         if not target.run_id:
             return False
-        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, messages_mod.identified_text(text))
         for _ in range(STEER_RETRIES):
             if accepted:
                 break
@@ -4832,7 +4848,7 @@ class SidebandWorker:
             if not going or not target.run_id:
                 break
             await asyncio.sleep(STEER_RETRY_S)
-            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, messages_mod.identified_text(text))
         return bool(accepted)
 
     # -- follow-up receipts (receipts.py) ----------------------------------------------------
@@ -4845,7 +4861,7 @@ class SidebandWorker:
         # A run Hermes admitted a moment ago refuses guidance (409) until its agent is up. Two things
         # said seconds apart then became two near-identical runs that both answered out loud; ask
         # again for a few seconds while the run is still going before starting another one.
-        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, messages_mod.identified_text(text))
         for _ in range(STEER_RETRIES):
             if accepted:
                 break
@@ -4854,12 +4870,12 @@ class SidebandWorker:
             if not going:
                 break
             await asyncio.sleep(STEER_RETRY_S)
-            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, messages_mod.identified_text(text))
         if not accepted:
             return False
         milestone = f"You added: {notice_text(words, 200)}"
         self.store.progress(key, "milestone", milestone)
-        self.store.add_follow_up(key, words, text, milestone, after)
+        self.store.add_follow_up(key, words, messages_mod.identified_text(text), milestone, after)
         with self.interaction.lock:
             ended = target.status if target.status in TERMINAL else None
         if ended:
@@ -5169,7 +5185,7 @@ class SidebandWorker:
             # Hermes keeps each Idempotency-Key's run: a retry asks under its own key, or it would get
             # the refused run back.
             key = idem if not backend.refusal_retries else f"{idem}:retry{backend.refusal_retries}"
-            run_id = await asyncio.to_thread(self.hermes.start_run, prompt, key, session_id, **(extra or {}))
+            run_id = await asyncio.to_thread(self.hermes.start_run, messages_mod.identified_text(prompt), key, session_id, **(extra or {}))
             if first and started is not None:
                 started()
             with self.interaction.lock:

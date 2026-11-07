@@ -232,7 +232,8 @@ def test_spoken_follow_up_is_announced_and_a_correction_moves_it(server, service
     assert any("FAQ" in s for s in by_run[b["run_id"]])                       # moved there
     assert any("meant for a different task" in s for s in by_run[a["run_id"]])  # the wrong one told
     assert len(hermes.calls) == calls                                          # no new job
-    assert any("Moved it to" in n for n in notes(worker))
+    # The correction steers both tasks before its voice acknowledgement is emitted.
+    wait_for(lambda: any("Moved it to" in n for n in notes(worker)))
 
 
 def added_notes(worker):

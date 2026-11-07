@@ -31,33 +31,34 @@ public struct MessageModeChoice: Equatable, Sendable {
     }
 }
 
-/// Messages this device steered into a running task, so the thread can tag them "Steered" once the
-/// server's copy shows (same words, not older than the send).
+/// Messages this device steered into a running task, by client id (SPK-80: never by words), so the
+/// thread can tag them "Steered" until the server's receipt for that id arrives.
 public struct SteeredMarks: Equatable, Sendable {
-    private var marks: [(text: String, at: Date)] = []
+    private var ids: [String] = []
     public init() {}
 
-    public static func == (a: SteeredMarks, b: SteeredMarks) -> Bool {
-        a.marks.map(\.text) == b.marks.map(\.text) && a.marks.map(\.at) == b.marks.map(\.at)
+    public mutating func record(clientID: String) {
+        guard !clientID.isEmpty, !ids.contains(clientID) else { return }
+        ids.append(clientID)
+        if ids.count > 50 { ids.removeFirst(ids.count - 50) }
     }
 
-    public mutating func record(_ text: String, at: Date = Date()) {
-        let key = Self.norm(text)
-        guard !key.isEmpty else { return }
-        marks.append((key, at))
-        if marks.count > 50 { marks.removeFirst(marks.count - 50) }
-    }
+    public func contains(clientID: String?) -> Bool { clientID.map(ids.contains) ?? false }
 
-    /// True for a user message with these words, sent at or after a steer of them (a minute's slack).
-    public func contains(_ text: String, at: Date?) -> Bool {
-        let key = Self.norm(text)
-        return marks.contains { m in m.text == key && (at.map { $0 >= m.at.addingTimeInterval(-60) } ?? true) }
-    }
-
-    public var isEmpty: Bool { marks.isEmpty }
+    public var isEmpty: Bool { ids.isEmpty }
 
     static func norm(_ s: String) -> String {
         s.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// The receipt a thread message's bubble shows: the server's for its client id, else (just
+    /// steered here, the server hasn't listed it yet) "Sent to the running task". Nil for a message
+    /// with no client id: words never pick a receipt.
+    public func receipt(clientID: String?, at: Date?, in receipts: [SteeredMessage]) -> SteeredMessage? {
+        guard let clientID, !clientID.isEmpty else { return nil }
+        if let r = receipts.receipt(clientID: clientID) { return r }
+        guard contains(clientID: clientID) else { return nil }
+        return SteeredMessage(clientID: clientID, text: "", at: at, state: .sent)
     }
 }
 
@@ -141,8 +142,6 @@ public struct SteeredMessage: Equatable, Sendable, Identifiable {
 }
 
 public extension Array where Element == SteeredMessage {
-    /// The receipt for a thread message, if it was steered (newest match first).
-    func receipt(for message: String, at: Date?) -> SteeredMessage? {
-        last { $0.matches(message, at: at) }
-    }
+    /// The receipt for one message, by its client id only.
+    func receipt(clientID: String) -> SteeredMessage? { last { $0.clientID == clientID } }
 }

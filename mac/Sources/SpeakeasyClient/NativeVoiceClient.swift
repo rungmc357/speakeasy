@@ -231,8 +231,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.onOpenJob = { [weak self] id in self?.openJob(id) }
         model.onTellJob = { [weak self] id in self?.tellJob(id) }
         model.deliverMessage = { [weak self] message, done in
-            guard let self else { done(nil, nil); return }
-            self.deliver(message, done: done)
+            OutboxCompletion.run(self, done: done) { $0.deliver(message, done: done) }
         }
         model.onMessageNotice = { [weak model] m in
             guard let model else { return }
@@ -1574,7 +1573,8 @@ public final class NativeVoiceClient: VoiceCallClient {
             return
         }
         Task { [weak self] in
-            guard let self else { return }
+            // The client went away before the send started: the message still settles (failed, Retry).
+            guard let self else { done(nil, OutboxCompletion.ownerGone); return }
             do {
                 let reply = try await self.sendMessage(runID: m.runID, text: m.text, source: m.source, clientID: m.id,
                                                        choiceTaskID: m.choiceTaskID, attachments: m.attachments.map(\.id))

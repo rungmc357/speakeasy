@@ -17,8 +17,14 @@ public enum TaskMessageDelivery: String, Equatable, Sendable {
     case answer
     /// The job had finished: a linked follow-up job started.
     case followUp = "follow_up"
+    /// Sent to the session's linked follow-up (session page sends).
+    case linked
     /// Held until the job finishes ("Send when it's done", servers with `message_modes`).
     case queued
+    /// Nothing was running or waiting: the message started a new run (SPK-80).
+    case newRun = "new_run"
+    /// Taken, but not in a turn yet (the task is between steps). Not "sent": it may still end unused.
+    case pending
     case unknown
 }
 
@@ -41,23 +47,37 @@ public enum MessageMode: String, Equatable, Sendable, CaseIterable {
 
 /// A message the server holds until its task finishes (`queued` on a session page or task).
 public struct QueuedMessage: Equatable, Sendable, Identifiable {
+    /// `queued`: still waiting; `unused`: its task stopped before it was sent (SPK-80).
+    public enum State: String, Equatable, Sendable { case queued, unused }
     public var clientID: String
     public var text: String
     public var at: Date?
-    public var position: Int
+    /// 1 = sent next; nil once unused.
+    public var position: Int?
     /// A send was tried and failed; it is tried again.
     public var error: String?
+    public var state: State
+    /// The server's words for an unused one (else `unusedLabel`).
+    public var serverLabel: String?
     public var id: String { clientID }
-    public init(clientID: String, text: String, at: Date? = nil, position: Int = 1, error: String? = nil) {
-        self.clientID = clientID; self.text = text; self.at = at; self.position = position; self.error = error
+    public var isUnused: Bool { state == .unused }
+    public init(clientID: String, text: String, at: Date? = nil, position: Int? = 1, error: String? = nil,
+                state: State = .queued, serverLabel: String? = nil) {
+        self.clientID = clientID; self.text = text; self.at = at; self.error = error; self.state = state
+        self.position = state == .unused ? nil : position; self.serverLabel = serverLabel
     }
     public init?(json: Any?) {
         guard let o = json as? [String: Any], let id = o["client_id"] as? String, !id.isEmpty,
               let text = o["text"] as? String else { return nil }
+        let state = (o["state"] as? String).flatMap(State.init(rawValue:)) ?? .queued
         self.init(clientID: id, text: text, at: (o["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
-                  position: (o["position"] as? NSNumber)?.intValue ?? 1, error: o["error"] as? String)
+                  position: (o["position"] as? NSNumber)?.intValue ?? 1, error: o["error"] as? String,
+                  state: state, serverLabel: o["label"] as? String)
     }
     public static let label = "Queued · sends when this finishes"
+    public static let unusedLabel = "The task stopped before sending this"
+    /// The tag under it.
+    public var tag: String { isUnused ? (serverLabel ?? Self.unusedLabel) : Self.label }
 
     /// The path under a session page (`DELETE` cancels, `POST …/steer` sends it now).
     public static func path(session sessionID: String, clientID: String) -> String {
@@ -123,14 +143,22 @@ public struct TaskMessageReply: Equatable, Sendable {
     public var deliveredAs: TaskMessageDelivery
     /// A queued message: 1 = sent next.
     public var queuePosition: Int?
-    public init(runID: String?, deliveredAs: TaskMessageDelivery, queuePosition: Int? = nil) {
+    /// The send's own id, echoed (SPK-80): the reply belongs to this message, never matched by text.
+    public var clientID: String?
+    /// The server's durable receipt for it.
+    public var receiptID: String?
+    public init(runID: String?, deliveredAs: TaskMessageDelivery, queuePosition: Int? = nil,
+                clientID: String? = nil, receiptID: String? = nil) {
         self.runID = runID; self.deliveredAs = deliveredAs; self.queuePosition = queuePosition
+        self.clientID = clientID; self.receiptID = receiptID
     }
     public init?(json: [String: Any]) {
         guard json["ok"] as? Bool != false else { return nil }
         runID = json["run_id"] as? String
         deliveredAs = (json["delivered_as"] as? String).flatMap(TaskMessageDelivery.init(rawValue:)) ?? .unknown
         queuePosition = (json["queue_position"] as? NSNumber)?.intValue
+        clientID = (json["client_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        receiptID = (json["receipt_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 
@@ -176,7 +204,8 @@ public struct OutgoingMessage: Identifiable, Equatable, Sendable {
     }
 
     public var isFailed: Bool { if case .failed = state { return true }; return false }
-    public var isSent: Bool { if case .sent = state { return true }; return false }
+    /// `pending` (taken, not read yet) is not sent: it may still end unused.
+    public var isSent: Bool { if case .sent(let how) = state { return how != .pending }; return false }
     public var isPending: Bool { state == .queued || state == .sending }
 
     public func request(interactionID: String?) -> TaskMessageRequest {
@@ -187,8 +216,10 @@ public struct OutgoingMessage: Identifiable, Equatable, Sendable {
 
 /// Messages to tasks, sent one at a time in the order written. A message typed while another is
 /// sending waits (queued) and goes right after; a failure stays with Retry and doesn't hold up the rest.
+/// Storage and lifecycle are the shared `OutboxLedger` (the session page's `HistoryOutbox` uses it too).
 public struct TaskOutbox: Equatable, Sendable {
-    public private(set) var items: [OutgoingMessage] = []
+    private var ledger = OutboxLedger<OutgoingMessage>(keepSettled: 60)
+    public var items: [OutgoingMessage] { ledger.items }
     public init() {}
 
     /// Adds a message; nil when there is neither text nor an attachment.
@@ -202,44 +233,52 @@ public struct TaskOutbox: Equatable, Sendable {
         guard clean != nil || !attachments.isEmpty else { return nil }
         let m = OutgoingMessage(id: id, jobID: jobID, runID: runID, taskName: taskName, text: clean ?? "",
                                 source: source, choiceTaskID: choiceTaskID, attachments: attachments, at: at)
-        items.append(m)
-        trim()
+        ledger.add(m)
         return m
     }
 
     /// Something is on the wire now.
-    public var isSending: Bool { items.contains { $0.state == .sending } }
+    public var isSending: Bool { ledger.items.contains { $0.state == .sending } }
 
     /// The next message to send, marked sending; nil while one is already on the wire or none waits.
     public mutating func startNext() -> OutgoingMessage? {
-        guard !isSending, let i = items.firstIndex(where: { $0.state == .queued }) else { return nil }
-        items[i].state = .sending
-        return items[i]
+        guard !isSending, let next = ledger.items.first(where: { $0.state == .queued }) else { return nil }
+        ledger.set(next.id, .sending)
+        return ledger.item(next.id)
     }
 
-    public mutating func markSent(_ id: String, as delivery: TaskMessageDelivery) { set(id, .sent(delivery)) }
-    public mutating func markFailed(_ id: String, _ message: String) { set(id, .failed(message)) }
-    /// Retry: back in line with the same client id.
-    public mutating func retry(_ id: String) {
-        guard let i = items.firstIndex(where: { $0.id == id }), items[i].isFailed else { return }
-        items[i].state = .queued
+    public mutating func markSent(_ id: String, as delivery: TaskMessageDelivery) {
+        ledger.set(id, delivery == .pending ? .pending : .sent(delivery))
     }
-    public mutating func discard(_ id: String) { items.removeAll { $0.id == id } }
+    public mutating func markFailed(_ id: String, _ message: String) { ledger.set(id, .failed(message)) }
+    /// Retry: back in line with the same client id, words, answer and attachments.
+    public mutating func retry(_ id: String) { ledger.retry(id) }
+    public mutating func discard(_ id: String) { ledger.remove(id) }
 
-    public func messages(forJob jobID: String) -> [OutgoingMessage] { items.filter { $0.jobID == jobID } }
-    public func message(_ id: String) -> OutgoingMessage? { items.first { $0.id == id } }
+    public func messages(forJob jobID: String) -> [OutgoingMessage] { ledger.items.filter { $0.jobID == jobID } }
+    public func message(_ id: String) -> OutgoingMessage? { ledger.item(id) }
+}
 
-    private mutating func set(_ id: String, _ state: OutgoingMessage.State) {
-        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
-        items[i].state = state
-    }
-
-    /// Keeps the newest 60 settled messages (pending ones always stay).
-    private mutating func trim() {
-        let settled = items.filter { !$0.isPending }
-        guard settled.count > 60 else { return }
-        let drop = Set(settled.prefix(settled.count - 60).map(\.id))
-        items.removeAll { drop.contains($0.id) }
+extension OutgoingMessage: OutboxItem {
+    public var phase: OutboxPhase {
+        get {
+            switch state {
+            case .queued: return .queued
+            case .sending: return .sending
+            case .sent(.pending): return .pending
+            case .sent(let how): return .sent(how)
+            case .failed(let why): return .failed(why)
+            }
+        }
+        set {
+            switch newValue {
+            case .queued: state = .queued
+            case .sending: state = .sending
+            case .pending: state = .sent(.pending)
+            case .sent(let how): state = .sent(how)
+            case .failed(let why), .unused(let why): state = .failed(why)
+            }
+        }
     }
 }
 

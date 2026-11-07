@@ -76,6 +76,8 @@ public struct SentMessages: View {
                 Text("Sending…").font(.system(size: 10.5 * s, weight: .medium))
             }
             .foregroundStyle(.secondary)
+        case .sent(.pending):
+            Label(SteeredMessage.defaultLabel(.waiting), systemImage: "hourglass").labelStyle(SmallLabel(s: s)).foregroundStyle(.secondary)
         case .sent(let how2):
             Label(how2 == .followUp ? "Sent · started a follow-up" : how2 == .answer ? "Sent as your answer" : "Sent",
                   systemImage: "checkmark").labelStyle(SmallLabel(s: s)).foregroundStyle(.secondary)

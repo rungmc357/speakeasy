@@ -31,6 +31,13 @@ def no_real_routing_model(monkeypatch):
     monkeypatch.setattr(router, "_title_llm", lambda messages, timeout: None)
     monkeypatch.setattr(router, "_hermes_title", lambda text, timeout: None)
     monkeypatch.setattr(router, "result_headline", lambda request, report, timeout=10.0: None)
+    # Task metadata uses the title model directly, not aux_call/_title_llm. Leaving these live
+    # lets a fake task probe the host's providers while holding the shared profile scope lock;
+    # even an unrelated pair/status request can then time out waiting for that lock.
+    monkeypatch.setattr(router, "polish_request", lambda request, timeout=10.0: None)
+    monkeypatch.setattr(router, "working_status", lambda request, timeout=10.0: None)
+    monkeypatch.setattr(router, "plan_steps", lambda request, timeout=10.0: None)
+    monkeypatch.setattr(router, "result_shape", lambda *args, **kwargs: None)
 
 
 @pytest.fixture(autouse=True)

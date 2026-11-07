@@ -976,6 +976,8 @@ struct HistoryMessageView: View {
             switch message.delivery {
             case .sending?:
                 LiveSpinner(size: 9); Text("Sending…")
+            case .pending?:
+                Image(systemName: "hourglass").font(.system(size: 8.5)); Text(SteeredMessage.defaultLabel(.waiting))
             case .failed(let why)?:
                 Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Live.red)
                 Text(why).foregroundStyle(Live.red).lineLimit(1)
@@ -986,7 +988,7 @@ struct HistoryMessageView: View {
             default:
                 if message.voice && !message.isVoiceNote { Image(systemName: "mic.fill").font(.system(size: 8.5)); Text("Voice message") }
                 if message.delivery == .sent { Image(systemName: "checkmark").font(.system(size: 8.5, weight: .bold)); Text("Sent") }
-                if let receipt = store.steerReceipt(message.text, at: message.at, session: sessionID) {
+                if let receipt = store.steerReceipt(message, session: sessionID) {
                     Image(systemName: receipt.symbol).font(.system(size: 8.5, weight: .bold))
                     Text(receipt.tag()).foregroundStyle(receipt.state == .seen ? AnyShapeStyle(Live.brassText) : AnyShapeStyle(.tertiary))
                 }

@@ -64,13 +64,15 @@ final class MessageModesTests: XCTestCase {
         XCTAssertEqual(QueuedMessage.path(run: "run_1", clientID: "q1"), "/voice/work/run_1/queued/q1")
     }
 
-    func testSteeredMarksMatchTheServersCopy() {
+    func testSteeredMarksMatchByClientIDOnly() {
         var marks = SteeredMarks()
         let at = Date(timeIntervalSince1970: 1_800_000_000)
-        marks.record("Put the  tomatoes first", at: at)
-        XCTAssertTrue(marks.contains("put the tomatoes first", at: at.addingTimeInterval(3)))
-        XCTAssertFalse(marks.contains("put the tomatoes first", at: at.addingTimeInterval(-600)))   // an older message
-        XCTAssertFalse(marks.contains("something else", at: at))
+        marks.record(clientID: "c1")
+        XCTAssertTrue(marks.contains(clientID: "c1"))
+        XCTAssertFalse(marks.contains(clientID: "c2"))
+        XCTAssertFalse(marks.contains(clientID: nil))
+        XCTAssertEqual(marks.receipt(clientID: "c1", at: at, in: [])?.state, .sent)
+        XCTAssertNil(marks.receipt(clientID: nil, at: at, in: []), "no id, no receipt (never by words)")
     }
 
     func testTheOutboxDropsAMessageTheServerHolds() {
@@ -103,10 +105,8 @@ final class MessageModesTests: XCTestCase {
         XCTAssertEqual(c.steered[2].runID, "run_9")
         XCTAssertEqual(c.steered[2].label, "It finished first · sent as a follow-up")
         XCTAssertEqual(SteeredMessage(clientID: "z", text: "y", state: .sent).tag(), "Sent to the running task")
-        // The transcript keeps the words wrapped: still the same message.
-        let at = Date(timeIntervalSince1970: 1_800_000_005)
-        XCTAssertEqual(c.steered.receipt(for: "Sam typed to this task: Put the  tomatoes first Fold it in.", at: at)?.clientID, "a")
-        XCTAssertNil(c.steered.receipt(for: "Something else", at: at))
-        XCTAssertNil(c.steered.receipt(for: "Put the tomatoes first", at: Date(timeIntervalSince1970: 1_799_990_000)))
+        // By client id only (SPK-80).
+        XCTAssertEqual(c.steered.receipt(clientID: "a")?.state, .seen)
+        XCTAssertNil(c.steered.receipt(clientID: "zz"))
     }
 }

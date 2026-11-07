@@ -270,7 +270,8 @@ public enum HistoryTarget: Equatable, Sendable {
 
 public struct HistoryThreadMessage: Equatable, Sendable, Identifiable {
     public enum Role: Equatable, Sendable { case user, assistant, note }
-    public enum Delivery: Equatable, Sendable { case sending, sent, failed(String) }
+    /// `pending`: the server took it, no turn has read it yet (not "Sent"; SPK-80).
+    public enum Delivery: Equatable, Sendable { case sending, pending, sent, failed(String) }
     public var id: String
     public var role: Role
     public var text: String
@@ -353,6 +354,7 @@ public struct HistoryThread: Equatable, Sendable {
                 }
                 var m = HistoryThreadMessage(id: e.id, role: .user, text: e.text, at: e.at, voice: e.voice, call: e.call)
                 m.voiceClip = e.voiceClip; m.voiceDuration = e.voiceDuration
+                m.clientID = e.clientID
                 out.append(m)
             }
         }
@@ -380,50 +382,68 @@ public struct HistoryThread: Equatable, Sendable {
 // MARK: - Messages on their way
 
 /// Messages this app sent to a session, shown at the end of its thread until the server's copy
-/// arrives (same text, not older than ours), each with how it's going. A failed one retries with
-/// the same client id (the server never sends it twice).
+/// arrives (a user row with our client id: never matched by words, SPK-80), each with how it's
+/// going. A failed one retries with the same client id (the server never sends it twice).
+/// Storage and lifecycle are the shared `OutboxLedger`.
 public struct HistoryOutbox: Equatable, Sendable {
-    public struct Item: Equatable, Sendable, Identifiable {
+    public struct Item: Equatable, Sendable, Identifiable, OutboxItem {
         public var id: String { request.clientID }
         public var request: HistoryMessageRequest
         public var at: Date
-        public var delivery: HistoryThreadMessage.Delivery
+        public var phase: OutboxPhase
+        public var delivery: HistoryThreadMessage.Delivery {
+            switch phase {
+            case .queued, .sending: return .sending
+            case .pending: return .pending
+            case .sent: return .sent
+            case .failed(let why), .unused(let why): return .failed(why)
+            }
+        }
         /// A voice note: the recording that is the message (Retry sends the same clip and id).
         public var voiceNote: VoiceNoteRequest? = nil
         /// What Hermes heard, once it answered.
         public var transcript: String? = nil
     }
-    public private(set) var items: [Item] = []
+    private var ledger = OutboxLedger<Item>()
+    public var items: [Item] { ledger.items }
     public init() {}
 
     public mutating func add(_ request: HistoryMessageRequest, at: Date) {
-        items.removeAll { $0.id == request.clientID }
-        items.append(Item(request: request, at: at, delivery: .sending))
+        ledger.add(Item(request: request, at: at, phase: .sending))
     }
     /// A voice note on its way (the recording itself is the message).
     public mutating func add(voiceNote: VoiceNoteRequest, session: String, at: Date) {
         guard let placeholder = HistoryMessageRequest(sessionID: session, text: "Voice message", source: .voiceMessage,
                                                       clientID: voiceNote.clientID) else { return }
-        items.removeAll { $0.id == voiceNote.clientID }
-        items.append(Item(request: placeholder, at: at, delivery: .sending, voiceNote: voiceNote))
+        ledger.add(Item(request: placeholder, at: at, phase: .sending, voiceNote: voiceNote))
     }
     public mutating func heard(_ clientID: String, _ transcript: String?) {
-        if let i = items.firstIndex(where: { $0.id == clientID }) { items[i].transcript = transcript ?? "" }
+        ledger.update(clientID) { $0.transcript = transcript ?? "" }
     }
     public mutating func mark(_ clientID: String, _ delivery: HistoryThreadMessage.Delivery) {
-        if let i = items.firstIndex(where: { $0.id == clientID }) { items[i].delivery = delivery }
+        switch delivery {
+        case .sending: ledger.set(clientID, .sending)
+        case .pending: ledger.set(clientID, .pending)
+        case .sent: ledger.set(clientID, .sent(.unknown))
+        case .failed(let why): ledger.set(clientID, .failed(why))
+        }
     }
-    public func item(_ clientID: String) -> Item? { items.first { $0.id == clientID } }
+    /// Settle from a send's reply: `pending` is not "Sent" (SPK-80).
+    public mutating func settle(_ clientID: String, _ reply: TaskMessageDelivery) { ledger.set(clientID, .settled(reply)) }
+    public func item(_ clientID: String) -> Item? { ledger.item(clientID) }
     /// A message the server now holds for later (`delivered_as: queued`): the page's `queued` list
     /// shows it from here on, not the outbox.
-    public mutating func remove(_ clientID: String) { items.removeAll { $0.id == clientID } }
-    public func pending(in session: String) -> Bool { items.contains { $0.request.sessionID == session } }
+    public mutating func remove(_ clientID: String) { ledger.remove(clientID) }
+    /// Something still on its way in this session (sending, or taken but unread): poll fast. A sent
+    /// or failed message alone doesn't keep the page polling.
+    public func pending(in session: String) -> Bool {
+        ledger.items.contains { $0.request.sessionID == session && $0.phase.isInFlight }
+    }
 
     public func merged(into messages: [HistoryThreadMessage], session: String) -> [HistoryThreadMessage] {
         var shown = messages
-        var used = Set<String>()
-        for item in items where item.request.sessionID == session {
-            if item.delivery == .sent, let echo = Self.echo(of: item, in: messages, skipping: used) { used.insert(echo); continue }
+        for item in ledger.items where item.request.sessionID == session {
+            if Self.echo(of: item, in: messages) != nil { continue }
             var m = HistoryThreadMessage(id: "local-\(item.id)", role: .user,
                                          text: item.voiceNote == nil ? item.request.text : item.transcript ?? "", at: item.at,
                                          voice: item.request.source == .voiceMessage, delivery: item.delivery,
@@ -434,27 +454,21 @@ public struct HistoryOutbox: Equatable, Sendable {
         return shown
     }
 
-    /// Forget sent messages the server now shows.
+    /// Forget messages the server now shows (by client id), and settle the rest from its receipts.
     public mutating func prune(_ messages: [HistoryThreadMessage], session: String) {
-        var used = Set<String>()
-        items.removeAll { item in
-            guard item.request.sessionID == session, item.delivery == .sent,
-                  let echo = Self.echo(of: item, in: messages, skipping: used) else { return false }
-            used.insert(echo); return true
-        }
+        ledger.removeAll { $0.request.sessionID == session && Self.echo(of: $0, in: messages) != nil }
     }
 
-    static func echo(of item: Item, in messages: [HistoryThreadMessage], skipping used: Set<String>) -> String? {
+    /// Settle in-flight messages from the server's page: a held one leaves (its queued list shows
+    /// it), a stopped task's ones turn unused (Retry), a receipt confirms a pending one.
+    public mutating func reconcile(_ c: HistoryConversation) {
+        ledger.reconcile(c) { $0.request.sessionID == c.id && $0.phase.isInFlight }
+    }
+
+    /// The server's copy of a message: a user row with its client id (or its voice clip). Words never match.
+    static func echo(of item: Item, in messages: [HistoryThreadMessage]) -> String? {
         messages.first { m in
-            guard m.role == .user, m.delivery == nil, !used.contains(m.id),
-                  m.at.map({ $0 >= item.at.addingTimeInterval(-60) }) ?? true else { return false }
-            if item.voiceNote != nil {   // a voice note: by its clip (the message's client id)
-                if let clip = m.voiceClip { return clip == item.id }   // another recording, even with the same words
-                // A server that doesn't name the clip: by what Hermes heard.
-                guard let words = item.transcript, !words.isEmpty else { return false }
-                return m.text.trimmingCharacters(in: .whitespacesAndNewlines) == words
-            }
-            return m.text.trimmingCharacters(in: .whitespacesAndNewlines) == item.request.text
+            m.role == .user && m.delivery == nil && (m.clientID == item.id || m.voiceClip == item.id)
         }?.id
     }
 }
