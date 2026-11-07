@@ -77,7 +77,8 @@ async def present(worker, delegation_id, task, index, view, *, changed=False):
     for key, value in details.items():
         if key in {"photo_url", "checkout_url", "total_source"}:
             continue
-        parts.append(key.replace("_", " ") + ": " + operations.get(value, value))
+        spoken = operations.get(value, value) if key == "operation" else value
+        parts.append(key.replace("_", " ") + ": " + spoken)
     for item in view.get("items", []):
         parts.append("Item: " + ", ".join(key.replace("_", " ") + ": " + str(value)
                      for key, value in item.items() if key != "photo_url"))

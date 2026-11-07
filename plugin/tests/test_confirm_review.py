@@ -50,6 +50,15 @@ def test_share_and_subscription_exact_identifying_terms():
         assert all(term in worker.append.call_args.args[2] for term in terms)
 
 
+@pytest.mark.parametrize("literal", ["sign_up", "open_garage"])
+def test_operation_words_do_not_rewrite_exact_content_or_destination(literal):
+    raw = raw_card("send"); raw["details"].update(recipient=literal, body=literal)
+    worker, _ = voice_worker()
+    asyncio.run(V.present(worker, "reply", "task", 0, C.clean(raw)))
+    speech = worker.append.call_args.args[2]
+    assert "recipient: " + literal in speech and "body: " + literal in speech
+
+
 @pytest.mark.parametrize("length", [1900, 7000])
 def test_long_offer_never_binds_clipped_terms(length):
     raw = raw_card("send"); raw["details"]["body"] = "x" * length
