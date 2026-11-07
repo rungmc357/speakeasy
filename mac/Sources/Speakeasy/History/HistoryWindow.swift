@@ -111,11 +111,23 @@ final class DemoHistoryBackend: HistoryBackend {
 
     var models = ModelCatalog.sample
     var sessionModels: [SessionModelRequest] = []
+    var modelAliases: [String: String] = [:]
+    var modelSaveDelay: UInt64 = 0
     func models() async throws -> ModelCatalog { models }
     func skills() async throws -> [SlashSkill] { DemoSlashSkills.all }
     func setSessionModel(_ request: SessionModelRequest) async throws {
         sessionModels.append(request)
+        if modelSaveDelay > 0 { try? await Task.sleep(nanoseconds: modelSaveDelay) }
         conversations[request.sessionID]?.modelChoice = request.choice.isEmpty ? nil : request.choice
+        let canonical = modelAliases[request.sessionID] ?? request.sessionID
+        let picker = ModelPickerState(catalog: models, chatChoice: request.choice)
+        if let option = picker.model {
+            for id in conversations.keys where (modelAliases[id] ?? id) == canonical {
+                conversations[id]?.modelChoice = request.choice
+                conversations[id]?.nextModel = ModelBadge(id: option.id, name: option.name,
+                    reasoning: picker.reasoning, source: "chat")
+            }
+        }
     }
     func setDefaultModel(_ defaults: JobModelDefaults) async throws {
         models.defaultChoice = ModelChoice(model: defaults.model, reasoning: defaults.reasoning)
@@ -681,6 +693,45 @@ enum HistoryShots {
                                                                     providerName: "Anthropic", reasoning: .high, source: "chat", served: true)
                 store.open("s_flaky")
                 store.load("s_flaky")
+            }
+            await shot("14-model-preservation") {
+                store.setCallLive(false)
+                store.preview(catalog: ModelCatalog.sample)
+                let gpt = ModelBadge(id: "openai-codex/gpt-5.5", name: "GPT-5.5", reasoning: .high, source: "chat")
+                let opus = ModelBadge(id: "anthropic/claude-opus-5-5", name: "Claude Opus 5.5", reasoning: .low, source: "chat")
+                backend.modelAliases = ["s_model_parent": "s_model_parent", "s_model_linked": "s_model_parent"]
+                for (id, title, badge) in [("s_model_parent", "Workbench lighting", gpt),
+                    ("s_model_linked", "Workbench wiring details", gpt), ("s_model_other", "A quiet cafe", opus)] {
+                    var convo = HistoryConversation(id: id, title: title, source: "speakeasy", sourceLabel: "Speakeasy")
+                    convo.nextModel = badge
+                    convo.entries = [.init(id: "m1", kind: .assistant, text: "The lighting plan is ready.")]
+                    backend.conversations[id] = convo
+                }
+                for id in ["s_model_parent", "s_model_linked", "s_model_parent", "s_model_other", "s_model_parent"] {
+                    store.open(id)
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    let expected = id == "s_model_other" ? opus.label : gpt.label
+                    precondition(store.picker?.chipLabel == expected, "navigation changed next-send model")
+                    try? snapshot(c, to: "\(dir)/\(id).png")
+                }
+                precondition(backend.sessionModels.isEmpty, "navigation wrote a preference")
+                var pick = store.picker!
+                pick.select(ModelCatalog.sample.option("anthropic/claude-haiku-4-5")!)
+                pick.select(.low)
+                backend.modelSaveDelay = 200_000_000
+                store.applyModel(pick, scope: .chat)
+                store.open("s_model_linked")
+                store.draft = "Must not send during save"
+                store.send()
+                precondition(backend.sent.isEmpty && store.draft == "Must not send during save", "Back bypassed save")
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                precondition(store.picker?.chipLabel == "Claude Haiku 4.5 · Low", "linked page did not refresh")
+                store.draft = "Confirmed route"
+                store.send()
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                precondition(backend.sent.last?.sessionID == "s_model_linked", "send used another identity")
+                precondition(backend.sessionModels.count == 1, "unexpected preference write")
+                print("SPK-210 Mac navigation/save/send assertions PASS")
             }
             await shot("12-reply-models") {
                 store.setCallLive(false)
