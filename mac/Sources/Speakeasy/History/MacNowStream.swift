@@ -1,5 +1,6 @@
 import SwiftUI
 import SpeakeasyCore
+import SpeakeasyClient
 
 struct MacNowThread: View {
     let stream: NowStream
@@ -92,27 +93,83 @@ struct MacNowRecent: View {
 struct MacNowWorkList: View {
     @ObservedObject var now: MacNowModel
     @ObservedObject var store: HistoryStore
-    @Environment(\.dismiss) private var dismiss
+    var onClose: () -> Void
+    @State private var category = "Needs you"
+    private var categories: [String] { ["Needs you", "Running", "Done today"].filter { !items($0).isEmpty || ($0 == "Running" && !(now.home?.background.isEmpty ?? true)) } }
+    private var current: String { categories.contains(category) ? category : categories.first ?? "Running" }
+    private func items(_ section: String) -> [NowItem] {
+        now.visible.filter {
+            switch section {
+            case "Needs you": return $0.kind == .question || $0.kind == .stopped
+            case "Running": return $0.kind == .working || $0.kind == .waiting
+            default: return $0.kind == .newAnswer || $0.kind == .seenAnswer
+            }
+        }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack { Text("Work").font(.title2); Spacer(); Button("Done") { dismiss() } }
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(now.visible.filter { [.working, .waiting, .question, .stopped].contains($0.kind) }) { item in
-                        MacNowCard(item: item, now: now) {
-                            if let sid = item.sessionID { dismiss(); store.open(sid) }
-                        }
-                    }
-                    ForEach(now.home?.background ?? []) { item in
-                        Button { dismiss(); store.open(item.sessionID) } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(AgentMarkdown.attributed(item.title)).font(.headline)
-                                Text(AgentMarkdown.attributed(item.line)).font(.callout)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                        }.buttonStyle(.plain)
+            HStack { Text("Work").font(.title2); Spacer(); Button("Collapse Work", action: onClose) }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack {
+                    ForEach(categories, id: \.self) { name in
+                        Button(name) { category = name }.buttonStyle(.bordered)
+                            .tint(current == name ? JobLook.brass : .secondary)
                     }
                 }
             }
-        }.padding(20).frame(minWidth: 340, idealWidth: 460, minHeight: 400)
+            if categories.isEmpty { Text("All caught up.").foregroundStyle(.secondary); Spacer() }
+            else {
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: 12) {
+                        ForEach(items(current)) { item in
+                            ScrollView {
+                                VStack(spacing: 12) {
+                                    MacNowCard(item: item, now: now) { onClose(); if let sid = item.sessionID { store.open(sid) } }
+                                    MacHomeWorkAnswer(item: item, now: now)
+                                    Button("See the work") { onClose(); if let sid = item.sessionID { store.open(sid) } }
+                                }.padding(4)
+                            }.containerRelativeFrame(.horizontal).id(item.id)
+                        }
+                        if current == "Running" {
+                            ForEach(now.home?.background ?? []) { item in
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text(AgentMarkdown.attributed(item.title)).font(.headline)
+                                    Text(AgentMarkdown.attributed(item.line)).font(.callout)
+                                    Button("See the work") { onClose(); store.open(item.sessionID) }
+                                    Spacer()
+                                }.containerRelativeFrame(.horizontal)
+                            }
+                        }
+                    }.scrollTargetLayout()
+                }.scrollTargetBehavior(.viewAligned).defaultScrollAnchor(.leading)
+            }
+        }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct MacHomeWorkAnswer: View {
+    let item: NowItem
+    @ObservedObject var now: MacNowModel
+    @State private var info: WorkInfo?
+    @State private var failed = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let info {
+                if let run = item.runID, !info.images.isEmpty {
+                    PictureGallery(images: info.images, identity: run) { number in
+                        try? await now.api()?.image(runID: run, index: number)
+                    }
+                }
+                ForEach(info.views.filter { $0.kind != "question" }) { ViewCardView($0) }
+                if let full = info.result?.full { Text(AgentMarkdown.attributed(full)).textSelection(.enabled) }
+            } else if failed {
+                Button("Couldn't load the answer. Try again") { Task { await load() } }
+            }
+        }.task(id: item.updatedAt) { await load() }
+    }
+    private func load() async {
+        guard now.demo == nil, let run = item.runID, let api = now.api() else { return }
+        failed = false
+        do { info = try await api.work(runID: run); failed = info == nil } catch { failed = true }
     }
 }

@@ -14,6 +14,28 @@ NOON = _at(NY, 2026, 11, 6, 12, 0)
 TZ = ZoneInfo(NY)
 
 
+def test_three_hundred_mostly_unopened_answers_keep_home_small(service):
+    """A fortnight of long requests and unavailable pictures must not flood a first stream view."""
+    _clock(service, NOON)
+    for index in range(300):
+        settled = NOON - 60 - index * (14 * 86400 / 300)
+        task(service.store, f"bulk_{index}", "completed", session=f"s_bulk_{index}",
+             request=f"Compare garden plan {index}: " + "raised beds and drip irrigation " * 12,
+             result={"spoken": "The revised layout uses less water.", "headline": "The revised layout uses less water.",
+                     "cards": [{"kind": "image", "name": "Unavailable garden plan", "path": "/missing/garden.png"}]},
+             settled=settled, created=settled - 30)
+    task(service.store, "live", "working", session="s_live", request="Compare the latest watering schedule", created=NOON - 30)
+    body = service.now({"tz": NY})
+    assert len(body["items"]) <= 8
+    entries = body["stream"]["entries"]
+    assert len(entries) <= 2 * len(body["items"])
+    assert len({entry["id"] for entry in entries}) == len(entries)
+    assert all(len(entry.get("text", "")) <= S.ASK_CHARS for entry in entries)
+    assert all(not item.get("thumbs") for item in body["items"])
+    assert any(item["kind"] == "working" for item in body["items"])
+    assert {e["item_id"] for e in entries if "item_id" in e} <= {item["id"] for item in body["items"]}
+
+
 def _seen(store, key, settled, request="Summarize the inbox"):
     task(store, key, "completed", session="s_" + key, request=request, result={"spoken": "Done.", "headline": "Done."},
          settled=settled, created=settled - 30)
