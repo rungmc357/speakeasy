@@ -67,7 +67,12 @@ def test_a_card_keeps_one_id_while_its_state_changes(service):
     assert first[0]["state"] == "working" and after[0]["state"] in {"new_answer", "seen_answer"}
 
 
-def test_a_question_is_an_open_widget_and_listed_for_the_strip(service):
+def test_a_question_is_an_open_widget_and_listed_for_the_strip(service, monkeypatch):
+    from fakes import ModuleClock
+    from speakeasy import service as service_module
+    # Home and its shared question sweep must observe the same invented wall clock.
+    # Replacing this module's clock leaves asyncio's process-wide clock untouched.
+    monkeypatch.setattr(service_module, "time", ModuleClock(__import__("time").monotonic, wall=lambda: NOON))
     _clock(service, NOON)
     task(service.store, "q", "completed", session="s_q", request="Order a desk",
          result={"spoken": "Two fit.", "question": {"kind": "question", "question": "Which desk?",
