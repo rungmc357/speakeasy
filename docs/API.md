@@ -1073,7 +1073,10 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
   `{id: "call:<interaction>", title: "Your call · 6 min", minutes, started_at, ended_at, session_id,
   things: [what it started, up to 4], more_things, decisions: [the user's own answers, up to 3],
   line: "Started X. Answered Y. Z has a question for you. You said: …" | "Short call, nothing started."}`
-  (0.3.43; apps show `line` when present).
+  (0.3.43; apps show `line` when present). It takes Dismiss and Later like any other card (0.3.47):
+  off Home while put off or dismissed, back at its time, at once on Undo, or when its own content
+  changes (a task from the call settling after hang-up adds its answer). It is not a question: an
+  answer sent to its id is refused with 404 "That question has closed." and starts nothing.
 - `sentence`: one clause for every kind of card shown, in list order (questions, stopped, in the
   works, new answers, waiting), so nothing below it goes unmentioned; one to nine as words, the item named when it's the only one. "All quiet." / "All caught up.".
 - There are no pins. Home is what's live or new (0.3.43): a finished answer leaves Home once it's
