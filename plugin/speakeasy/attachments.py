@@ -82,6 +82,7 @@ class Attachment:
     path: str | None = None     # files: Speakeasy's copy on the Hermes machine
     capture_id: str | None = None
     created: float = dataclasses.field(default_factory=time.time)
+    media: dict | None = None
 
     @property
     def is_image(self) -> bool:
@@ -530,11 +531,15 @@ MAX_STAGED = 6                # waiting on one device across its composers (each
 STAGED_TTL_S = 30 * 60        # an attachment nobody sent goes after half an hour
 
 
-STAGED_FILE_TYPES = frozenset({"application/pdf", "text/plain", "text/markdown", "text/csv", "application/json"})
+STAGED_FILE_TYPES = frozenset({"application/pdf", "text/plain", "text/markdown", "text/csv", "application/json",
+                               "video/mp4", "video/quicktime"})
 
 
 def staged_file_ok(mime: str, data: bytes) -> bool:
     """A staged file is what it says: a PDF starts %PDF-, text is UTF-8 with no NUL bytes."""
+    if mime in {"video/mp4", "video/quicktime"}:
+        from .video import sniff
+        return sniff(data)
     if mime == "application/pdf":
         return data.startswith(b"%PDF-")
     if mime in STAGED_FILE_TYPES:

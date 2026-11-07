@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+
 import SpeakeasyCore
 import UniformTypeIdentifiers
 
@@ -18,6 +19,8 @@ public struct EncodedAttachment: Equatable, Sendable {
     public let mimeType: String
     /// The original name; images get a .jpg extension.
     public let filename: String
+    public var videoDuration: Double? = nil
+    public var videoPoster: Data? = nil
 
     public init(kind: Kind, data: Data, mimeType: String, filename: String) {
         self.kind = kind; self.data = data; self.mimeType = mimeType; self.filename = filename
@@ -77,15 +80,31 @@ public enum AttachmentEncoder {
             guard let data = try? Data(contentsOf: url) else { throw AttachmentFailure.unsupported }
             // The size was checked before reading; the file may have grown since.
             guard data.count <= AttachmentPolicy.maxFileBytes else { throw AttachmentFailure.tooLarge }
+            if let type = values.contentType ?? UTType(filenameExtension: url.pathExtension), type.conforms(to: .movie) {
+                return try encodeVideo(data, filename: url.lastPathComponent,
+                    mimeType: type.conforms(to: .quickTimeMovie) ? "video/quicktime" : "video/mp4")
+            }
             return EncodedAttachment(kind: .file, data: data,
                                      mimeType: values.contentType?.preferredMIMEType ?? "application/octet-stream",
                                      filename: url.lastPathComponent)
         }
     }
 
+    /// Original MP4/MOV bytes with a small orientation-correct poster. No transcoding or external storage.
+    public static func encodeVideo(_ data: Data, filename: String, mimeType: String) throws -> EncodedAttachment {
+        let preview = try VideoAttachmentPreview.prepare(data, mimeType: mimeType)
+        var result = EncodedAttachment(kind: .file, data: data, mimeType: mimeType, filename: filename)
+        result.videoDuration = preview.duration
+        result.videoPoster = preview.poster
+        return result
+    }
+
     /// A small preview of an encoded picture for the panel's pending row (`maxPixelSize` on the long
     /// edge; 144 covers a 36 pt thumbnail at 2× twice over). Nil for files or unreadable bytes.
     public static func thumbnail(of attachment: EncodedAttachment, maxPixelSize: Int = 144) -> CGImage? {
+        if let poster = attachment.videoPoster {
+            return thumbnail(of: EncodedAttachment(kind: .image, data: poster, mimeType: "image/jpeg", filename: "poster.jpg"), maxPixelSize: maxPixelSize)
+        }
         guard attachment.kind == .image,
               let source = CGImageSourceCreateWithData(attachment.data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetCount(source) > 0 else { return nil }

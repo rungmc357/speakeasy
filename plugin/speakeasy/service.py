@@ -3919,6 +3919,8 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "upload ended early")
         if kind in A.IMAGE_KINDS and _sniff(data[:16]) != mime:
             raise ServiceError(415, f"the bytes aren't {mime}", reason="unsupported")
+        if kind == "file" and mime in {"video/mp4", "video/quicktime"} and not A.staged_file_ok(mime, data):
+            raise ServiceError(415, "not a playable MP4 or MOV", reason="unsupported")
         if kind == "picture":
             data = A.strip_metadata(data, mime)  # a picture from a phone may carry where it was taken
         shared = interaction.attachments
@@ -3933,8 +3935,10 @@ class VoiceService(SecureInputMixin):
                 self._call_open(interaction)
                 with self.shared.lock:  # saved and held in one step: never deleted in between
                     path = self.shared.save(data, upload["name"] or "file")
+                    media = self._prepare_video(path, mime)
                     try:
                         attachment = shared.add("file", mime=mime, size=len(data), path=str(path), name=path.name)
+                        attachment.media = media
                     except A.Refused:
                         self.discard_shared_files([str(path)])
                         raise
@@ -3943,6 +3947,7 @@ class VoiceService(SecureInputMixin):
         except OSError as exc:
             logger.warning("speakeasy: could not save a shared file (%s)", type(exc).__name__)
             raise ServiceError(500, "could not save the file") from None
+        self._transcribe_video(attachment)
         logger.info("speakeasy: %s shared on %s (%d KB)", kind, interaction.interaction_id[:10],
                     max(1, len(data) // 1024))
         publish_state(self.store, interaction, self.settings.get()["assistant_name"])
@@ -4133,6 +4138,24 @@ class VoiceService(SecureInputMixin):
                 self._save_voice_clips(session_id, clips)
         return out
 
+    def _prepare_video(self, path: Path, mime: str) -> dict | None:
+        if mime not in {"video/mp4", "video/quicktime"}:
+            return None
+        from . import video
+        try:
+            return video.prepare(path, self.shared)
+        except A.Refused as exc:
+            raise self._refused(exc) from None
+
+    def _transcribe_video(self, attachment: A.Attachment) -> None:
+        media = attachment.media
+        if media and media.get("audio_path"):
+            # Same configured STT and fallback as voice messages, never a new service.
+            _, transcript = T.voice_note(media["audio_path"], self.transcriber or T.hermes_transcriber())
+            if transcript is not None:
+                media["transcript"] = transcript[:16000]
+                media["audio_status"] = "transcribed"
+
     def check_stage(self, device_id: str, headers: Any, length: int) -> dict[str, Any]:
         """``POST /voice/attachments``, before its body is read: a picture (JPEG or PNG, the phone
         re-encodes) or a file (PDF or text), within its cap and this device's room."""
@@ -4144,7 +4167,7 @@ class VoiceService(SecureInputMixin):
         if kind == "picture" and mime not in A.IMAGE_TYPES:
             raise ServiceError(415, "pictures must be image/jpeg or image/png", reason="unsupported")
         if kind == "file" and mime not in A.STAGED_FILE_TYPES:
-            raise ServiceError(415, "files must be PDF or plain text", reason="unsupported")
+            raise ServiceError(415, "choose MP4, MOV, PDF or a text file", reason="unsupported")
         raw_name = headers.get("X-Speakeasy-Filename")
         if kind == "file" and not (raw_name or "").strip():
             raise ServiceError(400, "files need X-Speakeasy-Filename")
@@ -4171,7 +4194,7 @@ class VoiceService(SecureInputMixin):
                 raise ServiceError(415, f"the bytes aren't {mime}", reason="unsupported")
             data = A.strip_metadata(data, mime)
         elif not A.staged_file_ok(mime, data):
-            raise ServiceError(415, "that file isn't the PDF or text it says it is", reason="unsupported")
+            raise ServiceError(415, "that file doesn't match its media type", reason="unsupported")
         try:
             if kind == "picture":
                 attachment = self.staged.add(device_id, "picture", mime=mime, size=len(data), data=data,
@@ -4179,9 +4202,11 @@ class VoiceService(SecureInputMixin):
             else:
                 with self.shared.lock:  # saved and held in one step: never deleted in between
                     path = self.shared.save(data, upload["name"] or "file")
+                    media = self._prepare_video(path, mime)
                     try:
                         attachment = self.staged.add(device_id, "file", mime=mime, size=len(data),
                                                      path=str(path), name=path.name)
+                        attachment.media = media
                     except A.Refused:
                         self.discard_shared_files([str(path)])
                         raise
@@ -4190,6 +4215,7 @@ class VoiceService(SecureInputMixin):
         except OSError as exc:
             logger.warning("speakeasy: could not save a staged file (%s)", type(exc).__name__)
             raise ServiceError(500, "could not save the file") from None
+        self._transcribe_video(attachment)
         logger.info("speakeasy: %s staged from a device (%d KB)", kind, max(1, len(data) // 1024))
         return {"id": attachment.id, "kind": attachment.kind, "name": attachment.name, "size": attachment.size,
                 "expires_in": A.STAGED_TTL_S}

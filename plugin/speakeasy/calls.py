@@ -4258,8 +4258,11 @@ class SidebandWorker:
                     except OSError as exc:
                         logger.warning("speakeasy: could not keep a copy of a shared image (%s)", type(exc).__name__)
             items = [{"kind": a.kind, "app": a.app, "name": None if a.kind == "screen" else a.name,
-                      "path": shared.saved.get(a.id) or a.path, "at": shared.at} for a in shared.things]
+                      "path": shared.saved.get(a.id) or a.path, "at": shared.at,
+                      "mime": a.mime, "media": a.media} for a in shared.things]
+            from . import video
             paths = [i["path"] for i in items if i["path"]]
+            paths += [path for i in items for path in video.paths(i.get("media"))]
             if paths:
                 self.store.add_shared_files(idem, paths)
         return items

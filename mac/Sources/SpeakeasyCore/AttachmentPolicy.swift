@@ -75,7 +75,7 @@ public enum AttachmentPolicy {
     /// Files the composer may send as files (the plugin's `POST /voice/attachments` takes these; pictures
     /// are re-encoded to JPEG instead).
     public static let stagedFileTypes: Set<String> = ["application/pdf", "text/plain", "text/markdown", "text/csv",
-                                                      "application/json"]
+                                                      "application/json", "video/mp4", "video/quicktime"]
     /// Aim for about this many bytes per image.
     public static let targetImageBytes = 300_000
     /// Never send an image bigger than this.

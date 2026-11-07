@@ -851,7 +851,8 @@ def shared_block(names: Names, items: list[dict[str, Any]], attached: bool) -> s
     if how:
         sentence = "; ".join(how)
         text += sentence[0].upper() + sentence[1:] + ". "
-    return text + "Use them to understand what they mean."
+    from .. import video
+    return text + "Use them to understand what they mean." + "".join(video.prompt(i) for i in items)
 
 
 def stale_screen_line(at: float) -> str:
