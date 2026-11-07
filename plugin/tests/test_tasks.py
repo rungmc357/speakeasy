@@ -35,14 +35,28 @@ def test_result_is_spoken_and_shown(server, service, hermes):
 
 def test_parallel_tasks_get_their_own_sessions(server, service, hermes):
     _, worker = start_call(server, service)
-    worker.delegate("call_a", "Book a table for two tonight")
-    # The voice answered in between: two requests of their own. Without it, the second handoff can
-    # land inside the merge window and is (correctly) read as the rest of the first sentence.
-    worker.feed({"type": "session.output_transcript.delta", "delta": "Sure.", "start_ms": 1, "end_ms": 2})
-    worker.delegate("call_b", "Find the cheapest flight to Rome next week")
-    wait_for(lambda: len([t for t in tasks(server) if t["status"] == "completed"]) == 2)
-    sessions = {c["session_id"] for c in hermes.calls}
-    assert len(hermes.calls) == 2 and len(sessions) == 2 and None not in sessions
+    # Keep the first backend running so this proves actual overlap, not two fast serial replies.
+    # A second uninterrupted transcript delta belongs to the same spoken turn; feeding it before
+    # the first handoff settles made this a timing-dependent test of sentence joining instead.
+    hermes.hold = True
+    try:
+        worker.delegate("call_a", "Book a table for two tonight")
+        wait_for(lambda: len(hermes.calls) == 1, timeout=30)
+        worker.feed({"type": "session.output_transcript.delta", "delta": "I'll check the table.",
+                     "start_ms": 2, "end_ms": 3})
+        worker.delegate("call_b", "Find the cheapest flight to Rome next week")
+        wait_for(lambda: len(hermes.calls) == 2, timeout=30)
+        sessions = {c["session_id"] for c in hermes.calls}
+        assert len(sessions) == 2 and None not in sessions
+        wait_for(lambda: {t["task_id"] for t in tasks(server) if t["status"] == "running"}
+                 == {"call_a", "call_b"}, timeout=30)
+        first, second = [c["input"].rsplit("User: ", 1)[-1] for c in hermes.calls]
+        assert first == "Book a table for two tonight"
+        assert second == "Find the cheapest flight to Rome next week"
+    finally:
+        hermes.hold = False
+    wait_for(lambda: {t["task_id"] for t in tasks(server) if t["status"] == "completed"}
+             == {"call_a", "call_b"}, timeout=30)
 
 
 def test_marked_follow_up_continues_same_session(server, service, hermes):
