@@ -714,6 +714,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.board_call(board_one.group(1)))
             elif saved_call:
                 self._reply(200, self.service.saved_call(saved_call.group(1)))
+            elif path == "/voice/now/recent":
+                self._reply(200, self.service.now_recent(self._query()))
             elif path == "/voice/now":
                 self._reply(200, self.service.now(self._query()))
             elif path == "/voice/history/events":

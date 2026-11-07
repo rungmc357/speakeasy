@@ -110,6 +110,71 @@
  "notice": null,
  "rev": 1,
  "sentence": "One question for you, one thing stopped, one thing in the works, and one new answer.",
+ "stream": {
+  "entries": [
+   {
+    "at": 1794036212.847745,
+    "id": "a:q:run_c_q",
+    "item_id": "q:run_c_q",
+    "kind": "ask",
+    "text": "Desk hunt"
+   },
+   {
+    "at": 1794036212.847745,
+    "id": "c:q:run_c_q",
+    "item_id": "q:run_c_q",
+    "kind": "card",
+    "state": "question",
+    "widget": "open"
+   },
+   {
+    "at": 1794036212.8487418,
+    "id": "a:s:s_cf",
+    "item_id": "s:s_cf",
+    "kind": "ask",
+    "text": "Book the cabin"
+   },
+   {
+    "at": 1794036212.8487418,
+    "id": "c:s:s_cf",
+    "item_id": "s:s_cf",
+    "kind": "card",
+    "state": "stopped"
+   },
+   {
+    "at": 1794036212.8495739,
+    "id": "a:s:s_cw",
+    "item_id": "s:s_cw",
+    "kind": "ask",
+    "text": "Sort the garden photos"
+   },
+   {
+    "at": 1794036212.849943,
+    "id": "c:s:s_cw",
+    "item_id": "s:s_cw",
+    "kind": "card",
+    "state": "working"
+   },
+   {
+    "at": 1794036212.8500412,
+    "id": "a:s:s_ca",
+    "item_id": "s:s_ca",
+    "kind": "ask",
+    "text": "Compare tomato seeds"
+   },
+   {
+    "at": 1794036212.8500412,
+    "id": "c:s:s_ca",
+    "item_id": "s:s_ca",
+    "kind": "card",
+    "state": "new_answer"
+   }
+  ],
+  "folded": [],
+  "needs_you": [
+   "q:run_c_q"
+  ]
+ },
  "tiers": {
   "1": 1,
   "2": 1,

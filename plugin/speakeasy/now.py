@@ -39,6 +39,7 @@ BASELINE_GRACE_S = 3600         # first use of Home: answers older than this cou
 DISMISS_KEPT_S = 7 * 86400
 ROLLOVER_NOTICES = 3            # "Moved 3 seen answers to Earlier." on the first three mornings that move any
 MAX_ITEMS = 60
+RECENT_KEPT_S = 14 * 86400      # Recent looks back this far
 BACKGROUND_ITEMS = 5
 LIVE_LINES = 8                  # Hermes conversations (not Speakeasy tasks) given a live line per build
 LINE_CHARS = 90
@@ -499,6 +500,7 @@ class NowModel:
         by_place: dict[str, dict[str, Any]] = {}
         by_thread: dict[str, dict[str, Any]] = {}
         items: list[dict[str, Any]] = []
+        answered_keys: set[str] = set()
         gone = superseded(rows)
         threads = thread_keys(rows)
         live_interaction = getattr(call, "interaction_id", None) if call is not None else None
@@ -513,6 +515,9 @@ class NowModel:
             if item is None:
                 continue
             item["_thread"] = threads.get(row["key"]) or place
+            item["_run_key"] = row["key"]
+            if row.get("answered"):
+                answered_keys.add(row["key"])
             held = by_place.get(place)
             if held is not None:
                 # One card per conversation, except a question, which keeps its own card.
@@ -588,6 +593,7 @@ class NowModel:
         items.sort(key=lambda i: 0 if i.get("on_call") == "asking" else 1)
         total = len(items)
         items = items[:MAX_ITEMS]
+        stream = self._stream(items, answered_keys, now, zone_)
         focus = None
         for i in items:
             i["tier"] = 0 if i.get("on_call") == "asking" else TIER[i["kind"]]
@@ -596,6 +602,7 @@ class NowModel:
             i.pop("_task_id", None)
             i.pop("_thread", None)
             i.pop("_cause", None)
+            i.pop("_run_key", None)
         counts = {"needs_you": sum(i["kind"] == QUESTION for i in items),
                   "stopped": sum(i["kind"] == STOPPED for i in items),
                   "working": sum(i["kind"] == WORKING for i in items),
@@ -615,6 +622,7 @@ class NowModel:
             # "Earlier today · N": answers more than 4 h old, one row instead of N cards. Outside
             # ``items`` so a build 68 app (which knows no such row) simply doesn't show it.
             "earlier": {"today_more": max(0, total - len(items)), "today": earlier_today},
+            "stream": stream,
         }
         body["rev"] = self._rev(body)
         body["as_of"] = round(now, 3)
@@ -623,6 +631,42 @@ class NowModel:
         body["notice"] = None if peek else self._notice(rows, marks, edge, cleared)
         self._last_sessions = {i["session_id"] for i in items if i.get("session_id")}
         return body
+
+    def _stream(self, items: list[dict[str, Any]], answered: set[str], now: float, zone_: dt.tzinfo) -> dict[str, Any]:
+        """The same cards as one thread: each ask, then its card, in time order (stream.py)."""
+        from .stream import build_stream
+        asks: dict[str, str] = {}
+        for i in items:
+            key = i.get("_run_key")
+            if key:
+                try:
+                    text = self.store.request_text(key)
+                except Exception:
+                    text = None
+                if text:
+                    asks[i["id"]] = text
+        marked = {i["id"] for i in items if i.get("_run_key") in answered}
+        return build_stream(items, asks, marked, now, zone_)
+
+    def recent(self, tz: str | None = None, limit: int = 30) -> dict[str, Any]:
+        """``GET /voice/now/recent``: the last tasks, finished or not, whatever Home's leave rules did to
+        them, so \"Recent\" shows previous work without leaving Home. Newest first."""
+        now = self.clock()
+        name = self.svc.settings.get()["assistant_name"]
+        out: list[dict[str, Any]] = []
+        for row in self.store.now_runs(since=now - RECENT_KEPT_S, limit=limit * 2):
+            work = self.store.work(idem_key=row["key"], assistant_name=name) or {}
+            status = str(getattr(work.get("status") or row["status"], "value", work.get("status") or row["status"]))
+            at = float(row.get("settled_at") or row.get("updated") or row.get("created") or 0)
+            result = work.get("result") or {}
+            out.append({"id": f"t:{work.get('run_id') or row['run_id'] or row['key']}", "title": self._title(work),
+                        "state": status, "at": at, "session_id": row.get("linked_source") or row.get("session_id"),
+                        "line": _clip(result.get("headline") or work.get("summary") or "", 140) or None,
+                        "dismissed": bool(row.get("dismissed")),
+                        "origin": origin(at, now, zone(tz))})
+            if len(out) >= limit:
+                break
+        return {"items": out, "as_of": round(now, 3)}
 
     def sessions_on_now(self) -> set[str]:
         """The conversations Home shows (Earlier's ``on_now`` / ``exclude_now``)."""

@@ -181,6 +181,7 @@ CAPABILITIES["agent_model"] = True
 CAPABILITIES["now"] = True
 CAPABILITIES["now_dismiss"] = True  # build 69: POST/DELETE /voice/now/{id}/dismiss, DELETE /voice/now/clear-seen (Undo)
 CAPABILITIES["saved_calls"] = True  # read-only call conversations, independent of provider sessions
+CAPABILITIES["home_stream"] = True  # SPK-208: `stream` on /voice/now (one thread, asks + cards) and GET /voice/now/recent
 CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking/heard), call_summary
 
 
@@ -3123,6 +3124,10 @@ class VoiceService(SecureInputMixin):
         body = self.now_model.build(tz)
         self._now_rev_sent = body["rev"]
         return body
+
+    def now_recent(self, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/now/recent?tz=``: previous tasks for Home's Recent button."""
+        return self.now_model.recent((query or {}).get("tz") or None)
 
     def _now_changed(self) -> None:
         """Publish ``now`` {rev} on the history feed when what Home shows changed."""
