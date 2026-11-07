@@ -120,6 +120,8 @@ public enum CardText {
             return ChartFacts(c).plainText
         case "stats", "nutrition":
             for i in c["items"].array { lines.append("\(i["label"].string ?? ""): \(i["value"].string ?? "")") }
+        case "draft":
+            return [c["subject"].string, c["body"].string].compactMap { $0 }.joined(separator: "\n\n")
         case "list", "steps":
             for i in c["items"].array { lines.append("• " + (i.string ?? i["text"].string ?? i["title"].string ?? "")) }
         default:

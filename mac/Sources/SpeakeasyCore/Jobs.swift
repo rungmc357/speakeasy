@@ -234,8 +234,13 @@ public enum JobAnswer {
         return promise && rest.split(separator: " ").count <= 7
     }
 
+    /// Artifact kinds (v1): an answer carrying one opens on its job view (the card first, then
+    /// "See the work"), not straight on the session.
+    public static let artifactKinds: Set<String> = ["explore", "compare", "status", "draft"]
+    public static func hasArtifact(_ info: WorkInfo) -> Bool { info.views.contains { artifactKinds.contains($0.kind) } }
+
     /// Kinds a board tile can draw small, best first.
-    public static let glanceKinds = ["chart", "weather", "quote", "comparison", "stats", "fact", "conversion", "math"]
+    public static let glanceKinds = ["chart", "weather", "quote", "compare", "status", "comparison", "stats", "fact", "conversion", "math"]
 
     /// The result card the board tile shows small, when one has something to draw.
     public static func glanceCard(_ info: WorkInfo) -> ViewCard? {
@@ -249,6 +254,8 @@ public enum JobAnswer {
         case "weather": return c["temp"].double != nil
         case "quote": return c["price"].double != nil
         case "comparison": return c["winner"].string != nil
+        case "compare": return c["options"].array.indices.contains(Int(c["winner"].double ?? -1))
+        case "status": return !c["items"].array.isEmpty
         case "stats": return c["items"].array.first?["value"].string != nil
         case "fact": return c["value"].string != nil
         case "conversion": return c["to_value"].string != nil

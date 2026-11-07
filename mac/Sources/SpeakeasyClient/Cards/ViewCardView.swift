@@ -59,6 +59,10 @@ public struct ViewCardView: View {
             case "before_after": BeforeAfterCard(card: card)
             case "flow": FlowCard(card: card)
             case "devices": DevicesCard(card: card)
+            case "explore": ArtifactOpenerHost { ExploreCard(card: card) }
+            case "compare": CompareCard(card: card)
+            case "status": StatusTilesCard(card: card)
+            case "draft": ArtifactDraftCard(card: card)
             default: EmptyView()
             }
         }
@@ -72,7 +76,12 @@ public struct ViewCardView: View {
 struct CardAccessibility: ViewModifier {
     let card: ViewCard
     func body(content: Content) -> some View {
-        if card.kind == "question" {
+        if ["explore", "compare", "status"].contains(card.kind) {
+            // Each thing and its buttons (Play, Maps, Open) stay their own elements.
+            content
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(card.summary)
+        } else if card.kind == "question" {
             content
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Question")

@@ -36,7 +36,7 @@ public struct CardActionBar: View {
     }
     static let mapsKinds: Set<String> = ["place", "route", "transit"]
     static let copyKinds: Set<String> = ["chart", "stats", "list", "steps", "fact", "conversion", "math", "translation",
-                                         "definition", "comparison", "nutrition", "message_draft"]
+                                         "definition", "comparison", "nutrition", "message_draft", "draft"]
 
     public var body: some View {
         let server = model.capabilities?.cardActions == true ? card.actions : []
@@ -63,7 +63,7 @@ public struct CardActionBar: View {
             }
             Spacer(minLength: 0)
         }
-        .confirmationDialog(confirming?.label ?? "", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } })) {
+        .confirmationDialog(confirming.map { Self.confirmTitle($0, card) } ?? "", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }), titleVisibility: .visible) {
             if let action = confirming {
                 Button(action.label, role: action.style == .destructive ? .destructive : nil) {
                     model.runCardAction(taskID: taskID, card: card, action: action)
@@ -71,6 +71,15 @@ public struct CardActionBar: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    /// The question a confirming button asks: what will happen, in plain words.
+    static func confirmTitle(_ action: CardAction, _ card: ViewCard) -> String {
+        if card.kind == "draft", action.id == "send" {
+            return "Send this \(card["channel"].string == "email" ? "email" : "message") to \(card["to"].string ?? "them")?"
+        }
+        if card.kind == "compare", action.id == "go" { return action.label + "?" }
+        return action.label
     }
 
     static func copy(_ text: String) {

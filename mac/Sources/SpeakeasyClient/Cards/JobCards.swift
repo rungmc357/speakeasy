@@ -275,6 +275,18 @@ public struct AnswerGlance: View {
                     Text(card["winner"].string ?? "").font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
                         .truncationMode(.tail).frame(maxWidth: 96, alignment: .leading)
                 }
+            case "compare":
+                let options = card["options"].array, w = Int(card["winner"].double ?? 0)
+                let pick = options.indices.contains(w) ? options[w] : .null
+                value(pick["price"].string ?? pick["name"].string ?? "", pick["price"].string == nil ? "My pick" : pick["name"].string)
+            case "status":
+                // One dot per thing, the worst first: how things are at a glance.
+                let items = card["items"].array
+                HStack(spacing: 4) {
+                    ForEach(Array(items.prefix(8).enumerated()), id: \.offset) { _, i in
+                        Circle().fill(StatusTile.color(i["state"].string)).frame(width: 8, height: 8)
+                    }
+                }
             case "stats":
                 let item = card["items"].array.first ?? .null
                 value(item["value"].string ?? "", item["label"].string, tone: item["good"].bool.map { $0 ? "good" : "warn" })

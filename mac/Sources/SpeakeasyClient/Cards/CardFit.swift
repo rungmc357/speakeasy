@@ -85,6 +85,10 @@ struct CardLine: View {
         case "home", "thermostat", "devices": return "house.fill"
         case "package": return "shippingbox.fill"
         case "flight": return "airplane"
+        case "explore": return "square.stack.fill"
+        case "compare": return "star.fill"
+        case "status": return "circle.grid.2x2.fill"
+        case "draft": return "paperplane.fill"
         default: return "square.text.square"
         }
     }
@@ -92,6 +96,9 @@ struct CardLine: View {
     static func title(_ card: ViewCard) -> String {
         switch card.kind {
         case "message_draft": return card["subject"].string ?? "Email draft"
+        case "draft": return card["subject"].string ?? ArtifactDraftCard.channelName(card["channel"].string) + " draft"
+        case "explore": return card["title"].string ?? card["sections"].array.first?["label"].string ?? "Ideas"
+        case "status": return card["scope"].string ?? "Status"
         case "calendar_day": return card["title"].string ?? card["date"].string ?? "Today"
         default: return card.summary
         }
@@ -108,6 +115,9 @@ struct CardLine: View {
         case "calendar_day": return count(card["events"].array.count, "event", "events") ?? "Nothing scheduled"
         case "agenda": return count(card["days"].array.count, "day", "days")
         case "chart": return ChartFacts(card).subtitle
+        case "draft": return card["to"].string.map { "To \($0)" }
+        case "explore":
+            return card["sections"].array.compactMap { $0["label"].string }.joined(separator: " · ")
         case "message_draft":
             return card["to"].string.map { "To \($0)" } ?? card["body"].string?.split(separator: "\n").first.map(String.init)
         default: return nil

@@ -68,6 +68,7 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
         "message", "inbox", "media", "now_playing", "fact", "entity", "definition", "conversion", "math",
         "translation", "recipe", "nutrition", "comparison", "list", "steps", "stats", "chart", "news",
         "home", "thermostat", "camera", "question", "lanes", "before_after", "flow", "devices",
+        "explore", "compare", "status", "draft",
     ]
 
     /// Cards are a task's answer, so the task has finished: a "progress" card (older servers sent
@@ -126,6 +127,18 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
         case "fact":
             let value = [self["value"].string, self["unit"].string].compactMap { $0 }.joined(separator: " ")
             return [self["title"].string, value.isEmpty ? nil : value].compactMap { $0 }.joined(separator: ", ")
+        case "explore":
+            let names = self["sections"].array.flatMap { $0["items"].array.compactMap { $0["name"].string } }
+            return ([self["title"].string].compactMap { $0 } + names.prefix(4)).joined(separator: ", ")
+        case "compare":
+            let options = self["options"].array, w = Int(self["winner"].double ?? 0)
+            let pick = options.indices.contains(w) ? options[w]["name"].string : nil
+            return [self["title"].string, pick.map { "My pick: \($0)" }, self["why"].string].compactMap { $0 }.joined(separator: ", ")
+        case "status":
+            let items = self["items"].array.map { [$0["name"].string, $0["value"].string ?? $0["state"].string].compactMap { $0 }.joined(separator: " ") }
+            return ([self["scope"].string].compactMap { $0 } + items.prefix(6)).joined(separator: ", ")
+        case "draft":
+            return ["Draft to " + (self["to"].string ?? ""), self["subject"].string].compactMap { $0 }.joined(separator: ", ")
         default:
             return self["title"].string ?? self["name"].string ?? self["word"].string ?? kind.replacingOccurrences(of: "_", with: " ").capitalized
         }
