@@ -4579,7 +4579,7 @@ class SidebandWorker:
         if status == "waiting_on_task":
             # Not started yet (held behind another task): what they add goes in with it when it starts.
             with self.interaction.lock:
-                target.held_words.append(part.request)
+                target.held_words.append(messages_mod.identified_text(part.request))
                 self.interaction.latest_delegation_id = target.delegation_id
             self.note_outcome(delegation_id, "steer")
             self.drop_capture(delegation_id)
@@ -4771,7 +4771,7 @@ class SidebandWorker:
         """Steer a running task, asking again for a few seconds while a just-admitted run refuses."""
         if not target.run_id:
             return False
-        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, messages_mod.identified_text(text))
         for _ in range(STEER_RETRIES):
             if accepted:
                 break
@@ -4780,7 +4780,7 @@ class SidebandWorker:
             if not going or not target.run_id:
                 break
             await asyncio.sleep(STEER_RETRY_S)
-            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, messages_mod.identified_text(text))
         return bool(accepted)
 
     # -- follow-up receipts (receipts.py) ----------------------------------------------------
@@ -4793,7 +4793,7 @@ class SidebandWorker:
         # A run Hermes admitted a moment ago refuses guidance (409) until its agent is up. Two things
         # said seconds apart then became two near-identical runs that both answered out loud; ask
         # again for a few seconds while the run is still going before starting another one.
-        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+        accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, messages_mod.identified_text(text))
         for _ in range(STEER_RETRIES):
             if accepted:
                 break
@@ -4802,12 +4802,12 @@ class SidebandWorker:
             if not going:
                 break
             await asyncio.sleep(STEER_RETRY_S)
-            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, text)
+            accepted = await asyncio.to_thread(self.hermes.steer, target.run_id, messages_mod.identified_text(text))
         if not accepted:
             return False
         milestone = f"You added: {notice_text(words, 200)}"
         self.store.progress(key, "milestone", milestone)
-        self.store.add_follow_up(key, words, text, milestone, after)
+        self.store.add_follow_up(key, words, messages_mod.identified_text(text), milestone, after)
         with self.interaction.lock:
             ended = target.status if target.status in TERMINAL else None
         if ended:
@@ -5117,7 +5117,7 @@ class SidebandWorker:
             # Hermes keeps each Idempotency-Key's run: a retry asks under its own key, or it would get
             # the refused run back.
             key = idem if not backend.refusal_retries else f"{idem}:retry{backend.refusal_retries}"
-            run_id = await asyncio.to_thread(self.hermes.start_run, prompt, key, session_id, **(extra or {}))
+            run_id = await asyncio.to_thread(self.hermes.start_run, messages_mod.identified_text(prompt), key, session_id, **(extra or {}))
             if first and started is not None:
                 started()
             with self.interaction.lock:

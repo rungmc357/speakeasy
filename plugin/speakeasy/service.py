@@ -1884,6 +1884,9 @@ class VoiceService(SecureInputMixin):
         return self._send_held(row, steered=True)
 
     def _send_held(self, row: dict[str, Any], steered: bool = False) -> dict[str, Any]:
+        return M.identify_send(row["client_id"], lambda: self._send_held_identified(row, steered))()
+
+    def _send_held_identified(self, row: dict[str, Any], steered: bool = False) -> dict[str, Any]:
         """Send one claimed held message (state sending) through the normal path; sent or back in the queue."""
         cid = row["client_id"]
         receipt, mine = self.store.begin_receipt(cid, "queued", row["page_session"], H.said_key(row["text"]))
@@ -1982,7 +1985,7 @@ class VoiceService(SecureInputMixin):
     def _follow_up_settled(self, key: str, follow_up_id: str, state: str) -> None:
         """store.settle_follow_up listener: a steered message's receipt settled."""
         for row in self.store.steered_messages([key], states=("sent",)):
-            receipt = self.store.follow_up_receipt(key, row["text"], row["sent_at"])
+            receipt = self.store.follow_up_receipt(key, row["text"], row["sent_at"], client_id=row["client_id"])
             if receipt is None or receipt["id"] != follow_up_id:
                 continue
             if state == "landed":
@@ -2018,7 +2021,7 @@ class VoiceService(SecureInputMixin):
         now = time.time()
         for row in self.store.steered_messages(states=("sent",), limit=200):
             key = row["idem_key"]
-            receipt = self.store.follow_up_receipt(key, row["text"], row["sent_at"])
+            receipt = self.store.follow_up_receipt(key, row["text"], row["sent_at"], client_id=row["client_id"])
             if receipt and receipt["state"] == "landed":
                 self._steer_seen(row, receipt.get("settled"))
                 changed += 1
@@ -2116,6 +2119,7 @@ class VoiceService(SecureInputMixin):
         have gone): its retry is answered as pending. Every reply carries client_id and receipt_id
         (a send with no client_id gets a fresh receipt_id, kept only for its history row).
         *page*: the history page its user row shows on (else the session of the task it reached)."""
+        send = M.identify_send(client_id, send)
         if client_id is None:
             cid = "srv_" + secrets.token_hex(8)
             receipt, _ = self.store.begin_receipt(cid, route, page, H.said_key(text) if text else None)
@@ -2159,8 +2163,7 @@ class VoiceService(SecureInputMixin):
                     return held
             if receipt["stale"]:
                 # Being sent when the service restarted: it may already have reached the task.
-                return {"ok": True, "run_id": None, "delivered_as": "pending", "client_id": client_id,
-                        "receipt_id": receipt["receipt_id"], "receipt_state": "interrupted"}
+                raise ServiceError(409, "Hermes restarted before confirming this message. It won't send it twice. Check the conversation before sending it again.")
             raise ServiceError(409, "That message is still being sent. Try again in a moment.")
         try:
             reply = send()
@@ -3257,26 +3260,13 @@ class VoiceService(SecureInputMixin):
         return out
 
     def _bind_sent_rows(self, session_id: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """User rows sent from the apps carry the exact send's client_id and receipt_id (SPK-80): each
-        row is bound once, for good, to the receipt of the send that wrote it (store.bind_message_rows),
-        so two sends with the same words stay two and a reload never moves an id. A voice message keeps
-        its clip's client id."""
-        users = [e for e in entries if e.get("kind") == "user" and not e.get("client_id") and e.get("id") is not None]
-        if not users:
-            return entries
-        try:
-            pairs = self.store.bind_message_rows(
-                session_id, [(str(e["id"]), H.said_key(e.get("text") or ""), e.get("at")) for e in users],
-                self._VOICE_CLIP_SLACK_S)
-        except Exception:  # noqa: BLE001 - a page without ids reads as before
-            logger.debug("speakeasy: sent rows not bound", exc_info=True)
-            return entries
-        if not pairs:
-            return entries
+        """The transport marker supplies the exact client_id, even if the words were rewritten.
+        Add its durable receipt by id only, never by matching words or timestamps."""
         out = []
-        for e in entries:
-            found = pairs.get(str(e.get("id"))) if e.get("kind") == "user" and not e.get("client_id") else None
-            out.append({**e, "client_id": found[0], "receipt_id": found[1]} if found else e)
+        for entry in entries:
+            cid = entry.get("client_id") if entry.get("kind") == "user" else None
+            receipt = self.store.receipt(cid) if cid else None
+            out.append({**entry, "receipt_id": receipt["receipt_id"]} if receipt else entry)
         return out
 
     def _voice_said(self, session_id: str) -> set[str]:

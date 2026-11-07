@@ -1666,36 +1666,6 @@ class StateStore:
             else:
                 self._db.execute("DELETE FROM message_receipts WHERE client_id=? AND state!='done'", (client_id,))
 
-    def bind_message_rows(self, page: str, rows: list[tuple[str, str, Any]],
-                          slack: float = 30.0) -> dict[str, tuple[str, str]]:
-        """Row id -> (client_id, receipt_id) for the user rows (row id, said key, written at) of one
-        history page. A row keeps the receipt it was first bound to; an unbound row takes the oldest
-        unbound receipt sent to this page with the same words sent no later than the row was written
-        (plus *slack*), one to one, so two sends with equal words stay two. None fits: no id."""
-        out: dict[str, tuple[str, str]] = {}
-        with self._lock, self._db:
-            bound = {r[0]: r[1] for r in self._db.execute(
-                "SELECT row_id, client_id FROM message_rows WHERE page=?", (page,)).fetchall()}
-            receipts = self._db.execute(
-                "SELECT client_id, receipt_id, said, created FROM message_receipts WHERE page_session=? "
-                "AND said IS NOT NULL AND state='done' ORDER BY created, rowid", (page,)).fetchall()
-            ids = {c: r for c, r, _, _ in receipts}
-            taken = set(bound.values())
-            for row_id, said, at in rows:
-                if row_id in bound:
-                    if bound[row_id] in ids:
-                        out[row_id] = (bound[row_id], ids[bound[row_id]])
-                    continue
-                limit = (float(at) if isinstance(at, (int, float)) else float("inf")) + slack
-                for cid, rid, rsaid, created in receipts:
-                    if cid not in taken and rsaid == said and created <= limit:
-                        self._db.execute("INSERT OR IGNORE INTO message_rows (page,row_id,client_id) VALUES (?,?,?)",
-                                         (page, row_id, cid))
-                        taken.add(cid)
-                        out[row_id] = (cid, rid)
-                        break
-        return out
-
     def set_failure(self, key: str, kind: str | None, hint: str | None = None) -> None:
         """Why the run failed, as a ``failures`` kind (the app and voice get Speakeasy's own words),
         plus, when no kind fits, the coarse shape of the error (``failures.failure_hint``)."""
@@ -1941,13 +1911,21 @@ class StateStore:
                     pass
         return cur.rowcount > 0
 
-    def follow_up_receipt(self, key: str, words: str, since: float) -> dict[str, Any] | None:
-        """The receipt for words typed to this task at or after *since* (the steer's own), if any."""
-        want = notice_text(words, 200) or ""
+    def follow_up_receipt(self, key: str, words: str, since: float,
+                          client_id: str | None = None) -> dict[str, Any] | None:
+        """App sends match their stored transport id, never words/time. Voice-only legacy callers
+        without a client id retain their existing matching rule."""
+        if client_id is not None:
+            import base64
+            encoded = base64.urlsafe_b64encode(client_id.encode()).decode().rstrip("=")
+            marker = f"[Speakeasy message id: {encoded}]"
+            where, args = "instr(body,?) > 0", (key, marker)
+        else:
+            where, args = "words=? AND created>=?", (key, notice_text(words, 200) or "", since - 5)
         with self._lock:
             row = self._db.execute(
-                "SELECT follow_up_id, state, settled FROM follow_ups WHERE idem_key=? AND words=? AND created>=? "
-                "ORDER BY created LIMIT 1", (key, want, since - 5)).fetchone()
+                f"SELECT follow_up_id, state, settled FROM follow_ups WHERE idem_key=? AND {where} "
+                "ORDER BY created LIMIT 1", args).fetchone()
         return {"id": row[0], "state": row[1], "settled": row[2]} if row else None
 
     # -- messages steered into a running task (Steer now) --------------------------------------

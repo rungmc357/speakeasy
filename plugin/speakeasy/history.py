@@ -21,6 +21,7 @@ goes through the call router. Which door it uses depends on who owns the session
 """
 from __future__ import annotations
 
+import base64
 import dataclasses
 import hashlib
 import json
@@ -118,7 +119,7 @@ _HIDDEN_RES = (
 _SPEAKEASY_BRIEF = re.compile(r"Recent timestamped voice transcript|Recent messages typed in the Speakeasy app|"
                               r"handling one task .{0,80} (?:gave you by voice|sent you as a message in the Speakeasy app)", re.S)
 _USER_LINE = re.compile(r"^(?:\[[^\]]{1,40}\]\s*)?(?:User|You)\s*:\s*(.+)$", re.M)
-_ADDED = re.compile(r"^\S+ (?:just added to this task(?: by voice| by typing)?|typed to this task):?\s*(.+?)"
+_ADDED = re.compile(r"^.{1,60}? (?:just added to this task(?: by voice| by typing)?|typed to this task):?\s*(.+?)"
                     r"(?:\s*Fold it into the work.*)?$", re.S)
 # A correction steer (prompt.builder.correction_steer_text): only the person's own words show.
 _CORRECTION = re.compile(r'^Correction from .{1,60}?, who (?:said|typed): "(.+?)"\. ', re.S)
@@ -516,11 +517,27 @@ def call_transcript(content: str) -> list[dict[str, str]] | None:
     return lines[-CALL_LINES:] or None
 
 
+_MESSAGE_ID = re.compile(r"\n?\[Speakeasy message id: ([A-Za-z0-9_-]+)\]")
+
+
+def message_id(content: str) -> str | None:
+    found = _MESSAGE_ID.search(content or "")
+    if not found:
+        return None
+    try:
+        cid = base64.urlsafe_b64decode(found[1] + "=" * (-len(found[1]) % 4)).decode()
+        return cid if SAFE_ID_RE.fullmatch(cid) else None
+    except (ValueError, UnicodeError):
+        return None
+
+
 def user_words(content: str) -> tuple[str, str]:
     """(kind, text) for a user row: ``user`` with the person's words; ``note`` for the one thing
     worth a quiet line (earlier messages summarized, a Kanban card); ``hidden`` for Hermes talking to
     itself (helper and background-job reports, internal notifications, system notes), whose text is
     the plain step the reply's work shows for it ("A helper finished") or empty."""
+    if isinstance(content, str):
+        content = _MESSAGE_ID.sub("", content)
     if not isinstance(content, str):
         return "user", ""
     card = _kanban_head(content)
@@ -1319,6 +1336,8 @@ def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, An
             elif text.strip():
                 entry: dict[str, Any] = {"kind": kind, "id": f"m{row['id']}", "at": at,
                                          "text": redact_text(text) if kind == "user" else text}
+                if kind == "user" and (cid := message_id(content)):
+                    entry["client_id"] = cid
                 card = kanban_card(content) if kind == "note" else None
                 if card and card_seen:
                     entry["text"] = "Picked up again"   # a retry's dispatch: the header shows once

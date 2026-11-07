@@ -52,7 +52,7 @@ def test_a_send_cut_off_by_a_restart_is_pending_and_never_resent(server, service
     service.store.begin_receipt("r_cut", "task")           # being sent when the process died
     service.store.boot = "after-restart"
     status, body = send(server, run_id, "Use the red packets", client_id="r_cut")
-    assert status == 200 and body["delivered_as"] == "pending" and body["receipt_state"] == "interrupted"
+    assert status == 409 and "restarted" in body["error"]
     time.sleep(0.3)
     assert hermes.steers == [] and len(hermes.calls) == 1
 
@@ -120,15 +120,48 @@ def test_history_rows_carry_the_client_id_of_their_own_send(server, service, her
                for i, w in enumerate(words)]
     assert [r["delivered_as"] for r in replies] == ["steer"] * 3 and len({r["receipt_id"] for r in replies}) == 3
     now = time.time()
+    wait_for(lambda: len(hermes.steers) == 3)
     for i, w in enumerate(words + ["Smaller footer"]):   # the last was typed somewhere else: no id
-        add_msg(state, sid, "user", steer_row(w), at=now + 1 + i)
+        content = hermes.steers[i][1] if i < 3 else steer_row(w)
+        add_msg(state, sid, "user", content, at=now + 1 + i)
         add_msg(state, sid, "assistant", f"Done that ({i + 1}).", at=now + 1.5 + i)
 
     def rows():
         entries = get(server, f"/voice/history/{sid}")[1]["session"]["entries"]
         return [(e["text"], e.get("client_id"), e.get("receipt_id")) for e in entries
                 if e["kind"] == "user" and e["text"] in words]
-    got = wait_for(lambda: (lambda r: r if len(r) == 4 else None)(rows()))
+    got = rows()
+    assert len(got) == 4, get(server, f"/voice/history/{sid}")[1]["session"]["entries"]
     assert got == [(w, f"e_{i}", replies[i]["receipt_id"]) for i, w in enumerate(words)] + [
         ("Smaller footer", None, None)], got
     assert rows() == got                                                  # a reload never moves an id
+
+
+def test_reworded_history_keeps_transport_identity_without_leaking_marker(server, service, hermes, state):
+    from speakeasy import history as H
+    run_id = running_job(server, service, hermes, "Draft a garden plan")
+    sid = wait_for(lambda: service.store.session_for(service.store.key_for_run(run_id)))
+    add_session(state, sid, "api_server", at=NOW - 5)
+    status, reply = send(server, run_id, "Make the border wider", client_id="reworded")
+    assert status == 200
+    wait_for(lambda: hermes.steers)
+    raw = hermes.steers[-1][1].replace("Make the border wider", "Widen the garden border")
+    assert H.message_id(raw) == "reworded"
+    assert H.user_words(raw) == ("user", "Widen the garden border")
+    add_msg(state, sid, "user", raw, at=time.time())
+    entries = get(server, f"/voice/history/{sid}")[1]["session"]["entries"]
+    row = next(e for e in entries if e.get("client_id") == "reworded")
+    assert row["text"] == "Widen the garden border" and row["receipt_id"] == reply["receipt_id"]
+    assert "Speakeasy message id" not in row["text"]
+
+
+def test_equal_words_have_distinct_follow_up_receipts_by_id(service):
+    from speakeasy import messages as M
+    store = service.store
+    bodies = [M.identify_send(cid, lambda: M.identified_text("Same words"))() for cid in ("first", "second")]
+    for body in bodies:
+        store.add_follow_up("some-task", "Same words", body, "You added something", 0)
+    first = store.follow_up_receipt("some-task", "Changed words", 0, client_id="first")
+    second = store.follow_up_receipt("some-task", "Changed words", 0, client_id="second")
+    assert first and second and first["id"] != second["id"]
+    assert store.follow_up_receipt("some-task", "Same words", 0, client_id="third") is None

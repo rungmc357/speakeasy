@@ -12,6 +12,31 @@ where none of this is used:
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextvars
+
+# Send identity follows asyncio tasks and to_thread calls, never words or timing. The marker is
+# transport metadata inside Hermes' stored user row; history removes it before rendering.
+_send_identity: contextvars.ContextVar[str | None] = contextvars.ContextVar("speakeasy_send_id", default=None)
+
+
+def identify_send(client_id, send):
+    def identified():
+        token = _send_identity.set(client_id)
+        try:
+            return send()
+        finally:
+            _send_identity.reset(token)
+    return identified
+
+
+def identified_text(text: str) -> str:
+    cid = _send_identity.get()
+    if not cid:
+        return text
+    encoded = base64.urlsafe_b64encode(cid.encode()).decode().rstrip("=")
+    return f"{text}\n[Speakeasy message id: {encoded}]"
+
 import logging
 import re
 import secrets
@@ -97,7 +122,7 @@ async def deliver(worker: "SidebandWorker", task_id: str, text: str,
             return {"delivered_as": "answer", "task_id": task_id}
         if await worker.resolve_approval(task_id, "deny") is None:
             raise RuntimeError("approval not answered")
-        await asyncio.to_thread(worker.hermes.steer, run.run_id, P.typed_steer_text(worker.names, text))
+        await asyncio.to_thread(worker.hermes.steer, run.run_id, identified_text(P.typed_steer_text(worker.names, text)))
         worker.store.progress(key, "milestone", f"You answered: {notice_text(text, 200)}")
         worker.publish()
         return {"delivered_as": "answer", "task_id": task_id}
