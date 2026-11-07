@@ -117,6 +117,17 @@ def test_pair_never_sends_a_link_that_only_works_on_this_computer(tmp_path, monk
     assert "`hermes voice pair` gives a link that works from anywhere" in out
 
 
+@pytest.mark.parametrize("person", [True, False])
+def test_pair_local_only_help_speaks_to_a_person_or_an_agent(tmp_path, person):
+    from speakeasy import cli
+    lines: list[str] = []
+    cli._local_only_help(tmp_path, lines.append, sent=False, person=person)
+    text = "\n".join(lines)
+    assert ("Your phone can't reach this computer yet" in text) is person
+    assert ("don't ask the user first" in text) is not person
+    assert "    " + cli.CLOUDFLARE_DOWNLOAD in lines and "    " + cli.CLOUDFLARE_QUICK in lines
+
+
 def test_pair_warns_when_its_printed_link_only_works_here(tmp_path, monkeypatch, capsys):
     from speakeasy import cli
     rc, sent = _pair(tmp_path, monkeypatch)

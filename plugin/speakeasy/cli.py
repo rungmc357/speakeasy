@@ -272,7 +272,7 @@ def cmd_setup(args, home: Path, env=None) -> int:
             "not pairing with it.")
     server = _advertise(args, env, settings, port) or local
     server = _cloudflare(env, home, settings, tailnet=not is_local_url(server),
-                         here=getattr(args, "here", False)) or server
+                         here=getattr(args, "here", False), person=_person(env, assume)) or server
 
     from . import agent_model as M
     no_model = env.model_state() == M.MISSING
@@ -378,7 +378,6 @@ def _advertise(args, env, settings: Settings, port: int) -> str:
 
 
 AGENT_DOC_CLOUDFLARE = "https://github.com/rungmc357/speakeasy/blob/main/docs/AGENT_SETUP.md#cloudflare-mode"
-CLOUDFLARE_SCRIPT = "https://github.com/rungmc357/speakeasy/blob/main/scripts/speakeasy-cloudflare.py"
 CLOUDFLARE_NOTE = ("Cloudflare mode: nothing to install on your phone. The address is on the public internet, "
                    "but only your paired devices get in (a device token on every request; pairing needs a "
                    "one-time code from this computer, valid 10 minutes, with attempts rate-limited). Tailscale "
@@ -386,29 +385,57 @@ CLOUDFLARE_NOTE = ("Cloudflare mode: nothing to install on your phone. The addre
 TAILSCALE_RECOMMENDED = ("• Recommended: Tailscale (most private: your devices only). Install it on this computer "
                          "and your iPhone (https://tailscale.com/download), sign both in with the same account, "
                          "then run `hermes voice setup` again.")
-# No Tailscale and no tunnel: the agent turns Cloudflare mode on itself (owner decision: no choice
-# screen), then tells the user what it did. Instructions for the agent, not a menu for the user.
+CLOUDFLARE_SCRIPT_URL = "https://raw.githubusercontent.com/rungmc357/speakeasy/main/scripts/speakeasy-cloudflare.py"
+# The two commands print under the box, unboxed, so a copied line pastes into a shell as-is (no ┃
+# border); they are the same two lines as docs/AGENT_SETUP.md step 2.
+CLOUDFLARE_DOWNLOAD = f"curl -fsSL {CLOUDFLARE_SCRIPT_URL} -o speakeasy-cloudflare.py"
+CLOUDFLARE_QUICK = "python3 speakeasy-cloudflare.py quick"
+# No Tailscale and no tunnel. Run by an agent (no terminal, or --yes): the agent turns Cloudflare
+# mode on itself (owner decision: no choice screen), then tells the user what it did. Run by a person
+# at a terminal: the same steps, said to them.
 CLOUDFLARE_AUTO = [
     "→ No usable Tailscale on this computer, so turn on Cloudflare mode now (don't ask the user first):",
-    "  1. python3 speakeasy-cloudflare.py quick",
-    f"     (the script: {CLOUDFLARE_SCRIPT})",
+    "  1. Run the two lines under this box: they download the script, then start a free Cloudflare address.",
     "  2. Run this setup again: it should say \"Connected through Cloudflare\", and the pairing link",
     "     then works from anywhere.",
     "  3. Tell the user what you did and that Tailscale is the most private option (the message is in",
     "     " + AGENT_DOC_CLOUDFLARE + ").",
     "  If the script fails, explain Tailscale to the user instead: " + "https://tailscale.com/download",
 ]
+CLOUDFLARE_PERSON = [
+    "Your phone can't reach this computer yet. The quickest fix is a free Cloudflare address:",
+    "nothing to install on your phone, and only devices you pair can get in.",
+    "  1. Copy the two lines under this box into this terminal and press Return.",
+    "  2. Run `hermes voice setup` again. It should say \"Connected through Cloudflare\", and the",
+    "     pairing link then works from anywhere.",
+    "  Most private instead: Tailscale on this computer and your phone (https://tailscale.com/download),",
+    "  then `hermes voice setup` again.",
+]
 LOCAL_ONLY_NOT_SENT = ("✗ No pairing link sent yet: without Tailscale or Cloudflare it would only work on this "
                        "computer. Turn on Cloudflare mode (the box above), then run setup again.")
-def cloudflare_auto(home: Path, port: int) -> list[str]:
-    """CLOUDFLARE_AUTO for this profile: a second profile's tunnel needs its own home and ports."""
+
+
+def cloudflare_commands(home: Path, port: int) -> list[str]:
+    """The two copy-paste lines for this profile: a second profile's tunnel needs its own home and ports."""
     from . import profiles as P
-    if port == DEFAULT_PORT and P.profile_name(home) == "default":
-        return list(CLOUDFLARE_AUTO)
-    lines = list(CLOUDFLARE_AUTO)
-    lines[1] = (f"  1. python3 speakeasy-cloudflare.py quick --hermes-home {home} --port {port} "
-                f"--metrics-port {port + 2}")
-    return lines
+    quick = CLOUDFLARE_QUICK
+    if port != DEFAULT_PORT or P.profile_name(home) != "default":
+        quick += f" --hermes-home {home} --port {port} --metrics-port {port + 2}"
+    return [CLOUDFLARE_DOWNLOAD, quick]
+
+
+def cloudflare_step(env, home: Path, port: int, *, person: bool) -> None:
+    """The no-Tailscale box, said to the person at the terminal or to the agent, then the two
+    commands unboxed and indented like the docs so each line copies cleanly."""
+    from . import setup_flow as F
+    F.banner(env, list(CLOUDFLARE_PERSON if person else CLOUDFLARE_AUTO))
+    for line in cloudflare_commands(home, port):
+        env.out("    " + line)
+
+
+def _person(env, assume) -> bool:
+    """A person at a terminal rather than an agent: interactive stdin and no --yes."""
+    return bool(getattr(env, "interactive", False)) and assume is None
 
 
 CLOUDFLARE_CONNECTED = "✓ Connected through Cloudflare (works anywhere). For more privacy: Tailscale."
@@ -421,7 +448,8 @@ CLOUDFLARE_USER_MESSAGE = ("Speakeasy is set up and works from anywhere. I conne
                            "for you anytime.")
 
 
-def _cloudflare(env, home: Path, settings: Settings, *, tailnet: bool, here: bool = False) -> str:
+def _cloudflare(env, home: Path, settings: Settings, *, tailnet: bool, here: bool = False,
+                person: bool = False) -> str:
     """Cloudflare mode (tunnel.py). The tunnel itself is set up outside the plugin (AGENT_SETUP.md ›
     Cloudflare mode); here setup reads its current address, or, with no Tailscale and no tunnel,
     tells the agent to turn Cloudflare mode on (no menu: the owner's "automatic Cloudflare")."""
@@ -430,7 +458,7 @@ def _cloudflare(env, home: Path, settings: Settings, *, tailnet: bool, here: boo
     s = settings.get()["server"]
     if not s["tunnel"]:
         if not tailnet and not here:
-            F.banner(env, cloudflare_auto(home, voice_port(home)))
+            cloudflare_step(env, home, voice_port(home), person=person)
         return ""
     if s["tunnel_hostname"]:
         url = f"https://{s['tunnel_hostname']}"
@@ -449,7 +477,7 @@ def _cloudflare(env, home: Path, settings: Settings, *, tailnet: bool, here: boo
                 "(an encrypted note via ntfy.sh) and Hermes messages you a link too. For one that never changes, "
                 "see the permanent address in " + AGENT_DOC_CLOUDFLARE)
     env.out(f"  {CLOUDFLARE_NOTE}")
-    if not tailnet:
+    if not tailnet and not person:
         env.out(f"  Agent: once the user has paired, tell them: \"{CLOUDFLARE_USER_MESSAGE}\"")
     return "" if tailnet else url
 
@@ -722,12 +750,14 @@ PAIR_LOCAL_ONLY = ("! This link only works on this computer: Speakeasy isn't rea
 PAIR_AGAIN = "  After that, `hermes voice pair` gives a link that works from anywhere."
 
 
-def _local_only_help(home: Path, out, *, sent: bool) -> None:
-    """Setup's Tailscale/Cloudflare step, for a pairing link that would only work on this computer."""
+def _local_only_help(home: Path, out, *, sent: bool, person: bool | None = None) -> None:
+    """Setup's Tailscale/Cloudflare step, for a pairing link that would only work on this computer.
+    Said to the person when `hermes voice pair` runs in a terminal, to the agent otherwise."""
     from . import setup_flow as F
+    env = F.Env(out=out)
     out(PAIR_LOCAL_ONLY if sent else PAIR_LOCAL_ONLY_NOT_SENT)
     out(TAILSCALE_RECOMMENDED)
-    F.banner(F.Env(out=out), cloudflare_auto(home, voice_port(home)))
+    cloudflare_step(env, home, voice_port(home), person=env.interactive if person is None else person)
     out(PAIR_AGAIN)
 
 

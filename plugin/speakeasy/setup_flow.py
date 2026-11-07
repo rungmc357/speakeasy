@@ -53,6 +53,14 @@ class Env:
     identity: Callable[[str], dict | None] | None = None   # the local /health answer (profiles.py)
     port_free: Callable[[int], bool] | None = None
     agent_model: Callable[[], str] | None = None   # "ok" | "missing" | "unknown" (agent_model.py)
+    browser: Callable[[], bool] | None = None       # whether a sign-in browser window can open here
+
+    def opens_browser(self) -> bool:
+        """Whether `codex login` can show its browser window to the person at this terminal.
+        Tests that fake ``health`` get yes unless they fake ``browser``."""
+        if self.browser is not None:
+            return self.browser()
+        return True if self.health is not None else browser_available()
 
     def model_state(self) -> str:
         """Whether Hermes has an AI model to run turns with. Tests that fake ``health`` get "ok"."""
@@ -153,6 +161,18 @@ def find_signed_in_codex(env: Env, settings: Settings) -> dict:
 
 
 REMOTE_RETRY = "Run `hermes voice setup --yes --sign-in remote` again for a new code."
+
+
+def browser_available(environ=None, platform: str | None = None) -> bool:
+    """Whether a browser window opened here is seen by the person at this terminal: not over SSH
+    (it would open on a screen nobody is looking at), and on Linux only with a display."""
+    environ = os.environ if environ is None else environ
+    platform = sys.platform if platform is None else platform
+    if environ.get("SSH_CONNECTION") or environ.get("SSH_TTY"):
+        return False
+    if platform.startswith("linux"):
+        return bool(environ.get("DISPLAY") or environ.get("WAYLAND_DISPLAY"))
+    return True
 
 
 def remote_sign_in(env: Env, home: Path, binary: Path, *, wait_s: float | None = None) -> bool:
@@ -258,8 +278,25 @@ def voice_sign_in(env: Env, home: Path, settings: Settings, *, api_key: bool, as
             env.out("✓ Voice: GPT-Live-1 through Codex OAuth (your ChatGPT account)")
             return True
         return False
-    env.out("• Sign in to ChatGPT so Speakeasy can use GPT-Live-1 on your plan. A browser window will open.")
+    # Only promise a browser window when one will open: a person at a desktop gets `codex login`;
+    # one reaching this computer over SSH (or a Linux box with no display) gets a link and code
+    # for any device instead; no terminal at all (an agent) gets no promise and the ✗ line below.
+    lead = "• Sign in to ChatGPT so Speakeasy can use GPT-Live-1 on your plan."
+    browser = env.interactive and env.opens_browser()
+    if not env.interactive:
+        env.out(lead)
+    elif browser:
+        env.out(f"{lead} A browser window will open.")
+    else:
+        env.out(f"{lead} There's no browser on this screen, so you'll get a link and a code to open on "
+                "any device, like your phone.")
     if env.interactive and env.confirm("  Sign in now?", True, assume):
+        if not browser:
+            if remote_sign_in(env, home, binary):
+                settings.patch({"voice": {"provider": "codex"}})
+                env.out("✓ Voice: GPT-Live-1 through Codex OAuth (your ChatGPT account)")
+                return True
+            return False
         from .codex_transport import child_env
         try:
             env.run([str(binary), "login"], timeout=600, env=child_env())

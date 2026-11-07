@@ -21,7 +21,8 @@ class Fake:
 
     def __init__(self, *, codex_signed_in=True, codex_installed=True, running=True,
                  brew=True, answers=None, secret="", interactive=True, tailscale_dns="box.tail123.ts.net",
-                 tailscale="missing", serve_error=""):
+                 tailscale="missing", serve_error="", browser=True):
+        self.browser = browser
         self.cmds: list[list[str]] = []
         self.lines: list[str] = []
         self.codex_signed_in, self.codex_installed = codex_signed_in, codex_installed
@@ -68,7 +69,7 @@ class Fake:
     def env(self):
         return F.Env(run=self.run, ask=self.ask, secret=lambda p: self.secret_value, out=self.lines.append,
                      interactive=self.interactive, health=self.health, sleep=self.sleep, which=self.which,
-                     clock=lambda: self.now)
+                     clock=lambda: self.now, browser=lambda: self.browser)
 
     def sleep(self, seconds):
         self.now += seconds
@@ -178,6 +179,50 @@ def test_signs_in_to_codex_when_needed(home):
     rc, _ = run_setup(fake, yes=True)
     assert rc == 0 and any(c[-1] == "login" for c in fake.cmds)
     assert S.Settings(home).get()["voice"]["provider"] == "codex"
+
+
+BROWSER_PROMISE = "A browser window will open."
+
+
+def test_a_person_at_a_desktop_is_promised_the_browser_that_opens(home):
+    fake = Fake(codex_signed_in=False)
+    rc, _ = run_setup(fake)
+    text = "\n".join(fake.lines)
+    assert rc == 0 and BROWSER_PROMISE in text and any(c[-1] == "login" for c in fake.cmds)
+    assert "✗ Not signed in yet" not in text
+
+
+def test_no_terminal_gets_no_browser_promise(home):
+    """An agent (no terminal) can't sign in here: no promised browser right before 'Not signed in'."""
+    fake = Fake(codex_signed_in=False, interactive=False)
+    run_setup(fake)
+    text = "\n".join(fake.lines)
+    assert "• Sign in to ChatGPT" in text and "✗ Not signed in yet" in text
+    assert "browser" not in text.split("✗ Not signed in yet")[0].lower()
+    assert not any(c[-1] == "login" for c in fake.cmds)
+
+
+def test_no_browser_on_this_screen_signs_in_with_a_code_instead(home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(F, "remote_sign_in", lambda env, h, binary, **kw: calls.append(binary) or True)
+    fake = Fake(codex_signed_in=False, browser=False)
+    rc, _ = run_setup(fake)
+    text = "\n".join(fake.lines)
+    assert rc == 0 and calls and BROWSER_PROMISE not in text
+    assert "a link and a code to open on any device" in text and "✓ Voice: GPT-Live-1" in text
+    assert not any(c[-1] == "login" for c in fake.cmds)  # codex login would open an unseen browser
+
+
+@pytest.mark.parametrize("environ,platform,seen", [
+    ({}, "darwin", True),
+    ({"SSH_CONNECTION": "198.51.100.7 50000 203.0.113.5 22"}, "darwin", False),
+    ({"SSH_TTY": "/dev/ttys004"}, "linux", False),
+    ({}, "linux", False),
+    ({"DISPLAY": ":0"}, "linux", True),
+    ({"WAYLAND_DISPLAY": "wayland-0"}, "linux", True),
+])
+def test_browser_available(environ, platform, seen):
+    assert F.browser_available(environ, platform) is seen
 
 
 def test_installs_codex_with_homebrew(home):
@@ -525,6 +570,53 @@ def test_no_tailscale_and_no_tunnel_prints_the_cloudflare_step_not_a_menu(home, 
     assert rc == 0 and "speakeasy-cloudflare.py quick" in text and "┏" in text
     assert "No Tailscale? Your agent can" not in text and "Connected through Cloudflare\"" in text
     assert "✓ Connected through Cloudflare" not in text
+
+
+def _box_and_after(text):
+    box = text[text.index("┏"):text.index("┛") + 1]
+    return box, text[text.index("┛") + 1:]
+
+
+def test_an_agent_gets_the_agent_wording_and_two_pasteable_lines(home, monkeypatch):
+    """--yes (or no terminal) = an agent is running setup: it turns Cloudflare on without asking."""
+    for kw in (dict(yes=True), dict(interactive=False)):
+        fake = Fake(tailscale="missing", interactive=kw.get("interactive", True))
+        rc, _ = run_setup(fake, yes=kw.get("yes", False))
+        box, after = _box_and_after("\n".join(fake.lines))
+        assert "don't ask the user first" in box and "Tell the user what you did" in box
+        assert "Your phone can't reach this computer yet" not in box
+        lines = after.splitlines()
+        assert lines[1:3] == ["    " + cli.CLOUDFLARE_DOWNLOAD, "    " + cli.CLOUDFLARE_QUICK]
+
+
+def test_a_person_at_a_terminal_is_spoken_to_not_given_agent_instructions(home, monkeypatch):
+    fake = Fake(tailscale="missing")  # interactive, no --yes
+    rc, _ = run_setup(fake)
+    text = "\n".join(fake.lines)
+    box, after = _box_and_after(text)
+    assert rc == 0 and "Your phone can't reach this computer yet. The quickest fix is a free Cloudflare address" in box
+    assert "don't ask" not in text and "Tell the user" not in text and "Agent:" not in text
+    lines = after.splitlines()
+    assert lines[1:3] == ["    " + cli.CLOUDFLARE_DOWNLOAD, "    " + cli.CLOUDFLARE_QUICK]
+
+
+def test_the_download_line_matches_the_agent_guide():
+    from pathlib import Path
+    doc = (Path(__file__).resolve().parents[2] / "docs" / "AGENT_SETUP.md").read_text()
+    assert cli.CLOUDFLARE_DOWNLOAD in doc and cli.CLOUDFLARE_QUICK in doc
+    assert cli.CLOUDFLARE_SCRIPT_URL.startswith("https://raw.githubusercontent.com/")  # a download, not a page
+    assert not any("┃" in line or "┏" in line for line in (cli.CLOUDFLARE_DOWNLOAD, cli.CLOUDFLARE_QUICK))
+
+
+def test_a_person_with_cloudflare_on_is_not_told_what_to_tell_the_user(home, monkeypatch):
+    from speakeasy import tunnel as T
+    S.Settings(home).patch({"server": {"tunnel": "cloudflare"}})
+    monkeypatch.setattr(T, "wait_for_url", lambda *a, **k: "https://calm-river-sound-test.trycloudflare.com")
+    person, agent = Fake(tailscale="missing"), Fake(tailscale="missing")
+    run_setup(person)
+    run_setup(agent, yes=True)
+    assert "Agent: once the user has paired" not in "\n".join(person.lines)
+    assert "Agent: once the user has paired" in "\n".join(agent.lines)
 
 
 def test_same_mac_needs_no_cloudflare(home, monkeypatch):
