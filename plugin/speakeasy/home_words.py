@@ -24,7 +24,7 @@ from typing import Any, Iterable
 from .text import _TITLE_UNFINISHED, fix_product_names, request_notes
 
 TITLE_MAX = 32
-STATUS_MAX = 48
+STATUS_MAX = 40   # what one tracker/card status row shows on the smallest phone
 PILL_MAX = 24
 
 # -- titles --------------------------------------------------------------------------------------
@@ -81,7 +81,9 @@ def _fit(text: str, limit: int, phrase_only: bool = False) -> str | None:
     for n in range(1, len(words)):
         head = words[:n]
         nxt = re.sub(r"[^a-z]", "", words[n].lower())
-        if (nxt in _CONNECTORS or head[-1].endswith(",")) and len(head) >= 2:
+        # "… in light | and dark" splits a pair: cut before the preposition instead.
+        split_pair = nxt in {"and", "or"} and len(head) >= 2 and head[-2].lower() in _CONNECTORS
+        if (nxt in _CONNECTORS or head[-1].endswith(",")) and len(head) >= 2 and not split_pair:
             cut = " ".join(head).rstrip(",;:")
             if len(cut) <= limit and _ok_end(cut.split()):
                 best = cut
@@ -182,7 +184,7 @@ def status_line(line: Any, finished: bool = False, limit: int = STATUS_MAX) -> s
 
 _FILLER_LEAD = re.compile(r"(?i)^[\s:;,.-]*(?:(?:got it|so|okay|ok|alright|all right|yeah|yes|yep|um+|uh+|er+|hmm+|oh|hey|yo|cool|"
                           r"right|well|also|and|like|actually|listen|look|anyway|basically)\b[\s,.!-]*)+")
-_FILLER_MID = re.compile(r"(?i)(?:,\s*|\s)(?:um+|uh+|er+|hmm+|you know|i mean|kind of|sort of|like)(?=[\s,.!?])(?:,(?=\s))?")
+_FILLER_MID = re.compile(r"(?i)(?:,\s*|\s)(?:um+|uh+|er+|hmm+|you know|i mean|like)(?=[\s,.!?])(?:,(?=\s))?")
 _STUTTER = re.compile(r"(?i)\b((?:[\w']+\s+){0,3}[\w']+)(?:[\s,]+\1\b)+")
 _ONES = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
          "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,

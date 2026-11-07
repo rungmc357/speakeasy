@@ -1,5 +1,5 @@
 {
- "as_of": 1794040308.715,
+ "as_of": 1794095980.778,
  "background": {
   "items": [],
   "running": 0
@@ -20,14 +20,14 @@
  },
  "items": [
   {
-   "finished_at": 1794040278.710109,
+   "finished_at": 1794095950.7743518,
    "id": "q:run_c_q",
    "kind": "question",
    "line": "Which desk should I order?",
    "on_current_call": false,
    "question": {
     "approvable": false,
-    "asked_at": 1794040278.710109,
+    "asked_at": 1794095950.7743518,
     "options": [
      {
       "facts": [
@@ -52,14 +52,14 @@
    "run_id": "run_c_q",
    "session_id": "s_cq",
    "source": "speakeasy",
-   "started_at": 1794040308.710131,
+   "started_at": 1794095980.7743711,
    "tier": 1,
    "title": "Desk hunt",
    "unread": false,
-   "updated_at": 1794040308.710635
+   "updated_at": 1794095980.774796
   },
   {
-   "finished_at": 1794040258.710109,
+   "finished_at": 1794095930.7743518,
    "fix": {
     "kind": "credits"
    },
@@ -70,11 +70,11 @@
    "run_id": "run_c_f",
    "session_id": "s_cf",
    "source": "speakeasy",
-   "started_at": 1794040308.711089,
+   "started_at": 1794095980.775148,
    "tier": 2,
    "title": "Book the cabin",
    "unread": false,
-   "updated_at": 1794040308.7114198
+   "updated_at": 1794095980.775462
   },
   {
    "id": "s:s_cw",
@@ -84,14 +84,14 @@
    "run_id": "run_c_w",
    "session_id": "s_cw",
    "source": "speakeasy",
-   "started_at": 1794040308.71181,
+   "started_at": 1794095980.775785,
    "tier": 3,
    "title": "Sort the garden photos",
    "unread": false,
-   "updated_at": 1794040308.712207
+   "updated_at": 1794095980.776087
   },
   {
-   "finished_at": 1794040268.710109,
+   "finished_at": 1794095940.7743518,
    "id": "s:s_ca",
    "kind": "new_answer",
    "line": "Brandywine wins for your shade.",
@@ -99,27 +99,28 @@
    "run_id": "run_c_a",
    "session_id": "s_ca",
    "source": "speakeasy",
-   "started_at": 1794040308.712358,
+   "started_at": 1794095980.776166,
    "tier": 4,
    "title": "Compare tomato seeds",
    "unread": true,
-   "updated_at": 1794040308.71279
+   "updated_at": 1794095980.776447
   }
  ],
  "notice": null,
+ "pill": "1 needs you \u00b7 1 running",
  "rev": 1,
  "sentence": "One question for you, one thing stopped, one thing in the works, and one new answer.",
  "stream": {
   "entries": [
    {
-    "at": 1794040308.710131,
+    "at": 1794095980.7743711,
     "id": "a:run_c_q",
     "item_id": "q:run_c_q",
     "kind": "ask",
     "text": "Desk hunt"
    },
    {
-    "at": 1794040308.710131,
+    "at": 1794095980.7743711,
     "id": "c:run_c_q",
     "item_id": "q:run_c_q",
     "kind": "card",
@@ -127,42 +128,42 @@
     "widget": "open"
    },
    {
-    "at": 1794040308.711089,
+    "at": 1794095980.775148,
     "id": "a:run_c_f",
     "item_id": "s:s_cf",
     "kind": "ask",
     "text": "Book the cabin"
    },
    {
-    "at": 1794040308.711089,
+    "at": 1794095980.775148,
     "id": "c:run_c_f",
     "item_id": "s:s_cf",
     "kind": "card",
     "state": "stopped"
    },
    {
-    "at": 1794040308.71181,
+    "at": 1794095980.775785,
     "id": "a:run_c_w",
     "item_id": "s:s_cw",
     "kind": "ask",
     "text": "Sort the garden photos"
    },
    {
-    "at": 1794040308.71181,
+    "at": 1794095980.775785,
     "id": "c:run_c_w",
     "item_id": "s:s_cw",
     "kind": "card",
     "state": "working"
    },
    {
-    "at": 1794040308.712358,
+    "at": 1794095980.776166,
     "id": "a:run_c_a",
     "item_id": "s:s_ca",
     "kind": "ask",
     "text": "Compare tomato seeds"
    },
    {
-    "at": 1794040308.712358,
+    "at": 1794095980.776166,
     "id": "c:run_c_a",
     "item_id": "s:s_ca",
     "kind": "card",

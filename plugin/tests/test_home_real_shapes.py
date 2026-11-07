@@ -63,9 +63,11 @@ def test_a_rescoped_job_is_named_for_what_it_became():
 
 @pytest.mark.parametrize("raw,want", [
     ("Fixed on the branch with a test; waiting for the release step to pick it up.",
-     "Waiting for the release step to pick it up"),
+     "Waiting for the release step"),
     ("Resuming after an earlier run stopped: reshooting all 40 screens in light and dark",
-     "Reshooting all 40 screens in light and dark"),
+     "Reshooting all 40 screens"),
+    ("Fixed on the release branch and verified on the phone and tablet simulators",
+     "Fixed on the release branch and verified"),
     ("Checking project files", "Checking project files"),
 ])
 def test_status_is_one_short_present_tense_line(raw, want):
@@ -96,6 +98,8 @@ def test_asks_lose_filler_and_the_calls_notes_and_use_digits():
     assert W.clean_ask(raw) == "Can you check whether the 3 studios are online"
     assert W.clean_ask("Hey Juniper, book twenty five minutes at seven pm", "Juniper") == "Book 25 minutes at 7 pm"
     assert W.clean_ask(": No worries. Want to tidy the notes?") == "No worries. Want to tidy the notes?"
+    # "kind of"/"sort of" are words, not filler: "what kind of job" keeps them.
+    assert W.clean_ask("Do we have, like, some sort of job for that") == "Do we have some sort of job for that"
     assert W.clean_ask("hey") == "Hey"                                 # a bare greeting is the message
 
 
