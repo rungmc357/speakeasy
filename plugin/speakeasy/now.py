@@ -677,9 +677,32 @@ class NowModel:
             try:
                 messages = [chat.entry(r) for r in chat.shown(now)]
                 from_chat = chat.started_runs()
+                from_chat |= self._chat_descendants(items, from_chat)
             except Exception:
                 logging.getLogger(__name__).debug("speakeasy: Home's chat messages failed", exc_info=True)
         return build_stream(items, asks, marked, now, zone_, messages=messages, from_chat=from_chat)
+
+    def _chat_descendants(self, items: list[dict[str, Any]], from_chat: set[str]) -> set[str]:
+        """Runs that continue a chat-born job (answering its question, a follow-up it spawned): their
+        card belongs to the chat too, so no "you asked" bubble repeats the job's internal request."""
+        if not from_chat:
+            return set()
+        with self.store._lock:
+            rows = self.store._db.execute("SELECT idem_key, run_id FROM runs WHERE run_id IS NOT NULL").fetchall()
+        run_of = {k: r for k, r in rows}
+        out: set[str] = set()
+        for item in items:
+            key, run = item.get("_run_key"), item.get("run_id")
+            if not key or not run or run in from_chat:
+                continue
+            seen: set[str] = set()
+            while key and key not in seen and len(seen) < 8:
+                seen.add(key)
+                key = self.store.parent_of(key)
+                if key and run_of.get(key) in from_chat:
+                    out.add(str(run))
+                    break
+        return out
 
     def recent(self, tz: str | None = None, limit: int = 30) -> dict[str, Any]:
         """``GET /voice/now/recent``: the last tasks, finished or not, whatever Home's leave rules did to
