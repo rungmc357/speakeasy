@@ -67,6 +67,17 @@ def test_written_answer_appears_once_and_an_acknowledgement_is_not_replaced():
     assert [t["text"] for t in turns] == ["All set.", "## Hotel\nFull details."]
 
 
+def test_repeated_words_after_a_new_ask_are_not_deleted():
+    log = {"id": "vi_test", "turns": [{"role": "user", "text": "Which hotel?"},
+                                       {"role": "assistant", "text": "Harbor Inn."},
+                                       {"role": "user", "text": "Say its name again"},
+                                       {"role": "assistant", "text": "Harbor Inn."}]}
+    answer = {"task_id": "d_hotel", "spoken": "Harbor Inn.", "full": "**Harbor Inn** with a courtyard room."}
+    turns = conversation(log, [answer])["turns"]
+    assert len(turns) == 4 and turns[-1]["text"] == "Harbor Inn."
+    assert turns[1]["kind"] == "text"
+
+
 def test_unspoken_written_results_are_kept_and_bad_turns_are_dropped():
     log = {"id": "vi_test", "turns": [{"role": "system", "text": "internal"}, None,
                                        {"role": "user", "text": "Find a hotel"}]}

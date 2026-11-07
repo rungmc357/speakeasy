@@ -36,7 +36,10 @@ def conversation(log: dict[str, Any], answers: list[dict[str, Any]]) -> dict[str
                 matches.append(i)
         if matches:
             turns[matches[0]] = written
-            for i in reversed(matches[1:]):
+            # Only fold repeats in this reply stretch; an identical answer after a new user turn
+            # may belong to another ask and must not disappear.
+            end = next((i for i in range(matches[0] + 1, len(turns)) if turns[i]["role"] == "user"), len(turns))
+            for i in reversed([i for i in matches[1:] if i < end]):
                 del turns[i]
         else:
             turns.append(written)
