@@ -31,7 +31,9 @@ struct CardPicture: View {
     @State private var open = false
 
     var body: some View {
-        Group {
+        // A ZStack (not a Group) so the loader runs while nothing is drawn yet: an empty Group has
+        // no view to attach `.task` to, and the picture would never load.
+        ZStack {
             if let image {
                 Button { open = true } label: {
                     picture(image)
@@ -44,6 +46,8 @@ struct CardPicture: View {
                 #else
                 .sheet(isPresented: $open) { CardPictureViewer(image: image, label: label).frame(minWidth: 520, minHeight: 520) }
                 #endif
+            } else {
+                Color.clear.frame(width: 0, height: 0)
             }
         }
         .task(id: key) { await load() }
@@ -70,7 +74,7 @@ struct CardPicture: View {
         return min(max(height * image.size.width / image.size.height, 110), 320)
     }
 
-    private var key: String { value.string ?? "" }
+    private var key: String { value.string ?? "none" }
 
     private func load() async {
         guard image == nil else { return }
@@ -272,7 +276,7 @@ struct JobsCard: View {
         }.map(\.element)
         let shown = Array(items.prefix(fit.rows(8)))
         CardBox {
-            if let title = card["title"].string { CardHeader(icon: "circle.dotted", title: title, trailing: "\(items.count)") }
+            if let title = card["title"].string { CardHeader(icon: "list.bullet.rectangle", title: title, trailing: "\(items.count)") }
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(shown.enumerated()), id: \.offset) { i, item in
                     if i > 0 { Rectangle().fill(style.hairline).frame(height: 0.7) }
