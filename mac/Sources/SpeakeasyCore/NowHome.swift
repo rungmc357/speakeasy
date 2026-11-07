@@ -448,13 +448,16 @@ public struct HomeModelStatus: Equatable, Sendable {
     public var source: String
     public var auto: Option?
     public var options: [Option]
-    public init(model: Option?, source: String, auto: Option?, options: [Option]) {
-        self.model = model; self.source = source; self.auto = auto; self.options = options
+    /// Set when the chosen model didn't answer last time (another one replied).
+    public var note: String?
+    public init(model: Option?, source: String, auto: Option?, options: [Option], note: String? = nil) {
+        self.model = model; self.source = source; self.auto = auto; self.options = options; self.note = note
     }
     public init(json: [String: Any]) {
         self.init(model: Option(json: json["model"]), source: (json["source"] as? String) ?? "",
                   auto: Option(json: json["auto"]),
-                  options: ((json["options"] as? [Any]) ?? []).compactMap { Option(json: $0) })
+                  options: ((json["options"] as? [Any]) ?? []).compactMap { Option(json: $0) },
+                  note: (json["note"] as? String).flatMap { $0.isEmpty ? nil : $0 })
     }
     /// The user picked it on the chip (otherwise Auto or a fallback is in use).
     public var chosen: Bool { source == "chosen" }
