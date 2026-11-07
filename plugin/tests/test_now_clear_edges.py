@@ -53,5 +53,9 @@ def test_the_dismiss_path_a_client_builds_reaches_the_routes(server, service, st
     # NowItemPath.segment("s:s_a") == "s:s_a": prefix colon literal, rest percent-encoded.
     assert post(server, "/voice/now/s:s_a/dismiss", {})[0] == 200
     assert _delete(server, "/voice/now/s:s_a/dismiss")[0] == 200
-    # What the old client sent (an encoded colon) never matched a route.
-    assert post(server, "/voice/now/s%3As_a/dismiss", {})[0] != 200
+    # Both shipped client encodings are supported by the 0.3.46 compatibility route.
+    assert post(server, "/voice/now/s%3As_a/dismiss", {})[0] == 200
+    assert _ids(get(server, "/voice/now")[1]) == []
+    assert _delete(server, "/voice/now/s%3As_a/dismiss")[0] == 200
+    assert _ids(get(server, "/voice/now")[1]) == ["s:s_a"]
+    assert post(server, "/voice/now/s%3Aunknown/dismiss", {})[0] == 404
