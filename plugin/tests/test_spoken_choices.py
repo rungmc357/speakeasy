@@ -62,6 +62,9 @@ def test_a_choice_card_is_never_seen_without_its_question(server, service, herme
         setattr(store, name, spy)
     said(worker, "Coffee or tea?")
     wait_for(lambda: _choice_task(server), timeout=5)
+    # The committed row is visible before the spy finishes observing that same write.
+    # Wait for the observation, then keep checking EVERY captured intermediate snapshot.
+    wait_for(lambda: seen, timeout=5)
     assert seen and all((t.get("result") or {}).get("question") for t in seen)
 
 

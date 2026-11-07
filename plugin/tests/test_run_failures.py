@@ -278,6 +278,10 @@ def test_out_of_credits_reaches_the_task_and_the_voice(server, service, hermes):
     worker.delegate("call_weather", "What's the weather in Lisbon?")
     task = failed_task(server)
     reason, said = failures.reason_text("billing"), failures.voice_text("billing")
+    # Failure metadata is committed before the separate activity-event write. Observe that
+    # event before asserting its exact contents, not the earlier failed-status milestone.
+    task = wait_for(lambda: (latest := failed_task(server)) and latest.get("events")
+                    and latest["events"][-1]["kind"] == "result" and latest)
     assert task["failure"] == {"kind": "billing", "label": "Out of credits", "text": reason}
     assert task["events"][-1] == {"kind": "result", "text": f"Work failed: {reason}", "at": task["events"][-1]["at"]}
     wait_for(lambda: P.failed_because(said) in spoken(worker))
