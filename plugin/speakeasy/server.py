@@ -669,6 +669,7 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(rf"/voice/interactions/{_ID}", path)
             work = re.fullmatch(rf"/voice/work/{_ID}", path)
             history_one = re.fullmatch(rf"/voice/history/{_SESSION}", path)
+            saved_call = re.fullmatch(rf"/voice/calls/{_ID}", path)
             schedule_one = re.fullmatch(rf"/voice/schedules/{_ID}", path)
             board_one = re.fullmatch(rf"/voice/boards/{_ID}", path)
             routes = {
@@ -711,6 +712,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.board_call())
             elif board_one:
                 self._reply(200, self.service.board_call(board_one.group(1)))
+            elif saved_call:
+                self._reply(200, self.service.saved_call(saved_call.group(1)))
             elif path == "/voice/now":
                 self._reply(200, self.service.now(self._query()))
             elif path == "/voice/history/events":

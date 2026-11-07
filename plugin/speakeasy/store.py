@@ -1876,6 +1876,29 @@ class StateStore:
                             "at": float(updated or 0)})
         return out
 
+    def call_written_answers(self, interaction_id: str) -> list[dict[str, Any]]:
+        """Written answers for this call only, in completion order (no carried work)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT delegation_id, title, result_json FROM runs WHERE interaction_id = ? "
+                "AND status = 'completed' AND result_json IS NOT NULL ORDER BY COALESCE(settled_at, updated)",
+                (interaction_id,)).fetchall()
+        out = []
+        for task_id, title, raw in rows:
+            if not task_id or task_id.startswith("choice_"):
+                continue
+            try:
+                result = json.loads(raw)
+                if not isinstance(result, dict):
+                    continue
+                full = result.get("full") or result.get("spoken")
+                if isinstance(full, str) and full.strip():
+                    out.append({"task_id": task_id, "title": title or "", "full": full,
+                                "spoken": result.get("spoken") or ""})
+            except (ValueError, TypeError):
+                continue
+        return out
+
     def calls_from_tasks(self, since_s: float = 7 * 86400) -> list[dict[str, Any]]:
         """Recent calls reconstructed from their tasks: what was asked, how it ended, the answer."""
         with self._lock:

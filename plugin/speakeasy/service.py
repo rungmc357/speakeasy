@@ -180,6 +180,7 @@ CAPABILITIES["agent_model"] = True
 # ``?kinds=`` filter menu with counts, and one read state (a read conversation's answers are seen).
 CAPABILITIES["now"] = True
 CAPABILITIES["now_dismiss"] = True  # build 69: POST/DELETE /voice/now/{id}/dismiss, DELETE /voice/now/clear-seen (Undo)
+CAPABILITIES["saved_calls"] = True  # read-only call conversations, independent of provider sessions
 CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking/heard), call_summary
 
 
@@ -2994,6 +2995,14 @@ class VoiceService(SecureInputMixin):
             self.__dict__.setdefault("_history_cache", {}).clear()
 
     # -- Home (SPK-124, now.py) ---------------------------------------------------------------------
+    def saved_call(self, interaction_id: str) -> dict[str, Any]:
+        """Authenticated, read-only conversation from the private call log, not a chat session."""
+        from .saved_calls import conversation
+        logged = self.call_log.get(interaction_id)
+        if logged is None:
+            raise ServiceError(404, "This call is no longer saved on your Hermes.")
+        return conversation(logged, self.store.call_written_answers(interaction_id))
+
     def now(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/now?tz=<IANA zone>``: Home's one ordered list (now.py)."""
         self.sweep_questions()
