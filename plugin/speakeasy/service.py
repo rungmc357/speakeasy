@@ -3254,7 +3254,7 @@ class VoiceService(SecureInputMixin):
         except ValueError:
             raise ServiceError(400, "before must be a number") from None
         try:
-            page = self._sessions_for(sid).session_messages(sid, before=before)
+            page = self._sessions_for(sid).session_messages(sid, before=before, model_runs=self.store.reply_model_runs(sid))
         except H.HistoryError as exc:
             raise ServiceError(exc.status, exc.message) from None
         link = self._linked(sid)
@@ -3274,7 +3274,7 @@ class VoiceService(SecureInputMixin):
                 if linked_sid and linked_sid not in seen:
                     seen.add(linked_sid)
                     try:
-                        got = self._sessions_for(linked_sid).session_messages(linked_sid)["entries"]
+                        got = self._sessions_for(linked_sid).session_messages(linked_sid, model_runs=self.store.reply_model_runs(linked_sid))["entries"]
                     except H.HistoryError:
                         got = []
                     more += [{**e, "id": f"{linked_sid[-6:]}-{e['id']}"} for e in got]

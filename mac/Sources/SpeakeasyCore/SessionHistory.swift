@@ -364,10 +364,13 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
     /// shown in place, fetched by id from `/voice/files` (SPK-214).
     public var files: [AgentFile] = []
 
+    public var attribution: ReplyAttribution?
+
     public init(id: String, kind: Kind, at: Date? = nil, text: String = "", tools: [JobActivityItem] = [], voice: Bool = false,
-                call: [HistoryCallLine]? = nil, card: HistoryWorkerTask? = nil, update: Bool = false) {
+                call: [HistoryCallLine]? = nil, card: HistoryWorkerTask? = nil, update: Bool = false, attribution: ReplyAttribution? = nil) {
         self.id = id; self.kind = kind; self.at = at; self.text = text; self.tools = tools; self.voice = voice; self.call = call
         self.card = card; self.update = update
+        self.attribution = kind == .assistant ? attribution : nil
     }
 
     public init?(json: Any?) {
@@ -389,6 +392,7 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
         voiceDuration = (o["voice_duration"] as? NSNumber)?.doubleValue
         clientID = kind == .user ? nonEmpty(o["client_id"]) : nil
         self.files = files
+        self.attribution = kind == .assistant ? ReplyAttribution(json: o["model"]) : nil
     }
 }
 

@@ -1288,7 +1288,7 @@ def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
 
 
 def session_messages(state_db: Path, session_id: str, *, before: int | None = None,
-                     limit: int = MESSAGES_PAGE) -> dict[str, Any]:
+                     limit: int = MESSAGES_PAGE, model_runs: dict[str, list[dict]] | None = None) -> dict[str, Any]:
     """``GET /voice/history/{id}``'s transcript: entries oldest first. ``user`` / ``assistant`` text,
     ``note`` for system rows, and ``tools`` groups: the calls made between two messages, each item in
     the job tool log's shape (``activity.public(detail=True)``: text, tool, args, result, status,
@@ -1305,11 +1305,23 @@ def session_messages(state_db: Path, session_id: str, *, before: int | None = No
         cols = _columns(db, "messages")
         active = " AND coalesce(active,1)=1" if "active" in cols else ""
         hidden = " AND coalesce(display_kind,'') != 'hidden'" if "display_kind" in cols else ""
-        kind_col = ", display_kind" if "display_kind" in cols else ""
+        extra = ''.join(', ' + name for name in ('model', 'provider', 'reasoning_effort', 'fallback', 'display_metadata', 'display_kind') if name in cols)
         rows = db.execute(
-            f"SELECT id, role, content, tool_calls, tool_call_id, tool_name, timestamp{kind_col} FROM messages "
+            f"SELECT id, session_id, role, content, tool_calls, tool_call_id, tool_name, timestamp{extra} FROM messages "
             f"WHERE session_id IN ({marks}){active}{hidden} AND id < ? ORDER BY id DESC LIMIT ?",
             (*chain, int(before) if before else 1 << 62, int(limit) + 1)).fetchall()
+        scols = _columns(db, 'sessions')
+        fields = ', '.join(['id'] + [c for c in ('model', 'model_config', 'billing_provider') if c in scols])
+        session_models = {}
+        for item in db.execute(f'SELECT {fields} FROM sessions WHERE id IN ({marks})', chain):
+            item = dict(item)
+            # A session's current model cannot identify older replies after switches.
+            usage = set()
+            if _columns(db, 'session_model_usage'):
+                usage = {r[0] for r in db.execute('SELECT DISTINCT model FROM session_model_usage WHERE session_id=?', (item['id'],)) if r[0]}
+            if len(usage) > 1:
+                continue
+            session_models[item['id']] = {'model': item.get('model'), 'provider': item.get('billing_provider')}
     except sqlite3.Error as exc:
         logger.warning("speakeasy: history read failed (%s)", type(exc).__name__)
         raise HistoryError(502, "I couldn't read that conversation.") from None
@@ -1317,7 +1329,8 @@ def session_messages(state_db: Path, session_id: str, *, before: int | None = No
         db.close()
     more = len(rows) > limit
     rows = list(reversed(rows[:limit]))
-    return {"entries": build_entries(rows, worker=found[0] == "kanban"), "has_more": more,
+    from .reply_models import attribute
+    return {"entries": attribute(rows, build_entries(rows, worker=found[0] == "kanban"), session_models, model_runs), "has_more": more,
             "before": rows[0]["id"] if more and rows else None}
 
 
