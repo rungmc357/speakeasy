@@ -14,7 +14,7 @@ def test_task_brief_checks_calendar_before_notes():
 def test_voice_says_checking_until_task_finishes():
     rules = P.rules_text(N)
     assert "Only a finished task's result is an answer" in rules
-    assert "never state a count" in rules and "hand them off" in rules
+    assert "never state a count" in rules and "get handed off" in rules
     assert "good catch" in rules
 
 

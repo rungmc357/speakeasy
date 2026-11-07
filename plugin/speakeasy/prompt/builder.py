@@ -18,7 +18,7 @@ from ..transcript import tail_text
 
 PROMPT_DIR = Path(__file__).parent
 # ~12,000 tokens at ~4 chars/token.
-MAX_INSTRUCTION_CHARS = 48_000
+MAX_INSTRUCTION_CHARS = 49_000
 MAX_BRIEF_CHARS = 10_000
 RESULT_BACKGROUND_CHARS = 1900  # live-call appends over 2,000 characters are dropped
 
