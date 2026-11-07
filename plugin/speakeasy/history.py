@@ -1358,6 +1358,22 @@ def session_messages(state_db: Path, session_id: str, *, before: int | None = No
             "before": rows[0]["id"] if more and rows else None}
 
 
+def _reply_entry(row: Any, at: float | None, *, with_tools: bool = False) -> dict[str, Any]:
+    """Mark recorded commentary additively; preserve the sanitized text for older clients."""
+    content = row["content"] or ""
+    clean = _MACHINE_BLOCK.sub("", content)
+    status, detail = _STATUS.search(clean), _DETAIL.search(clean)
+    rest = _DETAIL.sub("", _STATUS.sub("", clean)).strip()
+    narration = with_tools or (bool(status or detail) and not rest)
+    entry: dict[str, Any] = {"kind": "assistant", "id": f"m{row['id']}", "at": at,
+                             "text": redact_text(assistant_text(content))}
+    if narration:
+        entry["narration"] = True
+        if detail:
+            entry["work_detail"] = redact_text(detail.group(1).strip())
+    return entry
+
+
 def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, Any]]:
     """*worker*: a Kanban worker's session, whose tracker updates (comments, status lines) are its
     words to the person and show as messages; anywhere else they stay steps of the work."""
@@ -1429,7 +1445,7 @@ def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, An
                     flush()
                     fold_pending()
                 flush()
-                entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(shown)})
+                entries.append(_reply_entry(row, at, with_tools=True))
             try:
                 parsed = json.loads(calls)
             except ValueError:
@@ -1512,7 +1528,7 @@ def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, An
             flush()
             fold_pending()
             flush()
-            entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(assistant_text(content))})
+            entries.append(_reply_entry(row, at))
     flush()
     from .history_events import dedupe_events
     return dedupe_entries(dedupe_events(_drop_answered_failures(entries)))

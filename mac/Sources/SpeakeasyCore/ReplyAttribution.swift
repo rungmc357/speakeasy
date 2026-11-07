@@ -43,7 +43,8 @@ public extension HistoryConversation {
     var replyModelLabels: Set<String> {
         var previous: ReplyAttribution?
         var shown = Set<String>()
-        for entry in entries where entry.kind == .assistant {
+        let visibleReplies = ReplyWorkLayout.rows(entries, running: isWorking).compactMap(\.entry)
+        for entry in visibleReplies where entry.kind == .assistant {
             if let attribution = entry.attribution {
                 if attribution.differs(from: previous) { shown.insert(entry.id) }
                 previous = attribution

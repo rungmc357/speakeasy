@@ -363,6 +363,8 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
     public var clientID: String?
     /// `assistant`: the pictures and files this reply handed over (its `MEDIA:` lines), as Files rows:
     /// shown in place, fetched by id from `/voice/files` (SPK-214).
+    public var narration: Bool = false
+    public var workDetail: String? = nil
     public var files: [AgentFile] = []
 
     public var attribution: ReplyAttribution?
@@ -395,6 +397,8 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
         self.files = files
         self.attribution = kind == .assistant ? ReplyAttribution(json: o["model"]) : nil
         automaticEvent = kind == .note ? HistoryAutomaticEvent(json: o["event"]) : nil
+        narration = kind == .assistant && (o["narration"] as? Bool ?? false)
+        workDetail = narration ? nonEmpty(o["work_detail"]) : nil
     }
 }
 
