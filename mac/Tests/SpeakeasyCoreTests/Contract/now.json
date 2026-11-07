@@ -68,7 +68,7 @@
    },
    "id": "s:s_cf",
    "kind": "stopped",
-   "line": "Your Hermes's AI account is out of credits.",
+   "line": "Your AI account is out of credits.",
    "run_id": "run_c_f",
    "session_id": "s_cf",
    "source": "speakeasy",

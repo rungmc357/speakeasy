@@ -19,13 +19,13 @@ from typing import Any
 # wherever they talk to it; the app's own buttons (Try again, Switch model) cover the rest.
 REASONS: dict[str, tuple[str, str]] = {
     "billing": ("Out of credits",
-                "The AI account your Hermes uses is out of credits. Add credits there, or switch model in "
+                "Your AI account is out of credits. Add credits there, or switch model in "
                 "this chat."),
     "auth": ("Needs signing in again",
-             "The AI account your Hermes uses needs signing in again. Send /model to your Hermes to sign in, "
+             "Your AI account needs signing in again. Send /model to your Hermes to sign in, "
              "or switch model here."),
     "rate_limit": ("Too many requests",
-                   "The AI account your Hermes uses is busy (too many requests). Try again in a minute, or "
+                   "Your AI account is busy (too many requests). Try again in a minute, or "
                    "switch model."),
     # The provider's safety filter refused this request (Hermes' content_policy_blocked). Often a false
     # positive on ordinary work; the fix is a retry or another model, never the key, credits or a firewall.
@@ -45,11 +45,11 @@ REASONS: dict[str, tuple[str, str]] = {
 # and sounds like noise), so these name the fix in words and send the user to the app, whose task
 # detail and chat notice carry the REASONS text.
 SPOKEN: dict[str, str] = {
-    "billing": "The AI account your Hermes uses is out of credits. Add credits there, or switch this chat to "
+    "billing": "Your AI account is out of credits. Add credits there, or switch this chat to "
                "another model in the app.",
-    "auth": "The AI account your Hermes uses needs signing in again. The steps are in the app, or you can "
+    "auth": "Your AI account needs signing in again. The steps are in the app, or you can "
             "switch model there.",
-    "rate_limit": "The AI account your Hermes uses is busy with too many requests. Try again in a minute, or "
+    "rate_limit": "Your AI account is busy with too many requests. Try again in a minute, or "
                   "switch model in the app.",
     "content_refused": "The AI model declined that one. You can try again, or switch this "
                        "chat to another model in the app.",

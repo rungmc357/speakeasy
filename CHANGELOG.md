@@ -2,6 +2,15 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.45 · Mac 0.3.23 · iPhone build 69 — A tidier Home
+
+- **No counting headline.** Home no longer opens with a sentence counting your cards; the cards say it. An empty Home says "All caught up." *(apps)*
+- **Swipe to dismiss.** On iPhone and iPad, swipe a Home card left to move it to Earlier, with Undo. It moves on every device and is never deleted. *(iPhone build 69)*
+- **Clear.** One tap moves every finished answer to Earlier, seen or not (on iPhone and iPad from the top bar, with Undo). *(apps)*
+- **The call card says what the call did,** in the plugin's own words. *(apps)*
+- **No empty picture tiles:** a picture shows only once it has loaded. *(iPhone build 69)*
+- **Plainer failure lines:** "Your AI account is out of credits." instead of naming the account after your Hermes. *(Plugin)*
+
 ## Plugin 0.3.44 — Plain words on Home's live line
 
 - **One card per piece of work.** A conversation and the task it started show as one Home card: the task's card, with that conversation as its origin line.

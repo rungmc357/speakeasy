@@ -6,7 +6,7 @@ import XCTest
 /// the task row, the task detail, the call's status line and the failure notifications.
 final class RunFailureTests: XCTestCase {
     let t0 = Date(timeIntervalSince1970: 1_800_000_000)
-    let credits = "The AI account your Hermes uses is out of credits. Add credits there, or switch model in this chat."
+    let credits = "Your AI account is out of credits. Add credits there, or switch model in this chat."
 
     /// One task exactly as the plugin's `GET /voice/work/latest` returns it after Venice's HTTP 402.
     var outOfCreditsJSON: String {

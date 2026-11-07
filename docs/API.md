@@ -533,8 +533,8 @@ ask (same words, started within three minutes) are left out of the task list.
 running), `step_index` / `step_count` (the step it is on, 1-based, out of its `plan`; null without a
 plan; `step_index == step_count` once completed), `eta_seconds` (only once two steps are done, from
 their measured pace; never a guess), and `failure_reason`: one short plain sentence for a `failed`
-or `interrupted` task (e.g. "Your Hermes's AI account is out of credits.", "It timed out waiting on
-Hermes's model provider.", "Your Hermes stopped without saying why."), never "unknown";
+or `interrupted` task (e.g. "Your AI account is out of credits.", "It timed out waiting on
+the AI model.", "Your Hermes stopped without saying why."), never "unknown";
 null otherwise. The richer `failure` object (below) is unchanged.
 
 **Summary points** (capability `summary_points`): when an answer is laid out in sections (two or
@@ -591,7 +591,7 @@ the same `failure` object.
 
 ```json
 "failure": {"kind": "billing", "label": "Out of credits",
-            "text": "Your Hermes's AI account is out of credits. Add credits there, or switch model in this chat."}
+            "text": "Your AI account is out of credits. Add credits there, or switch model in this chat."}
 ```
 
 `200`

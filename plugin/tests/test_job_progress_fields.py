@@ -52,7 +52,7 @@ def test_eta_only_from_a_measured_pace():
 
 
 @pytest.mark.parametrize("kind,hint,expected", [
-    ("billing", None, "The AI account your Hermes uses is out of credits."),
+    ("billing", None, "Your AI account is out of credits."),
     (failures.UNKNOWN, None, failures.NO_REASON),
     (failures.UNKNOWN, "timeout", "The AI model took too long. Try again."),
     (None, "provider_error", "The AI model had a problem on its side. Try again in a minute."),

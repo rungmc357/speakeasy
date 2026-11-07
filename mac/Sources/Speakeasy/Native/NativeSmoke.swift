@@ -247,7 +247,7 @@ enum PreviewFixtures {
                                   events: [WorkEventItem(kind: "request", text: "What's the weather tomorrow in Lisbon?", at: now - 3)],
                                   title: "Lisbon weather tomorrow")
             failed.failure = WorkFailure(kind: "billing", label: "Out of credits",
-                                         text: "The AI account your Hermes uses is out of credits. Add credits there, or switch model in this chat.")
+                                         text: "Your AI account is out of credits. Add credits there, or switch model in this chat.")
             let done = WorkInfo(runID: "run_f0", status: "completed", updated: now - 60, shortStatus: "Done",
                                 events: [WorkEventItem(kind: "request", text: "Kitchen lights to thirty percent", at: now - 61)],
                                 result: WorkResult(spoken: "Kitchen's at 30 percent.", full: nil), title: "Kitchen lights")
@@ -255,7 +255,7 @@ enum PreviewFixtures {
             s.runID = "run_f1"; s.delegationAt = now - 3
             s.workInfo = failed
             s.exchange = Exchange(you: "What's the weather tomorrow in Lisbon?",
-                                  assistant: "That task didn't finish. The AI account your Hermes uses is out of credits.", replyStarted: true)
+                                  assistant: "That task didn't finish. Your AI account is out of credits.", replyStarted: true)
         case "detail":
             let events = [
                 WorkEventItem(kind: "request", text: "Restock the snack cart with salty stuff, about $60", at: now - 70),

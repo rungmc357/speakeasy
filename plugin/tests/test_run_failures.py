@@ -123,7 +123,7 @@ def test_the_sentences_are_speakeasys_own():
     for kind, (label, text) in failures.REASONS.items():
         assert label and text and failures.reason_text(kind) == text
         assert failures.public_failure(kind) == {"kind": kind, "label": label, "text": text}
-    assert failures.reason_text("billing") == ("The AI account your Hermes uses is out of credits. Add credits "
+    assert failures.reason_text("billing") == ("Your AI account is out of credits. Add credits "
                                                "there, or switch model in this chat.")
     unknown = failures.public_failure(failures.UNKNOWN)
     assert unknown == {"kind": failures.UNKNOWN, "text": "Your Hermes stopped without saying why."}
@@ -167,9 +167,9 @@ def test_no_reason_sends_anyone_to_a_terminal_or_a_log_file():
 
 
 def test_the_fixes_are_the_agreed_plain_words():
-    assert failures.reason_text("auth") == ("The AI account your Hermes uses needs signing in again. Send /model "
+    assert failures.reason_text("auth") == ("Your AI account needs signing in again. Send /model "
                                             "to your Hermes to sign in, or switch model here.")
-    assert failures.reason_text("rate_limit") == ("The AI account your Hermes uses is busy (too many requests). "
+    assert failures.reason_text("rate_limit") == ("Your AI account is busy (too many requests). "
                                                   "Try again in a minute, or switch model.")
     assert failures.reason_text("model_not_found") == "That AI model isn't available any more. Pick another for this chat."
     assert failures.reason_text("hermes_key").startswith("Your Hermes didn't accept Speakeasy's key. "
@@ -177,7 +177,7 @@ def test_the_fixes_are_the_agreed_plain_words():
     assert failures.reason_text("hermes_unreachable") == ("Speakeasy couldn't get through to your Hermes. "
                                                           "Send /restart to your Hermes, then try again.")
     # The card's one-line reason is the first sentence, without the fix.
-    assert failures.failure_reason("failed", "billing") == "The AI account your Hermes uses is out of credits."
+    assert failures.failure_reason("failed", "billing") == "Your AI account is out of credits."
     assert failures.failure_reason("failed", "hermes_unreachable") == "Speakeasy couldn't get through to your Hermes."
 
 
