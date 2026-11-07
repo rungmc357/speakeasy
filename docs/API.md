@@ -1255,6 +1255,11 @@ id is never transcribed or sent twice. Reply: the `…/message` reply plus
 entry has `voice: true`, its words unquoted (`""` when unknown) and, when known, `voice_clip` (the
 sending device's client id, to play the clip it kept) and `voice_duration`.
 
+`POST /voice/work/voice-message` (no run id; servers with `capabilities.new_voice_notes`): the
+recording starts a NEW job and chat, the way `POST /voice/work` does for typed words (Home's composer,
+no call). Same headers (`X-Speakeasy-Mode` and `-Answers` are ignored); reply: the `POST /voice/work`
+reply plus `voice: {transcript, duration}`.
+
 ### POST /voice/history/{session_id}/message
 
 Optional `answers`: a task's `run_id` — the message is that question's answer ("Reply…" on a decision card), delivered to the task that asked even when a newer task exists (`via: "answer"`); a task this conversation doesn't hold is `404`.

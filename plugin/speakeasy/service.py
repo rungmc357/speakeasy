@@ -121,6 +121,9 @@ CAPABILITIES["transcribe"] = True
 # message, handed to Hermes like a Telegram voice note (transcribed on arrival); the reply carries the
 # transcript for the bubble. Clients without it record, transcribe, then send the words as text.
 CAPABILITIES["voice_notes"] = True
+# POST /voice/work/voice-message: a voice note that starts a NEW job and chat (Home's composer, no call),
+# the way POST /voice/work starts one from typed words.
+CAPABILITIES["new_voice_notes"] = True
 # POST /voice/push + GET /voice/push/events/{id}: notifications while the app is closed (push.py).
 CAPABILITIES["push"] = True
 # GET /voice/models, model/reasoning on POST /voice/work + history messages, PUT /voice/history/{id}/model,
@@ -2271,8 +2274,8 @@ class VoiceService(SecureInputMixin):
         text = " ".join(text.split())
         if len(text) > M.MAX_TEXT:
             raise ServiceError(400, f"The job is too long (at most {M.MAX_TEXT} characters).")
-        if source != "typed":
-            raise ServiceError(400, "source must be typed.")
+        if source not in {"typed", "voice_message"}:
+            raise ServiceError(400, "source must be typed or voice_message.")
         if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
             raise ServiceError(400, "client_id must be an id.")
         return self._once(client_id, lambda: self._with_staged(
@@ -3839,6 +3842,8 @@ class VoiceService(SecureInputMixin):
         if len(data) != upload["size"]:
             raise ServiceError(400, "upload ended early")
         fields = dict(upload["fields"])
+        if target == "new":
+            return self._voice_message_new(fields, upload, data, device_id)
         if target == "session":
             if not H.valid_session_id(target_id) or H.session_meta(self.rt.state_db, target_id) is None:
                 raise ServiceError(404, "I couldn't find that conversation.")
@@ -3853,6 +3858,22 @@ class VoiceService(SecureInputMixin):
                else self.task_message(target_id, body, device_id))
         if target == "session":
             self._note_voice_clip(target_id, note, fields.get("client_id"), upload["duration"], sent_at)
+        return {**got, "voice": {"transcript": transcript, "duration": upload["duration"]}}
+
+    def _voice_message_new(self, fields: dict[str, Any], upload: dict[str, Any], data: bytes,
+                           device_id: str | None) -> dict[str, Any]:
+        """``POST /voice/work/voice-message``: the recording starts a new job and chat, exactly as
+        typed words do on ``POST /voice/work`` (Home's composer, no call). The agent gets the
+        gateway's voice-note text; the new chat's page shows it as a voice message."""
+        fields.pop("answers", None)
+        fields.pop("mode", None)   # nothing is running in a chat that doesn't exist yet
+        note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
+        sent_at = time.time()
+        got = self.start_job({**fields, "text": note}, device_id)
+        session = got.get("session_id")
+        if isinstance(session, str) and session:
+            self._note_voice_message(session, note)
+            self._note_voice_clip(session, note, fields.get("client_id"), upload["duration"], sent_at)
         return {**got, "voice": {"transcript": transcript, "duration": upload["duration"]}}
 
     def _voice_note(self, client_id: str | None, suffix: str, data: bytes) -> tuple[str, str | None]:

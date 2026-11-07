@@ -757,6 +757,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/transcribe":  # a voice message's audio: same raw-body rules
                 self._transcribe()
                 return
+            if path == "/voice/work/voice-message":  # a voice note that starts a new job (Home's composer)
+                self._voice_message("new", "")
+                return
             voice_note = (re.fullmatch(rf"/voice/history/{_SESSION}/voice-message", path)
                           or re.fullmatch(rf"/voice/work/{_ID}/voice-message", path))
             if voice_note:  # the recording itself is the message: same raw-body rules

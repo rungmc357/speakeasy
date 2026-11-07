@@ -215,3 +215,29 @@ def test_not_audio_or_unknown_is_refused_before_reading(server, state, heard):
     assert send(server, "/voice/history/api_nope/voice-message", Client_Id="bad id!")[0] == 400
     assert send(server, "/voice/history/api_missing/voice-message", Client_Id="vm-x")[0] == 404
     assert not seen
+
+
+def test_a_voice_message_from_home_starts_a_new_job_and_shows_on_home(server, service, hermes, heard):
+    """Home's composer (SPK-198): a voice note with no conversation yet starts a new job and chat,
+    like typed words on POST /voice/work; the agent gets the voice-note text; a retry starts nothing new."""
+    seen, words = heard
+    assert http(server.base_url, "GET", "/voice/status", token=server.token)[1]["capabilities"]["new_voice_notes"] is True
+    status, body = send(server, "/voice/work/voice-message", Client_Id="vm-home", Duration="6.5", Mode="steer")
+    assert status == 202 or status == 200, body
+    assert body["ok"] is True and body["delivered_as"] == "new_run", body
+    assert body["voice"] == {"transcript": words["text"], "duration": 6.5}
+    run_id = body["run_id"]
+    key = service.store.key_for_run(run_id)
+    # The same kind of job typed words start on Home (the voiceless worker, its own new chat), so Home
+    # lists it while it runs exactly like a typed one.
+    row = service.store.run_row(key)
+    assert str(row["interaction_id"]).startswith("vi_typed") and row["session_id"], row
+    assert f'"{words["text"]}"' in _said(wait_for(lambda: hermes.calls)[-1])
+    wait_for(lambda: service.store.work(run_id)["status"] == "completed")
+    # The same recording again (a retry): no second transcription, no second job.
+    calls = len(hermes.calls)
+    status, again = send(server, "/voice/work/voice-message", Client_Id="vm-home", Duration="6.5")
+    assert again["run_id"] == run_id and len(seen) == 1 and len(hermes.calls) == calls
+    # Only short hashes are kept, never the words.
+    sid = service.store.session_for(key)
+    assert sid and "cedar" not in (service.store.get_meta("voice_clips:" + sid) or "")
