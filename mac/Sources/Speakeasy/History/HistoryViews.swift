@@ -1033,6 +1033,9 @@ struct HistoryMessageView: View {
                     }
                 }
             }
+            if !message.files.isEmpty {
+                HistoryMessageFiles(files: message.files, files_: store.files).padding(.leading, 34)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.trailing, ChatLabel.isLongForm(message.text) ? 0 : 90)

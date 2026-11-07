@@ -293,6 +293,8 @@ public struct HistoryThreadMessage: Equatable, Sendable, Identifiable {
     public var voiceDuration: TimeInterval? = nil
     /// A voice note is drawn as one (play, waveform, length, the words under it).
     public var isVoiceNote: Bool { voice && (voiceClip != nil || voiceDuration != nil || text.isEmpty) }
+    /// `assistant`: the pictures and files this answer handed over (SPK-214), drawn under it.
+    public var files: [AgentFile] = []
 
     public init(id: String, role: Role, text: String, at: Date? = nil, voice: Bool = false, tools: [JobActivityItem] = [],
                 delivery: Delivery? = nil, clientID: String? = nil, call: [HistoryCallLine]? = nil) {
@@ -345,7 +347,9 @@ public struct HistoryThread: Equatable, Sendable {
                 note.card = e.card
                 out.append(note)
             case .assistant:
-                out.append(HistoryThreadMessage(id: e.id, role: .assistant, text: e.text, at: e.at, tools: pending))
+                var answer = HistoryThreadMessage(id: e.id, role: .assistant, text: e.text, at: e.at, tools: pending)
+                answer.files = e.files
+                out.append(answer)
                 pending = []; pendingAt = nil
             case .user:
                 if !pending.isEmpty {
