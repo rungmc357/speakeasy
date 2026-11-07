@@ -343,10 +343,10 @@ struct TranscriptGrip: NSViewRepresentable {
 final class VoicePanelController {
     let model: VoicePanelModel
     private let panel: VoicePanel
-    private let hosting: PanelHostingView<VoicePanelView>
+    private let hosting: PanelHostingView<MacNowVoiceSurface>
     private var resizeScheduled = false
     /// Off-screen measurer: SwiftUI reports its ideal height for the fixed width.
-    private lazy var measurer = NSHostingController(rootView: VoicePanelView(model: model))
+    private lazy var measurer = NSHostingController(rootView: MacNowVoiceSurface(voice: model))
 
     /// Top-left corner the user dragged the panel to (screen coordinates). `nil`
     /// means the default bottom-center spot. Growth/shrink keeps the top edge
@@ -379,7 +379,7 @@ final class VoicePanelController {
         panel.worksWhenModal = true
         panel.title = "Speakeasy"
         panel.setAccessibilityLabel("Speakeasy voice panel")
-        hosting = PanelHostingView(rootView: VoicePanelView(model: model))
+        hosting = PanelHostingView(rootView: MacNowVoiceSurface(voice: model))
         hosting.sizingOptions = []
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = .clear
@@ -404,7 +404,7 @@ final class VoicePanelController {
             return true
         }
         panel.onKey = { [weak model] code, chars in model?.handleKey(code: code, characters: chars) ?? false }
-        panel.allowsResize = { [weak model] in !(model?.showsSlim ?? false) }
+        panel.allowsResize = { [weak model] in !MacNowPresentation.shared.enabled && !(model?.showsSlim ?? false) }
         if let saved = UserDefaults.standard.string(forKey: Self.sizeKey) {
             let s = NSSizeFromString(saved)
             model.panelWidth = Self.clampWidth(s.width == 0 ? Tokens.width : s.width)
@@ -484,6 +484,13 @@ final class VoicePanelController {
     }
 
     func show() {
+        if MacNowPresentation.shared.enabled {
+            guard MacNowLayout.floats(nowSupported: true,
+                                      callOpen: model.state.connection.isOpen && !model.state.workOnly,
+                                      homeFrontmost: MacNowPresentation.shared.homeFrontmost) else {
+                hide(); return
+            }
+        }
         resize(animated: false)
         if !panel.isVisible { panel.orderFrontRegardless() }
         setNeedsResize()   // SwiftUI may publish the new content next turn
@@ -573,7 +580,8 @@ final class VoicePanelController {
     }
 
     private func resize(animated: Bool) {
-        let width = model.displayWidth
+        let compact = MacNowPresentation.shared.enabled && model.state.connection.isOpen && !model.state.workOnly
+        let width = compact ? CGFloat(MacNowLayout.callBarSize.width) : model.displayWidth
         // Lay the measurer out at the first answer, then ask again: content hosted inside the
         // board's scroll view (its own SwiftUI host, e.g. the plugin-update card) only catches up
         // in a layout pass. Measuring once returned its height from one change earlier, so the
@@ -585,7 +593,8 @@ final class VoicePanelController {
         let height = max(56, ceil(fitting.height))
         let frame = Self.placement(height: height, width: width, userTopLeft: userTopLeft,
                                    screens: NSScreen.screens.map(\.visibleFrame),
-                                   fallback: (panel.screen ?? NSScreen.main)?.visibleFrame)
+                                   fallback: (panel.screen ?? NSScreen.main)?.visibleFrame,
+                                   topCenter: compact)
         guard let frame, frame != panel.frame, !panel.isDraggingPanel else { return }
         let animated = animated && !panel.isResizingPanel
         // `animator().setFrame` on this non-activating panel reported completion
@@ -601,11 +610,13 @@ final class VoicePanelController {
     /// extends downward and never snaps back), clamped fully onto the visible
     /// frame of whichever screen holds most of the panel.
     static func placement(height: CGFloat, width: CGFloat = Tokens.width, userTopLeft: NSPoint?,
-                          screens: [NSRect], fallback: NSRect?) -> NSRect? {
+                          screens: [NSRect], fallback: NSRect?, topCenter: Bool = false) -> NSRect? {
         guard let userTopLeft else {
             guard let visible = fallback else { return nil }
-            return NSRect(x: round(visible.midX - width / 2), y: visible.minY + 14,
-                          width: width, height: min(height, visible.height - 40))
+            let h = min(height, visible.height - 40)
+            // Home's floating call bar defaults to top-center, just below the menu bar.
+            return NSRect(x: round(visible.midX - width / 2), y: topCenter ? visible.maxY - h - 8 : visible.minY + 14,
+                          width: width, height: h)
         }
         let wanted = NSRect(x: userTopLeft.x, y: userTopLeft.y - height, width: width, height: height)
         let visible = screens.max { $0.intersection(wanted).area < $1.intersection(wanted).area }

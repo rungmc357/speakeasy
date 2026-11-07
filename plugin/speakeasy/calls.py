@@ -739,6 +739,14 @@ class Interaction:
     # Listening mode: the voice already responded from the room on this call (any leg of it).
     room_nudged: bool = False
     last_activity: float = dataclasses.field(default_factory=time.monotonic)
+    started_at: float = dataclasses.field(default_factory=time.time)  # wall clock, for Home's "From the earlier call"
+    # Home (SPK-124 phase 3): the task the voice is talking about right now (lights up its card),
+    # since when (wall clock), and every task whose answer the voice spoke on this call ("You heard
+    # this on the call"); ended_at once the call is over (the "Your call" card).
+    talking_about: str | None = None
+    talking_at: float = 0.0
+    spoken_tasks: dict[str, float] = dataclasses.field(default_factory=dict)
+    ended_at: float | None = None
     successor: "Interaction | None" = dataclasses.field(default=None, repr=False)
     # A later call (not a resume) that took on this ended or paused call's open tasks: their results,
     # approvals and follow-ups go there (head()), and carried_keys on it names the tasks it took on.
@@ -1175,7 +1183,7 @@ class SidebandWorker:
         self.choice_tasks: dict[str, str] = {}
         self.choice_answered: set[str] = set()
         self.offered_choices: set[frozenset[str]] = set()
-        self.replied_task: str | None = None     # the task the voice last spoke an answer from
+        self._replied_task: str | None = None    # the task the voice last spoke an answer from
         # Repeat status asks (recap.py): when this call opened, when the call before it ended, and the
         # earlier tasks whose answer was just repeated with an offer of a fresh check (key -> monotonic).
         self.opened_wall = time.time()
@@ -1391,6 +1399,56 @@ class SidebandWorker:
         self.dispatch_tasks.add(task)
         task.add_done_callback(self.dispatch_tasks.discard)
 
+    @property
+    def replied_task(self) -> str | None:
+        """The task the voice last spoke an answer from (routing's strong prior for "and that one?")."""
+        return getattr(self, "_replied_task", None)
+
+    @replied_task.setter
+    def replied_task(self, task_id: str | None) -> None:
+        self._replied_task = task_id
+        if task_id:
+            self.talking_about(task_id, spoke=True)
+
+    def talking_about(self, task_id: str, spoke: bool = False) -> None:
+        """Home: the voice is talking about this task now, so its card lights up on every screen.
+        *spoke*: it read the task's answer out, so that answer counts as heard (seen) everywhere."""
+        interaction = getattr(self, "interaction", None)
+        if interaction is None:
+            return
+        now = time.time()
+        with interaction.lock:
+            interaction.talking_about, interaction.talking_at = task_id, now
+            run = interaction.runs.get(task_id)
+            key, status = (run.idem_key, run.status) if run else (None, None)
+            if spoke:
+                interaction.spoken_tasks[task_id] = now
+        try:
+            if spoke and key and status == "completed" and not self.store.is_seen(key):
+                self.store.mark_seen(key)  # told on the call: read, like opening it
+        except Exception:
+            logger.debug("speakeasy: could not mark a spoken answer seen", exc_info=True)
+        hook = getattr(self.rt, "now_changed", None)
+        if callable(hook):
+            try:
+                hook()
+            except Exception:
+                logger.debug("speakeasy: Home change hook failed", exc_info=True)
+
+    def needs_a_tap(self, task_id: str) -> bool:
+        """A task's open question with a risky choice (sending, paying, deleting): a spoken answer
+        doesn't decide it; the card on screen does (Home's "Risky choices need a tap")."""
+        with self.interaction.lock:
+            run = self.interaction.runs.get(task_id)
+            key = run.idem_key if run else None
+        if not key:
+            return False
+        if (self.store.question_state(key) or "open") != "open":
+            return False
+        asked = ((self.store.work(idem_key=key) or {}).get("result") or {}).get("question")
+        options = asked.get("options") if isinstance(asked, dict) else None
+        return any(isinstance(o, dict) and o.get("risk") == "high" for o in options or [])
+
     def publish(self) -> None:
         name = self.names.assistant_name
         publish_state(self.store, self.interaction, name)
@@ -1445,6 +1503,9 @@ class SidebandWorker:
             if self.interaction.call_closed:
                 return
             self.interaction.call_closed = True
+            if not self.interaction.paused:
+                self.interaction.ended_at = time.time()
+            self.interaction.talking_about = None
             self.interaction.history = (self.interaction.history + self.turns())[-400:]
             paused = self.interaction.paused
             history = list(self.interaction.history)
@@ -1713,6 +1774,7 @@ class SidebandWorker:
             return None
         logger.info("speakeasy: spoken choice shown as a card (%d options)", len(options))
         self.publish()
+        self.talking_about(delegation_id)  # the voice is asking it right now: Home lights it up
         # Name the card for the decision, not the first words of the question.
         self.retitle(idem, f"Question put to the user: {question} Options: {'; '.join(options)}")
         return delegation_id
@@ -3395,6 +3457,12 @@ class SidebandWorker:
                 # "A picture of that page. OK, the 4:15 then": the picture opened, and the rest is
                 # an instruction for the task, which must still reach it.
             self.wants_show.add(delegation_id)
+        if part.kind == "follow_up" and part.task_id and self.needs_a_tap(part.task_id):
+            # A risky choice is never made by voice: the card on screen takes the tap.
+            self.talking_about(part.task_id)
+            await self.append("session.commentary.append", delegation_id, P.needs_a_tap_line(
+                notice_text(self.store.title(self.interaction.runs[part.task_id].idem_key) or "", 60)))
+            return
         if part.kind == "follow_up" and part.task_id:
             # Where it went is obvious when they picked or are looking at that task: not said aloud.
             obvious = part.task_id == marked or (focus is not None and part.task_id == focus.task_id)

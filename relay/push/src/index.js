@@ -17,6 +17,9 @@
 export const KINDS = ["finished", "needs_you", "failed", "reply"];
 export const ENVIRONMENTS = ["sandbox", "production"];
 export const FIELDS = ["collapse_id", "device_token", "environment", "event_id", "kind", "nonce"];
+// Optional: the notification's words sealed on the Hermes computer with the phone's own key. The relay
+// can't read it and never looks inside; it only checks it is base64url of a sane size and passes it on.
+export const SEALED = "sealed";
 export const LIMITS = {
   skewS: 300,              // a signed request is good for this long either side of now
   nonceTtlS: 900,          // nonces are remembered at least as long as a timestamp is accepted
@@ -80,8 +83,9 @@ function constantTimeEqual(a, b) {
 /** The notify body, or a reason it is refused. Unknown keys are refused: that is the content rule. */
 export function validateNotify(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return "body must be a JSON object";
-  const keys = Object.keys(body).sort();
-  if (keys.join(",") !== FIELDS.join(",")) return "exactly device_token, environment, kind, nonce, collapse_id, event_id";
+  const keys = Object.keys(body).filter((k) => k !== SEALED).sort();
+  if (keys.join(",") !== FIELDS.join(",")) return "exactly device_token, environment, kind, nonce, collapse_id, event_id (and optionally sealed)";
+  if (SEALED in body && (typeof body.sealed !== "string" || !/^[A-Za-z0-9_-]{40,2400}$/.test(body.sealed))) return "sealed";
   if (typeof body.device_token !== "string" || !/^[0-9a-f]{64,200}$/.test(body.device_token)) return "device_token";
   if (!ENVIRONMENTS.includes(body.environment)) return "environment";
   if (!KINDS.includes(body.kind)) return "kind";
@@ -102,6 +106,7 @@ export function apnsPayload(body) {
     },
     e: body.event_id,
     k: body.kind,
+    ...(body.sealed ? { s: body.sealed } : {}),
   };
 }
 

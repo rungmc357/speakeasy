@@ -134,6 +134,7 @@ def same_machine(peer: str, headers: Any) -> bool:
 _ID = r"([A-Za-z0-9_-]+)"
 # A Hermes session id (percent-encoded in the path; history.SAFE_ID_RE checks it once decoded).
 _SESSION = r"([A-Za-z0-9_:@.+=%-]{1,200})"
+_NOW_ITEM = r"([qstc]:[A-Za-z0-9_:@.+=%-]{1,200})"  # a Home item id (now.py): q:/s:/t:/c: + its id
 
 
 def upload_read_s(length: int) -> float:
@@ -509,6 +510,7 @@ class Handler(BaseHTTPRequestHandler):
         decision_resolved, history_changed), resumable with Last-Event-ID; a ``reset`` event tells the
         client to reload everything (it missed some). Heartbeat as on the call stream."""
         feed = self.service.history_events
+        wants_now = self._query().get("now") in {"1", "true"}  # Home's ``now`` {rev} events (SPK-124)
         try:
             cursor = int(self.headers.get("Last-Event-ID", ""))
         except ValueError:
@@ -539,8 +541,10 @@ class Handler(BaseHTTPRequestHandler):
                     if batch is None:
                         batch = [(feed.seq, "reset", {})]
                 for seq, kind, payload in batch:
-                    self._sse(seq, kind, payload)
                     cursor = max(cursor, seq)
+                    if kind == "now" and not wants_now:
+                        continue  # apps before Home reload everything on any event they don't know
+                    self._sse(seq, kind, payload)
                     last_write = time.monotonic()
                 if time.monotonic() - last_write >= self.heartbeat_s:
                     self.wfile.write(b": ping\n\n")
@@ -696,6 +700,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.board_call())
             elif board_one:
                 self._reply(200, self.service.board_call(board_one.group(1)))
+            elif path == "/voice/now":
+                self._reply(200, self.service.now(self._query()))
             elif path == "/voice/history/events":
                 self._history_events()
             elif path == "/voice/history":
@@ -790,6 +796,19 @@ class Handler(BaseHTTPRequestHandler):
                 # By session id only: never the call router (docs/API.md "History").
                 self._reply(200, self.service.history_message(unquote(history_message.group(1)), self._body(),
                                                                      device_id))
+                return
+            if path == "/voice/now/clear-seen":
+                self._reply(200, self.service.now_clear_seen(self._body()))
+                return
+            now_act = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/(later|answer|approval)", path)
+            if now_act:
+                item_id, act = unquote(now_act.group(1)), now_act.group(2)
+                if act == "later":
+                    self._reply(200, self.service.now_later(item_id, self._body()))
+                elif act == "answer":
+                    self._reply(200, self.service.now_answer(item_id, self._body()))
+                else:
+                    self._reply(200, self.service.now_approval(item_id, self._body()))
                 return
             history_act = re.fullmatch(rf"/voice/history/{_SESSION}/(rename|pin|archive|read)", path)
             if history_act:
@@ -924,6 +943,10 @@ class Handler(BaseHTTPRequestHandler):
                       or re.fullmatch(rf"/voice/work/{_ID}/queued/{_ID}", path))
             if queued:  # cancel a held message
                 self._reply(200, self.service.cancel_queued(queued.group(2)))
+                return
+            now_later = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/later", path)
+            if now_later:  # bring a put-off item back now
+                self._reply(200, self.service.now_later(unquote(now_later.group(1)), {}, undo=True))
                 return
             staged = re.fullmatch(rf"/voice/attachments/{_ID}", path)
             if staged:

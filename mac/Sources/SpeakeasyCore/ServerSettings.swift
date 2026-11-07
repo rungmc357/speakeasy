@@ -950,6 +950,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var slashSkills: Bool = false
     /// Files your agent made (`GET /voice/files`, AgentFiles.swift): the Files row and page.
     public var files: Bool = false
+    /// Home (SPK-124, `GET /voice/now`): the Mac window's Now column and the menu bar's question dot.
+    public var now: Bool = false
     /// The read-only Approvals page (`GET /voice/approvals`, ApprovalRules.swift).
     public var approvalRules: Bool = false
     /// Add the OpenAI API key for the API-key voice from the app (`POST /voice/openai-key`, OpenAIKey.swift).
@@ -975,6 +977,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case messageModes = "message_modes", questionState = "question_state", agents
         case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
         case voiceNotes = "voice_notes"
+        case now
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -999,6 +1002,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false
         files = (try? c.decodeIfPresent(Bool.self, forKey: .files)) ?? false
+        now = (try? c.decodeIfPresent(Bool.self, forKey: .now)) ?? false
         approvalRules = (try? c.decodeIfPresent(Bool.self, forKey: .approvalRules)) ?? false
         openaiKey = (try? c.decodeIfPresent(Bool.self, forKey: .openaiKey)) ?? false
     }

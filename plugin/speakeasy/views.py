@@ -105,14 +105,15 @@ CATALOG: dict[str, dict[str, Any]] = {
     # A decision the task needs from the user; the app shows numbered answers (tap, 1-4, or say it).
     # Options are strings, or objects (OPTION below) when the model explained them; checked in clean_options.
     "question": {"question": S, "recommended": N, "task_id": S, "images": (N, 4),
-                 "context": S, "why": S, "affects": S},
+                 "context": S, "why": S, "affects": S, "expires_in": N},
 }
 
 TONES = {"good", "warn", "bad", "info", "neutral"}
 CHART_SORTS = {"high_first", "low_first", "as_listed"}
 TAG_TONES = {"good", "warn", "bad", "neutral"}
 RISKS = {"low", "medium", "high"}
-OPTION = {"text": S, "detail": S, "tags": ({"text": S, "tone": S}, 4), "risk": S, "reversible": B}
+OPTION = {"text": S, "detail": S, "tags": ({"text": S, "tone": S}, 4), "risk": S, "reversible": B,
+          "link": S, "facts": (S, 3)}  # link: the https page of a thing to pick; facts: price, size... (Home)
 
 # A decision is one-tap "Approve" only when nothing in it spends money, speaks for the user,
 # publishes, or deletes. Plain words, checked on the question and the recommended option; a false

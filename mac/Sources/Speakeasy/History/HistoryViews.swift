@@ -59,13 +59,48 @@ enum HistoryLook {
 
 struct HistoryRootView: View {
     @ObservedObject var store: HistoryStore
+    var voice: VoicePanelModel? = nil
+    @State private var earlierOpen = false
 
     var body: some View {
+        GeometryReader { geo in
+            // Home (SPK-124 phase 4b): sidebar · Now · conversation; under 1,000 wide, Now · conversation.
+            let wide = MacNowLayout.showsSidebar(width: geo.size.width, nowSupported: store.nowSupported)
+            columns(sidebar: wide, width: geo.size.width)
+                .overlay(alignment: .topLeading) {
+                    if !wide {
+                        Button { earlierOpen.toggle() } label: {
+                            Label("Earlier", systemImage: "sidebar.left")
+                        }
+                        .buttonStyle(.borderless).padding(.leading, 84).padding(.top, 9)
+                        .accessibilityIdentifier("mac-now-earlier")
+                        .popover(isPresented: $earlierOpen, arrowEdge: .bottom) {
+                            HistorySidebar(store: store).frame(width: 288, height: 560)
+                                .background(HistoryLook.sidebar)
+                        }
+                    }
+                }
+        }
+    }
+
+    private var divider: some View {
+        Rectangle().fill(Color.adaptive(dark: Color.black.opacity(0.45), light: Color.black.opacity(0.08))).frame(width: 1)
+    }
+
+    private func columns(sidebar: Bool, width: CGFloat) -> some View {
         HStack(spacing: 0) {
-            HistorySidebar(store: store)
-                .frame(width: HistoryLook.sidebarWidth)
-                .background(HistoryLook.sidebar)
-            Rectangle().fill(Color.adaptive(dark: Color.black.opacity(0.45), light: Color.black.opacity(0.08))).frame(width: 1)
+            if sidebar {
+                HistorySidebar(store: store)
+                    .frame(width: store.nowSupported ? 260 : HistoryLook.sidebarWidth)
+                    .background(HistoryLook.sidebar)
+                divider
+            }
+            if store.nowSupported {
+                MacNowColumn(now: MacNowModel.shared, store: store, voice: voice)
+                    .frame(width: sidebar ? 420 : MacNowLayout.nowWidth(windowWidth: width))
+                    .background(HistoryLook.sidebar.opacity(0.5))
+                divider
+            }
             HistoryDetailPane(store: store)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(HistoryLook.window)
@@ -78,7 +113,10 @@ struct HistoryRootView: View {
 
     /// ⌘F search (⌘N lives on the New chat button).
     private var shortcuts: some View {
-        Button("") { store.focusSearch += 1 }.keyboardShortcut("f", modifiers: .command).opacity(0).allowsHitTesting(false)
+        Button("") {
+            if store.nowSupported { earlierOpen = true }
+            store.focusSearch += 1
+        }.keyboardShortcut("f", modifiers: .command).opacity(0).allowsHitTesting(false)
             .accessibilityHidden(true)
     }
 }
@@ -243,12 +281,8 @@ struct HistorySidebar: View {
     @ViewBuilder private var listBody: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                if !store.list.pinned.isEmpty {
-                    Section {
-                        ForEach(store.list.pinned) { s in row(s) }
-                    } header: { sectionHeader("Pinned") }
-                }
-                ForEach(store.list.grouped(now: store.now), id: \.0.id) { group, sessions in
+                // No Pinned section: Geo removed pinning (SPK-124); a pinned chat sorts by time.
+                ForEach(store.list.grouped(now: store.now, pins: false), id: \.0.id) { group, sessions in
                     Section {
                         ForEach(sessions) { s in row(s) }
                     } header: { sectionHeader(store.list.archived ? "Archived · " + group.rawValue : group.rawValue) }
@@ -347,10 +381,6 @@ struct HistoryRow: View {
                             Image(systemName: "archivebox").font(.system(size: 9)).foregroundStyle(.tertiary)
                                 .accessibilityLabel("Archived")
                         }
-                        if session.pinned {
-                            Image(systemName: "pin.fill").font(.system(size: 8.5)).foregroundStyle(.tertiary)
-                                .accessibilityLabel("Pinned")
-                        }
                         Text(HistoryLook.short(session.lastActivity, now: now)).font(.system(size: 10.5).monospacedDigit())
                             .foregroundStyle(.tertiary).fixedSize()
                     }
@@ -427,7 +457,6 @@ struct HistoryRowMenu: View {
 
     var body: some View {
         Button("Rename…") { HistoryRename.ask(session.title) { store.act(.rename($0), on: session.id) } }
-        Button(session.pinned ? "Unpin" : "Pin") { store.act(.pin(!session.pinned), on: session.id) }
         if session.unread { Button("Mark as Read") { store.act(.read, on: session.id) } }
         Divider()
         Button("Copy Link") {

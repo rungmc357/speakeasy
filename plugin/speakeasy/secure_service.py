@@ -81,7 +81,7 @@ class SecureInputMixin:
             logger.warning("speakeasy: secure input milestone failed: %s", type(exc).__name__)
         try:
             self.push.notify("needs_you", key=f"secure:{pending.id}", title=pending.target.title, body=body,
-                             run_id=pending.target.run_id)
+                             run_id=pending.target.run_id, level="restricted")
         except Exception as exc:
             logger.warning("speakeasy: secure input push failed: %s", type(exc).__name__)
         self._secure_feed(pending)

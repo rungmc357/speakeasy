@@ -8,6 +8,8 @@ import SpeakeasyClient
 @MainActor
 final class HistoryWindowController: NSObject, NSWindowDelegate {
     let store = HistoryStore()
+    var voice: VoicePanelModel?
+    var onFrontmostChanged: (Bool) -> Void = { _ in }
     private(set) var window: NSWindow?
 
     func show() {
@@ -24,7 +26,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
-        w.title = "Speakeasy History"
+        w.title = "Speakeasy"
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.isMovableByWindowBackground = true
@@ -35,7 +37,7 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         }
         w.minSize = NSSize(width: 720, height: 480)
         w.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: HistoryRootView(store: store))
+        let host = NSHostingView(rootView: HistoryRootView(store: store, voice: voice))
         host.sizingOptions = []   // the window keeps its size; the lists scroll inside it
         w.contentView = host
         w.center()
@@ -44,8 +46,11 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
         return w
     }
 
-    func windowWillClose(_ notification: Notification) { store.stop() }
+    func windowWillClose(_ notification: Notification) { store.stop(); onFrontmostChanged(false) }
+    func windowDidResignKey(_ notification: Notification) { onFrontmostChanged(false) }
+    func windowDidMiniaturize(_ notification: Notification) { onFrontmostChanged(false) }
     func windowDidBecomeKey(_ notification: Notification) {
+        onFrontmostChanged(true)
         // Back in front: pick up what changed while it was away.
         if store.supported, store.backend != nil, !store.list.loading { store.refresh() }
         if let id = store.target?.sessionID { store.load(id) }
@@ -481,6 +486,10 @@ enum HistoryShots {
         c.store.boardsSupported = true
         c.store.files.backend = DemoAgentFilesBackend()
         c.store.filesSupported = true
+        if ProcessInfo.processInfo.environment["HISTORY_NOW"] != nil {
+            c.store.nowSupported = true
+            MacNowModel.shared.demo = MacDemoNow.home()
+        }
         if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
             NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
         }
@@ -911,4 +920,30 @@ final class SilentRecorder: VoiceMessageRecording {
                finished: @escaping @MainActor (String?, String?) -> Void) -> Bool { false }
     func stop() {}
     func cancel() {}
+}
+
+
+/// Invented Home for the Mac window's screenshots (`HISTORY_NOW=1`). US units, made-up names.
+enum MacDemoNow {
+    static func home(now: Date = Date()) -> NowHome {
+        func ago(_ m: Double) -> Date { now.addingTimeInterval(-m * 60) }
+        let items: [NowItem] = [
+            NowItem(id: "q:run_desk", kind: .question, sessionID: "s_pricing", runID: "run_desk", title: "Desk hunt",
+                    line: "Three desks fit your 62 in. wall under $400. Which one should I order?", updatedAt: ago(2),
+                    question: NowQuestion(shape: .words, prompt: "Which one should I order?",
+                                          options: [.init(id: "o1", text: "Oakline 60 in."), .init(id: "o2", text: "Birch Lift 55 in."),
+                                                    .init(id: "o3", text: "Ridge Pro 58 in.")], recommended: 0)),
+            NowItem(id: "s:s_cabin", kind: .stopped, sessionID: "s_deploy", title: "Cabin for next weekend",
+                    line: "Your Hermes's AI account is out of credits.", finishedAt: ago(9), fix: .credits),
+            NowItem(id: "s:s_flaky", kind: .working, sessionID: "s_flaky", title: "Sort this week's photos",
+                    line: "Grouping 214 photos by place", startedAt: ago(12)),
+            NowItem(id: "s:s_seeds", kind: .newAnswer, sessionID: "s_seeds", title: "Tomato seeds for shade",
+                    line: "Brandywine and Cherokee Purple do best with 6 hours of sun.", finishedAt: ago(18), unread: true),
+            NowItem(id: "s:s_weather", kind: .seenAnswer, sessionID: "s_weather", title: "Weekend weather",
+                    line: "Sunny Saturday, 72°F; showers Sunday after 3 PM.", finishedAt: ago(150)),
+        ]
+        var c = NowHome.Counts(); c.needsYou = 1; c.stopped = 1; c.working = 1; c.finishedUnread = 1
+        return NowHome(rev: 1, asOf: now, sentence: "One question for you, one thing stopped, one thing in the works, and one new answer.",
+                       counts: c, items: items, backgroundRunning: 2)
+    }
 }

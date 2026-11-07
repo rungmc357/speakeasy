@@ -32,6 +32,11 @@ used in the tests (timestamps and IDs will differ).
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/health` | none | Liveness |
+| GET | `/voice/now` | device | Home: one ordered list of what's live and new |
+| POST | `/voice/now/{id}/later` | device | Put a Home item off (DELETE brings it back) |
+| POST | `/voice/now/{id}/answer` | device | Answer a Home question card, on a call or not |
+| POST | `/voice/now/{id}/approval` | device | Answer a Home approval card |
+| POST | `/voice/now/clear-seen` | device | Move every seen answer to Earlier |
 | POST | `/voice/pair` | none | Trade a one-time code for a device token |
 | POST | `/voice/sessions` | device | Start (or resume) a voice call |
 | GET | `/voice/interactions/{id}` | device | Call snapshot |
@@ -1026,6 +1031,72 @@ next line with "Adding that to *task name*." Right after, "no, the dashboard one
 "not that one" moves what was added to the task they name (or the voice asks "Which one?"): the
 wrong task is told to ignore it (or the follow-up it started is stopped), and nothing is started twice.
 
+## Home: GET /voice/now (capability `now`, SPK-124)
+
+One ordered list of what's live and new, the same on every app. `?tz=<IANA zone>` is the phone's
+zone (the 4:00 AM rollover and "From yesterday" use it; without it, the Hermes computer's).
+
+```
+{"rev": 41, "as_of": 1762455120.4,
+ "sentence": "One question for you, and one new answer.",
+ "counts": {"needs_you": 1, "stopped": 0, "working": 2, "waiting": 0, "finished_unread": 1, "on_its_own_running": 1},
+ "tiers": {"1": 1, "3": 2, "4": 1},
+ "call": {"interaction_id", "started_at"} | null,
+ "items": [Item, ...],
+ "background": {"running": 1, "items": [{"session_id", "title", "line", "source", "source_label", "started_at"}]},
+ "earlier": {"today_more": 0},
+ "notice": {"kind": "rollover", "moved": 3, "text": "Moved three seen answers to Earlier."} | null}
+Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "session_id", "run_id"?,
+        "title", "line", "source", "source_label"?, "started_at", "updated_at", "finished_at"?, "unread",
+        "idle_seconds"?, "thumbs"?: [{"url"}], "waiting_on"?, "dismissed_question"?,
+        "provenance"?: {"kind": "yesterday" | "earlier_call" | "later", "at"},
+        "fix"?: {"kind": "credits" | "sign_in" | "retry" | "setup" | "open"},
+        "question"?: {"shape": "words" | "things" | "approval", "prompt", "context"?, "why"?, "affects"?,
+                      "options": [{"id": "o1", "text", "detail"?, "tags"?, "risk"?, "reversible"?,
+                                   "image"?: "/voice/card-image/...", "link"?: "https://...", "facts"?: [≤3]}],
+                      "recommended"?, "risk"?, "approvable", "asked_at", "expires_at"?, "expired"?,
+                      "approval"?: {"choices"}}}
+```
+
+- Kinds and tiers: `question` 1, `stopped` 2, `working` 3, `new_answer` 4, `waiting` 5, `seen_answer` 6.
+  Questions sort by expiry, then high risk first, then oldest; a working card keeps its place while it
+  keeps working (new ones go on top); answers newest first; waiting oldest first. Up to 60 items;
+  the device caps are the app's, from `tiers`.
+- On a call (`call` is set; capability `now_focus`): `call.focus` is the item id of the card the voice
+  is talking about (Vision Pro's own focus wins; it lapses 10 min after the voice last spoke of it),
+  `call.focus_label` "Talking about this". A question asked on this call (or the one being talked
+  about) comes first with `tier: 0`, `on_call: "asking"`, `asking_label: "Asking now"` and `say_ok`
+  (false when a choice is `risk: high`: the voice says "That one needs a tap." and a spoken yes does
+  nothing; `lock_line` then reads "Can't be undone · Needs a tap"). An answer the voice read out is
+  marked seen everywhere and listed as `seen_answer` with `on_call: "heard"`, line "Told you on the call.".
+- `call_summary` (off a call): the call that just ended, until Clear-seen, the next 4 AM or 6 hours:
+  `{id: "call:<interaction>", title: "Your call · 6 min", minutes, started_at, ended_at, session_id,
+  things: [what it started, up to 4], more_things, decisions: [the user's own answers, up to 3]}`.
+- `sentence`: one clause for every kind of card shown, in list order (questions, stopped, in the
+  works, new answers, waiting), so nothing below it goes unmentioned; one to nine as words, the item named when it's the only one. "All quiet." / "All caught up.".
+- There are no pins. A seen answer leaves Home at the next 4:00 AM in the phone's zone (or the one
+  after, if it was opened in the six hours before); questions, stopped and working never leave on
+  their own. An answer nobody opened leaves after three days (still unread in Earlier).
+- `rev` moves only when something shown changes. Clients that open `GET /voice/history/events?now=1`
+  also get `now` {rev} events (older apps never see them).
+- One read state: `POST /voice/history/{id}/read` marks that conversation's answers seen, and
+  `POST /voice/tasks/{run_id}/seen` marks its conversation read.
+
+`POST /voice/now/{id}/later {until?: epoch, on_change?: true}`: off Home until then, or until the
+item changes; it comes back with `provenance.kind = "later"`. `DELETE /voice/now/{id}/later` brings it
+back now. `POST /voice/now/clear-seen` → `{moved}` moves every seen answer to Earlier.
+
+`POST /voice/now/{id}/answer {option_id} | {text}`: a question card's answer. A live call holding
+the task takes it as the call's answer (`via: "call"`); otherwise it goes to the task that asked, in
+its conversation (`via: "conversation"`). `POST /voice/now/{id}/approval {choice: once|session|deny}`.
+
+### Earlier: `GET /voice/history?kinds=conversations,scheduled,kanban,subagents,archived`
+
+The checked boxes of Earlier's filter menu. The reply adds `kinds: [{id, label, count, on}]` (labels
+"Conversations", "Scheduled jobs", "Kanban", "Subagents", "Archived"; counts follow the search) and
+lists no pinned-first order. `exclude_now=1` leaves out what Home shows; rows Home shows carry
+`on_now: true`. Without `kinds` the list behaves as before.
+
 ## History
 
 Capability `history` (added after plugin 0.3.32). Speakeasy as a full Hermes client: the apps list every Hermes
@@ -1925,7 +1996,14 @@ phone's Notification Service Extension ──GET /voice/push/events/{id} (device
 {"apns_token": "<hex>", "environment": "sandbox" | "production", "kinds": ["finished", "needs_you", "failed", "reply"]}
 ```
 
-→ `200 {"ok": true, "enabled": true, "kinds": [...], "relay": "https://speakeasy-push.todd-562.workers.dev", "available": true}`.
+→ `200 {"ok": true, "enabled": true, "kinds": [...], "relay": "https://speakeasy-push.todd-562.workers.dev", "available": true, "seal_key": "<base64url, 32 bytes>"}`.
+`seal_key` (also in the pairing reply) is this device's own key for **sealed words**: each
+notification carries `sealed` = base64url(nonce 12 ‖ ChaCha20-Poly1305 ciphertext ‖ tag 16, AAD
+`speakeasy-push-v1`) of `{"title", "body", "kind", "run_id", "level"}`, sealed on this computer. The
+relay and APNs carry only that ciphertext; the phone's Notification Service Extension opens it and
+shows the real words (a secure-input request is `level: "restricted"`; a locked phone follows the
+privacy level). If it can't open it, the extension fetches `/voice/push/events/{id}` as before, and
+failing that shows "Hermes has a question for you". A relay from before `sealed` gets the old body.
 `{"enabled": false}` turns notifications off and forgets the token. The token is kept in
 `devices.json` next to the device (`push: {apns_token, environment, kinds, updated_at}`); revoking the
 device drops it. `400` for a token that isn't hex, an unknown environment or kind.

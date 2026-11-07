@@ -128,6 +128,9 @@ class DeviceStore:
                 "token_sha256": _hash(token),
                 "created_at": now,
                 "last_seen_at": None,
+                # The key this device's notification text is sealed with (push.seal): handed over
+                # once, in the pair reply, over the paired connection; never sent to the relay.
+                "seal_key": secrets.token_urlsafe(32),
             }
             if client:
                 data["devices"][device_id]["client"] = dict(client)
@@ -207,8 +210,22 @@ class DeviceStore:
         return True
 
     def push_targets(self) -> dict[str, dict[str, Any]]:
-        """device id -> push record, for every device that turned notifications on."""
-        return {k: dict(v["push"]) for k, v in self._load()["devices"].items() if v.get("push")}
+        """device id -> push record (with its ``seal_key``, when it has one), for every device that
+        turned notifications on."""
+        return {k: {**v["push"], **({"seal_key": v["seal_key"]} if v.get("seal_key") else {})}
+                for k, v in self._load()["devices"].items() if v.get("push")}
+
+    def seal_key(self, device_id: str) -> str:
+        """This device's notification key, made now for a device paired before there were keys."""
+        with self._lock:
+            data = self._load()
+            device = data["devices"].get(device_id)
+            if device is None:
+                return ""
+            if not device.get("seal_key"):
+                device["seal_key"] = secrets.token_urlsafe(32)
+                self._save(data)
+            return device["seal_key"]
 
     def revoke(self, device_id: str) -> bool:
         with self._lock:

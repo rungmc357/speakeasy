@@ -22,6 +22,8 @@ struct SpeakeasyApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let app = AppModel.shared
     private var statusItem: NSStatusItem!
+    private var statusMenu: NSMenu?
+    private let nowPopover = NSPopover()
     private var updateItem: NSMenuItem?
     private var hotKey: GlobalHotKey?
     /// In-call mute shortcut: registered only while a call is open.
@@ -79,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         MacAppearance.apply()
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "--welcome-shots"), i + 1 < args.count { DispatchQueue.main.async { WelcomeShots.run(dir: args[i + 1]) }; return }
+        if let i = args.firstIndex(of: "--now-mac-shots"), i + 1 < args.count { NowMacShots.run(dir: args[i + 1]); return }
         if let i = args.firstIndex(of: "--history-shots"), i + 1 < args.count { HistoryShots.run(dir: args[i + 1]); return }
         if let i = args.firstIndex(of: "--secure-input-shots"), i + 1 < args.count { SecureInputShots.run(dir: args[i + 1]); return }
         if args.contains("--native-offer-smoke") { NativeSmoke.offer(); return }
@@ -134,6 +137,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         native = NativeVoiceClient(config: app.config)
+        history.voice = native.model
+        MacNowPresentation.shared.openHome = { [weak self] in self?.showHistory() }
+        history.onFrontmostChanged = { [weak self] frontmost in
+            MacNowPresentation.shared.homeFrontmost = frontmost
+            guard let self, MacNowPresentation.shared.enabled else { return }
+            if frontmost { self.native.panel.hide() }
+            else if self.native.model.state.connection.isOpen { self.native.panel.show() }
+        }
         room = RoomListeningController()
         applyClientPrefs()
         resolveMuteShortcut()
@@ -169,6 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.boardsSupported = caps?.boards ?? false
                     self.history.store.skillsSupported = caps?.slashSkills ?? false
                     self.history.store.filesSupported = caps?.files ?? false
+                    self.wireNow(caps?.now ?? false)
                 }
             }
             .store(in: &bag)
@@ -185,6 +197,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .removeDuplicates()
             .sink { [weak self] live in self?.history.store.setCallLive(live) }
             .store(in: &bag)
+        native.model.$state
+            .map { $0.connection.isOpen && !$0.workOnly }
+            .removeDuplicates()
+            .sink { [weak self] open in
+                DispatchQueue.main.async {
+                    MacNowPresentation.shared.callStartedAt = open ? (MacNowPresentation.shared.callStartedAt ?? Date()) : nil
+                    guard let self, MacNowPresentation.shared.enabled else { return }
+                    if open { self.native.panel.show() } else { self.native.panel.hide() }
+                }
+            }.store(in: &bag)
         Timer.publish(every: 24 * 3600, on: .main, in: .common).autoconnect()
             .sink { [weak self] _ in
                 self?.app.checkForUpdatesIfDue()
@@ -204,6 +226,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if onboarding != nil || !app.isPaired || !UserDefaults.standard.bool(forKey: Prefs.onboardingDone) {
             showOnboarding()
+        } else if history.store.nowSupported {
+            showHistory()
         } else if !flag {
             openSettings()
         }
@@ -369,9 +393,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         idle = continuity
     }
 
+    /// Home (SPK-124): the window's Now column, and the menu bar dot while a question waits.
+    private var questionsWaiting = 0
+    private func wireNow(_ on: Bool) {
+        history.store.nowSupported = on
+        MacNowPresentation.shared.enabled = on
+        MacNowPresentation.shared.homeFrontmost = history.window?.isKeyWindow == true
+        if on, MacNowPresentation.shared.homeFrontmost { native.panel.hide() }
+        let now = MacNowModel.shared
+        guard on else { now.stop(); return }
+        now.api = { [weak self] in self?.native.api }
+        now.onQuestions = { [weak self] n in
+            guard let self, n != self.questionsWaiting else { return }
+            self.questionsWaiting = n
+            self.statusItem?.button?.image = BrandGlyph.menuBarImage(badge: self.badgeOn || n > 0, listening: self.room?.isOn == true)
+        }
+        now.start()
+    }
+
     private func setBadge(_ on: Bool) {
         badgeOn = on
-        statusItem?.button?.image = BrandGlyph.menuBarImage(badge: on, listening: room?.isOn == true)
+        statusItem?.button?.image = BrandGlyph.menuBarImage(badge: on || questionsWaiting > 0, listening: room?.isOn == true)
     }
 
     // MARK: Pairing links
@@ -470,8 +512,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quit)
         menu.autoenablesItems = false
         menu.delegate = self
-        statusItem.menu = menu
+        statusMenu = menu
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(openStatusItem)
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         updateMenu()
+    }
+
+    @objc private func openStatusItem() {
+        if NSApp.currentEvent?.type == .rightMouseUp || !history.store.nowSupported {
+            openStatusMenu(); return
+        }
+        guard let button = statusItem.button else { return }
+        if nowPopover.isShown { nowPopover.performClose(nil); return }
+        nowPopover.behavior = .transient
+        nowPopover.contentViewController = NSHostingController(rootView: MacNowPopover(
+            now: MacNowModel.shared, voice: native.model,
+            open: { [weak self] session in
+                self?.nowPopover.performClose(nil)
+                self?.openHistory(session: session)
+            }, more: { [weak self] in
+                self?.nowPopover.performClose(nil)
+                self?.openStatusMenu()
+            }))
+        nowPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+
+    private func openStatusMenu() {
+        guard let menu = statusMenu, let button = statusItem.button else { return }
+        updateMenu()
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
     }
 
     func menuWillOpen(_ menu: NSMenu) { updateMenu() }
@@ -616,6 +686,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.skillsSupported = app.status?.capabilities?.slashSkills ?? false
         if store.files.backend == nil { store.files.backend = LiveAgentFilesBackend { [weak self] in self?.native.api } }
         store.filesSupported = app.status?.capabilities?.files ?? false
+        wireNow(app.status?.capabilities?.now ?? false)
         store.setCallLive(native.model.state.connection.isInCall)
         history.show()
         if let session { store.open(session) }
@@ -623,6 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showRecentWork() {
         setBadge(false)
+        if history.store.nowSupported { showHistory(); return }
         native.showWork(active: active)
     }
 

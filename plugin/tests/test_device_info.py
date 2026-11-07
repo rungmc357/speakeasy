@@ -40,7 +40,7 @@ def test_pairing_stores_the_client_and_requests_refresh_it_only_when_it_changes(
     assert store.authenticate(token, now=1002 + SEEN_WRITE_S) == device_id
     assert store.client(device_id) == updated
     raw = json.loads(store.path.read_text())["devices"][device_id]
-    assert set(raw) == {"name", "token_sha256", "created_at", "last_seen_at", "client"}
+    assert set(raw) == {"name", "token_sha256", "created_at", "last_seen_at", "client", "seal_key"}  # seal_key: SPK-124 sealed push words
 
 
 def test_old_device_files_without_a_client_still_load(home):

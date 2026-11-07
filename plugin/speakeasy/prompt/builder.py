@@ -485,8 +485,10 @@ QUESTION_RULE = (
     "labeled `speakeasy-question` holding one JSON object: {\"question\": \"<one short question>\", \"options\": "
     "[\"<2 to 4 short answers, a few words each>\"], \"recommended\": <index of the one you'd pick, or omit>}. "
     "When the options are things to look at (layouts, designs, photos, places, products), make each option "
-    "{\"text\": \"<short name>\", \"image\": \"<absolute path of a screenshot or render of it, or an https image URL>\"} "
-    "so {user_name} can see them side by side. For a real decision (a change, a fix, a plan to pick), also add "
+    "{\"text\": \"<short name>\", \"image\": \"<absolute path of a screenshot or render of it, or an https image URL>\", "
+    "\"link\": \"<its https page, when it has one>\", \"facts\": [\"<up to three short checked facts: price, size, rating>\"]} "
+    "so {user_name} can see and compare them side by side. When the decision stops mattering after a while, add "
+    "\"expires_in\": <seconds>. For a real decision (a change, a fix, a plan to pick), also add "
     "\"context\" (the situation in plain words, one or two sentences), \"why\" (why you recommend that option) and "
     "\"affects\" (what it touches), and make each option {\"text\": \"<answer>\", \"detail\": \"<what happens>\", "
     "\"risk\": \"low|medium|high\", \"reversible\": true|false}. Build it only from facts you checked, and prefer "
@@ -1868,3 +1870,9 @@ def retract_steer_text(names: Names, words: str) -> str:
 
 def typed_steer_text(names: Names, text: str) -> str:
     return f"{names.user_cap} typed to this task: {text} Fold it into the work you are doing; do not start over."
+
+
+def needs_a_tap_line(title: str) -> str:
+    """Said when a spoken answer would make a risky choice (send, pay, delete): the tap decides."""
+    return (f"That one needs a tap. {title} is on your screen." if title
+            else "That one needs a tap. It's on your screen.")

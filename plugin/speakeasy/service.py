@@ -173,6 +173,11 @@ CAPABILITIES["openai_key"] = True
 # /voice/status carries ``agent_model`` (ok | missing | unknown: does Hermes have an AI model to run
 # turns with, agent_model.py) and the Setup check an ``agent_model`` row when it's missing.
 CAPABILITIES["agent_model"] = True
+# SPK-124 Home: GET /voice/now (one ordered list + header sentence), POST /voice/now/{id}/later|answer|
+# approval, /voice/now/clear-seen, the ``now`` {rev} event on /voice/history/events, Earlier's
+# ``?kinds=`` filter menu with counts, and one read state (a read conversation's answers are seen).
+CAPABILITIES["now"] = True
+CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking/heard), call_summary
 
 
 
@@ -257,6 +262,8 @@ class HistoryEvents:
         self.listeners = 0
         self._watcher: threading.Thread | None = None
         self._last: Any = None
+        # Called (on the watcher thread) after anything moved: Home publishes ``now`` {rev} from it.
+        self.after_change: Callable[[], None] | None = None
 
     def publish(self, kind: str, payload: dict[str, Any]) -> None:
         with self.cond:
@@ -299,6 +306,11 @@ class HistoryEvents:
             if now != self._last:
                 self._last = now
                 self.publish("history_changed", {})
+                if self.after_change is not None:
+                    try:
+                        self.after_change()
+                    except Exception:
+                        logger.debug("speakeasy: Home's change check failed", exc_info=True)
 
 
 class VoiceService(SecureInputMixin):
@@ -360,6 +372,7 @@ class VoiceService(SecureInputMixin):
         self.push = PushNotifier(self.devices, self.settings.get, hermes_home=self.home,
                                  claim=self.store.claim_notice, background=start_threads)
         self.rt.push = self.push
+        self.rt.now_changed = self._now_changed  # a call's voice moved to another card (Home lights it up)
         self.rt.pause_call = lambda interaction_id: self.pause(interaction_id, stop_transport=True, limit=True)
         self.shared = A.SharedFolder(self.home)
         self.rt.shared = self.shared
@@ -395,6 +408,9 @@ class VoiceService(SecureInputMixin):
         # Device-wide live changes to the history (GET /voice/history/events): every client's list,
         # session page, board, widgets and Live Activity refresh within ~1-2 s of a change anywhere.
         self.history_events = HistoryEvents(self._history_stamp)
+        from .now import NowModel
+        self.now_model = NowModel(self)
+        self.history_events.after_change = self._now_changed
         self.rt.history_events = self.history_events
         Q.wire(self.store, self.rt)  # every closed question: decision_resolved + the push withdrawn
         self._suggest_run = suggest_run or self._brief_run
@@ -615,7 +631,8 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(403, "pairing code is wrong or expired")
         device_id, token = result
         out: dict[str, Any] = {"device_id": device_id, "token": token, "assistant_name": self.settings.get()["assistant_name"],
-                               "agent": agent_slot.agent_info(self.agent, self.host)}
+                               "agent": agent_slot.agent_info(self.agent, self.host),
+                               "seal_key": self.devices.seal_key(device_id)}
         out.update(self.endpoints())  # endpoints + the address-drop key: only a paired device sees them
         return out
 
@@ -1453,6 +1470,8 @@ class VoiceService(SecureInputMixin):
         worker = interaction.worker
         if changed and worker is not None and worker.loop is not None and not worker.loop.is_closed():
             asyncio.run_coroutine_threadsafe(worker.focus_changed(), worker.loop)
+        if changed:
+            self._now_changed()
         return {"interaction_id": interaction_id, "task_id": task_id}
 
     def set_mic(self, interaction_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1606,7 +1625,15 @@ class VoiceService(SecureInputMixin):
         if key is None:
             raise ServiceError(404, "task not found")
         self.store.mark_seen(key)
+        # One read state: opening an answer reads its conversation (the list's unread dot) too.
+        row = self.store.run_row(key) or {}
+        place = self.store.linked_source(key) or row.get("session_id")
+        if place:
+            self.store.set_read(place)
+            self.forget_history_cache()
+            self.history_events.publish("session_updated", {"session_id": place, "unread": False})
         self._republish_all()
+        self._now_changed()
         return {"run_id": run_id, "seen": True}
 
     def set_aside(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -2797,16 +2824,117 @@ class VoiceService(SecureInputMixin):
         with self.__dict__.setdefault("_history_cache_lock", threading.Lock()):
             self.__dict__.setdefault("_history_cache", {}).clear()
 
-    def history(self, query: dict[str, str]) -> dict[str, Any]:
-        """``GET /voice/history?cursor=&q=&source=&limit=``."""
+    # -- Home (SPK-124, now.py) ---------------------------------------------------------------------
+    def now(self, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/now?tz=<IANA zone>``: Home's one ordered list (now.py)."""
+        self.sweep_questions()
+        tz = (query or {}).get("tz") or None
+        body = self.now_model.build(tz)
+        self._now_rev_sent = body["rev"]
+        return body
+
+    def _now_changed(self) -> None:
+        """Publish ``now`` {rev} on the history feed when what Home shows changed."""
+        try:
+            rev = self.now_model.build(peek=True)["rev"]
+        except Exception:
+            logger.debug("speakeasy: Home's build failed", exc_info=True)
+            return
+        if rev != getattr(self, "_now_rev_published", None):
+            self._now_rev_published = rev
+            self.history_events.publish("now", {"rev": rev})
+
+    def now_later(self, item_id: str, body: dict[str, Any], undo: bool = False) -> dict[str, Any]:
+        """``POST /voice/now/{id}/later {until?: epoch, on_change?: true}``: off Home until then (or until
+        it changes); ``DELETE`` brings it back now."""
+        if undo:
+            self.store.clear_later(item_id)
+            self._now_changed()
+            return {"ok": True, "id": item_id, "later": None}
+        if not isinstance(body, dict) or not set(body) <= {"until", "on_change", "tz"}:
+            raise ServiceError(400, "later takes until (a time) and/or on_change.")
+        until, on_change = body.get("until"), body.get("on_change", False)
+        if until is not None and (not isinstance(until, (int, float)) or isinstance(until, bool)
+                                  or not time.time() < float(until) < time.time() + 30 * 86400):
+            raise ServiceError(400, "until is a time in the next 30 days.")
+        if not isinstance(on_change, bool) or (until is None and not on_change):
+            raise ServiceError(400, "Say when: until, on_change, or both.")
+        item = self.now_model.find(item_id, body.get("tz"))
+        if item is None:
+            raise ServiceError(404, "That isn't on Home any more.")
+        self.store.set_later(item_id, None if until is None else float(until), on_change,
+                             self.now_model.signature(item))
+        self._now_changed()
+        return {"ok": True, "id": item_id, "later": {"until": until, "on_change": on_change}}
+
+    def now_clear_seen(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/now/clear-seen``: every seen answer moves to Earlier now."""
+        if body:
+            raise ServiceError(400, "body must be empty")
+        before = self.now_model.build(peek=True)
+        self.store.set_meta("now_cleared_at", repr(time.time()))
+        moved = sum(1 for i in before["items"] if i["kind"] == "seen_answer")
+        self._now_changed()
+        return {"ok": True, "moved": moved}
+
+    def now_answer(self, item_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/now/{id}/answer {option_id} | {text}``: one way to answer a question card,
+        on a call or not. A live call that holds the task takes it as the call's answer (the voice
+        hears it); otherwise it goes to the task that asked, in its own conversation."""
+        from . import now as N
+        if not isinstance(body, dict) or len(body) != 1 or not ({"option_id"} == set(body) or {"text"} == set(body)):
+            raise ServiceError(400, "Send option_id or text.")
+        item = self.now_model.find(item_id)
+        if item is None or item["kind"] != "question" or (item.get("question") or {}).get("shape") == "approval":
+            raise ServiceError(404, "That question has closed.")
+        text = N.option_text(item, body["option_id"]) if "option_id" in body else body.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > M.MAX_TEXT:
+            raise ServiceError(400, "That isn't one of its answers.")
+        run_id = item["run_id"]
+        key = self.store.key_for_run(run_id)
+        with self.lock:
+            live = list(self.interactions.values())
+        for interaction in live:
+            with interaction.lock:
+                task_id = next((t for t, r in interaction.runs.items() if r.idem_key == key), None)
+            worker = interaction.worker
+            if task_id is None or interaction.call_closed or worker is None or worker.loop is None \
+                    or worker.loop.is_closed():
+                continue
+            sent = asyncio.run_coroutine_threadsafe(worker.answer(task_id, text.strip()[:400]), worker.loop).result(15)
+            if sent:
+                self._now_changed()
+                return {"ok": True, "id": item_id, "via": "call", "interaction_id": interaction.interaction_id}
+        got = self.history_message(item["session_id"], {"text": text.strip(), "answers": run_id})
+        self._now_changed()
+        return {"ok": True, "id": item_id, "via": "conversation", **{k: got[k] for k in ("run_id", "delivered_as") if k in got}}
+
+    def now_approval(self, item_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/now/{id}/approval {choice: once|session|deny}``: the approval a card waits on."""
+        if not isinstance(body, dict) or set(body) != {"choice"}:
+            raise ServiceError(400, "Send a choice of once, session or deny.")
+        item = self.now_model.find(item_id)
+        if item is None or (item.get("question") or {}).get("shape") != "approval":
+            raise ServiceError(409, "That approval has closed.")
+        key = self.store.key_for_run(item["run_id"])
+        session = (self.store.run_row(key) or {}).get("session_id") if key else None
+        if not session:
+            raise ServiceError(409, "That approval has closed.")
+        got = self.history_approval(session, {"run_id": item["run_id"], "choice": body["choice"]})
+        self._now_changed()
+        return {**got, "id": item_id}
+
+    def history(self, query: dict[str, str], for_now: bool = False) -> dict[str, Any]:
+        """``GET /voice/history?cursor=&q=&source=&limit=`` (and Earlier's ``kinds=``, ``exclude_now=``).
+        *for_now*: Home's own read of the list (no ``on_now`` marks: those come from Home)."""
         self.sweep_questions()
         args = tuple(sorted((k, str(v)) for k, v in (query or {}).items()))
         stamp = self.sessions.fingerprint()
         if stamp is not None:
             for agent, ids in sorted(self._other_agent_sessions().items()):
                 stamp = (stamp, agent, H.fingerprint(AG.state_db(self.home, agent), sorted(ids)))
-        return self._cached(("list", args), None if stamp is None else (stamp, self.store.revision),
-                            self.LIST_CACHE_S, lambda: self._history(query))
+        return self._cached(("list", args, for_now), None if stamp is None else (stamp, self.store.revision),
+                            self.LIST_CACHE_S, lambda: self._history(query, for_now))
 
     def _other_agent_sessions(self) -> dict[str, set[str]]:
         """{agent: its chat session ids} for chats Speakeasy started on other Hermes profiles."""
@@ -2816,8 +2944,8 @@ class VoiceService(SecureInputMixin):
                 out.setdefault(agent, set()).add(sid)
         return out
 
-    def _history(self, query: dict[str, str]) -> dict[str, Any]:
-        page = self._history_one(query, self.rt.state_db, None)
+    def _history(self, query: dict[str, str], for_now: bool = False) -> dict[str, Any]:
+        page = self._history_one(query, self.rt.state_db, None, for_now)
         others = self._other_agent_sessions()
         if not others:
             return page
@@ -2825,27 +2953,30 @@ class VoiceService(SecureInputMixin):
         limit = max(1, min(int(query.get("limit") or H.PAGE), H.MAX_PAGE))
         rows, more = list(page["sessions"]), page["next_cursor"] is not None
         for agent, ids in sorted(others.items()):
-            got = self._history_one(query, AG.state_db(self.home, agent), ids)
+            got = self._history_one(query, AG.state_db(self.home, agent), ids, for_now)
             info = AG.describe(self.home, agent, self._own_agent())
             rows += [{**r, "agent": info} for r in got["sessions"]]
             more = more or got["next_cursor"] is not None
         first = not query.get("cursor")
-        rows.sort(key=lambda r: (not (first and r.get("pinned")), -float(r.get("last_activity") or 0), r["id"]),
+        pins = first and query.get("kinds") is None  # Earlier (kinds) has no pins
+        rows.sort(key=lambda r: (not (pins and r.get("pinned")), -float(r.get("last_activity") or 0), r["id"]),
                   reverse=False)
         kept = rows[:limit]
-        tail = next((r for r in reversed(kept) if not r.get("pinned")), None)
+        tail = next((r for r in reversed(kept) if not (pins and r.get("pinned"))), None)
         more = more or len(rows) > limit
         page["sessions"] = kept
         page["next_cursor"] = f"{float(tail['last_activity'] or 0)!r}|{tail['id']}" if more and tail else page["next_cursor"]
         return page
 
-    def _history_one(self, query: dict[str, str], state_db: Path, only: set[str] | None) -> dict[str, Any]:
+    def _history_one(self, query: dict[str, str], state_db: Path, only: set[str] | None,
+                     for_now: bool = False) -> dict[str, Any]:
         try:
             limit = int(query.get("limit") or H.PAGE)
         except ValueError:
             raise ServiceError(400, "limit must be a number") from None
         q = (query.get("q") or "").strip()[:200]
         try:
+            kinds = H.parse_kinds(query.get("kinds"))
             return self._sessions_at(state_db).list_sessions(cursor=query.get("cursor") or None, q=q, source=query.get("source") or "",
                                    limit=limit, linked=self._linked_with_continuations,
                                    speakeasy_ids=self.store.speakeasy_sessions, folded=self.store.folded_sessions,
@@ -2855,7 +2986,9 @@ class VoiceService(SecureInputMixin):
                                    hide=[k.strip() for k in str(query.get("hide") or "").split(",") if k.strip()],
                                    helpers=str(query.get("helpers") or "") in {"1", "true", "show"},
                                    include_archived=(None if query.get("include_archived") in (None, "")
-                                                     else str(query.get("include_archived")) in {"1", "true"}))
+                                                     else str(query.get("include_archived")) in {"1", "true"}),
+                                   kinds=kinds, on_now=None if for_now or kinds is None else self.now_model.sessions_on_now,
+                                   exclude_now=not for_now and str(query.get("exclude_now") or "") in {"1", "true"})
         except H.HistoryError as exc:
             raise ServiceError(exc.status, exc.message) from None
 
@@ -3276,7 +3409,10 @@ class VoiceService(SecureInputMixin):
             at = body.get("at")
             if at is not None and not isinstance(at, (int, float)):
                 raise ServiceError(400, "at is a time in seconds.")
-            self.store.set_read(session_id, None if at is None else min(float(at), time.time()))
+            at = None if at is None else min(float(at), time.time())
+            self.store.set_read(session_id, at)
+            # One read state: reading a conversation marks its answers seen on Home too.
+            self.store.mark_session_runs_seen(session_id, at)
             event.update(unread=False)
             kind = "session_updated"
         self.forget_history_cache()
