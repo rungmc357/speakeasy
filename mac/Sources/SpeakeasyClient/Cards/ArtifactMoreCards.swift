@@ -85,7 +85,7 @@ struct TimelineRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!place && item["url"].url == nil)
+        .allowsHitTesting(place || item["url"].url != nil)   // a row with nowhere to go stays full strength
         .overlay(alignment: .bottom) { if !last { Divider().padding(.leading, 42) } }
         .accessibilityElement(children: .combine)
     }
@@ -235,8 +235,9 @@ struct MetricLine: View {
                     Path { p in p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: w, y: y)) }
                         .stroke(Color.secondary.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     if let label = thresholdLabel, showMarks {
-                        Text(label).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
-                            .position(x: w - 30, y: max(y - 9, 6))
+                        // On the left, clear of the dashes (below them when the line is at the top).
+                        Text(label).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary).fixedSize()
+                            .position(x: 24, y: y > 18 ? y - 10 : y + 10)
                     }
                 }
                 Path { p in
