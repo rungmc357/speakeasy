@@ -333,3 +333,43 @@ def test_research_explore_by_day_needs_the_day_said():
 def test_every_artifact_kind_is_in_the_brief():
     for kind in views.ARTIFACTS:
         assert kind + " (" in builder.ARTIFACTS_RULE
+
+
+# -- status and rows names are labels (SPK-236) ------------------------------------------------------
+
+def test_status_labels_written_in_other_words_keep_the_card():
+    """A tile's name is the agent's short label for a line of its answer, not a quote of it."""
+    answer = ("The release is ready: the Mac tests and the phone tests passed, and the privacy checks are clean. "
+              "The upload is waiting on store review.")
+    card = _result(answer, [{"kind": "status", "scope": "Release 2.4", "items": [
+        {"name": "Mac tests", "state": "ok"}, {"name": "Phone tests passed", "state": "ok"},
+        {"name": "Privacy checks clean", "state": "ok"}, {"name": "Store review", "state": "needs_you"}]}])["views"]
+    assert [i["name"] for i in card[0]["items"]] == ["Mac tests", "Phone tests passed", "Privacy checks clean",
+                                                    "Store review"]
+
+
+def test_rows_labels_in_other_words_keep_the_card_but_refs_stay_exact():
+    answer = "Two pull requests wait on you: #41 fixes the login timeout and #42 adds dark mode."
+    rows = {"kind": "rows", "entity": "pr", "items": [{"ref": "#41", "name": "Login timeout fix"},
+                                                      {"ref": "#42", "name": "Dark mode"}]}
+    assert [i["name"] for i in _result(answer, [rows])["views"][0]["items"]] == ["Login timeout fix", "Dark mode"]
+    assert _result(answer.replace("#42", "#43"), [rows])["views"] == []
+
+
+def test_invented_labels_and_unsaid_numbers_still_drop_the_card():
+    answer = "runner-a is fine at 41 jobs an hour."
+    for name in ("runner-z", "Disk cleanup", "runner-a build 7"):
+        card = {"kind": "status", "scope": "Runners", "items": [{"name": "runner-a", "state": "ok", "value": "41"},
+                                            {"name": name, "state": "warn"}]}
+        assert _result(answer, [card])["views"] == [], name
+    ok = {"kind": "status", "scope": "Runners", "items": [{"name": "runner-a", "state": "ok", "value": "41"},
+                                                         {"name": "runner-a jobs", "state": "ok"}]}
+    assert _result(answer, [ok])["views"]
+
+
+def test_a_number_said_only_in_the_spoken_line_grounds_the_card():
+    out = ("Plugin rollout is done and pushed to main.\n```speakeasy-views\n" + json.dumps([{"kind": "status", "scope": "Rollout", "items": [
+        {"name": "Pushed to main", "state": "ok"},
+        {"name": "Installed on this Mac", "state": "ok", "value": "0.3.35"}]}]) + "\n```\n"
+        "SPOKEN: Version 0.3.35 is installed on this Mac.")
+    assert [v["kind"] for v in (split_result(out, ()) or {}).get("views", [])] == ["status"]

@@ -733,7 +733,9 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
             question["images"] = numbers
     full = safe_full_text(output)
     from .views import shape as shape_views
-    views = shape_views(views, output)   # artifacts must be grounded in the answer, or they go
+    # Artifacts must be grounded in the answer, or they go. The SPOKEN line is part of the answer
+    # the user gets (often the only place a count or version is said), so it counts too.
+    views = shape_views(views, output + ("\n" + spoken_raw if spoken_raw else ""))
     spoken = safe_user_text(spoken_raw, 500) if spoken_raw else None
     if not spoken and full:
         spoken = safe_user_text(spoken_from(full), 500)
