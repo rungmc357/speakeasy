@@ -661,13 +661,14 @@ public final class ServerClient: @unchecked Sendable {
     /// `HTTPError`s with the plugin's reason: 409 too_many / too_large / ended, 410 closed,
     /// 413 too_large, 415 unsupported.
     public func uploadAttachment(interactionID: String, _ attachment: EncodedAttachment, as kind: AttachmentUploadKind,
-                                 captureID: String? = nil, app: String? = nil) async throws -> String {
+                                 captureID: String? = nil, app: String? = nil,
+                                 progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         let headers = attachmentUploadHeaders(kind: kind, mimeType: attachment.mimeType, filename: attachment.filename,
                                               captureID: captureID, app: app)
         // Up to 10 MB over Tailscale: give a file longer than the usual 30 s.
-        let timeout: TimeInterval = attachment.data.count > 1_000_000 ? 120 : 30
+        let timeout: TimeInterval = attachment.mimeType.hasPrefix("video/") ? 180 : (attachment.data.count > 1_000_000 ? 120 : 30)
         let req = request(SharingRoute.attachments(interactionID), method: "POST", headers: headers, timeout: timeout)
-        let (data, response) = try await sessionFor(timeout).upload(for: req, from: attachment.data)
+        let (data, response) = try await sessionFor(timeout).upload(for: req, from: attachment.data, delegate: UploadProgress(progress))
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw HTTPError(status: status, body: data, fallback: "Upload HTTP \(status)") }
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -685,7 +686,7 @@ public final class ServerClient: @unchecked Sendable {
                                 progress: (@Sendable (Double) -> Void)? = nil) async throws -> StagedAttachmentReply {
         precondition(kind != .screen, "screen captures go to a call")
         let headers = attachmentUploadHeaders(kind: kind, mimeType: attachment.mimeType, filename: attachment.filename)
-        let timeout: TimeInterval = attachment.data.count > 1_000_000 ? 120 : 30
+        let timeout: TimeInterval = attachment.mimeType.hasPrefix("video/") ? 180 : (attachment.data.count > 1_000_000 ? 120 : 30)
         let req = request(StagedAttachmentRoute.stage, method: "POST", headers: headers, timeout: timeout)
         let delegate = UploadProgress(progress)
         let (data, response) = try await sessionFor(timeout).upload(for: req, from: attachment.data, delegate: delegate)

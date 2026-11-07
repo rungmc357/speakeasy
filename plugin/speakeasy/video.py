@@ -22,13 +22,14 @@ def sniff(data: bytes) -> bool:
     return len(data) >= 12 and data[4:8] == b"ftyp"
 
 
-def prepare(path: Path, folder, transcribe=None) -> dict:
+def prepare(path: Path, folder, transcribe=None, on_failure=None) -> dict:
     """Validate a saved original and retain at most six upright JPEG frames and one audio clip.
 
     Uses the user's installed ffmpeg and Hermes transcription path, not an upload service.
     Derived files use the existing shared-folder lifecycle. Missing tooling is an honest refusal.
     """
     from .attachments import Refused
+    created = []
     try:
         probe = json.loads(_run(["ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
                                  "-show_streams", "-show_format", "-of", "json", str(path)]))
@@ -51,6 +52,7 @@ def prepare(path: Path, folder, transcribe=None) -> dict:
             if not data or len(data) > 500_000:
                 raise ValueError("frame unavailable")
             saved = folder.save(data, f"video-frame-{index + 1}.jpg")
+            created.append(str(saved))
             frames.append({"seconds": round(at, 3), "path": str(saved)})
         media = {"duration": round(duration, 3), "frames": frames,
                  "mode": "sampled_frames", "audio_status": "no_audio"}
@@ -59,6 +61,7 @@ def prepare(path: Path, folder, transcribe=None) -> dict:
                           "-protocol_whitelist", "file,pipe", "-i", str(path), "-vn", "-t", str(MAX_SECONDS),
                           "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"])
             audio_path = folder.save(audio, "video-audio.wav")
+            created.append(str(audio_path))
             media["audio_path"] = str(audio_path)
             media["audio_status"] = "available_for_transcription"
             if transcribe:
@@ -71,8 +74,12 @@ def prepare(path: Path, folder, transcribe=None) -> dict:
                     pass  # Keep the audio and disclose the missing transcript; never invent speech.
         return media
     except Refused:
+        if on_failure:
+            on_failure(created)
         raise
     except (OSError, ValueError, subprocess.SubprocessError, KeyError, TypeError):
+        if on_failure:
+            on_failure(created)
         raise Refused(415, "unsupported", "Couldn't prepare that video. Use a playable MP4 or MOV; Hermes needs ffmpeg and ffprobe.") from None
 
 

@@ -3962,8 +3962,8 @@ class VoiceService(SecureInputMixin):
             removed = interaction.attachments.remove(attachment_id)
         except A.Refused as exc:
             raise self._refused(exc) from None
-        if removed.path:
-            self.discard_shared_files([removed.path])
+        if removed.file_paths():
+            self.discard_shared_files(removed.file_paths())
         publish_state(self.store, interaction, self.settings.get()["assistant_name"])
         self._sync_notes(interaction)
         return {"id": attachment_id, "removed": True}
@@ -4143,8 +4143,9 @@ class VoiceService(SecureInputMixin):
             return None
         from . import video
         try:
-            return video.prepare(path, self.shared)
+            return video.prepare(path, self.shared, on_failure=self.discard_shared_files)
         except A.Refused as exc:
+            self.discard_shared_files([str(path)])
             raise self._refused(exc) from None
 
     def _transcribe_video(self, attachment: A.Attachment) -> None:
@@ -4226,14 +4227,14 @@ class VoiceService(SecureInputMixin):
             removed = self.staged.remove(device_id, attachment_id)
         except A.Refused as exc:
             raise self._refused(exc) from None
-        if removed.path:
-            self.discard_shared_files([removed.path])
+        if removed.file_paths():
+            self.discard_shared_files(removed.file_paths())
         return {"id": attachment_id, "removed": True}
 
     def expire_staged(self, now: float | None = None) -> int:
         """Drop what a device staged and never sent (STAGED_TTL_S), saved copies included."""
         gone = self.staged.expire(now)
-        paths = [a.path for a in gone if a.path]
+        paths = [path for a in gone for path in a.file_paths()]
         if paths:
             self.discard_shared_files(paths)
         return len(gone)

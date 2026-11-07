@@ -88,6 +88,10 @@ class Attachment:
     def is_image(self) -> bool:
         return self.kind in IMAGE_KINDS
 
+    def file_paths(self) -> list[str]:
+        from . import video
+        return ([self.path] if self.path else []) + video.paths(self.media)
+
     def public(self) -> dict[str, str | None]:
         """What the app may see: never bytes or paths."""
         return {"id": self.id, "kind": self.kind, "name": self.name, "app": self.app}
@@ -200,8 +204,8 @@ class CallAttachments:
     def file_paths(self) -> set[str]:
         """Saved files this call still holds (not sent yet): never delete these."""
         with self._cond:
-            return {i.attachment.path for i in self._items.values()
-                    if i.state in {"pending", "bound"} and i.attachment.path}
+            return {path for i in self._items.values() if i.state in {"pending", "bound"}
+                    for path in i.attachment.file_paths()}
 
     # -- sharing ---------------------------------------------------------------------------
     def set_screen(self, on: bool, seq: int) -> bool:
@@ -693,7 +697,7 @@ class StagedPool:
     def file_paths(self) -> set[str]:
         """Saved files still waiting: never delete these."""
         with self._lock:
-            return {a.path for mine in self._items.values() for a in mine.values() if a.path}
+            return {path for mine in self._items.values() for a in mine.values() for path in a.file_paths()}
 
 
 # -- names and header values ---------------------------------------------------------------------

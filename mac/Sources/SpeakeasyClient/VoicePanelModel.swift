@@ -393,11 +393,16 @@ public final class VoicePanelModel: ObservableObject {
     public var pendingAttachments: [PendingAttachmentItem] {
         state.sharing.visibleAttachments.map { item in
             PendingAttachmentItem(id: item.id, kind: item.kind, name: item.name, phase: item.phase,
-                                  thumbnail: attachmentThumbnails[item.id])
+                                  thumbnail: attachmentThumbnails[item.id], duration: attachmentDurations[item.id],
+                                  progress: attachmentProgress[item.id], failed: attachmentFailures.contains(item.id))
         }
     }
     /// Previews of pending pictures, by attachment id (files have none).
     @Published public var attachmentThumbnails: [String: CGImage] = [:]
+    @Published public var attachmentDurations: [String: Double] = [:]
+    @Published public var attachmentProgress: [String: Double] = [:]
+    @Published public var attachmentFailures: Set<String> = []
+    public var onRetryAttachment: (String) -> Void = { _ in }
     /// Dropped or pasted items, already encoded with `AttachmentEncoder`.
     public var onAttach: ([EncodedAttachment]) -> Void = { _ in }
     /// An item that couldn't be encoded: its `AttachmentFailure` raw value, shown as a short line.
@@ -886,9 +891,14 @@ public struct PendingAttachmentItem: Identifiable {
     public let phase: PendingAttachment.Phase
     /// Pictures only, once made.
     public let thumbnail: CGImage?
+    public var duration: Double?
+    public var progress: Double?
+    public var failed: Bool
 
-    public init(id: String, kind: PendingAttachment.Kind, name: String, phase: PendingAttachment.Phase, thumbnail: CGImage?) {
+    public init(id: String, kind: PendingAttachment.Kind, name: String, phase: PendingAttachment.Phase, thumbnail: CGImage?,
+                duration: Double? = nil, progress: Double? = nil, failed: Bool = false) {
         self.id = id; self.kind = kind; self.name = name; self.phase = phase; self.thumbnail = thumbnail
+        self.duration = duration; self.progress = progress; self.failed = failed
     }
 }
 

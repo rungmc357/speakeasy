@@ -5,6 +5,7 @@ import subprocess
 import pytest
 
 from fakes import http, wait_for
+from test_routing import start_call, tasks
 from test_staged_attachments import stage, text_of
 from speakeasy import attachments as A, video
 
@@ -98,3 +99,46 @@ def test_missing_transcript_is_disclosed_not_invented(tmp_path, clips):
     prompt = video.prompt({"mime": "video/quicktime", "path": str(path), "media": media})
     assert "transcript unavailable" in prompt and "audio retained" in prompt
     assert "transcript" not in media
+
+
+def test_video_follow_up_stays_in_existing_job(server, service, hermes, clips):
+    service.transcriber = lambda _: {"success": True, "transcript": "A sample audio track."}
+    _, worker = start_call(server, service)
+    worker.feed({"type": "session.output_transcript.delta", "delta": "Checking.", "start_ms": 1, "end_ms": 2})
+    worker.delegate("call_1", "Review the checkout layout")
+    task = wait_for(lambda: [t for t in tasks(server) if t["task_id"] == "call_1" and t["status"] == "completed"])[0]
+    staged = stage(server, clips["mp4"], "file", "video/mp4", "checkout.mp4")[1]
+    status, result = http(server.base_url, "POST", f"/voice/work/{task['run_id']}/message",
+                          {"text": "Here is the recording", "attachments": [staged["id"]]}, server.token)
+    assert status == 200, result
+    wait_for(lambda: len(hermes.calls) >= 2)
+    original = hermes.calls[0]
+    follow = hermes.calls[-1]
+    assert original.get("session_id"), "the initial run must name its actual session"
+    assert follow.get("session_id") == original["session_id"]
+    assert "video/mp4" in text_of(follow["input"])
+    assert "checkout.mp4" in text_of(follow["input"])
+
+
+def test_call_video_upload_is_local_and_stays_pending_on_same_call(server, service, clips):
+    service.transcriber = lambda _: {"success": False}
+    session, worker = start_call(server, service)
+    upload = service.check_upload(session["interaction_id"], {"X-Speakeasy-Kind": "file", "Content-Type": "video/quicktime",
+                                                           "X-Speakeasy-Filename": "recording.mov"}, len(clips["mov"]))
+    response = service.accept_upload(upload, clips["mov"])
+    pending = worker.interaction.attachments.snapshot()["attachments"]
+    assert [p["id"] for p in pending] == [response["id"]]
+    assert pending[0]["kind"] == "file"
+    assert not service.staged._items
+    assert len(worker.interaction.attachments.file_paths()) == 8
+
+
+def test_removing_video_deletes_original_and_all_derived_copies(server, service, clips):
+    service.transcriber = lambda _: {"success": False}
+    status, staged = stage(server, clips["mp4"], "file", "video/mp4", "remove.mp4")
+    assert status == 200
+    paths = service.staged.file_paths()
+    assert len(paths) == 8
+    status, _ = http(server.base_url, "DELETE", "/voice/attachments/" + staged["id"], token=server.token)
+    assert status == 200
+    assert all(not Path(path).exists() for path in paths)
