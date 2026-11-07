@@ -18,6 +18,8 @@ public struct NowHome: Equatable, Sendable {
     public var call: NowCall?
     /// The "Your call · 6 min" card after a call ends, until it's cleared or rolls over.
     public var callSummary: NowCallSummary?
+    /// SPK-208 (plugin 0.3.46+, capability `home_stream`): the same cards as one thread. Nil from an older plugin.
+    public var stream: NowStream?
 
     public struct Counts: Equatable, Sendable {
         public var needsYou = 0, stopped = 0, working = 0, waiting = 0, finishedUnread = 0, onItsOwn = 0
@@ -53,6 +55,7 @@ public struct NowHome: Equatable, Sendable {
         notice = nonEmpty((json["notice"] as? [String: Any])?["text"])
         call = NowCall(json: json["call"])
         callSummary = NowCallSummary(json: json["call_summary"])
+        stream = NowStream(json: json["stream"])
     }
 
     /// Nothing live or new: Home shows a quiet "All caught up." instead of a header (build 69 drops
@@ -162,6 +165,8 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     /// On a call: `asking` (the question the voice is asking now, first on Home) or `heard` (the voice
     /// read this answer out, so it's already read).
     public var onCall: OnCall?
+    /// Created or explicitly brought into the current call (other work stays in the capsule).
+    public var onCurrentCall = false
     /// Asking on a call: a spoken answer may pick a choice (false: a risky one, it needs a tap).
     public var sayOK: Bool = true
     /// Asking on a call with a risky choice: "Can't be undone · Needs a tap".
@@ -203,6 +208,7 @@ public struct NowItem: Equatable, Sendable, Identifiable {
                   provenance: prov, fix: (((o["fix"] as? [String: Any])?["kind"]) as? String).flatMap(Fix.init(rawValue:)),
                   question: NowQuestion(json: o["question"]))
         onCall = (o["on_call"] as? String).flatMap(OnCall.init(rawValue:))
+        onCurrentCall = o["on_current_call"] as? Bool ?? false
         sayOK = o["say_ok"] as? Bool ?? true
         lockLine = nonEmpty(o["lock_line"])
     }
@@ -334,5 +340,76 @@ public struct EarlierKind: Equatable, Sendable, Identifiable {
     public static func query(_ on: Set<String>) -> String {
         let picked = all.filter(on.contains)
         return (picked.isEmpty ? ["conversations"] : picked).joined(separator: ",")
+    }
+}
+
+// MARK: - Home as one stream (SPK-208)
+
+/// Home as a single thread: the user's asks and their cards in time order. A card keeps one id, so it
+/// updates in place; older seen stretches arrive folded ("This morning · 6 done").
+public struct NowStream: Equatable, Sendable {
+    public struct Entry: Equatable, Sendable, Identifiable {
+        public enum Kind: String, Sendable { case ask, card, group }
+        /// A question, confirm or checkout is a widget in the thread: open -> confirmed -> done.
+        public enum Widget: String, Sendable { case open, confirmed, done }
+        public var id: String
+        public var kind: Kind
+        public var at: Date
+        /// ask: what the user asked.
+        public var text: String?
+        /// ask and card: the Home item this entry belongs to.
+        public var itemID: String?
+        public var widget: Widget?
+        /// group: the plain line ("This morning · 6 done") and the items it folds.
+        public var line: String?
+        public var itemIDs: [String]
+        public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
+                    line: String? = nil, itemIDs: [String] = []) {
+            self.id = id; self.kind = kind; self.at = at; self.text = text; self.itemID = itemID; self.widget = widget
+            self.line = line; self.itemIDs = itemIDs
+        }
+        init?(json: Any?) {
+            guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
+                  let kind = (o["kind"] as? String).flatMap(Kind.init(rawValue:)),
+                  let at = (o["at"] as? NSNumber)?.doubleValue else { return nil }
+            self.init(id: id, kind: kind, at: Date(timeIntervalSince1970: at), text: nonEmpty(o["text"]),
+                      itemID: nonEmpty(o["item_id"]), widget: (o["widget"] as? String).flatMap(Widget.init(rawValue:)),
+                      line: nonEmpty(o["line"]), itemIDs: (o["item_ids"] as? [Any] ?? []).compactMap(nonEmpty))
+        }
+    }
+    public var entries: [Entry]
+    /// Item ids waiting on the user, for the count on the work strip.
+    public var needsYou: [String]
+    public init(entries: [Entry] = [], needsYou: [String] = []) { self.entries = entries; self.needsYou = needsYou }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any] else { return nil }
+        self.init(entries: (o["entries"] as? [Any] ?? []).compactMap(Entry.init(json:)),
+                  needsYou: (o["needs_you"] as? [Any] ?? []).compactMap(nonEmpty))
+    }
+}
+
+/// One row of Recent: a previous task, finished or not.
+public struct NowRecentItem: Equatable, Sendable, Identifiable {
+    public var id: String
+    public var title: String
+    public var state: String
+    public var at: Date
+    public var sessionID: String?
+    public var line: String?
+    public init(id: String, title: String, state: String, at: Date, sessionID: String? = nil, line: String? = nil) {
+        self.id = id; self.title = title; self.state = state; self.at = at; self.sessionID = sessionID; self.line = line
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["id"]), let at = (o["at"] as? NSNumber)?.doubleValue else { return nil }
+        self.init(id: id, title: nonEmpty(o["title"]) ?? "Untitled", state: nonEmpty(o["state"]) ?? "completed",
+                  at: Date(timeIntervalSince1970: at), sessionID: nonEmpty(o["session_id"]), line: nonEmpty(o["line"]))
+    }
+    /// "Done", "Stopped", "In progress" in plain words.
+    public var statusWords: String {
+        switch state {
+        case "completed": return "Done"
+        case "failed", "interrupted", "cancelled": return "Stopped"
+        default: return "In progress"
+        }
     }
 }
