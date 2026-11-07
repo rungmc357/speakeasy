@@ -83,8 +83,10 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
         if ask:
             entries.append({"id": f"a:{thread_key(item)}", "kind": "ask", "at": started, "text": _clip(ask, ASK_CHARS),
                             "item_id": item["id"]})
-        entry: dict[str, Any] = {"id": f"c:{thread_key(item)}", "kind": "card", "at": max(started, _at(item)) if ask
-                                 else _at(item), "item_id": item["id"], "state": item.get("kind")}
+        # The card belongs to the ask, not to the latest progress tick. Otherwise each refresh moves
+        # old work past newer asks, and answering a question jumps it to the bottom of the thread.
+        entry: dict[str, Any] = {"id": f"c:{thread_key(item)}", "kind": "card", "at": started,
+                                "item_id": item["id"], "state": item.get("kind")}
         widget = widget_state(item, item.get("_run_key") in answered or item["id"] in answered)
         if widget:
             entry["widget"] = widget

@@ -96,7 +96,7 @@ def test_recent_lists_previous_tasks_newest_first_even_after_they_left_home(serv
          settled=NOON - 5 * 86400, created=NOON - 5 * 86400 - 30)
     task(service.store, "new", "completed", session="s_n", request="Book the dentist", result={"headline": "Booked"},
          settled=NOON - 3600, created=NOON - 3700)
-    assert [i["id"] for i in service.now({"tz": NY})["items"]] == ["t:run_new"] or True
+    assert all(i.get("run_id") != "old" for i in service.now({"tz": NY})["items"])
     rec = service.now_recent({"tz": NY})["items"]
     assert [i["at"] for i in rec] == sorted((i["at"] for i in rec), reverse=True) and len(rec) == 2
     assert {i["state"] for i in rec} == {"completed"}
@@ -109,3 +109,15 @@ def test_a_question_card_keeps_its_thread_id_when_it_becomes_a_working_card():
     after = S.build_stream([going], {"s:s_1": "Order a desk"}, {"s:s_1"}, NOON, TZ)["entries"]
     assert [e["id"] for e in before] == [e["id"] for e in after] == ["a:run_1", "c:run_1"]
     assert before[1]["widget"] == "open" and after[1]["widget"] == "confirmed"
+    assert before[1]["at"] == after[1]["at"] == NOON - 90
+
+
+def test_progress_and_completion_do_not_move_an_older_card_past_a_newer_ask():
+    old = {"id": "s:old", "run_id": "old", "kind": "working", "started_at": NOON - 90,
+           "updated_at": NOON - 1}
+    newer = {"id": "s:new", "run_id": "new", "kind": "working", "started_at": NOON - 30}
+    asks = {"s:old": "Compare standing desks", "s:new": "Draft a note"}
+    first = S.build_stream([old, newer], asks, set(), NOON, TZ)["entries"]
+    old.update(kind="new_answer", finished_at=NOON)
+    after = S.build_stream([old, newer], asks, set(), NOON, TZ)["entries"]
+    assert [e["id"] for e in first] == [e["id"] for e in after] == ["a:old", "c:old", "a:new", "c:new"]

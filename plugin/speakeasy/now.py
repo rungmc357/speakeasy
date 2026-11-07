@@ -452,6 +452,8 @@ class NowModel:
             if started_call and (started or 0) < started_call:
                 item["provenance"] = {"kind": "earlier_call", "at": started}
         task_id = (call_info or {}).get("keys", {}).get(row["key"])
+        item["on_current_call"] = bool(call is not None and (
+            row.get("interaction_id") == call.interaction_id or task_id is not None))
         if task_id is not None:
             if item["kind"] in {NEW_ANSWER, SEEN_ANSWER} and task_id in call_info["spoken"]:
                 # Told on the call: already read; the card keeps its own answer line.
