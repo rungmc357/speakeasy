@@ -186,6 +186,30 @@ final class CallPhaseTests: XCTestCase {
         XCTAssertNil(s.quietPausedMinutes)
     }
 
+    /// Pause closes the transport on purpose. Both close notifications may arrive, in either order.
+    func testPauseCloseNotificationsStayQuietInEitherOrder() {
+        let lost = VoiceEvent.transportLost
+        let closed = VoiceEvent.serverClosed(.incomplete, error: "Voice connection lost.")
+        let sequences: [[VoiceEvent]] = [[lost, closed], [closed, lost], [.sessionClosed, closed], [.endTimedOut, closed]]
+        for reconnects in [false, true] {
+            for quiet in [false, true] {
+                for events in sequences {
+                    var s = reduce(live(reconnects: reconnects), quiet ? .quietPauseRequested(minutes: 15) : .pauseRequested, now: t0)
+                    let reason: PauseReason = quiet ? .quiet(minutes: 15) : .user
+                    for event in events {
+                        s = reduce(s, event, now: t0.addingTimeInterval(1))
+                        XCTAssertEqual(s.phase, .paused(id: "vi_1", reason: reason))
+                        XCTAssertNil(s.lastError, "an intentional close must not gain a dropped-call banner")
+                        XCTAssertEqual(s.phase.reconnectAttempt, 0)
+                    }
+                    s = reduce(s, .resumeRequested, now: t0.addingTimeInterval(2))
+                    XCTAssertEqual(s.connection, .connecting)
+                    XCTAssertEqual(s.resumeFrom, "vi_1")
+                }
+            }
+        }
+    }
+
     func testFailureWhilePausingLeavesNoPausingBehind() {
         var s = reduce(live(reconnects: false), .pauseRequested, now: t0)
         s = reduce(s, .failed("Couldn't reach your Hermes"), now: t0)

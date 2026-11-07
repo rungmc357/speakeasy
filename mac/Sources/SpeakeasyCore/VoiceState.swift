@@ -676,7 +676,9 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s.speech = .idle
 
     case .serverClosed(let fin, let error):
-        let pausing = s.pausing
+        // The transport and server can each report the same intentional close. A late server
+        // notification must stay quiet even after the first notification completed the pause.
+        let pausing = s.pausing || isPaused(s.phase)
         closed(&s, fin)
         if let error, !pausing { s.lastError = VoiceState.isCallDropped(error) ? VoiceState.callDropped : error }
         s.speech = .idle
