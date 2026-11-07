@@ -404,21 +404,21 @@ enum FilmFrames {
     static func codeAnswerBeats() -> [Shot] {
         let now = Date()
         let full = """
-        The build box answers on the network, but it won't take the helper's key yet. One paste in Terminal on the build box fixes it:
+        The garden planner's photo folder is set, but the new tray sizes aren't loaded yet. One paste in Terminal fixes it:
 
         ```bash
-        mkdir -p ~/.ssh && echo 'ssh-ed25519 AAAAC3NzaExampleExampleExampleExampleKey helper@build-box' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+        cd ~/Projects/garden-planner && cp trays.sample.json trays.json && npm run load-trays
         ```
 
-        Then restart the sync job so it picks up the key:
+        Then reopen the planner so it reads them:
         ```
-        sudo launchctl kickstart -k system/com.example.sync
+        open -a "Garden Planner"
         ```
 
         After that I can finish the setup from here.
         """
-        var t = task("b", "completed", "Get the build box connected", title: "Connect the build box", short: "Done", age: 60, now: now,
-                     result: WorkResult(spoken: "The build box won't take the key yet. There's a command for you to run. It's on screen, ready to copy.",
+        var t = task("b", "completed", "Load the new tray sizes", title: "Load tray sizes", short: "Done", age: 60, now: now,
+                     result: WorkResult(spoken: "The tray sizes need one more step. There's a command for you to run. It's on screen, ready to copy.",
                                         full: full, label: "Needs one paste"))
         t.info.finishedAt = now - 60
         var s = VoiceState(); s.now = now; s.workOnly = true
