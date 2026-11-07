@@ -713,7 +713,7 @@ class HomeChat:
             aux = (self._config().get("auxiliary") or {}).get(route["task"]) or {}
             if isinstance(aux, dict) and aux.get("model"):
                 current = f"{aux.get('provider') or 'auto'}/{aux['model']}"
-        options = approved(entries)[:4]
+        options = approved(entries)[:16]
         main = self._config().get("model")
         if isinstance(main, dict) and main.get("default") and main.get("provider"):
             mid = f"{main['provider']}/{main['default']}"
@@ -727,8 +727,14 @@ class HomeChat:
             return {"id": mid, "name": e.get("name") or MD.friendly_name(mid.partition("/")[2] or mid),
                     "provider_name": e.get("provider_name") or mid.partition("/")[0]}
         auto = pick_auto(entries)
+        rows: list[dict[str, Any]] = []
+        for mid in options:
+            r = row(mid)
+            if mid == current or r["name"] not in {x["name"] for x in rows}:   # one row per model, not per provider
+                rows.append(r)
+        rows = rows[:4] + [r for r in rows[4:] if r["id"] in {current, f"{(self._config().get('model') or {}).get('provider')}/{(self._config().get('model') or {}).get('default')}"}]
         return {"model": row(current) if current else None, "source": route.get("source"),
-                "auto": row(auto) if auto else None, "options": [row(m) for m in options]}
+                "auto": row(auto) if auto else None, "options": rows}
 
     def choose_model(self, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /voice/home/model {"model": "provider/model" | null}``: the chip's pick (null = Auto)."""
