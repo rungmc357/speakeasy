@@ -6,12 +6,13 @@ Setup check / "You're connected" data must carry it, and the brief is written on
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import types
 
 import pytest
 
-from fakes import http
+from fakes import http, wait_for
 from speakeasy import agent_model as M
 from speakeasy import brief as B
 from speakeasy import setup_check
@@ -143,18 +144,86 @@ def test_brief_failing_for_no_model_says_so_and_writes_itself_once_a_model_exist
         return ("completed", good) if model[0] == M.OK else ("failed", "")
 
     m = B.BriefManager(tmp_path, run, lambda: settings, error_fn=lambda: NO_PROVIDER, model_check=check)
-    m.rewrite(force=True, background=False)
-    st = m.status()
-    assert st["state"] == "failed" and st["waits_for_model"] and st["error"] == B.NO_MODEL_ERROR
-    assert "not signed in" not in st["error"]  # not mistaken for a sign-in problem
-    time.sleep(0.1)
-    assert len(runs) == 1 and not m.text()  # no model yet: no extra runs
-    model[0] = M.OK
-    deadline = time.time() + 3
-    while not m.text() and time.time() < deadline:
-        time.sleep(0.02)
-    m.stop()
-    assert m.status()["state"] == "ready" and len(runs) == 2 and not m.status()["waits_for_model"]
+    try:
+        m.rewrite(force=True, background=False)
+        st = m.status()
+        assert st["state"] == "failed" and st["waits_for_model"] and st["error"] == B.NO_MODEL_ERROR
+        assert "not signed in" not in st["error"]  # not mistaken for a sign-in problem
+        time.sleep(0.1)
+        assert len(runs) == 1 and not m.text()  # no model yet: no extra runs
+        model[0] = M.OK
+        # The file is published before metadata is saved and writing clears; stop() is not a join.
+        wait_for(lambda: m.status()["state"] == "ready", timeout=3)
+        st = m.status()
+        assert st["state"] == "ready" and len(runs) == 2 and not st["waits_for_model"]
+        assert st["error"] is None and m._state()["no_model"] is False
+        assert m.text() == B.validate(good)
+        waiter = m._model_waiter
+        assert waiter is not None
+        waiter.join(timeout=3)  # The retry loop exits on success: no further attempts.
+        assert not waiter.is_alive() and len(runs) == 2
+    finally:
+        m.stop()
+        if m._model_waiter is not None:
+            m._model_waiter.join(timeout=3)
+            assert not m._model_waiter.is_alive()
+
+
+def test_brief_publication_precedes_ready_and_stop_does_not_join(tmp_path, monkeypatch):
+    """Hold the real model retry between atomic file publication and metadata persistence."""
+    monkeypatch.setattr(B, "MODEL_POLL_S", 0.02)
+    settings = {"brief": {"auto_refresh": True, "include_recent_voice": True}}
+    model = [M.MISSING]
+    check = M.ModelCheck(lambda: model[0])
+    check.MISSING_TTL_S = 0.0  # type: ignore[misc]
+    runs: list[str] = []
+    publications: list[str] = []
+    body = "The assistant helps with example projects and gives clear, practical answers. " * 4
+    good = "".join(f"## {name}\n{body}\n" for name in B.REQUIRED_SECTIONS)
+    published, finish_write = threading.Event(), threading.Event()
+
+    def run(prompt, idem):
+        runs.append(idem)
+        return ("completed", good) if model[0] == M.OK else ("failed", "")
+
+    m = B.BriefManager(tmp_path, run, lambda: settings, error_fn=lambda: NO_PROVIDER, model_check=check)
+    write_private = B._write_private
+
+    def pause_after_publication(path, text):
+        write_private(path, text)
+        if path == m.path:
+            publications.append(text)
+            published.set()
+            assert finish_write.wait(timeout=3), "test did not release the brief writer"
+
+    monkeypatch.setattr(B, "_write_private", pause_after_publication)
+    try:
+        m.rewrite(force=True, background=False)
+        assert m.status()["state"] == "failed" and len(runs) == 1
+        assert m.status()["error"] == B.NO_MODEL_ERROR and m.status()["waits_for_model"]
+        model[0] = M.OK
+        assert published.wait(timeout=3), "model retry did not publish the brief"
+        waiter = m._model_waiter
+        assert waiter is not None and waiter.is_alive()
+        assert m.text() == B.validate(good) and len(runs) == 2
+        assert m.status()["state"] == "writing"  # Readable text is not a completion barrier.
+        assert m._state()["no_model"] is True and m.status()["error"] == B.NO_MODEL_ERROR
+        m.stop()
+        assert waiter.is_alive() and m.status()["state"] == "writing"
+        finish_write.set()
+        wait_for(lambda: m.status()["state"] == "ready", timeout=3)
+        waiter.join(timeout=3)
+        assert not waiter.is_alive()
+        st = m.status()
+        assert st["state"] == "ready" and not st["waits_for_model"] and st["error"] is None
+        assert m._state()["no_model"] is False and m.text() == B.validate(good)
+        assert len(runs) == 2 and publications == [B.validate(good)]
+    finally:
+        finish_write.set()  # Release before joining even if an assertion failed.
+        m.stop()
+        if m._model_waiter is not None:
+            m._model_waiter.join(timeout=3)
+            assert not m._model_waiter.is_alive()
 
 
 def test_brief_other_failures_keep_the_hourly_retry_only(tmp_path, monkeypatch):
