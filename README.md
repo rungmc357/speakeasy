@@ -17,7 +17,9 @@ Tailscale).
 
 Needs **Hermes Agent 0.22.0 or newer** (`hermes --version`). If you don't have Hermes yet,
 [install it](https://hermes-agent.nousresearch.com/docs/getting-started/installation) with
-`curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`, then reload your shell.
+`curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`, then open a new terminal and
+run `hermes setup` to choose its model. You can run `hermes` and paste the setup request below;
+no chat app is needed.
 
 1. Download and open [Speakeasy.dmg](https://github.com/rungmc357/speakeasy/releases/latest/download/Speakeasy.dmg).
 2. In Terminal:
@@ -26,6 +28,9 @@ Needs **Hermes Agent 0.22.0 or newer** (`hermes --version`). If you don't have H
    hermes plugins install rungmc357/speakeasy/plugin/speakeasy --enable
    hermes voice setup --here --yes   # installs the Codex CLI if needed and opens the ChatGPT sign-in
    ```
+
+   The GitHub-source warning is expected. Hermes must be running: on a new install, run
+   `hermes gateway install` to keep it running in the background, then rerun setup.
 
 3. If setup says Hermes needs a restart (exit code 2, first install only): send `/restart` in your
    chat with Hermes (from a terminal: `hermes gateway restart`, or stop and start `hermes gateway`
@@ -72,7 +77,8 @@ Two things are yours to do:
 
 Hermes can run on the Mac you talk from or on another computer; the agent checks which, then
 opens the link for you or sends it to your chat. [docs/AGENT_SETUP.md](docs/AGENT_SETUP.md) is the
-exact guide the agent follows.
+exact guide the agent follows. Maintainers: use the [setup documentation release check](docs/SETUP_DOCS_RELEASE.md)
+whenever that guide changes.
 
 **By hand**, on the machine that runs Hermes:
 

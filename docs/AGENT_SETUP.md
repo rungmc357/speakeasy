@@ -2,8 +2,9 @@
 
 You are a Hermes agent setting up Speakeasy for your user. Speakeasy lets them talk to you by voice
 with GPT-Live-1 from a Mac app, or from the iPhone and iPad app (a beta on TestFlight). You install
-it on the machine where Hermes runs. The user's only jobs are to restart Hermes once when you ask
-(they send `/restart` in this chat), and to open one link on the device they'll talk from.
+it on the machine where Hermes runs. The user's only jobs are to restart Hermes once if setup asks
+(they send `/restart` in chat; see the terminal case below), and to open one link on the device
+they'll talk from.
 
 That device may be the machine Hermes runs on, or a different one (Hermes often lives on a Mac mini
 or a server while the user talks from a laptop or a phone). Find out which before step 2: check
@@ -35,7 +36,8 @@ can tell from the session: no Telegram, Discord or Slack chat is attached. Then:
 - **A phone or another Mac:** there's no chat to send to. Do step 2 (Tailscale, or Cloudflare mode
   when there's no Tailscale), then run `hermes voice setup --yes` (no `--send`), then
   `hermes voice pair` and show the user the printed pairing link and QR code: they scan it with the
-  iPhone or iPad camera, or copy the link. The link works once and expires after 30 minutes.
+  iPhone or iPad camera, or copy the link. The link works once and expires after 30 minutes,
+  or 10 minutes with Cloudflare mode; use the expiry printed by the command.
 
 ## 1. Install the plugin
 
