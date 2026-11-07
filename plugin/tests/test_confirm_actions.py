@@ -134,6 +134,8 @@ def test_spoken_yes_reaches_exact_card_once():
 def test_spoken_no_cancels():
     worker, decisions = voice_worker()
     assert asyncio.run(V.answer(worker, "new", 1, "no"))
+    assert decisions == []
+    assert asyncio.run(V.answer(worker, "confirm", 2, "no"))
     assert decisions[0][3] == "cancel"
 
 

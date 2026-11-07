@@ -29,6 +29,12 @@ def _update(service: Any, run_id: str, index: int, expected: str, changes: dict)
                 view.update(changes)
                 claim_state = "unverified"
             else:
+                spent = store._db.execute(
+                    "SELECT state FROM confirmation_claims WHERE run_id=? AND card_index=? AND sha256=?",
+                    (run_id, index, changes["sha256"])).fetchone()
+                if spent:
+                    changes = {**changes, "state": "unverified", "actions": [],
+                               "error": "This preview was already used and replaced. Check the service before starting a new action."}
                 views[index] = changes  # replace completely; never carry old fields into a new digest
                 claim_state = "replaced"
         else:

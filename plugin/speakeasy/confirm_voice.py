@@ -53,7 +53,7 @@ async def answer(worker, delegation_id, revision, request, marked=None):
     offered = getattr(worker, "confirmation_offers", {})
     offered_key = (task, index)
     previous = offered.get(offered_key)
-    if choice != "deny" and (not previous or previous[0] != view["sha256"] or time.monotonic() - previous[1] > 120):
+    if not previous or previous[0] != view["sha256"] or time.monotonic() - previous[1] > 120:
         await present(worker, delegation_id, task, index, view, changed=bool(previous))
         return True
     offered.pop(offered_key, None)
@@ -68,27 +68,31 @@ async def answer(worker, delegation_id, revision, request, marked=None):
 
 
 async def present(worker, delegation_id, task, index, view, *, changed=False):
+    # Speak every consent-bearing field, not a clipped summary. URLs and image
+    # references are screen-only; all destination, price, content and policy terms
+    # remain in the spoken offer for every schema kind.
     details = view["details"]
-    kind = view["type"]
-    if kind in {"checkout", "pay"}:
-        destination = details.get("merchant") or details.get("payee")
-        preview = ("Buy from " if kind == "checkout" else "Pay ") + destination + " for " + details["currency"] + " " + details["total"]
-    elif kind == "send":
-        preview = "Send the full draft shown to " + details["recipient"]
-    elif kind == "post":
-        preview = "Post the exact preview shown from " + details["account"]
-    elif kind == "book":
-        preview = "Book " + view["title"] + " for " + details["when"] + ", " + details["price"]
-    elif kind == "invite":
-        preview = "Send the invitation shown to " + details["attendees"] + " for " + details["when"]
-    elif kind == "home":
-        preview = {"unlock": "Unlock ", "open_garage": "Open ", "disarm": "Disarm "}[details["operation"]] + details["device"]
-    elif kind == "delete_share":
-        preview = ("Delete " if details["operation"] == "delete" else "Share ") + details["items_description"]
-    else:
-        preview = view["title"] + ", exactly as shown"
-    prefix = "The preview changed. " if changed else "Before I do that: "
-    await worker.append("session.commentary.append", delegation_id, prefix + preview[:1500] + ". Approve this preview?")
+    operations = {"sign_up": "sign up", "open_garage": "open garage"}
+    parts = [view["actions"][0]["label"] + ": " + view["title"]]
+    for key, value in details.items():
+        if key in {"photo_url", "checkout_url", "total_source"}:
+            continue
+        parts.append(key.replace("_", " ") + ": " + operations.get(value, value))
+    for item in view.get("items", []):
+        parts.append("Item: " + ", ".join(key.replace("_", " ") + ": " + str(value)
+                     for key, value in item.items() if key != "photo_url"))
+    for field in view.get("fields", []):
+        parts.append(field["label"] + ": " + field["value"] + (" (agent guessed)" if field["guessed"] else ""))
+    preview = ". ".join(parts)
     if not hasattr(worker, "confirmation_offers"):
         worker.confirmation_offers = {}
+    worker.confirmation_offers.pop((task, index), None)
+    # Shared call append() caps speech at 2,000 characters. Leave room for
+    # its resumed-call prefix; never bind terms that would be clipped there.
+    if len(preview) > 1800:
+        await worker.append("session.commentary.append", delegation_id,
+                            "This preview is too long to approve safely by voice. Review the full card and tap its action button.")
+        return
+    prefix = "The preview changed. " if changed else "Before I do that: "
+    await worker.append("session.commentary.append", delegation_id, prefix + preview + ". Approve this preview?")
     worker.confirmation_offers[(task, index)] = (view["sha256"], time.monotonic())

@@ -118,8 +118,20 @@ def clean(raw: Any) -> dict | None:
         return None
     if kind == "home" and out["operation"] not in {"unlock", "open_garage", "disarm"}:
         return None
-    if kind == "delete_share" and out["operation"] not in {"delete", "share"}:
-        return None
+    if kind == "delete_share":
+        if out["operation"] not in {"delete", "share"}:
+            return None
+        count = out.get("count")
+        if count is not None and (not re.fullmatch(r"[1-9][0-9]{0,5}", count)):
+            return None
+        if out["operation"] == "delete" and count is None:
+            return None
+        # Reject a contradictory explicit leading count instead of inventing a label.
+        leading = out["items_description"].split()[0].lower()
+        words = dict(zip("one two three four five six seven eight nine ten".split(), range(1, 11)))
+        described = int(leading) if leading.isdecimal() else words.get(leading)
+        if count is not None and described is not None and described != int(count):
+            return None
     view = {"kind": "confirm", "type": kind, "title": raw["title"].strip(), "details": out}
     if items:
         view["items"] = items
@@ -136,7 +148,7 @@ def clean(raw: Any) -> dict | None:
     elif kind == "home":
         label = {"unlock": "Unlock", "open_garage": "Open garage", "disarm": "Disarm"}[out["operation"]]
     elif kind == "delete_share" and out["operation"] == "delete":
-        label = "Delete " + out.get("count", "items")
+        label = "Delete " + out["count"] + (" item" if out["count"] == "1" else " items")
     view["actions"] = [{"id": "approve", "label": label, "style": "primary", "value": view["sha256"]},
                        {"id": "cancel", "label": "Cancel", "style": "secondary", "value": view["sha256"]}]
     return view
@@ -177,6 +189,8 @@ def claim(store: Any, run_id: str, index: int, expected: str, action: str, *, so
             (run_id, index, expected)).fetchone()
         if consumed:
             view["state"], view["actions"] = consumed[0], []
+            if consumed[0] == "replaced":
+                view.update(state="unverified", error="This preview was already used and replaced. Check the service before starting a new action.")
             store._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?", (canonical(result), key))
             return key, view, False
         state = view.get("state")
@@ -225,6 +239,23 @@ def recover(store: Any) -> int:
     with store._lock, store._db:
         if not store._db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='confirmation_claims'").fetchone():
             return 0
+        # Older candidates may have saved a pending A after A→B→A. Repair that
+        # persisted replay at startup too, before it is offered on any surface.
+        for key, encoded in store._db.execute("SELECT idem_key,result_json FROM runs").fetchall():
+            result = json.loads(encoded or "{}")
+            repaired = False
+            for index, view in enumerate(result.get("views", [])):
+                if view.get("kind") != "confirm" or view.get("state") != "pending":
+                    continue
+                spent = store._db.execute(
+                    "SELECT 1 FROM confirmation_claims c JOIN runs r ON r.run_id=c.run_id "
+                    "WHERE r.idem_key=? AND c.card_index=? AND c.sha256=?", (key, index, view.get("sha256"))).fetchone()
+                if spent:
+                    view.update(state="unverified", actions=[], error="This preview was already used. Check the service before starting a new action.")
+                    repaired = True
+                    changed += 1
+            if repaired:
+                store._db.execute("UPDATE runs SET result_json=? WHERE idem_key=?", (canonical(result), key))
         rows = store._db.execute("SELECT run_id,card_index,sha256 FROM confirmation_claims WHERE state='approved'").fetchall()
         for run_id, index, expected in rows:
             row = store._db.execute("SELECT idem_key,result_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
