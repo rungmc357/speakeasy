@@ -361,7 +361,7 @@ struct HistoryRow: View {
                     }
                     if session.state != .idle || !session.isSpeakeasy || session.agent != nil {
                         HStack(spacing: 6) {
-                            if session.state == .needsYou { tag("Needs you", Live.amber) }
+                            if session.state == .needsYou { NeedsYouMark(font: .system(size: 10, weight: .semibold)) }
                             else if session.state == .running { tag("Working", Live.brassText) }
                             if let agent = session.agent {
                                 Text(agent.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(Live.brassText).lineLimit(1)
