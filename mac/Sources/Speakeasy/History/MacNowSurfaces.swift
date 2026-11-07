@@ -70,19 +70,6 @@ struct MacNowCallControls: View {
     }
 }
 
-struct MacNowHomeCall: View {
-    @ObservedObject var voice: VoicePanelModel
-    var body: some View {
-        if voice.state.connection.isOpen && !voice.state.workOnly {
-            MacNowCallControls(voice: voice)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-        } else {
-            Button(action: voice.onStart) { Label("Start a call", systemImage: "phone.fill") }
-                .buttonStyle(.borderedProminent).tint(JobLook.brass)
-        }
-    }
-}
-
 /// The legacy panel remains available to old servers. Home-capable servers get only the call bar.
 struct MacNowVoiceSurface: View {
     @ObservedObject var voice: VoicePanelModel

@@ -958,6 +958,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var openaiKey: Bool = false
     /// Voice notes: the recording itself is the message (`POST …/voice-message`), like a Telegram voice note.
     public var voiceNotes: Bool = false
+    /// A voice note can start a brand-new job and chat (`POST /voice/work/voice-message`): Home's mic.
+    public var newVoiceNotes: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -976,7 +978,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
         case messageModes = "message_modes", questionState = "question_state", agents
         case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
-        case voiceNotes = "voice_notes"
+        case voiceNotes = "voice_notes", newVoiceNotes = "new_voice_notes"
         case now
     }
     public init(from decoder: Decoder) throws {
@@ -998,6 +1000,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         questionState = (try? c.decodeIfPresent(Bool.self, forKey: .questionState)) ?? false
         transcribe = (try? c.decodeIfPresent(Bool.self, forKey: .transcribe)) ?? false
         voiceNotes = (try? c.decodeIfPresent(Bool.self, forKey: .voiceNotes)) ?? false
+        newVoiceNotes = (try? c.decodeIfPresent(Bool.self, forKey: .newVoiceNotes)) ?? false
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false

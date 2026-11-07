@@ -22,7 +22,57 @@ final class MacNowModel: ObservableObject {
     var onQuestions: (Int) -> Void = { _ in }
     private var loop: Task<Void, Never>?
 
-    var visible: [NowItem] { (home?.items ?? []).filter { !hidden.contains($0.id) } }
+    var visible: [NowItem] { pendingItems + (home?.items ?? []).filter { !hidden.contains($0.id) } }
+
+    // MARK: Started from Home's composer (SPK-198)
+
+    /// Something sent from Home's composer: a working card at once, until Home's own list carries
+    /// its task or chat (or a minute passes: then Home's list is the truth).
+    struct Pending: Equatable {
+        let id: String
+        let title: String
+        let at: Date
+        var runID: String?
+        var sessionID: String?
+    }
+    @Published private(set) var pending: [Pending] = []
+    nonisolated static let pendingKeptS: TimeInterval = 60
+
+    func addPending(id: String, title: String, now: Date = Date()) {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.9)) {
+            pending.insert(Pending(id: id, title: title, at: now), at: 0)
+        }
+    }
+
+    func pendingStarted(id: String, runID: String?, sessionID: String?) {
+        guard let i = pending.firstIndex(where: { $0.id == id }) else { return }
+        pending[i].runID = runID
+        pending[i].sessionID = sessionID
+        prunePending()
+    }
+
+    func dropPending(_ id: String) { withAnimation { pending.removeAll { $0.id == id } } }
+
+    func prunePending(now: Date = Date()) {
+        let keep = Self.unmatched(pending, items: home?.items ?? [], now: now, demo: demo != nil)
+        if keep != pending { pending = keep }
+    }
+
+    nonisolated static func unmatched(_ pending: [Pending], items: [NowItem], now: Date, demo: Bool = false) -> [Pending] {
+        pending.filter { p in
+            if !demo && now.timeIntervalSince(p.at) > pendingKeptS { return false }
+            return !items.contains { item in
+                (p.runID != nil && item.runID == p.runID) || (p.sessionID != nil && item.sessionID == p.sessionID)
+            }
+        }
+    }
+
+    private var pendingItems: [NowItem] {
+        pending.map { p in
+            NowItem(id: "pending:" + p.id, kind: .working, sessionID: p.sessionID, runID: p.runID, title: p.title,
+                    line: "Getting started", startedAt: p.at)
+        }
+    }
 
     func start() {
         guard loop == nil else { return }
@@ -42,6 +92,7 @@ final class MacNowModel: ObservableObject {
         do {
             let fresh = try await api.now()
             home = fresh; failed = false; hidden = []
+            prunePending()
             onQuestions(fresh.counts.needsYou)
         } catch {
             failed = true
@@ -71,36 +122,41 @@ struct MacNowColumn: View {
     @ObservedObject var now: MacNowModel
     @ObservedObject var store: HistoryStore
     var voice: VoicePanelModel? = nil
+    @ObservedObject var composer = MacHomeComposerModel.shared
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if let voice { MacNowHomeCall(voice: voice) }
-                // No counting header (build 69): only "can't reach" or a quiet "All caught up."
-                if now.failed && now.home == nil {
-                    Text("Can't reach Hermes right now.").font(.title3.weight(.semibold)).padding(.bottom, 4)
-                } else if now.home?.caughtUp ?? false, now.visible.isEmpty {
-                    Text(NowHome.caughtUpLine).font(.title3).foregroundStyle(.secondary).padding(.vertical, 8)
-                        .accessibilityIdentifier("mac-now-caught-up")
-                }
-                if let summary = now.home?.callSummary {
-                    callSummary(summary)
-                }
-                ForEach(now.visible) { item in
-                    MacNowCard(item: item, now: now, selected: isOpen(item), focused: now.home?.call?.focus == item.id) {
-                        if let sid = item.sessionID { store.open(sid) }
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    // No counting header (build 69): only "can't reach", or (SPK-198) a small, quiet
+                    // "All caught up." with a few things to try that fill the composer.
+                    if now.failed && now.home == nil {
+                        Text("Can't reach Hermes right now.").font(.title3.weight(.semibold)).padding(.bottom, 4)
+                    } else if now.home?.caughtUp ?? false, now.visible.isEmpty {
+                        MacNowEmpty { composer.fill($0) }
+                    }
+                    if let summary = now.home?.callSummary {
+                        callSummary(summary)
+                    }
+                    ForEach(now.visible) { item in
+                        MacNowCard(item: item, now: now, selected: isOpen(item), focused: now.home?.call?.focus == item.id) {
+                            if let sid = item.sessionID { store.open(sid) }
+                        }
+                    }
+                    if now.visible.contains(where: { $0.kind == .seenAnswer || $0.kind == .newAnswer }) {
+                        Button("Clear") { now.clearSeen() }
+                            .buttonStyle(.link).font(.callout).padding(.top, 2)
+                    }
+                    if let n = now.home?.backgroundRunning, n > 0 {
+                        Label("\(n) running on \(n == 1 ? "its" : "their") own", systemImage: "gearshape.2")
+                            .font(.callout).foregroundStyle(.secondary).padding(.top, 4)
                     }
                 }
-                if now.visible.contains(where: { $0.kind == .seenAnswer || $0.kind == .newAnswer }) {
-                    Button("Clear") { now.clearSeen() }
-                        .buttonStyle(.link).font(.callout).padding(.top, 2)
-                }
-                if let n = now.home?.backgroundRunning, n > 0 {
-                    Label("\(n) running on \(n == 1 ? "its" : "their") own", systemImage: "gearshape.2")
-                        .font(.callout).foregroundStyle(.secondary).padding(.top, 4)
-                }
+                .padding(.horizontal, 18).padding(.top, 44).padding(.bottom, 18)
             }
-            .padding(.horizontal, 18).padding(.top, 44).padding(.bottom, 18)
+            // Home's bottom bar (SPK-198): the composer with the round call button beside it; on a
+            // call it becomes the call's dock.
+            MacHomeBottomBar(voice: voice, composer: composer)
         }
         .onAppear { now.start() }
         .accessibilityIdentifier("mac-now")

@@ -177,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.schedulesSupported = caps?.schedules ?? false
                     self.wireHermesTranscription(caps?.transcribe ?? false)
                     self.history.store.voiceNotesSupported = caps?.voiceNotes ?? false
+                    MacHomeComposerModel.shared.voiceNotesSupported = caps?.newVoiceNotes ?? false
                     self.history.store.boardsSupported = caps?.boards ?? false
                     self.history.store.skillsSupported = caps?.slashSkills ?? false
                     self.history.store.filesSupported = caps?.files ?? false
@@ -403,6 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let now = MacNowModel.shared
         guard on else { now.stop(); return }
         now.api = { [weak self] in self?.native.api }
+        MacHomeComposerModel.shared.api = { [weak self] in self?.native.api }
         now.onQuestions = { [weak self] n in
             guard let self, n != self.questionsWaiting else { return }
             self.questionsWaiting = n
