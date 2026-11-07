@@ -10,23 +10,12 @@ final class VideoAttachmentTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("video-test-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let base = directory.appendingPathComponent("source." + ext)
-        try ffmpeg(["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=4:duration=2", "-c:v", "libx264",
-                    "-threads", "1", "-pix_fmt", "yuv420p", base.path])
-        if !rotate { return base }
-        let rotated = directory.appendingPathComponent("rotated." + ext)
-        try ffmpeg(["-display_rotation", "90", "-i", base.path, "-c", "copy", rotated.path])
-        return rotated
-    }
-
-    private func ffmpeg(_ args: [String]) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
-        process.arguments = ["-nostdin", "-v", "error"] + args
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run(); process.waitUntilExit()
-        XCTAssertEqual(process.terminationStatus, 0)
+        // Generated, invented blue clip; the MOV carries a 90° display transform.
+        // Bundle resources work in simulator tests too (Process/ffmpeg does not).
+        let fixture = try XCTUnwrap(Bundle.module.url(forResource: "video-fixture", withExtension: ext, subdirectory: "Contract"))
+        let copy = directory.appendingPathComponent("source." + ext)
+        try FileManager.default.copyItem(at: fixture, to: copy)
+        return copy
     }
 
     func testMP4KeepsOriginalBytesAndCarriesDurationAndPoster() throws {

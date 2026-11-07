@@ -2,6 +2,7 @@ import AppKit
 import SpeakeasyClient
 import SpeakeasyCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 // Home's composer on the Mac (SPK-198), matching the iPhone and iPad: the session page's composer at
 // the bottom of the Now column, with the round call button beside it. Typing (↩) or a voice message
@@ -25,6 +26,86 @@ final class MacHomeComposerModel: ObservableObject {
     @Published private(set) var level: Float = 0
     /// Servers with `new_voice_notes`: the mic shows.
     @Published var voiceNotesSupported = false
+
+    struct Pick: Identifiable {
+        let id = UUID()
+        let url: URL
+        var encoded: EncodedAttachment?
+        var serverID: String?
+        var progress: Double = 0
+        var failure: String?
+    }
+    @Published private(set) var picks: [Pick] = []
+    private var sendID: String?
+    private var lastSentText: String?
+    var canSend: Bool {
+        !sending && !recording && (TaskMessageRequest.clean(draft) != nil || !picks.isEmpty)
+            && picks.allSatisfy { $0.serverID != nil && $0.failure == nil }
+    }
+
+    func chooseFiles() {
+        guard !sending, !recording else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image, .mpeg4Movie, .quickTimeMovie, .pdf, .plainText, .json]
+        panel.message = "Add a clip, picture or document. Videos: up to 10 MB and 2 minutes."
+        panel.begin { [weak self] result in
+            guard result == .OK else { return }
+            Task { @MainActor in self?.addFiles(panel.urls) }
+        }
+    }
+
+    func addFiles(_ urls: [URL]) {
+        guard !sending, !recording else { return }
+        for url in urls {
+            guard picks.count < AttachmentPolicy.maxAttachments else {
+                notice = "You can attach up to three items."; break
+            }
+            let pick = Pick(url: url)
+            picks.append(pick)
+            retryPick(pick.id)
+        }
+        sendID = nil
+    }
+
+    func removePick(_ id: UUID) {
+        guard !sending, let pick = picks.first(where: { $0.id == id }) else { return }
+        picks.removeAll { $0.id == id }; sendID = nil
+        if let serverID = pick.serverID, let api = api() {
+            Task { try? await api.removeStagedAttachment(id: serverID) }
+        }
+    }
+
+    func retryPick(_ id: UUID) {
+        guard let index = picks.firstIndex(where: { $0.id == id }), picks[index].serverID == nil else { return }
+        picks[index].failure = nil; picks[index].progress = 0
+        let url = picks[index].url
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                // Decode off the UI thread; retain the original video's bytes.
+                let encoded = try await Task.detached(priority: .utility) { try AttachmentEncoder.encode(fileAt: url) }.value
+                guard let i = self.picks.firstIndex(where: { $0.id == id }) else { return }
+                self.picks[i].encoded = encoded
+                guard let api = self.api() else { throw URLError(.notConnectedToInternet) }
+                let staged = try await api.stageAttachment(encoded, as: encoded.kind == .image ? .picture : .file) { [weak self] value in
+                    Task { @MainActor in
+                        guard let self, let i = self.picks.firstIndex(where: { $0.id == id }) else { return }
+                        self.picks[i].progress = value
+                    }
+                }
+                guard let i = self.picks.firstIndex(where: { $0.id == id }) else {
+                    try? await api.removeStagedAttachment(id: staged.id); return
+                }
+                self.picks[i].serverID = staged.id; self.picks[i].progress = 1
+            } catch {
+                if let i = self.picks.firstIndex(where: { $0.id == id }) {
+                    self.picks[i].failure = HistoryStore.message(error)
+                }
+            }
+        }
+    }
 
     struct Clip: Equatable {
         let id: String
@@ -53,9 +134,12 @@ final class MacHomeComposerModel: ObservableObject {
 
     /// ↩ / Send: the words start a new chat + task, no call, no navigation.
     func send() {
-        guard let clean = TaskMessageRequest.clean(draft), !sending else { return }
-        let clientID = UUID().uuidString
-        let title = String(clean.prefix(80))
+        guard canSend else { return }
+        let clean = TaskMessageRequest.clean(draft) ?? ""
+        let clientID = (lastSentText == clean ? sendID : nil) ?? UUID().uuidString
+        sendID = clientID; lastSentText = clean
+        let attachments = picks.compactMap(\.serverID)
+        let title = String((clean.isEmpty ? "Review attached media" : clean).prefix(80))
         notice = nil
         draft = ""
         now.addPending(id: clientID, title: title)
@@ -66,7 +150,8 @@ final class MacHomeComposerModel: ObservableObject {
             defer { self.sending = false }
             do {
                 guard let api = self.api() else { throw URLError(.notConnectedToInternet) }
-                let started = try await api.startChatSession(text: clean, clientID: clientID)
+                let started = try await api.startChatSession(text: clean, attachments: attachments, clientID: clientID)
+                self.picks.removeAll(); self.sendID = nil
                 self.now.pendingStarted(id: clientID, runID: started.runID, sessionID: started.sessionID)
                 await self.now.refresh()
             } catch {
@@ -213,6 +298,32 @@ struct MacHomeComposerBar: View {
                 .padding(.horizontal, 6)
                 .accessibilityIdentifier("mac-home-notice")
             }
+            if !model.picks.isEmpty {
+                ForEach(model.picks) { pick in
+                    HStack(spacing: 8) {
+                        if let data = pick.encoded?.videoPoster, let image = NSImage(data: data) {
+                            Image(nsImage: image).resizable().scaledToFit().frame(width: 52, height: 36)
+                        } else { Image(systemName: "doc").frame(width: 52, height: 36) }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(pick.url.lastPathComponent).font(.caption).lineLimit(1)
+                            if let duration = pick.encoded?.videoDuration {
+                                Text(VoiceMessageFlow.clock(duration)).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            if let failure = pick.failure {
+                                Text(failure).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                            } else if pick.serverID == nil {
+                                ProgressView(value: pick.progress).frame(maxWidth: 160)
+                                    .accessibilityLabel("Uploading attachment")
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        if pick.failure != nil { Button("Retry") { model.retryPick(pick.id) } }
+                        Button { model.removePick(pick.id) } label: { Image(systemName: "xmark") }
+                            .accessibilityLabel("Remove " + pick.url.lastPathComponent)
+                    }
+                    .disabled(model.sending)
+                }
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 if model.recording { recording } else { typing }
                 if let onCall { MacHomeCallButton(action: onCall) }
@@ -220,12 +331,15 @@ struct MacHomeComposerBar: View {
         }
         .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
         .onChange(of: model.focusToken) { _, _ in focused = true }
+        .dropDestination(for: URL.self) { urls, _ in model.addFiles(urls); return !urls.isEmpty }
     }
 
     private var typing: some View {
-        let empty = TaskMessageRequest.clean(model.draft) == nil
+        let empty = TaskMessageRequest.clean(model.draft) == nil && model.picks.isEmpty
         return HStack(alignment: .bottom, spacing: 8) {
-            TextField("Ask Hermes anything", text: $model.draft, axis: .vertical)
+            circle("plus", help: "Attach a clip, picture or document", fill: Color.primary.opacity(0.08), ink: .primary) { model.chooseFiles() }
+                .disabled(model.sending).accessibilityIdentifier("mac-home-attach")
+            TextField(model.picks.isEmpty ? "Ask Hermes anything" : "Add a caption or ask about the clip", text: $model.draft, axis: .vertical)
                 .textFieldStyle(.plain).font(.system(size: 13.5)).lineLimit(1...6)
                 .focused($focused)
                 .onSubmit { model.send() }
@@ -241,7 +355,7 @@ struct MacHomeComposerBar: View {
             } else {
                 circle("arrow.up", help: "Send (↩)", fill: empty ? Color.primary.opacity(0.06) : Live.brass,
                        ink: empty ? Color.secondary : JobLook.brassInk) { model.send() }
-                    .disabled(empty || model.sending)
+                    .disabled(!model.canSend)
                     .accessibilityIdentifier("mac-home-send")
             }
         }

@@ -133,6 +133,28 @@ def test_call_video_upload_is_local_and_stays_pending_on_same_call(server, servi
     assert len(worker.interaction.attachments.file_paths()) == 8
 
 
+def test_staged_preview_is_device_scoped_and_does_not_claim_original(server, service, clips):
+    import urllib.request
+    import urllib.error
+    status, staged = stage(server, clips["mp4"], "file", "video/mp4", "preview.mp4")
+    assert status == 200
+    path = "/voice/attachments/" + staged["id"] + "/preview"
+    request = urllib.request.Request(server.base_url + path, headers={"Authorization": "Bearer " + server.token})
+    with urllib.request.urlopen(request, timeout=10) as response:
+        assert response.headers["Content-Type"] == "image/jpeg"
+        assert response.headers["Cache-Control"] == "no-store"
+        assert response.read().startswith(b"\xff\xd8")
+    with pytest.raises(A.Refused) as refused:
+        service.staged.preview("different-device", staged["id"])
+    assert refused.value.status == 404
+    assert service.staged.file_paths(), "preview must not claim or delete the clip"
+    with pytest.raises(urllib.error.HTTPError) as denied:
+        urllib.request.urlopen(server.base_url + path, timeout=10)
+    assert denied.value.code == 401
+    assert http(server.base_url, "DELETE", "/voice/attachments/" + staged["id"], token=server.token)[0] == 200
+    assert http(server.base_url, "GET", path, token=server.token)[0] == 404
+
+
 def test_removing_video_deletes_original_and_all_derived_copies(server, service, clips):
     service.transcriber = lambda _: {"success": False}
     status, staged = stage(server, clips["mp4"], "file", "video/mp4", "remove.mp4")

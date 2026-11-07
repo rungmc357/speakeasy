@@ -656,6 +656,24 @@ class StagedPool:
             raise Refused(404, "unknown", "no such attachment")
         return found
 
+    def preview(self, device_id: str, attachment_id: str) -> tuple[bytes, str]:
+        """A device-owned staged poster, without claiming the original or exposing its path."""
+        with self._lock:
+            item = self._items.get(device_id, {}).get(attachment_id)
+            if item is None:
+                raise Refused(404, "unknown", "no such attachment")
+            if item.is_image and item.data:
+                return item.data, item.mime
+            frames = (item.media or {}).get("frames", [])
+            if frames:
+                try:
+                    data = Path(frames[0]["path"]).read_bytes()
+                    if len(data) <= 500_000:
+                        return data, "image/jpeg"
+                except OSError:
+                    pass
+            raise Refused(404, "unknown", "no preview available")
+
     def claim(self, device_id: str, ids: list[str]) -> list[Attachment]:
         """Take these (in this order) for one message: all or nothing. Refused when one is unknown
         (404, maybe expired), more than MAX_ATTACHMENTS (409 too_many) or the images break one

@@ -625,6 +625,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.push_event(self._auth(presence=False), push_event.group(1)))
                 return
             device_id = self._auth()
+            staged_preview = re.fullmatch(rf"/voice/attachments/{_ID}/preview", path)
+            if staged_preview:
+                data, mime = self.service.staged_preview(device_id, staged_preview.group(1))
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             image = re.fullmatch(rf"/voice/card-image/{_ID}/([1-8])", path)
             live = re.fullmatch(rf"/voice/live-image/{_ID}", path)
             shared = re.fullmatch(rf"/voice/shared-image/{_ID}/([1-9][0-9]?)", path)

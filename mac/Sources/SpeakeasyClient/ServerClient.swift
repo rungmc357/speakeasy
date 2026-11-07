@@ -704,6 +704,15 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await json(StagedAttachmentRoute.remove(id), method: "DELETE")
     }
 
+    /// Recover a staged thumbnail after Share-to-app handoff; bytes stay on the paired path.
+    public func stagedAttachmentPreview(id: String) async throws -> Data {
+        let req = request(StagedAttachmentRoute.remove(id) + "/preview", method: "GET")
+        let (data, response) = try await sessionFor(30).data(for: req)
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+              data.count <= AttachmentPolicy.maxImageBytes else { throw URLError(.badServerResponse) }
+        return data
+    }
+
     /// A recorded voice message's audio, transcribed by Hermes the way a Telegram voice note is
     /// (servers with `transcribe`, plugin 0.3.37+). Returns the text. Errors are `HTTPError`s with
     /// the plugin's reason: 413 too_large, 415 unsupported, 502 failed, 503 unavailable/busy.

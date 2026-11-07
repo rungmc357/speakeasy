@@ -4221,6 +4221,13 @@ class VoiceService(SecureInputMixin):
         return {"id": attachment.id, "kind": attachment.kind, "name": attachment.name, "size": attachment.size,
                 "expires_in": A.STAGED_TTL_S}
 
+    def staged_preview(self, device_id: str, attachment_id: str) -> tuple[bytes, str]:
+        try:
+            with self.shared.lock:
+                return self.staged.preview(device_id, attachment_id)
+        except A.Refused as exc:
+            raise self._refused(exc) from None
+
     def remove_staged(self, device_id: str, attachment_id: str) -> dict[str, Any]:
         """The x on a composer chip: forget it (404 once sent, removed or expired)."""
         try:
