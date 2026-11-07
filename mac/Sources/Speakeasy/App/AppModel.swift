@@ -152,7 +152,7 @@ final class AppModel: ObservableObject {
     /// the read blocks on a prompt no one is there to click.
     static let isAutomatedRun: Bool = {
         if ProcessInfo.processInfo.environment["SPEAKEASY_NO_KEYCHAIN"] == "1" { return true }
-        let flags: Set<String> = ["--onboarding-snapshot", "--codex-login-snapshot", "--ui-preview", "--snapshot", "--film-frames", "--history-shots"]
+        let flags: Set<String> = ["--welcome-shots", "--onboarding-snapshot", "--codex-login-snapshot", "--ui-preview", "--snapshot", "--film-frames", "--history-shots"]
         return CommandLine.arguments.contains { $0.hasSuffix("-smoke") || flags.contains($0) }
     }()
 

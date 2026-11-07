@@ -13,6 +13,7 @@ enum OnboardingSnapshot {
         let demo = env["SPEAKEASY_ONBOARDING_DEMO"] == "1"
         let app = AppModel.shared
         let flow = OnboardingFlow(app: app)
+        flow.welcome.route = .setup
         if let step, let s = OnboardingFlow.Step.allCases.first(where: { $0.rawValue == step }) {
             if demo {
                 app.destinations = [Destination(target: "discord:1001", label: "Discord · #updates"),

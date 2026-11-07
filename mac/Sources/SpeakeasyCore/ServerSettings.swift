@@ -454,6 +454,9 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     /// The address `hermes voice setup` advertised for other devices (empty = local only).
     public var advertisedURL: String?
     public var tailscaleName: String?
+    /// What the owner calls the Hermes computer ("Studio Mac"; `computer_name`, empty when it has
+    /// no person-facing name); nil from older plugins. Read it through `computerLabel`.
+    public var computerName: String?
     /// Whether Hermes reads pictures, and the attachment limits (plugin 0.2.48 on); nil from older plugins.
     public var attachments: AttachmentSupport?
     /// The server accepts what listening mode heard with a new call (`room` on POST /voice/sessions).
@@ -490,6 +493,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         case routingModel = "routing_model", routingHint = "routing_hint", routingChoice = "routing_choice"
         case routingExplainer = "routing_explainer"
         case advertisedURL = "advertised_url", tailscaleName = "tailscale_name"
+        case computerName = "computer_name"
         case attachments
         case roomListening = "room_listening", roomOnResume = "room_on_resume"
         case inputText = "input_text"
@@ -527,6 +531,7 @@ public struct ServerStatus: Codable, Equatable, Sendable {
         routingExplainer = try? c.decodeIfPresent(String.self, forKey: .routingExplainer)
         advertisedURL = try? c.decodeIfPresent(String.self, forKey: .advertisedURL)
         tailscaleName = try? c.decodeIfPresent(String.self, forKey: .tailscaleName)
+        computerName = try? c.decodeIfPresent(String.self, forKey: .computerName)
         attachments = try? c.decodeIfPresent(AttachmentSupport.self, forKey: .attachments)
         roomListening = try? c.decodeIfPresent(Bool.self, forKey: .roomListening)
         roomOnResume = try? c.decodeIfPresent(Bool.self, forKey: .roomOnResume)
@@ -547,6 +552,19 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     /// The server says Hermes has no AI model yet, so every task would fail at once. Only a plugin
     /// that checks says so (`agent_model`); "unknown" and older plugins never do.
     public var agentModelMissing: Bool { agentModel == "missing" }
+
+    /// The Hermes computer as copy says it: its own name ("Studio Mac"), else "your Hermes computer".
+    /// Never an address or a host name (127.0.0.1, a tailnet or trycloudflare name), even if a
+    /// plugin sent one.
+    public var computerLabel: String { ServerStatus.computerLabel(computerName) }
+
+    public static func computerLabel(_ name: String?) -> String {
+        let name = (name ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let lower = name.lowercased()
+        let hostLike = !name.contains(" ") && (name.contains(".") || name.contains(":"))
+        if name.isEmpty || hostLike || lower == "localhost" || name.count > 64 { return "your Hermes computer" }
+        return name
+    }
 
     /// Grok Voice goes in the provider picker: beta on and Grok available on the server.
     public var grokOffered: Bool { beta == true && grokAvailable == true }

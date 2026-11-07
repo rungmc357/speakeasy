@@ -39,6 +39,7 @@ from . import messages as M
 from . import models as MD
 from . import skills as SK
 from .brief import BriefInvalid, BriefManager
+from .computer_name import computer_name
 from .calls import (ACTIVE_RUN_STATES, SHARE_NOTE_KEY, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_BOARD, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
                     TYPED_SENT, BackendRun, CallState, ServiceError,
                     Interaction, Notices, Runtime, SidebandWorker, call_work_running, end_shared, interaction_tasks, publish_state,
@@ -4252,6 +4253,9 @@ class VoiceService(SecureInputMixin):
             "routing_choice": self.routing_choices(),
             "advertised_url": s["server"]["advertised_url"], "tailscale_name": s["server"]["tailscale_name"],
             "tunnel": s["server"]["tunnel"] or None,
+            # What the owner calls this computer ("Studio Mac"); "" when it has no such name. The apps
+            # say "paired with Hermes on <name>" and never show an address (computer_name.py).
+            "computer_name": computer_name(),
             "attachments": self.attachment_status(),
             # Grok voice (beta): calls relay audio through the plugin (transport type "relay").
             "grok_beta": grok_beta_on(s), "grok_signed_in": grok_signed_in, "grok_api_key_set": grok_key_set,
