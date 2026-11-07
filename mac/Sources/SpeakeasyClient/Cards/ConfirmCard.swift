@@ -6,6 +6,8 @@ import SpeakeasyCore
 struct ConfirmCard: View {
     let card: ViewCard
     @Environment(\.cardFit) private var fit
+    @Environment(\.cardStyle) private var style
+    @Environment(\.cardHosted) private var hosted
     private var details: JSONValue { card["details"] }
     private var state: String { card["state"].string ?? "pending" }
     private var compact: Bool { fit == .compact }
@@ -24,12 +26,21 @@ struct ConfirmCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: state == "done" ? "checkmark.circle.fill" : symbol)
-                    .font(.system(size: 20)).foregroundStyle(JobLook.brass)
+                if style.capsHeaders {
+                    Image(systemName: state == "done" ? "checkmark.circle.fill" : symbol)
+                        .font(.system(size: 20)).foregroundStyle(style.emphasis)
+                } else {
+                    Image(systemName: state == "done" ? "checkmark" : symbol)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(state == "done" ? style.good : state == "pending" ? style.needsYou : style.secondary)
+                        .frame(width: 32, height: 32)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(style.well))
+                }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(stateTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(stateTitle).font(.caption.weight(.semibold))
+                        .foregroundStyle(state == "pending" && !style.capsHeaders ? style.needsYou : style.secondary)
                     Text(AgentMarkdown.attributed(card["title"].string ?? "Preview"))
-                        .font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                        .font(.title3.weight(.semibold)).foregroundStyle(style.ink).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
             }
@@ -41,14 +52,14 @@ struct ConfirmCard: View {
                     Text(AgentMarkdown.attributed(body))
                         .font(.body).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.045)))
+                        .background(RoundedRectangle(cornerRadius: style.wellRadius, style: .continuous).fill(style.well))
                 }
                 ForEach(Array(card["fields"].array.enumerated()), id: \.offset) { _, field in
                     VStack(alignment: .leading, spacing: 3) {
                         HStack {
                             Text(AgentMarkdown.attributed(field["label"].string ?? ""))
                             if field["guessed"].bool == true {
-                                Label("Please check", systemImage: "questionmark.circle").foregroundStyle(.orange)
+                                Label("Please check", systemImage: "questionmark.circle").foregroundStyle(style.warn)
                             }
                         }.font(.caption)
                         Text(AgentMarkdown.attributed(field["value"].string ?? "")).font(.body)
@@ -65,13 +76,11 @@ struct ConfirmCard: View {
                 }
                 if let error = card["error"].string {
                     Label { Text(AgentMarkdown.attributed(error)) } icon: { Image(systemName: "exclamationmark.circle") }
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.callout).foregroundStyle(style.warn)
                 }
             }
         }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.primary.opacity(0.035)))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(JobLook.brass.opacity(0.28)))
+        .modifier(ConfirmSurface(style: style, hosted: hosted))
         .accessibilityIdentifier("confirm-card")
     }
     private var stateTitle: String {
@@ -128,7 +137,7 @@ struct ConfirmCard: View {
             ForEach(Self.fields, id: \.0) { key, label in
                 if let value = details[key].string {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 82, alignment: .leading)
+                        Text(label).font(.caption).foregroundStyle(style.secondary).frame(width: 82, alignment: .leading)
                         Text(AgentMarkdown.attributed(key == "payment_last4" ? "•••• \(value)" : value))
                             .font(.callout).fixedSize(horizontal: false, vertical: true)
                     }
@@ -160,6 +169,24 @@ struct ConfirmCard: View {
     }
 }
 
+/// Classic: its own faint box with a brass edge. Glass: the shared card surface (or none when the
+/// host draws one around the card and its approval bar).
+struct ConfirmSurface: ViewModifier {
+    let style: CardStyle
+    let hosted: Bool
+    func body(content: Content) -> some View {
+        if hosted {
+            content
+        } else if style.surface == .glass {
+            content.cardSurface(style)
+        } else {
+            content.padding(16)
+                .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.primary.opacity(0.035)))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(JobLook.brass.opacity(0.28)))
+        }
+    }
+}
+
 struct ConfirmActionBar: View {
     let taskID: String
     let card: ViewCard
@@ -169,6 +196,7 @@ struct ConfirmActionBar: View {
     @State private var subject = ""
     @State private var saving = false
     @State private var editError: String?
+    @Environment(\.cardStyle) private var style
     var body: some View {
         HStack(spacing: 12) {
             if card["type"].string == "send", card["state"].string == "pending" {
@@ -193,7 +221,8 @@ struct ConfirmActionBar: View {
                             Text(action.label).font(.body.weight(.semibold))
                         }.frame(maxWidth: .infinity, minHeight: 34)
                     }
-                    .buttonStyle(.borderedProminent).tint(JobLook.brass).foregroundStyle(JobLook.brassInk)
+                    .buttonStyle(.borderedProminent).tint(style.action).foregroundStyle(style.onAction)
+                    .buttonBorderShape(style.capsHeaders ? .automatic : .capsule)
                     .disabled(busy).accessibilityIdentifier("confirm-approve")
                 }
             }

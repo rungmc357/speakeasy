@@ -5,7 +5,9 @@ import SpeakeasyCore
 // with its series, P7 one thing to open). Same bar as ArtifactCards.swift: typed fields in, layout and
 // links here, no table grids, photos only once they load, one gold primary per card.
 
-private let gold = JobLook.brass
+/// Highlights (brass on classic, neutral ink on clean) and the one primary action, from the card look.
+private var gold: Color { CardStyle.active.emphasis }
+private var look: CardStyle { CardStyle.active }
 
 // MARK: - P2 Timeline: what happens when
 
@@ -49,7 +51,7 @@ struct TimelineDay: View {
                 }
             }
             .padding(.vertical, 4)
-            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.primary.opacity(0.06)))
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(look.well))
         }
     }
 }
@@ -103,7 +105,7 @@ struct TimelineRow: View {
 
     @ViewBuilder private func marker(_ state: String?) -> some View {
         switch state {
-        case "done": Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case "done": Image(systemName: "checkmark.circle.fill").foregroundStyle(look.good)
         case "now": Circle().fill(gold).frame(width: 12, height: 12).overlay(Circle().stroke(gold.opacity(0.35), lineWidth: 4))
         default: Circle().strokeBorder(Color.primary.opacity(0.35), lineWidth: 1.5).frame(width: 12, height: 12)
         }
@@ -136,7 +138,7 @@ struct ActionRow: View {
     let entity: String
     @Environment(\.openURL) private var openURL
     static func tone(_ t: String?) -> Color {
-        switch t { case "good": return .green; case "warn": return gold; case "bad": return .red; default: return .secondary }
+        switch t { case "good": return look.good; case "warn": return look.warn; case "bad": return look.bad; default: return .secondary }
     }
     var body: some View {
         let tone = item["tone"].string
@@ -170,7 +172,7 @@ struct ActionRow: View {
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(look.well))
         .accessibilityElement(children: .contain)
     }
 }
@@ -191,7 +193,7 @@ struct MetricCard: View {
                 Spacer(minLength: 4)
                 if let delta = card["delta"].string {
                     let good = card["good"].bool
-                    let color: Color = good == nil ? .secondary : (good! ? .green : .red)
+                    let color: Color = good == nil ? .secondary : (good! ? look.good : look.bad)
                     Text(delta).font(.system(size: 14, weight: .bold)).monospacedDigit().foregroundStyle(color)
                         .padding(.horizontal, 8).padding(.vertical, 3).background(Capsule().fill(color.opacity(0.13)))
                 }
