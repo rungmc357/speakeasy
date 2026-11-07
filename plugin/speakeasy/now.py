@@ -497,6 +497,7 @@ class NowModel:
         chat = getattr(self.svc, "home_chat", None)
         try:
             self._chat_runs = chat.started_runs() if chat is not None else set()
+            self._chat_runs |= self._chat_children(self._chat_runs)
         except Exception:
             self._chat_runs = set()
         self._baseline = self._meta_float("now_baseline_at")
@@ -681,6 +682,27 @@ class NowModel:
             except Exception:
                 logging.getLogger(__name__).debug("speakeasy: Home's chat messages failed", exc_info=True)
         return build_stream(items, asks, marked, now, zone_, messages=messages, from_chat=from_chat)
+
+    def _chat_children(self, runs: set[str]) -> set[str]:
+        """Runs that continue a chat-born job (answering its question, a follow-up): they belong to
+        the chat too, so their result stays in the thread where the job's card was."""
+        if not runs:
+            return set()
+        with self.store._lock:
+            rows = self.store._db.execute(
+                "SELECT idem_key, run_id, parent FROM runs WHERE parent IS NOT NULL AND run_id IS NOT NULL").fetchall()
+            keys = dict(self.store._db.execute(
+                "SELECT idem_key, run_id FROM runs WHERE run_id IS NOT NULL").fetchall())
+        out: set[str] = set()
+        for _ in range(8):
+            grew = False
+            for key, run, parent in rows:
+                if run not in runs and run not in out and keys.get(parent) in runs | out:
+                    out.add(run)
+                    grew = True
+            if not grew:
+                break
+        return out
 
     def _chat_descendants(self, items: list[dict[str, Any]], from_chat: set[str]) -> set[str]:
         """Runs that continue a chat-born job (answering its question, a follow-up it spawned): their

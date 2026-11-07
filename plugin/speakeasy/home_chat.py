@@ -17,10 +17,16 @@ the time when asked for strict JSON, and prose is the right answer for chat anyw
 reply (``{"reply", "action", "job", "request"}``) is still understood.
 
 The coordinator is not a Hermes session: it has no real tools and never does work itself, which
-keeps it fast. Its model: ``auxiliary.speakeasy_home`` when the user set one, else the user's main
-model (their agent's own voice: fast routing models wrote noticeably worse chat and misrouted
-requests in the real-model acceptance run), else the Speakeasy routing model. Live calls keep their
-own routing; this is only Home's composer.
+keeps it fast. Its model (``route``), first that applies:
+
+1. the user's pick on Home's model chip (``POST /voice/home/model``, kept in Speakeasy's store);
+2. ``auxiliary.speakeasy_home`` when the user configured one in Hermes;
+3. Auto: the first model in ``COORDINATOR_MODELS`` the user already has connected in Hermes (read
+   from Hermes' own model list, never by calling a model);
+4. the user's main model; then the Speakeasy routing model.
+
+Nothing here writes the user's Hermes config. Live calls keep their own routing; this is only Home's
+composer.
 """
 from __future__ import annotations
 
@@ -49,6 +55,21 @@ REPLY_CHARS = 1500
 RESULT_CHARS = 1600           # a finished job's answer, for "what did it find?"
 JOBS = 8
 ACTIONS = {"none", "start", "follow_up", "cancel"}
+EXTRA_JOBS = 3                # "two asks in one message are two jobs": at most this many more per message
+CHOICE_META = "home_model"    # the Home chip's pick, a catalog id ("provider/model"); unset = Auto
+
+# Approved coordinator models, best first. Home's coordinator answers chat and decides "reply, start
+# a job, message a job"; it needs to be quick, good at plain conversation and reliable with tool
+# calls. Each entry is (provider slug or None for any provider, model-id pattern); within one entry
+# the newest version the user has wins. Auto picks the first entry the user already has connected in
+# Hermes; the Home model chip overrides it. Keep this list short and current; swap entries here.
+COORDINATOR_MODELS: list[tuple[str | None, str]] = [
+    ("anthropic", r"^claude-haiku-\d"),      # fast, good plain chat, dependable tool calls
+    (None, r"claude-haiku-\d"),              # the same model through another provider (OpenRouter, Bedrock...)
+    (None, r"(^|/)gpt-\d+(\.\d+)*-mini$"),
+    (None, r"gemini-\d+(\.\d+)*-flash$"),
+    (None, r"grok-\d+(\.\d+)*-fast"),
+]
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 _SMALL_TALK = re.compile(
@@ -59,6 +80,29 @@ _SMALL_TALK = re.compile(
 
 def small_talk(text: str) -> bool:
     return bool(_SMALL_TALK.match(text or ""))
+
+
+def _version(model: str) -> tuple[int, ...]:
+    """Newest first within a family: the version digits in the id (dates count as one big number)."""
+    return tuple(int(n) for n in re.findall(r"\d+", model)[:4])
+
+
+def approved(entries: dict[str, dict[str, Any]]) -> list[str]:
+    """The user's connected models that are approved coordinators, best first (COORDINATOR_MODELS
+    order, newest version first within an entry). Pure: reads only *entries*."""
+    out: list[str] = []
+    for provider, pattern in COORDINATOR_MODELS:
+        rx = re.compile(pattern, re.I)
+        hits = [e for e in entries.values()
+                if (provider is None or e.get("provider") == provider) and rx.search(str(e.get("model") or ""))]
+        hits.sort(key=lambda e: _version(str(e["model"])), reverse=True)
+        out += [e["id"] for e in hits if e["id"] not in out]
+    return out
+
+
+def pick_auto(entries: dict[str, dict[str, Any]]) -> str | None:
+    got = approved(entries)
+    return got[0] if got else None
 
 
 _PROMPT = """You are {name}, the user's own AI assistant, chatting with them on the Home screen of the \
@@ -78,8 +122,11 @@ doing ("Looking for a quiet cafe near the river."). Never "Starting task".
 - message_job when the message changes, corrects, answers or adds to an existing job, or asks it to do \
 more with its result ("make it shorter", "actually Friday", "also check the price"). "job" is its id.
 - cancel_job to stop a running job. "job" is its id.
+- One message that asks for two separate things gets two start_job calls, one per job ("Book the \
+dentist and find a birthday gift" is two jobs). Never merge unrelated asks into one job.
 
 Rules:
+- Use US units first (miles, °F, pounds, inches).
 - Never repeat or paraphrase the user's message back to them. Never narrate routing ("I'll send this to \
 a job", "a task will handle it"): just say what you're doing.
 - Never say you can't access something live or can't do something: start a job, which can.
@@ -87,7 +134,7 @@ a job", "a task will handle it"): just say what you're doing.
 start a job instead.
 - Name a job by what it is about, never by its id. When the user refers to a job ("that", "the cafe \
 one"), pick it from the list; if unclear, the newest one the conversation was about.
-{attachments}
+{attachments}{focus}
 Now: {now}.
 Jobs on Home (newest first):
 {jobs}"""
@@ -153,6 +200,14 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
             return None
         data = {"action": action, "reply": args.get("reply") or raw.get("text") or "",
                 "job": args.get("job"), "request": args.get("request")}
+        extra = []
+        for more in raw.get("more") or []:
+            mname = str(more.get("tool") or "").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+            margs = more.get("args") if isinstance(more.get("args"), dict) else {}
+            words = margs.get("request")
+            if mname == "start_job" and isinstance(words, str) and words.strip():
+                extra.append({"request": " ".join(words.split()), "reply": str(margs.get("reply") or "").strip()})
+        data["extra"] = extra[:EXTRA_JOBS]
     else:
         text = raw.get("text") if isinstance(raw, dict) else raw
         if not isinstance(text, str) or not text.strip():
@@ -181,7 +236,17 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
         return None
     if action == "none" and not reply:
         return None
-    return {"reply": reply[:REPLY_CHARS], "action": action, "run_id": run_id, "request": request}
+    extra = data.get("extra") if isinstance(data.get("extra"), list) else []
+    if extra and action == "none":
+        # Prose plus a start_job: the first ask is the main action.
+        first = extra.pop(0)
+        action, request, reply = "start", first["request"], (reply or first["reply"])
+    if extra:
+        # One reply line for the whole message: the extra jobs' own lines join the first.
+        lines = [reply] + [e["reply"] for e in extra if e["reply"] and e["reply"] not in reply]
+        reply = " ".join(x for x in lines if x)
+    return {"reply": reply[:REPLY_CHARS], "action": action, "run_id": run_id, "request": request,
+            "extra": [e["request"] for e in extra]}
 
 
 class HomeChat:
@@ -201,6 +266,9 @@ class HomeChat:
                 model TEXT, run_id TEXT, action TEXT, voice TEXT, reply_to TEXT)""")
             self.store._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS home_messages_client "
                                    "ON home_messages(client_id) WHERE client_id IS NOT NULL")
+            # Further jobs one message started ("two asks, two jobs"); the first is home_messages.run_id.
+            self.store._db.execute("CREATE TABLE IF NOT EXISTS home_jobs (message_id TEXT NOT NULL, "
+                                   "run_id TEXT NOT NULL, at REAL NOT NULL)")
 
     # -- the messages ----------------------------------------------------------------------------
     def _rows(self, where: str = "", args: tuple = (), limit: int = SHOWN_MAX) -> list[dict[str, Any]]:
@@ -228,6 +296,11 @@ class HomeChat:
                  json.dumps(voice) if voice else None, reply_to))
         return mid
 
+    def _extra_run(self, mid: str, run_id: str) -> None:
+        with self.store._lock, self.store._db:
+            self.store._db.execute("INSERT INTO home_jobs (message_id, run_id, at) VALUES (?,?,?)",
+                                   (mid, run_id, self.clock()))
+
     def _link(self, mid: str, run_id: str | None, action: str) -> None:
         with self.store._lock, self.store._db:
             self.store._db.execute("UPDATE home_messages SET run_id=?, action=? WHERE id=?", (run_id, action, mid))
@@ -250,6 +323,8 @@ class HomeChat:
             rows = self.store._db.execute(
                 "SELECT run_id FROM home_messages WHERE run_id IS NOT NULL AND at >= ?",
                 (self.clock() - 2 * SHOWN_S,)).fetchall()
+            rows += self.store._db.execute("SELECT run_id FROM home_jobs WHERE at >= ?",
+                                           (self.clock() - 2 * SHOWN_S,)).fetchall()
         return {r[0] for r in rows if r[0]}
 
     @staticmethod
@@ -273,7 +348,7 @@ class HomeChat:
         """``POST /voice/home/message {text, client_id?, attachments?, model?, reasoning?, agent?}``.
         Idempotent on client_id: a retry gets the first reply and never starts a second job."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "client_id", "attachments", "model", "reasoning", "agent", "source"}:
+                "text", "client_id", "attachments", "model", "reasoning", "agent", "source", "focus"}:
             raise self._error(400, "Send the message as text.")
         text, client_id = body.get("text"), body.get("client_id")
         ids = body.get("attachments") or []
@@ -343,7 +418,8 @@ class HomeChat:
         shown_text = text or ("(a picture)" if len(ids) == 1 else f"({len(ids)} pictures and files)")
         user_id = self._add("user", shown_text, self.clock(), client_id=client_id, voice=voice)
         self.svc._now_changed()   # every device shows the message while the coordinator thinks
-        decided, model = self._decide(text, history, (jobs, aliases), len(ids))
+        focus = body.get("focus") if isinstance(body.get("focus"), str) else None
+        decided, model = self._decide(text, history, (jobs, aliases), len(ids), focus=focus)
         if decided is None:
             # No coordinator answer (no model, a timeout, unreadable JSON): never invent a reply. Small
             # talk gets a plain line; anything else runs as a job, as Home always did.
@@ -400,6 +476,23 @@ class HomeChat:
             self.svc._now_changed()
             raise
         self._link(user_id, run_id, action)
+        for n, words in enumerate(decided.get("extra") or []):
+            # "Those are two different tasks": each further ask in the message is its own job.
+            job_body = {"text": words, "source": "voice_message" if voice else "typed"}
+            for k in ("model", "reasoning", "agent"):
+                if body.get(k) is not None:
+                    job_body[k] = body[k]
+            if client_id:
+                job_body["client_id"] = (f"hx{n}" + client_id)[:128]
+            try:
+                more = self.svc.start_job(job_body, device_id)
+            except Exception as exc:
+                logger.info("speakeasy: Home's second job didn't start (%s)", type(exc).__name__)
+                self._add("assistant", "One of those didn't go through. Ask me again for it.", self.clock(),
+                          reply_to=user_id)
+                continue
+            if more.get("run_id"):
+                self._extra_run(user_id, more["run_id"])
         if reply_row:
             self._link(reply_row, run_id, action)
         self.svc._now_changed()
@@ -463,13 +556,13 @@ class HomeChat:
         return _clip(text, RESULT_CHARS)
 
     def _decide(self, text: str, history: list[dict[str, Any]], jobs: tuple[str, dict[str, str]] | str,
-                attachments: int) -> tuple[dict[str, Any] | None, dict | None]:
+                attachments: int, focus: str | None = None) -> tuple[dict[str, Any] | None, dict | None]:
         job_lines, aliases = jobs if isinstance(jobs, tuple) else (jobs, {})
         name = (self.svc.settings.get() or {}).get("assistant_name") or "Hermes"
         note = (f"- The user attached {attachments} picture(s) or file(s) you can't see: use \"start\" (or "
                 "\"follow_up\" for the job they're about) so a job looks at them.\n") if attachments else ""
         system = _PROMPT.format(name=name, now=time.strftime("%A %B %-d, %-I:%M %p", time.localtime(self.clock())),
-                                jobs=job_lines, attachments=note)
+                                jobs=job_lines, attachments=note, focus=self._focus_line(focus, aliases))
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         for row in history:
             messages.append({"role": "user" if row["role"] == "user" else "assistant", "content": row["text"]})
@@ -483,6 +576,18 @@ class HomeChat:
         if decided is None:
             logger.info("speakeasy: Home's coordinator reply wasn't usable")
         return decided, model
+
+    def _focus_line(self, focus: str | None, aliases: dict[str, str]) -> str:
+        """The job the user has selected (Home's work strip, an iPad board): "this"/"it" means it,
+        the same as a job on screen during a call."""
+        if not focus:
+            return ""
+        for alias, run in aliases.items():
+            if run == focus:
+                title = _clip(self._titles.get(alias), 120)
+                return (f"- The user has job {alias} ({title}) selected right now: \"this\", \"it\" and short "
+                        "instructions are about that job unless they clearly start something new.\n")
+        return ""
 
     def _model_call(self, messages: list[dict[str, str]]) -> tuple[Any, dict | None]:
         """One coordinator turn. Returns the answer (plain text, or ``{"tool", "args", "text"}`` for a
@@ -508,12 +613,23 @@ class HomeChat:
             except Exception as exc:
                 if route.get("task") == FALLBACK_TASK:
                     raise
-                # The main model didn't answer (offline, a provider this client can't reach): the routing
-                # model still gives the user a reply.
-                logger.info("speakeasy: Home's coordinator model failed (%s); using the routing model",
+                # The chosen/auto model didn't answer (offline, a provider this client can't reach):
+                # the user's main model, then the routing model, still give the user a reply.
+                logger.info("speakeasy: Home's coordinator model failed (%s); falling back",
                             type(exc).__name__)
-                route = {"task": FALLBACK_TASK}
-                response = call_llm(task=FALLBACK_TASK, **kwargs)
+                main = self._config().get("model")
+                tried = (route.get("provider"), route.get("model"))
+                response = None
+                if (isinstance(main, dict) and main.get("default") and main.get("provider")
+                        and (str(main["provider"]), str(main["default"])) != tried):
+                    try:
+                        route = {"provider": str(main["provider"]), "model": str(main["default"]), "source": "main"}
+                        response = call_llm(provider=route["provider"], model=route["model"], **kwargs)
+                    except Exception:
+                        response = None
+                if response is None:
+                    route = {"task": FALLBACK_TASK}
+                    response = call_llm(task=FALLBACK_TASK, **kwargs)
         return self._answer_of(response, extract), self._served(response, route)
 
     @staticmethod
@@ -531,22 +647,107 @@ class HomeChat:
                 args = json.loads(raw) if isinstance(raw, str) else dict(raw)
             except (ValueError, TypeError):
                 args = {}
+            more = []
+            for extra in calls[1:1 + EXTRA_JOBS]:
+                efn = getattr(extra, "function", None)
+                eraw = getattr(efn, "arguments", None) or "{}"
+                try:
+                    eargs = json.loads(eraw) if isinstance(eraw, str) else dict(eraw)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(eargs, dict):
+                    more.append({"tool": getattr(efn, "name", ""), "args": eargs})
             return {"tool": getattr(fn, "name", ""), "args": args if isinstance(args, dict) else {},
-                    "text": text.strip() if isinstance(text, str) else ""}
+                    "text": text.strip() if isinstance(text, str) else "", "more": more}
         return extract(response)
 
     def route(self) -> dict[str, Any]:
-        """Which model answers: ``{"task": "speakeasy_home"}`` when the user configured it, else the
-        main model ``{"provider", "model"}``, else the routing model's task."""
+        """Which model answers (see the module notes): ``{"provider", "model", "source"}`` or
+        ``{"task", "source"}``. Reads only Speakeasy's store, Hermes' config and the cached model
+        list; it never calls a model or the network."""
+        entries = self._entries()
+        chosen = self.store.get_meta(CHOICE_META) or ""
+        if chosen and (entries is None or chosen in entries):
+            provider, _, model = chosen.partition("/")
+            if provider and model:
+                return {"provider": provider, "model": model, "source": "chosen"}
         cfg = self._config()
         aux = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
         block = aux.get(AUX_TASK)
         if isinstance(block, dict) and (str(block.get("provider") or "auto") != "auto" or block.get("model")):
-            return {"task": AUX_TASK}
+            return {"task": AUX_TASK, "source": "configured"}
+        auto = pick_auto(entries or {})
+        if auto:
+            provider, _, model = auto.partition("/")
+            return {"provider": provider, "model": model, "source": "auto"}
         main = cfg.get("model")
         if isinstance(main, dict) and main.get("default") and main.get("provider"):
-            return {"provider": str(main["provider"]), "model": str(main["default"])}
-        return {"task": FALLBACK_TASK}
+            return {"provider": str(main["provider"]), "model": str(main["default"]), "source": "main"}
+        return {"task": FALLBACK_TASK, "source": "routing"}
+
+    def _entries(self) -> dict[str, dict[str, Any]] | None:
+        """The user's connected models from the cached Hermes list (None until it has been read; a
+        background read is started then, so the next message can use Auto)."""
+        catalog = getattr(self.svc, "catalog", None)
+        if catalog is None:
+            return None
+        raw = catalog.peek()
+        if raw is None:
+            warm = getattr(self.svc, "_warm_catalog", None)
+            if callable(warm):
+                try:
+                    warm()
+                except Exception:
+                    pass
+            return None
+        return catalog.entries(raw)
+
+    def model_status(self) -> dict[str, Any]:
+        """``GET /voice/home/model``: the model Home's chat uses, why, and the chip's choices (the
+        approved coordinator models the user has, then their main model and the current pick)."""
+        from . import models as MD
+        route = self.route()
+        entries = self._entries() or {}
+        current = (f"{route['provider']}/{route['model']}" if route.get("model") else None)
+        if current is None and route.get("task"):
+            aux = (self._config().get("auxiliary") or {}).get(route["task"]) or {}
+            if isinstance(aux, dict) and aux.get("model"):
+                current = f"{aux.get('provider') or 'auto'}/{aux['model']}"
+        options = approved(entries)[:4]
+        main = self._config().get("model")
+        if isinstance(main, dict) and main.get("default") and main.get("provider"):
+            mid = f"{main['provider']}/{main['default']}"
+            if mid in entries and mid not in options:
+                options.append(mid)
+        if current and current in entries and current not in options:
+            options.insert(0, current)
+
+        def row(mid: str) -> dict[str, Any]:
+            e = entries.get(mid) or {}
+            return {"id": mid, "name": e.get("name") or MD.friendly_name(mid.partition("/")[2] or mid),
+                    "provider_name": e.get("provider_name") or mid.partition("/")[0]}
+        auto = pick_auto(entries)
+        return {"model": row(current) if current else None, "source": route.get("source"),
+                "auto": row(auto) if auto else None, "options": [row(m) for m in options]}
+
+    def choose_model(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/home/model {"model": "provider/model" | null}``: the chip's pick (null = Auto)."""
+        if not isinstance(body, dict) or set(body) - {"model"}:
+            raise self._error(400, "Send {\"model\": id} or {\"model\": null}.")
+        mid = body.get("model")
+        if mid in (None, "", "auto"):
+            self.store.set_meta(CHOICE_META, "")
+            return self.model_status()
+        if not isinstance(mid, str) or "/" not in mid or len(mid) > 200:
+            raise self._error(400, "model must be a model id from the list.")
+        entries = self._entries()
+        if entries is None:
+            catalog = getattr(self.svc, "catalog", None)
+            entries = catalog.entries(catalog.raw()) if catalog is not None else {}
+        if mid not in (entries or {}):
+            raise self._error(400, "That model isn't one your Hermes has.")
+        self.store.set_meta(CHOICE_META, mid)
+        return self.model_status()
 
     def task(self) -> str:
         """The aux task name in use (kept for older callers): the routing model's task unless the user

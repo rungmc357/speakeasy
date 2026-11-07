@@ -693,6 +693,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/voice/onboarding": self.service.onboarding,
                 "/voice/routing": self.service.routing_choices,
                 "/voice/home": self.service.get_home,
+                "/voice/home/model": self.service.home_chat.model_status,
                 "/voice/brief/tune": self.service.get_tune,
                 "/voice/endpoints": self.service.endpoints,
                 "/voice/secrets": lambda: self.service.secure_list(device_id),
@@ -807,6 +808,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/work":
                 self._reply(202, self.service.start_job(self._body(), device_id))
+                return
+            if path == "/voice/home/model":  # Home's model chip: the coordinator's model (null = Auto)
+                self._reply(200, self.service.home_chat.choose_model(self._body()))
                 return
             if path == "/voice/home/message":  # Home is a chat: the coordinator replies, maybe starts a job
                 self._reply(200, self.service.home_message(self._body(), device_id))

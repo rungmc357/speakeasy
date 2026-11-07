@@ -159,20 +159,108 @@ class _Resp:
 
 def test_answer_of_reads_tool_calls_and_text():
     got = HC.HomeChat._answer_of(_Resp(_Msg("\n\n", [("start_job", '{"request":"x","reply":"y"}')])), lambda r: None)
-    assert got == {"tool": "start_job", "args": {"request": "x", "reply": "y"}, "text": ""}
+    assert got == {"tool": "start_job", "args": {"request": "x", "reply": "y"}, "text": "", "more": []}
     assert HC.HomeChat._answer_of(_Resp(_Msg("Hey!")), lambda r: r.choices[0].message.content) == "Hey!"
 
 
-def test_the_main_model_answers_unless_home_chat_has_its_own(service, monkeypatch):
+def _entries(*ids):
+    return {i: {"id": i, "provider": i.split("/")[0], "model": i.split("/", 1)[1]} for i in ids}
+
+
+def test_auto_picks_the_first_approved_model_the_user_has():
+    have = _entries("acme/big-model-3", "openai-codex/gpt-5.4-mini", "anthropic/claude-haiku-4-5",
+                    "anthropic/claude-haiku-5-5", "anthropic/claude-opus-5-5")
+    assert HC.pick_auto(have) == "anthropic/claude-haiku-5-5"        # list order, newest version first
+    assert HC.approved(have)[:3] == ["anthropic/claude-haiku-5-5", "anthropic/claude-haiku-4-5",
+                                     "openai-codex/gpt-5.4-mini"]
+    assert HC.pick_auto(_entries("acme/big-model-3", "studio/qwen3.8-coder")) is None
+
+
+class _Catalog:
+    """The cached Hermes model list. ``raw`` would fetch: selection must never call it."""
+    def __init__(self, payload):
+        self.payload, self.fetched = payload, 0
+
+    def peek(self):
+        return self.payload
+
+    def raw(self, refresh=False):
+        self.fetched += 1
+        raise AssertionError("selection fetched the model list")
+
+    def entries(self, raw):
+        return raw
+
+
+def test_route_auto_then_fallbacks_and_never_calls_anything(service, monkeypatch):
     chat = service.home_chat
-    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"},
-                                                  "auxiliary": {"speakeasy_router": {"provider": "acme", "model": "tiny"}}})
-    assert chat.route() == {"provider": "acme", "model": "big-model-3"}
-    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"},
-                                                  "auxiliary": {"speakeasy_home": {"provider": "acme", "model": "mid"}}})
-    assert chat.route() == {"task": "speakeasy_home"}
+    catalog = _Catalog(_entries("acme/big-model-3", "openai-codex/gpt-5.4-mini"))
+    monkeypatch.setattr(service, "catalog", catalog)
+    monkeypatch.setattr(chat, "_call", None)
+    monkeypatch.setattr(HC.host_mod, "aux_client", lambda: (_ for _ in ()).throw(AssertionError("model called")))
+    main = {"model": {"default": "big-model-3", "provider": "acme"},
+            "auxiliary": {"speakeasy_router": {"provider": "acme", "model": "tiny"}}}
+    monkeypatch.setattr(chat, "_config", lambda: main)
+    assert chat.route() == {"provider": "openai-codex", "model": "gpt-5.4-mini", "source": "auto"}
+    # None approved connected: the user's main model, then the routing model.
+    catalog.payload = _entries("acme/big-model-3")
+    assert chat.route() == {"provider": "acme", "model": "big-model-3", "source": "main"}
     monkeypatch.setattr(chat, "_config", lambda: {})
-    assert chat.route() == {"task": "speakeasy_router"}
+    assert chat.route() == {"task": "speakeasy_router", "source": "routing"}
+    # An explicit speakeasy_home in Hermes' config beats Auto.
+    catalog.payload = _entries("openai-codex/gpt-5.4-mini")
+    monkeypatch.setattr(chat, "_config", lambda: {"auxiliary": {"speakeasy_home": {"provider": "acme", "model": "mid"}}})
+    assert chat.route() == {"task": "speakeasy_home", "source": "configured"}
+    assert catalog.fetched == 0
+
+
+def test_model_list_not_read_yet_uses_the_main_model_and_warms_it(service, monkeypatch):
+    chat = service.home_chat
+    catalog = _Catalog(None)
+    warmed: list[int] = []
+    monkeypatch.setattr(service, "catalog", catalog)
+    monkeypatch.setattr(service, "_warm_catalog", lambda: warmed.append(1))
+    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"}})
+    assert chat.route()["source"] == "main" and warmed and catalog.fetched == 0
+
+
+def test_the_home_chip_choice_wins_and_auto_comes_back(server, service, monkeypatch):
+    chat = service.home_chat
+    monkeypatch.setattr(service, "catalog", _Catalog(_entries("acme/big-model-3", "anthropic/claude-haiku-5-5")))
+    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"}})
+    status, body = http(server.base_url, "GET", "/voice/home/model", None, server.token)
+    assert status == 200 and body["source"] == "auto" and body["model"]["id"] == "anthropic/claude-haiku-5-5"
+    assert [o["id"] for o in body["options"]] == ["anthropic/claude-haiku-5-5", "acme/big-model-3"]
+    status, body = http(server.base_url, "POST", "/voice/home/model", {"model": "acme/big-model-3"}, server.token)
+    assert status == 200 and body["source"] == "chosen" and body["model"]["id"] == "acme/big-model-3"
+    assert chat.route() == {"provider": "acme", "model": "big-model-3", "source": "chosen"}
+    assert http(server.base_url, "POST", "/voice/home/model", {"model": "acme/nope"}, server.token)[0] == 400
+    status, body = http(server.base_url, "POST", "/voice/home/model", {"model": None}, server.token)
+    assert status == 200 and body["source"] == "auto"
+
+
+def test_two_asks_in_one_message_are_two_jobs(server, service, hermes):
+    coordinator(service, {"tool": "start_job", "text": "",
+                          "args": {"request": "Find a dentist open Saturday", "reply": "Looking for a dentist."},
+                          "more": [{"tool": "start_job", "args": {"request": "Find a birthday gift for a cyclist",
+                                                                  "reply": "And a gift idea."}}]})
+    body = post(server, {"text": "find a dentist open saturday and a gift for my cycling friend",
+                         "client_id": "c_two"})[1]
+    assert body["action"] == "start" and body["reply"]["text"] == "Looking for a dentist. And a gift idea."
+    calls = wait_for(lambda: len(hermes.calls) >= 2 and hermes.calls)
+    sent = json.dumps([c["input"] for c in calls])
+    assert "dentist open Saturday" in sent and "birthday gift for a cyclist" in sent
+    cards = wait_for(lambda: len([e for e in stream(server) if e["kind"] == "card"]) == 2 and stream(server))
+    assert not [e for e in cards if e["kind"] == "ask"]       # both jobs are the chat's: no "you asked" echo
+
+
+def test_a_selected_job_is_the_coordinators_context(server, service, hermes):
+    coordinator(service, {"reply": "Looking.", "action": "start", "request": "Compare two standing desks"})
+    first = post(server, {"text": "compare two standing desks", "client_id": "c_f1"})[1]
+    wait_for(lambda: hermes.calls)
+    seen = coordinator(service, "Sure.")
+    post(server, {"text": "make it cheaper", "client_id": "c_f2", "focus": first["run_id"]})
+    assert "has job j1" in seen[0][0]["content"] and "selected right now" in seen[0][0]["content"]
 
 
 def test_cancel_stops_the_named_running_job(server, service, hermes, monkeypatch):
@@ -227,3 +315,19 @@ def test_parse(raw, ok):
 
 def test_small_talk_fallback_words():
     assert HC.small_talk("yo") and HC.small_talk("Thanks!") and not HC.small_talk("book a table")
+
+
+def test_a_run_that_continues_a_chat_job_stays_in_the_chat(service):
+    """Answering a chat job's question runs a child job: its result stays in the thread (the
+    real-model run lost the shopping list once the answer run finished and was opened)."""
+    db = service.store._db
+    with service.store._lock, db:
+        cols = {r[1] for r in db.execute("pragma table_info(runs)")}
+        assert {"idem_key", "run_id", "parent"} <= cols
+        for key, run, parent in [("k_job", "run_job", None), ("k_answer", "run_answer", "k_job"),
+                                 ("k_more", "run_more", "k_answer"), ("k_other", "run_other", None)]:
+            db.execute("INSERT INTO runs (idem_key, interaction_id, delegation_id, revision, run_id, parent, "
+                       "status, updated) VALUES (?,?,?,?,?,?,?,?)",
+                       (key, "i_" + key, "d_" + key, 1, run, parent, "completed", 0))
+    assert service.now_model._chat_children({"run_job"}) == {"run_answer", "run_more"}
+    assert service.now_model._chat_children(set()) == set()
