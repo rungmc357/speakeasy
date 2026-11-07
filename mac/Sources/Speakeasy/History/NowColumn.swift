@@ -253,6 +253,14 @@ struct MacNowCard: View {
                 Text(AgentMarkdown.attributed(item.line)).font(.callout).foregroundStyle(.secondary).lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true).padding(.leading, 26)
             }
+            if let run = item.runID, !item.thumbs.isEmpty {
+                PictureGallery(images: Array(item.thumbs.prefix(6)).enumerated().compactMap { index, url in
+                    guard let number = Int(url.split(separator: "/").last ?? "") else { return nil }
+                    return ImageCard(number: number, name: "Picture \(index + 1)")
+                }, identity: run) { number in
+                    try? await now.api()?.image(runID: run, index: number)
+                }
+            }
             if let q = item.question { choices(q).padding(.leading, 26).padding(.top, 2) }
         }
         .padding(12)
