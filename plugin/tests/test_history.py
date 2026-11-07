@@ -12,12 +12,19 @@ from speakeasy import history as H
 NOW = time.time()
 
 
-def make_db(path, *, fts=True):
+def make_db(path, *, fts=True, routed=False):
     db = sqlite3.connect(path)
     db.execute("""CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, title TEXT, display_name TEXT,
                   chat_type TEXT, thread_id TEXT, origin_json TEXT, parent_session_id TEXT, started_at REAL NOT NULL,
                   ended_at REAL, message_count INTEGER DEFAULT 0, last_activity_at REAL, hidden INTEGER DEFAULT 0,
                   archived INTEGER DEFAULT 0)""")
+    if routed:
+        # Ordinary send/voice/decision fixtures represent a conversation with a known route.
+        # Keep the legacy schema opt-in independent: missing-model safety and attribution tests
+        # must still be able to construct genuinely unknown history, without an invented fallback.
+        db.execute("ALTER TABLE sessions ADD COLUMN model TEXT DEFAULT 'gpt-5.5'")
+        db.execute("""ALTER TABLE sessions ADD COLUMN model_config TEXT
+                      DEFAULT '{"provider":"openai-codex"}'""")
     db.execute("""CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT,
                   content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL,
                   active INTEGER NOT NULL DEFAULT 1, display_kind TEXT)""")
@@ -59,7 +66,7 @@ def call(cid, name, args):
 @pytest.fixture
 def state(service):
     path = service.rt.state_db
-    make_db(path)
+    make_db(path, routed=True)
     # A Discord thread, a Telegram chat, a terminal session, a cron run, a helper, a hidden one.
     add_session(path, "d1", "discord", title="Shelf brackets", display="Workshop / #build / Shelf brackets",
                 chat_type="thread", at=NOW - 100)
