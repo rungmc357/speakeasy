@@ -14,6 +14,8 @@ final class ComputerLabelTests: XCTestCase {
             XCTAssertEqual(ServerStatus.computerLabel(raw), "your Hermes computer", raw)
         }
         XCTAssertEqual(ServerStatus.computerLabel(nil), "your Hermes computer")
+        XCTAssertNil(ServerStatus.plainComputerName("127.0.0.1"))
+        XCTAssertEqual(ServerStatus.plainComputerName("Studio Mac"), "Studio Mac")
     }
 
     func testDecodesFromStatus() throws {

@@ -558,11 +558,13 @@ public struct ServerStatus: Codable, Equatable, Sendable {
     /// plugin sent one.
     public var computerLabel: String { ServerStatus.computerLabel(computerName) }
 
-    public static func computerLabel(_ name: String?) -> String {
+    public static func computerLabel(_ name: String?) -> String { plainComputerName(name) ?? "your Hermes computer" }
+
+    /// The computer's own name, or nil when there is none or it reads like an address or host name.
+    public static func plainComputerName(_ name: String?) -> String? {
         let name = (name ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        let lower = name.lowercased()
         let hostLike = !name.contains(" ") && (name.contains(".") || name.contains(":"))
-        if name.isEmpty || hostLike || lower == "localhost" || name.count > 64 { return "your Hermes computer" }
+        if name.isEmpty || hostLike || name.lowercased() == "localhost" || name.count > 64 { return nil }
         return name
     }
 
