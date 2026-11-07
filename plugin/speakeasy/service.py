@@ -1249,7 +1249,8 @@ class VoiceService(SecureInputMixin):
         except Exception as exc:
             logger.warning("speakeasy: open-task sweep failed: %s", type(exc).__name__)
         try:
-            settled += sweep(self.store, self.home / "state.db", self.image_roots, LIVE_THREAD_WAITS)
+            settled += sweep(self.store, self.home / "state.db", self.image_roots, LIVE_THREAD_WAITS,
+                             hermes=self.hermes)
         except Exception as exc:
             logger.warning("speakeasy: stuck-task sweep failed: %s", type(exc).__name__)
         if settled:
