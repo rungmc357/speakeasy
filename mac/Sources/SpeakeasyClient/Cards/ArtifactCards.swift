@@ -84,7 +84,23 @@ struct EntityTile: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.artifactOpener) private var opener
     var body: some View {
+        let pictured = item["photo_url"].url != nil || item["image"].double != nil
         VStack(alignment: .leading, spacing: 0) {
+            if !pictured {
+                // No photo found: the name on the card's own surface with a small mark, not a big
+                // grey tile with a lone pin standing in for a picture.
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: ArtifactLinks.symbol(entity, item: item)).font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary).frame(width: 34, height: 34)
+                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.06)))
+                    Text(item["name"].string ?? "").font(.system(size: 18, weight: .bold)).lineLimit(2)
+                    Spacer(minLength: 0)
+                    if let when = item["when"].string {
+                        Text(when).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                .padding([.horizontal, .top], 12)
+            } else {
             ZStack(alignment: .bottomLeading) {
                 ArtifactPhoto(url: item["photo_url"].url, symbol: ArtifactLinks.symbol(entity, item: item), number: item["image"].double.map { Int($0) })
                     .frame(height: 138).frame(maxWidth: .infinity).clipped()
@@ -99,8 +115,12 @@ struct EntityTile: View {
                         .background(Capsule().fill(.ultraThinMaterial)).environment(\.colorScheme, .dark).padding(10)
                 }
             }
+            }
             VStack(alignment: .leading, spacing: 4) {
-                let first = [item["sub"].string ?? item["creator"].string, item["city"].string, item["price"].string,
+                let sub = item["sub"].string ?? item["creator"].string
+                // "Williamsburg, Brooklyn · Brooklyn": the city only when the line doesn't already say it.
+                let city = item["city"].string.flatMap { c in sub?.localizedCaseInsensitiveContains(c) == true ? nil : c }
+                let first = [sub, city, item["price"].string,
                              item["rating"].double.map { String(format: "★ %.1f", $0) }, item["state"].string].compactMap { $0 }
                 if !first.isEmpty { Text(first.joined(separator: " · ")).font(.system(size: 14)).lineLimit(1) }
                 let facts = item["facts"].strings

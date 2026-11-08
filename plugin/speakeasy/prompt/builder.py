@@ -517,7 +517,7 @@ ARTIFACTS_RULE = (
     "{source (the app: Gmail, Sentry, GitHub; omit if none), title, entity (pr|issue|email|todo|bill|package|alert|note|item|task|post), items[{ref (a number people use, e.g. SPK-12 or #418; never an internal id), name (plain words, never an exception, function or file name), state (its status "
     "word: Open, Merged, In review, Paid), tone "
     "(good|warn|bad|neutral), note, when, amount, url}]}; metric (one number that matters) {label, value, unit, "
-    "delta, good (true when the change is good news), points[{label, value, mark (a word for a point worth "
+    "delta, good (true when the change is good news), points[{label (when it is: 9 PM, Mon, Oct; never Hr 1 or 1, 2, 3), value, mark (a word for a point worth "
     "naming)}], threshold, threshold_label, source, as_of}; preview (one thing to open: an album, article, paper, "
     "contract, file) {entity (media|article|paper|file|document|contract|page|image|recipe), title, creator, sub, "
     "year, photo_url, url, media_kind, ids{apple_music, spotify}, summary, list_label, list[up to 10 tracks, "
@@ -539,7 +539,8 @@ ARTIFACTS_RULE = (
     "For each visual thing in a carousel, find its real photo_url from its own site, "
     "store or catalog, or set image to the absolute path of a render you made; never guess a photo. "
     "Omit the picture if none was found. Every name, price and "
-    "number on these cards must also be written in your answer text, or the card is dropped. No winner you can "
+    "number on these cards must also be written in your answer text, or the card is dropped: name each row, tile "
+    "or job with the words your answer uses for it, and leave off any row your answer doesn't mention. No winner you can "
     "name means no compare card; nothing to send means no draft card; never send a draft yourself. "
 )
 

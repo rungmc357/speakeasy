@@ -189,3 +189,9 @@ def test_calendar_move_label_cuts_at_a_word_and_free_time_names_real_gaps():
     out = views.shape([day], "")[0]
     assert out["actions"][0]["label"] == "Move Investor update"
     assert out["free"] == ["9:45\u201311 AM", "1:30\u20136 PM"]
+
+
+def test_a_row_label_with_a_qualifier_counts_as_said_by_its_head():
+    said, nums = views._norm("The wallboard updater and the backup job missed their runs."), set()
+    assert views._grounded_label("Wallboard updater \u2014 daytime", said, nums)
+    assert not views._grounded_label("Open lane", said, nums)
