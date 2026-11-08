@@ -23,7 +23,8 @@ keeps it fast. Its model (``route``), first that applies:
 2. ``auxiliary.speakeasy_home`` when the user configured one in Hermes;
 3. Auto: the first model in ``COORDINATOR_MODELS`` the user already has connected in Hermes (read
    from Hermes' own model list, never by calling a model);
-4. the user's main model; then the Speakeasy routing model.
+4. none of those connected: the user's Home work model (the chip's pick, else their Hermes default),
+   so a user without a fast model chats on the model they chose; then the Speakeasy routing model.
 
 Home's model chip picks the WORK model (``work`` in ``GET /voice/home/model``, ``{"work_model": id}``
 on POST): the model the jobs started from Home run on. Unset, jobs run on the user's Hermes default
@@ -74,17 +75,20 @@ FAILED_S = 24 * 3600          # Auto skips a model that failed in real use for t
 # version counts, from whichever provider serves it (the preferred provider first when it has that
 # version): an older family member is never picked while a newer one is connected. The Home model
 # chip overrides Auto. Measured on the real coordinator prompt (378 calls, invented asks graded
-# against a fixed answer key): Sonnet 5.5 routed 98% right at ~1.9 s, Haiku 5.5 93% at ~2.0 s,
-# Haiku 4.5 85%. The prompt is slim, so the mid tier costs no latency. Never the top tier (Opus):
-# that is the work model's job. Keep this list short and current; swap entries here.
+# against a fixed answer key): Sonnet 5.5 routed 97-98% right at ~1.9 s, GPT-6.1 Terra 99% at ~2.0 s,
+# Haiku 5.5 93% at ~2.0 s, Haiku 4.5 85%. The prompt is slim, so the mid tier costs no latency. Never
+# the top tier (Opus) and never the small "Luna" tier: Opus is the work model's job, and small models
+# misroute follow-ups and corrections. Keep this list short and current; swap entries here.
 COORDINATOR_MODELS: list[tuple[str | None, str]] = [
     ("anthropic", r"(^|/)claude-sonnet-\d"),   # most accurate routing, as quick as Haiku on this prompt
+    (None, r"(^|/)gpt-\d+(\.\d+)*-terra$"),     # OpenAI-only users: the mid tier, as accurate as Sonnet
     ("anthropic", r"(^|/)claude-haiku-\d"),    # quick, good plain chat, dependable tool calls
     (None, r"(^|/)gpt-\d+(\.\d+)*-mini$"),
     (None, r"gemini-\d+(\.\d+)*-flash$"),
     (None, r"grok-\d+(\.\d+)*-fast"),
 ]
-FAST_OPTIONS = 2              # "Fast replies" rows besides Auto (one per family: Sonnet, Haiku)
+FAST_FAMILIES = 3             # "Fast replies" offers only these leading families (Sonnet, Terra, Haiku)
+FAST_OPTIONS = 3              # "Fast replies" rows besides Auto (one per connected family of those)
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 _SMALL_TALK = re.compile(
@@ -164,13 +168,14 @@ def _version(model: str) -> tuple[int, ...]:
     return tuple(head + [0] * (3 - len(head)) + (dated or [0]))
 
 
-def approved(entries: dict[str, dict[str, Any]]) -> list[str]:
+def approved(entries: dict[str, dict[str, Any]],
+             families: list[tuple[str | None, str]] | None = None) -> list[str]:
     """The user's connected models that are approved coordinators, best first: COORDINATOR_MODELS
     order, and per family only its newest version (an older one never appears while a newer one is
     connected), the preferred provider first, then others serving that same version. Pure: reads
     only *entries*."""
     out: list[str] = []
-    for provider, pattern in COORDINATOR_MODELS:
+    for provider, pattern in (COORDINATOR_MODELS if families is None else families):
         rx = re.compile(pattern, re.I)
         hits = [e for e in entries.values() if rx.search(str(e.get("model") or ""))]
         if not hits:
@@ -1016,6 +1021,12 @@ class HomeChat:
         if auto:
             provider, _, model = auto.partition("/")
             return {"provider": provider, "model": model, "source": "auto"}
+        # No approved fast model connected: the user's Home work model (the chip's pick, else their
+        # Hermes default), never a silent substitute.
+        work = str(self.work_route().get("model") or "")
+        provider, _, model = work.partition("/")
+        if provider and model:
+            return {"provider": provider, "model": model, "source": "work"}
         main = cfg.get("model")
         if isinstance(main, dict) and main.get("default") and main.get("provider"):
             return {"provider": str(main["provider"]), "model": str(main["default"]), "source": "main"}
@@ -1077,10 +1088,10 @@ class HomeChat:
             aux = (self._config().get("auxiliary") or {}).get(route["task"]) or {}
             if isinstance(aux, dict) and aux.get("model"):
                 current = f"{aux.get('provider') or 'auto'}/{aux['model']}"
-        # "Fast replies": the approved coordinator families the user has (newest version each), never
+        # "Fast replies": the Sonnet / Terra / Haiku families the user has (newest version each), never
         # the user's main model (often the top tier, which is the work model's job), plus the
         # user's own past pick while it is still connected, so the sheet shows what is in use.
-        options = approved(entries)[:16]
+        options = approved(entries, COORDINATOR_MODELS[:FAST_FAMILIES])[:16]
         if current and current in entries and current not in options and route.get("source") == "chosen":
             options.insert(0, current)
 
