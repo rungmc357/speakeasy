@@ -329,8 +329,9 @@ ISSUES_ANSWER = "Two pull requests wait on you: #41 Fix the login timeout is gre
 
 def test_coding_rows_keep_named_items_and_allowed_tones():
     card = _result(ISSUES_ANSWER, [ISSUES])["views"][0]
-    assert card["entity"] == "pr" and [i["name"] for i in card["items"]] == ["Fix the login timeout", "Add dark mode"]
-    assert card["items"][0]["tone"] == "good" and "tone" not in card["items"][1]
+    # D1: attention first: the failing one (no allowed tone, so neutral) leads the green one.
+    assert card["entity"] == "pr" and [i["name"] for i in card["items"]] == ["Add dark mode", "Fix the login timeout"]
+    assert card["items"][1]["tone"] == "good" and "tone" not in card["items"][0]
     assert "actions" not in card                                 # rows open their links; nothing sends from here
 
 
@@ -354,11 +355,17 @@ SPEND = {"kind": "metric", "label": "Cloud spend this month", "value": "$1,260",
 
 
 def test_numbers_metric_grounds_the_hero_and_marked_points_only():
+    # D2: cloud spend isn't a server or error tracker: its number and plain state, no comparison.
     answer = "Cloud spend is $1,260 this month, up 18%, under the $1,500 budget. The spike was a 310 load test."
     card = _result(answer, [SPEND])["views"][0]
-    assert card["value"] == "$1,260" and len(card["points"]) == 3 and card["good"] is False
-    assert _result(answer.replace("310", "300"), [SPEND])["views"] == []       # a marked point not said
-    assert _result(answer.replace("18%", "a lot"), [SPEND])["views"] == []     # the change not said
+    assert card["value"] == "$1,260" and not {"points", "delta", "good", "threshold", "threshold_label"} & set(card)
+    assert _result(answer.replace("$1,260", "$1,200"), [SPEND])["views"] == []   # the number itself must be said
+    errors = {**SPEND, "label": "Errors per hour", "source": "Sentry", "value": "1,260"}
+    card = _result(answer, [errors])["views"][0]
+    assert len(card["points"]) == 3 and card["delta"] == "+18%" and card["good"] is False
+    assert _result(answer.replace("310", "300"), [errors])["views"] == []       # a marked point not said
+    unsaid = _result(answer.replace("18%", "a lot"), [errors])["views"][0]      # the change not said: left off
+    assert "delta" not in unsaid and "good" not in unsaid and unsaid["value"] == "1,260"
 
 
 def test_monitoring_metric_with_a_broken_series_keeps_the_number_only():

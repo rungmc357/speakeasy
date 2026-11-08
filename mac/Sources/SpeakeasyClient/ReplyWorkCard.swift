@@ -27,10 +27,16 @@ public struct ReplyWorkCard: View {
                     Image(systemName: work.failed ? "exclamationmark.circle" : work.running ? "sparkles" : "checkmark.circle")
                         .font(.system(size: 18))
                         .foregroundStyle(work.failed ? Color.orange : Color.accentColor)
-                    Text(AgentMarkdown.attributed(work.line)).font(.subheadline.weight(.medium))
-                        .multilineTextAlignment(.leading)
-                        .lineLimit(expanded || typeSize.isAccessibilitySize ? nil : 2)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if work.running && !expanded && !typeSize.isAccessibilitySize {
+                        // Its live line changes as it works: one line pushed in place, never two lines
+                        // crossfading over each other or a wrap onto the next row (SPK-231 R4).
+                        LiveStatusLine(work.line, font: .subheadline.weight(.medium), color: .primary)
+                    } else {
+                        Text(AgentMarkdown.attributed(work.line)).font(.subheadline.weight(.medium))
+                            .multilineTextAlignment(.leading)
+                            .lineLimit(expanded || typeSize.isAccessibilitySize ? nil : 2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold))
                         .rotationEffect(.degrees(expanded ? 180 : 0)).foregroundStyle(.secondary)

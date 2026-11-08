@@ -130,14 +130,14 @@ CATALOG: dict[str, dict[str, Any]] = {
     # P7: one thing to open (an album, an article, a paper, a contract, a file) with a short list.
     "preview": {"entity": S, "title": S, "creator": S, "sub": S, "year": S, "photo_url": URL, "url": URL,
                 "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "summary": S, "list_label": S,
-                "list": (S, 10), "flags": (S, 4)},
+                "list": (S, 10), "flags": (S, 4), "editor": S, "edited": S, "app": S},
     # Work cards (Home v7). The agent sends facts; the app draws the layout, the server sets buttons.
     # One issue from a tracker, with its mockup or screenshot as its own picture.
     "issue": {"source": S, "ref": S, "title": S, "state": S, "tone": S, "assignee": S, "priority": S,
               "labels": (S, 4), "note": S, "updated": S, "image": IMG, "url": URL},
     # One pull request explained: where it stands and why, in one plain line, with its checks.
     "pr": {"repo": S, "number": N, "title": S, "state": S, "reason": S, "files": N, "checks": (
-        {"name": S, "state": S, "note": S}, 40), "when": S, "url": URL, "diff_url": URL},
+        {"name": S, "state": S, "note": S, "count": N}, 40), "when": S, "url": URL, "diff_url": URL},
     # Work that is running: one quiet status line each, what needs the user first.
     "jobs": {"title": S, "items": ({"name": S, "status": S, "elapsed": S, "needs_you": B, "ask": S,
                                     "task_id": S}, 8)},
@@ -168,6 +168,25 @@ MAX_ARTIFACTS = 2
 ISSUE_SOURCES = {"linear", "github", "jira", "other"}
 PR_STATES = {"open", "draft", "conflicts", "failing", "passing", "approved", "merged", "closed"}
 CHECK_STATES = {"passed", "failed", "skipped", "running", "pending"}
+# D3: previews of documents (title, first line, last editor and when, the app), never a page thumbnail.
+DOC_ENTITIES = {"document", "page", "file", "contract"}
+# D1: per-row detail (who, how old, a note) only on the first five rows, attention first.
+ROW_DETAIL_ROWS = 5
+ROW_DETAIL = ("who", "when", "note")
+_ATTENTION = {"bad": 0, "warn": 1, "": 2, "neutral": 2, "good": 3}
+# D2: the numbers that get a history comparison: servers and error tracking. Anything else is
+# its number and plain state.
+_WATCHED = re.compile(
+    r"(?i)\b(?:sentry|bugsnag|rollbar|crashlytics|honeybadger|datadog|new relic|grafana|cloudwatch|pagerduty|"
+    r"errors?|exceptions?|crash(?:es)?|5xx|500s|server|servers|host|cpu|load|memory|latency|uptime|"
+    r"response times?|requests?|p95|p99|queue|api)\b")
+_COMPARISON = re.compile(r"(?i)\b(?:\d+(?:\.\d+)?\s?[x\u00d7]|normal|usual|average|baseline|since|vs\.?|versus|"
+                         r"compared|than|last (?:week|month|year)|up \d|down \d)\b")
+
+
+def watched_metric(view: dict[str, Any]) -> bool:
+    """A server's or an error tracker's number (D2), which may carry a baseline or history."""
+    return bool(_WATCHED.search(" ".join(str(view.get(k) or "") for k in ("label", "source", "scope", "unit"))))
 
 TONES = {"good", "warn", "bad", "info", "neutral"}
 CHART_SORTS = {"high_first", "low_first", "as_listed"}
@@ -455,6 +474,16 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                     body[rows] = kept
                 else:
                     body.pop(rows)
+        days = body.get("days") or []
+        if days and str(days[0].get("label", "")).strip().lower() in ("today", "now", "tonight") \
+                and body.get("high") is not None and days[0].get("high") == body.get("high") \
+                and days[0].get("low") in (None, body.get("low")):
+            # Today's row under a hero that already reads today's high and low said the high a
+            # second time (SPK-231 R1: one weather answer showed the high four times).
+            if len(days) > 1:
+                body["days"] = days[1:]
+            else:
+                body.pop("days")
     if kind in ARTIFACTS:
         return _artifact(kind, body)
     return body
@@ -610,6 +639,16 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 i["name"] = _cap_first(_work_title(i["name"]))
                 if i.get("state"):
                     i["state"] = _cap_first(i["state"])
+        # D1: what needs the user first (blocked, failing, overdue, then warnings), the agent's own
+        # order kept within each; per-row detail (who, age, note) only on the top five rows, the rest
+        # stay a name and a state (the brief fetches detail for five only; empty fields are left out).
+        items.sort(key=lambda i: _ATTENTION.get(str(i.get("tone") or "").lower(), 2))
+        for i in items[ROW_DETAIL_ROWS:]:
+            for key in ROW_DETAIL:
+                i.pop(key, None)
+        for i in items:
+            for key in [k for k, v in i.items() if isinstance(v, str) and not v.strip()]:
+                i.pop(key)
         return out
     if kind == "metric":
         if not body.get("label") or not body.get("value"):
@@ -619,12 +658,26 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         points = out.get("points") or []
         if points and (len(points) < 2 or any("label" not in pt or "value" not in pt for pt in points)):
             out.pop("points")   # a series is all of it or none of it, never a chart cut short
+        if not watched_metric(out):
+            # D2: a comparison with history ("9x normal", "since 3:12", a 7-day line) only on a server
+            # or error tracker's number; anything else is its number and plain state, no baseline.
+            for key in ("delta", "good", "threshold", "threshold_label", "points"):
+                out.pop(key, None)
+            if isinstance(out.get("note"), str) and _COMPARISON.search(out["note"]):
+                out.pop("note")
         return out
     if kind == "preview":
         entity = str(body.get("entity", "")).lower()
         if entity not in PREVIEW_ENTITIES or not body.get("title"):
             return {}
         out = _entity_item(entity, {**body, "entity": entity})
+        if entity in DOC_ENTITIES:
+            # D3: a document reads by its title, first line, last editor and app; no page thumbnail yet.
+            out.pop("photo_url", None)
+            out.pop("image", None)
+        else:
+            for key in ("editor", "edited", "app"):
+                out.pop(key, None)
         said = _norm(out.get("summary") or "")
         if isinstance(out.get("list"), list):
             # A key point that only restates the summary ("Goal: drafts keep attachments") is said twice.
@@ -700,7 +753,7 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             out.pop("number")
         elif "number" in out:
             out["number"] = int(out["number"])
-        checks = [{**c, "state": c["state"].lower()} for c in out.get("checks") or []
+        checks = [{**{k: v for k, v in c.items() if k != "count"}, "state": c["state"].lower()} for c in out.get("checks") or []
                   if c.get("name") and str(c.get("state", "")).lower() in CHECK_STATES]
         for c in checks:
             if c.get("note") and re.search(r"(?i)action[_ ]required|awaiting approval|needs approval", c["note"]):
@@ -717,12 +770,27 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             # counts the rest from checks_total ("9 more skipped"), so fifteen skips aren't a wall.
             order = {"failed": 0, "running": 1, "pending": 2, "passed": 3, "skipped": 4}
             ranked = [c for _, c in sorted(enumerate(checks), key=lambda p: (order.get(p[1]["state"], 5), p[0]))]
-            out["checks"] = ranked[:6]
-            if len(ranked) > 6:
+            failed = [c for c in ranked if c["state"] == "failed"]
+            # D5: identical waiting checks are one line ("6 checks waiting"); a failure is always
+            # listed by its own name, however many there are.
+            shown = list(failed)
+            for state, word in (("running", "running"), ("pending", "waiting")):
+                same = [c for c in ranked if c["state"] == state]
+                plain = [c for c in same if not c.get("note")]
+                if len(plain) >= 2:
+                    shown += [c for c in same if c.get("note")]
+                    shown.append({"name": f"{len(plain)} checks {word}", "state": state, "count": len(plain)})
+                else:
+                    shown += same
+            rest = [c for c in ranked if c["state"] not in ("failed", "running", "pending")]
+            room = max(0, 6 - len(shown))
+            out["checks"] = shown + rest[:room]
+            shown_n = sum(int(c.get("count") or 1) for c in out["checks"])
+            if len(ranked) > shown_n:
                 out["checks_total"] = len(ranked)
-                rest = {c["state"] for c in ranked[6:]}
-                if len(rest) == 1:
-                    out["checks_rest"] = rest.pop()
+                left = {c["state"] for c in rest[room:]}
+                if len(left) == 1:
+                    out["checks_rest"] = left.pop()
             # The agent often lists a few checks and counts the rest in words ("All 15 checks were
             # skipped"): the card's "2 more" then undercounts. Take the count the reason gives.
             said = re.search(r"\b(all )?(\d{1,3}) (?:CI )?checks\b", out.get("reason") or "", re.I)
@@ -1210,14 +1278,53 @@ def _unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
     # the reply shown above the card.
     last = text.rsplit("\n", 1)[-1] if "\n" in text else ""
     reply = _norm(re.split(r"(?<=[.!?])\s+", last.strip())[0]) if last.strip() else ""
-    for key in {"pr": ("reason",), "issue": ("note",), "preview": ("summary",), "site": ("sub",)}.get(view.get("kind"), ()):
+    for key in {"pr": ("reason",), "issue": ("note",), "preview": ("summary",), "site": ("sub",),
+                "metric": ("note",)}.get(view.get("kind"), ()):
         if isinstance(view.get(key), str) and (_restates(view[key], opening) or (reply and _restates(view[key], reply))):
             view = {k: v for k, v in view.items() if k != key}
+    if view.get("kind") == "pr" and view.get("checks"):
+        # R1: the cause said in the answer, again as the reason line, and a third time as a check's
+        # note ("Tests · snapshot mismatch in the share sheet"): the check keeps its name and state.
+        reason = _norm(view.get("reason") or "")
+        checks = []
+        for c in view["checks"]:
+            note = c.get("note")
+            if isinstance(note, str) and (_restates(note, opening) or (reply and _restates(note, reply))
+                                          or (reason.strip() and _restates(note, reason))):
+                c = {k: v for k, v in c.items() if k != "note"}
+            checks.append(c)
+        view = {**view, "checks": checks}
     states = {c.get("state") for c in view.get("checks") or []}
     if view.get("kind") == "pr" and len(states) == 1 and states <= {"skipped", "passed"} and isinstance(view.get("reason"), str) \
             and re.search(r"(?i)\b(skipped|passed|didn't run|never ran|nothing ran)\b", view["reason"]):
         # "All 15 skipped" under "All 15 checks were skipped, so nothing was tested": the checks line says it.
         view = {k: v for k, v in view.items() if k != "reason"}
+    return view
+
+
+_RERUN_ADVICE = re.compile(r"(?i)\b(?:re-?run|run (?:it|them|the (?:checks?|tests?|jobs?|ci)) again|retry|retrigger|"
+                           r"re-?trigger|kick (?:it|them|ci) again|flak(?:y|e|es|iness))\b")
+_FIX_LABEL = re.compile(r"(?i)^(?:fix|patch|repair|update the (?:test|snapshot)|change)\b")
+
+
+def _agrees_with_reply(view: dict[str, Any], answer: str) -> dict[str, Any]:
+    """R1: a button never contradicts the reply's advice. A PR card whose reply says the failure is
+    flaky and to rerun doesn't lead with "Fix the checks": an offered rerun leads, else one is set."""
+    if view.get("kind") != "pr" or not view.get("actions"):
+        return view
+    text = (answer or "").strip()
+    last = text.rsplit("\n", 1)[-1] if "\n" in text else text
+    advice = " ".join(re.split(r"(?<=[.!?])\s+", text)[:2]) + " " + last
+    if not _RERUN_ADVICE.search(advice) or re.search(r"(?i)\b(?:don'?t|no point|won'?t help|not) (?:re-?run|retry)", advice):
+        return view
+    kept = [a for a in view["actions"] if not (a.get("id") == "fix" or _FIX_LABEL.match(str(a.get("label") or "")))]
+    rerun = next((a for a in kept if re.match(r"(?i)^(?:re-?run|retry|re-?trigger)", str(a.get("label") or ""))), None)
+    if rerun is None:
+        rerun = {"id": "do_rerun", "label": "Rerun checks", "style": "primary", "confirm": False}
+        kept.insert(0, rerun)
+    kept = [{**rerun, "style": "primary"}] + [{**a, "style": "secondary" if a.get("style") == "primary" else a.get("style")}
+                                               for a in kept if a is not rerun]
+    view = {**view, "actions": kept[:MAX_OFFERED]}
     return view
 
 
@@ -1245,7 +1352,7 @@ def _checks_counted(view: dict[str, Any], answer: str) -> dict[str, Any]:
     if not said:
         return view
     n = int(said.group(2)) if said.group(2).isdigit() else _NUMBER_WORDS[said.group(2).lower()]
-    if not len(checks) < n <= 300:
+    if not sum(int(c.get("count") or 1) for c in checks) < n <= 300:
         return view
     view = {**view, "checks_total": n}
     states = {c["state"] for c in checks}
@@ -1262,6 +1369,25 @@ def _soft_unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
             and not _grounded_name(view["creator"], said)):
         # A document's maker is a detail; an album's artist is what makes it the right album, so it stays checked.
         view = {k: v for k, v in view.items() if k != "creator"}
+    if view.get("kind") == "preview":
+        # D3: a document's last editor and when are details: left off when the answer doesn't say them.
+        nums = _numbers(answer)
+        if view.get("editor") and not _grounded_name(view["editor"], said):
+            view = {k: v for k, v in view.items() if k != "editor"}
+        if view.get("edited") and not _grounded_value(view["edited"], nums):
+            view = {k: v for k, v in view.items() if k != "edited"}
+    if view.get("kind") == "metric":
+        # D2: never an invented baseline. A comparison the answer doesn't back ("9x normal", a
+        # threshold it never said) is left off; the number itself must still be said.
+        from .home_words import digits
+        nums = _numbers(answer) | _numbers(digits(answer or ""))
+        for key in ("delta", "threshold"):
+            if view.get(key) is not None and not (_numbers(str(view[key])) and _grounded_value(view[key], nums)):
+                view = {k: v for k, v in view.items() if k != key and not (key == "threshold" and k == "threshold_label")
+                        and not (key == "delta" and k == "good")}
+        if isinstance(view.get("note"), str) and _COMPARISON.search(view["note"]) \
+                and not _grounded_label(view["note"], said, nums, half=True):
+            view = {k: v for k, v in view.items() if k != "note"}
     if view.get("kind") == "timeline":
         # "Nov 8, 2:50 AM" where the answer said "today at 2:50 AM": the time is backed; the date
         # beside it is the day's own label. Only the date goes; an unsaid time still drops the card.
@@ -1313,7 +1439,7 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
             view = {**view, "links": [lk for lk in view["links"] if lk["url"] not in own]}
             if not view["links"]:
                 view.pop("links")
-        view = _artifact_actions(_unsaid(view, answer))
+        view = _agrees_with_reply(_artifact_actions(_unsaid(view, answer)), answer)
         if _LOOK_ONLY.search(asked or "") and view.get("actions"):
             # "Just tell me, don't change anything": a step that changes something ("Fix conflicts",
             # "Rerun checks") is not what was asked; looking further ("Show conflicts") still is.

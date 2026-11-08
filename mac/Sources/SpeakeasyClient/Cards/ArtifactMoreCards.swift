@@ -383,24 +383,31 @@ struct PreviewCard: View {
         let item = ArtifactLinks.previewItem(card.data)
         let music = ArtifactLinks.isMusic(item, entity: entity)
         let square = entity == "media"
+        let doc = DocPreview.isDocument(entity)
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 14) {
-                if card["photo_url"].url != nil || music {
+                if !doc, card["photo_url"].url != nil || music {
                     ArtifactPhoto(url: card["photo_url"].url, symbol: ArtifactLinks.symbol(entity, item: item))
                         .frame(width: square ? (fit == .compact ? 72 : 112) : (fit == .compact ? 56 : 84),
                                height: fit == .compact ? 72 : 112)
                         .clipShape(RoundedRectangle(cornerRadius: square ? 12 : 8, style: .continuous))
                 } else {
-                    // No cover: a small mark beside the title, not a big grey tile standing in for a picture.
-                    Image(systemName: ArtifactLinks.symbol(entity, item: item)).font(.system(size: 15, weight: .semibold))
+                    // No cover (a document never has one, SPK-231 D3): a small mark beside the title, the
+                    // app's own glyph when it's named, not a big grey tile standing in for a picture.
+                    Image(systemName: (doc ? DocPreview.appSymbol(card["app"].string) : nil) ?? ArtifactLinks.symbol(entity, item: item))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.secondary).frame(width: 36, height: 36)
                         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.06)))
+                        .accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(card["title"].string ?? "").font(.system(size: 19, weight: .bold)).lineLimit(3)
                     if let creator = card["creator"].string { Text(creator).font(.system(size: 15)).lineLimit(1) }
-                    let sub = [card["sub"].string, card["year"].string].compactMap { $0 }
+                    let sub = [doc ? card["app"].string : nil, card["sub"].string, card["year"].string].compactMap { $0 }
                     if !sub.isEmpty { Text(sub.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1) }
+                    if doc, let edited = DocPreview.editedLine(editor: card["editor"].string, edited: card["edited"].string) {
+                        Text(edited).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
+                    }
                     if music {
                         PillButton(title: "Play", icon: "play.fill", primary: true) { opener.play(item) }.fixedSize().padding(.top, 6)
                     } else if let url = card["url"].url {
@@ -410,7 +417,9 @@ struct PreviewCard: View {
                 Spacer(minLength: 0)
             }
             if let summary = card["summary"].string, fit != .compact {
-                Text(summary).font(.system(size: 14.5)).fixedSize(horizontal: false, vertical: true)
+                // A document reads by its first line (D3); the rest is in the doc.
+                Text(doc ? (DocPreview.firstLine(summary) ?? summary) : summary).font(.system(size: 14.5))
+                    .lineLimit(doc ? 2 : nil).fixedSize(horizontal: false, vertical: true)
             }
             let flags = card["flags"].strings
             ForEach(Array(flags.prefix(fit == .compact ? 1 : 4).enumerated()), id: \.offset) { _, flag in

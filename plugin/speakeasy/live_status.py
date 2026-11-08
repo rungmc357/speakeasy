@@ -99,6 +99,49 @@ def present(text: str) -> str:
     return f"{ing} {rest}".strip() if ing else text
 
 
+# R3: a status line names the site ("Reading Yelp"), never its bare domain ("Reading www.yelp.com/biz/…").
+# Brands whose name isn't their domain label in title case.
+SITE_NAMES = {
+    "github": "GitHub", "gitlab": "GitLab", "youtube": "YouTube", "linkedin": "LinkedIn", "tripadvisor": "Tripadvisor",
+    "opentable": "OpenTable", "stackoverflow": "Stack Overflow", "stackexchange": "Stack Exchange", "ebay": "eBay",
+    "imdb": "IMDb", "rei": "REI", "bbc": "BBC", "cnn": "CNN", "nytimes": "The New York Times", "wsj": "WSJ",
+    "npr": "NPR", "espn": "ESPN", "hackernews": "Hacker News", "ycombinator": "Hacker News", "openai": "OpenAI",
+    "chatgpt": "ChatGPT", "airbnb": "Airbnb", "doordash": "DoorDash", "ubereats": "Uber Eats", "x": "X",
+    "twitter": "X", "weather": "Weather.com", "accuweather": "AccuWeather", "wikipedia": "Wikipedia",
+    "bestbuy": "Best Buy", "homedepot": "Home Depot", "walmart": "Walmart", "costco": "Costco", "etsy": "Etsy",
+    "google": "Google", "apple": "Apple", "icloud": "iCloud", "npmjs": "npm", "pypi": "PyPI", "vercel": "Vercel",
+    "netlify": "Netlify", "cloudflare": "Cloudflare", "sentry": "Sentry", "linear": "Linear", "notion": "Notion",
+    "figma": "Figma", "reddit": "Reddit", "yelp": "Yelp", "amazon": "Amazon", "resy": "Resy", "kayak": "Kayak",
+    "booking": "Booking.com", "expedia": "Expedia", "zillow": "Zillow", "redfin": "Redfin", "craigslist": "Craigslist",
+    "spotify": "Spotify", "medium": "Medium", "substack": "Substack", "arxiv": "arXiv", "nasa": "NASA",
+    "noaa": "NOAA", "usps": "USPS", "ups": "UPS", "fedex": "FedEx", "dhl": "DHL", "irs": "IRS", "dmv": "DMV",
+}
+_SECOND_LEVEL = {"co", "com", "org", "net", "gov", "ac", "edu"}
+_TLDS = ("com|org|net|io|co|dev|ai|gov|edu|us|uk|ca|au|de|fr|jp|tv|news|info|biz|gg|fm|xyz|blog|shop|eu|nz|ie")
+_DOMAIN = re.compile(rf"(?i)(?<![@\w.-])(?:https?://)?(?:www\d?\.)?((?:[a-z0-9-]+\.)+(?:{_TLDS}))\b(?![@\w-])(?:/[^\s,;)]*)?")
+
+
+def site_name(host: str) -> str:
+    """"www.yelp.com" -> "Yelp", "news.ycombinator.com" -> "Hacker News", "acme-tools.co.uk" -> "Acme Tools"."""
+    parts = [p for p in host.lower().strip(".").split(".") if p]
+    if parts and re.fullmatch(r"www\d?", parts[0]):
+        parts = parts[1:]
+    if len(parts) >= 3 and parts[-2] in _SECOND_LEVEL and len(parts[-1]) == 2:
+        label = parts[-3]
+    elif len(parts) >= 2:
+        label = parts[-2]
+    else:
+        label = parts[0] if parts else host
+    if label in SITE_NAMES:
+        return SITE_NAMES[label]
+    return " ".join(w[:1].upper() + w[1:] for w in label.split("-") if w) or host
+
+
+def sited(line: str) -> str:
+    """A status line with every bare domain (and its path) said as the site's name."""
+    return _DOMAIN.sub(lambda m: site_name(m.group(1)), line or "")
+
+
 def _ended(item: dict[str, Any]) -> float:
     return float(item.get("ended_at") or item.get("at") or 0)
 
@@ -170,7 +213,7 @@ def _so_far(items: list[dict[str, Any]], findings: list[dict[str, Any]]) -> str 
         "tool": "used its tools",
     }
     parts = [phrase.get(k, "") for k in order if phrase.get(k)]
-    found = [t for t in (_clean(f.get("text"), 80) for f in findings if isinstance(f, dict)) if t]
+    found = [t for t in (_clean(sited(str(f.get("text") or "")), 80) for f in findings if isinstance(f, dict)) if t]
     if found:
         parts.insert(0, "found " + found[-1][0].lower() + found[-1][1:])
     if not parts:
@@ -198,7 +241,7 @@ def deterministic(state: dict[str, Any] | None, *, now: float, started: float | 
         if ran >= LONG_CALL_S:
             text = str(running.get("text") or "")
             target = next((label for pattern, label in _WAIT_ON if pattern.search(text)), None)
-            line = f"Waiting on {target}" if target else present(text)
+            line = f"Waiting on {target}" if target else sited(present(text))
             return {"now": f"{line} \u00b7 {_minutes(ran)}", "so_far": so_far, "quiet_s": None,
                     "source": "activity", "basis": basis}
     quiet = now - last_at
@@ -206,7 +249,7 @@ def deterministic(state: dict[str, Any] | None, *, now: float, started: float | 
         return {"now": f"No new steps \u00b7 {_minutes(quiet)}", "so_far": so_far, "quiet_s": int(quiet),
                 "source": "idle", "basis": basis}
     recent = [i for i in items if _ended(i) >= now - WINDOW_S] or items[-1:]
-    return {"now": _clean(_now_line(recent), NOW_CHARS) or present(str(items[-1]["text"]))[:NOW_CHARS],
+    return {"now": _clean(sited(_now_line(recent)), NOW_CHARS) or sited(present(str(items[-1]["text"])))[:NOW_CHARS],
             "so_far": so_far, "quiet_s": None, "source": "activity", "basis": basis}
 
 
@@ -248,7 +291,7 @@ def parse_model(reply: Any) -> dict[str, str] | None:
         return None
     if not isinstance(data, dict):
         return None
-    now = _clean(data.get("now"), NOW_CHARS)
+    now = _clean(sited(data["now"]) if isinstance(data.get("now"), str) else None, NOW_CHARS)
     if not now or re.search(r"\bstep \d|\d+ of \d+", now, re.I) or not 2 <= len(now.split()) <= 16:
         return None
     so_far = _clean(data.get("so_far"), SO_FAR_CHARS)

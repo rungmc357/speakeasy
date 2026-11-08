@@ -509,6 +509,8 @@ class Runtime:
     shape_call: Callable[[str, str], dict[str, Any] | None] | None = None
     # A finished answer's outcome headline (request, reply) -> str | None (None = the title model).
     headline_call: Callable[[str, str], str | None] | None = None
+    # D4: one rewrite of a weak first line (request, reply, line) -> str | None (None = router.verdict_rewrite).
+    verdict_call: Callable[[str, str, str], str | None] | None = None
     # Instant home control (home_control.HomeControl); None or turned off = every request goes to Hermes.
     home: Any = None
     # Quick answers (quick.answer); None = the real one. Tests swap in a fake.
@@ -1328,6 +1330,7 @@ class SidebandWorker:
         with its shape)."""
         shaper = self.rt.shape_call or router.result_shape
         headliner = self.rt.headline_call or router.result_headline
+        rewriter = self.rt.verdict_call or router.verdict_rewrite
         request = self.store.request_text(idem) or ""
         wants_shape = shape
 
@@ -1337,6 +1340,18 @@ class SidebandWorker:
             headline = text_mod.clean_headline((shape or {}).get("headline"))
             if not headline:
                 headline = await asyncio.to_thread(headliner, request, report)
+            # D4: a first line that is a bare count or the card said again gets ONE rewrite, verdict
+            # first; anything unusable keeps the line it had. Never asked twice.
+            stored = (self.store.work(idem_key=idem) or {}).get("result") or {}
+            line = headline or stored.get("headline")
+            if line and text_mod.weak_reply(line, stored.get("views")):
+                try:
+                    redo = await asyncio.to_thread(rewriter, request, report, line)
+                except Exception:
+                    redo = None
+                better = text_mod.verdict_line(redo, stored.get("views"))
+                if better:
+                    headline = better
             if headline and self.store.set_headline(idem, headline):
                 changed = True
             if shape:
