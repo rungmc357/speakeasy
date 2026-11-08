@@ -490,6 +490,15 @@ public enum CardLinks {
             guard let url = card["url"].url else { return [] }
             let preview = (card["sub"].string ?? "").lowercased().contains("preview")
             return [Link(id: "open", label: preview ? "Open preview" : "Open site", symbol: "arrow.up.right", url: url)]
+        case "status":
+            // A deploy card's ready preview is the thing to open (the design's "Open preview"); a tile's
+            // tap still opens any link, so only a preview earns a button.
+            let item = card["items"].array.first { i in
+                i["url"].url != nil && ["ok", "on"].contains(i["state"].string ?? "")
+                    && "\(i["role"].string ?? "") \(i["name"].string ?? "")".lowercased().contains("preview")
+            }
+            guard let url = item?["url"].url else { return [] }
+            return [Link(id: "preview", label: "Open preview", symbol: "arrow.up.right", url: url)]
         default:
             return []
         }

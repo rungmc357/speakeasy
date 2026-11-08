@@ -476,7 +476,11 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
     if kind == "timeline":
         days = []
         for day in body.get("days") or []:
-            items = [_coords(i) for i in day.get("items") or [] if i.get("when") and i.get("what")]
+            # A step still to come often has no time yet ("Combine into one build"): it reads "Next"
+            # rather than being dropped, which left a release timeline with only its past.
+            items = [_coords({**i, "when": i.get("when") or ("Now" if str(i.get("state", "")).lower() == "now" else "Next")})
+                     for i in day.get("items") or []
+                     if i.get("what") and (i.get("when") or str(i.get("state", "")).lower() in ("now", "next"))]
             items = [i if str(i.get("state", "")).lower() in TIMELINE_STATES else {k: v for k, v in i.items() if k != "state"}
                      for i in items]
             items = [{**i, "state": i["state"].lower()} if "state" in i else i for i in items]
@@ -491,6 +495,8 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                     bare = re.sub(r"\s{2,}", " ", bare).strip(" ,;:\u2014-")
                     if len(bare.split()) >= 2:
                         i["what"] = bare
+                    elif bare:   # "Land SPK-172, SPK-197, SPK-217": "Land 3 issues"
+                        i["what"] = f"{_cap_first(bare)} {len(keys)} issues"
                 # A note that is a list of keys ("Includes SPK-232, SPK-233, SPK-241") says nothing to read.
                 if isinstance(i.get("note"), str) and len(re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b|#\d+", i["note"])) >= 3:
                     i.pop("note")

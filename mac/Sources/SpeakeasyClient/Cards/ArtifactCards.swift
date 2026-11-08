@@ -339,9 +339,10 @@ struct StatusTilesCard: View {
                 // Every row in one state ("Needs a look" six times): say it once, under the heading,
                 // and let the rows keep their width for their names.
                 let states = Set(sorted.map { $0["state"].string ?? "" })
-                let shared = states.count == 1 && sorted.allSatisfy { $0["value"].string == nil } ? states.first : nil
-                if let shared, !StatusTile.word(shared).isEmpty {
-                    Text(sorted.count == 2 ? "Both: \(StatusTile.word(shared).lowercased())" : "All \(sorted.count): \(StatusTile.word(shared).lowercased())")
+                let words = Set(sorted.map { StatusTile.word(for: $0) })
+                let shared = states.count == 1 && words.count == 1 && sorted.allSatisfy { $0["value"].string == nil } ? states.first : nil
+                if let shared, let word = words.first, !word.isEmpty {
+                    Text(sorted.count == 2 ? "Both: \(word.lowercased())" : "All \(sorted.count): \(word.lowercased())")
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(StatusTile.color(shared)).padding(.top, -6)
                 }
                 VStack(spacing: 0) {
@@ -383,7 +384,14 @@ struct StatusTile: View {
     /// "Down" (the site behind it may be up on the last good deploy).
     static func word(for item: JSONValue) -> String {
         let state = item["state"].string
-        if state == "bad", (item["note"].string ?? "").range(of: #"(?i)\bfail"#, options: .regularExpression) != nil { return "Failed" }
+        let note = item["note"].string ?? ""
+        func says(_ re: String) -> Bool { note.range(of: re, options: [.regularExpression, .caseInsensitive]) != nil }
+        if state == "bad" || state == "warn" {
+            // A job's trouble in its own word: "Missed 9:00 AM run" is Missed, a run that never ends is Stuck.
+            if says(#"\bfail"#) { return "Failed" }
+            if says(#"\bmissed\b"#) { return "Missed" }
+            if says(#"\b(stuck|running since|hung)\b"#) { return "Stuck" }
+        }
         return word(state)
     }
     static func word(_ state: String?) -> String {

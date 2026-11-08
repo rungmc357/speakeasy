@@ -512,7 +512,7 @@ ARTIFACTS_RULE = (
     "which are a jobs card); draft (a message for the user to send) {channel "
     "(email|imessage|sms|slack|discord|telegram|x|linkedin|whatsapp), to (the name only), subject, body, send_as}. "
     "Four more: timeline (what happens when: a trip by day, a calendar, release stages, a package's scans) "
-    "{title, days[{label, sleep (where they stay that night), items[{when, what, where, note, state (done|now|next), "
+    "{title, days[{label, sleep (where they stay that night), items[{when (a time or date; omit for a step not scheduled yet), what, where, note, state (done|now|next), "
     "url, address, lat, lon}]}]}; rows (things to act on: pull requests, issues, inbox, to-dos, bills, alerts) "
     "{source (the app: Gmail, Sentry, GitHub; omit if none), title, entity (pr|issue|email|todo|bill|package|alert|note|item|task|post), items[{ref (a number people use, e.g. SPK-12 or #418; never an internal id), name (plain words, never an exception, function or file name), state (its status "
     "word: Open, Merged, In review, Paid), tone "

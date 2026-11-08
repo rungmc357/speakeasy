@@ -283,3 +283,13 @@ def test_checks_waiting_on_approval_say_so():
                      "reason": "Nothing ran yet.", "checks": [{"name": "Unit", "state": "pending", "note": "action_required"},
                                                               {"name": "Lint", "state": "pending", "note": "Queued"}]})
     assert v["checks"][0]["note"] == "Waiting for approval to run"
+
+
+def test_timeline_keeps_unscheduled_next_steps_and_counts_a_bare_key_list():
+    v = views.clean({"kind": "timeline", "days": [
+        {"label": "Done", "items": [{"when": "Nov 7", "what": "Branch cut", "state": "done"}]},
+        {"label": "Next", "items": [{"what": "Land ACME-1, ACME-2, ACME-3", "state": "now"},
+                                    {"what": "Ship the new build", "state": "next"},
+                                    {"what": "A step with no time or state"}]}]})
+    nxt = v["days"][1]["items"]
+    assert [(i["when"], i["what"]) for i in nxt] == [("Now", "Land 3 issues"), ("Next", "Ship the new build")]
