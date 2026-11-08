@@ -223,6 +223,29 @@ _HISTORY_TOOL = {"start": "start_job called: job", "follow_up": "message_job cal
                  "cancel": "cancel_job called: job"}
 
 
+def _sent_noun(files: Any) -> str:
+    """"a video", "a picture", "2 files": what a message without words carried."""
+    kinds = [f.get("kind") for f in files if isinstance(f, dict)] if isinstance(files, list) else []
+    if not kinds:
+        return "something"
+    if len(kinds) == 1:
+        return {"video": "a video", "picture": "a picture"}.get(str(kinds[0]), "a file")
+    same = kinds[0] if all(k == kinds[0] for k in kinds) else None
+    return f"{len(kinds)} " + {"video": "videos", "picture": "pictures"}.get(str(same), "files")
+
+
+def sent_words(files: Any) -> str:
+    """A neutral stand-in for a user message that was only attachments, for the coordinator's
+    history (a model never gets an empty user turn). Never shown in the thread."""
+    return f"(sent {_sent_noun(files)})"
+
+
+def look_words(files: Any) -> str:
+    """The job's ask when the user sent only attachments and the coordinator wrote none."""
+    noun = _sent_noun(files)
+    return f"Take a look at {'what I sent' if noun == 'something' else 'the ' + noun.split(' ', 1)[1] + ' I sent'}."
+
+
 def _clip(text: Any, limit: int) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "\u2026"
@@ -359,7 +382,10 @@ class HomeChat:
         with self.store._lock, self.store._db:
             self.store._db.execute("""CREATE TABLE IF NOT EXISTS home_messages (
                 id TEXT PRIMARY KEY, client_id TEXT, role TEXT NOT NULL, text TEXT NOT NULL, at REAL NOT NULL,
-                model TEXT, run_id TEXT, action TEXT, voice TEXT, reply_to TEXT)""")
+                model TEXT, run_id TEXT, action TEXT, voice TEXT, reply_to TEXT, files TEXT)""")
+            columns = {r[1] for r in self.store._db.execute("PRAGMA table_info(home_messages)")}
+            if "files" not in columns:   # a thread kept from before messages carried their files
+                self.store._db.execute("ALTER TABLE home_messages ADD COLUMN files TEXT")
             self.store._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS home_messages_client "
                                    "ON home_messages(client_id) WHERE client_id IS NOT NULL")
             # Further jobs one message started ("two asks, two jobs"); the first is home_messages.run_id.
@@ -370,12 +396,12 @@ class HomeChat:
     def _rows(self, where: str = "", args: tuple = (), limit: int = SHOWN_MAX) -> list[dict[str, Any]]:
         with self.store._lock:
             rows = self.store._db.execute(
-                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to FROM home_messages "
+                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to, files FROM home_messages "
                 f"{where} ORDER BY at DESC, rowid DESC LIMIT ?", (*args, limit)).fetchall()
-        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to")
+        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to", "files")
         out: list[dict[str, Any]] = [dict(zip(names, r)) for r in rows]
         for r in out:
-            for k in ("model", "voice"):
+            for k in ("model", "voice", "files"):
                 try:
                     r[k] = json.loads(r[k]) if r[k] else None
                 except ValueError:
@@ -383,13 +409,14 @@ class HomeChat:
         return list(reversed(out))
 
     def _add(self, role: str, text: str, at: float, client_id: str | None = None, model: dict | None = None,
-             voice: dict | None = None, reply_to: str | None = None) -> str:
+             voice: dict | None = None, reply_to: str | None = None, files: list[dict] | None = None) -> str:
         mid = ("hu_" if role == "user" else "ha_") + secrets.token_hex(8)
         with self.store._lock, self.store._db:
             self.store._db.execute(
-                "INSERT INTO home_messages (id, client_id, role, text, at, model, voice, reply_to) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO home_messages (id, client_id, role, text, at, model, voice, reply_to, files) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (mid, client_id, role, text, at, json.dumps(model) if model else None,
-                 json.dumps(voice) if voice else None, reply_to))
+                 json.dumps(voice) if voice else None, reply_to, json.dumps(files) if files else None))
         return mid
 
     def _extra_run(self, mid: str, run_id: str) -> None:
@@ -425,9 +452,13 @@ class HomeChat:
 
     @staticmethod
     def entry(row: dict[str, Any]) -> dict[str, Any]:
-        """One stream entry: ``{"kind": "message", "role": "user"|"assistant", "text", "at", "model"?}``."""
+        """One stream entry: ``{"kind": "message", "role": "user"|"assistant", "text", "at", "model"?,
+        "files"?}``. ``files``: what the user sent with it (``{id, kind: video|picture|file, mime,
+        name?, duration?}``, never a path); ``text`` is "" when they sent only those."""
         out: dict[str, Any] = {"id": "m:" + row["id"], "kind": "message", "role": row["role"],
                                "text": row["text"], "at": row["at"]}
+        if isinstance(row.get("files"), list) and row["files"]:
+            out["files"] = row["files"]
         if row.get("model"):
             out["model"] = row["model"]
         if row.get("voice"):
@@ -511,8 +542,11 @@ class HomeChat:
               device_id: str | None, voice: dict | None, job_text: str | None) -> dict[str, Any]:
         history = self.shown()[-HISTORY_TURNS:]
         jobs, aliases = self.jobs()
-        shown_text = text or ("(a picture)" if len(ids) == 1 else f"({len(ids)} pictures and files)")
-        user_id = self._add("user", shown_text, self.clock(), client_id=client_id, voice=voice)
+        # The thread shows what was sent (the clip, the picture), not a placeholder: read what the
+        # staged items are before the job claims them. Words stay "" when there were none.
+        staged = getattr(self.svc, "staged", None)
+        files = staged.describe(device_id, ids) if ids and staged is not None else []
+        user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files)
         self.svc._now_changed()   # every device shows the message while the coordinator thinks
         focus = body.get("focus") if isinstance(body.get("focus"), str) else None
         decided, model = self._decide(text, history, (jobs, aliases), len(ids), focus=focus)
@@ -552,7 +586,7 @@ class HomeChat:
                 # the memo itself stays in the thread. Handing the job the whole memo made it do the
                 # part the reply had already handled (or asked about) and drop the ask it was for.
                 # Without a written ask, the job hears the memo itself.
-                words = decided.get("request") or job_text or text
+                words = decided.get("request") or job_text or text or look_words(files)
                 job_body = {"text": words, "source": "voice_message" if voice else "typed"}
                 self._job_choice(job_body, body)
                 if ids:
@@ -738,7 +772,7 @@ class HomeChat:
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
         by_run = {run: alias for alias, run in aliases.items()}
         for row in history:
-            content = row["text"]
+            content = row["text"] or (sent_words(row.get("files")) if row["role"] == "user" else "") or "(no words)"
             if row["role"] != "user" and row.get("action") in _HISTORY_TOOL and row.get("run_id"):
                 # An earlier "Looking up X." came with a tool call. Shown as bare prose, the model
                 # learns that saying it is how work starts and answers the next ask with a line and

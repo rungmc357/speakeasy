@@ -674,6 +674,27 @@ class StagedPool:
                     pass
             raise Refused(404, "unknown", "no preview available")
 
+    def describe(self, device_id: str | None, ids: list[str]) -> list[dict[str, object]]:
+        """What a thread may show of these staged items (read-only, in order; unknown ids skipped):
+        ``{id, kind: video|picture|file, mime, name?, duration?}``. Never a path or bytes."""
+        with self._lock:
+            mine = dict(self._items.get(device_id or "", {}))
+        out: list[dict[str, object]] = []
+        for i in ids:
+            item = mine.get(i) if isinstance(i, str) else None
+            if item is None:
+                continue
+            duration = (item.media or {}).get("duration")
+            is_video = item.mime.startswith("video/") or isinstance(duration, (int, float))
+            row: dict[str, object] = {"id": item.id, "mime": item.mime,
+                                      "kind": "video" if is_video else "picture" if item.is_image else "file"}
+            if item.name:
+                row["name"] = item.name
+            if is_video and isinstance(duration, (int, float)) and duration > 0:
+                row["duration"] = round(float(duration), 1)
+            out.append(row)
+        return out
+
     def claim(self, device_id: str, ids: list[str]) -> list[Attachment]:
         """Take these (in this order) for one message: all or nothing. Refused when one is unknown
         (404, maybe expired), more than MAX_ATTACHMENTS (409 too_many) or the images break one
