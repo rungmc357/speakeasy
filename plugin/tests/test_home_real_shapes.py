@@ -49,6 +49,15 @@ def test_title_examples_read_like_a_person_wrote_them():
     assert W.short_title("iPhone layout pass") == "iPhone layout pass"     # brand casing kept
 
 
+def test_coordinator_job_titles_keep_their_subject_when_cut():
+    # Shapes the Home coordinator writes for real jobs: a handle at the end, a long ask verb.
+    assert W.short_title("Create a Linear issue card for ABC-42") == "Create a Linear issue card"
+    assert W.short_title("Create and display an invented example Linear issue") == "Invented example Linear issue"
+    assert W.short_title("Look up three easy weeknight dinner recipes online") == "Easy weeknight dinner recipes"
+    assert W.short_title("Find a hardware store open Sunday near the station") == "Hardware store open Sunday"
+    assert not W.short_title("Find out what time the user's market opens on weekends").endswith("user's")
+
+
 def test_a_rescoped_job_is_named_for_what_it_became():
     # The titler's retitle input carries the newest ask; the name must fit Home either way.
     from speakeasy.router import clean_task_title

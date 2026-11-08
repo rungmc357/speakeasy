@@ -39,7 +39,7 @@ _PAREN = re.compile(r"\s*\([^()]*\)")
 # Words a title may be cut before: what follows them is detail, not the job.
 _CONNECTORS = {"for", "with", "to", "from", "after", "before", "via", "into", "on", "in", "across", "including",
                "covering", "using", "about", "because", "so", "that", "which", "and", "or", "vs", "versus",
-               "through", "while", "when", "instead", "against", "by", "as", "at", "plus"}
+               "through", "while", "when", "instead", "against", "by", "as", "at", "plus", "near"}
 _HEAD_SPLIT = re.compile(r"\s*(?:\s[-\u2013\u2014]+\s|:\s)\s*")
 # A head that is a code name, not a subject: "b70 debug", "ios", "wip", "r2 fix".
 _CODE_HEAD = re.compile(r"(?i)^(?:[a-z]{1,3}\d+[a-z]?|wip|tmp|todo|ios|mac|plugin|server|qa|ci)(?:\s+\w+)?$")
@@ -66,7 +66,25 @@ _ALSO_UNFINISHED = {"not", "no", "never", "without", "than", "very", "more", "mo
 
 def _ok_end(words: list[str]) -> bool:
     last = re.sub(r"[^a-z']", "", words[-1].lower()) if words else ""
-    return bool(last) and last not in _TITLE_UNFINISHED and last not in _ALSO_UNFINISHED
+    # a possessive waits for its noun ("Find out what time the user's")
+    possessive = last.endswith("'s") or len(last) > 2 and last.endswith("s'")
+    return bool(last) and not possessive and last not in _TITLE_UNFINISHED and last not in _ALSO_UNFINISHED
+
+
+def _trim_end(text: str) -> str:
+    """*text* without the words left dangling at its end ("Make a card for" once "DEMO-42" is out)."""
+    words = _words(text)
+    while len(words) > 1 and not _ok_end(words):
+        words.pop()
+    return " ".join(words).rstrip(" ,;:-\u2013\u2014")
+
+
+# The ask's verb and a leading count, which a too-long title can lose and keep its subject:
+# "Create and display an invented example Linear issue" -> "Invented example Linear issue".
+_LEAD_ASK = re.compile(r"(?i)^(?:please\s+)?(?:(?:create|make|build|draft|write) and (?:display|show)|find out|look up|"
+                       r"look for|search for|pull up|show me|give me|find|get|create|make|show|draft|write|build)\s+"
+                       r"(?:(?:a|an|the|some|me|\d+|two|three|four|five|six|seven|eight|nine|ten|a few|few)\s+)?")
+_TAIL_DETAIL = re.compile(r"(?i)\s+(?:online|today|tonight|tomorrow|now|nearby|quickly|again|for me)$")
 
 
 def _fit(text: str, limit: int, phrase_only: bool = False) -> str | None:
@@ -109,7 +127,7 @@ def short_title(title: Any, limit: int = TITLE_MAX) -> str:
     text = _BOOKKEEPING.sub("", text)
     text = _HANDLE.sub("", text)
     text = _PAREN.sub("", text)
-    text = re.sub(r"\s{2,}", " ", text).strip(" ,;:-\u2013\u2014")
+    text = _trim_end(re.sub(r"\s{2,}", " ", text).strip(" ,;:-\u2013\u2014"))
     parts = [p for p in _HEAD_SPLIT.split(text) if p.strip()]
     if not parts:
         return ""
@@ -130,6 +148,14 @@ def short_title(title: Any, limit: int = TITLE_MAX) -> str:
         for candidate in variants:
             cut = _fit(candidate, limit, phrase_only=phrase_only)
             if cut and (len(_words(cut)) >= 2 or len(_words(candidate)) == 1):
+                if not phrase_only and len(candidate) > limit:
+                    # A cut mid-subject ("Create and display an invented") reads worse than the
+                    # subject without its ask verb, when that subject fits whole in three words or more.
+                    subject = _TAIL_DETAIL.sub("", _LEAD_ASK.sub("", candidate, count=1))
+                    if subject != candidate:
+                        whole = subject if len(subject) <= limit else _fit(subject, limit, phrase_only=True)
+                        if whole and len(_words(whole)) >= 3 and _ok_end(_words(whole)):
+                            return _cap(whole)
                 return _cap(cut)
     words, out = _words(head), []
     for w in words:
