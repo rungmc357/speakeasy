@@ -573,9 +573,14 @@ public final class ServerClient: @unchecked Sendable {
         HomeModelStatus(json: try await json("/voice/home/model"))
     }
 
-    /// The Home chip's pick for the coordinator; nil goes back to Auto.
+    /// The coordinator's model (the secondary row in Home's model menu); nil goes back to Auto.
     public func setHomeModel(_ id: String?) async throws -> HomeModelStatus {
         HomeModelStatus(json: try await post("/voice/home/model", ["model": id.map { $0 as Any } ?? NSNull()]))
+    }
+
+    /// Home's chip: the model jobs started from Home run on; nil goes back to the Hermes default.
+    public func setHomeWorkModel(_ id: String?) async throws -> HomeModelStatus {
+        HomeModelStatus(json: try await post("/voice/home/model", ["work_model": id.map { $0 as Any } ?? NSNull()]))
     }
 
     /// One page of every Hermes session, newest first.

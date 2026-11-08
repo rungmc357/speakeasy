@@ -64,8 +64,15 @@ struct MacNowThread: View {
         }.accessibilityIdentifier("mac-now-reply")
     }
     private func card(_ item: NowItem) -> some View {
-        MacNowCard(item: item, now: now, focused: now.home?.call?.focus == item.id) {
-            if let sid = item.sessionID { store.open(sid) }
+        VStack(alignment: .leading, spacing: 3) {
+            MacNowCard(item: item, now: now, focused: now.home?.call?.focus == item.id) {
+                if let sid = item.sessionID { store.open(sid) }
+            }
+            // The model that did the work (Home's chip picks it), under the card like a reply's.
+            if let model = item.workModel {
+                Text(model.label).font(.caption2).foregroundStyle(.secondary).padding(.leading, 12)
+                    .accessibilityLabel("Worked on by \(model.label)")
+            }
         }.id(item.id)
     }
 }
