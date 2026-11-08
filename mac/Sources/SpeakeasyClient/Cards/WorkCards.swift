@@ -234,8 +234,10 @@ struct PRCard: View {
             let checks = card["checks"].array
             if !checks.isEmpty, fit != .compact {
                 let rows = Self.checkRows(checks, total: card["checks_total"].double.map(Int.init), restState: card["checks_rest"].string)
+                // Every check in one state ("didn't run" four times): the icon and the count line say it once.
+                let same = Set(checks.map { $0["state"].string ?? "" }).count == 1
                 VStack(alignment: .leading, spacing: 7) {
-                    ForEach(Array(rows.shown.enumerated()), id: \.offset) { _, check in checkRow(check) }
+                    ForEach(Array(rows.shown.enumerated()), id: \.offset) { _, check in checkRow(check, word: !same) }
                     if let rest = rows.rest {
                         Text(rest).font(.footnote).foregroundStyle(style.faint)
                     }
@@ -271,7 +273,7 @@ struct PRCard: View {
         default: return "checkmark.circle.fill"
         }
     }
-    private func checkRow(_ check: JSONValue) -> some View {
+    private func checkRow(_ check: JSONValue, word: Bool = true) -> some View {
         let state = check["state"].string ?? ""
         let (icon, tint): (String, Color) = {
             switch state {
@@ -285,9 +287,12 @@ struct PRCard: View {
         return HStack(spacing: 8) {
             Image(systemName: icon).font(.footnote).foregroundStyle(tint)
             Text(check["name"].string ?? "").font(.footnote.weight(.medium)).foregroundStyle(style.ink)
-            Text(note).font(.footnote).foregroundStyle(style.secondary).lineLimit(1)
+            if word || check["note"].string != nil {
+                Text(note).font(.footnote).foregroundStyle(style.secondary).lineLimit(1)
+            }
         }
         .accessibilityElement(children: .combine)
+        .accessibilityValue(word ? "" : note)
     }
 }
 
@@ -454,6 +459,6 @@ public enum CardLinks {
     }
 }
 
-private extension Array where Element: Hashable {
+extension Array where Element: Hashable {
     func removingDuplicates() -> [Element] { var seen = Set<Element>(); return filter { seen.insert($0).inserted } }
 }

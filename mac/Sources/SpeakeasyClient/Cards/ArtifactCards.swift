@@ -309,7 +309,9 @@ struct StatusTilesCard: View {
         let order: [String: Int] = ["needs_you": 0, "bad": 1, "warn": 2, "info": 3, "on": 4, "ok": 5, "off": 6]
         let sorted = items.enumerated().sorted { (order[$0.element["state"].string ?? ""] ?? 9, $0.offset) < (order[$1.element["state"].string ?? ""] ?? 9, $1.offset) }.map(\.element)
         VStack(alignment: .leading, spacing: 10) {
-            if let scope = card["scope"].string { Text(scope).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
+            // The app the facts came from, then what they are about ("Vercel · fieldnote-web"), as the designs head a card.
+            let head = [card["source"].string, card["scope"].string].compactMap { $0 }.removingDuplicates()
+            if !head.isEmpty { Text(head.joined(separator: " · ")).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
             if items.count > 4 {
                 // Past four, tiles turn into a wall of repeated state words ("Check" seven times):
                 // one row each, what's wrong first, the state word at the end.

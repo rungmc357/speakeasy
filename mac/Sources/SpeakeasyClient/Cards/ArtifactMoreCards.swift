@@ -123,7 +123,8 @@ struct RowsCard: View {
         // Six rows read at a glance (a 13-row wall on Home did not); the rest are in the answer.
         let cap = fit == .compact ? 3 : 6
         VStack(alignment: .leading, spacing: 8) {
-            if let title = card["title"].string { Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
+            let head = [card["source"].string, card["title"].string].compactMap { $0 }.removingDuplicates()
+            if !head.isEmpty { Text(head.joined(separator: " · ")).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
             ForEach(Array(items.prefix(cap).enumerated()), id: \.offset) { _, item in
                 ActionRow(item: item, entity: entity)
             }
@@ -149,9 +150,17 @@ struct ActionRow: View {
                 .frame(width: 34, height: 34)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill((tone == nil ? gold : Self.tone(tone)).opacity(0.14)))
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    if let ref = item["ref"].string { Text(ref).font(.system(size: 13, weight: .medium).monospacedDigit()).foregroundStyle(.secondary) }
+                // A short ref ("#418", "SPK-12") leads the name; a long one ("FIELDNOTE-IOS-3KD") squeezed
+                // the name into a letter-wide column, so it moves to the line under it.
+                let ref = item["ref"].string
+                let inline = (ref?.count ?? 0) <= 8
+                // A time fits the corner ("2:48 AM"); a phrase ("Last seen 2:48 AM ET") joins the note line.
+                let when = EventTimes.stamp(item["when"].string)
+                let corner = (when?.count ?? 0) <= 9
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if let ref, inline { Text(ref).font(.system(size: 13, weight: .medium).monospacedDigit()).foregroundStyle(.secondary).fixedSize() }
                     Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 6) {
                     if let state = item["state"].string {
@@ -161,14 +170,17 @@ struct ActionRow: View {
                             .background(Capsule().fill((tone == nil ? Color.primary : Self.tone(tone)).opacity(0.12)))
                             .fixedSize().layoutPriority(1)   // the note gives way, never the status word ("Due Mon…")
                     }
-                    if let note = item["note"].string { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
+                    let meta = [inline ? nil : ref, item["note"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
+                    if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
                 }
             }
             Spacer(minLength: 6)
+            let when = EventTimes.stamp(item["when"].string)
             VStack(alignment: .trailing, spacing: 3) {
                 if let amount = item["amount"].string { Text(amount).font(.system(size: 15, weight: .bold)).monospacedDigit() }
-                if let when = EventTimes.stamp(item["when"].string) { Text(when).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1) }
+                if let when, when.count <= 9 { Text(when).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1) }
             }
+            .fixedSize()
             if let url = item["url"].url {
                 PillButton(title: "Open", icon: "arrow.up.right", primary: false, iconOnly: true) { openURL(url) }.fixedSize()
             }

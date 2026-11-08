@@ -53,6 +53,10 @@ final class EventTimesTests: XCTestCase {
         XCTAssertEqual(stamp("2026-11-08"), "Today")
         XCTAssertEqual(stamp("2026-10-28"), "Oct 28")
         XCTAssertEqual(stamp("2h ago"), "2h ago")   // the agent's own words pass through
+        // A stamp the agent copied from a tracker reads like the others (SPK-231 reps).
+        XCTAssertEqual(stamp("Nov 8, 2:50 AM ET"), "2:50 AM")
+        XCTAssertEqual(stamp("Nov 7 7:20 PM"), "Yesterday")
+        XCTAssertEqual(stamp("Last seen 2:48 AM ET"), "Last seen 2:48 AM ET")
         XCTAssertNil(EventTimes.stamp("  ", now: now, calendar: cal, locale: us))
     }
 

@@ -42,7 +42,7 @@ public enum EventTimes {
             let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = calendar
             f.timeZone = calendar.timeZone; f.dateFormat = "yyyy-MM-dd"; return f.date(from: v)
         }() : nil
-        guard let d = bare ?? date(v) else { return v }
+        guard let d = bare ?? date(v) ?? spoken(v, now: now, calendar: calendar) else { return v }
         let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: d), to: calendar.startOfDay(for: now)).day ?? 0
         if days <= 0 { return bare != nil ? "Today" : clock(d, calendar: calendar, locale: locale) }
         if days == 1 { return "Yesterday" }
@@ -51,6 +51,26 @@ public enum EventTimes {
         let sameYear = calendar.component(.year, from: d) == calendar.component(.year, from: now)
         f.setLocalizedDateFormatFromTemplate(sameYear ? "MMMd" : "MMMdyyyy")
         return f.string(from: d)
+    }
+
+    /// A written stamp the agent copied ("Nov 8, 2:50 AM ET", "Nov 7 7:20 PM"): month, day and clock
+    /// time in the user's own zone (a trailing zone word is dropped), in *now*'s year.
+    static func spoken(_ v: String, now: Date, calendar: Calendar) -> Date? {
+        let zone = #"\s+(?:ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|PT|PST|PDT|UTC|GMT)$"#
+        let text = v.replacingOccurrences(of: zone, with: "", options: .regularExpression)
+            .replacingOccurrences(of: ",", with: "")
+        guard text.range(of: #"^[A-Z][a-z]{2,8}\.? \d{1,2} \d{1,2}:\d{2} ?[AaPp][Mm]$"#, options: .regularExpression) != nil
+        else { return nil }
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = calendar
+        f.timeZone = calendar.timeZone
+        let year = calendar.component(.year, from: now)
+        for format in ["MMM d h:mm a yyyy", "MMMM d h:mm a yyyy", "MMM d h:mma yyyy"] {
+            f.dateFormat = format
+            if let d = f.date(from: text.replacingOccurrences(of: ".", with: "") + " \(year)") {
+                return d
+            }
+        }
+        return nil
     }
 
     /// A calendar day as a heading: "2026-11-09" becomes "Monday, November 9" (with the year when it

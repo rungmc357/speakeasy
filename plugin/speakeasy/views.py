@@ -112,7 +112,7 @@ CATALOG: dict[str, dict[str, Any]] = {
     "compare": {"title": S, "options": ({"name": S, "sub": S, "price": S, "why": S, "url": URL, "photo_url": URL,
                                          "facts": (S, 3)}, 6),
                 "winner": N, "why": S, "reasons": (S, 3), "caveat": S},
-    "status": {"scope": S, "items": ({"name": S, "role": S, "state": S, "value": S, "unit": S, "note": S,
+    "status": {"source": S, "scope": S, "items": ({"name": S, "role": S, "state": S, "value": S, "unit": S, "note": S,
                                       "history": (N, 24), "url": URL}, 12)},
     "draft": {"channel": S, "to": S, "subject": S, "body": S, "send_as": S, "thread": S, "revision": N,
               "changes": S},
@@ -121,7 +121,7 @@ CATALOG: dict[str, dict[str, Any]] = {
                                                                          "state": S, "url": URL, "address": S,
                                                                          "lat": N, "lon": N}, 10)}, 10)},
     # P4: rows of things to act on (pull requests, inbox triage, to-dos, bills, alerts).
-    "rows": {"title": S, "entity": S, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S, "when": S,
+    "rows": {"source": S, "title": S, "entity": S, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S, "when": S,
                                                  "amount": S, "url": URL}, 12)},
     # P6: one number that matters, which way it moves, and the series behind it.
     "metric": {"label": S, "value": S, "unit": S, "delta": S, "good": B,
@@ -434,6 +434,9 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         items = [{**i, "state": i["state"].lower()} for i in body.get("items") or []
                  if i.get("name") and str(i.get("state", "")).lower() in STATUS_STATES]
         for i in items:
+            role = i.get("role")
+            if isinstance(role, str) and len(role) > 24 and " \u00b7 " in role:
+                i["role"] = role.split(" \u00b7 ")[0]   # "Production · pg 8.13 bump" cut to "Production · pg 8.13 b…"
             if isinstance(i.get("note"), str) and _COMMAND_NOTE.search(i["note"]):
                 i.pop("note")
             elif isinstance(i.get("note"), str):
@@ -549,6 +552,10 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             out["state"] = state
         else:
             out.pop("state", None)
+        repo = str(out.get("repo") or "")
+        if not out.get("url") and out.get("number") and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+            # owner/repo and a number name exactly one GitHub page: the card can open it.
+            out["url"] = f"https://github.com/{repo}/pull/{int(out['number'])}"
         if "number" in out and not (float(out["number"]).is_integer() and out["number"] > 0):
             out.pop("number")
         elif "number" in out:
@@ -654,10 +661,23 @@ def _cap_first(text: str) -> str:
     return text[:1].upper() + text[1:] if text and text[:1].islower() else text
 
 
-def _work_title(title: str) -> str:
-    """An issue or pull request title as people read it: no commit-style prefix."""
-    bare = _COMMIT_PREFIX.sub("", title.strip())
-    return _cap_first(bare) if bare != title.strip() else title.strip()
+def _work_title(title: str, long: int = 56) -> str:
+    """An issue or pull request title as people read it: no commit-style prefix; and a long one
+    ("Build 70 iPhone: Jump to work shows while the work is on screen; new replies stop
+    auto-scrolling", three lines on a phone card) loses its scope prefix and its second clause
+    ("Jump to work shows while the work is on screen"). The tracker keeps the whole title."""
+    text = title.strip()
+    bare = _COMMIT_PREFIX.sub("", text)
+    out = _cap_first(bare) if bare != text else text
+    if len(out) > long:
+        head, sep, rest = out.partition(": ")
+        if sep and len(head.split()) <= 4 and len(rest.split()) >= 3:
+            out = _cap_first(rest.strip())
+    if len(out) > long:
+        clause = re.split(r"\s*(?:;|\s[\u2014\u2013]\s|\s-\s)\s*", out)[0].strip()
+        if len(clause.split()) >= 3:
+            out = clause
+    return out
 
 
 def _priority(value: Any) -> str | None:
@@ -681,6 +701,8 @@ def _topic_labels(labels: list[Any], state: Any, priority: Any) -> list[str]:
     said = {_norm_label(state), _norm_label(priority), ""}
     out: list[str] = []
     for label in labels:
+        if re.fullmatch(r"(?i)(?:build|release|cycle|sprint|milestone|v)[\s_-]?\d+(?:\.\d+)*", str(label).strip()):
+            continue   # "build-70": a release bucket, not what the issue is about
         if _norm_label(label) not in said and _norm_label(label) not in {_norm_label(x) for x in out}:
             out.append(str(label))
     return out
@@ -888,8 +910,27 @@ def _day_actions(view: dict[str, Any]) -> dict[str, Any]:
     pairs = day_overlaps(view)
     if pairs and not view.get("actions"):
         later = view["events"][pairs[0][1]].get("title") or "the later one"
-        view["actions"] = [{"id": "move", "label": _str("Move " + later, 24) or "Move it", "style": "secondary",
+        label = "Move " + later
+        while len(label) > 24 and len(label.split()) > 2:
+            label = label.rsplit(" ", 1)[0]   # "Move Investor update", never "Move Investor update cal"
+        view["actions"] = [{"id": "move", "label": label if len(label) <= 24 else "Move it", "style": "secondary",
                             "confirm": False}]
+    free = view.get("free")
+    if isinstance(free, list) and free:
+        # "Before 9:30 AM" and "After 7:00 PM" are the whole morning and evening, not a gap worth
+        # naming; and ":00" is noise ("1:30\u20136:00 PM" reads "1:30\u20136 PM").
+        inner = [f for f in free if isinstance(f, str) and not re.match(r"(?i)(?:before|after|until|from)\b", f)]
+        view["free"] = [re.sub(r":00(?=\s*(?:[AaPp][Mm]|\u2013|-|$))", "", f) for f in (inner or free) if isinstance(f, str)]
+    return view
+
+
+def _unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
+    """A card line that repeats the answer's opening (the reply sits right above the card on Home)
+    is said twice: a PR's reason or an issue's note that restates it goes; the reply keeps it."""
+    opening = _norm(" ".join(re.split(r"(?<=[.!?])\s+", (answer or "").strip())[:2]))
+    for key in {"pr": ("reason",), "issue": ("note",)}.get(view.get("kind"), ()):
+        if isinstance(view.get(key), str) and _restates(view[key], opening):
+            view = {k: v for k, v in view.items() if k != key}
     return view
 
 
@@ -906,7 +947,7 @@ def shape(views: list[dict[str, Any]], answer: str) -> list[dict[str, Any]]:
             continue
         if kept >= MAX_ARTIFACTS or not grounded(view, answer):
             continue
-        out.append(_artifact_actions(view))
+        out.append(_artifact_actions(_unsaid(view, answer)))
         kept += 1
     return out
 

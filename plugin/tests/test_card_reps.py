@@ -154,3 +154,38 @@ def test_confirm_title_drops_the_total_it_repeats():
     v = clean_confirm({"type": "checkout", "title": "Buy Oakline desk \u2014 $423.53",
                        "details": [{"label": "Total", "value": "$423.53"}]})
     assert v is None or v["title"] == "Buy Oakline desk"
+
+
+def test_a_pr_reason_that_repeats_the_reply_goes_and_the_card_can_open_the_pr():
+    pr = views.clean({"kind": "pr", "repo": "acme/widgets", "number": 77, "title": "Offline drafts", "state": "open",
+                      "reason": "All 15 checks were skipped, so nothing ran."})
+    assert pr["url"] == "https://github.com/acme/widgets/pull/77"
+    said = views.shape([pr], "CI didn't test PR 77 Offline drafts. All 15 checks were skipped, so nothing passed.")
+    assert said and "reason" not in said[0]
+    kept = views.shape([pr], "PR 77 Offline drafts is waiting on a review from the design team.")
+    assert kept[0]["reason"] == "All 15 checks were skipped, so nothing ran."
+
+
+def test_long_tracker_titles_lose_scope_prefix_and_second_clause_and_release_buckets_go():
+    v = views.clean({"kind": "issue", "source": "linear", "ref": "FN-9", "state": "In review",
+                     "title": "Build 12 iPad: Jump chip shows while the card is on screen; new replies stop auto-scrolling",
+                     "labels": ["Bug", "build-12", "Release 3", "iOS"]})
+    assert v["title"] == "Jump chip shows while the card is on screen"
+    assert v["labels"] == ["Bug", "iOS"]
+    assert views._work_title("Home mockups: three design directions") == "Home mockups: three design directions"
+
+
+def test_long_refs_and_phrase_times_and_long_roles_are_shaped():
+    v = views.clean({"kind": "status", "scope": "Deploys", "source": "Vercel", "items": [
+        {"name": "api", "state": "bad", "role": "Production \u00b7 pg 8.13 bump from Renovate"}]})
+    assert v["source"] == "Vercel" and v["items"][0]["role"] == "Production"
+
+
+def test_calendar_move_label_cuts_at_a_word_and_free_time_names_real_gaps():
+    day = {"kind": "calendar_day", "date": "2026-11-09", "events": [
+        {"start": "2026-11-09T12:30:00-05:00", "end": "2026-11-09T13:30:00-05:00", "title": "Lunch with Sam"},
+        {"start": "2026-11-09T13:00:00-05:00", "end": "2026-11-09T13:30:00-05:00", "title": "Investor update call"}],
+        "free": ["Before 9:30 AM", "9:45\u201311:00 AM", "1:30\u20136:00 PM", "After 7:00 PM"]}
+    out = views.shape([day], "")[0]
+    assert out["actions"][0]["label"] == "Move Investor update"
+    assert out["free"] == ["9:45\u201311 AM", "1:30\u20136 PM"]
