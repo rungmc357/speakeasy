@@ -5151,6 +5151,15 @@ class SidebandWorker:
                                          others=[] if self.VOICELESS else self.call_so_far(task_id), skill=skill,
                                          names_hint=P.task_vocabulary_line(self.names, self.vocabulary()))
         self.store.set_meta("turn_context:" + session_id, context[-MAX_TRANSCRIPT:])
+        project_brief = getattr(self.store, "project_brief", None)  # SPK-254: a filed job's standing notes
+        if project_brief is not None:
+            try:
+                block = project_brief(idem, request or "")
+            except Exception:  # noqa: BLE001 - notes are a bonus; the job still starts
+                logger.debug("speakeasy: project notes unavailable", exc_info=True)
+                block = ""
+            if block:
+                prompt = prompt.rstrip() + "\n\n" + block
         try:
             choice = await self.model_choice(task_id, idem, session_id, request)
             extra: dict[str, Any] = {**({"images": images} if images else {}), **({"choice": choice} if choice else {})}

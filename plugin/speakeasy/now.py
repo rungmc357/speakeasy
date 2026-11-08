@@ -585,6 +585,10 @@ class NowModel:
             if key:
                 approvals[key] = a
         name = svc.settings.get()["assistant_name"]
+        projects = getattr(svc, "projects", None)
+        # SPK-254: a job card says its project once filed, else offers the one project its words name.
+        known_projects = projects._read() if projects is not None else []
+        project_links = projects._links() if known_projects else {}
         by_place: dict[str, dict[str, Any]] = {}
         by_thread: dict[str, dict[str, Any]] = {}
         items: list[dict[str, Any]] = []
@@ -604,6 +608,10 @@ class NowModel:
                 continue
             item["_thread"] = threads.get(row["key"]) or place
             item["_run_key"] = row["key"]
+            if known_projects:
+                item.update(projects.card_fields(
+                    row["key"], (item.get("title") or "", self.store.request_text(row["key"]) or ""),
+                    known_projects, project_links))
             if row.get("answered"):
                 answered_keys.add(row["key"])
             held = by_place.get(place)

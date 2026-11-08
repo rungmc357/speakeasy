@@ -643,6 +643,16 @@ class HomeChat:
         started = None
         run_id = None
         action = decided["action"]
+        # SPK-254: "for <project>, ..." (or "... for the <project> project") files the jobs this
+        # message starts into that existing project. Only the person's own words decide it.
+        filed_to = None
+        projects = getattr(self.svc, "projects", None)
+        if action == "start" and projects is not None and text:
+            try:
+                hit = projects.directive(text)
+            except Exception:  # noqa: BLE001 - filing is a bonus; the job still starts
+                hit = None
+            filed_to = hit[0] if hit else None
         try:
             if action == "start":
                 # A voice memo's job gets the ask the coordinator wrote for it, like a typed message:
@@ -652,6 +662,8 @@ class HomeChat:
                 words = decided.get("request") or job_text or text or look_words(files)
                 job_body = {"text": words, "source": "voice_message" if voice else "typed"}
                 self._job_choice(job_body, body)
+                if filed_to:
+                    job_body["project_id"] = filed_to
                 if ids:
                     job_body["attachments"] = ids
                 if client_id:
@@ -689,6 +701,8 @@ class HomeChat:
             # "Those are two different tasks": each further ask in the message is its own job.
             job_body = {"text": words, "source": "voice_message" if voice else "typed"}
             self._job_choice(job_body, body)
+            if filed_to:
+                job_body["project_id"] = filed_to
             if client_id:
                 job_body["client_id"] = (f"hx{n}" + client_id)[:128]
             try:

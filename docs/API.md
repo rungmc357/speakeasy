@@ -1128,6 +1128,36 @@ The checked boxes of Earlier's filter menu. The reply adds `kinds: [{id, label, 
 lists no pinned-first order. `exclude_now=1` leaves out what Home shows; rows Home shows carry
 `on_now: true`. Without `kinds` the list behaves as before.
 
+## Projects (capability `projects`, SPK-254)
+
+Hermes' own first-class projects (`hermes project …`, `$HERMES_HOME/projects.db`), read through
+Hermes' `projects_db` module. Off (`false`, and every route 501) on a Hermes without projects. A chat
+belongs to a project when its working folder is inside one of the project's folders, or when it was
+filed into it from the app; chats, calls and Home jobs have no folder, so filing is stored by
+Speakeasy. Nothing is ever filed on its own.
+
+- `GET /voice/projects` → `{projects: [{id, slug, name, icon?, color?, board?, has_folders, chats,
+  jobs, notes?}], offer?: {subject, chats}}`. `offer` appears at most once per subject: three or more
+  recent unfiled chats share a subject and no project is named for it.
+- `POST /voice/projects {name, icon?, color?, from_offer?, sessions?}` → 201 `{project}`: a
+  name-only Hermes project (no folder). `icon` is an SF Symbol name; `color` one of blue, teal,
+  green, yellow, orange, red, pink, purple, gray. `from_offer` files that offer's chats too. 409 for
+  a duplicate name.
+- `GET /voice/projects/{id}` → `{project, chats: [history rows], jobs: [{run_id, task_id, title,
+  status, session_id, started_at, finished_at?, short_status?, summary?}], board?}`.
+- `PUT /voice/projects/{id}/notes {notes}`: standing notes (≤1200 chars). The first turn of every
+  job filed into the project carries them as a short block.
+- `POST /voice/projects/file {session_id | run_id, project_id}`: file a chat (with its Speakeasy
+  jobs) or a job into a project; `project_id: null` takes it out; `""` on a `run_id` declines the
+  job card's suggestion.
+- `POST /voice/projects/offer/dismiss {subject}`: never offer that subject again.
+- `POST /voice/work` takes `project_id`: the job is filed there from the start. A Home message that
+  begins "for <project>, …" (or ends "… for the <project> project") files the jobs it starts.
+- History rows in a project carry `project: {id, name}`. Home's job items carry `project: {id, name}`
+  once filed, else `project_suggestion: {id, name}` when the job's words name exactly one existing
+  project (whole words, no model call).
+- `projects_changed` on `/voice/history/events` after any change.
+
 ## History
 
 Capability `history` (added after plugin 0.3.32). Speakeasy as a full Hermes client: the apps list every Hermes

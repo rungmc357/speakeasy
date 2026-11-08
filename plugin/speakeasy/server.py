@@ -683,7 +683,9 @@ class Handler(BaseHTTPRequestHandler):
             saved_call = re.fullmatch(rf"/voice/calls/{_ID}", path)
             schedule_one = re.fullmatch(rf"/voice/schedules/{_ID}", path)
             board_one = re.fullmatch(rf"/voice/boards/{_ID}", path)
+            project_one = re.fullmatch(rf"/voice/projects/{_ID}", path)
             routes = {
+                "/voice/projects": self.service.projects_list,
                 "/voice/work/latest": self.service.work_latest,
                 "/voice/titles": self.service.pending_thread_titles,
                 "/voice/settings": self.service.get_settings,
@@ -724,6 +726,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.board_call())
             elif board_one:
                 self._reply(200, self.service.board_call(board_one.group(1)))
+            elif project_one:
+                self._reply(200, self.service.project_page(project_one.group(1)))
             elif saved_call:
                 self._reply(200, self.service.saved_call(saved_call.group(1)))
             elif path == "/voice/now/recent":
@@ -839,6 +843,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/now/clear-seen":
                 self._reply(200, self.service.now_clear_seen(self._body()))
+                return
+            if path == "/voice/projects":
+                self._reply(201, self.service.project_create(self._body()))
+                return
+            if path == "/voice/projects/file":
+                self._reply(200, self.service.project_file(self._body()))
+                return
+            if path == "/voice/projects/offer/dismiss":
+                self._reply(200, self.service.project_offer_dismiss(self._body()))
                 return
             now_act = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/(later|answer|approval|dismiss)", path)
             if now_act:
@@ -1036,6 +1049,10 @@ class Handler(BaseHTTPRequestHandler):
             chat_model = re.fullmatch(rf"/voice/history/{_SESSION}/model", self.route)
             if chat_model:  # Use for this chat (models.py)
                 self._reply(200, self.service.set_session_model(unquote(chat_model.group(1)), self._body()))
+                return
+            project_notes = re.fullmatch(rf"/voice/projects/{_ID}/notes", self.route)
+            if project_notes:  # SPK-254: a project's standing notes
+                self._reply(200, self.service.project_notes(project_notes.group(1), self._body()))
                 return
             if self.route != "/voice/brief":
                 raise ServiceError(404, "not found")

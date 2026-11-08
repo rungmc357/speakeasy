@@ -59,6 +59,7 @@ from .threads import THREAD_PLATFORMS
 from .settings import (GROK_BETA_OFF, max_call_seconds, OPENAI_KEY_NAME, Settings, SettingsError, default_voice, find_codex, hermes_api_base,
                        grok_beta_on, hermes_secret, openai_api_key, valid_delivery_target)
 from .secure_service import SecureInputMixin
+from . import projects as P_
 from .store import StateStore
 from .suggest import SuggestError, suggest
 from .threads import ThreadRunner, capability, sync_routes
@@ -186,7 +187,11 @@ CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking
 # SPK-208: POST /voice/home/message (+ /voice/home/voice-message): Home is a chat with a coordinator;
 # ``stream`` entries of kind ``message`` (user / assistant) interleave with the job cards.
 CAPABILITIES["home_chat"] = True
-
+# SPK-254: GET/POST /voice/projects, GET /voice/projects/{id}, PUT /voice/projects/{id}/notes,
+# POST /voice/projects/file, POST /voice/projects/offer/dismiss, ``project_id`` on POST /voice/work,
+# ``project`` on history rows and ``project`` / ``project_suggestion`` on Home's job cards. Off on a
+# Hermes without first-class projects.
+CAPABILITIES["projects"] = P_.available()
 
 
 _SHORTCUT_RE = re.compile(r"^[^\x00-\x1f<>{}]{1,24}$")
@@ -429,6 +434,9 @@ class VoiceService(SecureInputMixin):
         self.now_model = NowModel(self)
         from .home_chat import HomeChat
         self.home_chat = HomeChat(self)
+        # SPK-254: Hermes' projects plus Speakeasy's chat/job links (projects.py).
+        self.projects = P_.Projects(self.store, self.home, lambda: self.rt.state_db)
+        self.store.project_brief = self.projects.for_start  # a filed job's standing notes, in its brief
         self.history_events.after_change = self._now_changed
         self.rt.history_events = self.history_events
         Q.wire(self.store, self.rt)  # every closed question: decision_resolved + the push withdrawn
@@ -2319,10 +2327,20 @@ class VoiceService(SecureInputMixin):
         notice's Update button). It runs like a job started on a call, on the voiceless worker, never
         through routing, and shows on the board. Idempotent on client_id."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "source", "client_id", "attachments", "model", "reasoning", "agent"}:
+                "text", "source", "client_id", "attachments", "model", "reasoning", "agent", "project_id"}:
             raise ServiceError(400, "Send the job as text.")
+        project_id = body.get("project_id")
+        if project_id is not None:
+            # SPK-254: a job started inside a project (or "for <project>, ..." at Home) is filed there,
+            # and the project's standing notes go into its first brief.
+            if not isinstance(project_id, str):
+                raise ServiceError(400, "project_id is a project's id.")
+            try:
+                project_id = self.projects._get(project_id).id
+            except P_.ProjectError as exc:
+                raise ServiceError(exc.status, exc.message) from None
         agent = self._body_agent(body)
-        choice = self._body_choice({k: v for k, v in body.items() if k != "agent"})
+        choice = self._body_choice({k: v for k, v in body.items() if k not in {"agent", "project_id"}})
         if agent:
             choice = {"agent": agent}  # another agent runs on its own model and level
         text, source, client_id = body.get("text"), body.get("source") or "typed", body.get("client_id")
@@ -2338,9 +2356,20 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "source must be typed or voice_message.")
         if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
             raise ServiceError(400, "client_id must be an id.")
-        return self._once(client_id, lambda: self._with_staged(
-            device_id, ids, lambda staged: self._start_job(text, staged, choice=choice, new_chat=True)),
-                          route="work", text=text)
+        def start(staged: list[A.Attachment]) -> dict[str, Any]:
+            if project_id:
+                self.projects.expect(text, project_id)
+            got = self._start_job(text, staged, choice=choice, new_chat=True)
+            if project_id:
+                key = self.store.key_for_task(got.get("task_id") or "") if got.get("task_id") else None
+                key = key or (self.store.key_for_run(got["run_id"]) if got.get("run_id") else None)
+                if key:
+                    self.projects.link("job", self.projects._job_key(key), project_id)
+                    got["project"] = {"id": project_id}
+                self._projects_changed()
+            return got
+
+        return self._once(client_id, lambda: self._with_staged(device_id, ids, start), route="work", text=text)
 
     @staticmethod
     def _attachment_ids(body: dict[str, Any]) -> list[str]:
@@ -3320,6 +3349,26 @@ class VoiceService(SecureInputMixin):
         return out
 
     def _history(self, query: dict[str, str], for_now: bool = False) -> dict[str, Any]:
+        page = self._history_raw(query, for_now)
+        self._mark_projects(page.get("sessions") or [])
+        return page
+
+    def _mark_projects(self, rows: list[dict[str, Any]]) -> None:
+        """SPK-254: each conversation in a project carries ``project`` {id, name} (Move to project
+        shows where it is; the list can badge it)."""
+        projects = getattr(self, "projects", None)
+        if projects is None or not rows:
+            return
+        known = {p.id: p for p in projects._read()}
+        if not known:
+            return
+        where = projects.session_projects()
+        for row in rows:
+            p = known.get(where.get(row.get("id") or ""))
+            if p is not None:
+                row["project"] = {"id": p.id, "name": p.name}
+
+    def _history_raw(self, query: dict[str, str], for_now: bool = False) -> dict[str, Any]:
         page = self._history_one(query, self.rt.state_db, None, for_now)
         others = self._other_agent_sessions()
         if not others:
@@ -3761,6 +3810,118 @@ class VoiceService(SecureInputMixin):
                 "delivered_as": "linked", "task": got.get("task")}
 
     # -- session actions from the panel's context menu (rename, pin, archive, read) -------------------
+    # -- Projects (SPK-254, projects.py) -----------------------------------------------------------
+    def _projects_call(self, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        if not P_.available():
+            raise ServiceError(501, f"This {self.agent_name} doesn't have projects yet. Update Hermes to use them.")
+        try:
+            return fn()
+        except P_.ProjectError as exc:
+            raise ServiceError(exc.status, exc.message) from None
+
+    def _projects_changed(self) -> None:
+        """Every device's panel, project page and Home cards refresh (one event, the history feed)."""
+        self.forget_history_cache()
+        self.history_events.publish("projects_changed", {})
+        self._now_changed()
+
+    def projects_list(self) -> dict[str, Any]:
+        """``GET /voice/projects``: Hermes' projects with chat/job counts, plus at most one offer."""
+        return self._projects_call(self.projects.list)
+
+    def project_create(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/projects {name, icon?, color?, from_offer?, sessions?}``: a name-only Hermes
+        project (``hermes project list`` shows it too)."""
+        out = self._projects_call(lambda: self.projects.create(body))
+        self._projects_changed()
+        return out
+
+    def project_page(self, project_id: str) -> dict[str, Any]:
+        """``GET /voice/projects/{id}``: the project, its chats, its jobs and its Kanban board."""
+        name = self.settings.get()["assistant_name"]
+
+        def history(ids: set[str]) -> dict[str, Any]:
+            page = self._history_one({"limit": str(H.MAX_PAGE), "include_archived": "1"}, self.rt.state_db,
+                                     set(ids), False)
+            self._mark_projects(page.get("sessions") or [])
+            return page
+
+        def work(key: str) -> dict[str, Any] | None:
+            got = self.store.work(idem_key=self.store.newest_in_job(key) or key, assistant_name=name)
+            if not got:
+                return None
+            keep = ("run_id", "task_id", "title", "status", "session_id", "started_at", "finished_at",
+                    "short_status", "now_line", "summary")
+            return {k: got.get(k) for k in keep if got.get(k) is not None}
+
+        def board(slug: str) -> dict[str, Any] | None:
+            try:
+                rows = self.boards.list().get("boards") or []
+            except Exception:  # noqa: BLE001 - a missing board just isn't shown
+                return None
+            return next((b for b in rows if b.get("slug") == slug), None)
+
+        return self._projects_call(lambda: self.projects.page(project_id, history, work, board))
+
+    def project_notes(self, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``PUT /voice/projects/{id}/notes {notes}``: standing notes added to jobs filed into it."""
+        out = self._projects_call(lambda: self.projects.set_notes(project_id, body))
+        self._projects_changed()
+        return out
+
+    def project_file(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/projects/file {session_id | run_id, project_id}``: file a chat or a job into a
+        project; ``project_id`` null takes it out, "" declines the job card's suggestion. Always an
+        explicit action by the person; nothing is ever filed on its own."""
+        if not isinstance(body, dict) or "project_id" not in body or len(
+                [k for k in ("session_id", "run_id") if k in body]) != 1 or not set(body) <= {
+                "session_id", "run_id", "project_id"}:
+            raise ServiceError(400, "Send a session_id or a run_id, and a project_id.")
+        pid = body["project_id"]
+        if pid is not None and not isinstance(pid, str):
+            raise ServiceError(400, "project_id is a project's id, null or \"\".")
+
+        def go() -> dict[str, Any]:
+            project = self.projects._get(pid).id if pid else pid
+            if "session_id" in body:
+                sid = body["session_id"]
+                if not isinstance(sid, str) or not H.valid_session_id(sid):
+                    raise ServiceError(404, "I couldn't find that conversation.")
+                if project == "":
+                    raise ServiceError(400, "A conversation is filed into a project or taken out (null).")
+                # Taken out = an explicit "not in a project" ("" overrides a folder match too).
+                self.projects.link("session", sid, project if project else "")
+                # Its Speakeasy jobs move with it.
+                with self.store._lock:
+                    keys = [r[0] for r in self.store._db.execute(
+                        "SELECT idem_key FROM runs WHERE session_id=?", (sid,)).fetchall()]
+                for key in keys:
+                    self.projects.link("job", self.projects._job_key(key), project if project else "")
+                return {"ok": True, "session_id": sid, "project_id": project}
+            run_id = body["run_id"]
+            key = (self.store.key_for_run(run_id) or self.store.key_for_task(run_id)) if isinstance(run_id, str) else None
+            if not key:
+                raise ServiceError(404, "I couldn't find that task.")
+            self.projects.link("job", self.projects._job_key(key), project if project else "")
+            session = self.store.session_for(key)
+            if session and project:
+                self.projects.link("session", session, project)
+            elif session and project is None:
+                self.projects.link("session", session, "")
+            return {"ok": True, "run_id": run_id, "project_id": project}
+
+        out = self._projects_call(go)
+        self._projects_changed()
+        return out
+
+    def project_offer_dismiss(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/projects/offer/dismiss {subject}``: never offer a project for it again."""
+        if not isinstance(body, dict) or set(body) != {"subject"}:
+            raise ServiceError(400, "Send the offer's subject.")
+        out = self._projects_call(lambda: self.projects.dismiss_offer(body["subject"]))
+        self._projects_changed()
+        return out
+
     def history_action(self, session_id: str, action: str, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /voice/history/{id}/{rename|pin|archive|read}``. Rename and archive go through Hermes' own
         ``PATCH /api/sessions/{id}`` (so Hermes' other apps show the same title and hide the same
