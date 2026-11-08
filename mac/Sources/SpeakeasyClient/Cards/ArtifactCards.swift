@@ -452,7 +452,7 @@ struct StatusRow: View {
             }
             Spacer(minLength: 8)
             if let trailing = [item["value"].string, item["unit"].string].compactMap({ $0 }).joined(separator: " ").nonEmpty
-                ?? (sayState ? StatusTile.word(for: item) : nil) {
+                ?? (sayState && state != "info" ? StatusTile.word(for: item) : nil) {   // "Info" said nothing
                 Text(trailing)
                     .font(.system(size: 13, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(loud ? StatusTile.color(state) : .secondary).lineLimit(1).fixedSize()

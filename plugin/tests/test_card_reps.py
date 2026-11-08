@@ -239,3 +239,22 @@ def test_rows_fill_tracker_links_from_one_linked_row():
         {"ref": "#99", "name": "Not a tracker key", "state": "Open"}]})
     assert v["items"][1]["url"] == "https://tracker.example/acme/issue/ACME-14"
     assert "url" not in v["items"][2]
+
+
+def test_timeline_steps_lose_tracker_keys_and_key_list_notes():
+    v = views.clean({"kind": "timeline", "title": "Release 4.2", "days": [{"label": "Done", "items": [
+        {"when": "Nov 7", "what": "ACME-208 Offline drafts land", "state": "done", "note": "Fixes the sync bug"},
+        {"when": "Nov 8", "what": "30 issues ready", "state": "done", "note": "Includes ACME-232, ACME-233, ACME-241"},
+        {"when": "Next", "what": "ACME-9", "state": "next"}]}]})
+    items = v["days"][0]["items"]
+    assert items[0]["what"] == "Offline drafts land" and items[0]["note"] == "Fixes the sync bug"
+    assert "note" not in items[1]
+    assert items[2]["what"] == "ACME-9"   # nothing left but the key: it stays
+
+
+def test_status_job_slugs_read_as_words_and_scope_loses_its_aside():
+    v = views.clean({"kind": "status", "source": "Hermes cron", "scope": "Scheduled jobs (partial list, ~3 AM snapshot)", "items": [
+        {"name": "nightly-photo-index-refresh", "state": "ok"}, {"name": "acme-api", "state": "bad"},
+        {"name": "personal daily digest", "state": "info"}]})
+    assert v["scope"] == "Scheduled jobs"
+    assert [i["name"] for i in v["items"]] == ["Nightly photo index refresh", "acme-api", "Personal daily digest"]

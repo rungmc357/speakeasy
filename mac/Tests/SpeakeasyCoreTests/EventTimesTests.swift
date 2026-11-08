@@ -62,6 +62,12 @@ final class EventTimesTests: XCTestCase {
         XCTAssertEqual(stamp("Sat 9:03 PM"), "Sat")
         XCTAssertEqual(stamp("Yesterday, 6 PM"), "Yesterday")
         XCTAssertEqual(stamp("Today at noon"), "Today at noon")
+        func clockTime(_ s: String) -> String? {
+            EventTimes.clockTime(s, now: now, calendar: cal, locale: us)?.replacingOccurrences(of: "\u{202F}", with: " ")
+        }
+        XCTAssertEqual(clockTime("Nov 8, 2:50 AM ET"), "2:50 AM")
+        XCTAssertEqual(clockTime("2026-11-08T06:53:24Z"), "1:53 AM")
+        XCTAssertEqual(clockTime("Next"), "Next")
         XCTAssertNil(EventTimes.stamp("  ", now: now, calendar: cal, locale: us))
     }
 

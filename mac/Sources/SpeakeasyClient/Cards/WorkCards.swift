@@ -206,7 +206,8 @@ struct PRCard: View {
                 SourceMark.pr
                 // "owner/repo · #418"; when that can't fit beside the time, the repo's own name (an
                 // owner like NousResearch cut to "NousResearch/he…" said nothing).
-                let number = card["number"].string.map { "#\($0)" }
+                // A title that already names the number ("Checks on #147753") keeps it there only.
+                let number = PRCard.headerNumber(card)
                 let repo = card["repo"].string
                 ViewThatFits(in: .horizontal) {
                     ForEach([repo, repo?.split(separator: "/").last.map(String.init)].compactMap { $0 }.removingDuplicates() + [""], id: \.self) { name in
@@ -235,7 +236,20 @@ struct PRCard: View {
             if !checks.isEmpty, fit != .compact {
                 let rows = Self.checkRows(checks, total: card["checks_total"].double.map(Int.init), restState: card["checks_rest"].string)
                 // Every check in one state ("didn't run" four times): the icon and the count line say it once.
-                let same = Set(checks.map { $0["state"].string ?? "" }).count == 1
+                let states = Set(checks.map { $0["state"].string ?? "" })
+                let same = states.count == 1
+                let total = max(Int(card["checks_total"].double ?? 0), checks.count)
+                let restSame = total == checks.count || card["checks_rest"].string == states.first
+                if same, restSame, let only = states.first, ["skipped", "passed"].contains(only), total > 2 {
+                    // Fifteen checks that all skipped (or all passed) are one fact, not a list of names.
+                    HStack(spacing: 8) {
+                        Image(systemName: only == "passed" ? "checkmark.circle.fill" : "minus.circle.fill")
+                            .foregroundStyle(only == "passed" ? style.tone("good") : style.faint)
+                        Text("All \(total) \(only)").font(.subheadline.weight(.medium)).foregroundStyle(style.ink)
+                        Spacer(minLength: 0)
+                    }
+                    .cardWell(style)
+                } else {
                 VStack(alignment: .leading, spacing: 7) {
                     ForEach(Array(rows.shown.enumerated()), id: \.offset) { _, check in checkRow(check, word: !same) }
                     if let rest = rows.rest {
@@ -243,8 +257,15 @@ struct PRCard: View {
                     }
                 }
                 .cardWell(style)
+                }
             }
         }
+    }
+    static func headerNumber(_ card: ViewCard) -> String? {
+        guard let n = card["number"].string else { return nil }
+        let tag = "#" + n
+        let title: String = card["title"].string ?? ""
+        return title.contains(tag) ? nil : tag
     }
     /// Checks as the card lists them: what failed or is still running first, at most five; the rest
     /// as one line ("10 more skipped"). Fifteen identical "Skipped" rows were a wall, not news.

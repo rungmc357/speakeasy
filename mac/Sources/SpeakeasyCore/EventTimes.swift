@@ -53,6 +53,15 @@ public enum EventTimes {
         return f.string(from: d)
     }
 
+    /// A time inside a day (a timeline row sits under its day): a timestamp or a copied stamp ("Nov 8,
+    /// 2:50 AM ET") shows only its clock time; words ("9:40", "Next") pass through.
+    public static func clockTime(_ value: String?, now: Date = Date(), calendar: Calendar = .current,
+                                 locale: Locale = .current) -> String? {
+        guard let v = clean(value) else { return nil }
+        guard let d = date(v) ?? spoken(v, now: now, calendar: calendar) else { return v }
+        return clock(d, calendar: calendar, locale: locale)
+    }
+
     /// A day word with a clock time, as an inbox writes it, cut to what a corner shows: "Today 7:12 AM"
     /// -> "7:12 AM", "Sat 9:03 PM" / "Yesterday, 6 PM" -> the day. Anything else passes through.
     static func corner(_ v: String) -> String {

@@ -75,7 +75,7 @@ struct TimelineRow: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(item["when"].string ?? "").font(.system(size: 14, weight: .semibold)).foregroundStyle(gold)
+                    Text(EventTimes.clockTime(item["when"].string) ?? "").font(.system(size: 14, weight: .semibold)).foregroundStyle(gold)
                         .monospacedDigit().lineLimit(1)
                     if place || item["url"].url != nil {
                         Image(systemName: place ? "mappin" : "arrow.up.right").font(.system(size: 11, weight: .semibold))
@@ -153,7 +153,10 @@ struct ActionRow: View {
                 // A short ref ("#418", "SPK-12") leads the name; a long one ("FIELDNOTE-IOS-3KD") squeezed
                 // the name into a letter-wide column, so it moves to the line under it.
                 let ref = item["ref"].string
-                let inline = (ref?.count ?? 0) <= 7   // "#418", "SPK-207" lead the name as the designs do; "FIELDNOTE-IOS-3KD" took a third of the row
+                // "#418" and a tracker key up to "SPK-207" lead the name, as the designs do; "#66526" and
+                // "FIELDNOTE-IOS-3KD" took a third of the row and cut the title, so they join the note line.
+                let n = ref?.count ?? 0
+                let inline = n <= 5 || (n <= 7 && ref?.range(of: #"^[A-Z]{1,4}-\d+$"#, options: .regularExpression) != nil)
                 // A time fits the corner ("2:48 AM"); a phrase ("Last seen 2:48 AM ET") joins the note line.
                 let when = EventTimes.stamp(item["when"].string)
                 let corner = (when?.count ?? 0) <= 9
@@ -199,11 +202,16 @@ struct MetricCard: View {
     var body: some View {
         let points = card["points"].array
         VStack(alignment: .leading, spacing: 8) {
-            Text(card["label"].string ?? "").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+            // The app heads the card ("Sentry · crashes per hour"), as the designs do; the footer keeps the time.
+            let label = card["label"].string ?? ""
+            Text([card["source"].string, label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                .font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(card["value"].string ?? "").font(.system(size: fit == .compact ? 30 : 40, weight: .bold)).monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.6)
-                if let unit = card["unit"].string { Text(unit).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(1) }
+                if let unit = MetricCard.unit(card["unit"].string, label: label) {
+                    Text(unit).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(1)
+                }
                 Spacer(minLength: 4)
                 if let delta = card["delta"].string {
                     let good = card["good"].bool
@@ -223,9 +231,25 @@ struct MetricCard: View {
                 }
                 .font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
-            let foot = [card["source"].string, EventTimes.stamp(card["as_of"].string).map { "as of \($0)" }].compactMap { $0 }
+            let foot = [EventTimes.stamp(card["as_of"].string).map { "As of \($0)" }].compactMap { $0 }
             if !foot.isEmpty && fit != .compact { Text(foot.joined(separator: " · ")).font(.system(size: 11.5)).foregroundStyle(.secondary) }
         }
+    }
+}
+
+extension MetricCard {
+    /// The unit beside the number, unless the label already says it: "Crashes per hour" with
+    /// "crashes/hr" read the same thing twice.
+    static func unit(_ unit: String?, label: String) -> String? {
+        guard let unit, !unit.isEmpty else { return nil }
+        let low = label.lowercased()
+        let per = ["hr": "hour", "hour": "hour", "h": "hour", "min": "minute", "day": "day", "d": "day", "wk": "week", "week": "week", "s": "second", "sec": "second"]
+        if let slash = unit.lowercased().split(separator: "/").last, unit.contains("/"),
+           let word = per[String(slash).trimmingCharacters(in: .whitespaces)], low.contains("per \(word)") || low.contains("/\(slash)") {
+            return nil
+        }
+        if low.contains(unit.lowercased()) { return nil }
+        return unit
     }
 }
 
@@ -324,14 +348,20 @@ struct PreviewCard: View {
                     if let label = card["list_label"].string {
                         Text(label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
                     }
-                    ForEach(Array(list.enumerated()), id: \.offset) { i, line in
-                        HStack(spacing: 10) {
+                    // Six lines at most, each whole (two lines before a cut): nine one-line items cut
+                    // mid-word ran the card off the screen. The rest are counted; the answer has them.
+                    let shown = list.count > 7 ? Array(list.prefix(6)) : list
+                    ForEach(Array(shown.enumerated()), id: \.offset) { i, line in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text("\(i + 1)").font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary).frame(width: 18, alignment: .trailing)
-                            Text(line).font(.system(size: 14.5)).lineLimit(1)
+                            Text(line).font(.system(size: 14.5)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 0)
                         }
                         .padding(.vertical, 6)
-                        .overlay(alignment: .bottom) { if i < list.count - 1 { Divider().padding(.leading, 28) } }
+                        .overlay(alignment: .bottom) { if i < shown.count - 1 { Divider().padding(.leading, 28) } }
+                    }
+                    if shown.count < list.count {
+                        Text("\(list.count - shown.count) more").font(.system(size: 12.5)).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, 6)
                     }
                 }
             }

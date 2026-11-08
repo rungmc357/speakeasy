@@ -447,6 +447,15 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 i.pop("note")
             elif isinstance(i.get("note"), str):
                 i["note"] = _first_clause(i["note"])
+            name = i["name"].strip()
+            if re.fullmatch(r"[a-z0-9]+(?:[-_][a-z0-9]+){2,}", name):
+                # "wiki-session-writeback-curator": a job's file name, read as words. Two-part slugs
+                # ("fieldnote-api") are the names people use for projects and stay as written.
+                name = re.sub(r"[-_]", " ", name)
+            i["name"] = name[0].upper() + name[1:] if name[:1].islower() and " " in name else name
+        if isinstance(body.get("scope"), str):
+            # "Scheduled jobs (partial list, ~3 AM snapshot)": the aside is the agent's caveat; the answer says it.
+            body = {**body, "scope": _PAREN_ASIDE.sub("", body["scope"]).strip() or body["scope"]}
         return {**body, "items": items} if body.get("scope") and items else {}
     if kind == "draft":
         channel = str(body.get("channel", "")).lower()
@@ -463,6 +472,13 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             items = [i if str(i.get("state", "")).lower() in TIMELINE_STATES else {k: v for k, v in i.items() if k != "state"}
                      for i in items]
             items = [{**i, "state": i["state"].lower()} if "state" in i else i for i in items]
+            for i in items:
+                # "SPK-208 Home is now a chat": a step reads as what happened; the key is tracker filing.
+                what = re.sub(r"^(?:[A-Z][A-Z0-9]*-\d+|#\d+)[:\s\u2014-]+(?=\S+\s+\S)", "", i["what"].strip())
+                i["what"] = _cap_first(what) if what != i["what"].strip() else what
+                # A note that is a list of keys ("Includes SPK-232, SPK-233, SPK-241") says nothing to read.
+                if isinstance(i.get("note"), str) and len(re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b|#\d+", i["note"])) >= 3:
+                    i.pop("note")
             if day.get("label") and items:
                 days.append({**day, "items": items})
         return {**body, "days": days} if days else {}
