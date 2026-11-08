@@ -236,7 +236,8 @@ public enum JobAnswer {
 
     /// Artifact kinds (v1): an answer carrying one opens on its job view (the card first, then
     /// "See the work"), not straight on the session.
-    public static let artifactKinds: Set<String> = ["explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview"]
+    public static let artifactKinds: Set<String> = ["explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview",
+                                                    "issue", "pr", "jobs", "site", "mockups"]
     public static func hasArtifact(_ info: WorkInfo) -> Bool { info.views.contains { artifactKinds.contains($0.kind) } }
 
     /// Kinds a board tile can draw small, best first.

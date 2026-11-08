@@ -407,7 +407,7 @@ struct ChartCard: View {
             }
             .buttonStyle(.plain)
             .frame(minHeight: JobLook.touch ? 44 : 24)
-            .foregroundStyle(JobLook.touch ? JobLook.brass : Color.accentColor)
+            .foregroundStyle(JobLook.touch ? CardStyle.active.emphasis : Color.accentColor)
             .accessibilityIdentifier("chart-show-values")
             if showsValues { ChartValueTable(facts: facts) }
         }
@@ -427,7 +427,7 @@ struct ChartRows: View {
     @State private var valueWidth: CGFloat = 0
 
     static func tint(_ series: Int) -> Color {
-        if series == 0 { return JobLook.touch ? JobLook.brass : Color.accentColor }
+        if series == 0 { return JobLook.touch ? CardStyle.active.emphasis : Color.accentColor }
         return [Color.teal, Color.purple, Color.pink][(series - 1) % 3]
     }
 
@@ -553,7 +553,7 @@ private struct FreshnessLabel: LabelStyle {
 private struct OneSeriesTint: ViewModifier {
     var on: Bool
     func body(content: Content) -> some View {
-        if on { content.chartForegroundStyleScale(range: [JobLook.brass]) } else { content }
+        if on { content.chartForegroundStyleScale(range: [CardStyle.active.emphasis]) } else { content }
     }
 }
 

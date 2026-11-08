@@ -19,7 +19,7 @@ MAX_VIEWS = 6
 S, N, B, URL, ANY_LIST, IMG = "str", "num", "bool", "url", "list", "img"
 
 # Row shapes reused by several kinds.
-EVENT = {"start": S, "end": S, "title": S, "place": S, "all_day": B, "color": S, "url": URL}
+EVENT = {"start": S, "end": S, "title": S, "place": S, "all_day": B, "color": S, "url": URL, "join_url": URL}
 GAME_SIDE = {"name": S, "abbr": S, "score": S, "logo_url": URL, "winner": B, "home": B, "record": S}
 DAY = {"label": S, "high": N, "low": N, "rain": N, "condition": S, "icon": S}
 HOUR = {"label": S, "temp": N, "rain": N, "icon": S}
@@ -131,6 +131,20 @@ CATALOG: dict[str, dict[str, Any]] = {
     "preview": {"entity": S, "title": S, "creator": S, "sub": S, "year": S, "photo_url": URL, "url": URL,
                 "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "summary": S, "list_label": S,
                 "list": (S, 10), "flags": (S, 4)},
+    # Work cards (Home v7). The agent sends facts; the app draws the layout, the server sets buttons.
+    # One issue from a tracker, with its mockup or screenshot as its own picture.
+    "issue": {"source": S, "ref": S, "title": S, "state": S, "tone": S, "assignee": S, "priority": S,
+              "labels": (S, 4), "note": S, "updated": S, "image": IMG, "url": URL},
+    # One pull request explained: where it stands and why, in one plain line, with its checks.
+    "pr": {"repo": S, "number": N, "title": S, "state": S, "reason": S, "files": N, "checks": (
+        {"name": S, "state": S, "note": S}, 6), "when": S, "url": URL, "diff_url": URL},
+    # Work that is running: one quiet status line each, what needs the user first.
+    "jobs": {"title": S, "items": ({"name": S, "status": S, "elapsed": S, "needs_you": B, "ask": S,
+                                    "task_id": S}, 8)},
+    # A website or preview deploy: the page's screenshot at its own shape, and one Open.
+    "site": {"url": URL, "title": S, "sub": S, "image": IMG},
+    # Screens the task designed, to swipe through, and up to two next steps the user can tap.
+    "mockups": {"title": S, "note": S, "items": ({"image": IMG, "caption": S}, 8), "next": (S, 2)},
 }
 
 # One thing in an explore section (a place, a stay, an album, a pull request…). The app draws the
@@ -142,7 +156,8 @@ ENTITY_ITEM = {"name": S, "sub": S, "when": S, "facts": (S, 3), "price": S, "rat
                "photo_url": URL, "image": IMG, "url": URL, "address": S, "city": S, "lat": N, "lon": N, "phone": S,
                "creator": S, "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "day": S}
 CATALOG["explore"]["sections"][0]["items"] = (ENTITY_ITEM, 10)
-ARTIFACTS = {"explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview"}
+ARTIFACTS = {"explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview",
+             "issue", "pr", "jobs", "site", "mockups"}
 ROW_ENTITIES = {"pr", "issue", "email", "todo", "bill", "package", "alert", "note", "item", "task", "post"}
 PREVIEW_ENTITIES = {"media", "article", "paper", "file", "document", "contract", "page", "image", "recipe"}
 TIMELINE_STATES = {"done", "now", "next"}
@@ -150,6 +165,9 @@ STATUS_STATES = {"ok", "warn", "bad", "off", "on", "needs_you", "info"}
 DRAFT_CHANNELS = {"email", "imessage", "sms", "slack", "discord", "telegram", "x", "linkedin", "whatsapp"}
 MEDIA_KINDS = {"album", "song", "playlist", "podcast", "artist", "show", "book"}
 MAX_ARTIFACTS = 2
+ISSUE_SOURCES = {"linear", "github", "jira", "other"}
+PR_STATES = {"open", "draft", "conflicts", "failing", "passing", "approved", "merged", "closed"}
+CHECK_STATES = {"passed", "failed", "skipped", "running", "pending"}
 
 TONES = {"good", "warn", "bad", "info", "neutral"}
 CHART_SORTS = {"high_first", "low_first", "as_listed"}
@@ -435,6 +453,48 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         if entity not in PREVIEW_ENTITIES or not body.get("title"):
             return {}
         return _entity_item(entity, {**body, "entity": entity})
+    if kind == "issue":
+        if not body.get("title"):
+            return {}
+        out = _tone(dict(body), TAG_TONES)
+        source = str(out.get("source", "")).lower()
+        out["source"] = source if source in ISSUE_SOURCES else "other"
+        return out
+    if kind == "pr":
+        state = str(body.get("state", "")).lower()
+        if not body.get("title") or not body.get("reason") or state not in PR_STATES:
+            return {}
+        out = {**body, "state": state, "reason": body["reason"][:160]}
+        if "number" in out and not (float(out["number"]).is_integer() and out["number"] > 0):
+            out.pop("number")
+        elif "number" in out:
+            out["number"] = int(out["number"])
+        checks = [{**c, "state": c["state"].lower()} for c in out.get("checks") or []
+                  if c.get("name") and str(c.get("state", "")).lower() in CHECK_STATES]
+        out.pop("checks", None)
+        if checks:
+            out["checks"] = checks
+        return out
+    if kind == "jobs":
+        items = [i for i in body.get("items") or [] if i.get("name") and i.get("status")]
+        for i in items:
+            if "ask" in i:
+                i["ask"] = _label(i["ask"])
+            if not i.get("needs_you"):
+                i.pop("ask", None)
+        return {**body, "items": items} if items else {}
+    if kind == "site":
+        return body if body.get("url") else {}
+    if kind == "mockups":
+        items = [i for i in body.get("items") or [] if i.get("image") is not None]
+        if not items:
+            return {}
+        out = {**body, "items": items}
+        nxt = [_label(n) for n in out.get("next") or [] if n]
+        out.pop("next", None)
+        if nxt:
+            out["next"] = nxt
+        return out
     return body
 
 
@@ -526,6 +586,17 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
         values += [pt["value"] for pt in view.get("points") or [] if pt.get("mark")]
     elif kind == "preview":
         names += [view["title"]] + ([view["creator"]] if view.get("creator") else [])
+    elif kind == "issue":
+        names.append(view["title"])
+        values += [view["ref"]] if view.get("ref") else []
+    elif kind == "pr":
+        names.append(view["title"])
+        values += [view["number"]] if view.get("number") is not None else []
+    elif kind == "jobs":
+        names += [i["name"] for i in view["items"]]
+    elif kind == "site":
+        names += [view["title"]] if view.get("title") else []
+    # mockups: the pictures are the task's own renders and their captions describe them; nothing to check.
     if kind == "explore":
         values += [it["day"] for sec in view["sections"] for it in sec["items"] if it.get("day")]
     return all(_grounded_name(n, said) for n in names) and all(_grounded_value(v, nums) for v in values)
@@ -540,6 +611,60 @@ def _artifact_actions(view: dict[str, Any]) -> dict[str, Any]:
     elif view["kind"] == "compare":
         label = _str("Go with " + view["options"][view["winner"]]["name"], 24) or "Go with this"
         view["actions"] = [{"id": "go", "label": label, "style": "primary", "confirm": True}]
+    elif view["kind"] == "pr" and view["state"] in ("conflicts", "failing"):
+        label = "Fix conflicts" if view["state"] == "conflicts" else "Fix the checks"
+        view["actions"] = [{"id": "fix", "label": label, "style": "primary", "confirm": False}]
+    elif view["kind"] == "mockups" and view.get("next"):
+        view["actions"] = [{"id": f"next_{i}", "label": n, "style": "secondary", "confirm": False}
+                           for i, n in enumerate(view["next"])]
+    return view
+
+
+def _label(text: str, limit: int = 24) -> str:
+    """A button's words, cut at a word so a label never ends mid-word."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit + 1].rsplit(" ", 1)[0].strip()
+    return cut or text[:limit]
+
+
+def _when(value: Any) -> Any:
+    """An event time as a datetime when it is a machine timestamp ("2026-11-09T13:00"), else None."""
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")) if "T" in str(value) else None
+    except ValueError:
+        return None
+
+
+def day_overlaps(view: dict[str, Any]) -> list[tuple[int, int]]:
+    """Pairs of a day's timed events that overlap (index of the earlier, index of the later). The
+    apps draw the same pairs from the same times; the server only uses them to offer Move."""
+    times = []
+    for i, e in enumerate(view.get("events") or []):
+        start, end = _when(e.get("start")), _when(e.get("end"))
+        if start and end and end > start and not e.get("all_day"):
+            times.append((start, end, i))
+    times.sort()
+    pairs = []
+    for a in range(len(times)):
+        for b in range(a + 1, len(times)):
+            try:
+                if times[b][0] < times[a][1]:
+                    pairs.append((times[a][2], times[b][2]))
+            except TypeError:   # one time with a zone, one without: not comparable, not drawn
+                continue
+    return pairs
+
+
+def _day_actions(view: dict[str, Any]) -> dict[str, Any]:
+    """A day with an overlap offers to move the later event (the agent does the moving)."""
+    pairs = day_overlaps(view)
+    if pairs and not view.get("actions"):
+        later = view["events"][pairs[0][1]].get("title") or "the later one"
+        view["actions"] = [{"id": "move", "label": _str("Move " + later, 24) or "Move it", "style": "secondary",
+                            "confirm": False}]
     return view
 
 
@@ -548,6 +673,9 @@ def shape(views: list[dict[str, Any]], answer: str) -> list[dict[str, Any]]:
     order given. Other kinds pass through unchanged (older apps keep their cards)."""
     out, kept = [], 0
     for view in views:
+        if view.get("kind") == "calendar_day":
+            out.append(_day_actions(view))
+            continue
         if view.get("kind") not in ARTIFACTS:
             out.append(view)
             continue
@@ -565,6 +693,19 @@ def follow_up(view: dict[str, Any], action: str) -> str | None:
         return f"Send the {channel} to {view['to']} exactly as drafted on the card."
     if view.get("kind") == "compare" and action == "go":
         return f"Go with {view['options'][view['winner']]['name']}."
+    if view.get("kind") == "pr" and action == "fix":
+        name = " ".join(x for x in (view.get("repo"), f"#{view['number']}" if view.get("number") else None) if x)
+        what = "merge conflicts" if view.get("state") == "conflicts" else "failing checks"
+        return f"Fix the {what} on the pull request {name} ({view['title']}).".replace("  ", " ")
+    if view.get("kind") == "mockups" and action.startswith("next_"):
+        nxt = view.get("next") or []
+        i = action[5:]
+        return f"{nxt[int(i)]}." if i.isdigit() and int(i) < len(nxt) else None
+    if view.get("kind") == "calendar_day" and action == "move":
+        pairs = day_overlaps(view)
+        if pairs:
+            first, later = (view["events"][j].get("title") or "the event" for j in pairs[0])
+            return f"Move {later} so it no longer overlaps {first}. Show me the new time before changing it."
     return None
 
 
@@ -578,6 +719,10 @@ def _image_parts(views: list[dict[str, Any]]):
         if view.get("kind") == "before_after":
             yield from (view.get(side) or {} for side in ("before", "after")
                         if _is_path((view.get(side) or {}).get("image")))
+        elif view.get("kind") in ("issue", "site") and isinstance(view.get("image"), str):
+            yield view
+        elif view.get("kind") == "mockups":
+            yield from (item for item in view.get("items") or [] if isinstance(item.get("image"), str))
         elif view.get("kind") == "explore":
             for section in view.get("sections", []):
                 for item in section.get("items", []):

@@ -42,23 +42,118 @@ func eventColor(_ name: String?) -> Color {
 struct DayCard: View {
     let card: ViewCard
     @Environment(\.cardFit) private var fit
+    @Environment(\.cardStyle) private var style
+    @Environment(\.cardRunAction) private var runAction
     var body: some View {
+        let events = Array(card["events"].array.prefix(fit.rows(12)))
+        let pairs = DayOverlaps.pairs(events)
         CardBox {
-            CardHeader(icon: "calendar", title: card["title"].string ?? card["date"].string ?? "Today")
-            let events = card["events"].array
+            CardHeader(icon: "calendar", title: card["title"].string ?? card["date"].string ?? "Today",
+                       trailing: style.capsHeaders || events.isEmpty ? nil : "\(card["events"].array.count) event\(card["events"].array.count == 1 ? "" : "s")")
             if events.isEmpty {
-                Text("Nothing scheduled.").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text("Nothing scheduled.").font(.system(size: style.capsHeaders ? 12 : 15)).foregroundStyle(style.secondary)
             }
-            ForEach(Array(events.prefix(fit.rows(12)).enumerated()), id: \.offset) { _, e in EventRow(event: e) }
-            MoreRows(total: min(events.count, 12), shown: fit.rows(12))
+            // Overlapping events sit together in one well, under a line saying by how much.
+            ForEach(groups(events, pairs), id: \.first) { group in
+                if group.count > 1 {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(overlapText(events, group), systemImage: "exclamationmark.triangle.fill")
+                            .font(style.capsHeaders ? .system(size: 11, weight: .semibold) : .caption.weight(.semibold))
+                            .foregroundStyle(style.warn)
+                        ForEach(group, id: \.self) { i in row(events[i], next: i == nextIndex(events)) }
+                        if let move = card.actions.first(where: { $0.id == "move" }), let runAction {
+                            CardPillButton(move.label, compact: style.capsHeaders) { runAction(move.id) }
+                                .accessibilityIdentifier("card-action-move")
+                        }
+                    }
+                    .cardWell(style, padding: style.capsHeaders ? 8 : 12)
+                    .accessibilityElement(children: .contain)
+                } else {
+                    row(events[group[0]], next: group[0] == nextIndex(events))
+                }
+            }
+            MoreRows(total: min(card["events"].array.count, 12), shown: events.count)
             let free = card["free"].strings
             if !free.isEmpty {
                 HStack(spacing: 5) {
-                    Image(systemName: "checkmark.circle").font(.system(size: 10)).foregroundStyle(.green)
-                    Text("Free " + free.joined(separator: ", ")).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2)
+                    if style.capsHeaders { Image(systemName: "checkmark.circle").font(.system(size: 10)).foregroundStyle(style.good) }
+                    Text("Free " + free.joined(separator: ", ")).font(style.capsHeaders ? .system(size: 11.5) : .footnote)
+                        .foregroundStyle(style.capsHeaders ? style.secondary : style.faint).lineLimit(2)
                 }
             }
         }
+    }
+
+    /// Events in order, overlapping ones gathered (transitively) into one group.
+    private func groups(_ events: [JSONValue], _ pairs: [(Int, Int)]) -> [[Int]] {
+        var parent = Array(events.indices)
+        func root(_ i: Int) -> Int { var i = i; while parent[i] != i { i = parent[i] }; return i }
+        for (a, b) in pairs { parent[root(b)] = root(a) }
+        var seen: [Int: Int] = [:], out: [[Int]] = []
+        for i in events.indices {
+            let r = root(i)
+            if let g = seen[r] { out[g].append(i) } else { seen[r] = out.count; out.append([i]) }
+        }
+        return out
+    }
+
+    private func overlapText(_ events: [JSONValue], _ group: [Int]) -> String {
+        let spans = group.compactMap { i -> (Date, Date)? in
+            guard let s = events[i]["start"].string.flatMap(EventTimes.date), let e = events[i]["end"].string.flatMap(EventTimes.date) else { return nil }
+            return (s, e)
+        }
+        guard group.count == 2, spans.count == 2 else { return "These overlap" }
+        let minutes = Int((min(spans[0].1, spans[1].1).timeIntervalSince(max(spans[0].0, spans[1].0)) / 60).rounded())
+        guard minutes > 0 else { return "These overlap" }
+        let span = minutes >= 60 && minutes % 60 == 0 ? "\(minutes / 60) hour\(minutes == 60 ? "" : "s")" : "\(minutes) minutes"
+        return "These overlap by \(span)"
+    }
+
+    /// The first event still to come that has a call link gets Join.
+    private func nextIndex(_ events: [JSONValue]) -> Int? {
+        events.firstIndex { e in
+            e["join_url"].url != nil && (e["end"].string.flatMap(EventTimes.date).map { $0 > Date() } ?? true)
+        }
+    }
+
+    @ViewBuilder private func row(_ e: JSONValue, next: Bool) -> some View {
+        if style.capsHeaders {
+            HStack(spacing: 6) {
+                EventRow(event: e)
+                if next, let join = e["join_url"].url { Link("Join", destination: join).font(.system(size: 11.5, weight: .semibold)) }
+            }
+        } else {
+            HStack(alignment: .center, spacing: 12) {
+                Text(e["all_day"].bool == true ? "All day" : EventTimes.one(e["start"].string).map(Self.bare) ?? "")
+                    .font(.footnote.weight(.semibold)).monospacedDigit().foregroundStyle(style.secondary)
+                    .frame(width: 48, alignment: .leading)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(e["title"].string ?? "").font(.subheadline.weight(.medium)).foregroundStyle(style.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    let note = [e["all_day"].bool == true ? nil : EventTimes.span(start: e["start"].string, end: e["end"].string),
+                                e["place"].string ?? (e["join_url"].url != nil ? "Video call" : nil)].compactMap { $0 }
+                    if !note.isEmpty { Text(note.joined(separator: " · ")).font(.footnote).foregroundStyle(style.secondary).lineLimit(2) }
+                }
+                Spacer(minLength: 4)
+                if next, let join = e["join_url"].url {
+                    Link(destination: join) {
+                        Text("Join").font(.subheadline.weight(.semibold)).foregroundStyle(style.onAction)
+                            .padding(.horizontal, 16).frame(height: 34).background(Capsule().fill(style.action))
+                    }
+                    .accessibilityLabel("Join \(e["title"].string ?? "the call")")
+                } else if let url = e["url"].url {
+                    Link(destination: url) { Image(systemName: "arrow.up.right").font(.caption.weight(.semibold)).foregroundStyle(style.faint) }
+                        .accessibilityLabel("Open \(e["title"].string ?? "event")")
+                }
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// "1:00 PM" → "1:00" in the time column (the span underneath says AM/PM).
+    static func bare(_ time: String) -> String {
+        for suffix in [" AM", " PM", "\u{202F}AM", "\u{202F}PM"] where time.hasSuffix(suffix) { return String(time.dropLast(suffix.count)) }
+        return time
     }
 }
 

@@ -69,6 +69,7 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
         "translation", "recipe", "nutrition", "comparison", "list", "steps", "stats", "chart", "news",
         "home", "thermostat", "camera", "question", "lanes", "before_after", "flow", "devices",
         "explore", "compare", "status", "draft", "timeline", "rows", "metric", "preview", "confirm",
+        "issue", "pr", "jobs", "site", "mockups",
     ]
 
     /// Cards are a task's answer, so the task has finished: a "progress" card (older servers sent
@@ -150,6 +151,25 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
                     self["delta"].string].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
         case "preview":
             return [self["title"].string, self["creator"].string.map { "by \($0)" }, self["sub"].string].compactMap { $0 }.joined(separator: ", ")
+        case "issue":
+            return [self["ref"].string, self["title"].string, self["state"].string, self["assignee"].string]
+                .compactMap { $0 }.joined(separator: ", ")
+        case "pr":
+            let ref = self["number"].string.map { "Pull request #\($0)" } ?? "Pull request"
+            return [ref, self["title"].string, PRState.label(self["state"].string), self["reason"].string]
+                .compactMap { $0 }.joined(separator: ", ")
+        case "jobs":
+            let items = self["items"].array.map { [$0["name"].string, $0["status"].string].compactMap { $0 }.joined(separator: ": ") }
+            return ([self["title"].string ?? "Running"] + items.prefix(6)).joined(separator: ", ")
+        case "site":
+            return [self["title"].string ?? self["url"].url?.host, self["sub"].string].compactMap { $0 }.joined(separator: ", ")
+        case "mockups":
+            let n = self["items"].array.count
+            return [self["title"].string, "\(n) screen\(n == 1 ? "" : "s")"].compactMap { $0 }.joined(separator: ", ")
+        case "calendar_day":
+            let n = DayOverlaps.pairs(self["events"].array).count
+            return ([self["title"].string ?? self["date"].string ?? "Today", "\(self["events"].array.count) events"]
+                    + (n > 0 ? ["\(n) overlap\(n == 1 ? "" : "s")"] : [])).compactMap { $0 }.joined(separator: ", ")
         default:
             return self["title"].string ?? self["name"].string ?? self["word"].string ?? kind.replacingOccurrences(of: "_", with: " ").capitalized
         }
@@ -180,4 +200,49 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
     }
 
     public static func degrees(_ value: Double?) -> String { value.map { "\(Int($0.rounded()))°" } ?? "–" }
+}
+
+/// A pull request's state in plain words, and its tone.
+public enum PRState {
+    public static func label(_ state: String?) -> String? {
+        switch state {
+        case "open": return "Open"
+        case "draft": return "Draft"
+        case "conflicts": return "Conflicts"
+        case "failing": return "Checks failing"
+        case "passing": return "Checks passed"
+        case "approved": return "Approved"
+        case "merged": return "Merged"
+        case "closed": return "Closed"
+        default: return nil
+        }
+    }
+    /// good, warn, bad or neutral.
+    public static func tone(_ state: String?) -> String {
+        switch state {
+        case "conflicts": return "warn"
+        case "failing": return "bad"
+        case "passing", "approved", "merged": return "good"
+        default: return "neutral"
+        }
+    }
+}
+
+/// Timed events on one day that overlap (index of the earlier, index of the later), from their
+/// machine times; the plugin finds the same pairs (views.day_overlaps). Word times never overlap.
+public enum DayOverlaps {
+    public static func pairs(_ events: [JSONValue]) -> [(Int, Int)] {
+        let timed: [(Date, Date, Int)] = events.enumerated().compactMap { i, e in
+            guard e["all_day"].bool != true, let s = e["start"].string.flatMap(EventTimes.date),
+                  let f = e["end"].string.flatMap(EventTimes.date), f > s else { return nil }
+            return (s, f, i)
+        }.sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.2 < $1.2 }
+        var out: [(Int, Int)] = []
+        for a in timed.indices { for b in timed.indices where b > a && timed[b].0 < timed[a].1 { out.append((timed[a].2, timed[b].2)) } }
+        return out
+    }
+    /// Indexes of events that overlap another.
+    public static func clashing(_ events: [JSONValue]) -> Set<Int> {
+        Set(pairs(events).flatMap { [$0.0, $0.1] })
+    }
 }

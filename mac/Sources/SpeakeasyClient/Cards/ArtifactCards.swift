@@ -5,7 +5,9 @@ import SpeakeasyCore
 // typed fields only; layout, links and the photo-or-icon choice live here. Premium bar: no table
 // grids, photos only when they load (an icon tile otherwise), one gold primary per card.
 
-private let gold = JobLook.brass
+/// Highlights (brass on classic, neutral ink on clean) and the one primary action, from the card look.
+private var gold: Color { CardStyle.active.emphasis }
+private var look: CardStyle { CardStyle.active }
 
 // MARK: - P1 Explore: sections of swipeable things
 
@@ -126,9 +128,9 @@ struct EntityTile: View {
             }
             .padding(12)
         }
-        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.primary.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(look.well))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(look.hairline))
         .accessibilityElement(children: .contain)
     }
 
@@ -215,8 +217,8 @@ struct PillButton: View {
                 if !iconOnly { Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1) }
             }
             .padding(.horizontal, iconOnly ? 0 : 14).frame(minWidth: 34).frame(height: 34)
-            .foregroundStyle(primary ? JobLook.brassInk : Color.primary)
-            .background(Capsule().fill(primary ? AnyShapeStyle(gold) : AnyShapeStyle(Color.primary.opacity(0.09))))
+            .foregroundStyle(primary ? look.onAction : look.quietInk)
+            .background(Capsule().fill(primary ? AnyShapeStyle(look.action) : AnyShapeStyle(look.quietFill)))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -245,7 +247,7 @@ struct CompareCard: View {
                     }
                     HStack(spacing: 8) {
                         Label("MY PICK", systemImage: "star.fill").font(.system(size: 11, weight: .bold)).tracking(0.6)
-                            .foregroundStyle(JobLook.brassInk).padding(.horizontal, 8).padding(.vertical, 4)
+                            .foregroundStyle(look.onAction).padding(.horizontal, 8).padding(.vertical, 4)
                             .background(Capsule().fill(gold))
                         Text(card["why"].string ?? "").font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2)
                     }
@@ -267,8 +269,9 @@ struct CompareCard: View {
                     }
                 }
                 .padding(14)
-                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(gold.opacity(0.08)))
-                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(gold.opacity(0.85), lineWidth: 1.2))
+                .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(look.capsHeaders ? gold.opacity(0.08) : look.well))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(look.capsHeaders ? gold.opacity(0.85) : look.hairline, lineWidth: look.capsHeaders ? 1.2 : 0.7))
             }
             if !others.isEmpty && fit != .compact {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10, alignment: .top), GridItem(.flexible(), spacing: 10, alignment: .top)], spacing: 10) {
@@ -282,7 +285,7 @@ struct CompareCard: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.06)))
+                            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(look.well))
                         }
                         .buttonStyle(.plain).disabled(o["url"].url == nil)
                     }
@@ -320,9 +323,9 @@ struct StatusTile: View {
     let item: JSONValue
     static func color(_ state: String?) -> Color {
         switch state {
-        case "ok", "on": return .green
-        case "warn", "needs_you": return gold
-        case "bad": return .red
+        case "ok", "on": return look.good
+        case "warn", "needs_you": return look.needsYou
+        case "bad": return look.bad
         default: return .secondary
         }
     }
@@ -349,8 +352,8 @@ struct StatusTile: View {
             if let note = item["note"].string { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2) }
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(loud ? gold.opacity(0.08) : Color.primary.opacity(0.06)))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(loud ? Self.color(state).opacity(0.7) : Color.primary.opacity(0.08)))
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(loud ? Self.color(state).opacity(0.08) : look.well))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(loud ? Self.color(state).opacity(0.7) : look.hairline))
         .accessibilityElement(children: .combine)
     }
 }
@@ -406,7 +409,7 @@ struct ArtifactDraftCard: View {
             Text(card["body"].string ?? "").font(.system(size: 14.5)).textSelection(.enabled)
                 .lineLimit(fit == .compact ? 3 : nil).fixedSize(horizontal: false, vertical: true)
                 .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.06)))
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(look.well))
             if let changes = card["changes"].string { Text(changes).font(.system(size: 12.5)).foregroundStyle(.secondary) }
         }
     }
@@ -485,7 +488,7 @@ struct ArtifactOpenerHost<Content: View>: View {
     private func choice(_ title: String, _ go: @escaping () -> Void) -> some View {
         Button { pending = nil; go() } label: {
             Text(title).font(.system(size: 16, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 44)
-                .foregroundStyle(JobLook.brassInk).background(Capsule().fill(gold))
+                .foregroundStyle(look.onAction).background(Capsule().fill(look.action))
         }
         .buttonStyle(.plain)
     }
