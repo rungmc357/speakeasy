@@ -983,6 +983,15 @@ Hermes session, on the board, openable by `run_id`), never through routing. Idem
 `client_id` as above. `202 {"ok": true, "run_id": "run_0002", "task_id": "job_…", "task": {...}}`;
 `400` for an empty, too long or malformed body, `502` when Hermes didn't take it.
 
+Capability `chat_replies`. An app that can show a plain reply adds `"chat_replies": true` to the body.
+Older servers refuse the unknown key, so send it only when the capability is there. Then a greeting or
+small talk on its own with no attachments ("hi", "hey, how's it going?", the same rule as a hello on a
+call) starts **no** job. The reply is `202 {"ok": true, "delivered_as": "chat", "reply": "Hi! …",
+"run_id": null, "task_id": null, "task": null, "session_id": null}`. Nothing is added to the board,
+Home or a Hermes session; the app shows `reply` in the chat. A job's reply says
+`"delivered_as": "new_run"`. Apps must show a job (Starting…, a task card) only for that. Without the
+flag, or on servers without `chat_replies`, every send here is a job, as before.
+
 While such a job runs, the server counts as busy: a newly installed plugin version loads only after
 it (and any call) has finished, exactly like a job started on a call.
 

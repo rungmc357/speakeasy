@@ -43,7 +43,7 @@ from .computer_name import computer_name
 from .calls import (ACTIVE_RUN_STATES, SHARE_NOTE_KEY, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_BOARD, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
                     TYPED_SENT, BackendRun, CallState, ServiceError,
                     Interaction, Notices, Runtime, SidebandWorker, call_work_running, end_shared, interaction_tasks, publish_state,
-                    typed_text)
+                    is_greeting, typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
 from .devices import CLIENT_HEADER, DeviceStore, parse_client
 from .emails import canonical_json, extract_email_drafts
@@ -95,6 +95,9 @@ CAPABILITIES["job_subagents"] = True  # helpers a task started (delegate_task) o
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
 CAPABILITIES["task_stop"] = True  # POST /voice/work/{run_id}/stop: stop one task by id, with or without a call
 CAPABILITIES["start_jobs"] = True  # POST /voice/work: a new job from typed text, no call needed (the app's Update button)
+# POST /voice/work with "chat_replies": true answers a greeting / small talk itself (delivered_as
+# "chat" + reply): no job, no run.
+CAPABILITIES["chat_replies"] = True
 CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the pair response): every address of this Hermes
 # POST /voice/interactions/{id}/input-text: a turn typed to the call itself (same as the top-level
 # "input_text"; listed here too so both typing features sit together). task_messages types to one job.
@@ -2256,10 +2259,13 @@ class VoiceService(SecureInputMixin):
         notice's Update button). It runs like a job started on a call, on the voiceless worker, never
         through routing, and shows on the board. Idempotent on client_id."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "source", "client_id", "attachments", "model", "reasoning", "agent"}:
+                "text", "source", "client_id", "attachments", "model", "reasoning", "agent", "chat_replies"}:
             raise ServiceError(400, "Send the job as text.")
+        chats = body.get("chat_replies", False)
+        if not isinstance(chats, bool):
+            raise ServiceError(400, "chat_replies must be true or false.")
         agent = self._body_agent(body)
-        choice = self._body_choice({k: v for k, v in body.items() if k != "agent"})
+        choice = self._body_choice({k: v for k, v in body.items() if k not in {"agent", "chat_replies"}})
         if agent:
             choice = {"agent": agent}  # another agent runs on its own model and level
         text, source, client_id = body.get("text"), body.get("source") or "typed", body.get("client_id")
@@ -2275,6 +2281,14 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "source must be typed.")
         if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
             raise ServiceError(400, "client_id must be an id.")
+        if chats and not ids and is_greeting(text):
+            # "hi" from Home / New chat is plain chat, like a hello on a call (calls.py): no job, no run,
+            # nothing on the board or Home. Only for apps that show the reply (`chat_replies` in the
+            # body); the Mac, older phones and the Share extension still get the job they expect.
+            logger.info("speakeasy: a typed greeting, no job started")
+            return self._once(client_id, lambda: {"ok": True, "delivered_as": "chat", "reply": P.GREETING_TYPED,
+                                                  "run_id": None, "task_id": None, "task": None, "session_id": None},
+                              route="work", text=text)
         return self._once(client_id, lambda: self._with_staged(
             device_id, ids, lambda staged: self._start_job(text, staged, choice=choice, new_chat=True)),
                           route="work", text=text)

@@ -1626,6 +1626,7 @@ def reaction_note(names: "Names") -> str:
 
 
 GREETING_SPOKEN = "That was just a hello, so nothing's started. Go ahead, I'm listening."
+GREETING_TYPED = "Hi! Nothing's started. Tell me what you'd like done and I'll get on it."
 
 
 def nothing_started_note(names: "Names") -> str:

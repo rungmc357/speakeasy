@@ -550,6 +550,22 @@ public final class ServerClient: @unchecked Sendable {
         return (reply["run_id"] as? String, session)
     }
 
+    /// A New chat's first message and what the server made of it: a job, or (`serverChats`: servers
+    /// with `chat_replies`) a plain reply to small talk with no run. See `NewChatSend`.
+    public func startNewChat(text: String, attachments: [String] = [], clientID: String = UUID().uuidString,
+                             choice: ModelChoice? = nil, agent: String? = nil,
+                             serverChats: Bool = false) async throws -> NewChatSend.Outcome {
+        guard let body = NewChatSend.body(text: text, attachments: attachments, clientID: clientID, choice: choice,
+                                          agent: agent, serverChats: serverChats) else {
+            throw HTTPError(status: 400, message: "The job is empty.")
+        }
+        let reply = try await post("/voice/work", body)
+        guard let outcome = NewChatSend.outcome(reply) else {
+            throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't start that.")
+        }
+        return outcome
+    }
+
     // MARK: History (servers with `history`; docs/API.md "History")
 
     /// One page of every Hermes session, newest first.
