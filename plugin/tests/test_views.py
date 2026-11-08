@@ -12,6 +12,15 @@ def test_unknown_kind_and_bad_fields_are_dropped():
     assert v == {"kind": "quote", "symbol": "ACME", "price": 12.5, "points": [1.0, 3.0]}
 
 
+def test_weather_rows_with_only_a_label_are_left_out():
+    v = views.clean({"kind": "weather", "place": "Springfield", "temp": 51, "high": 57, "low": 36,
+                     "days": [{"label": "6am"}, {"label": "9am", "icon": "cloud"}]})
+    assert "days" not in v and v["high"] == 57
+    v = views.clean({"kind": "weather", "place": "Springfield", "temp": 51,
+                     "hours": [{"label": "6am", "temp": 40}, {"label": "9am"}]})
+    assert v["hours"] == [{"label": "6am", "temp": 40.0}]
+
+
 def test_lists_are_capped_and_rows_validated():
     v = views.clean({"kind": "list", "title": "Errands", "items": [{"text": f"item {i}", "done": "yes"} for i in range(40)]})
     assert len(v["items"]) == 20 and "done" not in v["items"][0]

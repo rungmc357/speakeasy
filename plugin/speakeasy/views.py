@@ -387,6 +387,16 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             body["sort"] = word
     if kind == "before_after" and not ("before" in body or "after" in body):
         return {}
+    if kind == "weather":
+        # A row that is only a label ("6am" with no temperature) draws an empty bar: no row
+        # beats an empty one, and an hour or day list of nothing but labels is left out.
+        for rows in ("hours", "days"):
+            if rows in body:
+                kept = [row for row in body[rows] if set(row) - {"label", "icon"}]
+                if kept:
+                    body[rows] = kept
+                else:
+                    body.pop(rows)
     if kind in ARTIFACTS:
         return _artifact(kind, body)
     return body
