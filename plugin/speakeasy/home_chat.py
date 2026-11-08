@@ -97,6 +97,9 @@ _CLAIMS_WORK = re.compile(
     r"(?i)(?:^|[.!?]\s+|\band\s+)(?:"
     r"(?:i'?m\s+|i am\s+|now\s+)?(?:looking (?:for|up|into)|checking|searching|finding|pulling up|fetching|digging into)"
     r"|(?:i'?ll|i will|let me)\s+(?:look|check|search|find|pull up|fetch|dig)"
+    # The acknowledgements the start line itself suggests ("Looking now.", "Checking now.") promise a
+    # job too: seen live, "Looking now." with no tool call left an ask with no job.
+    r"|(?:looking|checking|searching|digging in)\s+(?:now|on (?:it|that))\b|looking at (?:it|that|this) now\b"
     r"|on it\b)")
 
 

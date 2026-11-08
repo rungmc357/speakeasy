@@ -122,3 +122,11 @@ def test_a_start_with_no_request_still_gets_a_clean_line():
     parsed = HC.parse({"tool": "start_job", "args": {"reply": "I can't see the video you attached. Starting a job to look."},
                        "text": ""}, {})
     assert parsed and parsed["action"] == "start" and parsed["reply"] == HC.ACK
+
+
+def test_the_suggested_acknowledgements_count_as_promising_work():
+    # "Looking now." with no tool call must trigger the start-the-job retry, like "On it."
+    for said in ("Looking now.", "Checking now.", "On it.", "Looking at it now.", "Checking."):
+        assert HC.claims_work(said), said
+    for said in ("Looking at the forecast, you won't need one.", "Nope, only a 2% chance of rain."):
+        assert not HC.claims_work(said), said
