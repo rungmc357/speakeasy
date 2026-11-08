@@ -118,7 +118,7 @@ struct EntityTile: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 let sub = item["sub"].string ?? item["creator"].string
-                // "Williamsburg, Brooklyn · Brooklyn": the city only when the line doesn't already say it.
+                // "Old Town, Springfield · Springfield": the city only when the line doesn't already say it.
                 let city = item["city"].string.flatMap { c in sub?.localizedCaseInsensitiveContains(c) == true ? nil : c }
                 let first = [sub, city, item["price"].string,
                              item["rating"].double.map { String(format: "★ %.1f", $0) }, item["state"].string].compactMap { $0 }

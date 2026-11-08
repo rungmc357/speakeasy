@@ -193,8 +193,8 @@ def test_calendar_move_label_cuts_at_a_word_and_free_time_names_real_gaps():
 
 
 def test_a_row_label_with_a_qualifier_counts_as_said_by_its_head():
-    said, nums = views._norm("The wallboard updater and the backup job missed their runs."), set()
-    assert views._grounded_label("Wallboard updater \u2014 daytime", said, nums)
+    said, nums = views._norm("The report builder and the backup job missed their runs."), set()
+    assert views._grounded_label("Report builder \u2014 nightly", said, nums)
     assert not views._grounded_label("Open lane", said, nums)
 
 

@@ -877,7 +877,7 @@ def _grounded_label(name: str, said: str, said_numbers: set[str], half: bool = F
         return True
     head = re.split(r"\s+[\u2014\u2013+]\s+|\s+-\s+|\s*\(", name, maxsplit=1)[0].strip()
     if head != name and len(_norm(head).split()) >= 2 and _grounded_label(head, said, said_numbers, half):
-        return True   # "Wallboard updater \u2014 daytime": the job is named; the qualifier is its detail
+        return True   # "Report builder \u2014 nightly": the job is named; the qualifier is its detail
     words = [w for w in _norm(name).split() if w not in _LABEL_STOP]
     if len(words) < 2 or not _numbers(name) <= said_numbers:
         return False
