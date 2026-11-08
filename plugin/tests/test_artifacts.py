@@ -308,13 +308,15 @@ def test_planning_timeline_keeps_dated_rows_and_checks_states_and_coordinates():
     assert sat["items"] == [{"when": "11:00 AM", "what": "Port tasting", "lat": 41.13, "lon": -8.61}]
 
 
-def test_release_stages_timeline_leaves_off_a_time_not_in_the_answer():
+def test_release_stages_timeline_drops_when_a_time_is_not_in_the_answer():
     stages = {"kind": "timeline", "title": "Release 4.2", "days": [{"label": "Today", "items": [
         {"when": "10:00", "what": "Tests passed", "state": "done"}, {"when": "14:30", "what": "Store review", "state": "now"}]}]}
     assert _result("Tests passed at 10:00; store review started at 14:30.", [stages])["views"][0]["days"][0]["items"][1]["state"] == "now"
-    # An unsaid time is left off its step (never shown, never guessed); the stage itself stays.
-    items = _result("Tests passed at 10:00; store review is under way.", [stages])["views"][0]["days"][0]["items"]
-    assert items[0]["when"] == "10:00" and "when" not in items[1] and items[1]["what"] == "Store review"
+    assert _result("Tests passed at 10:00; store review is under way.", [stages])["views"] == []
+    # "Nov 8, 2:50 AM" said as "2:50 AM today": the clock time pins the step.
+    dated = {"kind": "timeline", "title": "Release 4.2", "days": [{"label": "Done", "items": [
+        {"when": "Nov 8, 2:50 AM", "what": "Store review", "state": "done"}]}]}
+    assert _result("Store review finished at 2:50 AM today.", [dated])["views"]
 
 
 ISSUES = {"kind": "rows", "title": "Needs review", "entity": "PR", "items": [

@@ -514,7 +514,7 @@ ARTIFACTS_RULE = (
     "jobs waiting, disk used), note (what it means, at most 6 words, e.g. Not answering since 3:12 PM), history[recent "
     "values of that number when the tool gave them], url}]} (machines, services, deploys; not agents or jobs, "
     "which are a jobs card; the thing that's wrong comes first, the cause before what it held up, and several items "
-    "stopped by one cause are one item saying so, e.g. 4 jobs every few minutes · Missed since 3 AM; the value of each "
+    "stopped by one cause are one item saying so, named in your answer's words; the value of each "
     "is the number your answer is about, e.g. the CPU of a busy machine rather than its free disk); draft (a message for the user to send) {channel "
     "(email|imessage|sms|slack|discord|telegram|x|linkedin|whatsapp), to (the name only), subject, body, send_as}. "
     "Four more: timeline (what happens when: a trip by day, a calendar, release stages, a package's scans) "

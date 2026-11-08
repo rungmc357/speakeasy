@@ -1027,6 +1027,8 @@ def _offered(view: dict[str, Any]) -> list[dict[str, Any]]:
     for a in view.get("actions") or []:
         if not str(a.get("id", "")).startswith("do_") or len(out) == MAX_OFFERED:
             continue
+        if re.match(r"(?i)^(?:open|view|visit|go to)\b", a["label"]):
+            continue   # opening a page is a link the phone opens, not words sent to the task ("Open #66526")
         primary = a.get("style") == "primary" and not any(o["style"] == "primary" for o in out)
         harmful = bool(_HARMFUL.match(a["label"]))
         out.append({**a, "style": "primary" if primary and not harmful else "destructive" if harmful else "secondary",
@@ -1172,24 +1174,9 @@ def _checks_counted(view: dict[str, Any], answer: str) -> dict[str, Any]:
 
 
 def _soft_unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
-    """Optional facts the answer never says go, not the card: a release step's time ("2:50 AM" only in
-    the card) or a preview's maker. Nothing is rewritten; an unbacked detail is simply left off, so
-    every fact still shown is one the answer says."""
-    said, nums = _norm(answer), _numbers(answer)
-    if view.get("kind") == "timeline":
-        days = []
-        for day in view["days"]:
-            items = []
-            for it in day["items"]:
-                when = it.get("when")
-                if when is not None:
-                    clock = re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:AM|PM|am|pm)\b", str(when))
-                    ok = _grounded_value(when, nums) or (clock and "," in str(when) and _grounded_value(clock.group(0), nums))
-                    if not ok:
-                        it = {k: v for k, v in it.items() if k != "when"}
-                items.append(it)
-            days.append({**day, "items": items})
-        view = {**view, "days": days}
+    """A document preview's maker the answer never names is left off, not the card (a name, never a
+    number: a figure or time the answer doesn't back still drops the card, which is never repaired)."""
+    said = _norm(answer)
     if (view.get("kind") == "preview" and view.get("creator") and view.get("entity") != "media"
             and not _grounded_name(view["creator"], said)):
         # A document's maker is a detail; an album's artist is what makes it the right album, so it stays checked.
