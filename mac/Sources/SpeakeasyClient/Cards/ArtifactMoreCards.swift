@@ -210,16 +210,25 @@ struct ActionRow: View {
                     Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                HStack(spacing: 6) {
-                    if let state = item["state"].string {
-                        Text(state).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
-                            .padding(.horizontal, 7).padding(.vertical, 2.5)
-                            .foregroundStyle(tone == nil ? Color.primary : Self.tone(tone))
-                            .background(Capsule().fill((tone == nil ? Color.primary : Self.tone(tone)).opacity(0.12)))
-                            .fixedSize().layoutPriority(1)   // the note gives way, never the status word ("Due Mon…")
+                let meta = [inline ? nil : ref, item["who"].string, item["note"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
+                let chip = item["state"].string.map { state in
+                    Text(state).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
+                        .padding(.horizontal, 7).padding(.vertical, 2.5)
+                        .foregroundStyle(tone == nil ? Color.primary : Self.tone(tone))
+                        .background(Capsule().fill((tone == nil ? Color.primary : Self.tone(tone)).opacity(0.12)))
+                        .fixedSize()
+                }
+                // Chip and note share a line when the note fits whole; else the note takes its own line
+                // under the chip (beside it, it was cut to nothing: "Unread · Dana · Confirm pr…").
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        chip
+                        if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1).fixedSize() }
                     }
-                    let meta = [inline ? nil : ref, item["who"].string, item["note"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
-                    if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
+                    VStack(alignment: .leading, spacing: 3) {
+                        chip
+                        if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true) }
+                    }
                 }
             }
             Spacer(minLength: 6)
@@ -247,10 +256,12 @@ struct MetricCard: View {
     var body: some View {
         let points = card["points"].array
         VStack(alignment: .leading, spacing: 8) {
-            // The app heads the card ("Sentry · crashes per hour"), as the designs do; the footer keeps the time.
+            // The app heads the card ("Sentry · fieldnote-ios"), as the designs do; what the number counts
+            // sits under it, whole (in the header it was cut: "Shared notes crashes p…").
             let label = card["label"].string ?? ""
-            AppHeader(parts: [card["source"].string, card["scope"].string, label].compactMap { $0 }.filter { !$0.isEmpty }.removingDuplicates(),
-                      source: card["source"].string)
+            let where_ = [card["source"].string, card["scope"].string].compactMap { $0 }.filter { !$0.isEmpty }.removingDuplicates()
+            AppHeader(parts: where_.isEmpty ? [label] : where_, source: card["source"].string)
+            VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(card["value"].string ?? "").font(.system(size: fit == .compact ? 30 : 40, weight: .bold)).monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.6)
@@ -264,6 +275,13 @@ struct MetricCard: View {
                     Text(delta).font(.system(size: 14, weight: .bold)).monospacedDigit().foregroundStyle(color)
                         .padding(.horizontal, 8).padding(.vertical, 3).background(Capsule().fill(color.opacity(0.13)))
                 }
+            }
+            // "crashes per hour · 41 people affected": what it counts, and the one fact beside it.
+            let sub = [where_.isEmpty || label.isEmpty ? nil : label, card["note"].string]
+                .compactMap { $0 }.joined(separator: " · ")
+            if !sub.isEmpty {
+                Text(sub).font(.system(size: 13.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             }
             if points.count >= 2 {
                 MetricLine(points: points, threshold: card["threshold"].double, thresholdLabel: card["threshold_label"].string,
@@ -412,8 +430,13 @@ struct PreviewCard: View {
                         .padding(.vertical, 6)
                         .overlay(alignment: .bottom) { if i < shown.count - 1 { Divider().padding(.leading, 28) } }
                     }
-                    if shown.count < list.count {
-                        Text("\(list.count - shown.count) more").font(.system(size: 12.5)).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, 6)
+                    // The count the header gives ("10 changes") when the list sent fewer: "3 more" under 6
+                    // of a 10-change build disagreed with the line above it.
+                    let said = (card["sub"].string ?? "").range(of: #"\b(\d{1,3}) (?:changes|issues|fixes|items)\b"#, options: .regularExpression)
+                        .flatMap { Int((card["sub"].string ?? "")[$0].split(separator: " ")[0]) } ?? 0
+                    let total = max(list.count, said)
+                    if shown.count < total {
+                        Text("\(total - shown.count) more").font(.system(size: 12.5)).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, 6)
                     }
                 }
             }

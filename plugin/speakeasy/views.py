@@ -126,7 +126,7 @@ CATALOG: dict[str, dict[str, Any]] = {
     # P6: one number that matters, which way it moves, and the series behind it.
     "metric": {"label": S, "value": S, "unit": S, "delta": S, "good": B,
                "points": ({"label": S, "value": N, "mark": S}, 31),
-               "threshold": N, "threshold_label": S, "source": S, "scope": S, "as_of": S},
+               "threshold": N, "threshold_label": S, "source": S, "scope": S, "as_of": S, "note": S},
     # P7: one thing to open (an album, an article, a paper, a contract, a file) with a short list.
     "preview": {"entity": S, "title": S, "creator": S, "sub": S, "year": S, "photo_url": URL, "url": URL,
                 "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "summary": S, "list_label": S,
@@ -996,6 +996,7 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
         # The line itself prints no numbers; only marked points show theirs, so only those are checked.
         values += [view["value"]] + [view[k] for k in ("delta", "threshold") if view.get(k) is not None]
         values += [pt["value"] for pt in view.get("points") or [] if pt.get("mark")]
+        loose += [view["note"]] if view.get("note") else []   # "41 people affected": its number said, half its words
     elif kind == "preview":
         names += [view["title"]] + ([view["creator"]] if view.get("creator") else [])
     elif kind in ("issue", "pr"):
@@ -1209,6 +1210,22 @@ def _soft_unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
             and not _grounded_name(view["creator"], said)):
         # A document's maker is a detail; an album's artist is what makes it the right album, so it stays checked.
         view = {k: v for k, v in view.items() if k != "creator"}
+    if view.get("kind") == "timeline":
+        # "Nov 8, 2:50 AM" where the answer said "today at 2:50 AM": the time is backed; the date
+        # beside it is the day's own label. Only the date goes; an unsaid time still drops the card.
+        nums = _numbers(answer)
+        days = []
+        for day in view.get("days") or []:
+            items = []
+            for it in day.get("items") or []:
+                when = it.get("when")
+                if isinstance(when, str) and not _grounded_value(when, nums):
+                    m = re.fullmatch(r"[A-Z][a-z]{2,8}\.? \d{1,2}, (\d{1,2}(?::\d{2})? ?[AP]M)", when.strip())
+                    if m and _grounded_value(m.group(1), nums):
+                        it = {**it, "when": m.group(1)}
+                items.append(it)
+            days.append({**day, "items": items})
+        view = {**view, "days": days}
     return view
 
 

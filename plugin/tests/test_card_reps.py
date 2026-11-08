@@ -308,3 +308,20 @@ def test_row_scope_drops_the_sort_clause_and_the_repo_owner():
     rows = views.clean({"kind": "rows", "entity": "pr", "scope": "acme/widgets · 10 open, sorted by last activity",
                         "items": [{"ref": "#12", "name": "Fix the thing", "state": "Stale"}]})
     assert rows["scope"] == "widgets · 10 open"
+
+
+def test_a_metrics_side_note_must_be_said():
+    m = views.clean({"kind": "metric", "label": "Crashes per hour", "value": "56", "note": "41 people affected"})
+    assert m["note"] == "41 people affected"
+    assert views.grounded(m, "56 crashes in the last hour, hitting 41 people.")
+    assert not views.grounded(m, "56 crashes in the last hour, hitting 40 people.")
+
+
+def test_a_timeline_step_keeps_its_said_time_without_the_unsaid_date():
+    tl = {"kind": "timeline", "title": "Build 12", "days": [{"label": "Done", "items": [
+        {"when": "Mar 4, 2:50 AM", "what": "Fix added", "state": "done"}]}]}
+    out = views.shape([tl], "The fix was added today at 2:50 AM, so build 12 is done.")
+    assert out and out[0]["days"][0]["items"][0]["when"] == "2:50 AM"
+    # An unsaid time is never repaired: the card goes.
+    assert not views.shape([{**tl, "days": [{"label": "Done", "items": [{"when": "Mar 4, 8:12 PM", "what": "Fix added", "state": "done"}]}]}],
+                           "The fix was added, so build 12 is done.")

@@ -329,7 +329,7 @@ struct StatusTilesCard: View {
         let order: [String: Int] = ["needs_you": 0, "bad": 1, "warn": 2, "info": 3, "on": 4, "ok": 5, "off": 6]
         // Trouble first; among it a job that is stuck leads, because it's usually why the others missed
         // their runs (the cause sat last, under the jobs it held up).
-        func rank(_ item: JSONValue) -> Int { StatusTile.word(for: item) == "Stuck" ? 0 : (order[item["state"].string ?? ""] ?? 9) + 1 }
+        let rank = { (item: JSONValue) -> Int in StatusTile.word(for: item) == "Stuck" ? 0 : (order[item["state"].string ?? ""] ?? 9) + 1 }
         let sorted = items.enumerated().sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }.map(\.element)
         VStack(alignment: .leading, spacing: 10) {
             // The app the facts came from, then what they are about ("Vercel · fieldnote-web"), as the designs head a card.
