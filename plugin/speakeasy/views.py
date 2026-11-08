@@ -646,7 +646,8 @@ def _artifact_actions(view: dict[str, Any]) -> dict[str, Any]:
     if view["kind"] == "draft":
         view["actions"] = [{"id": "send", "label": "Send", "style": "primary", "confirm": True}]
     elif view["kind"] == "compare":
-        label = _str("Go with " + view["options"][view["winner"]]["name"], 24) or "Go with this"
+        # Cut at a word ("Go with REI Co-op", never "Go with REI Co-op Rainie").
+        label = _label("Go with " + view["options"][view["winner"]]["name"]) or "Go with this"
         view["actions"] = [{"id": "go", "label": label, "style": "primary", "confirm": True}]
     elif view["kind"] == "pr" and view["state"] in ("conflicts", "failing"):
         label = "Fix conflicts" if view["state"] == "conflicts" else "Fix the checks"
@@ -700,7 +701,7 @@ def _day_actions(view: dict[str, Any]) -> dict[str, Any]:
     pairs = day_overlaps(view)
     if pairs and not view.get("actions"):
         later = view["events"][pairs[0][1]].get("title") or "the later one"
-        view["actions"] = [{"id": "move", "label": _str("Move " + later, 24) or "Move it", "style": "secondary",
+        view["actions"] = [{"id": "move", "label": _label("Move " + later) or "Move it", "style": "secondary",
                             "confirm": False}]
     return view
 
