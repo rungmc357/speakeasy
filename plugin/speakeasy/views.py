@@ -1084,6 +1084,8 @@ def _offered(view: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if re.match(r"(?i)^(?:open|view|visit|go to)\b", a["label"]):
             continue   # opening a page is a link the phone opens, not words sent to the task ("Open #66526")
+        if view.get("url") and re.match(r"(?i)^(?:read|see|show)(?: me)? (?:the )?(?:full|whole|entire|complete) ", a["label"]):
+            continue   # "Read full spec" beside the card's own Open: two buttons to one document
         primary = a.get("style") == "primary" and not any(o["style"] == "primary" for o in out)
         harmful = bool(_HARMFUL.match(a["label"]))
         out.append({**a, "style": "primary" if primary and not harmful else "destructive" if harmful else "secondary",
@@ -1168,7 +1170,12 @@ def _day_actions(view: dict[str, Any]) -> dict[str, Any]:
     pairs = day_overlaps(view)
     if pairs and not view.get("actions"):
         later = view["events"][pairs[0][1]].get("title") or "the later one"
-        view["actions"] = [{"id": "move", "label": _label("Move " + later) or "Move it", "style": "secondary",
+        # "Move Investor update" (cut, title-cased mid-sentence) -> "Move the investor call": the
+        # title's last word names the kind of event; a short title stays whole.
+        name = later if len("Move " + later) <= 24 else "the " + later.split()[-1].lower()
+        if len(later.split()) > 1 and name == later and later[:1].isupper() and not later.split()[0].isupper():
+            name = later[0].lower() + later[1:] if later.split()[0].lower() in ("lunch", "dinner", "coffee", "breakfast", "call", "meeting") else later
+        view["actions"] = [{"id": "move", "label": _label("Move " + name) or "Move it", "style": "secondary",
                             "confirm": False}]
     free = view.get("free")
     if isinstance(free, list) and free:

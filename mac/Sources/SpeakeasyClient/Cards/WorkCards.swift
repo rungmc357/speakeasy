@@ -174,8 +174,15 @@ struct AppHeader: View {
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(mark.color))
                         .accessibilityHidden(true)
                 }
-                Text(parts.joined(separator: " · ")).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
-                    .lineLimit(1)
+                // Whole parts that fit, never one cut mid-word ("12 active jobs se…"): the last parts give
+                // way first, since the app and the view it came from lead.
+                ViewThatFits(in: .horizontal) {
+                    ForEach((1...parts.count).reversed(), id: \.self) { n in
+                        Text(parts.prefix(n).joined(separator: " · ")).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                            .lineLimit(1).fixedSize()
+                    }
+                    Text(parts[0]).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
             .accessibilityElement(children: .combine)
         }

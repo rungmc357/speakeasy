@@ -164,8 +164,8 @@ enum StateWords {
         func has(_ re: String) -> Bool { s.range(of: re, options: .regularExpression) != nil }
         if has(#"^(done|merged|shipped|ready( to ship)?|paid|approved|passed|live|fixed|delivered|completed?|confirmed|sent)$"#) { return "good" }
         if has(#"^(blocked|failed|failing|overdue|conflicts?|missed|down|crash(ed|ing)?|declined|waiting on .+|needs you|your call|needs (a )?decision|decide)$"#) { return "bad" }
-        // Fresh activity is news, not trouble: the accent, so it stands apart from both amber and grey.
-        if has(#"^(new activity|new comments?|new reply|needs review|review requested|unread)$"#) { return "accent" }
+        // Fresh activity is news, not trouble: blue, so it stands apart from both amber and grey.
+        if has(#"^(new activity|new comments?|new reply|needs review|review requested|unread)$"#) { return "info" }
         if has(#"^(in progress|rebasing|running|stuck|stale|due .+|today|tomorrow|building|deploying|started)$"#) { return "warn" }
         if has(#"^(backlog|todo|to do|canceled|cancelled|open|draft|in review|review|skipped|idle|queued|triage|quiet|this week|later)$"#) { return "neutral" }
         return given
@@ -186,7 +186,7 @@ struct ActionRow: View {
     let entity: String
     @Environment(\.openURL) private var openURL
     static func tone(_ t: String?) -> Color {
-        switch t { case "good": return look.good; case "warn": return look.warn; case "bad": return look.bad; case "accent": return gold; default: return .secondary }
+        switch t { case "good": return look.good; case "warn": return look.warn; case "bad": return look.bad; case "accent", "info": return look.info; default: return .secondary }
     }
     var body: some View {
         // A known status word sets its colour (Backlog grey, Waiting on Geo red); otherwise the agent's tone.
