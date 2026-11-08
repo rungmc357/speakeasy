@@ -100,6 +100,7 @@ def test_asks_lose_filler_and_the_calls_notes_and_use_digits():
     assert W.clean_ask(": No worries. Want to tidy the notes?") == "No worries. Want to tidy the notes?"
     # "kind of"/"sort of" are words, not filler: "what kind of job" keeps them.
     assert W.clean_ask("Do we have, like, some sort of job for that") == "Do we have some sort of job for that"
+    assert W.clean_ask("Do we have a, like, some sort of job") == "Do we have some sort of job"
     assert W.clean_ask("hey") == "Hey"                                 # a bare greeting is the message
 
 

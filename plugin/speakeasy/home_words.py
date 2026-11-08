@@ -230,6 +230,8 @@ def clean_ask(text: Any, assistant: str | None = None) -> str:
     said = _FILLER_LEAD.sub("", said)
     said = _FILLER_MID.sub("", said)
     said = _STUTTER.sub(lambda m: m.group(1), said)
+    # "have a, like, some sort of job" -> without the filler, "a some" is a restart: keep the second word.
+    said = re.sub(r"(?i)\b(?:a|an|the)\s+(?=(?:a|an|the|some|any|this|that|these|those|my|your|our)\b)", "", said)
     said = re.sub(r"\s+([,.!?])", r"\1", said)
     said = re.sub(r",\s*,", ",", said)
     said = re.sub(r"\s{2,}", " ", said).strip(" ,")
