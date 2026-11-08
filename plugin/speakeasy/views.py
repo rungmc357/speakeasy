@@ -1072,6 +1072,9 @@ _READ_ONLY = re.compile(
     r"draft|preview|test|diagnose|investigate|trace|watch|track|search|re-?run|retry|refresh|recheck|load|"
     r"download|copy|count|estimate|map|plan|review)\b")
 MAX_OFFERED = 2
+# The user asked only to be told ("just tell me", "don't change anything", "read-only").
+_LOOK_ONLY = re.compile(r"(?i)\b(?:just tell me|don'?t (?:change|touch|fix|do) anything|do not (?:change|touch) anything|"
+                        r"without changing|read[- ]only|no changes|only look|just look|don'?t change it)\b")
 # Interrupts or destroys something: drawn in the warning tint, always confirmed.
 _HARMFUL = re.compile(r"(?i)^(?:restart|reboot|stop|kill|delete|remove|drop|roll\s*back|rollback|revert|cancel|"
                       r"disable|turn\s+off|refund)\b")
@@ -1301,7 +1304,17 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
             view = {**view, "links": [lk for lk in view["links"] if lk["url"] not in own]}
             if not view["links"]:
                 view.pop("links")
-        out.append(_artifact_actions(_unsaid(view, answer)))
+        view = _artifact_actions(_unsaid(view, answer))
+        if _LOOK_ONLY.search(asked or "") and view.get("actions"):
+            # "Just tell me, don't change anything": a step that changes something ("Fix conflicts",
+            # "Rerun checks") is not what was asked; looking further ("Show conflicts") still is.
+            view["actions"] = [a for a in view["actions"] if not str(a.get("id", "")).startswith(("do_", "fix"))
+                               or (_READ_ONLY.match(a.get("label", "")) and not re.match(r"(?i)^re-?run|retry|refresh", a.get("label", "")))]
+            if not view["actions"]:
+                view.pop("actions")
+            elif not any(a.get("style") == "primary" for a in view["actions"]):
+                view["actions"][0] = {**view["actions"][0], "style": "primary"}
+        out.append(view)
         kept += 1
     return out
 

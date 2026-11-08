@@ -392,3 +392,14 @@ def test_a_two_word_label_is_named_by_its_head_noun():
     s = views.clean({"kind": "status", "scope": "Scheduled jobs", "items": [{"name": "Cron scheduler", "state": "bad", "note": "Stopped at 3 AM"}]})
     assert views.grounded(s, "The scheduler stopped at 3 AM.")
     assert not views.grounded(s, "The cron stopped at 3 AM.")   # the qualifier alone is not the thing
+
+
+def test_look_only_asks_keep_only_steps_that_look():
+    pr = {"kind": "pr", "repo": "acme/widgets", "number": 4182, "title": "Fix the paint lease", "state": "conflicts",
+          "reason": "Main moved.", "actions": [{"id": "do_0", "label": "Fix conflicts", "style": "primary"},
+                                              {"id": "do_1", "label": "Show conflicts"}]}
+    answer = "PR 4182, Fix the paint lease, conflicts: main moved."
+    out = views.shape([views.clean(pr)], answer, "where is PR 4182? just tell me, don't change anything")
+    assert [(a["label"], a["style"]) for a in out[0]["actions"]] == [("Show conflicts", "primary")]
+    out = views.shape([views.clean(pr)], answer, "where is PR 4182?")
+    assert "Fix conflicts" in [a["label"] for a in out[0]["actions"]]
