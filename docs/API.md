@@ -879,6 +879,16 @@ per light, switch or fan it moved (up to four), each with a `toggle` button that
 `value`, sets a light's brightness; 0 turns it off). Client-only actions (open a place in Maps, open
 a link, copy, chart scrubbing) need no server call.
 
+Next steps on work cards (`pr`, `issue`, `rows`, `status`, `metric`, `timeline`, `preview`, `site`,
+`places`): the agent may offer up to two buttons, which the server ids `do_0`, `do_1`
+(`{"id": "do_0", "label": "Rerun failed", "style": "primary", "confirm": false}`). Pressing one sends
+the task its label and the card's subject as a typed message ("Rerun failed (PR #418).") and returns
+`"Sent to the task."`. Only look/fetch/prepare steps (Check, Show, Pull, Draft, Rerun…) skip the
+confirm; anything else has `confirm: true`, and restart/stop/delete/revert are `destructive`. Such
+cards may also carry `"links": [{"label": "Logs", "url": "https://…"}]` (at most two, https only),
+which apps open directly. Phones show at most two buttons per card: the task's steps, then these
+links, then the card's own links.
+
 ## Messages to a task
 
 Capability `task_messages` (plugin 0.3.19+). The app sends typed words to **one task, by its id**:
