@@ -397,6 +397,8 @@ struct StatusTile: View {
             if says(#"\bfail"#) { return "Failed" }
             if says(#"\bmissed\b"#) { return "Missed" }
             if says(#"\b(stuck|running since|hung)\b"#) { return "Stuck" }
+            // A server that still answers but is drowning is overloaded, not "Down".
+            if says(#"\b(overload|overloaded|struggling|out of memory|memory nearly gone|load climbing)\b"#) { return "Overloaded" }
             // A scheduled job (its role is its schedule: "every 5m", "daily 9:30 AM") that stopped
             // running missed its runs; it isn't a server that's "Down".
             let role = item["role"].string ?? ""
@@ -410,7 +412,7 @@ struct StatusTile: View {
     static func color(for item: JSONValue) -> Color {
         let state = item["state"].string
         guard state == "warn" || state == "bad", item["value"].string == nil else { return color(state) }
-        switch word(for: item) { case "Failed", "Down": return look.bad; case "Missed", "Stuck": return look.warn; default: return color(state) }
+        switch word(for: item) { case "Failed", "Down", "Overloaded": return look.bad; case "Missed", "Stuck": return look.warn; default: return color(state) }
     }
     static func word(_ state: String?) -> String {
         ["ok": "OK", "on": "On", "off": "Off", "warn": "Needs a look", "bad": "Down", "needs_you": "Needs you", "info": "Info"][state ?? ""] ?? ""
