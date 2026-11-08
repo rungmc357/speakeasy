@@ -233,12 +233,33 @@ struct PRCard: View {
             }
             let checks = card["checks"].array
             if !checks.isEmpty, fit != .compact {
+                let rows = Self.checkRows(checks, total: card["checks_total"].double.map(Int.init), restState: card["checks_rest"].string)
                 VStack(alignment: .leading, spacing: 7) {
-                    ForEach(Array(checks.enumerated()), id: \.offset) { _, check in checkRow(check) }
+                    ForEach(Array(rows.shown.enumerated()), id: \.offset) { _, check in checkRow(check) }
+                    if let rest = rows.rest {
+                        Text(rest).font(.footnote).foregroundStyle(style.faint)
+                    }
                 }
                 .cardWell(style)
             }
         }
+    }
+    /// Checks as the card lists them: what failed or is still running first, at most five; the rest
+    /// as one line ("10 more skipped"). Fifteen identical "Skipped" rows were a wall, not news.
+    /// *total*: how many the PR has when the server sent only some (``checks_total``), and
+    /// *restState* the one state all the unsent ones share.
+    static func checkRows(_ checks: [JSONValue], cap: Int = 4, total: Int? = nil, restState: String? = nil) -> (shown: [JSONValue], rest: String?) {
+        let order = ["failed": 0, "running": 1, "pending": 2, "passed": 3, "skipped": 4]
+        let sorted = checks.enumerated().sorted {
+            (order[$0.element["state"].string ?? ""] ?? 5, $0.offset) < (order[$1.element["state"].string ?? ""] ?? 5, $1.offset)
+        }.map(\.element)
+        let all = max(total ?? 0, sorted.count)
+        guard all > cap + 1 else { return (sorted, nil) }
+        let shown = Array(sorted.prefix(cap)), left = sorted.dropFirst(cap)
+        var states = Set(left.map { $0["state"].string ?? "" })
+        if all > sorted.count { states.insert(restState ?? "") }
+        let word = states.count == 1 && !(states.first ?? "").isEmpty ? " " + (states.first ?? "") : ""
+        return (shown, "\(all - shown.count) more\(word)")
     }
     private var stateIcon: String {
         switch card["state"].string {

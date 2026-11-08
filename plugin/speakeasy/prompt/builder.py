@@ -533,7 +533,7 @@ ARTIFACTS_RULE = (
     "image (the screenshot you took: absolute path; always include it when you took one)}; mockups (screens you designed) {title, note, items[{image (absolute "
     "path of each render), caption}], next[up to 2 short follow-ups the user may want, e.g. Make it darker]}. "
     "Give ids and https URLs (an Apple Music or Spotify id, the venue's own page, a product page, a GitHub URL), "
-    "never app links or layout. Pick by what it is: one pull request or its CI is a pr card (CI results are its checks); "
+    "never app links or layout. Pick by what it is: one pull request or its CI is a pr card (CI results are its checks; give its title and state when you know them); "
     "agents, workers or tasks are a jobs card; a count that changes over time (errors, crashes, signups) is a metric "
     "card with its points, not stats plus a chart; a row's state is its status word (at most 2 words). "
     "For each visual thing in a carousel, find its real photo_url from its own site, "

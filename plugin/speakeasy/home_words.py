@@ -65,6 +65,8 @@ _ALSO_UNFINISHED = {"not", "no", "never", "without", "than", "very", "more", "mo
 
 
 def _ok_end(words: list[str]) -> bool:
+    if words and re.fullmatch(r"\d[\d.,]*", words[-1]):
+        return True   # "build 70", "iOS 27": a number ends a phrase (a ticket number is gone before this)
     last = re.sub(r"[^a-z']", "", words[-1].lower()) if words else ""
     # a possessive waits for its noun ("Find out what time the user's")
     possessive = last.endswith("'s") or len(last) > 2 and last.endswith("s'")

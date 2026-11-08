@@ -137,7 +137,7 @@ CATALOG: dict[str, dict[str, Any]] = {
               "labels": (S, 4), "note": S, "updated": S, "image": IMG, "url": URL},
     # One pull request explained: where it stands and why, in one plain line, with its checks.
     "pr": {"repo": S, "number": N, "title": S, "state": S, "reason": S, "files": N, "checks": (
-        {"name": S, "state": S, "note": S}, 6), "when": S, "url": URL, "diff_url": URL},
+        {"name": S, "state": S, "note": S}, 40), "when": S, "url": URL, "diff_url": URL},
     # Work that is running: one quiet status line each, what needs the user first.
     "jobs": {"title": S, "items": ({"name": S, "status": S, "elapsed": S, "needs_you": B, "ask": S,
                                     "task_id": S}, 8)},
@@ -434,7 +434,9 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         items = [{**i, "state": i["state"].lower()} for i in body.get("items") or []
                  if i.get("name") and str(i.get("state", "")).lower() in STATUS_STATES]
         for i in items:
-            if isinstance(i.get("note"), str):
+            if isinstance(i.get("note"), str) and _COMMAND_NOTE.search(i["note"]):
+                i.pop("note")
+            elif isinstance(i.get("note"), str):
                 i["note"] = _first_clause(i["note"])
         return {**body, "items": items} if body.get("scope") and items else {}
     if kind == "draft":
@@ -534,9 +536,19 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         return out
     if kind == "pr":
         state = str(body.get("state", "")).lower()
-        if not body.get("title") or not body.get("reason") or state not in PR_STATES:
+        if not body.get("title") and body.get("checks") and body.get("number"):
+            # Asked only about CI ("how did CI do on 147753"), the agent read the checks, not the PR:
+            # the card is that PR's checks, named by its number, with no state it didn't see.
+            body = {**body, "title": f"Checks on #{int(body['number'])}"}
+            if state not in PR_STATES:
+                state = "failing" if any(str(c.get("state", "")).lower() == "failed" for c in body["checks"]) else ""
+        if not body.get("title") or not body.get("reason") or state not in PR_STATES and not (state == "" and body.get("checks")):
             return {}
-        out = {**body, "state": state, "reason": body["reason"][:160], "title": _work_title(body["title"])}
+        out = {**body, "reason": body["reason"][:160], "title": _work_title(body["title"])}
+        if state:
+            out["state"] = state
+        else:
+            out.pop("state", None)
         if "number" in out and not (float(out["number"]).is_integer() and out["number"] > 0):
             out.pop("number")
         elif "number" in out:
@@ -552,7 +564,16 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 c.pop("note")
         out.pop("checks", None)
         if checks:
-            out["checks"] = checks
+            # What failed or is still going first, six at most (older apps list them all); the card
+            # counts the rest from checks_total ("9 more skipped"), so fifteen skips aren't a wall.
+            order = {"failed": 0, "running": 1, "pending": 2, "passed": 3, "skipped": 4}
+            ranked = [c for _, c in sorted(enumerate(checks), key=lambda p: (order.get(p[1]["state"], 5), p[0]))]
+            out["checks"] = ranked[:6]
+            if len(ranked) > 6:
+                out["checks_total"] = len(ranked)
+                rest = {c["state"] for c in ranked[6:]}
+                if len(rest) == 1:
+                    out["checks_rest"] = rest.pop()
         return out
     if kind == "jobs":
         items = [i for i in body.get("items") or [] if i.get("name") and i.get("status")]
@@ -593,6 +614,8 @@ _PRIORITY_WORDS = {"0": None, "1": "Urgent", "2": "High", "3": "Medium", "4": "L
 _INTERNAL_ID = re.compile(r"(?i)#?(?:[a-z]{1,4}_[0-9a-f]{6,}|[0-9a-f]{12,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{20,}|\d{8,})")
 # Machine words in a check's note: CI states in snake_case and bare commit SHAs ("action_required on 05396a4").
 _MACHINE_NOTE = re.compile(r"\b[a-z]+_[a-z_]+\b|\b[0-9a-f]{7,40}\b")
+# A command line in a note ("npm run build exited 1"): the state already says it failed.
+_COMMAND_NOTE = re.compile(r"(?i)\bexit(?:ed)?(?: with)?(?: code| status)? \d+\b|^(?:npm|yarn|pnpm|bun|make|cargo|go|pip|uv) \w")
 
 
 _TRACKER_KEY = re.compile(r"\s*\((?:[A-Z][A-Z0-9]*-)+[A-Z0-9]+\)\s*$")
@@ -625,6 +648,9 @@ def _restates(text: str, said: str) -> bool:
 
 
 def _cap_first(text: str) -> str:
+    first = text.split(" ", 1)[0] if text else ""
+    if any(ch.isupper() for ch in first[1:]):
+        return text   # "iPhone Duo side panel", "macOS menu": the name's own casing
     return text[:1].upper() + text[1:] if text and text[:1].islower() else text
 
 
@@ -810,7 +836,7 @@ def _artifact_actions(view: dict[str, Any]) -> dict[str, Any]:
     elif view["kind"] == "compare":
         label = _str("Go with " + view["options"][view["winner"]]["name"], 24) or "Go with this"
         view["actions"] = [{"id": "go", "label": label, "style": "primary", "confirm": True}]
-    elif view["kind"] == "pr" and view["state"] in ("conflicts", "failing"):
+    elif view["kind"] == "pr" and view.get("state") in ("conflicts", "failing"):
         label = "Fix conflicts" if view["state"] == "conflicts" else "Fix the checks"
         view["actions"] = [{"id": "fix", "label": label, "style": "primary", "confirm": False}]
     elif view["kind"] == "mockups" and view.get("next"):

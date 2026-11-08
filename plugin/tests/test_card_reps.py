@@ -90,3 +90,67 @@ def test_checkout_cart_nested_in_details_is_read_with_the_same_checks():
     raw["details"]["items"] = [{"name": "Standing desk", "quantity": 1}]
     raw["details"]["total"] = "400.00"   # totals still have to add up
     assert clean_confirm(raw) is None
+
+
+# -- round 5 (real-shaped answers: CI-only asks, Sentry, Vercel, Linear boards, checkout titles) -----
+
+def test_ci_only_pr_card_is_named_by_its_number_and_counts_the_rest():
+    checks = [{"name": f"Job {n}", "state": "skipped"} for n in range(14)] + [{"name": "Lint", "state": "failed"}]
+    v = views.clean({"kind": "pr", "repo": "acme/widgets", "number": 5120, "checks": checks,
+                     "reason": "Fourteen checks skipped and lint failed."})
+    assert v["title"] == "Checks on #5120" and v["state"] == "failing"
+    assert v["checks"][0]["name"] == "Lint" and len(v["checks"]) == 6
+    assert v["checks_total"] == 15 and v["checks_rest"] == "skipped"
+    quiet = views.clean({"kind": "pr", "number": 7, "reason": "All skipped.",
+                         "checks": [{"name": "A", "state": "skipped"}, {"name": "B", "state": "skipped"}]})
+    assert "state" not in quiet
+    assert views.shape([quiet], "PR 7: checks A and B were all skipped.")   # no state, no crash
+    assert views.clean({"kind": "pr", "number": 7, "reason": "x"}) is None   # no title, no checks: no card
+
+
+def test_one_reason_on_every_check_is_the_cards_reason():
+    v = views.clean({"kind": "pr", "title": "Offline drafts", "state": "open", "reason": "Waiting on approval.",
+                     "checks": [{"name": n, "state": "pending", "note": "Needs a maintainer to approve"} for n in "AB"]})
+    assert all("note" not in c for c in v["checks"])
+
+
+def test_stats_drop_tracker_keys_and_capitalize_word_values():
+    v = views.clean({"kind": "stats", "title": "Shared notes crash (FIELDNOTE-IOS-3KD)",
+                     "items": [{"label": "Level", "value": "fatal"}, {"label": "Crashes", "value": "312"}]})
+    assert v["title"] == "Shared notes crash"
+    assert [i["value"] for i in v["items"]] == ["Fatal", "312"]
+
+
+def test_status_notes_are_one_short_clause_and_command_lines_go():
+    v = views.clean({"kind": "status", "scope": "Deploys", "items": [
+        {"name": "api", "state": "bad", "value": "Build failed", "note": "npm run build exited 1"},
+        {"name": "web", "state": "ok", "note": "Very busy; 18.0 GB free, 206 GB disk free, load 12"}]})
+    assert "note" not in v["items"][0]
+    assert v["items"][1]["note"] == "Very busy"
+
+
+def test_rows_that_all_share_one_state_drop_it():
+    v = views.clean({"kind": "rows", "entity": "pr", "items": [
+        {"ref": f"#{n}", "name": f"Change {n}", "state": "Open"} for n in (1, 2, 3)]})
+    assert all("state" not in i for i in v["items"])
+    mixed = views.clean({"kind": "rows", "entity": "pr", "items": [
+        {"ref": "#1", "name": "A", "state": "Open"}, {"ref": "#2", "name": "B", "state": "Draft"}, {"ref": "#3", "name": "C", "state": "Open"}]})
+    assert all("state" in i for i in mixed["items"])
+
+
+def test_names_keep_their_own_casing():
+    assert views._cap_first("iPhone Duo side panel") == "iPhone Duo side panel"
+    assert views._cap_first("video attachments") == "Video attachments"
+
+
+def test_preview_key_points_that_restate_the_summary_go():
+    v = views.clean({"kind": "preview", "entity": "document", "title": "Offline drafts spec",
+                     "summary": "Drafts keep their photos when the phone is offline.",
+                     "list": ["Goal: drafts keep their photos offline", "Sync resumes on reconnect"]})
+    assert v["list"] == ["Sync resumes on reconnect"]
+
+
+def test_confirm_title_drops_the_total_it_repeats():
+    v = clean_confirm({"type": "checkout", "title": "Buy Oakline desk \u2014 $423.53",
+                       "details": [{"label": "Total", "value": "$423.53"}]})
+    assert v is None or v["title"] == "Buy Oakline desk"
