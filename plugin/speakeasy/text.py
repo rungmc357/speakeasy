@@ -218,7 +218,7 @@ def derive_tool_status(tool: Any, preview: Any) -> tuple[str, str] | None:
     if text and _preview_is_unsafe(text):
         return None
     if tool in {"read_file", "search_files"}:
-        return "Checking project files", "Reading files in the project."
+        return "Reading files", "Reading files it needs for this."
     if tool == "chat_history_lookup":
         detail = safe_user_text(text, 200) if text and not HOME_PATH_RE.search(text) else None
         return "Checking past conversations", detail or "Looking through earlier conversations."

@@ -810,7 +810,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/work":
                 self._reply(202, self.service.start_job(self._body(), device_id))
                 return
-            if path == "/voice/home/model":  # Home's model chip: the coordinator's model (null = Auto)
+            if path == "/voice/home/model":  # Home's chip: {"work_model"} jobs' model; {"model"} the coordinator's
                 self._reply(200, self.service.home_chat.choose_model(self._body()))
                 return
             if path == "/voice/home/message":  # Home is a chat: the coordinator replies, maybe starts a job

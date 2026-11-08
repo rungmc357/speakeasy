@@ -288,3 +288,9 @@ def test_a_job_with_no_real_step_yet_shows_no_stock_status():
 @pytest.mark.parametrize("stock", ["Working on it", "Running a command", "Working\u2026", "working."])
 def test_stock_placeholders_are_not_a_status(stock):
     assert now_mod.live_line(stock) == ""
+
+
+def test_a_running_line_names_the_site_not_the_url_path():
+    from speakeasy.now import live_line
+    assert live_line("Reading api.example-weather.com/v1/forecast") == "Reading api.example-weather.com"
+    assert live_line("Reading example.org") == "Reading example.org"

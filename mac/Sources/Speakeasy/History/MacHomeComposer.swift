@@ -28,6 +28,23 @@ final class MacHomeComposerModel: ObservableObject {
     @Published var voiceNotesSupported = false
     /// Plugins with `home_chat`: Home is a chat with a coordinator (it replies; jobs only for real work).
     var homeChat = false
+    /// Home's model menu (plugins with `work` in `/voice/home/model`): the model jobs from Home run
+    /// on, and the chat's own model as a secondary choice.
+    @Published var homeModel: HomeModelStatus?
+
+    func loadHomeModel() async {
+        guard let api = api() else { return }   // older plugins: no route, no menu
+        if let status = try? await api.homeModel() { homeModel = status }
+    }
+
+    /// nil = back to the default (Hermes' default model for jobs; Auto for the chat).
+    func chooseHomeModel(work: Bool, _ id: String?) {
+        guard let api = api() else { return }
+        Task {
+            do { homeModel = work ? try await api.setHomeWorkModel(id) : try await api.setHomeModel(id) }
+            catch { notice = "Couldn't change the model." }
+        }
+    }
 
     struct Pick: Identifiable {
         let id = UUID()
@@ -300,6 +317,39 @@ private struct MacHomeBottomBarLive: View {
     }
 }
 
+/// Home's model menu on the Mac: the model jobs from Home run on (default: the Hermes default), and
+/// below it, the chat's own model (Auto: a fast model you already have).
+struct MacHomeModelMenu: View {
+    let status: HomeModelStatus
+    let work: HomeModelStatus.Work
+    let choose: (_ work: Bool, _ id: String?) -> Void
+
+    var body: some View {
+        Menu {
+            Section("Jobs from Home run on") {
+                ForEach(work.options) { option in
+                    let isDefault = option.id == work.defaultModel?.id
+                    Button((work.model?.id == option.id ? "✓ " : "") + option.name + (isDefault ? " · Default" : "")) {
+                        choose(true, isDefault ? nil : option.id)
+                    }
+                }
+            }
+            Menu("Chat replies: " + (status.chosen ? (status.model?.name ?? "Auto") : status.auto.map { "Auto · \($0.name)" } ?? "Auto")) {
+                Button((status.chosen ? "" : "✓ ") + (status.auto.map { "Auto · \($0.name)" } ?? "Auto")) { choose(false, nil) }
+                ForEach(status.options) { option in
+                    Button((status.chosen && status.model?.id == option.id ? "✓ " : "") + option.name) { choose(false, option.id) }
+                }
+            }
+        } label: {
+            Label(work.model?.name ?? "Default model", systemImage: "sparkle").font(.system(size: 11.5, weight: .semibold))
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+        .accessibilityLabel("Model for jobs, \(work.model?.name ?? "default")")
+        .accessibilityIdentifier("mac-home-model")
+        .padding(.horizontal, 6)
+    }
+}
+
 /// The session page's composer look (rounded field, round buttons), plus the brass call button.
 struct MacHomeComposerBar: View {
     @ObservedObject var model: MacHomeComposerModel
@@ -349,12 +399,16 @@ struct MacHomeComposerBar: View {
                     .disabled(model.sending)
                 }
             }
+            if let status = model.homeModel, let work = status.work {
+                MacHomeModelMenu(status: status, work: work) { isWork, id in model.chooseHomeModel(work: isWork, id) }
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 if model.recording { recording } else { typing }
                 if let onCall { MacHomeCallButton(action: onCall) }
             }
         }
         .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 12)
+        .task { await model.loadHomeModel() }
         .onChange(of: model.focusToken) { _, _ in focused = true }
         .dropDestination(for: URL.self) { urls, _ in model.addFiles(urls); return !urls.isEmpty }
     }

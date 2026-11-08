@@ -384,6 +384,18 @@ class NowModel:
         return line
 
     # -- one Speakeasy task ----------------------------------------------------------------------
+    def _work_model(self, key: str) -> dict[str, Any] | None:
+        """The job's model for Home's card: what Hermes served once known, else what the job was
+        started on (a pick, or the Hermes default it was sent to). None when nothing is known."""
+        try:
+            record = self.store.run_model(key)
+            described = self.svc.describe_model(record) if record else None
+        except Exception:
+            return None
+        if not described:
+            return None
+        return {k: described.get(k) for k in ("id", "name", "provider", "provider_name", "reasoning")}
+
     def _task_item(self, row: dict[str, Any], work: dict[str, Any], open_question: bool,
                    approvals: dict[str, dict[str, Any]], read_at: float | None, edge: float,
                    cleared: float, now: float, call: Any,
@@ -402,6 +414,9 @@ class NowModel:
                                 "started_at": started, "updated_at": float(row.get("updated") or started or now)}
         if finished is not None:
             item["finished_at"] = finished
+        badge = self._work_model(row["key"])
+        if badge:
+            item["model"] = badge   # the model that did (or is doing) the work: Home's job cards say it
         approval = approvals.get(row["key"])
         question = result.get("question") if isinstance(result.get("question"), dict) else None
         if approval is not None:
@@ -1258,6 +1273,9 @@ def plain_line(line: str | None, fallback: str | None = None) -> str:
 _STOCK_LINES = frozenset({"working", "working on it", "running a command", "thinking", "on it"})
 
 
+_URL_PATH = re.compile(r"(?i)\b((?:[a-z0-9-]+\.)+[a-z]{2,})/\S*")
+
+
 def live_line(line: str | None, fallback: str | None = None) -> str:
     """A running card's one short present-tense line (home_words.status_line): the newest real
     step, else the task's last plain status, else nothing (the card shows only its title until the
@@ -1266,6 +1284,9 @@ def live_line(line: str | None, fallback: str | None = None) -> str:
     for text in (line, fallback):
         if text and text.strip().rstrip(".\u2026").lower() in _STOCK_LINES:
             continue
+        if text:
+            # "Reading api.example.com/v1/forecast" -> "Reading api.example.com": the site, not its path.
+            text = _URL_PATH.sub(r"\1", text)
         if text and plain_line(text):
             short = status_line(text)
             if short:

@@ -171,6 +171,9 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     /// A question nobody answered that a newer one took over: when, and which card took over.
     public var replacedAt: Date?
     public var replacedBy: String?
+    /// The model that did (or is doing) the job, as recorded by the plugin (what Hermes served once
+    /// known). Home's chat shows it under a job's card; nil when nothing was recorded.
+    public var workModel: ReplyAttribution?
     public var provenance: Provenance?
     public var fix: Fix?
     public var question: NowQuestion?
@@ -225,6 +228,7 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         lockLine = nonEmpty(o["lock_line"])
         pictures = (o["thumbs"] as? [Any] ?? []).compactMap(NowPicture.init(json:))
         fullTitle = nonEmpty(o["full_title"])
+        workModel = ReplyAttribution(json: o["model"])
         if let r = o["replaced"] as? [String: Any] {
             replacedAt = (r["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } ?? updatedAt ?? finishedAt
             replacedBy = nonEmpty(r["by"])
@@ -493,16 +497,39 @@ public struct HomeModelStatus: Equatable, Sendable {
     public var options: [Option]
     /// Set when the chosen model didn't answer last time (another one replied).
     public var note: String?
-    public init(model: Option?, source: String, auto: Option?, options: [Option], note: String? = nil) {
+    /// The model jobs started from Home run on (plugins with `work` in `/voice/home/model`): what
+    /// Home's chip shows and picks. The fields above are the coordinator's, a secondary choice.
+    public var work: Work?
+    public struct Work: Equatable, Sendable {
+        public var model: Option?
+        /// `chosen` on Home's chip, else `default` (the user's Hermes default model).
+        public var source: String
+        public var defaultModel: Option?
+        public var options: [Option]
+        public init(model: Option?, source: String, defaultModel: Option?, options: [Option]) {
+            self.model = model; self.source = source; self.defaultModel = defaultModel; self.options = options
+        }
+        init?(json: Any?) {
+            guard let d = json as? [String: Any] else { return nil }
+            self.init(model: Option(json: d["model"]), source: (d["source"] as? String) ?? "default",
+                      defaultModel: Option(json: d["default"]),
+                      options: ((d["options"] as? [Any]) ?? []).compactMap { Option(json: $0) })
+        }
+        public var chosen: Bool { source == "chosen" }
+    }
+    public init(model: Option?, source: String, auto: Option?, options: [Option], note: String? = nil, work: Work? = nil) {
         self.model = model; self.source = source; self.auto = auto; self.options = options; self.note = note
+        self.work = work
     }
     public init(json: [String: Any]) {
-        self.init(model: Option(json: json["model"]), source: (json["source"] as? String) ?? "",
-                  auto: Option(json: json["auto"]),
-                  options: ((json["options"] as? [Any]) ?? []).compactMap { Option(json: $0) },
-                  note: (json["note"] as? String).flatMap { $0.isEmpty ? nil : $0 })
+        let c = (json["coordinator"] as? [String: Any]) ?? json
+        self.init(model: Option(json: c["model"]), source: (c["source"] as? String) ?? "",
+                  auto: Option(json: c["auto"]),
+                  options: ((c["options"] as? [Any]) ?? []).compactMap { Option(json: $0) },
+                  note: (c["note"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                  work: Work(json: json["work"]))
     }
-    /// The user picked it on the chip (otherwise Auto or a fallback is in use).
+    /// The coordinator's model was picked by the user (otherwise Auto or a fallback is in use).
     public var chosen: Bool { source == "chosen" }
 }
 
