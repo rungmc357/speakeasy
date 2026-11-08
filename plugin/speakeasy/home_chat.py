@@ -91,6 +91,19 @@ def small_talk(text: str) -> bool:
     return bool(_SMALL_TALK.match(text or ""))
 
 
+# A chat reply that says work is under way ("Looking for a rain jacket under $100.", "Let me check")
+# promises a job; without a tool call it would start nothing.
+_CLAIMS_WORK = re.compile(
+    r"(?i)(?:^|[.!?]\s+|\band\s+)(?:"
+    r"(?:i'?m\s+|i am\s+|now\s+)?(?:looking (?:for|up|into)|checking|searching|finding|pulling up|fetching|digging into)"
+    r"|(?:i'?ll|i will|let me)\s+(?:look|check|search|find|pull up|fetch|dig)"
+    r"|on it\b)")
+
+
+def claims_work(reply: str | None) -> bool:
+    return bool(_CLAIMS_WORK.search(reply or ""))
+
+
 def _version(model: str) -> tuple[int, ...]:
     """Newest first within a family: the version digits in the id (dates count as one big number)."""
     return tuple(int(n) for n in re.findall(r"\d+", model)[:4])
@@ -489,6 +502,20 @@ class HomeChat:
         self.svc._now_changed()   # every device shows the message while the coordinator thinks
         focus = body.get("focus") if isinstance(body.get("focus"), str) else None
         decided, model = self._decide(text, history, (jobs, aliases), len(ids), focus=focus)
+        if decided is not None and decided["action"] == "none" and claims_work(decided["reply"]):
+            # "Looking for a rain jacket." with no tool call starts nothing (seen live on a fast model):
+            # ask once more, showing it what it wrote, so the work it promised really starts.
+            retried, again = self._decide(text, history, (jobs, aliases), len(ids), focus=focus,
+                                          unkept=decided["reply"])
+            if retried is not None and retried["action"] != "none":
+                decided, model = {**retried, "reply": retried["reply"] or decided["reply"]}, again or model
+            elif retried is not None and not claims_work(retried["reply"]):
+                decided, model = retried, again or model   # on reflection it was only chat
+            else:
+                # Promised twice (or no second answer) and still no call: the user's words run as a
+                # job, as Home always did.
+                logger.info("speakeasy: Home's coordinator promised work twice without starting it")
+                decided = {**decided, "action": "start", "run_id": None, "request": None}
         if decided is None:
             # No coordinator answer (no model, a timeout, unreadable JSON): never invent a reply. Small
             # talk gets a plain line; anything else runs as a job, as Home always did.
@@ -687,7 +714,7 @@ class HomeChat:
         return _clip(text, RESULT_CHARS)
 
     def _decide(self, text: str, history: list[dict[str, Any]], jobs: tuple[str, dict[str, str]] | str,
-                attachments: int, focus: str | None = None) -> tuple[dict[str, Any] | None, dict | None]:
+                attachments: int, focus: str | None = None, unkept: str | None = None) -> tuple[dict[str, Any] | None, dict | None]:
         job_lines, aliases = jobs if isinstance(jobs, tuple) else (jobs, {})
         name = (self.svc.settings.get() or {}).get("assistant_name") or "Hermes"
         note = (f"- The user attached {attachments} picture(s) or file(s) you can't see: use \"start\" (or "
@@ -706,6 +733,12 @@ class HomeChat:
                 content += f"\n({_HISTORY_TOOL[row['action']]}{' ' + alias if alias else ''})"
             messages.append({"role": "user" if row["role"] == "user" else "assistant", "content": content})
         messages.append({"role": "user", "content": text or "(pictures, no words)"})
+        if unkept:
+            messages.append({"role": "assistant", "content": unkept})
+            messages.append({"role": "user", "content": (
+                "(Note from the app, not the user: you wrote that you're doing it, but no tool was called, "
+                "so nothing started. Call start_job now, once for each ask that needs work, with the "
+                "same short reply.)")})
         try:
             raw, model = self._model_call(messages)
         except Exception as exc:

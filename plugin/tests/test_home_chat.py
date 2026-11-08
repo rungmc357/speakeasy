@@ -118,6 +118,24 @@ def test_history_marks_the_tool_call_behind_an_earlier_reply(server, service, he
     assert body["reply"]["text"] == "Looking it up."
 
 
+def test_a_reply_that_promises_work_without_a_tool_call_is_asked_once_more(server, service, hermes):
+    # Live: "Looking for a rain jacket under a hundred dollars." came back as plain text, no job.
+    seen = coordinator(service, "Looking for a rain jacket under a hundred dollars.",
+                       {"tool": "start_job", "text": "", "args": {"request": "Find a rain jacket under $100",
+                                                                  "reply": "Looking for a rain jacket under $100."}})
+    body = post(server, {"text": "find me a rain jacket under a hundred dollars", "client_id": "c_rj"})[1]
+    assert body["action"] == "start" and body["run_id"]
+    assert "no tool was called" in seen[1][-1]["content"] and seen[1][-2]["role"] == "assistant"
+    assert "rain jacket" in json.dumps(wait_for(lambda: hermes.calls)[0]["input"])
+    # Promised twice: the words still run as a job; a plain chat answer on reflection stays chat.
+    coordinator(service, "Checking the bus times.", "I'm checking the bus times now.")
+    assert post(server, {"text": "when's the next 61 bus", "client_id": "c_bus"})[1]["action"] == "start"
+    coordinator(service, "Let me check that for you.", "The capital of France is Paris.")
+    body = post(server, {"text": "capital of france?", "client_id": "c_fr"})[1]
+    assert body["action"] == "none" and body["reply"]["text"] == "The capital of France is Paris."
+    assert not HC.claims_work("About 238,900 miles (384,400 km).") and not HC.claims_work("Hey! What's up?")
+
+
 def test_an_unknown_job_never_invents_a_reply(server, service, hermes):
     coordinator(service, {"reply": "Sure.", "action": "follow_up", "job": "j9"})
     status, body = post(server, {"text": "make it shorter", "client_id": "c_bad"})
