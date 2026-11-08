@@ -575,7 +575,7 @@ def _grounded_label(name: str, said: str, said_numbers: set[str]) -> bool:
     return sum(f" {w} " in said for w in words) * 3 >= len(words) * 2
 
 
-def grounded(view: dict[str, Any], answer: str) -> bool:
+def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
     """Every name and number on an artifact appears in the answer text. One miss and the card goes
     (it is never repaired: repaired cards were how wrong content got through). Status and rows names
     are labels, checked word by word (``_grounded_label``); entity names stay exact."""
@@ -615,12 +615,19 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
         values += [pt["value"] for pt in view.get("points") or [] if pt.get("mark")]
     elif kind == "preview":
         names += [view["title"]] + ([view["creator"]] if view.get("creator") else [])
-    elif kind == "issue":
-        names.append(view["title"])
-        values += [view["ref"]] if view.get("ref") else []
-    elif kind == "pr":
-        names.append(view["title"])
-        values += [view["number"]] if view.get("number") is not None else []
+    elif kind in ("issue", "pr"):
+        # A ticket's or PR's title is a short label the agent writes for it, often in the words the
+        # user gave it ("make an issue: the Save button hides behind the keyboard"): it counts as said
+        # when the answer or the user's own ask says it (as a label, two thirds of its words). The
+        # ref and number stay exact against the answer.
+        title = view["title"]
+        if not (_grounded_label(title, said, nums)
+                or (asked and _grounded_label(title, _norm(asked), _numbers(asked)))):
+            return False
+        if kind == "issue":
+            values += [view["ref"]] if view.get("ref") else []
+        else:
+            values += [view["number"]] if view.get("number") is not None else []
     elif kind == "jobs":
         names += [i["name"] for i in view["items"]]
     elif kind == "site":
@@ -698,7 +705,7 @@ def _day_actions(view: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
-def shape(views: list[dict[str, Any]], answer: str) -> list[dict[str, Any]]:
+def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dict[str, Any]]:
     """Artifacts (the v1 kinds) kept only when grounded in the answer text; at most two, in the
     order given. Other kinds pass through unchanged (older apps keep their cards)."""
     out, kept = [], 0
@@ -709,7 +716,7 @@ def shape(views: list[dict[str, Any]], answer: str) -> list[dict[str, Any]]:
         if view.get("kind") not in ARTIFACTS:
             out.append(view)
             continue
-        if kept >= MAX_ARTIFACTS or not grounded(view, answer):
+        if kept >= MAX_ARTIFACTS or not grounded(view, answer, asked):
             continue
         out.append(_artifact_actions(view))
         kept += 1

@@ -39,6 +39,22 @@ def test_issue_needs_a_title_and_its_ref_said():
     assert _result("Redesign notification settings is in review.", [ISSUE])["views"] == []
 
 
+def test_issue_title_may_come_from_the_users_own_ask():
+    # The agent wrote the ticket from the user's words and its answer only names the ref: the title
+    # is grounded by the ask (as a label), the ref still has to be in the answer.
+    card = {"kind": "issue", "source": "linear", "ref": "FN-77", "title": "Share sheet hides behind keyboard on small phones",
+            "state": "In Progress"}
+    answer = "Here's the card for FN-77, made from what you gave me.\n```speakeasy-views\n" + json.dumps([card]) + "\n```\nSPOKEN: FN-77 is ready."
+    ask = "Make an example issue FN-77: the Share sheet hides behind the keyboard on small phones."
+    assert (split_result(answer, ()) or {}).get("views", []) == []
+    kept = split_result(answer, (), asked=ask)["views"]
+    assert [v["ref"] for v in kept] == ["FN-77"]
+    # A title neither the answer nor the ask says still goes, and so does an unsaid ref.
+    assert (split_result(answer, (), asked="Make an example issue FN-77 about the login page.") or {}).get("views", []) == []
+    unsaid = answer.replace("FN-77", "it").replace('"ref": "it"', '"ref": "FN-77"')
+    assert (split_result(unsaid, (), asked=ask) or {}).get("views", []) == []
+
+
 def test_issue_unknown_source_is_other_and_odd_tone_dropped():
     card = views.clean({"kind": "issue", "title": "X", "source": "trello", "tone": "purple"})
     assert card["source"] == "other" and "tone" not in card
