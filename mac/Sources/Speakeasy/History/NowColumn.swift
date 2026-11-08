@@ -152,7 +152,7 @@ struct MacNowColumn: View {
                 NowWorkStrip(items: now.visible, background: now.home?.background ?? [], onOpen: { item in
                     if item.kind == .question { focusID = nil; focusID = item.id }
                     else if let sid = item.sessionID { store.open(sid) }
-                }, onBackground: { store.open($0.sessionID) }, onBoard: { workOpen = true })
+                }, onBackground: { store.open($0.sessionID) }, onBoard: { workOpen = true }, pill: now.home?.pill)
                     .padding(.horizontal, 18).padding(.top, 12)
             }
             ScrollViewReader { proxy in

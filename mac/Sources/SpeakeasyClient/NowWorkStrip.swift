@@ -8,6 +8,8 @@ public struct NowWorkStrip: View {
     public var onOpen: (NowItem) -> Void
     public var onBackground: (NowBackgroundItem) -> Void
     public var onBoard: () -> Void
+    /// The plugin's pill words ("3 need you · 5 running"); nil: counted here.
+    public var pill: String?
     @State private var expanded = false
     @State private var page: String?
     @State private var pull: CGFloat = 0
@@ -15,7 +17,8 @@ public struct NowWorkStrip: View {
 
 
     public init(items: [NowItem], background: [NowBackgroundItem], onOpen: @escaping (NowItem) -> Void,
-                onBackground: @escaping (NowBackgroundItem) -> Void, onBoard: @escaping () -> Void) {
+                onBackground: @escaping (NowBackgroundItem) -> Void, onBoard: @escaping () -> Void, pill: String? = nil) {
+        self.pill = pill
         self.items = items; self.background = background; self.onOpen = onOpen
         self.onBackground = onBackground; self.onBoard = onBoard
     }
@@ -28,6 +31,13 @@ public struct NowWorkStrip: View {
         if !keys.isEmpty {
             VStack(spacing: 8) {
                 ViewThatFits(in: .horizontal) {
+                    if let pill {
+                        // One line at any volume: the counts, never a cut-off title.
+                        HStack(spacing: 8) {
+                            Text(pill).fixedSize().foregroundStyle(needs > 0 ? Color.accentColor : Color.primary)
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
+                        }
+                    }
                     HStack(spacing: 8) {
                         Text(running > 0 ? "\(running) running" : "Work").fixedSize()
                         if needs > 0 { Text("· \(needs) needs you").foregroundStyle(Color.accentColor).fixedSize() }

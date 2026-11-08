@@ -76,10 +76,21 @@ public struct ImageCard: Equatable, Sendable, Identifiable {
     public init(number: Int, name: String) { self.number = number; self.name = name }
 
     public init?(json: Any?, number: Int) {
-        guard let raw = json as? [String: Any], raw["kind"] as? String == "image", (1...8).contains(number) else { return nil }
-        let name = (raw["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // A picture whose file is gone (`available: false`, plugin 0.3.47+) draws nothing, not a dead tile.
+        guard let raw = json as? [String: Any], raw["kind"] as? String == "image", (1...8).contains(number),
+              raw["available"] as? Bool != false else { return nil }
+        // A person's caption first; a file name ("IMG_2231.png", "sheet-v3.jpg") is never shown.
+        let words = [raw["caption"], raw["name"]].compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty && !ImageCard.looksLikeFileName($0) } ?? ""
         self.number = number
-        self.name = name.isEmpty ? "Image \(number)" : String(name.prefix(120))
+        self.name = words.isEmpty ? "Image \(number)" : String(words.prefix(120))
+    }
+
+    /// "IMG_2231.PNG", "contact-sheet_v3.jpg", "/tmp/x/shot.png": a file's name, not words a person wrote.
+    public static func looksLikeFileName(_ text: String) -> Bool {
+        if text.contains("/") && !text.contains(" ") { return true }
+        return text.range(of: #"^[^\s]+\.(png|jpe?g|gif|webp|heic|heif|tiff?|bmp|svg)$"#,
+                          options: [.regularExpression, .caseInsensitive]) != nil
     }
 }
 

@@ -383,9 +383,11 @@ public final class ServerClient: @unchecked Sendable {
         return WorkInfo(json: object["work"])
     }
 
-    public func image(runID: String, index: Int) async throws -> Data {
+    /// *hero*: for a wide contact sheet, its readable crop (plugin 0.3.47+; an older one ignores it).
+    public func image(runID: String, index: Int, hero: Bool = false) async throws -> Data {
         guard (1...8).contains(index) else { throw HTTPError(status: 400, message: "Invalid card") }
-        let (data, response) = try await session.data(for: request("/voice/card-image/\(escape(runID))/\(index)"))
+        let path = "/voice/card-image/\(escape(runID))/\(index)" + (hero ? "?v=hero" : "")
+        let (data, response) = try await session.data(for: request(path))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               http.mimeType?.hasPrefix("image/") == true, !data.isEmpty, data.count <= 8_000_000 else {
             throw HTTPError(status: (response as? HTTPURLResponse)?.statusCode ?? 502, message: "Image unavailable")
