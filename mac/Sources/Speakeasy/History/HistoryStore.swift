@@ -160,6 +160,8 @@ final class HistoryStore: ObservableObject {
         didSet { if showingBoard { showingFiles = false } else { board.stopRefreshing() } }
     }
     /// Files your agent made (servers with `files`): the sidebar row and its pane.
+    /// Hermes' projects and where Home works (servers with `projects`, SPK-254).
+    let projects = ProjectsModel()
     let files = AgentFilesModel()
     @Published var filesSupported = false
     @Published private(set) var showingFiles = false { didSet { if showingFiles { showingBoard = false } } }

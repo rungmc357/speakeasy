@@ -185,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.boardsSupported = caps?.boards ?? false
                     self.history.store.skillsSupported = caps?.slashSkills ?? false
                     self.history.store.filesSupported = caps?.files ?? false
+                    self.wireProjects(caps?.projects ?? false)
                     self.wireNow(caps?.now ?? false)
                 }
             }
@@ -400,6 +401,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Home (SPK-124): the window's Now column, and the menu bar dot while a question waits.
     private var questionsWaiting = 0
+    /// SPK-254: Hermes' projects (sidebar section + Home's chip), one stored choice with the phone.
+    private func wireProjects(_ on: Bool) {
+        let projects = history.store.projects
+        if projects.backend == nil { projects.backend = LiveProjectsBackend { [weak self] in self?.native.api } }
+        MacHomeComposerModel.shared.projects = projects
+        if projects.supported != on { projects.supported = on }
+    }
+
     private func wireNow(_ on: Bool) {
         history.store.nowSupported = on
         MacNowPresentation.shared.enabled = on
@@ -692,6 +701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.skillsSupported = app.status?.capabilities?.slashSkills ?? false
         if store.files.backend == nil { store.files.backend = LiveAgentFilesBackend { [weak self] in self?.native.api } }
         store.filesSupported = app.status?.capabilities?.files ?? false
+        wireProjects(app.status?.capabilities?.projects ?? false)
         wireNow(app.status?.capabilities?.now ?? false)
         store.setCallLive(native.model.state.connection.isInCall)
         history.show()

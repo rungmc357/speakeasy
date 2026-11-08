@@ -31,6 +31,8 @@ final class MacHomeComposerModel: ObservableObject {
     /// Home's model menu (plugins with `work` in `/voice/home/model`): the model jobs from Home run
     /// on, and the chat's own model as a secondary choice.
     @Published var homeModel: HomeModelStatus?
+    /// The window's projects (set by the app; the chip hides without them).
+    var projects: ProjectsModel?
 
     func loadHomeModel() async {
         guard let api = api() else { return }   // older plugins: no route, no menu
@@ -399,8 +401,13 @@ struct MacHomeComposerBar: View {
                     .disabled(model.sending)
                 }
             }
-            if let status = model.homeModel, let work = status.work {
-                MacHomeModelMenu(status: status, work: work) { isWork, id in model.chooseHomeModel(work: isWork, id) }
+            HStack(spacing: 10) {
+                if let status = model.homeModel, let work = status.work {
+                    MacHomeModelMenu(status: status, work: work) { isWork, id in model.chooseHomeModel(work: isWork, id) }
+                }
+                // SPK-254: where Home's jobs go (house + Home by default).
+                if let projects = model.projects { MacProjectChip(projects: projects) }
+                Spacer(minLength: 0)
             }
             HStack(alignment: .bottom, spacing: 8) {
                 if model.recording { recording } else { typing }

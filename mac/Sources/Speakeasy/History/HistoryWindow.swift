@@ -498,6 +498,9 @@ enum HistoryShots {
         c.store.boardsSupported = true
         c.store.files.backend = DemoAgentFilesBackend()
         c.store.filesSupported = true
+        c.store.projects.backend = DemoProjectsBackend()
+        c.store.projects.supported = true
+        MacHomeComposerModel.shared.projects = c.store.projects
         if ProcessInfo.processInfo.environment["HISTORY_NOW"] != nil {
             c.store.nowSupported = true
             MacNowModel.shared.demo = MacDemoNow.home()

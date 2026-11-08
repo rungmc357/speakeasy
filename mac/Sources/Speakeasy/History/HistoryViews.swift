@@ -141,6 +141,9 @@ struct HistorySidebar: View {
             if store.supported && store.filesSupported {
                 FilesSidebarRow(store: store, files: store.files).padding(.horizontal, 6).padding(.bottom, 6)
             }
+            if store.supported {
+                MacProjectsSidebarSection(store: store, projects: store.projects).padding(.horizontal, 6).padding(.bottom, 6)
+            }
             Rectangle().fill(Live.hairline).frame(height: 1)
             if !store.supported { updateNote } else { listBody }
         }
