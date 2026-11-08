@@ -596,3 +596,23 @@ def test_a_conversation_and_the_task_it_started_are_one_home_item(service, state
     assert len(items) == 1, [(i["id"], i["title"]) for i in items]
     assert items[0]["run_id"] == "run_t1" and items[0]["kind"] == "working"
     assert "Plan the garden beds" in (items[0].get("source_label") or "")
+
+
+def test_running_work_is_on_home_for_someone_who_never_uses_kanban(service, state):
+    """A tester with no Kanban boards saw an empty Board ("Nothing running") while jobs ran. Home is the
+    first screen and lists running work wherever it started: a call, Home's chat, or a Hermes
+    conversation in another app. Invented data; no board exists anywhere."""
+    now = time.time()
+    service.store.set_meta("now_baseline_at", repr(now - 30 * 86400))
+    task(service.store, "call1", "working", session="s_call1", request="Reorder the coffee filters",
+         interaction="vi_call_1")
+    task(service.store, "chat1", "running", session="s_chat1", request="Find a quiet café for Saturday")
+    add_session(state, "tg_live", "telegram", title="Pack list for the cabin", at=now - 20)
+    add_msg(state, "tg_live", "user", "Add the headlamps too", at=now - 20)
+    body = service.now({"tz": NY})
+    working = [i["title"] for i in body["items"] if i["kind"] == "working"]
+    assert any("coffee filters" in t.lower() for t in working), working
+    assert any("café" in t.lower() or "cafe" in t.lower() for t in working), working
+    assert "Pack list for the cabin" in working, working
+    assert body["counts"]["working"] >= 3
+    assert "in the works" in body["sentence"]
