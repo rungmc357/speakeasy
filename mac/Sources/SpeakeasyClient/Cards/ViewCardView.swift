@@ -59,6 +59,20 @@ public struct ViewCardView: View {
             case "before_after": BeforeAfterCard(card: card)
             case "flow": FlowCard(card: card)
             case "devices": DevicesCard(card: card)
+            case "explore": ArtifactOpenerHost { ExploreCard(card: card) }
+            case "compare": CompareCard(card: card)
+            case "status": StatusTilesCard(card: card)
+            case "draft": ArtifactDraftCard(card: card)
+            case "timeline": ArtifactOpenerHost { TimelineCard(card: card) }
+            case "rows": RowsCard(card: card)
+            case "metric": MetricCard(card: card)
+            case "confirm": ConfirmCard(card: card)
+            case "preview": ArtifactOpenerHost { PreviewCard(card: card) }
+            case "issue": IssueCard(card: card)
+            case "pr": PRCard(card: card)
+            case "jobs": JobsCard(card: card)
+            case "site": SiteCard(card: card)
+            case "mockups": MockupsCard(card: card)
             default: EmptyView()
             }
         }
@@ -72,7 +86,13 @@ public struct ViewCardView: View {
 struct CardAccessibility: ViewModifier {
     let card: ViewCard
     func body(content: Content) -> some View {
-        if card.kind == "question" {
+        if ["explore", "compare", "status", "timeline", "rows", "preview", "confirm", "issue", "pr", "jobs", "site", "mockups",
+            "calendar_day"].contains(card.kind) {
+            // Each thing and its buttons (Play, Maps, Open) stay their own elements.
+            content
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(card.summary)
+        } else if card.kind == "question" {
             content
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("Question")
@@ -96,21 +116,25 @@ struct CardBox<Content: View>: View {
     var tint: Color? = nil
     @ViewBuilder var content: Content
     @Environment(\.cardCloseRoom) private var closeRoom
+    @Environment(\.cardStyle) private var style
+    @Environment(\.cardHosted) private var hosted
     /// The card's header keeps the corner clear itself (`CardHeader`); without one the whole
     /// content keeps clear of the close button.
     @State private var hasHeader = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) { content }
+        let inner = VStack(alignment: .leading, spacing: style.capsHeaders ? 8 : 12) { content }
             .onPreferenceChange(CardHeaderShown.self) { hasHeader = $0 }
             .padding(.trailing, closeRoom > 0 && !hasHeader ? closeRoom : 0)
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(tint.map { AnyShapeStyle($0.opacity(0.14)) } ?? AnyShapeStyle(Color.primary.opacity(0.06)))
-            )
-            // Touch: no hairline (cards sit on grouped sections already).
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(JobLook.touch ? 0 : 0.06)))
+        if hosted {
+            inner.frame(maxWidth: .infinity, alignment: .leading)
+        } else if let tint {
+            // A tinted card (a status that matters) keeps its tint on either look.
+            inner.padding(style.padding)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: style.radius, style: .continuous).fill(tint.opacity(0.14)))
+        } else {
+            inner.cardSurface(style)
+        }
     }
 }
 
@@ -121,13 +145,18 @@ struct CardHeader: View {
     /// Lines the title may take (a chart's title says what is compared, so it wraps rather than cuts).
     var lines: Int = 1
     @Environment(\.cardCloseRoom) private var closeRoom
+    @Environment(\.cardStyle) private var style
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-            Text(title.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.4).foregroundStyle(.secondary)
-                .lineLimit(lines).fixedSize(horizontal: false, vertical: lines > 1)
-            Spacer(minLength: 0)
-            if let trailing { Text(trailing).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1) }
+        HStack(alignment: style.capsHeaders ? .firstTextBaseline : .center, spacing: 6) {
+            if style.capsHeaders {
+                Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Text(title.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.4).foregroundStyle(.secondary)
+                    .lineLimit(lines).fixedSize(horizontal: false, vertical: lines > 1)
+                Spacer(minLength: 0)
+                if let trailing { Text(trailing).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1) }
+            } else {
+                CardTitleRow(icon: icon, title: sentenceCase(title), note: trailing, lines: lines)
+            }
             // Clear of the card's close button (inside the corner, `cardCloseRoom`).
             if closeRoom > 0 { Color.clear.frame(width: closeRoom, height: 1) }
         }

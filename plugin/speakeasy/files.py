@@ -62,6 +62,8 @@ _EXTRA_MIME = {".md": "text/markdown", ".heic": "image/heic", ".m4a": "audio/mp4
                ".yml": "application/yaml", ".csv": "text/csv", ".tsv": "text/tab-separated-values",
                ".webp": "image/webp", ".webm": "video/webm"}
 _FALLBACK_TAG = re.compile(r"""MEDIA:[ \t]*[`"']?(?P<p>(?:~/|/)[^\s`"'<>]+?)[`"',.;:)\]]*(?=\s|$)""")
+# A MEDIA tag that ends its line (Hermes' delivery form), bare, in backticks or quoted.
+_TAG_LINE = re.compile(r"""(?m)(?:^[ \t]*|[ \t]+)MEDIA:[ \t]*(?:`(?P<tick>[^`\n]+)`|"(?P<quote>[^"\n]+)"|(?P<bare>(?:~/|/)\S+))[ \t]*$""")
 _CACHE_DIRS = ("cache/images", "cache/audio", "cache/videos", "cache/documents", "cache/screenshots",
                "cache/generated", "image_cache", "audio_cache", "video_cache", "document_cache",
                "browser_screenshots")
@@ -176,6 +178,53 @@ class FileIndex:
         import base64
         digest = hmac.new(self.key, str(path).encode("utf-8", "surrogatepass"), hashlib.sha256).digest()
         return base64.b32encode(digest[:16]).decode().lower().rstrip("=")
+
+    def message_files(self, text: str, session_id: str = "", at: float | None = None,
+                      ) -> tuple[str, list[dict[str, Any]]]:
+        """A chat message's files, for its thread (SPK-214): the text without its ``MEDIA:`` tag lines,
+        and each file Hermes would deliver, in ``listing``'s row shape (an opaque id, never a path), so
+        the app shows the picture in place and fetches it from ``/voice/files/{id}``. A tag Hermes
+        wouldn't deliver (refused path, gone, an unlisted type) stays as text; tags in code blocks too."""
+        if not isinstance(text, str) or "MEDIA:" not in text:
+            return text, []
+        fences = [(m.start(), m.end()) for m in re.finditer(r"(?s)```.*?```", text)]
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        spans: list[tuple[int, int, str]] = []
+        gone: list[tuple[int, int, str]] = []
+        for match in _TAG_LINE.finditer(text):
+            if any(a <= match.start() < b for a, b in fences):
+                continue
+            raw = (match.group("tick") or match.group("quote") or match.group("bare") or "").strip()
+            raw = raw.rstrip("`\"',.;:)]")
+            path = deliverable(raw, self.home)
+            if path is None:
+                name = Path(raw).name
+                if kind_of(name) in {"image", "video"}:
+                    gone.append((match.start(), match.end(), "\n"))
+                    continue
+                if kind_of(name) and not os.path.lexists(os.path.expanduser(raw)):
+                    # Gone (a pruned scratch folder): one plain line, never a dead path.
+                    gone.append((match.start(), match.end(), f"\n({'Picture' if kind_of(name) == 'image' else 'File'}"
+                                                             f" no longer available: {name[:120]})\n"))
+                continue
+            spans.append((match.start(), match.end(), "\n"))
+            fid = self.file_id(path)
+            if fid in seen:
+                continue
+            seen.add(fid)
+            try:
+                info = path.stat()
+            except OSError:
+                continue
+            with self.lock:   # so /voice/files/{id} finds it even before the next scan reaches it
+                self.entries.setdefault(fid, {"path": path, "session_id": session_id, "at": at, "message_id": 0})
+            rows.append({"id": fid, "name": path.name, "kind": kind_of(path.name) or "other",
+                         "mime": mime_of(path.name), "bytes": int(info.st_size), "at": at or info.st_mtime,
+                         "session_id": session_id})
+        for start, end, put in sorted(spans + gone, reverse=True):
+            text = text[:start] + put + text[end:]
+        return re.sub(r"\n{3,}", "\n\n", text).strip(), rows
 
     def _open(self) -> sqlite3.Connection | None:
         if not self.state_db.exists():

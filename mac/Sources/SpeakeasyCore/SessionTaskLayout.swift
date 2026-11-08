@@ -31,7 +31,7 @@ public struct SessionTaskLayout: Equatable, Sendable {
     /// Finished tasks that have no place on this page (asked before its first message).
     public var earlier: [WorkInfo] = []
 
-    public static let finishedStates: Set<String> = ["completed", "failed", "cancelled"]
+    public static let finishedStates: Set<String> = WorkInfo.terminalStatuses.union(["rejected"])
 
     /// The "N tasks finished in this chat" row shows only when some finished task isn't in the thread.
     public var showsFinishedRow: Bool { !earlier.isEmpty }
@@ -145,7 +145,8 @@ public enum TaskLineCopy {
                                locale: Locale = .current) -> String {
         let word: String
         switch job.status {
-        case "failed": word = "Didn't finish"
+        case "failed", "interrupted": word = "Didn't finish"
+        case "rejected": word = "Didn't start"
         case "cancelled": word = "Stopped"
         default: word = "Done"
         }

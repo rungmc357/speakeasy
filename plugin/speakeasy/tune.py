@@ -68,7 +68,8 @@ class CallLog:
         entry: dict[str, Any] = {"id": interaction_id, "ended": self.clock(), "device": device[:40]}
         if client:  # the app build that made the call (devices.parse_client); absent for older apps
             entry["client"] = {k: str(v)[:24] for k, v in client.items()}
-        entry["turns"] = [{"role": t.get("role", ""), "text": str(t.get("text", ""))[:MAX_TURN_CHARS]}
+        entry["turns"] = [{"role": t.get("role", ""), "kind": t.get("kind", "speech"),
+                           "text": str(t.get("text", ""))[:MAX_TURN_CHARS]}
                           for t in turns[-200:]]
         entry["tasks"] = tasks[-40:]
         with self._lock:
@@ -98,6 +99,14 @@ class CallLog:
             except ValueError:
                 continue
         return out
+
+    def get(self, interaction_id: str) -> dict[str, Any] | None:
+        """Exact call lookup within the same retention window as the private call log."""
+        cutoff = self.clock() - KEEP_DAYS * 86400
+        with self._lock:
+            return next((e for e in reversed(self._read())
+                         if isinstance(e, dict) and e.get("id") == interaction_id
+                         and e.get("ended", 0) >= cutoff), None)
 
     def recent(self, days: float = TUNE_DAYS) -> list[dict[str, Any]]:
         cutoff = self.clock() - days * 86400

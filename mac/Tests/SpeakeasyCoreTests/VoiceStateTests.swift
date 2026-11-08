@@ -411,4 +411,13 @@ final class VoiceStateTests: XCTestCase {
         let caps = try? JSONDecoder().decode(ServerCapabilities.self, from: Data(#"{"call_no_limit":true}"#.utf8))
         XCTAssertEqual(caps?.callNoLimit, true)
     }
+
+    /// SPK-198: Home's mic shows only on servers where a voice note can start a new chat.
+    func testNewVoiceNotesCapability() throws {
+        let on = try JSONDecoder().decode(ServerCapabilities.self, from: Data(#"{"voice_notes":true,"new_voice_notes":true}"#.utf8))
+        XCTAssertTrue(on.newVoiceNotes)
+        let old = try JSONDecoder().decode(ServerCapabilities.self, from: Data(#"{"voice_notes":true}"#.utf8))
+        XCTAssertTrue(old.voiceNotes)
+        XCTAssertFalse(old.newVoiceNotes)
+    }
 }

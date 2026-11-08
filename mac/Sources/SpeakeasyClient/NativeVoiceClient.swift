@@ -267,6 +267,11 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.onAttach = { [weak self] items in self?.attach(items) }
         model.onAttachRefused = { [weak self] reason in self?.dispatch(.sharing(.notice(reason))) }
         model.onRemoveAttachment = { [weak self] id in self?.removeAttachment(id) }
+        model.onRetryAttachment = { [weak self] id in
+            guard let self, self.model.attachmentFailures.contains(id), let bytes = self.attachmentBytes[id] else { return }
+            self.dispatch(.sharing(.removed(id)))
+            self.attach([bytes])
+        }
         model.onOpenScreenSettings = { [weak self] in self?.openScreenSettings?() }
         model.loadSharedImage = { [weak self] runID, number in
             guard let self, let api = self.api else { return nil }
@@ -741,7 +746,7 @@ public final class NativeVoiceClient: VoiceCallClient {
                     // anyway: a server that can't take it answers 400 and the call falls back below.
                     let supported = await Self.firstAnswer(of: roomSupport, within: 1)
                     if supported == false {
-                        self.dropRoomContext("This Speakeasy plugin can't use what listening mode heard. Update it on the Hermes machine, then run hermes voice reload.")
+                        self.dropRoomContext("This needs a newer Speakeasy on your Hermes. Update it from Settings.")
                     } else {
                         room = context
                     }
@@ -1938,7 +1943,8 @@ public final class NativeVoiceClient: VoiceCallClient {
                                                        name: item.filename, byteCount: item.data.count))))
             guard model.state.sharing.attachments.contains(where: { $0.id == id }) else { break }   // over the limit
             attachmentBytes[id] = item
-            if item.kind == .image { makeThumbnail(id, item) }
+            model.attachmentDurations[id] = item.videoDuration
+            if item.kind == .image || item.videoPoster != nil { makeThumbnail(id, item) }
         }
     }
 
@@ -1998,7 +2004,10 @@ public final class NativeVoiceClient: VoiceCallClient {
             Task { [weak self] in
                 do {
                     let serverID = try await api.uploadAttachment(interactionID: interactionID, bytes,
-                                                                  as: item.kind == .picture ? .picture : .file)
+                                                                  as: item.kind == .picture ? .picture : .file,
+                                                                  progress: { [weak self] value in
+                        Task { @MainActor in self?.model.attachmentProgress[item.id] = value }
+                    })
                     guard let self else { return }
                     self.dispatch(.sharing(.uploaded(item.id, serverID: serverID, interactionID: interactionID)))
                     // ✕ pressed while it was uploading: take it back off now.
@@ -2012,9 +2021,16 @@ public final class NativeVoiceClient: VoiceCallClient {
                     self?.dispatch(.sharing(.uploadDeferred(item.id, interactionID: interactionID)))
                 } catch let error as ServerClient.HTTPError {
                     let reason = error.reason ?? (error.status == 413 ? "too_large" : error.status == 415 ? "unsupported" : nil)
-                    self?.dispatch(.sharing(.refused(item.id, reason: reason)))
+                    if bytes.videoDuration != nil {
+                        self?.model.attachmentFailures.insert(item.id)
+                        self?.dispatch(.sharing(.uploadDeferred(item.id, interactionID: interactionID)))
+                        self?.dispatch(.sharing(.notice(reason ?? "failed")))
+                    } else { self?.dispatch(.sharing(.refused(item.id, reason: reason))) }
                 } catch {
-                    self?.dispatch(.sharing(.refused(item.id, reason: nil)))
+                    if bytes.videoDuration != nil {
+                        self?.model.attachmentFailures.insert(item.id)
+                        self?.dispatch(.sharing(.uploadDeferred(item.id, interactionID: interactionID)))
+                    } else { self?.dispatch(.sharing(.refused(item.id, reason: nil))) }
                 }
             }
         }
@@ -2038,6 +2054,9 @@ public final class NativeVoiceClient: VoiceCallClient {
         let ids = Set(kept.map(\.id))
         for id in attachmentBytes.keys where !ids.contains(id) { attachmentBytes[id] = nil }
         for id in model.attachmentThumbnails.keys where !ids.contains(id) { model.attachmentThumbnails[id] = nil }
+        for id in model.attachmentDurations.keys where !ids.contains(id) { model.attachmentDurations[id] = nil }
+        for id in model.attachmentProgress.keys where !ids.contains(id) { model.attachmentProgress[id] = nil }
+        model.attachmentFailures.formIntersection(ids)
     }
 
     // MARK: Preview

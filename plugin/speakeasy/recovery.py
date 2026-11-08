@@ -41,7 +41,7 @@ ORPHAN_BATCH = 40          # rows one pass may check with Hermes (the rest wait 
 
 
 def sweep(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]], live: dict[str, float],
-          now: float | None = None, mono: float | None = None) -> list[tuple[str, str]]:
+          now: float | None = None, mono: float | None = None, *, hermes: Any = None) -> list[tuple[str, str]]:
     """Settle every unsettled thread task not being waited on now. Returns (key, outcome) pairs."""
     now = time.time() if now is None else now
     mono = time.monotonic() if mono is None else mono
@@ -74,20 +74,56 @@ def sweep(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]
             if store.transition(key, "interrupted", expect={task["status"]}, orphaned=True):
                 store.progress(key, "result", NEVER_STARTED if never else INTERRUPTED_NOTE)
                 settled.append((key, "interrupted"))
-    settled += _settle_unconfirmed(store, state_db, image_roots, now)
+    settled += _settle_unconfirmed(store, state_db, image_roots, now, hermes)
     if settled:
         logger.info("speakeasy: settled %d stuck task(s): %s", len(settled),
                     ", ".join(outcome for _, outcome in settled))
     return settled
 
 
+def _hermes_state(hermes: Any, run_id: str | None) -> tuple[str, str | None] | None:
+    """Hermes' own word on a run: (known live/final status, output), else None.
+    A positive live record also matters: quiet time must not finish a retry still in flight."""
+    if hermes is None or not run_id or not ID_RE.fullmatch(run_id):
+        return None
+    try:
+        reply = hermes.get_run(run_id)
+    except Exception as exc:
+        logger.info("speakeasy: an unconfirmed task's run could not be checked (%s)", type(exc).__name__)
+        return None
+    final = reply.get("status") if isinstance(reply, dict) else None
+    if final not in RS.TERMINAL and final not in RS.LIVE:
+        return None
+    output = reply.get("output")
+    return final, output if isinstance(output, str) and output.strip() else None
+
+
 def _settle_unconfirmed(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]],
-                        now: float) -> list[tuple[str, str]]:
+                        now: float, hermes: Any = None, limit: int = ORPHAN_BATCH) -> list[tuple[str, str]]:
     """Settle Hermes runs left unconfirmed (the stream dropped before the run's final event) from
-    their session: the session's final reply once it has gone quiet, else interrupted after hours."""
+    Hermes' own record of the run first (a reload drops the follower of a run that keeps working;
+    it was only asked once, while it still ran, so its card read Working long after it finished),
+    then from their session: the session's final reply once it has gone quiet, else interrupted
+    after hours. At most *limit* runs are asked of Hermes a pass."""
     settled = []
+    asked = 0
     for task in store.unconfirmed_runs():
         key, session_id = task["key"], task.get("session_id")
+        if asked < limit and hermes is not None:
+            asked += 1
+            known = _hermes_state(hermes, task.get("run_id"))
+            if known is not None:
+                final, output = known
+                if final in RS.LIVE:
+                    continue  # positive liveness beats age or an earlier reply during a retry
+                result = split_result(P.without_voice_header(output), image_roots()) if output else None
+                if store.transition(key, final, expect={"ambiguous"}, orphaned=True,
+                                    **({"result": result} if result else {})):
+                    store.progress(key, "result", (result or {}).get("full") or {
+                        "completed": "Work complete", "cancelled": "Work stopped",
+                        "failed": "Didn't finish", "interrupted": "Didn't finish"}[final])
+                    settled.append((key, final))
+                continue
         last = (T.session_last_at(state_db, session_id) if session_id else None) or task["updated"]
         if now - last < UNCONFIRMED_QUIET_S:
             continue  # the session is still writing: the run may still be working

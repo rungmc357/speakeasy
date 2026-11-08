@@ -16,6 +16,22 @@ final class VideoAttachmentGateTests: XCTestCase {
         XCTAssertFalse(try caps(#"{"video_attachments": "yes"}"#).videoAttachments, "only a real true counts")
     }
 
+    func testTheCurrentPluginsStatusKeepsHomeAndVoiceNoteFlagsBesideVideos() throws {
+        let current = try caps(#"{"attachments": true, "new_voice_notes": true, "home_chat": true, "video_attachments": true}"#)
+        XCTAssertTrue(current.videoAttachments); XCTAssertTrue(current.newVoiceNotes); XCTAssertTrue(current.homeChat)
+        XCTAssertTrue(VideoAttachmentGate(current).offersVideos)
+    }
+
+    func testEachAdmissionReadsTheCapabilitiesItIsGiven() throws {
+        // The Mac composer builds a gate per admission, so re-pairing to an older Hermes takes effect at once.
+        let newer = try caps(#"{"video_attachments": true}"#), older = try caps(#"{"attachments": true}"#)
+        XCTAssertNil(VideoAttachmentGate(newer).refusal(for: URL(fileURLWithPath: "/tmp/porch.mov")))
+        XCTAssertEqual(VideoAttachmentGate(older).refusal(for: URL(fileURLWithPath: "/tmp/porch.mov")),
+                       VideoAttachmentGate.needsUpdate)
+        XCTAssertNil(VideoAttachmentGate(older).refusal(for: URL(fileURLWithPath: "/tmp/notes.txt")),
+                     "a text file beside a refused video still goes")
+    }
+
     func testAnOlderPluginGetsNoVideoInThePickerOrDrop() throws {
         let gate = VideoAttachmentGate(try caps(#"{"attachments": true}"#))
         XCTAssertFalse(gate.offersVideos)

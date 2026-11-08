@@ -66,6 +66,22 @@ def test_an_answer_read_out_on_the_call_is_heard_and_counted_seen(server, servic
     assert "call" not in item["line"].lower()
 
 
+def test_home_identifies_only_current_call_work_and_explicitly_brought_in_work(server, service, state):
+    now = time.time()
+    call = live_call(service, started=now - 300)
+    task(service.store, "current", "running", session="s_current", interaction="vi_call")
+    task(service.store, "unrelated", "running", session="s_unrelated", interaction="vi_earlier")
+    task(service.store, "brought", "running", session="s_brought", interaction="vi_earlier")
+    on_call(call, "d_brought", "brought", "running")
+    items = {i["session_id"]: i for i in get(server, "/voice/now")[1]["items"]}
+    assert items["s_current"]["on_current_call"] is True
+    assert items["s_brought"]["on_current_call"] is True
+    assert items["s_unrelated"]["on_current_call"] is False
+    call.status = "closed"
+    call.call_closed = True
+    assert all(not i["on_current_call"] for i in get(server, "/voice/now")[1]["items"])
+
+
 def test_the_worker_marks_a_spoken_answer_seen_and_lights_it(service):
     from speakeasy.calls import SidebandWorker
     store, now = service.store, time.time()

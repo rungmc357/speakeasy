@@ -1,5 +1,5 @@
 {
- "as_of": 1794004905.59,
+ "as_of": 1794095980.778,
  "background": {
   "items": [],
   "running": 0
@@ -20,13 +20,14 @@
  },
  "items": [
   {
-   "finished_at": 1794004875.5825632,
+   "finished_at": 1794095950.7743518,
    "id": "q:run_c_q",
    "kind": "question",
    "line": "Which desk should I order?",
+   "on_current_call": false,
    "question": {
     "approvable": false,
-    "asked_at": 1794004875.5825632,
+    "asked_at": 1794095950.7743518,
     "options": [
      {
       "facts": [
@@ -51,65 +52,129 @@
    "run_id": "run_c_q",
    "session_id": "s_cq",
    "source": "speakeasy",
-   "started_at": 1794004905.582613,
-   "thumbs": [
-    {
-     "url": "/voice/card-image/run_c_q/1"
-    }
-   ],
+   "started_at": 1794095980.7743711,
    "tier": 1,
    "title": "Desk hunt",
    "unread": false,
-   "updated_at": 1794004905.583839
+   "updated_at": 1794095980.774796
   },
   {
-   "finished_at": 1794004855.5825632,
+   "finished_at": 1794095930.7743518,
    "fix": {
     "kind": "credits"
    },
    "id": "s:s_cf",
    "kind": "stopped",
    "line": "Book the cabin stopped: your AI account is out of credits. Add credits, then retry.",
+   "on_current_call": false,
    "run_id": "run_c_f",
    "session_id": "s_cf",
    "source": "speakeasy",
-   "started_at": 1794004905.5846322,
+   "started_at": 1794095980.775148,
    "tier": 2,
    "title": "Book the cabin",
    "unread": false,
-   "updated_at": 1794004905.5853288
+   "updated_at": 1794095980.775462
   },
   {
    "id": "s:s_cw",
    "kind": "working",
-   "line": "Working on it",
+   "line": "",
+   "on_current_call": false,
    "run_id": "run_c_w",
    "session_id": "s_cw",
    "source": "speakeasy",
-   "started_at": 1794004905.586142,
+   "started_at": 1794095980.775785,
    "tier": 3,
    "title": "Sort the garden photos",
    "unread": false,
-   "updated_at": 1794004905.5867362
+   "updated_at": 1794095980.776087
   },
   {
-   "finished_at": 1794004865.5825632,
+   "finished_at": 1794095940.7743518,
    "id": "s:s_ca",
    "kind": "new_answer",
    "line": "Brandywine wins for your shade.",
+   "on_current_call": false,
    "run_id": "run_c_a",
    "session_id": "s_ca",
    "source": "speakeasy",
-   "started_at": 1794004905.586889,
+   "started_at": 1794095980.776166,
    "tier": 4,
    "title": "Compare tomato seeds",
    "unread": true,
-   "updated_at": 1794004905.5874078
+   "updated_at": 1794095980.776447
   }
  ],
  "notice": null,
+ "pill": "1 needs you \u00b7 1 running",
  "rev": 1,
  "sentence": "One question for you, one thing stopped, one thing in the works, and one new answer.",
+ "stream": {
+  "entries": [
+   {
+    "at": 1794095980.7743711,
+    "id": "a:run_c_q",
+    "item_id": "q:run_c_q",
+    "kind": "ask",
+    "text": "Desk hunt"
+   },
+   {
+    "at": 1794095980.7743711,
+    "id": "c:run_c_q",
+    "item_id": "q:run_c_q",
+    "kind": "card",
+    "state": "question",
+    "widget": "open"
+   },
+   {
+    "at": 1794095980.775148,
+    "id": "a:run_c_f",
+    "item_id": "s:s_cf",
+    "kind": "ask",
+    "text": "Book the cabin"
+   },
+   {
+    "at": 1794095980.775148,
+    "id": "c:run_c_f",
+    "item_id": "s:s_cf",
+    "kind": "card",
+    "state": "stopped"
+   },
+   {
+    "at": 1794095980.775785,
+    "id": "a:run_c_w",
+    "item_id": "s:s_cw",
+    "kind": "ask",
+    "text": "Sort the garden photos"
+   },
+   {
+    "at": 1794095980.775785,
+    "id": "c:run_c_w",
+    "item_id": "s:s_cw",
+    "kind": "card",
+    "state": "working"
+   },
+   {
+    "at": 1794095980.776166,
+    "id": "a:run_c_a",
+    "item_id": "s:s_ca",
+    "kind": "ask",
+    "text": "Compare tomato seeds"
+   },
+   {
+    "at": 1794095980.776166,
+    "id": "c:run_c_a",
+    "item_id": "s:s_ca",
+    "kind": "card",
+    "state": "new_answer"
+   }
+  ],
+  "folded": [],
+  "needs_you": [
+   "q:run_c_q"
+  ]
+ },
  "tiers": {
   "1": 1,
   "2": 1,

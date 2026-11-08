@@ -432,6 +432,7 @@ def test_answering_a_question_off_a_call_goes_to_the_task_that_asked(server, ser
     add_msg(state, sid, "assistant", "Four fit.", at=NOW - 5)
     wait_for(lambda: service.store.work(run_id)["status"] == "completed")
     item = next(i for i in service.now({})["items"] if i["kind"] == "question")
+    assert item["line"] == "Which desk?" and item["reply"] == "Four fit."   # the verdict said before it asked
     assert post(server, f"/voice/now/{item['id']}/answer", {"option_id": "o9"})[0] == 400
     hermes.responder = lambda prompt, sid: "Ordered the Oakline."
     status, got = post(server, f"/voice/now/{item['id']}/answer", {"option_id": "o1"})
@@ -559,14 +560,14 @@ def test_the_now_reply_matches_the_contract_the_apps_decode(server, service, sta
 
 
 @pytest.mark.parametrize("raw,status,shown", [
-    ("Running sleep 240 + 3 commands", None, "Working\u2026"),
+    ("Running sleep 240 + 3 commands", None, ""),
     ("Running sleep 240 + 3 commands", "Checking the garden photos", "Checking the garden photos"),
-    ("Running cd ~/garden && make", None, "Working\u2026"),
-    ("Running web_search", None, "Working\u2026"),
+    ("Running cd ~/garden && make", None, ""),
+    ("Running web_search", None, ""),
     ("Running the tests after editing seeds.py", None, "Running the tests after editing seeds.py"),
     ("Editing seeds.py and beds.py", None, "Editing seeds.py and beds.py"),
     ("Comparing three desks", None, "Comparing three desks"),
-    (None, "Running ls -la", "Working\u2026"),
+    (None, "Running ls -la", ""),
 ])
 def test_home_live_lines_are_plain_words_never_raw_commands(raw, status, shown):
     assert N.plain_line(raw, status) == shown
@@ -595,3 +596,23 @@ def test_a_conversation_and_the_task_it_started_are_one_home_item(service, state
     assert len(items) == 1, [(i["id"], i["title"]) for i in items]
     assert items[0]["run_id"] == "run_t1" and items[0]["kind"] == "working"
     assert "Plan the garden beds" in (items[0].get("source_label") or "")
+
+
+def test_running_work_is_on_home_for_someone_who_never_uses_kanban(service, state):
+    """A tester with no Kanban boards saw an empty Board ("Nothing running") while jobs ran. Home is the
+    first screen and lists running work wherever it started: a call, Home's chat, or a Hermes
+    conversation in another app. Invented data; no board exists anywhere."""
+    now = time.time()
+    service.store.set_meta("now_baseline_at", repr(now - 30 * 86400))
+    task(service.store, "call1", "working", session="s_call1", request="Reorder the coffee filters",
+         interaction="vi_call_1")
+    task(service.store, "chat1", "running", session="s_chat1", request="Find a quiet café for Saturday")
+    add_session(state, "tg_live", "telegram", title="Pack list for the cabin", at=now - 20)
+    add_msg(state, "tg_live", "user", "Add the headlamps too", at=now - 20)
+    body = service.now({"tz": NY})
+    working = [i["title"] for i in body["items"] if i["kind"] == "working"]
+    assert any("coffee filters" in t.lower() for t in working), working
+    assert any("café" in t.lower() or "cafe" in t.lower() for t in working), working
+    assert "Pack list for the cabin" in working, working
+    assert body["counts"]["working"] >= 3
+    assert "in the works" in body["sentence"]

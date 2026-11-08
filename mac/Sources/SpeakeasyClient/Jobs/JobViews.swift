@@ -770,6 +770,9 @@ public struct JobDetailBody: View {
         let pictures = JobCards.pictures(job, model: model)
         let unread = task.info.followUps.filter { $0.state == .notRead }
         if !unread.isEmpty { NotReadNotice(items: unread, finished: task.info.status == "completed") }
+        if let badge = task.info.model {
+            Text(badge.name).font(.caption2).foregroundStyle(.secondary)
+        }
         ForEach(JobCards.answerBlocks(job, model: model), id: \.self) { block in
             switch block {
             case .cards: JobCardStack(job: job, items: cards, model: model)

@@ -47,7 +47,7 @@ def test_linked_task_older_than_the_chat_tail_is_merged_in_by_time(service, chat
 def test_each_linked_entry_shows_on_exactly_one_page(service, chat, monkeypatch):
     monkeypatch.setattr(H, "MESSAGES_PAGE", 2)
     real = H.session_messages
-    monkeypatch.setattr(H, "session_messages", lambda db, sid, before=None, limit=2: real(db, sid, before=before, limit=2))
+    monkeypatch.setattr(H, "session_messages", lambda db, sid, before=None, limit=2, **kwargs: real(db, sid, before=before, limit=2, **kwargs))
     seen, before, pages = [], None, 0
     while True:
         page = service.history_session("d9", {"before": str(before)} if before else {})["session"]

@@ -133,6 +133,7 @@ private struct GeneralSettings: View {
                 }
             }
             ScreenSettingsSection()
+            OpenLinksSection()
             Section("Panel") {
                 Toggle("Show the panel when a call starts", isOn: $showPanelOnStart)
                 Toggle("Start calls folded into the orb", isOn: $startSlim)

@@ -120,6 +120,24 @@ public enum CardText {
             return ChartFacts(c).plainText
         case "stats", "nutrition":
             for i in c["items"].array { lines.append("\(i["label"].string ?? ""): \(i["value"].string ?? "")") }
+        case "draft":
+            return [c["subject"].string, c["body"].string].compactMap { $0 }.joined(separator: "\n\n")
+        case "timeline":
+            for d in c["days"].array {
+                lines.append(d["label"].string ?? "")
+                for i in d["items"].array { lines.append("  " + [i["when"].string, i["what"].string, i["where"].string].compactMap { $0 }.joined(separator: " · ")) }
+            }
+        case "rows":
+            for i in c["items"].array { lines.append("• " + [i["ref"].string, i["name"].string, i["state"].string, i["amount"].string].compactMap { $0 }.joined(separator: " ")) }
+        case "metric":
+            return [c["label"].string, [c["value"].string, c["unit"].string, c["delta"].string].compactMap { $0 }.joined(separator: " ")]
+                .compactMap { $0 }.joined(separator: ": ")
+        case "preview":
+            if let s = c["creator"].string { lines.append(s) }
+            if let s = c["summary"].string { lines.append(s) }
+            for (n, l) in c["list"].strings.enumerated() { lines.append("\(n + 1). \(l)") }
+            for f in c["flags"].strings { lines.append("! " + f) }
+            if let u = c["url"].string { lines.append(u) }
         case "list", "steps":
             for i in c["items"].array { lines.append("• " + (i.string ?? i["text"].string ?? i["title"].string ?? "")) }
         default:

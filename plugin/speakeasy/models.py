@@ -407,7 +407,7 @@ def resolve(layers: list[tuple[str, dict[str, Any] | None]], entries: dict[str, 
         if not layer:
             continue
         wanted = layer.get("model")
-        if model is None and isinstance(wanted, str) and "/" in wanted and (entries is None or wanted in entries):
+        if model is None and isinstance(wanted, str) and wanted and (entries is None or wanted in entries):
             model, model_source = wanted, source
             preset = preset or layer.get("preset")
         if reasoning is None and layer.get("reasoning") in LEVELS:

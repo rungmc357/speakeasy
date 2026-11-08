@@ -509,6 +509,8 @@ class Runtime:
     shape_call: Callable[[str, str], dict[str, Any] | None] | None = None
     # A finished answer's outcome headline (request, reply) -> str | None (None = the title model).
     headline_call: Callable[[str, str], str | None] | None = None
+    # D4: one rewrite of a weak first line (request, reply, line) -> str | None (None = router.verdict_rewrite).
+    verdict_call: Callable[[str, str, str], str | None] | None = None
     # Instant home control (home_control.HomeControl); None or turned off = every request goes to Hermes.
     home: Any = None
     # Quick answers (quick.answer); None = the real one. Tests swap in a fake.
@@ -537,6 +539,8 @@ class Runtime:
     # The state.db a session lives in (agents.py: a chat on another Hermes profile is in that
     # profile's). None = this profile's own for every session.
     session_db: Callable[[str | None], Path] | None = None
+    # Live speech answers a saved confirmation through the same single-use claim as an app tap.
+    confirm_card: Callable[..., dict[str, Any]] | None = None
 
     @property
     def names(self) -> P.Names:
@@ -690,6 +694,9 @@ class BackendRun:
     # A question the user asked this task about its own work (ask_task): (question, the handoff that
     # asked it, monotonic time asked). Its next STATUS/DETAIL is spoken as the answer.
     asked: tuple[str, str, float] | None = None
+    # The task's own interim texts already handled (normalized), so one read from its stream and
+    # again from its transcript (threads.SessionCommentary) counts once.
+    interim_seen: set[str] = dataclasses.field(default_factory=set)
 
     @property
     def say_id(self) -> str:
@@ -1323,6 +1330,7 @@ class SidebandWorker:
         with its shape)."""
         shaper = self.rt.shape_call or router.result_shape
         headliner = self.rt.headline_call or router.result_headline
+        rewriter = self.rt.verdict_call or router.verdict_rewrite
         request = self.store.request_text(idem) or ""
         wants_shape = shape
 
@@ -1332,6 +1340,18 @@ class SidebandWorker:
             headline = text_mod.clean_headline((shape or {}).get("headline"))
             if not headline:
                 headline = await asyncio.to_thread(headliner, request, report)
+            # D4: a first line that is a bare count or the card said again gets ONE rewrite, verdict
+            # first; anything unusable keeps the line it had. Never asked twice.
+            stored = (self.store.work(idem_key=idem) or {}).get("result") or {}
+            line = headline or stored.get("headline")
+            if line and text_mod.weak_reply(line, stored.get("views")):
+                try:
+                    redo = await asyncio.to_thread(rewriter, request, report, line)
+                except Exception:
+                    redo = None
+                better = text_mod.verdict_line(redo, stored.get("views"))
+                if better:
+                    headline = better
             if headline and self.store.set_headline(idem, headline):
                 changed = True
             if shape:
@@ -2989,6 +3009,9 @@ class SidebandWorker:
         """"Approve", "approved", "no", "for the rest of this task" while an approval waits: answer it.
         Never "always" (refused here and in hermes_api.approve); "session" only when Hermes offered it
         for that request. With several approvals waiting and nothing naming one, ask which."""
+        from .confirm_voice import answer as answer_confirmation
+        if await answer_confirmation(self, delegation_id, revision, request, marked):
+            return True
         pending = self.pending_approvals()
         if not pending:
             return False
@@ -4250,8 +4273,11 @@ class SidebandWorker:
                     except OSError as exc:
                         logger.warning("speakeasy: could not keep a copy of a shared image (%s)", type(exc).__name__)
             items = [{"kind": a.kind, "app": a.app, "name": None if a.kind == "screen" else a.name,
-                      "path": shared.saved.get(a.id) or a.path, "at": shared.at} for a in shared.things]
+                      "path": shared.saved.get(a.id) or a.path, "at": shared.at,
+                      "mime": a.mime, "media": a.media} for a in shared.things]
+            from . import video
             paths = [i["path"] for i in items if i["path"]]
+            paths += [path for i in items for path in video.paths(i.get("media"))]
             if paths:
                 self.store.add_shared_files(idem, paths)
         return items
@@ -5185,6 +5211,8 @@ class SidebandWorker:
             # Hermes keeps each Idempotency-Key's run: a retry asks under its own key, or it would get
             # the refused run back.
             key = idem if not backend.refusal_retries else f"{idem}:retry{backend.refusal_retries}"
+            # Read before the run starts: the transcript rows it writes are the ones after this.
+            commentary = await asyncio.to_thread(self._commentary_reader, session_id)
             run_id = await asyncio.to_thread(self.hermes.start_run, messages_mod.identified_text(prompt), key, session_id, **(extra or {}))
             if first and started is not None:
                 started()
@@ -5202,9 +5230,15 @@ class SidebandWorker:
             first = False
             self.publish()
             loop = asyncio.get_running_loop()
-            terminal_seen = await in_own_thread(
-                self.hermes.events, run_id,
-                lambda event: on_loop(self.handle_hermes_event(backend, event), loop))
+
+            def on_run_event(event: dict[str, Any]) -> None:
+                if commentary is not None and event.get("event") in {"tool.started", "tool.start"}:
+                    # The lines the agent wrote beside this tool call (STATUS/DETAIL) are in its
+                    # transcript already; the run stream may never carry them (SessionCommentary).
+                    for text in commentary.new():
+                        on_loop(self.handle_hermes_event(backend, {"event": "message.interim", "text": text}), loop)
+                on_loop(self.handle_hermes_event(backend, event), loop)
+            terminal_seen = await in_own_thread(self.hermes.events, run_id, on_run_event)
             with self.interaction.lock:
                 again = backend.retry_refused
             if again:
@@ -5699,7 +5733,31 @@ class SidebandWorker:
                            exc_info=True)
             return None
 
+    def _commentary_reader(self, session_id: str | None) -> threads.SessionCommentary | None:
+        """The task's interim lines from its transcript (threads.SessionCommentary); None when this
+        Hermes has no readable state.db (a remote or fake one)."""
+        if not session_id:
+            return None
+        try:
+            db = self.rt.db_for(session_id)
+            if not db or not Path(db).is_file():
+                return None
+            return threads.SessionCommentary(Path(db), session_id)
+        except Exception:
+            logger.debug("speakeasy: commentary reader not started", exc_info=True)
+            return None
+
     async def handle_hermes_event(self, backend: BackendRun, event: dict[str, Any]) -> None:
+        if event.get("event") == "message.interim" and isinstance(event.get("text"), str):
+            # Once per text: the same lines can come off the run stream and off the transcript.
+            seen = " ".join(event["text"].split()).lower()
+            with self.interaction.lock:
+                if seen in backend.interim_seen:
+                    return
+                backend.interim_seen.add(seen)
+                if len(backend.interim_seen) > 400:
+                    backend.interim_seen.clear()
+                    backend.interim_seen.add(seen)
         self.observe_activity(backend, event)
         runtime = event.get("runtime")
         if isinstance(runtime, dict) and str(event.get("event") or "").startswith("run."):
@@ -5882,7 +5940,7 @@ class SidebandWorker:
                 # The session chat stream (and its run status) carry no error field: a failed turn's
                 # reply is Hermes' failure message quoting the provider. Keep only what it means.
                 output, error = None, error or line
-            result = split_result(output, self.rt.image_roots())
+            result = split_result(output, self.rt.image_roots(), asked=self.store.request_text(idem))
             drafts = (result or {}).pop("_email_drafts", None) or []
             failed_as = (failures.failure_kind(error) or (None if result else failures.UNKNOWN)) if status == "failed" else None
             failure_hint = (None if failed_as in failures.REASONS else failures.failure_hint(error)) if status == "failed" else None
@@ -5962,6 +6020,12 @@ class SidebandWorker:
                 await self.append("session.thinking.append", delegation_id, P.retracted_result_note(
                     notice_text(self.store.request_text(idem), 140) or "an earlier request",
                     result["spoken"] if result and status == "completed" else f"it {status}"))
+            elif status == "completed" and result and any(v.get("kind") == "confirm" for v in result.get("views", [])):
+                from .confirm_voice import present as present_confirmation
+                for index, view in enumerate(result.get("views", [])):
+                    if view.get("kind") == "confirm" and view.get("state") == "pending":
+                        await present_confirmation(self, delegation_id, backend.delegation_id, index, view)
+                self.replied_task = backend.delegation_id
             elif status == "completed" and self.store.is_seen(idem):
                 # They already opened this answer in the app while the voice was busy: reading it out
                 # now would repeat what they've read. The voice knows it, and says it only if asked.

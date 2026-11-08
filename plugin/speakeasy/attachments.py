@@ -82,10 +82,15 @@ class Attachment:
     path: str | None = None     # files: Speakeasy's copy on the Hermes machine
     capture_id: str | None = None
     created: float = dataclasses.field(default_factory=time.time)
+    media: dict | None = None
 
     @property
     def is_image(self) -> bool:
         return self.kind in IMAGE_KINDS
+
+    def file_paths(self) -> list[str]:
+        from . import video
+        return ([self.path] if self.path else []) + video.paths(self.media)
 
     def public(self) -> dict[str, str | None]:
         """What the app may see: never bytes or paths."""
@@ -199,8 +204,8 @@ class CallAttachments:
     def file_paths(self) -> set[str]:
         """Saved files this call still holds (not sent yet): never delete these."""
         with self._cond:
-            return {i.attachment.path for i in self._items.values()
-                    if i.state in {"pending", "bound"} and i.attachment.path}
+            return {path for i in self._items.values() if i.state in {"pending", "bound"}
+                    for path in i.attachment.file_paths()}
 
     # -- sharing ---------------------------------------------------------------------------
     def set_screen(self, on: bool, seq: int) -> bool:
@@ -530,11 +535,15 @@ MAX_STAGED = 6                # waiting on one device across its composers (each
 STAGED_TTL_S = 30 * 60        # an attachment nobody sent goes after half an hour
 
 
-STAGED_FILE_TYPES = frozenset({"application/pdf", "text/plain", "text/markdown", "text/csv", "application/json"})
+STAGED_FILE_TYPES = frozenset({"application/pdf", "text/plain", "text/markdown", "text/csv", "application/json",
+                               "video/mp4", "video/quicktime"})
 
 
 def staged_file_ok(mime: str, data: bytes) -> bool:
     """A staged file is what it says: a PDF starts %PDF-, text is UTF-8 with no NUL bytes."""
+    if mime in {"video/mp4", "video/quicktime"}:
+        from .video import sniff
+        return sniff(data)
     if mime == "application/pdf":
         return data.startswith(b"%PDF-")
     if mime in STAGED_FILE_TYPES:
@@ -647,6 +656,45 @@ class StagedPool:
             raise Refused(404, "unknown", "no such attachment")
         return found
 
+    def preview(self, device_id: str, attachment_id: str) -> tuple[bytes, str]:
+        """A device-owned staged poster, without claiming the original or exposing its path."""
+        with self._lock:
+            item = self._items.get(device_id, {}).get(attachment_id)
+            if item is None:
+                raise Refused(404, "unknown", "no such attachment")
+            if item.is_image and item.data:
+                return item.data, item.mime
+            frames = (item.media or {}).get("frames", [])
+            if frames:
+                try:
+                    data = Path(frames[0]["path"]).read_bytes()
+                    if len(data) <= 500_000:
+                        return data, "image/jpeg"
+                except OSError:
+                    pass
+            raise Refused(404, "unknown", "no preview available")
+
+    def describe(self, device_id: str | None, ids: list[str]) -> list[dict[str, object]]:
+        """What a thread may show of these staged items (read-only, in order; unknown ids skipped):
+        ``{id, kind: video|picture|file, mime, name?, duration?}``. Never a path or bytes."""
+        with self._lock:
+            mine = dict(self._items.get(device_id or "", {}))
+        out: list[dict[str, object]] = []
+        for i in ids:
+            item = mine.get(i) if isinstance(i, str) else None
+            if item is None:
+                continue
+            duration = (item.media or {}).get("duration")
+            is_video = item.mime.startswith("video/") or isinstance(duration, (int, float))
+            row: dict[str, object] = {"id": item.id, "mime": item.mime,
+                                      "kind": "video" if is_video else "picture" if item.is_image else "file"}
+            if item.name:
+                row["name"] = item.name
+            if is_video and isinstance(duration, (int, float)) and duration > 0:
+                row["duration"] = round(float(duration), 1)
+            out.append(row)
+        return out
+
     def claim(self, device_id: str, ids: list[str]) -> list[Attachment]:
         """Take these (in this order) for one message: all or nothing. Refused when one is unknown
         (404, maybe expired), more than MAX_ATTACHMENTS (409 too_many) or the images break one
@@ -688,7 +736,7 @@ class StagedPool:
     def file_paths(self) -> set[str]:
         """Saved files still waiting: never delete these."""
         with self._lock:
-            return {a.path for mine in self._items.values() for a in mine.values() if a.path}
+            return {path for mine in self._items.values() for a in mine.values() for path in a.file_paths()}
 
 
 # -- names and header values ---------------------------------------------------------------------

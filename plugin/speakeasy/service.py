@@ -108,10 +108,9 @@ CAPABILITIES["files"] = True
 # POST /voice/attachments (+ DELETE /voice/attachments/{id}): pictures and files staged on a device,
 # then sent with a typed message or new job by id (``attachments`` on /voice/work[/{id}/message]).
 CAPABILITIES["attachments"] = True
-# Videos (MP4, QuickTime) among those staged files. Off: staging takes only PDF and text (415 for a
-# video), so the composers leave videos out and say Hermes needs a newer Speakeasy (SPK-230). The
-# video upload path (SPK-220) turns this on in the same change that makes check_stage take them.
-CAPABILITIES["video_attachments"] = False
+# Videos (MP4, QuickTime) among those staged files (SPK-220 staging). Plugins without this flag
+# refuse a staged video, so the composers offer videos only when it's here (SPK-230).
+CAPABILITIES["video_attachments"] = True
 # GET /voice/secrets + POST /voice/secrets/{id}: a key a skill needs, or the Mac password for one sudo
 # command, typed into a secure card and handed to Hermes, never to the model (secure_input.py).
 CAPABILITIES["secret_input"] = True
@@ -125,6 +124,9 @@ CAPABILITIES["transcribe"] = True
 # message, handed to Hermes like a Telegram voice note (transcribed on arrival); the reply carries the
 # transcript for the bubble. Clients without it record, transcribe, then send the words as text.
 CAPABILITIES["voice_notes"] = True
+# POST /voice/work/voice-message: a voice note that starts a NEW job and chat (Home's composer, no call),
+# the way POST /voice/work starts one from typed words.
+CAPABILITIES["new_voice_notes"] = True
 # POST /voice/push + GET /voice/push/events/{id}: notifications while the app is closed (push.py).
 CAPABILITIES["push"] = True
 # GET /voice/models, model/reasoning on POST /voice/work + history messages, PUT /voice/history/{id}/model,
@@ -181,7 +183,12 @@ CAPABILITIES["agent_model"] = True
 # ``?kinds=`` filter menu with counts, and one read state (a read conversation's answers are seen).
 CAPABILITIES["now"] = True
 CAPABILITIES["now_dismiss"] = True  # build 69: POST/DELETE /voice/now/{id}/dismiss, DELETE /voice/now/clear-seen (Undo)
+CAPABILITIES["saved_calls"] = True  # read-only call conversations, independent of provider sessions
+CAPABILITIES["home_stream"] = True  # SPK-208: `stream` on /voice/now (one thread, asks + cards) and GET /voice/now/recent
 CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking/heard), call_summary
+# SPK-208: POST /voice/home/message (+ /voice/home/voice-message): Home is a chat with a coordinator;
+# ``stream`` entries of kind ``message`` (user / assistant) interleave with the job cards.
+CAPABILITIES["home_chat"] = True
 
 
 
@@ -349,6 +356,8 @@ class VoiceService(SecureInputMixin):
         self.settings = Settings(self.home)
         self.devices = DeviceStore(self.home)
         self.store = StateStore(self.dir / "state.sqlite3", hermes_home=self.home)
+        from .confirms import recover as recover_confirmations
+        recover_confirmations(self.store)
         # The host this server lives in (settings, secrets, side model, chat delivery, liveness) and
         # the agent that does the work. Both are Hermes today; ``hermes=`` is the older name.
         self.host = host or HermesHost(self.home)
@@ -363,6 +372,9 @@ class VoiceService(SecureInputMixin):
                           route_call=route_call, title_call=title_call, polish_call=polish_call, status_call=status_call,
                           threads=thread_runner or ThreadRunner(self.home, self.host.threads_supported),
                           host=self.host)
+        from .confirm_actions import decide as decide_confirmation
+        self.rt.confirm_card = lambda run, index, digest, action, call: decide_confirmation(
+            self, run, index, digest, action, source="voice", interaction=call)
         from .home_control import HomeAssistantClient, HomeControl, credentials
         self.home_control = HomeControl(self.settings.get, lambda: credentials(self.home),
                                         plan_call=home_plan_call or router_home_plan_call,
@@ -396,10 +408,11 @@ class VoiceService(SecureInputMixin):
             self.hermes.agent_lookup = self.store.agent_lookup
         self.rt.session_db = self._db_for
         self.store.describe_model = self.describe_model
-        # A running task's live line (live_status.py): the side model words it at most every 40 s
-        # per task; a deterministic line from its steps otherwise. A fresh summary republishes.
+        # A running task's live line (live_status.py): a deterministic line from its steps, plus the
+        # task's own STATUS/DETAIL. The side model words it only when the user picked their own side
+        # model (never their main model), on a real open, once per phase, capped per hour.
         from . import live_status as LS
-        self.store.live_summarizer = LS.Summarizer(self._live_summary_call)
+        self.store.live_summarizer = LS.Summarizer(self._live_summary_call, enabled=self._side_model_on)
         self.store.live_publish = lambda key: self.publish_all(key)
         # Messages sent to a task by id (POST /voice/work/{id}/message): replies by client_id for
         # MESSAGE_REPLAY_S, and the voiceless worker for tasks whose call is gone.
@@ -417,6 +430,8 @@ class VoiceService(SecureInputMixin):
         self.history_events = HistoryEvents(self._history_stamp)
         from .now import NowModel
         self.now_model = NowModel(self)
+        from .home_chat import HomeChat
+        self.home_chat = HomeChat(self)
         self.history_events.after_change = self._now_changed
         self.rt.history_events = self.history_events
         Q.wire(self.store, self.rt)  # every closed question: decision_resolved + the push withdrawn
@@ -515,6 +530,25 @@ class VoiceService(SecureInputMixin):
                 if index is None:
                     index = self.__dict__["_files"] = F.FileIndex(self.rt.state_db, self.home, self.dir / "files.key")
         return index
+
+    def _thread_files(self, sid: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Pictures and files a reply handed over (``MEDIA:`` lines) ride on its entry as ``files``
+        (Files rows: ids, never paths) instead of showing as the raw tag text (SPK-214)."""
+        out = []
+        for e in entries:
+            text = e.get("text") if e.get("kind") == "assistant" else None
+            if isinstance(text, str) and "MEDIA:" in text:
+                try:
+                    clean, files = self.files.message_files(text, session_id=sid, at=e.get("at"))
+                except Exception as exc:   # a broken tag never costs the page
+                    logger.warning("speakeasy: thread files failed (%s)", type(exc).__name__)
+                    clean, files = text, []
+                if files:
+                    e = {**e, "text": clean, "files": files}
+                elif clean and clean != text:
+                    e = {**e, "text": clean}
+            out.append(e)
+        return out
 
     def files_list(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/files?kind=&q=&session_id=&cursor=&limit=``: newest first, no paths."""
@@ -1229,7 +1263,8 @@ class VoiceService(SecureInputMixin):
         except Exception as exc:
             logger.warning("speakeasy: open-task sweep failed: %s", type(exc).__name__)
         try:
-            settled += sweep(self.store, self.home / "state.db", self.image_roots, LIVE_THREAD_WAITS)
+            settled += sweep(self.store, self.home / "state.db", self.image_roots, LIVE_THREAD_WAITS,
+                             hermes=self.hermes)
         except Exception as exc:
             logger.warning("speakeasy: stuck-task sweep failed: %s", type(exc).__name__)
         if settled:
@@ -1273,6 +1308,18 @@ class VoiceService(SecureInputMixin):
     def _live_summary_call(messages: list[dict[str, str]]) -> str | None:
         from .router import aux_call
         return aux_call(messages, 8.0, 120)
+
+    _side_model_seen: tuple[float, bool] = (0.0, False)
+
+    def _side_model_on(self) -> bool:
+        """router.side_model_picked, read from the user's config at most once a minute."""
+        at, on = self._side_model_seen
+        now = time.monotonic()
+        if now - at >= 60.0 or not at:
+            from .router import side_model_picked
+            on = side_model_picked()
+            self._side_model_seen = (now, on)
+        return on
 
     def publish_all(self, key: str | None = None) -> None:
         events = getattr(self, "history_events", None)
@@ -1736,8 +1783,10 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "view must be a card index")
         if not isinstance(action, str) or not action:
             raise ServiceError(400, "action must be an action id")
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float, str))):
-            raise ServiceError(400, "value must be a number or a short string")
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float, str, dict))):
+            raise ServiceError(400, "invalid card value")
+        if isinstance(value, dict) and action != "edit":
+            raise ServiceError(400, "only a draft edit accepts an object")
         found = self.store.run_result(run_id)
         if found is None:
             raise ServiceError(404, "not found")
@@ -1746,7 +1795,7 @@ class VoiceService(SecureInputMixin):
         if index >= len(views) or not isinstance(views[index], dict):
             raise ServiceError(404, "that card isn't on this task")
         view = views[index]
-        if action not in {a.get("id") for a in view.get("actions") or [] if isinstance(a, dict)}:
+        if view.get("kind") != "confirm" and action not in {a.get("id") for a in view.get("actions") or [] if isinstance(a, dict)}:
             raise ServiceError(400, "that card has no such button")
         if view.get("kind") == "home" and action == "toggle":
             devices = view.get("devices") or []
@@ -1768,6 +1817,19 @@ class VoiceService(SecureInputMixin):
                 self.store.progress(key, "milestone", reply.spoken)
             self.publish_all(key)
             return {"ok": True, "message": reply.spoken}
+        if view.get("kind") == "confirm":
+            from .confirm_actions import decide
+            from .confirms import Conflict
+            try:
+                return decide(self, run_id, index, value, action)
+            except Conflict as exc:
+                raise ServiceError(409, str(exc)) from None
+        from .views import follow_up
+        words = follow_up(view, action)
+        if words:
+            # The agent does the sending (a draft) or carries on (a pick); nothing goes out from here.
+            self.task_message(run_id, {"text": words, "source": "typed"})
+            return {"ok": True, "message": "Sent to the task."}
         raise ServiceError(400, "this server doesn't do that action yet")
 
     def work(self, run_id: str) -> dict[str, Any]:
@@ -2275,8 +2337,8 @@ class VoiceService(SecureInputMixin):
         text = " ".join(text.split())
         if len(text) > M.MAX_TEXT:
             raise ServiceError(400, f"The job is too long (at most {M.MAX_TEXT} characters).")
-        if source != "typed":
-            raise ServiceError(400, "source must be typed.")
+        if source not in {"typed", "voice_message"}:
+            raise ServiceError(400, "source must be typed or voice_message.")
         if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
             raise ServiceError(400, "client_id must be an id.")
         return self._once(client_id, lambda: self._with_staged(
@@ -2321,7 +2383,10 @@ class VoiceService(SecureInputMixin):
         *staged*: attachments claimed for this job (carried with its handoff). *choice*: the model /
         reasoning picked for it (models.parse_choice); a new chat (*new_chat*) keeps it as its own."""
         if choice is None and link_to:
-            choice = self.store.model_choice("session:" + link_to)  # the chat's choice works its linked task
+            resolved, _ = self._next_choice(link_to)
+            if resolved and (resolved.get("unavailable") or (resolved.get("model") and "/" not in resolved["model"])):
+                raise ServiceError(409, "This conversation's model is unavailable or unknown. Choose a model before sending.", reason="model")
+            choice = {k: resolved.get(k) for k in ("model", "reasoning")} if resolved else None
         worker = self.text_worker()
         future = asyncio.run_coroutine_threadsafe(
             M.start_job(worker, text, session_id=session_id, context=context, staged=staged or None,
@@ -2539,14 +2604,17 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, f"That model isn't one {self.agent_name} offers. Pick one from the list.", reason="model")
 
     def _save_chat_choice(self, session_id: str, choice: dict[str, Any]) -> None:
-        old = self.store.model_choice("session:" + session_id) or {}
+        canonical, _ = self._model_context(session_id)
+        session_id = canonical or session_id
+        old = self._chat_choice(session_id) or {}
         model = choice["model"] if "model" in choice else old.get("model")
         reasoning = choice["reasoning"] if "reasoning" in choice else old.get("reasoning")
         if "model" in choice and "reasoning" not in choice and model and reasoning:
             entries = self._entries()
             if entries and model in entries:  # a new model keeps the chat's level only if it takes it
                 reasoning = MD.clamp(reasoning, entries[model]["reasoning_levels"])
-        self.store.set_model_choice("session:" + session_id, model, reasoning)
+        # Explicitly following the default differs from an imported session with no Speakeasy pick.
+        self.store.set_model_choice("session:" + session_id, model or ("default" if reasoning is None else None), reasoning)
 
     def set_session_model(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """``PUT /voice/history/{session_id}/model {model?, reasoning?}``: Use for this chat ("default" or
@@ -2577,39 +2645,153 @@ class VoiceService(SecureInputMixin):
         jobs = self.settings.get().get("jobs") or {}
         return {"model": jobs.get("model") or None, "reasoning": jobs.get("reasoning") or None}
 
+    def _model_context(self, sid: str | None, idem: str | None = None) -> tuple[str | None, list[str]]:
+        """Linked task pages are the same conversation; unrelated sessions stay independent."""
+        keys = [idem] if idem else [k for k, _, _ in self.store.keys_for_session(sid)] if sid else []
+        meta = H.session_meta(self.rt.state_db, sid) if sid else None
+        if not keys and sid and meta and meta["source"] != "api_server":
+            keys = list(reversed(self._continuations(sid)))
+        chain = list(keys)
+        for key in list(keys):
+            for _ in range(6):
+                key = self.store.parent_of(key)
+                if not key or key in chain:
+                    break
+                chain.append(key)
+        source = next((s for k in chain if (s := self.store.linked_source(k))), None)
+        canonical = source or sid
+        if canonical:
+            meta = H.session_meta(self.rt.state_db, canonical)
+            canonical = (meta.get("model_session_ids") or [meta["id"]])[0] if meta else canonical
+        return canonical, chain
+
+    def _chat_choice(self, canonical: str | None) -> dict[str, Any] | None:
+        if not canonical:
+            return None
+        # Older builds saved picks on a linked child's id. Preserve the newest deliberate choice
+        # from that conversation family; new writes use only its canonical identity.
+        sessions = {canonical}
+        meta = H.session_meta(self.rt.state_db, canonical)
+        sessions.update((meta or {}).get("model_session_ids") or [])
+        for source in list(sessions):
+            for key in self.store.history_links(source):
+                if sid := self.store.session_for(key):
+                    sessions.add(sid)
+        choices = [c for sid in sessions if (c := self.store.model_choice("session:" + sid))]
+        return max(choices, key=lambda c: c["updated"]) if choices else None
+
+    def _existing_route(self, model: str, provider: str | None, entries: dict[str, dict[str, Any]] | None,
+                        raw: dict[str, Any] | None) -> str:
+        """The catalog id an existing Hermes session ran on, from its recorded model and provider.
+
+        Real Hermes records the serving provider as ``billing_provider`` ("custom" for every
+        user-defined endpoint, whose catalog slugs are ``custom:<name>``), and one model name is often
+        offered by several providers. Narrow by the recorded provider, then by Hermes' configured
+        default provider; only a single remaining match qualifies. Anything else stays unresolved, so
+        the send asks for a model instead of silently switching it."""
+        if provider and model.startswith(provider + "/"):
+            return model
+        qualified = MD.make_id(provider, model) if provider else None
+        if entries is None:
+            return qualified or model
+        if qualified and qualified in entries:
+            return qualified
+        if not provider and model in entries:
+            return model
+        matches = [mid for mid, e in entries.items() if e["model"] == model]
+        if provider == "custom":
+            matches = [mid for mid in matches if entries[mid]["provider"].startswith("custom:")]
+        elif provider:
+            matches = []  # the recorded provider doesn't offer it now: unavailable, never another route
+        if len(matches) > 1:
+            default = self.catalog.hermes_default(raw) if raw else None
+            matches = [mid for mid in matches if mid == default] or matches
+        if len(matches) == 1:
+            return matches[0]
+        return qualified or model
+
+    def _next_choice(self, sid: str | None, *, idem: str | None = None, task_id: str | None = None,
+                     request: str | None = None) -> tuple[dict[str, Any] | None, str | None]:
+        """One prediction/dispatch resolver. Explicit preferences are never replaced by served fallback.
+
+        A chat pick newer than a task pick supersedes it; a newer task pick is local to that task.
+        Existing Hermes sessions retain their known route before new-chat defaults. A bare model is
+        qualified only by an unambiguous catalog match; unknown routes fail rather than silently switch.
+        """
+        canonical, chain = self._model_context(sid, idem)
+        chat = self._chat_choice(canonical)
+        raw = self.catalog.peek()
+        entries = self.catalog.entries(raw) if raw is not None else None
+        layers = []
+        kind, _ = MD.voice_preset(request)
+        if kind:
+            preset = MD.presets(self.settings.get(), entries, self.catalog.hermes_default(raw) if raw else None)[kind]
+            layers.append(("voice", {**preset, "preset": kind}))
+        task_ids = [task_id] if task_id else []
+        task_ids += [(self.store.run_row(k) or {}).get("delegation_id") for k in chain]
+        tasks = [t for tid in task_ids if tid and (t := self.store.model_choice("task:" + tid))]
+        task = max(tasks, key=lambda t: t["updated"]) if tasks else None
+        if task and (not chat or task["updated"] > chat["updated"]):
+            layers.append(("task", task))
+        follows_default = bool(chat and chat.get("model") == "default")
+        layers.append(("chat", None if follows_default else chat))
+        for key in chain:
+            earlier = self.store.run_model(key)
+            if earlier and earlier.get("source") in {"voice", "task"} and not chat:
+                layers.append((earlier["source"], earlier))
+        meta = H.session_meta(self.rt.state_db, canonical) if canonical else None
+        if not follows_default and not (chat or {}).get("model") and meta and meta.get("model"):
+            model, provider = meta["model"], meta.get("model_provider")
+            mid = self._existing_route(model, provider, entries, raw)
+            layers.append(("existing", {"model": mid, "reasoning": meta.get("model_reasoning")}))
+        # Persisted requested route is preferable to a fallback. Served evidence is the last resort.
+        if not follows_default and (not meta or not meta.get("model")):
+            for key in chain:
+                record = self.store.run_model(key) or {}
+                if record.get("model"):
+                    layers.append(("existing", {"model": record["model"], "reasoning": record.get("reasoning")}))
+                    break
+                served = record.get("served") or {}
+                if served.get("provider") and served.get("model"):
+                    layers.append(("historical", {"model": MD.make_id(served["provider"], served["model"])}))
+                    break
+        # A conversation with no recorded model at all (older chats, many Discord/Telegram threads,
+        # sessions from before Hermes recorded one) runs on the default with its effort, exactly as
+        # build 69 did (SPK-228). Only a recorded route that is now unavailable or ambiguous asks.
+        # An existing route with unknown effort must not borrow the new-chat effort.
+        has_existing = any(layer and layer.get("model") for _, layer in layers)
+        default = self._default_layer()
+        if has_existing:
+            default = {**default, "reasoning": None}
+        layers.append(("default", default))
+        choice = MD.resolve(layers, None)  # retain unknown/unavailable ids instead of falling through
+        if choice and choice.get("model"):
+            mid = choice["model"]
+            if entries is not None and mid not in entries:
+                choice["unavailable"] = True
+            elif entries and choice.get("reasoning"):
+                level = choice["reasoning"]
+                if level not in entries[mid]["reasoning_levels"]:
+                    choice["unavailable"] = True
+        return choice, canonical
+
     def choose_model(self, task_id: str, idem: str, session_id: str | None, request: str | None
                      ) -> dict[str, Any] | None:
         """The overrides a run starts with (Runtime.choose_model): the voice phrase, the task's own pick,
         its chat's (or the chat a linked task continues), what its earlier turn ran on, the default.
         Records what was asked on the task; never reads the catalog on this path (it may be cold)."""
-        settings = self.settings.get()
-        raw = self.catalog.peek()
-        entries = self.catalog.entries(raw) if raw is not None else None
-        layers: list[tuple[str, dict[str, Any] | None]] = []
-        kind, _ = MD.voice_preset(request)
-        if kind:
-            preset = MD.presets(settings, entries, self.catalog.hermes_default(raw) if raw else None)[kind]
-            layers.append(("voice", {**preset, "preset": kind}))
-        layers.append(("task", self.store.model_choice("task:" + task_id)))
-        chain, key = [], idem
-        for _ in range(6):
-            key = self.store.parent_of(key) if key else None
-            if not key or key in chain:
-                break
-            chain.append(key)
-        sessions = [session_id] if session_id else []
-        for k in [idem, *chain]:
-            src = self.store.linked_source(k)
-            if src and src not in sessions:
-                sessions.append(src)
-        for sid in sessions:
-            layers.append(("chat", self.store.model_choice("session:" + sid)))
-        for k in chain:  # a follow-up keeps what its task was asked to run on ("for this")
-            earlier = self.store.run_model(k)
-            if earlier and earlier.get("source") in {"voice", "task"}:
-                layers.append((earlier["source"], {kk: earlier.get(kk) for kk in ("model", "reasoning", "preset")}))
-        layers.append(("default", self._default_layer()))
-        choice, entries = self._resolved(layers)
+        canonical, chain = self._model_context(session_id, idem)
+        sessions = list(dict.fromkeys(s for s in [session_id, canonical,
+            *(self.store.linked_source(k) for k in [idem, *chain])] if s))
+        agent = self._run_agent(task_id, idem, chain, sessions)
+        if agent:
+            # Other agents own their model routing; never validate against this profile's catalog.
+            if session_id:
+                self.store.set_agent("session:" + session_id, agent)
+            return {"agent": agent}
+        choice, _ = self._next_choice(session_id, idem=idem, task_id=task_id, request=request)
+        if choice and (choice.get("unavailable") or (choice.get("model") and "/" not in choice["model"])):
+            raise ServiceError(409, "This conversation's model is unavailable or unknown. Choose a model before sending.", reason="model")
         record: dict[str, Any] = {"model": (choice or {}).get("model"), "reasoning": (choice or {}).get("reasoning"),
                                   "source": (choice or {}).get("source") or "hermes"}
         if choice and choice.get("preset"):
@@ -2618,13 +2800,6 @@ class VoiceService(SecureInputMixin):
             self.store.set_run_model(idem, record)
         except Exception:
             logger.debug("speakeasy: run model not recorded", exc_info=True)
-        agent = self._run_agent(task_id, idem, chain, sessions)
-        if agent:
-            # Another Hermes profile works it (agents.py): on that agent's own model, so no model fields.
-            if session_id:
-                self.store.set_agent("session:" + session_id, agent)
-            logger.info("speakeasy: a task runs on another agent")
-            return {"agent": agent}
         if choice:
             logger.info("speakeasy: a task runs on a chosen model (%s)", record["source"])
         return MD.run_fields(choice) or None
@@ -2679,7 +2854,8 @@ class VoiceService(SecureInputMixin):
     def _session_models(self, sid: str, meta: dict[str, Any], jobs: list[dict[str, Any]]) -> dict[str, Any]:
         """``model`` (what did the chat's latest work), ``model_choice`` (its Use-for-this-chat pick, or
         null) and ``next_model`` (what the next message runs on) for a session page."""
-        chat = self.store.model_choice("session:" + sid)
+        canonical, _ = self._model_context(sid)
+        chat = self._chat_choice(canonical)
         did = next((j["model"] for j in jobs if isinstance(j.get("model"), dict)), None)
         if did is None and isinstance(meta.get("model"), str) and meta["model"]:
             # No Speakeasy task ran here: the model Hermes recorded for the session (no provider, no level).
@@ -2689,12 +2865,16 @@ class VoiceService(SecureInputMixin):
                    "provider": entries[found]["provider"] if found else "",
                    "provider_name": entries[found]["provider_name"] if found else "",
                    "reasoning": None, "reasoning_label": None, "source": "hermes", "served": True}
-        choice, _ = self._resolved([("chat", chat), ("default", self._default_layer())])
-        upcoming = self.describe_model({"model": (choice or {}).get("model"),
-                                        "reasoning": (choice or {}).get("reasoning"),
-                                        "source": (choice or {}).get("source") or "hermes"})
-        return {"model": did, "next_model": upcoming,
-                "model_choice": {"model": chat.get("model"), "reasoning": chat.get("reasoning")} if chat else None}
+        choice, canonical = self._next_choice(sid)
+        raw = self.catalog.peek()
+        entries = self.catalog.entries(raw) if raw is not None else {}
+        upcoming = MD.describe(choice, entries) if choice else MD.describe(
+            {"source": "hermes"}, entries, self.catalog.hermes_default(raw) if raw else None,
+            self.catalog.hermes_reasoning)
+        if upcoming and choice:
+            upcoming["unavailable"] = bool(choice.get("unavailable") or "/" not in upcoming["id"])
+        return {"model": did, "next_model": upcoming, "model_session_id": canonical,
+                "model_choice": {"model": chat.get("model"), "reasoning": chat.get("reasoning")} if chat and chat.get("model") != "default" else None}
 
     # -- history: every Hermes session, readable and writable by id (docs/API.md "History") ---------
 
@@ -2976,6 +3156,14 @@ class VoiceService(SecureInputMixin):
             self.__dict__.setdefault("_history_cache", {}).clear()
 
     # -- Home (SPK-124, now.py) ---------------------------------------------------------------------
+    def saved_call(self, interaction_id: str) -> dict[str, Any]:
+        """Authenticated, read-only conversation from the private call log, not a chat session."""
+        from .saved_calls import conversation
+        logged = self.call_log.get(interaction_id)
+        if logged is None:
+            raise ServiceError(404, "This call is no longer saved on your Hermes.")
+        return conversation(logged, self.store.call_written_answers(interaction_id))
+
     def now(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/now?tz=<IANA zone>``: Home's one ordered list (now.py)."""
         self.sweep_questions()
@@ -2983,6 +3171,10 @@ class VoiceService(SecureInputMixin):
         body = self.now_model.build(tz)
         self._now_rev_sent = body["rev"]
         return body
+
+    def now_recent(self, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/now/recent?tz=``: previous tasks for Home's Recent button."""
+        return self.now_model.recent((query or {}).get("tz") or None)
 
     def _now_changed(self) -> None:
         """Publish ``now`` {rev} on the history feed when what Home shows changed."""
@@ -3065,7 +3257,13 @@ class VoiceService(SecureInputMixin):
         if not isinstance(body, dict) or len(body) != 1 or not ({"option_id"} == set(body) or {"text"} == set(body)):
             raise ServiceError(400, "Send option_id or text.")
         item = self.now_model.find(item_id)
-        if item is None or item["kind"] != "question" or (item.get("question") or {}).get("shape") == "approval":
+        # Guard the card's shape before reading it: a call recap has no kind (SPK-221 used to turn
+        # that into a 500). Anything that isn't an open question card is the same clean 404, with no
+        # task submitted and no answer recorded.
+        if item is None:
+            raise ServiceError(404, "That question has closed.")
+        question = item.get("question")
+        if item.get("kind") != "question" or (question if isinstance(question, dict) else {}).get("shape") == "approval":
             raise ServiceError(404, "That question has closed.")
         text = N.option_text(item, body["option_id"]) if "option_id" in body else body.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > M.MAX_TEXT:
@@ -3208,7 +3406,7 @@ class VoiceService(SecureInputMixin):
         except ValueError:
             raise ServiceError(400, "before must be a number") from None
         try:
-            page = self._sessions_for(sid).session_messages(sid, before=before)
+            page = self._sessions_for(sid).session_messages(sid, before=before, run_lookup=self.store.reply_model_runs)
         except H.HistoryError as exc:
             raise ServiceError(exc.status, exc.message) from None
         link = self._linked(sid)
@@ -3228,7 +3426,7 @@ class VoiceService(SecureInputMixin):
                 if linked_sid and linked_sid not in seen:
                     seen.add(linked_sid)
                     try:
-                        got = self._sessions_for(linked_sid).session_messages(linked_sid)["entries"]
+                        got = self._sessions_for(linked_sid).session_messages(linked_sid, run_lookup=self.store.reply_model_runs)["entries"]
                     except H.HistoryError:
                         got = []
                     more += [{**e, "id": f"{linked_sid[-6:]}-{e['id']}"} for e in got]
@@ -3246,6 +3444,7 @@ class VoiceService(SecureInputMixin):
             ids = {id(e) for e in voiced}
             entries = [self._voice_entry(e, pairs.get(str(e.get("id")))) if id(e) in ids else e for e in entries]
         entries = self._bind_sent_rows(sid, entries)
+        entries = self._thread_files(sid, entries)
         typed = self._typed_requests(list(dict.fromkeys(continued + keys)))
         if typed:
             # A message typed in the app with no call is never "From a call" (its task's brief may still
@@ -3450,6 +3649,9 @@ class VoiceService(SecureInputMixin):
     def _history_message(self, meta: dict[str, Any], text: str,
                          staged: list[A.Attachment] | None = None, client_id: str | None = None) -> dict[str, Any]:
         sid = meta["id"]
+        resolved, _ = self._next_choice(sid)
+        if resolved and (resolved.get("unavailable") or (resolved.get("model") and "/" not in resolved["model"])):
+            raise ServiceError(409, "This conversation's model is unavailable or unknown. Choose a model before sending.", reason="model")
         link = self._linked(sid)
         if self._speakeasy_owned(meta, link) and link is not None:
             for run_id in link.run_ids:
@@ -3750,6 +3952,8 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "upload ended early")
         if kind in A.IMAGE_KINDS and _sniff(data[:16]) != mime:
             raise ServiceError(415, f"the bytes aren't {mime}", reason="unsupported")
+        if kind == "file" and mime in {"video/mp4", "video/quicktime"} and not A.staged_file_ok(mime, data):
+            raise ServiceError(415, "not a playable MP4 or MOV", reason="unsupported")
         if kind == "picture":
             data = A.strip_metadata(data, mime)  # a picture from a phone may carry where it was taken
         shared = interaction.attachments
@@ -3764,8 +3968,10 @@ class VoiceService(SecureInputMixin):
                 self._call_open(interaction)
                 with self.shared.lock:  # saved and held in one step: never deleted in between
                     path = self.shared.save(data, upload["name"] or "file")
+                    media = self._prepare_video(path, mime)
                     try:
                         attachment = shared.add("file", mime=mime, size=len(data), path=str(path), name=path.name)
+                        attachment.media = media
                     except A.Refused:
                         self.discard_shared_files([str(path)])
                         raise
@@ -3774,6 +3980,7 @@ class VoiceService(SecureInputMixin):
         except OSError as exc:
             logger.warning("speakeasy: could not save a shared file (%s)", type(exc).__name__)
             raise ServiceError(500, "could not save the file") from None
+        self._transcribe_video(attachment)
         logger.info("speakeasy: %s shared on %s (%d KB)", kind, interaction.interaction_id[:10],
                     max(1, len(data) // 1024))
         publish_state(self.store, interaction, self.settings.get()["assistant_name"])
@@ -3788,8 +3995,8 @@ class VoiceService(SecureInputMixin):
             removed = interaction.attachments.remove(attachment_id)
         except A.Refused as exc:
             raise self._refused(exc) from None
-        if removed.path:
-            self.discard_shared_files([removed.path])
+        if removed.file_paths():
+            self.discard_shared_files(removed.file_paths())
         publish_state(self.store, interaction, self.settings.get()["assistant_name"])
         self._sync_notes(interaction)
         return {"id": attachment_id, "removed": True}
@@ -3843,6 +4050,10 @@ class VoiceService(SecureInputMixin):
         if len(data) != upload["size"]:
             raise ServiceError(400, "upload ended early")
         fields = dict(upload["fields"])
+        if target == "new":
+            return self._voice_message_new(fields, upload, data, device_id)
+        if target == "home":
+            return self._voice_message_home(fields, upload, data, device_id)
         if target == "session":
             if not H.valid_session_id(target_id) or H.session_meta(self.rt.state_db, target_id) is None:
                 raise ServiceError(404, "I couldn't find that conversation.")
@@ -3857,6 +4068,44 @@ class VoiceService(SecureInputMixin):
                else self.task_message(target_id, body, device_id))
         if target == "session":
             self._note_voice_clip(target_id, note, fields.get("client_id"), upload["duration"], sent_at)
+        return {**got, "voice": {"transcript": transcript, "duration": upload["duration"]}}
+
+    def _voice_message_new(self, fields: dict[str, Any], upload: dict[str, Any], data: bytes,
+                           device_id: str | None) -> dict[str, Any]:
+        """``POST /voice/work/voice-message``: the recording starts a new job and chat, exactly as
+        typed words do on ``POST /voice/work`` (Home's composer, no call). The agent gets the
+        gateway's voice-note text; the new chat's page shows it as a voice message."""
+        fields.pop("answers", None)
+        fields.pop("mode", None)   # nothing is running in a chat that doesn't exist yet
+        note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
+        sent_at = time.time()
+        got = self.start_job({**fields, "text": note}, device_id)
+        session = got.get("session_id")
+        if isinstance(session, str) and session:
+            self._note_voice_message(session, note)
+            self._note_voice_clip(session, note, fields.get("client_id"), upload["duration"], sent_at)
+        return {**got, "voice": {"transcript": transcript, "duration": upload["duration"]}}
+
+    def home_message(self, body: dict[str, Any], device_id: str | None = None) -> dict[str, Any]:
+        """``POST /voice/home/message``: Home's composer talks to the coordinator (home_chat.py)."""
+        return self.home_chat.message(body, device_id)
+
+    def _voice_message_home(self, fields: dict[str, Any], upload: dict[str, Any], data: bytes,
+                            device_id: str | None) -> dict[str, Any]:
+        """``POST /voice/home/voice-message``: a voice note to Home's coordinator. Hermes writes it
+        down; the coordinator reads the words, and a job it starts gets the gateway's voice-note text."""
+        fields.pop("answers", None)
+        fields.pop("mode", None)
+        note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
+        if not transcript:  # nothing to read: the recording goes to a job, as Home's mic always did
+            return self._voice_message_new(fields, upload, data, device_id)
+        body = {k: v for k, v in fields.items() if k in {"client_id", "attachments", "model", "reasoning", "agent"}}
+        got = self.home_chat.message({**body, "text": transcript}, device_id,
+                                     voice={"duration": upload["duration"]}, job_text=note)
+        session = got.get("session_id")
+        if isinstance(session, str) and session and got.get("action") == "start":
+            self._note_voice_message(session, note)
+            self._note_voice_clip(session, note, fields.get("client_id"), upload["duration"], time.time())
         return {**got, "voice": {"transcript": transcript, "duration": upload["duration"]}}
 
     def _voice_note(self, client_id: str | None, suffix: str, data: bytes) -> tuple[str, str | None]:
@@ -3946,6 +4195,25 @@ class VoiceService(SecureInputMixin):
                 self._save_voice_clips(session_id, clips)
         return out
 
+    def _prepare_video(self, path: Path, mime: str) -> dict | None:
+        if mime not in {"video/mp4", "video/quicktime"}:
+            return None
+        from . import video
+        try:
+            return video.prepare(path, self.shared, on_failure=self.discard_shared_files)
+        except A.Refused as exc:
+            self.discard_shared_files([str(path)])
+            raise self._refused(exc) from None
+
+    def _transcribe_video(self, attachment: A.Attachment) -> None:
+        media = attachment.media
+        if media and media.get("audio_path"):
+            # Same configured STT and fallback as voice messages, never a new service.
+            _, transcript = T.voice_note(media["audio_path"], self.transcriber or T.hermes_transcriber())
+            if transcript is not None:
+                media["transcript"] = transcript[:16000]
+                media["audio_status"] = "transcribed"
+
     def check_stage(self, device_id: str, headers: Any, length: int) -> dict[str, Any]:
         """``POST /voice/attachments``, before its body is read: a picture (JPEG or PNG, the phone
         re-encodes) or a file (PDF or text), within its cap and this device's room."""
@@ -3957,7 +4225,7 @@ class VoiceService(SecureInputMixin):
         if kind == "picture" and mime not in A.IMAGE_TYPES:
             raise ServiceError(415, "pictures must be image/jpeg or image/png", reason="unsupported")
         if kind == "file" and mime not in A.STAGED_FILE_TYPES:
-            raise ServiceError(415, "files must be PDF or plain text", reason="unsupported")
+            raise ServiceError(415, "choose MP4, MOV, PDF or a text file", reason="unsupported")
         raw_name = headers.get("X-Speakeasy-Filename")
         if kind == "file" and not (raw_name or "").strip():
             raise ServiceError(400, "files need X-Speakeasy-Filename")
@@ -3984,7 +4252,7 @@ class VoiceService(SecureInputMixin):
                 raise ServiceError(415, f"the bytes aren't {mime}", reason="unsupported")
             data = A.strip_metadata(data, mime)
         elif not A.staged_file_ok(mime, data):
-            raise ServiceError(415, "that file isn't the PDF or text it says it is", reason="unsupported")
+            raise ServiceError(415, "that file doesn't match its media type", reason="unsupported")
         try:
             if kind == "picture":
                 attachment = self.staged.add(device_id, "picture", mime=mime, size=len(data), data=data,
@@ -3992,9 +4260,11 @@ class VoiceService(SecureInputMixin):
             else:
                 with self.shared.lock:  # saved and held in one step: never deleted in between
                     path = self.shared.save(data, upload["name"] or "file")
+                    media = self._prepare_video(path, mime)
                     try:
                         attachment = self.staged.add(device_id, "file", mime=mime, size=len(data),
                                                      path=str(path), name=path.name)
+                        attachment.media = media
                     except A.Refused:
                         self.discard_shared_files([str(path)])
                         raise
@@ -4003,9 +4273,17 @@ class VoiceService(SecureInputMixin):
         except OSError as exc:
             logger.warning("speakeasy: could not save a staged file (%s)", type(exc).__name__)
             raise ServiceError(500, "could not save the file") from None
+        self._transcribe_video(attachment)
         logger.info("speakeasy: %s staged from a device (%d KB)", kind, max(1, len(data) // 1024))
         return {"id": attachment.id, "kind": attachment.kind, "name": attachment.name, "size": attachment.size,
                 "expires_in": A.STAGED_TTL_S}
+
+    def staged_preview(self, device_id: str, attachment_id: str) -> tuple[bytes, str]:
+        try:
+            with self.shared.lock:
+                return self.staged.preview(device_id, attachment_id)
+        except A.Refused as exc:
+            raise self._refused(exc) from None
 
     def remove_staged(self, device_id: str, attachment_id: str) -> dict[str, Any]:
         """The x on a composer chip: forget it (404 once sent, removed or expired)."""
@@ -4013,14 +4291,14 @@ class VoiceService(SecureInputMixin):
             removed = self.staged.remove(device_id, attachment_id)
         except A.Refused as exc:
             raise self._refused(exc) from None
-        if removed.path:
-            self.discard_shared_files([removed.path])
+        if removed.file_paths():
+            self.discard_shared_files(removed.file_paths())
         return {"id": attachment_id, "removed": True}
 
     def expire_staged(self, now: float | None = None) -> int:
         """Drop what a device staged and never sent (STAGED_TTL_S), saved copies included."""
         gone = self.staged.expire(now)
-        paths = [a.path for a in gone if a.path]
+        paths = [path for a in gone for path in a.file_paths()]
         if paths:
             self.discard_shared_files(paths)
         return len(gone)
@@ -4147,7 +4425,13 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(404, "card not found")
         return cards[index - 1]
 
-    def card_image(self, run_id: str, index: int) -> tuple[bytes, str]:
+    def card_image(self, run_id: str, index: int, hero: bool = False) -> tuple[bytes, str]:
+        """A result card's picture; *hero*: for a wide contact sheet, its readable portrait crop
+        (home_words.hero_crop), else the picture itself."""
+        if hero:
+            data, mime = self.card_image(run_id, index)
+            from .home_words import hero_crop
+            return hero_crop(data) or (data, mime)
         card = self._card(run_id, index)
         path = card.get("path") if card.get("kind") == "image" else None
         try:

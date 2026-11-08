@@ -625,11 +625,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.push_event(self._auth(presence=False), push_event.group(1)))
                 return
             device_id = self._auth()
+            staged_preview = re.fullmatch(rf"/voice/attachments/{_ID}/preview", path)
+            if staged_preview:
+                data, mime = self.service.staged_preview(device_id, staged_preview.group(1))
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             image = re.fullmatch(rf"/voice/card-image/{_ID}/([1-8])", path)
             live = re.fullmatch(rf"/voice/live-image/{_ID}", path)
             shared = re.fullmatch(rf"/voice/shared-image/{_ID}/([1-9][0-9]?)", path)
             if image or live or shared:
-                data, mime = (self.service.card_image(image.group(1), int(image.group(2))) if image
+                data, mime = (self.service.card_image(image.group(1), int(image.group(2)),
+                                                      hero=self._query().get("v") == "hero") if image
                               else self.service.shared_image(shared.group(1), int(shared.group(2))) if shared
                               else self.service.live_image(live.group(1)))
                 self.send_response(200)
@@ -669,6 +680,7 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(rf"/voice/interactions/{_ID}", path)
             work = re.fullmatch(rf"/voice/work/{_ID}", path)
             history_one = re.fullmatch(rf"/voice/history/{_SESSION}", path)
+            saved_call = re.fullmatch(rf"/voice/calls/{_ID}", path)
             schedule_one = re.fullmatch(rf"/voice/schedules/{_ID}", path)
             board_one = re.fullmatch(rf"/voice/boards/{_ID}", path)
             routes = {
@@ -682,6 +694,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/voice/onboarding": self.service.onboarding,
                 "/voice/routing": self.service.routing_choices,
                 "/voice/home": self.service.get_home,
+                "/voice/home/model": self.service.home_chat.model_status,
                 "/voice/brief/tune": self.service.get_tune,
                 "/voice/endpoints": self.service.endpoints,
                 "/voice/secrets": lambda: self.service.secure_list(device_id),
@@ -711,6 +724,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.board_call())
             elif board_one:
                 self._reply(200, self.service.board_call(board_one.group(1)))
+            elif saved_call:
+                self._reply(200, self.service.saved_call(saved_call.group(1)))
+            elif path == "/voice/now/recent":
+                self._reply(200, self.service.now_recent(self._query()))
             elif path == "/voice/now":
                 self._reply(200, self.service.now(self._query()))
             elif path == "/voice/history/events":
@@ -757,6 +774,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/transcribe":  # a voice message's audio: same raw-body rules
                 self._transcribe()
                 return
+            if path == "/voice/work/voice-message":  # a voice note that starts a new job (Home's composer)
+                self._voice_message("new", "")
+                return
+            if path == "/voice/home/voice-message":  # a voice note to Home's coordinator (SPK-208)
+                self._voice_message("home", "")
+                return
             voice_note = (re.fullmatch(rf"/voice/history/{_SESSION}/voice-message", path)
                           or re.fullmatch(rf"/voice/work/{_ID}/voice-message", path))
             if voice_note:  # the recording itself is the message: same raw-body rules
@@ -786,6 +809,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/work":
                 self._reply(202, self.service.start_job(self._body(), device_id))
+                return
+            if path == "/voice/home/model":  # Home's chip: {"work_model"} jobs' model; {"model"} the coordinator's
+                self._reply(200, self.service.home_chat.choose_model(self._body()))
+                return
+            if path == "/voice/home/message":  # Home is a chat: the coordinator replies, maybe starts a job
+                self._reply(200, self.service.home_message(self._body(), device_id))
                 return
             if path == "/voice/schedules/preview":  # saves nothing: what the app shows to confirm
                 self._reply(200, self.service.schedule_call("preview", body=self._body()))

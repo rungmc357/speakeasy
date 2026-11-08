@@ -357,14 +357,23 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
     /// `note`: the Kanban card a board worker was started with (a compact header, instructions folded away).
     public var card: HistoryWorkerTask?
     /// `assistant`: the worker's own update to the person (a tracker comment or its finish summary).
+    public var automaticEvent: HistoryAutomaticEvent? = nil
     public var update = false
     /// `user`: the sending device's `client_id` (SPK-80): how an app knows this row is its message.
     public var clientID: String?
+    /// `assistant`: the pictures and files this reply handed over (its `MEDIA:` lines), as Files rows:
+    /// shown in place, fetched by id from `/voice/files` (SPK-214).
+    public var narration: Bool = false
+    public var workDetail: String? = nil
+    public var files: [AgentFile] = []
+
+    public var attribution: ReplyAttribution?
 
     public init(id: String, kind: Kind, at: Date? = nil, text: String = "", tools: [JobActivityItem] = [], voice: Bool = false,
-                call: [HistoryCallLine]? = nil, card: HistoryWorkerTask? = nil, update: Bool = false) {
+                call: [HistoryCallLine]? = nil, card: HistoryWorkerTask? = nil, update: Bool = false, attribution: ReplyAttribution? = nil) {
         self.id = id; self.kind = kind; self.at = at; self.text = text; self.tools = tools; self.voice = voice; self.call = call
         self.card = card; self.update = update
+        self.attribution = kind == .assistant ? attribution : nil
     }
 
     public init?(json: Any?) {
@@ -374,8 +383,10 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
             ? (o["items"] as? [Any] ?? []).enumerated().compactMap { JobActivityItem(json: $0.element, index: $0.offset) } : []
         let text = nonEmpty(o["text"]) ?? ""
         let voice = (o["voice"] as? Bool) ?? false
-        // A voice note whose words Hermes couldn't write down still shows (as a voice message).
-        if kind == .tools ? tools.isEmpty : (text.isEmpty && !(voice && kind == .user)) { return nil }
+        let files = kind == .assistant ? (o["files"] as? [Any] ?? []).prefix(12).compactMap(AgentFile.init(json:)) : []
+        // A voice note whose words Hermes couldn't write down still shows (as a voice message); so does
+        // a reply that was only a picture.
+        if kind == .tools ? tools.isEmpty : (text.isEmpty && !(voice && kind == .user) && files.isEmpty) { return nil }
         self.init(id: id, kind: kind, at: decodeDate(o["at"]), text: text, tools: tools, voice: voice,
                   call: ((o["call"] as? [String: Any])?["lines"] as? [Any]).map { $0.compactMap(HistoryCallLine.init(json:)) }.flatMap { $0.isEmpty ? nil : $0 },
                   card: kind == .note ? HistoryWorkerTask(json: o["task"]) : nil, update: o["update"] as? Bool ?? false)
@@ -383,6 +394,11 @@ public struct HistoryEntry: Equatable, Sendable, Identifiable {
         voiceClip = nonEmpty(o["voice_clip"]) ?? (voice ? nonEmpty(o["client_id"]) : nil)
         voiceDuration = (o["voice_duration"] as? NSNumber)?.doubleValue
         clientID = kind == .user ? nonEmpty(o["client_id"]) : nil
+        self.files = files
+        self.attribution = kind == .assistant ? ReplyAttribution(json: o["model"]) : nil
+        automaticEvent = kind == .note ? HistoryAutomaticEvent(json: o["event"]) : nil
+        narration = kind == .assistant && (o["narration"] as? Bool ?? false)
+        workDetail = narration ? nonEmpty(o["work_detail"]) : nil
     }
 }
 

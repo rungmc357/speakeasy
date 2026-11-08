@@ -16,9 +16,27 @@ from typing import Any
 from ..text import clean_transcript, notice_text
 from ..transcript import tail_text
 
+CONFIRM_RULE = (
+    "Before a purchase, send, booking, invitation, payment, subscription change, public post, form submission, "
+    "deployment, risky home action or delete/share, finish the preparation but DO NOT ACT. Return a confirm card "
+    "in speakeasy-views: {kind:'confirm',type,title,details}. Wait for the plugin's exact-preview approval message; "
+    "a general earlier yes is not that approval. On a live call the user can approve by voice; outside a call they tap. "
+    "Details by type (all strings): checkout {merchant,address(short),delivery,payment_last4,subtotal,tax,shipping,total,"
+    "currency,checkout_url,total_source:'merchant_final'} plus top-level items[{name,quantity(integer),description,size,colour,photo_url}]; "
+    "send {recipient,channel,subject,body(full draft)}; book {when,party,price,cancellation,photo_url}; "
+    "invite {when,attendees,conflicts}; pay {payee,total,currency,payment_last4,arrival}; "
+    "subscription {operation:cancel|sign_up,consequences,final_charge,effective}; post {account,body(exact)}; "
+    "form {destination} plus fields[{label,value,guessed(boolean)}]; deploy {target,tests,changes}; "
+    "home {device,operation:unlock|open_garage|disarm}; delete_share {operation:delete|share,items_description,recipient,count}. "
+    "Checkout amounts are decimal strings read from the merchant's final checkout page, NEVER estimated; "
+    "re-read immediately before buying after approval, and if anything changed return a new card without acting. "
+    "Payment/account numbers are last four only. Missing facts mean ask, not invent. No action buttons, approval state, "
+    "digest or receipt come from you: the plugin sets those. "
+)
+
 PROMPT_DIR = Path(__file__).parent
 # ~12,000 tokens at ~4 chars/token.
-MAX_INSTRUCTION_CHARS = 48_000
+MAX_INSTRUCTION_CHARS = 49_000
 MAX_BRIEF_CHARS = 10_000
 RESULT_BACKGROUND_CHARS = 1900  # live-call appends over 2,000 characters are dropped
 
@@ -440,12 +458,13 @@ VIEWS_RULE = (
     "a fenced block labeled `speakeasy-views` before DONE/SPOKEN; the app draws each object as a card. Each object has "
     "a `kind` and only fields you verified. Kinds and their main fields: "
     "place {name, category, address, rating, price, open_now, hours_today, url, photo_url, lat, lon}; "
-    "places {title, items[{name, rating, price, distance, url, photo_url, lat, lon}]}; "
+    "places {title, items[{name, category, area (neighborhood), rating, price, distance, open_now, url, photo_url, lat, lon}]}; "
     "route {origin, destination, mode, minutes, distance, leave_by, steps[]}; "
     "transit {station, departures[{line, destination, minutes}]}; "
     "flight {number, airline, origin, destination, departs, arrives, status, gate, delay}; "
     "package {carrier, item, status, eta, steps[{when, text, done}]}; "
-    "calendar_day {date, events[{start, end, title, place, url}]}; agenda {days[{date, events[]}]}; "
+    "calendar_day {date, events[{start, end (ISO times, so the app can show overlaps), title, place, url, join_url (the "
+    "video call link)}], free[]}; agenda {days[{date, events[]}]}; "
     "reminder {title, due, list}; countdown {label, date, days}; "
     "contact {name, subtitle, phone, email}; message_draft {channel, to, subject, body}; "
     "inbox {items[{from, subject, preview, when}]}; "
@@ -456,11 +475,11 @@ VIEWS_RULE = (
     "recipe {title, image_url, time, serves, ingredients[], steps[]}; nutrition {title, serving, calories, rows[]}; "
     "comparison {title, columns[], rows[{label, values[]}], winner}; list {title, items[{text, done, detail, url}]}; "
     "steps {title, items[]}; stats {title, items[{label, value, delta, good}]}; "
-    "chart {title, style (line|bar), unit, labels[], series[{name, values[]}], metric (what the numbers are), "
+    "chart {title, style (line|bar), unit, labels[] (what each point is: Mon, 9 PM, Oct; never 1, 2, 3), series[{name, values[]}], metric (what the numbers are), "
     "sort (high_first|low_first|as_listed), order_by (what set a listed order), source, as_of (ISO time), delayed} "
     "(source/as_of only from the data, never guessed); "
     "news {items[{headline, source, when, url}]}; quote {symbol, name, price, change_pct, points[]}; "
-    "weather {place, temp, unit, condition, high, low, days[]}; game {league, status, teams[{name, score, winner}]}; "
+    "weather {place, temp, unit, condition, high, low, rain (chance %), days[{label (Mon), high, low, condition, rain}]}; game {league, status, teams[{name, score, winner}]}; "
     "lanes (what ran when, where it broke) {title, start_label, end_label, ticks[], lanes[{label, segments[{from, to, "
     "tone, label}]}], note} with from/to as 0-1 fractions of the span; before_after {title, before{label, text, image}, "
     "after{label, text, image}}; flow (where something goes) {title, nodes[{label, detail, tone}]}; devices {title, "
@@ -479,6 +498,86 @@ VIEWS_RULE = (
     "the full answer, and as `url` on that card or row. "
 )
 
+ARTIFACTS_RULE = (
+    "Richer card kinds go in the same `speakeasy-views` block; pick at most two, and prefer them over the older "
+    "kinds when they fit. explore (the answer is about several things the user may open: places, stays, "
+    "reservations, flights, events, products, media, people, articles, pull requests, listings) {title, "
+    "sections[{label, entity (place|stay|reservation|flight|event|product|media|person|article|pr|listing|"
+    "generation|task), items[{name, sub, when, facts[], price, rating, state, photo_url, image, url, address, city, lat, "
+    "lon, phone, day (which day it falls on, for a by-day view), creator, media_kind (album|song|playlist|podcast|artist|show|book), ids{apple_music, spotify}}]}]}; "
+    "compare (options and a winner you can name) {title, options[2-6]{name, sub, price, why (one line vs the "
+    "pick), url, photo_url, facts[]}, winner (index), why (80 characters max), reasons[up to 3], caveat}; "
+    "status (several things, each with a state) {source (the app the facts came from: Vercel, Cloudflare, AWS, Servers; omit if none), "
+    "scope (what they belong to, e.g. fieldnote-prod or fieldnote-web), items[{name, role, state (ok|warn|bad|off|on|needs_you|"
+    "info), value (the number a person reads: 38% CPU, 1,240 jobs waiting, 41% disk; a load average becomes CPU % "
+    "only when you know the cores, else leave it out; never a bare raw figure), unit (what the number is, under it: CPU, "
+    "jobs waiting, disk used), note (what it means, at most 6 words, e.g. Not answering since 3:12 PM), history[recent "
+    "values of that number when the tool gave them], url}]} (machines, services, deploys; not agents or jobs, "
+    "which are a jobs card; the thing that's wrong comes first, the cause before what it held up, and several items "
+    "stopped by one cause are one item saying so, named in your answer's words; the value of each "
+    "is the number your answer is about, e.g. the CPU of a busy machine rather than its free disk); draft (a message for the user to send) {channel "
+    "(email|imessage|sms|slack|discord|telegram|x|linkedin|whatsapp), to (the name only), subject, body, send_as}. "
+    "Four more: timeline (what happens when: a trip by day, a calendar, release stages, a package's scans) "
+    "{title, days[{label, sleep (where they stay that night), items[{when (a time or date your answer also says; omit for a step not scheduled yet or a time you did not write), what, where, note, state (done|now|next), "
+    "url, address, lat, lon}]}]}; rows (things to act on: pull requests, issues, inbox, to-dos, bills, alerts) "
+    "{source (the app: Gmail, Sentry, GitHub, Linear; omit if none), scope (the view it came from in plain words, e.g. Cycle 14 · iOS · ends Friday or Build 70 · still open; never a query or filter syntax), title, entity (pr|issue|email|todo|bill|package|alert|note|item|task|post), total (how many the list really has, when you send fewer rows), items[{ref (a number people use, e.g. SPK-12 or #418; never an internal id), name (plain words, never an exception, function or file name), state (its status "
+    "word: Open, Merged, In review, Paid, Conflicts, Approved; every row has one), tone "
+    "(good|warn|bad|neutral; bad only for blocked, failing or overdue, never for backlog), note, who (the assignee's or sender's first name and initial, or Unassigned; give it on every issue, PR and email row the tool shows one for), when (how old: 3d, today, 2:10 PM; give it whenever the tool has a date), amount, url}]}; metric (one number that matters) {label, value (in the label's own terms: a per-hour label takes the latest hour's count, never the total), unit, note (the one other fact beside it, e.g. 41 people affected), "
+    "delta, good (true when the change is good news), points[{label (when it is, in the user's local time like the rest of your answer: 9 PM, Mon, Oct; never UTC, Hr 1 or 1, 2, 3), value, mark (a word for a point worth "
+    "naming)}], threshold, threshold_label, source, scope (e.g. fieldnote-web), as_of}; preview (one thing to open: an album, article, paper, "
+    "contract, file) {entity (media|article|paper|file|document|contract|page|image|recipe), title, creator, sub, "
+    "year, photo_url (never for a document, page, file or contract), url, media_kind, ids{apple_music, spotify}, summary, list_label, list[up to 10 tracks, "
+    "sections or key terms], flags[up to 4 things to watch for], editor, edited, app}. "
+    "Work cards, also in that block: issue (one ticket from Linear, GitHub or Jira) {source (linear|github|jira), "
+    "ref, title (the tracker's own), state, tone (good|warn|bad|neutral), assignee, priority, labels[] (what it is "
+    "about, not workflow tags), note (what's going on, at most 8 words), updated, image (the issue's mockup or screenshot: its https URL or the absolute path of a copy you saved), url}; "
+    "pr (one pull request: where it stands and why) {repo, number, title, state (open|draft|conflicts|failing|passing|"
+    "approved|merged|closed), reason (one plain sentence on why it is where it is, at most 18 words, no jargon), files, checks[{name, state "
+    "(passed|failed|skipped|running|pending), note (plain words)}], when, url, diff_url}; jobs (work that is running) {title, "
+    "items[{name, status (one plain line of what it is doing now), elapsed, needs_you, ask (what the user must do, "
+    "2-4 words), task_id}]}; site (a website or preview deploy to open) {url, title, sub (e.g. Preview from PR #433), "
+    "image (the screenshot you took: absolute path; always include it when you took one)}; mockups (screens you designed) {title, note, items[{image (absolute "
+    "path of each render), caption}], next[up to 2 short follow-ups the user may want, e.g. Make it darker]}. "
+    "Give ids and https URLs (an Apple Music or Spotify id, the venue's own page, a product page, a GitHub URL), "
+    "never app links or layout. Pick by what it is: one pull request or its CI is a pr card (CI results are its checks; give its title and state when you know them; more than 4 passing or skipped checks are grouped by workflow into at most 4, each named with its count like Docker (5 checks), its shared state, and note naming what is in it; a failed check is always its own row); "
+    "agents, workers or tasks are a jobs card; a count that changes over time (errors, crashes, signups) is ONE metric "
+    "card (value the latest or peak, points the series whenever the tool returned one and it is a server or error tracker; source the app it came from), never stats, rows or a chart for it; what shipped in a release or build is ONE "
+    "preview (entity document, title the build or version, sub the tracker, how many changes and when it shipped in at most 7 words like Linear · 14 changes · shipped Tuesday, summary one sentence on what changed for the person using it (never version numbers or where it was uploaded), "
+    "list_label What shipped, list each shipped change in at most 6 plain words, no flags), and where a release stands now is a timeline of its stages (a day for what's done and one for what comes next, each step "
+    "in a few plain words with its time, the steps still to come marked next), not rows; a row's state is its status word (at most 2 words), the one that tells rows apart (for pull requests New activity, Stale, Needs review, CI failing; never Open on every row); "
+    "a status tile's value is the figure your verdict is about (load or CPU %, jobs waiting, minutes down), never an unrelated one like disk free. "
+    "For each visual thing in a carousel, find its real photo_url from its own site, "
+    "store or catalog, or set image to the absolute path of a render you made; never guess a photo. "
+    "Omit the picture if none was found. Every name, price and "
+    "number on these cards must also be written in your answer text, or the card is dropped: name each row, tile "
+    "or job with the words your answer uses for it, and leave off any row your answer doesn't mention. No winner you can "
+    "name means no compare card; nothing to send means no draft card; never send a draft yourself. "
+    "Finish each work card (pr, issue, rows, status, metric, timeline, preview, site, places) with its next useful step: "
+    "\"actions\" [{\"label\": a verb and at most two more words (Rerun failed, Restart api-2, Promote, Run backup now), "
+    "\"primary\": true on the one you'd do}] (at most two, only things you can do yourself in this session with your "
+    "tools and access when asked; pressing one sends you its label as a message, and anything that changes something "
+    "is confirmed first) and \"links\" [{\"label\": Logs, Open in Sentry, Website, \"url\": a real https page a tool returned "
+    "or you visited}] (at most two). No button that only repeats the card or that you couldn't do. "
+    "The primary step acts on the one item your reply says comes first; when the user asked you not to change "
+    "anything, offer only steps that look (Diff, Show logs), never one that changes something. "
+    "A list of messages or alerts is triage: rows only for what needs the user (state the urgency: Today, This week), "
+    "scope how many of how many (Needs a reply · 3 of 31), and the rest as one step (Archive 28 others). "
+    "A document or page preview lists its real structure (list_label the section's name, e.g. Checklist or Open "
+    "questions; list its items), and the reply says who has to decide or what blocks it, not the open question again. "
+    "A metric card says what its number counts in label (Crashes in 24 hours), gives threshold when there is an alert "
+    "line or normal level, and marks the point where a release or change landed. "
+    "Any count you say must match the card: when you say thirteen are left, the card lists or counts all thirteen. "
+    "Rows: put what needs the user first (blocked, failing, overdue), and look up detail (review state, CI, who, "
+    "last update) only for the top 5 rows; the rest are a name and a state, and leave a field out rather than empty. "
+    "Only a server's or an error tracker's number (Sentry, crashes, CPU, latency) gets a comparison (delta, "
+    "threshold, points: 9x normal, since 3:12) and only one your answer says; any other metric is its number and a "
+    "plain state, no baseline. A document preview has no thumbnail: title, summary its first line, editor (who last "
+    "edited it), edited (when, e.g. 2h ago) and app (Google Docs, Notion). On a pr card list every failed check by "
+    "its own name; waiting checks are one line, not one each. A card never repeats your answer: no reason, note "
+    "or check note that says what the answer already said, and no button that goes against your advice (you say "
+    "rerun: the button is Rerun, never Fix). "
+)
+
 QUESTION_RULE = (
     "When you can't go on without a decision from {user_name} (which option, which file, go ahead or not), "
     "don't guess on anything that matters: do everything you can first, then end your answer with a fenced block "
@@ -492,7 +591,8 @@ QUESTION_RULE = (
     "\"context\" (the situation in plain words, one or two sentences), \"why\" (why you recommend that option) and "
     "\"affects\" (what it touches), and make each option {\"text\": \"<answer>\", \"detail\": \"<what happens>\", "
     "\"risk\": \"low|medium|high\", \"reversible\": true|false}. Build it only from facts you checked, and prefer "
-    "one visual card (lanes, before_after, flow, devices or chart) that explains the decision. After the block, "
+    "one visual card (lanes, before_after, flow, devices or chart) that explains the decision; when the work found "
+    "things (places, failing jobs, results), still send their card, so the question sits under what you found. After the block, "
     "stop.  {user_name} answers with one tap or by voice, and the answer comes back to you here. Ask at most "
     "one question, only for a real decision, never to confirm something you were already asked to do. "
 )
@@ -506,8 +606,9 @@ VISUAL_RESULTS_RULE = (
     "showing the page you found it on: any two-sided matchup or score as a game card (status can say \"projected\" or \"live\"), "
     "this vs that as comparison, the key numbers as stats, a ranked or short list, a chart of a trend, lanes for a timeline. Pick whatever fits what you saw; there is no "
     "fixed format per topic. A screenshot or picture (MEDIA:<absolute path>) is for when the look itself matters: "
-    "a design or page you made, a product or place photo, a map, a booking or order summary to check. One picture "
-    "per answer at most. Screenshots of long pages get cut off in the panel, so never use one to show a list or "
+    "a design or page you made, a product or place photo, a map, a booking or order summary to check. Include up to "
+    "six pictures per answer as separate MEDIA lines when a gallery, comparison or before/after needs them. "
+    "Screenshots of long pages get cut off in the panel, so never use one to show a list or "
     "table. A picture only adds to the answer, it never replaces it: options, picks and lists still go in your "
     "text and a view card. Never send a picture of a website's home or landing page. "
     "When asked for recommendations (things to do, events, places, food, shows, products), first check what you "
@@ -565,29 +666,60 @@ SCREENSHOT_STEER = ("The user wants to see what you are looking at. Take a scree
 
 
 def status_rule(names: Names) -> str:
+    # Goal terms, the wording validated on GPT, DeepSeek, Qwen and Sonnet (SPK-200): about half the
+    # prompt of the older step-by-step rule, a pair per new part of the job rather than per step. Keep
+    # "interim commentary ... before the tool call": "in the same message as your tool call" made Qwen
+    # write no live lines and put STATUS lines in its answer.
     return render(
-        "{user_name_cap} watches a one-line live status while you work, so keep them company: report the work, "
-        "research and background activity as it happens. Before your first tool call, write interim commentary "
-        "exactly as two lines: STATUS: <specific present-tense action of 2-6 words, e.g. Checking the weather forecast> "
-        "then DETAIL: <one sentence on what you are working on or looking up at this moment and what you found so far, "
-        "with specifics: names, numbers, files, sites, e.g. Found three hotels under 200 euros near the port; checking reviews next>. "
-        "Write a fresh pair as an interim message, before the tool call that starts each meaningful step, not just the first: "
-        "when a subagent or delegate tool call you make in this session starts or returns, when a long operation (a build, "
-        "a big fetch, a search sweep) starts and when it lands, and when your plan changes or something breaks. STATUS always "
-        "starts with an -ing verb, even for something that just finished (Reviewing the build results, not Build finished). "
-        "Each DETAIL carries concrete state: what you are checking or looking into, and what any subagent or "
-        "long-running tool you started is doing meanwhile, with names, numbers and files, e.g. Kicked off a subagent to "
-        "scan 40 log files for the crash while I read the config, or Build finished in 2 minutes, green; three price "
-        "lookups still running. Never put STATUS or DETAIL lines in the final answer. "
-        "Skip a pair that would only repeat the last one: no filler, no \"still working\", each pair stays two short lines. "
-        "Each pair names the step and what it turned up, never credentials or raw tool arguments. "
+        "{user_name_cap} sees one live line for this job. Before your first tool call, write interim commentary "
+        "exactly as two lines: STATUS: <the part of the job you are on, in {user_name}'s terms, starting with an "
+        "-ing verb, 2-6 words, e.g. Adding the composer to Home> then DETAIL: <what is done or found so far, with "
+        "specifics, e.g. Found the Home layout; the composer goes under the header>. Write a fresh pair the same "
+        "way, before the tool call, only when the job moves to a new part (not every step). Name the goal, not the "
+        "tool or file operation (Adding the composer to Home, not Editing home.html or Using patch). Never put "
+        "STATUS or DETAIL lines in the final answer. "
         "End your final answer with two last lines: DONE: <past-tense label of 1-5 words, e.g. Weather checked> "
-        "then SPOKEN: <one or two plain sentences to say aloud>; "
+        "then SPOKEN: <one or two plain sentences to say aloud. Its first sentence stands alone as the reply shown "
+        "above your card: at most 22 words, your verdict plus the one judgment the card can't show (why, whether it "
+        "matters, which one item needs them first, what to do next), e.g. Almost: two share sheet tests timed out, and they fail on main too, so it isn't "
+        "this change. It must agree with the card (no Nothing is erroring over red rows), with counts in digits and the same figures and ages the card shows (never over a month above rows reading 10d). Never a bare verdict (It's bad.), a preamble (I've pulled up the spec.), a status the card "
+        "already shows (It's fixed and ready to ship.), a count the card shows (13 are left and 3 need you; for a list, say which one comes first and why, e.g. Decide the Home goal first; the rest are moving without you) or a recital of the names "
+        "and numbers on the card; those belong in the full answer above, which you always write and which is what "
+        "keeps your cards on screen>; "
         "the full answer above them is shown on screen and may include links and detail. "
         "Anything {user_name} must paste or type (a terminal command, code, a config line) goes in its own fenced "
         "code block, one command per block, never inside a sentence; it is sent as its own message so it copies "
         "cleanly. The SPOKEN line never contains a command, path, URL or code: say what it does and that it's "
         "ready to copy.", names)
+
+# What the user already has booked or planned lives in their calendar and confirmations; trip notes
+# are plans. A partial source never gets to say "only one".
+LOOKUP_SOURCES_RULE = (
+    "For questions about what {user_name} is booked for, where they are staying, or when something is "
+    "(reservations, dinners, flights, hotels, appointments), check the calendar and any confirmation "
+    "emails or messages first, and use notes and shortlists only to fill gaps. Never say there is "
+    "\"only one\", \"none\" or \"everything else is a maybe\" until you have checked the calendar and "
+    "confirmations as well, and say which sources you checked. When you list stays or bookings, give the "
+    "dates and the city for each. "
+)
+
+_OPENER_FILLER = re.compile(
+    r"(?i)^(?:(?:good|great|nice) catch|you(?:'|\u2019)re (?:right|absolutely right)|thanks(?: for [^.!?]{0,30})?|"
+    r"thank you|got it|sure thing|of course|absolutely|okay|ok|right)\b[\s,.!\u2014-]*")
+
+
+def tidy_spoken(text: str | None) -> str:
+    """A reply fit to read or say: no stray leading punctuation (a reply that began \", I'll add
+    hotels\") and no stacked filler openers (\"Good catch. Thanks. You're right\")."""
+    out = re.sub(r"\s+", " ", text or "").strip()
+    for _ in range(4):
+        out = out.lstrip(" ,;:.\u2014-")
+        stripped = _OPENER_FILLER.sub("", out, count=1)
+        if stripped == out or not stripped.strip():
+            break
+        out = stripped
+    out = out.lstrip(" ,;:.\u2014-")
+    return out[:1].upper() + out[1:] if out else out
 
 
 # The header over a typed task's messages (history.py tells it apart from a call's transcript).
@@ -660,7 +792,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         "another board or session. "
         + truthfulness(names) + " "
         "Do not auto-approve consequential actions. Return concise verified facts and status suitable for speech. "
-        + PRODUCT_CARDS_RULE + VIEWS_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
+        + render(LOOKUP_SOURCES_RULE, names) + PRODUCT_CARDS_RULE + VIEWS_RULE + ARTIFACTS_RULE + CONFIRM_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
         + render(EMAIL_DRAFT_RULE, names)
         + (render("Your task: ", names) + f"{focus} " + render(
             "Other parts of what {user_name} said run as separate tasks; do not do them, and do not "
@@ -777,7 +909,8 @@ def shared_block(names: Names, items: list[dict[str, Any]], attached: bool) -> s
     if how:
         sentence = "; ".join(how)
         text += sentence[0].upper() + sentence[1:] + ". "
-    return text + "Use them to understand what they mean."
+    from .. import video
+    return text + "Use them to understand what they mean." + "".join(video.prompt(i) for i in items)
 
 
 def stale_screen_line(at: float) -> str:
@@ -1302,6 +1435,7 @@ def unfinished_note(names: "Names") -> str:
 
 def late_result(asked: str, spoken: str) -> str:
     """A result that lands after the user has moved on: say what it answers before giving it."""
+    spoken = tidy_spoken(spoken)
     return (f"A result just arrived for their earlier request \"{asked}\". They have said something else since. "
             "If you still owe an answer to what they just said, answer that first. Then, in one short line, say this "
             f"is about \"{asked}\" (in a few words) and give it: {spoken}")[:2000]
@@ -1455,6 +1589,7 @@ def draft_outcome_note(action: str) -> str:
 
 
 def result_for_part(part: str, spoken: str, more: bool) -> str:
+    spoken = tidy_spoken(spoken)
     return f"Result for the part \"{part}\": {spoken}" + (" The other part is still working." if more else "")
 
 

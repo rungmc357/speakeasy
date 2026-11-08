@@ -879,6 +879,16 @@ per light, switch or fan it moved (up to four), each with a `toggle` button that
 `value`, sets a light's brightness; 0 turns it off). Client-only actions (open a place in Maps, open
 a link, copy, chart scrubbing) need no server call.
 
+Next steps on work cards (`pr`, `issue`, `rows`, `status`, `metric`, `timeline`, `preview`, `site`,
+`places`): the agent may offer up to two buttons, which the server ids `do_0`, `do_1`
+(`{"id": "do_0", "label": "Rerun failed", "style": "primary", "confirm": false}`). Pressing one sends
+the task its label and the card's subject as a typed message ("Rerun failed (PR #418).") and returns
+`"Sent to the task."`. Only look/fetch/prepare steps (Check, Show, Pull, Draft, Rerun…) skip the
+confirm; anything else has `confirm: true`, and restart/stop/delete/revert are `destructive`. Such
+cards may also carry `"links": [{"label": "Logs", "url": "https://…"}]` (at most two, https only),
+which apps open directly. Phones show at most two buttons per card: the task's steps, then these
+links, then the card's own links.
+
 ## Messages to a task
 
 Capability `task_messages` (plugin 0.3.19+). The app sends typed words to **one task, by its id**:
@@ -1020,12 +1030,12 @@ size-checked before any of the body is read.
 
 `200 {"id": "att_…", "kind": "picture" | "file", "name", "size", "expires_in": 1800}`. Errors: `400`
 bad headers or empty, `401`, `409 {"reason": "too_many"}`, `413 {"reason": "too_large"}`,
-`415 {"reason": "unsupported"}` (HEIC, videos, other types, bytes that aren't what they say). Logs carry kind
+`415 {"reason": "unsupported"}` (HEIC, videos other than MP4/QuickTime, other types, bytes that aren't what they say). Logs carry kind
 and size only, never bytes or names. `DELETE /voice/attachments/{id}` → `200 {"id", "removed": true}`,
 `404` once sent, removed or expired.
 
-Videos: capability `video_attachments` (SPK-230). It is listed and `false` until staging takes MP4 and
-QuickTime; plugins before it don't list it. Apps offer videos in a composer's picker and drop only
+Videos: capability `video_attachments` (SPK-230), `true` now that staging takes MP4 and QuickTime;
+plugins before it don't list it. Apps offer videos in a composer's picker and drop only
 when it's `true`; otherwise a video gets "Sending videos needs a newer Speakeasy on your Hermes.
 Update it from Settings." and no upload. A video dropped on a call still goes through the call's own
 upload as a plain file.
@@ -1079,7 +1089,10 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
   `{id: "call:<interaction>", title: "Your call · 6 min", minutes, started_at, ended_at, session_id,
   things: [what it started, up to 4], more_things, decisions: [the user's own answers, up to 3],
   line: "Started X. Answered Y. Z has a question for you. You said: …" | "Short call, nothing started."}`
-  (0.3.43; apps show `line` when present).
+  (0.3.43; apps show `line` when present). It takes Dismiss and Later like any other card (0.3.47):
+  off Home while put off or dismissed, back at its time, at once on Undo, or when its own content
+  changes (a task from the call settling after hang-up adds its answer). It is not a question: an
+  answer sent to its id is refused with 404 "That question has closed." and starts nothing.
 - `sentence`: one clause for every kind of card shown, in list order (questions, stopped, in the
   works, new answers, waiting), so nothing below it goes unmentioned; one to nine as words, the item named when it's the only one. "All quiet." / "All caught up.".
 - There are no pins. Home is what's live or new (0.3.43): a finished answer leaves Home once it's
@@ -1260,6 +1273,11 @@ id is never transcribed or sent twice. Reply: the `…/message` reply plus
 `voice: {transcript, duration}` (`transcript` null when Hermes couldn't write it down). On the page the
 entry has `voice: true`, its words unquoted (`""` when unknown) and, when known, `voice_clip` (the
 sending device's client id, to play the clip it kept) and `voice_duration`.
+
+`POST /voice/work/voice-message` (no run id; servers with `capabilities.new_voice_notes`): the
+recording starts a NEW job and chat, the way `POST /voice/work` does for typed words (Home's composer,
+no call). Same headers (`X-Speakeasy-Mode` and `-Answers` are ignored); reply: the `POST /voice/work`
+reply plus `voice: {transcript, duration}`.
 
 ### POST /voice/history/{session_id}/message
 
@@ -2125,7 +2143,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. `age
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules`, `task_stop`, `openai_key` (each `true`); `video_attachments` is listed `false` until staging takes videos. A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules`, `task_stop`, `openai_key`, `video_attachments` (each `true`). A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 ### Agent kind

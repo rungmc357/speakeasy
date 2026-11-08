@@ -893,7 +893,8 @@ _TITLE_PROMPT = (
     "earlier task it continues or answers and the last turns of the call. Use that context to work out what "
     "a short request (\"Fix and ship\", \"Do both\", \"Yes, that one\") actually refers to.\n\n"
     "Rules:\n"
-    "- 4 to 8 words, sentence case, no quotes, no trailing punctuation.\n"
+    "- 4 to 8 words, about 40 characters at most (Home shows it on one short line), sentence case, no quotes, "
+    "no trailing punctuation, no issue numbers or internal code names.\n"
     "- Name the specific subject and what is being done about it: the product, place, person, file or "
     "topic, plus the action or question. Someone reading only the title must know what the task is.\n"
     "- Never a meta title about the conversation: no \"Continue previous discussion\", \"Follow up on "
@@ -945,6 +946,8 @@ def clean_task_title(raw: str | None, request: str = "") -> tuple[str | None, st
     words = text.split()
     if not 3 <= len(words) <= 9 or len(text) > 70:
         return None, f"{len(words)} words; it must be 4 to 8"
+    if len(text) > 48:
+        return None, f"{len(text)} characters; keep it to about 40"
     if words[-1].lower().strip(",:;") in _TITLE_TRANSCRIPT_TAIL:
         return None, "it ends mid-phrase"
     if TITLE_META.search(text):
@@ -1261,7 +1264,8 @@ _HEADLINE_PROMPT = (
     "(\"Build 66 fix dropped; nothing shipped\", \"Kitchen lights set to 30% at sunset\", "
     "\"Oolong picks: three teas under $20\"). Use only what the reply says. Never an acknowledgment or opener "
     "(\"Okay\", \"Got it\", \"Sure thing\", \"I'm dropping it\"), never what the agent is about to do, never a "
-    "question, no names of people. Reply with JSON only: {\"headline\": \"...\"}"
+    "question, no names of people, never a bare count (\"3 PRs need review\"): lead with what it means. "
+    "Reply with JSON only: {\"headline\": \"...\"}"
 )
 
 
@@ -1293,6 +1297,45 @@ def result_headline(request: str, report: str, timeout: float = 10.0) -> str | N
     except ValueError:
         return None
     return clean_headline(data.get("headline")) if isinstance(data, dict) else None
+
+
+_VERDICT_PROMPT = (
+    "An AI agent finished a task and its reply opens with a weak first line: a bare count (\"3 PRs need review.\") "
+    "or the card's own heading said again. Rewrite that first line so it leads with the verdict: what it means "
+    "for the user or what to do next, in one plain sentence of at most 25 words, using only facts in the reply "
+    "(\"Two PRs are blocked on CI; the fix is a rebase.\"). Never a bare count, never a question, no opener. "
+    "Reply with JSON only: {\"line\": \"...\"}"
+)
+
+
+def verdict_rewrite(request: str, report: str, line: str, timeout: float = 10.0) -> str | None:
+    """D4: ONE rewrite of a weak first line (calls.shape_result asks at most once per answer). The
+    caller vets the words (text.verdict_line) and keeps the original line when this is None or unusable."""
+    text = str(report or "").strip()
+    if not text or not str(line or "").strip():
+        return None
+    try:
+        call_llm, _ = host_mod.aux_client()
+    except Exception:
+        return None
+    try:
+        with _profile_scope():
+            response = call_llm(task="title_generation",
+                                messages=[{"role": "system", "content": _VERDICT_PROMPT},
+                                          {"role": "user", "content": f"Request: {str(request or '')[:400]}\n\n"
+                                                                      f"Weak first line: {line}\n\nReply:\n{text[:3000]}"}],
+                                max_tokens=160, temperature=None, timeout=timeout,
+                                reasoning_config={"enabled": False})
+        raw = (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.info("speakeasy: verdict rewrite unavailable (%s)", type(exc).__name__)
+        return None
+    match = re.search(r"\{.*\}", raw, re.S)
+    try:
+        data = json.loads(match.group(0)) if match else {}
+    except ValueError:
+        return None
+    return data.get("line") if isinstance(data, dict) and isinstance(data.get("line"), str) else None
 
 
 def clean_status(raw: str) -> str | None:
@@ -1434,6 +1477,25 @@ def _decide_with_focus(request: str, open_tasks: list[OpenTask], topics: list[To
     if decision is None:
         return Decision([Part("follow_up", request, focus.task_id)], None, "focus", latency)
     return dataclasses.replace(decision, latency_ms=latency)
+
+
+def side_model_picked(config: dict[str, Any] | None = None) -> bool:
+    """Whether the user chose a model of their own for Speakeasy's side tasks
+    (``auxiliary.speakeasy_router``). Left on "auto" it is their main model: extras that only
+    polish (the live-line summarizer) stay off then, so they never bill the main model."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly  # type: ignore
+            config = load_config_readonly()
+        except Exception:
+            return False
+    aux = (config or {}).get("auxiliary") if isinstance(config, dict) else None
+    block = aux.get(AUX_TASK) if isinstance(aux, dict) else None
+    if not isinstance(block, dict):
+        return False
+    provider = str(block.get("provider") or "auto").strip().lower() or "auto"
+    model = str(block.get("model") or "").strip()
+    return bool(model) or provider != "auto"
 
 
 def routing_model(config: dict[str, Any] | None = None) -> str:

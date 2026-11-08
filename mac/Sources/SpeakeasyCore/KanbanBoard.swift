@@ -32,13 +32,14 @@ public struct KanbanBoardSummary: Equatable, Sendable, Identifiable, Hashable {
                   activeAt: unixDate(o["active_at"]))
     }
 
-    /// "2 running · 1 needs you", "Nothing going on".
+    /// "2 running · 1 needs you", "No cards". Board-scoped words: someone who doesn't use Kanban has an
+    /// empty board while calls and chats run, so it never claims nothing is going on (a tester's report).
     public var subtitle: String {
         var parts: [String] = []
         if running > 0 { parts.append("\(running) running") }
         if blocked > 0 { parts.append("\(blocked) need\(blocked == 1 ? "s" : "") you") }
         if ready > 0 { parts.append("\(ready) ready") }
-        if parts.isEmpty { return done > 0 ? "\(done) done this week" : "Nothing going on" }
+        if parts.isEmpty { return done > 0 ? "\(done) done this week" : "No cards" }
         return parts.joined(separator: " · ")
     }
 }
@@ -139,10 +140,10 @@ extension KanbanCard.Column {
     /// The empty column's line.
     public var emptyLine: String {
         switch self {
-        case .ready: return "Nothing queued"
-        case .running: return "Nothing running"
-        case .blocked: return "Nothing waiting on you"
-        case .done: return "Nothing finished this week"
+        case .ready: return "No cards queued"
+        case .running: return "No cards running"
+        case .blocked: return "No cards waiting on you"
+        case .done: return "No cards finished this week"
         }
     }
 }

@@ -2,25 +2,32 @@
 from speakeasy.prompt import builder as P
 
 
-def test_status_rule_narrates_steps_and_background_work_without_filler():
+def test_status_rule_asks_for_goal_terms_once_per_part_of_the_job():
     rule = P.status_rule(P.Names("Ava", "Sam"))
     # The two-line format the app parses is unchanged.
     assert "STATUS: <" in rule and "DETAIL: <" in rule
     assert "DONE: <" in rule and "SPOKEN: <" in rule
-    # A fresh pair at each meaningful step, including subagent calls and long operations started in this session.
-    assert "each meaningful step" in rule
-    assert "subagent" in rule and "long operation" in rule and "meanwhile" in rule
-    # Pairs never land in the final answer (split_result strips only DONE/SPOKEN), and STATUS stays an
-    # -ing action: valid_short_status drops anything else.
+    # Goal terms, a fresh pair only when the job moves to a new part (SPK-200's validated wording),
+    # and still as interim commentary before the tool call (the wording Qwen needs).
+    assert "in Sam's terms" in rule and "starting with an -ing verb" in rule
+    assert "only when the job moves to a new part (not every step)" in rule
+    assert "write interim commentary" in rule and "before the tool call" in rule
+    assert "Name the goal, not the tool or file operation" in rule
+    # DETAIL says what is done or found, not a restatement of STATUS (the doubled live line).
+    assert "what is done or found so far" in rule and "at this moment" not in rule
+    # Pairs never land in the final answer (split_result strips only DONE/SPOKEN).
     assert "Never put STATUS or DETAIL lines in the final answer" in rule
-    assert "STATUS always starts with an -ing verb" in rule
     # Nothing nudges toward other sessions or background workers, which the task prompt forbids.
     assert "parallel sessions" not in rule and "delegated workers" not in rule
-    # No filler, no repeats, and still no raw reasoning, credentials or tool arguments.
-    assert "Skip a pair that would only repeat the last one" in rule and "still working" in rule
-    assert "never credentials or raw tool arguments" in rule
     # Placeholders were rendered, never left raw.
     assert "{user_name" not in rule and "Sam" in rule
+
+
+def test_status_rule_is_about_half_the_old_rules_size():
+    """The old step-by-step rule's live-status part was ~350 prompt tokens; the goal-terms one ~165."""
+    rule = P.status_rule(P.Names("Ava", "Sam"))
+    status_part = rule[:rule.index("End your final answer")]
+    assert len(status_part) < 800, len(status_part)
 
 
 def test_status_rule_never_asks_for_the_models_thinking():
@@ -63,6 +70,6 @@ def test_every_task_prompt_carries_the_status_rule():
 
 def test_the_status_examples_pass_the_status_validator():
     from speakeasy.text import valid_short_status
-    for example in ("Checking the weather forecast", "Reviewing the build results"):
+    for example in ("Checking the weather forecast", "Reviewing the build results", "Adding the composer to Home"):
         assert valid_short_status(example) == example
     assert valid_short_status("Build finished") is None  # why the rule insists on an -ing verb

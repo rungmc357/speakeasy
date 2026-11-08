@@ -65,4 +65,13 @@ final class ViewCardsTests: XCTestCase {
         XCTAssertFalse(ViewCard.drawn.contains("progress"))
         XCTAssertNil(ViewCard(json: ["kind": "progress", "value": true], number: 1)?["value"].string, "a flag isn't a number")
     }
+
+    func testAForecastWithNoNowLeadsWithItsHighAndLow() {
+        XCTAssertEqual(ViewCard(kind: "weather", data: ["temp": 61.6, "high": 64, "low": 50]).weatherHeadline, "62°")
+        XCTAssertEqual(ViewCard(kind: "weather", data: ["high": 55, "low": 35]).weatherHeadline, "55° / 35°")
+        XCTAssertEqual(ViewCard(kind: "weather", data: ["high": 55]).weatherHeadline, "55°")
+        // The big number already is the high: the corner says only the low (no high said twice).
+        XCTAssertEqual(ViewCard(kind: "weather", data: ["temp": 57, "high": 57.2, "low": 36]).weatherHighLow, "L 36°")
+        XCTAssertEqual(ViewCard(kind: "weather", data: ["temp": 61.6, "high": 64, "low": 50]).weatherHighLow, "H 64°  L 50°")
+    }
 }

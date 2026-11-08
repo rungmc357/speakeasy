@@ -4,11 +4,39 @@ import XCTest
 final class SessionHistoryTests: XCTestCase {
     private func json(_ s: String) -> Any { try! JSONSerialization.jsonObject(with: Data(s.utf8)) }
 
+    func testAReplyCarriesItsPictures() {
+        // SPK-214: a reply's MEDIA files arrive as Files rows (ids, never paths); a picture-only reply still shows.
+        let e = HistoryEntry(json: json(#"{"id":"m2","kind":"assistant","text":"","files":[{"id":"abcdefghijklmnopqrstuvwxyz","name":"home-mockup.png","kind":"image","mime":"image/png","bytes":2048,"at":1794000000,"session_id":"d1"}]}"#))
+        XCTAssertEqual(e?.files.map(\.name), ["home-mockup.png"])
+        XCTAssertEqual(e?.files.first?.kind, .image)
+        XCTAssertNil(HistoryEntry(json: json(#"{"id":"m3","kind":"assistant","text":""}"#)), "an empty reply with nothing to show stays out")
+        let user = HistoryEntry(json: json(#"{"id":"m4","kind":"user","text":"hi","files":[{"id":"x","name":"a.png"}]}"#))
+        XCTAssertEqual(user?.files.count, 0, "only replies carry files")
+    }
+
     func testCapabilityFlag() throws {
         let on = try JSONDecoder().decode(ServerCapabilities.self, from: Data(#"{"history":true}"#.utf8))
         XCTAssertTrue(on.history)
         let old = try JSONDecoder().decode(ServerCapabilities.self, from: Data(#"{"task_messages":true}"#.utf8))
         XCTAssertFalse(old.history, "an older plugin hides the side panel")
+    }
+
+    func testReplyCarriesItsPictures() {
+        let withPicture = HistoryEntry(json: json(#"""
+        {"id": "m1", "kind": "assistant", "text": "Here is the chart.",
+         "files": [{"id": "abc123", "name": "chart.png", "kind": "image", "mime": "image/png", "bytes": 2048, "at": 1793891284, "session_id": "d1"}]}
+        """#))
+        XCTAssertEqual(withPicture?.files.map(\.id), ["abc123"])
+        XCTAssertEqual(withPicture?.files.first?.kind, .image)
+        let onlyPicture = HistoryEntry(json: json(#"""
+        {"id": "m2", "kind": "assistant", "text": "",
+         "files": [{"id": "def456", "name": "sketch.png", "kind": "image", "mime": "image/png", "bytes": 10, "at": 1793891285, "session_id": "d1"}]}
+        """#))
+        XCTAssertNotNil(onlyPicture, "a reply that was only a picture still shows")
+        XCTAssertNil(HistoryEntry(json: json(#"{"id": "m3", "kind": "assistant", "text": ""}"#)))
+        var chat = HistoryConversation(id: "d1", title: "Porch", source: "discord", sourceLabel: "Discord")
+        chat.entries = [withPicture!, onlyPicture!]
+        XCTAssertEqual(HistoryThread(chat).messages.map { $0.files.count }, [1, 1])
     }
 
     func testPageDecodes() {
@@ -259,6 +287,22 @@ final class VoiceNoteFlowTests: XCTestCase {
         let task = VoiceNoteRequest(target: .task("run_5"), audio: Data(), duration: 2, answers: "run_9")
         XCTAssertEqual(task.path, "/voice/work/run_5/voice-message")
         XCTAssertNil(task.headers["X-Speakeasy-Answers"])
+    }
+
+    /// Home's composer (SPK-198): a recording with no conversation yet starts a new job and chat.
+    func testANewJobVoiceNoteStartsItsOwnChat() throws {
+        let note = VoiceNoteRequest(target: .newJob, audio: Data([1]), clientID: "vm-home", duration: 6.5,
+                                    mode: .steer, answers: "run_9", attachments: ["att_1", "att_2"])
+        XCTAssertEqual(note.path, "/voice/work/voice-message")
+        XCTAssertNil(note.headers["X-Speakeasy-Mode"])      // nothing runs in a chat that doesn't exist yet
+        XCTAssertNil(note.headers["X-Speakeasy-Answers"])
+        XCTAssertEqual(note.headers["X-Speakeasy-Attachments"], "att_1,att_2")
+        let reply = try XCTUnwrap(VoiceNoteReply(json: ["ok": true, "run_id": "r2", "delivered_as": "new_run",
+                                                        "session_id": "speakeasy_task_1",
+                                                        "voice": ["transcript": "Find a quiet cafe", "duration": 6.5]]))
+        XCTAssertEqual(reply.sessionID, "speakeasy_task_1")
+        XCTAssertEqual(reply.runID, "r2")
+        XCTAssertEqual(reply.deliveredAs, .newRun)
     }
 
     func testReplyAndPageEntries() throws {

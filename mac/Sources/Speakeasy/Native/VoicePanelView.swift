@@ -561,7 +561,7 @@ struct VoicePanelView: View {
             }
             // Pictures and files waiting for the next request: under the header in every layout.
             if !model.state.workOnly && !pending.isEmpty {
-                PendingAttachmentsRow(items: pending, onRemove: model.onRemoveAttachment)
+                PendingAttachmentsRow(items: pending, onRemove: model.onRemoveAttachment, onRetry: model.onRetryAttachment)
                     .padding(.horizontal, 14).padding(.bottom, 8)
                     .transition(.opacity)
             }
@@ -1306,11 +1306,12 @@ struct AttachmentTile: View {
 struct PendingAttachmentsRow: View {
     var items: [PendingAttachmentItem]
     var onRemove: (String) -> Void
+    var onRetry: (String) -> Void = { _ in }
 
     var body: some View {
         HStack(spacing: 8) {
             ForEach(items) { item in
-                PendingAttachmentTile(item: item, onRemove: { onRemove(item.id) })
+                PendingAttachmentTile(item: item, onRemove: { onRemove(item.id) }, onRetry: { onRetry(item.id) })
                     .transition(.opacity)
             }
             Spacer(minLength: 0)
@@ -1324,13 +1325,28 @@ struct PendingAttachmentsRow: View {
 struct PendingAttachmentTile: View {
     var item: PendingAttachmentItem
     var onRemove: () -> Void
+    var onRetry: () -> Void = {}
     @State private var hover = false
 
     var body: some View {
         // On its way to the plugin, or already claimed by a request: shown a little faded.
         let settling = item.phase == .uploading || item.phase == .sending
-        AttachmentTile(content: item.kind == .picture ? .picture(item.thumbnail) : .file(item.name))
+        AttachmentTile(content: item.kind == .picture || item.thumbnail != nil ? .picture(item.thumbnail) : .file(item.name))
             .opacity(settling ? 0.55 : 1)
+            .overlay(alignment: .bottomLeading) {
+                if let duration = item.duration {
+                    Text(String(format: "%d:%02d", Int(duration) / 60, Int(duration) % 60))
+                        .font(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.white)
+                        .padding(2).background(.black.opacity(0.7)).padding(2)
+                }
+            }
+            .overlay {
+                if item.failed {
+                    Button("Retry", action: onRetry).font(.caption2).buttonStyle(.borderedProminent)
+                } else if item.phase == .uploading {
+                    ProgressView(value: item.progress ?? 0).frame(width: 32)
+                }
+            }
             .overlay(alignment: .topTrailing) {
                 RemoveTileButton(name: item.kind == .picture ? "picture" : item.name, action: onRemove)
                     .offset(x: 5, y: -5)
@@ -1344,6 +1360,7 @@ struct PendingAttachmentTile: View {
             .accessibilityLabel(item.kind == .picture ? "Picture" : item.name)
             .accessibilityHint("Goes with your next request")
             .accessibilityAction(named: "Remove") { onRemove() }
+            .accessibilityAction(named: "Retry") { if item.failed { onRetry() } }
     }
 }
 
@@ -1574,10 +1591,8 @@ struct WorkDetailView: View {
                     }
                     if let images = info?.images, !images.isEmpty, let runID = info?.runID {
                         section(images.count == 1 ? "Image" : "Images") {
-                            VStack(spacing: 8) {
-                                ForEach(images) { card in
-                                    ImageResultCard(runID: runID, card: card, all: images, model: model)
-                                }
+                            PictureGallery(images: images, identity: runID) { number in
+                                await model.loadProductImage(runID, number)
                             }
                         }
                     }

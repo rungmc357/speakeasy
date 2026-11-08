@@ -13,27 +13,38 @@ extension ServerClient {
         NowHome(json: try await json("/voice/now?tz=" + Self.esc(timeZone.identifier)))
     }
 
+    /// The saved call, not the voice provider's (non-Hermes) session.
+    public func savedCall(_ interactionID: String) async throws -> SavedCall {
+        SavedCall(json: try await json("/voice/calls/" + Self.esc(interactionID)))
+    }
+
+    /// `GET /voice/now/recent`: previous tasks for Home's Recent button (plugin 0.3.46+, `home_stream`).
+    public func nowRecent(timeZone: TimeZone = .current) async throws -> [NowRecentItem] {
+        let reply = try await json("/voice/now/recent?tz=" + Self.esc(timeZone.identifier))
+        return (reply["items"] as? [Any] ?? []).compactMap(NowRecentItem.init(json:))
+    }
+
     /// "Later": off Home until *until*, or until it changes.
     public func nowLater(_ itemID: String, until: Date?, onChange: Bool) async throws {
         var body: [String: Any] = [:]
         if let until { body["until"] = until.timeIntervalSince1970 }
         if onChange { body["on_change"] = true }
-        _ = try await post("/voice/now/\(Self.esc(itemID))/later", body)
+        _ = try await post("/voice/now/\(NowItemPath.segment(itemID))/later", body)
     }
 
     /// Undo a Later.
     public func nowLaterUndo(_ itemID: String) async throws {
-        _ = try await json("/voice/now/\(Self.esc(itemID))/later", method: "DELETE")
+        _ = try await json("/voice/now/\(NowItemPath.segment(itemID))/later", method: "DELETE")
     }
 
     /// One way to answer a question card, on a call or not.
     public func nowAnswer(_ itemID: String, optionID: String? = nil, text: String? = nil) async throws {
         let body: [String: Any] = optionID.map { ["option_id": $0] } ?? ["text": text ?? ""]
-        _ = try await post("/voice/now/\(Self.esc(itemID))/answer", body)
+        _ = try await post("/voice/now/\(NowItemPath.segment(itemID))/answer", body)
     }
 
     public func nowApproval(_ itemID: String, choice: String) async throws {
-        _ = try await post("/voice/now/\(Self.esc(itemID))/approval", ["choice": choice])
+        _ = try await post("/voice/now/\(NowItemPath.segment(itemID))/approval", ["choice": choice])
     }
 
     @discardableResult
@@ -48,11 +59,11 @@ extension ServerClient {
 
     /// Swipe-dismiss: the card moves to Earlier on every device (plugin 0.3.43+, `now_dismiss`).
     public func nowDismiss(_ itemID: String) async throws {
-        _ = try await post("/voice/now/\(Self.esc(itemID))/dismiss", [:])
+        _ = try await post("/voice/now/\(NowItemPath.segment(itemID))/dismiss", [:])
     }
 
     public func nowDismissUndo(_ itemID: String) async throws {
-        _ = try await json("/voice/now/\(Self.esc(itemID))/dismiss", method: "DELETE")
+        _ = try await json("/voice/now/\(NowItemPath.segment(itemID))/dismiss", method: "DELETE")
     }
 
     /// Earlier: one page of conversations for the checked kinds, never repeating Home, with the menu.

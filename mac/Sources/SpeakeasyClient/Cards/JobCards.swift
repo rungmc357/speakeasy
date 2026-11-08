@@ -275,6 +275,28 @@ public struct AnswerGlance: View {
                     Text(card["winner"].string ?? "").font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
                         .truncationMode(.tail).frame(maxWidth: 96, alignment: .leading)
                 }
+            case "compare":
+                let options = card["options"].array, w = Int(card["winner"].double ?? 0)
+                let pick = options.indices.contains(w) ? options[w] : .null
+                value(pick["price"].string ?? pick["name"].string ?? "", pick["price"].string == nil ? "My pick" : pick["name"].string)
+            case "status":
+                // One dot per thing, the worst first: how things are at a glance.
+                let items = card["items"].array
+                HStack(spacing: 4) {
+                    ForEach(Array(items.prefix(8).enumerated()), id: \.offset) { _, i in
+                        Circle().fill(StatusTile.color(i["state"].string)).frame(width: 8, height: 8)
+                    }
+                }
+            case "metric":
+                let pts = card["points"].array.compactMap { $0["value"].double }
+                if pts.count >= 3 {
+                    HStack(spacing: 6) {
+                        MiniBars(values: Array(pts.suffix(14)), line: true).frame(width: 52, height: 24)
+                        value(card["value"].string ?? "", nil, tone: card["good"].bool.map { $0 ? "good" : "bad" })
+                    }
+                } else {
+                    value(card["value"].string ?? "", card["delta"].string, tone: card["good"].bool.map { $0 ? "good" : "bad" })
+                }
             case "stats":
                 let item = card["items"].array.first ?? .null
                 value(item["value"].string ?? "", item["label"].string, tone: item["good"].bool.map { $0 ? "good" : "warn" })

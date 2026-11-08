@@ -80,6 +80,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applyDockPolicy()
         MacAppearance.apply()
         let args = ProcessInfo.processInfo.arguments
+        #if DEBUG
+        if let i = args.firstIndex(of: "--confirm-shots"), i + 1 < args.count { ConfirmationShots.run(dir: args[i + 1]); return }
+        #endif
         if let i = args.firstIndex(of: "--welcome-shots"), i + 1 < args.count { DispatchQueue.main.async { WelcomeShots.run(dir: args[i + 1]) }; return }
         if let i = args.firstIndex(of: "--now-mac-shots"), i + 1 < args.count { NowMacShots.run(dir: args[i + 1]); return }
         if let i = args.firstIndex(of: "--history-shots"), i + 1 < args.count { HistoryShots.run(dir: args[i + 1]); return }
@@ -177,6 +180,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.schedulesSupported = caps?.schedules ?? false
                     self.wireHermesTranscription(caps?.transcribe ?? false)
                     self.history.store.voiceNotesSupported = caps?.voiceNotes ?? false
+                    MacHomeComposerModel.shared.voiceNotesSupported = caps?.newVoiceNotes ?? false
+                    MacHomeComposerModel.shared.homeChat = caps?.homeChat ?? false
                     self.history.store.boardsSupported = caps?.boards ?? false
                     self.history.store.skillsSupported = caps?.slashSkills ?? false
                     self.history.store.filesSupported = caps?.files ?? false
@@ -403,6 +408,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let now = MacNowModel.shared
         guard on else { now.stop(); return }
         now.api = { [weak self] in self?.native.api }
+        MacHomeComposerModel.shared.api = { [weak self] in self?.native.api }
+        MacHomeComposerModel.shared.capabilities = { [weak self] in self?.app.status?.capabilities }
         now.onQuestions = { [weak self] n in
             guard let self, n != self.questionsWaiting else { return }
             self.questionsWaiting = n

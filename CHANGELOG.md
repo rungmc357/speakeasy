@@ -2,9 +2,36 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.47 · iPhone build 71 — Home is a chat
+
+- **Home talks back.** What you type on Home now goes to your assistant first, and it answers right there in the thread. Saying hi, a quick question, or "thanks" gets a reply, not a task card. *(plugin; needs iPhone build 71 or the next Mac app to show the replies)*
+- **Real work still runs as a job.** When a message needs doing ("find a quiet cafe near the river"), you get a one-line reply and the job's card right under it, which updates in place until the answer lands. *(plugin)*
+- **Follow-ups go to the right job.** "Will I need an umbrella?" is answered from the forecast job you just ran; "actually, Portland, Oregon" corrects the running search; "cancel that" stops it. *(plugin)*
+- **Two asks, two jobs.** "Find a hardware store open Sunday and look up how long to boil an egg" starts two jobs, each with its own card. *(plugin)*
+- **Pick the model your jobs run on.** The chip above the Home composer chooses the model Home's jobs use (your Hermes default unless you change it), each family shown once at its newest version with the rest under More…. Chat replies stay quick on Auto: the newest Sonnet, GPT Terra or Haiku you already have connected in Hermes, read from your list (it never test-calls your models or changes your settings). With none of those connected, the chat uses your work model. Home's chat shows no model name on each message. *(plugin + iPhone build 71)*
+- **Answers come as cards.** A finished job leads with a card made for it (a forecast, a list with a winner, a pull request's checks, a status board, a document preview), with up to two buttons for the next step, under a reply that starts with the verdict. *(plugin + iPhone build 71)*
+- **Send a video clip to Home.** It shows in the thread as its poster with a play mark and its length, and the job sees it. *(plugin + iPhone build 71)*
+- **Running jobs say what they are doing** in one live line ("Reading the reviews"), never a placeholder or a spinner, and a canceled job's card stays in the thread saying Canceled. *(plugin + iPhone build 71)*
+- **Conversations fixes.** The list no longer sticks on Archived when you switch views, a call shows once in the Live Activity, and running jobs are easy to find. *(iPhone build 71)*
+- **Voice memos to Home** get the same reply-or-job treatment, transcribed by your Hermes. *(plugin)*
+- **Other chats stay out of Home's thread.** A running Discord or Telegram conversation shows in the Work strip, and only joins the thread when it needs you. *(plugin)*
+
+- **"Later" on the call card works.** Putting the card from an ended call off now takes it off Home until its time (or until it changes), and Undo brings it straight back, the same as any other card. *(plugin)*
+- **A dismissed call card comes back when it has more to say.** If a task from the call finishes a few seconds after you hang up, the card returns with that answer instead of staying hidden. *(plugin)*
+- **Answering a call card is refused cleanly** instead of failing, and no task is started by it. *(plugin)*
+
 ## Plugin 0.3.46 — Swipe to dismiss works
 
 - **Swiping a Home card away works again.** On iPhone build 69 every swipe said "That didn't go through." The plugin now accepts the card ids exactly as the apps send them, including the call card, a group of stopped jobs, and answers in the "Earlier today" row. *(plugin)*
+## Plugin 0.3.37 (unreleased) — Task cards say what the task is really doing
+
+- **Bookings come from your calendar first.** Asked what you are booked for or where you are staying, the task now checks your calendar and confirmations before notes, never says "only one" from a partial source, and gives dates and cities. The voice says it is checking until the task finishes, and replies no longer start with a stray comma or stacked "good catch / thanks" filler.
+- **A live line instead of a plan.** A running task's card now says what it has actually done in the last couple of minutes ("Editing store.py and router.py", "Running the tests after editing calls.py"), with a short "So far" recap underneath, written from its real steps (and worded by the side model when it's available). The plan guessed at handoff is no longer shown as progress, and no card shows step numbers.
+- **Honest waits.** One long step says what it's waiting on and for how long ("Waiting on the tests · 4 min"); a task that has gone quiet says so ("No new steps · 3 min"); the handoff line stops posing as "now" after a minute with nothing reported.
+- **No spoken "Sent."** A message or picture you type to a task during a call is delivered silently; the voice only speaks about it if you ask.
+- **One ask, one task.** Pictures sent during a call no longer fail with "couldn't reach Hermes" when Hermes is just slow to read them in (it's asked again for the same task, with more time), and something you add seconds after a task starts goes into that task instead of starting a twin that answers a second time.
+- **No choice card for a closing offer.** "Want me to hold, or walk you through it?" at the end of an answer is just talk now, not a card and a "Decide on…" task in Done.
+- **Titles name the subject.** Titles made only of generic words ("Check work status", "Decide on holding") or pointing at "the earlier task" are rejected and written again.
 
 ## Plugin 0.3.45 · Mac 0.3.23 · iPhone build 69 — A tidier Home
 

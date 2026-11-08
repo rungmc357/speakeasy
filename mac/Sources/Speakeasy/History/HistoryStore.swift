@@ -398,13 +398,20 @@ final class HistoryStore: ObservableObject {
         open(file.sessionID)
     }
 
+    private var detailGenerations: [String: Int] = [:]
+
     func load(_ sessionID: String) {
         guard let backend else { return }
+        let revision = modelEpoch
+        detailGenerations[sessionID, default: 0] += 1
+        let generation = detailGenerations[sessionID]
         Task { [weak self] in
             do {
                 let c = try await backend.conversation(sessionID)
-                guard let self else { return }
+                guard let self, self.detailGenerations[sessionID] == generation else { return }
+                guard self.modelEpoch == revision, self.pendingModels.isEmpty else { return }
                 self.conversations[sessionID] = c
+                self.modelConfirmed[sessionID] = revision
                 self.detailErrors[sessionID] = nil
                 // The server's word on each question replaces what was pending here.
                 let states = Dictionary(c.jobs.compactMap { j in j.runID.map { ($0, j) } }, uniquingKeysWith: { a, _ in a })
@@ -415,7 +422,8 @@ final class HistoryStore: ObservableObject {
                 self.outbox.prune(HistoryThread(c).messages, session: sessionID)
                 self.outbox.reconcile(c)
             } catch {
-                self?.detailErrors[sessionID] = Self.message(error)
+                guard let self, self.detailGenerations[sessionID] == generation else { return }
+                self.detailErrors[sessionID] = Self.message(error)
             }
         }
     }
@@ -547,6 +555,7 @@ final class HistoryStore: ObservableObject {
     @discardableResult
     private func deliver(_ text: String, source: HistoryMessageRequest.Source, answers: String? = nil,
                          mode: MessageMode? = nil) -> Bool {
+        if let id = target?.sessionID, !pendingModels.isEmpty || (modelEpoch > 0 && modelConfirmed[id] != modelEpoch) { return false }
         guard let target, let outgoing = target.outgoing(text, source: source, answers: answers), let backend else { return false }
         switch outgoing {
         case .message(var request):
@@ -622,6 +631,7 @@ final class HistoryStore: ObservableObject {
 
     func retry(clientID: String) {
         guard let item = outbox.item(clientID), let backend else { return }
+        guard pendingModels[item.request.sessionID] == nil else { return }
         outbox.mark(clientID, .sending)
         if let note = item.voiceNote { transmit(voiceNote: note, session: item.request.sessionID, backend); return }
         transmit(item.request, backend)
@@ -725,6 +735,12 @@ final class HistoryStore: ObservableObject {
     }
 
     // MARK: Model (servers with `model_choice`)
+    private var modelRevisions: [String: Int] = [:]
+    private var modelSaves: [String: Task<Void, Never>] = [:]
+    private var modelSave: Task<Void, Never>?
+    private var modelEpoch = 0
+    private var modelConfirmed: [String: Int] = [:]
+    private var pendingModels: [String: ModelChoice] = [:]
 
     func loadModels() {
         guard let backend else { return }
@@ -736,7 +752,7 @@ final class HistoryStore: ObservableObject {
     /// The open chat's own pick (New chat: its pending one).
     var chatModel: ModelChoice? {
         switch target {
-        case .session(let id): return conversations[id]?.modelChoice
+        case .session(let id): return pendingModels[id] ?? conversations[id]?.modelChoice
         default: return newChatModel
         }
     }
@@ -745,47 +761,73 @@ final class HistoryStore: ObservableObject {
     /// agent's own model, so it has no model chip.
     var picker: ModelPickerState? {
         guard modelsSupported, let catalog, catalog.available, openAgent == nil else { return nil }
+        if let id = target?.sessionID {
+            if let pending = pendingModels[id] { return ModelPickerState(catalog: catalog, chatChoice: pending) }
+            guard modelEpoch == 0 || modelConfirmed[id] == modelEpoch else { return nil }
+            guard let c = conversations[id] else { return nil }
+            return ModelPickerState(catalog: catalog, chatChoice: chatModel,
+                nextModel: pendingModels[id] == nil ? c.nextModel : nil,
+                existingConversation: pendingModels[id] == nil)
+        }
         return ModelPickerState(catalog: catalog, chatChoice: chatModel)
     }
 
     /// The sheet's Apply: save it for this chat, or as Speakeasy's default.
     func applyModel(_ state: ModelPickerState, scope: ModelPickerState.Scope) {
-        var next = state
-        next.apply(scope)
-        catalog = next.catalog
         modelError = nil
         guard let backend else { return }
-        let choice = scope == .chat ? next.selection : nil
-        let sessionID = target?.sessionID
-        if scope == .chat, sessionID == nil { newChatModel = choice; return }
-        if let sessionID, scope == .chat, var c = conversations[sessionID] {
-            c.modelChoice = choice; conversations[sessionID] = c  // at once; the server confirms below
-        }
-        Task { [weak self] in
-            do {
-                if scope == .makeDefault {
-                    try await backend.setDefaultModel(JobModelDefaults(model: next.selection.model, reasoning: next.selection.reasoning))
-                } else if let sessionID, let choice {
-                    try await backend.setSessionModel(SessionModelRequest(sessionID: sessionID, choice: choice))
-                }
-                self?.loadModels()
-                if let sessionID { self?.load(sessionID) }
-            } catch {
-                self?.modelError = Self.message(error)
-                if let sessionID { self?.load(sessionID) }
+        if scope == .makeDefault {
+            let choice = state.selection
+            Task { [weak self] in
+                do {
+                    try await backend.setDefaultModel(JobModelDefaults(model: choice.model, reasoning: choice.reasoning))
+                    self?.loadModels()
+                } catch { self?.modelError = Self.message(error) }
             }
+            return
         }
+        guard let id = target?.sessionID else { newChatModel = state.selection; return }
+        saveModel(state.selection, in: id)
+    }
+
+    private func saveModel(_ choice: ModelChoice, in id: String) {
+        guard let backend else { return }
+        modelRevisions[id, default: 0] += 1
+        let revision = modelRevisions[id]!
+        modelEpoch += 1
+        modelConfirmed.removeAll() // linked pages must re-read their authoritative next-send target
+        let previous = modelSave
+        pendingModels[id] = choice
+        modelSaves[id] = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            var failure: String?
+            do { try await backend.setSessionModel(SessionModelRequest(sessionID: id, choice: choice)) }
+            catch { failure = Self.message(error) }
+            do {
+                let fresh = try await backend.conversation(id)
+                guard self.modelRevisions[id] == revision else { return }
+                self.conversations[id] = fresh
+                self.modelConfirmed[id] = self.modelEpoch
+                self.modelError = failure
+            } catch {
+                if self.modelRevisions[id] == revision {
+                    self.modelError = "Couldn't confirm the model. Choose it again to retry."
+                }
+                return // write outcome unknown: do not dispatch an old preference
+            }
+            guard self.modelRevisions[id] == revision else { return }
+            self.pendingModels[id] = nil
+            self.modelSaves[id] = nil
+            if let open = self.target?.sessionID, self.modelConfirmed[open] != self.modelEpoch { self.load(open) }
+        }
+        modelSave = modelSaves[id]
     }
 
     /// Back to the default for this chat.
     func useDefaultModel() {
-        guard let backend else { return }
         guard let sessionID = target?.sessionID else { newChatModel = nil; return }
-        if var c = conversations[sessionID] { c.modelChoice = nil; conversations[sessionID] = c }
-        Task { [weak self] in
-            try? await backend.setSessionModel(SessionModelRequest(sessionID: sessionID, choice: ModelChoice()))
-            self?.load(sessionID)
-        }
+        saveModel(ModelChoice(), in: sessionID)
     }
 
     func preview(catalog: ModelCatalog?) { self.catalog = catalog; modelsSupported = catalog != nil }

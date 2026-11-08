@@ -151,8 +151,12 @@ _CORRECTION = re.compile(r'^Correction from .{1,60}?, who (?:said|typed): "(.+?)
 _FOLLOW_UP = re.compile(r"^(?:\[Speakeasy follow-up\] )?.{1,60}? (?:said on the call|typed in the Speakeasy app|"
                         r"answered by tapping): ([^\n]+)(?=.*\nSame rules as the first message in this session)", re.S)
 # What a steer says about pictures/files the person shared (saved copies the task opens itself).
-_SHARED = re.compile(r"(?s)\s*\S+ shared (?:the |a )?(?:picture|pictures|file|files|screenshot|images?)\b.*?"
-                     r"Use them to understand what they mean\.\s*")
+_SHARED = re.compile(r"(?s)\s*(?:The user|\S+) shared (?:the |a )?(?:picture|pictures|file|files|screenshot|images?)\b.*?"
+                     r"Use them to understand what they mean\.\s*"
+                     # Video preparation is appended to this generated block, never user speech.
+                     # Only consume it after the complete shared-block signature, not a quoted
+                     # 'Video MIME' phrase in an ordinary message.
+                     r"(?:Video MIME: video/(?:mp4|quicktime)\. Original retained at .*\Z)?")
 
 
 # -- what a message shows: never Speakeasy's own plumbing ----------------------------------------
@@ -406,6 +410,18 @@ _MD_LEAD = re.compile(r"(?m)^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d{1,2}[.)]\s+)")
 _MD_LINK = re.compile(r"!?\[([^\]\n]{1,200})\]\([^)\s]{1,500}\)")
 
 
+def _status_line(status: str, detail: str) -> str:
+    """A progress note's STATUS and DETAIL as one line, never the same words twice ("Checking the
+    wiki — Checking the wiki for the trip"): a DETAIL that restates its STATUS shows alone."""
+    status, detail = status.strip().rstrip("."), detail.strip().rstrip(".")
+    s, d = _norm(status), _norm(detail)
+    if not d or d == s or d in s:
+        return status or detail
+    if not s or s in d:
+        return detail
+    return f"{status} — {detail}"
+
+
 def assistant_text(text: str, *, brief: bool = False) -> str:
     """An assistant message as shown: no machine blocks (question/views JSON), no "Voice: …" echo line,
     a progress note (STATUS:/DETAIL:) as its plain words.
@@ -424,7 +440,7 @@ def assistant_text(text: str, *, brief: bool = False) -> str:
     status, detail = _STATUS.search(out), _DETAIL.search(out)
     if status or detail:
         rest = _DETAIL.sub("", _STATUS.sub("", out)).strip()
-        said = " — ".join(m.group(1).strip().rstrip(".") for m in (status, detail) if m)
+        said = _status_line(status.group(1) if status else "", detail.group(1) if detail else "")
         out = (said + ("\n\n" + rest if rest else "")) if said else rest
     if label := _REPORT_LABEL.search(out):
         spoken = _SPOKEN.search(out)
@@ -897,7 +913,11 @@ def _preview(db: sqlite3.Connection, session_id: str, linked: Sequence[str] = ()
     older last message. The first user words (the title fallback) stay the chat's own."""
     preview, first = "", None
     try:
-        query = ("SELECT id, role, content, timestamp FROM messages WHERE session_id=? AND role IN ('user','assistant') "
+        from .history_events import event_for
+        columns = _columns(db, "messages")
+        display = ", display_kind" if "display_kind" in columns else ", NULL AS display_kind"
+        display += ", display_metadata" if "display_metadata" in columns else ", NULL AS display_metadata"
+        query = (f"SELECT id, role, content, timestamp{display} FROM messages WHERE session_id=? AND role IN ('user','assistant') "
                  "AND content IS NOT NULL AND content != '' ORDER BY id DESC LIMIT 12")
         rows = db.execute(query, (session_id,)).fetchall()
         others = [sid for sid in dict.fromkeys(linked) if sid != session_id]
@@ -908,14 +928,20 @@ def _preview(db: sqlite3.Connection, session_id: str, linked: Sequence[str] = ()
             rows.sort(key=lambda r: (r["timestamp"] if isinstance(r["timestamp"], (int, float)) else 0.0, r["id"]),
                       reverse=True)
         for row in rows:
+            notice = event_for(row)
+            if notice:
+                preview = preview_text(redact_text(f"{notice['label']}: {notice['title']} — {notice['summary']}"))
+                break
             kind, text = user_words(row["content"]) if row["role"] == "user" else ("assistant", assistant_text(row["content"], brief=True))
             if kind in ("user", "assistant") and text.strip():
                 preview = preview_text(redact_text(text))
                 break
-        head = db.execute("SELECT content FROM messages WHERE session_id=? AND role='user' AND content IS NOT NULL "
+        head = db.execute(f"SELECT id, role, content{display} FROM messages WHERE session_id=? AND role='user' AND content IS NOT NULL "
                           "ORDER BY id LIMIT 5", (session_id,)).fetchall()
-        for (content,) in head:
-            kind, text = user_words(content)
+        for row in head:
+            if event_for(row):
+                continue
+            kind, text = user_words(row["content"])
             if kind == "user" and text.strip():
                 first = redact_text(text)
                 break
@@ -1266,9 +1292,24 @@ def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
         chat = "chat_type" if "chat_type" in cols else "NULL AS chat_type"
         model = "model" if "model" in cols else "NULL AS model"  # the model Hermes ran the session on
         arch = "coalesce(archived,0) AS archived" if "archived" in cols else "0 AS archived"
-        row = db.execute(f"SELECT id, source, title, {display}, {chat}, {model}, {arch} FROM sessions WHERE id=?",
+        config = "model_config" if "model_config" in cols else "NULL AS model_config"
+        row = db.execute(f"SELECT id, source, title, {display}, {chat}, {model}, {arch}, {config} FROM sessions WHERE id=?",
                          (tip,)).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        result = dict(row)
+        result["model_session_ids"] = _chain(db, tip)
+        from .reply_models import object_value, clean
+        config_value = object_value(result.pop("model_config", None))
+        # Return only selection metadata, never endpoints or credentials in the config.
+        result["model_provider"] = clean(config_value.get("provider"), 80)
+        if not result["model_provider"] and "billing_provider" in cols:
+            # Real Hermes records the serving provider here; its model_config is bookkeeping only.
+            billed = db.execute("SELECT billing_provider FROM sessions WHERE id=?", (tip,)).fetchone()
+            result["model_provider"] = clean(billed[0], 80) if billed and isinstance(billed[0], str) else None
+        effort = config_value.get("reasoning_effort")
+        result["model_reasoning"] = effort if effort in {"none", "minimal", "low", "medium", "high", "xhigh", "max"} else None
+        return result
     except sqlite3.Error:
         return None
     finally:
@@ -1276,7 +1317,8 @@ def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
 
 
 def session_messages(state_db: Path, session_id: str, *, before: int | None = None,
-                     limit: int = MESSAGES_PAGE) -> dict[str, Any]:
+                     limit: int = MESSAGES_PAGE, model_runs: dict[str, list[dict]] | None = None,
+                     run_lookup: Callable[[str], dict[str, list[dict]]] | None = None) -> dict[str, Any]:
     """``GET /voice/history/{id}``'s transcript: entries oldest first. ``user`` / ``assistant`` text,
     ``note`` for system rows, and ``tools`` groups: the calls made between two messages, each item in
     the job tool log's shape (``activity.public(detail=True)``: text, tool, args, result, status,
@@ -1290,14 +1332,28 @@ def session_messages(state_db: Path, session_id: str, *, before: int | None = No
             raise HistoryError(404, "I couldn't find that conversation.")
         chain = _chain(db, session_id)
         marks = ",".join("?" * len(chain))
+        if run_lookup:
+            model_runs = {key: value for sid in chain for key, value in run_lookup(sid).items()}
         cols = _columns(db, "messages")
         active = " AND coalesce(active,1)=1" if "active" in cols else ""
         hidden = " AND coalesce(display_kind,'') != 'hidden'" if "display_kind" in cols else ""
-        kind_col = ", display_kind" if "display_kind" in cols else ""
+        extra = ''.join(', ' + name for name in ('model', 'provider', 'reasoning_effort', 'fallback', 'display_metadata', 'display_kind') if name in cols)
         rows = db.execute(
-            f"SELECT id, role, content, tool_calls, tool_call_id, tool_name, timestamp{kind_col} FROM messages "
+            f"SELECT id, session_id, role, content, tool_calls, tool_call_id, tool_name, timestamp{extra} FROM messages "
             f"WHERE session_id IN ({marks}){active}{hidden} AND id < ? ORDER BY id DESC LIMIT ?",
             (*chain, int(before) if before else 1 << 62, int(limit) + 1)).fetchall()
+        scols = _columns(db, 'sessions')
+        fields = ', '.join(['id'] + [c for c in ('model', 'model_config', 'billing_provider') if c in scols])
+        session_models = {}
+        for item in db.execute(f'SELECT {fields} FROM sessions WHERE id IN ({marks})', chain):
+            item = dict(item)
+            # A session's current model cannot identify older replies after switches.
+            usage = set()
+            if _columns(db, 'session_model_usage'):
+                usage = {r[0] for r in db.execute('SELECT DISTINCT model FROM session_model_usage WHERE session_id=?', (item['id'],)) if r[0]}
+            if len(usage) > 1:
+                continue
+            session_models[item['id']] = {'model': item.get('model'), 'provider': item.get('billing_provider')}
     except sqlite3.Error as exc:
         logger.warning("speakeasy: history read failed (%s)", type(exc).__name__)
         raise HistoryError(502, "I couldn't read that conversation.") from None
@@ -1305,8 +1361,27 @@ def session_messages(state_db: Path, session_id: str, *, before: int | None = No
         db.close()
     more = len(rows) > limit
     rows = list(reversed(rows[:limit]))
-    return {"entries": build_entries(rows, worker=found[0] == "kanban"), "has_more": more,
+    from .reply_models import attribute
+    return {"entries": attribute(rows, build_entries(rows, worker=found[0] == "kanban"), session_models, model_runs), "has_more": more,
             "before": rows[0]["id"] if more and rows else None}
+
+
+def _reply_entry(row: Any, at: float | None, *, with_tools: bool = False) -> dict[str, Any]:
+    """Mark recorded commentary additively; preserve the sanitized text for older clients."""
+    content = row["content"] or ""
+    clean = _MACHINE_BLOCK.sub("", content)
+    status, detail = _STATUS.search(clean), _DETAIL.search(clean)
+    rest = _DETAIL.sub("", _STATUS.sub("", clean)).strip()
+    narration = with_tools or (bool(status or detail) and not rest)
+    entry: dict[str, Any] = {"kind": "assistant", "id": f"m{row['id']}", "at": at,
+                             "text": redact_text(assistant_text(content))}
+    if narration:
+        entry["narration"] = True
+        if status:
+            entry["text"] = redact_text(status.group(1).strip())
+        if detail:
+            entry["work_detail"] = redact_text(detail.group(1).strip())
+    return entry
 
 
 def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, Any]]:
@@ -1352,6 +1427,16 @@ def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, An
         role, content = row["role"], row["content"] or ""
         at = float(row["timestamp"]) if isinstance(row["timestamp"], (int, float)) else None
         calls = row["tool_calls"]
+        from .history_events import event_for
+        notice = event_for(row)
+        if notice:
+            flush()
+            pending.clear()
+            notice = {key: redact_text(value) if isinstance(value, str) and key in {"title", "summary"} else value
+                      for key, value in notice.items()}
+            entries.append({"kind": "note", "id": f"event:{notice['id']}", "at": at,
+                            "text": f"{notice['label']}: {notice['title']} — {notice['summary']}", "event": notice})
+            continue
         if role == "assistant" and _failed_turn_row(row, content):
             flush()
             pending.clear()
@@ -1370,7 +1455,7 @@ def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, An
                     flush()
                     fold_pending()
                 flush()
-                entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(shown)})
+                entries.append(_reply_entry(row, at, with_tools=True))
             try:
                 parsed = json.loads(calls)
             except ValueError:
@@ -1453,9 +1538,10 @@ def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, An
             flush()
             fold_pending()
             flush()
-            entries.append({"kind": "assistant", "id": f"m{row['id']}", "at": at, "text": redact_text(assistant_text(content))})
+            entries.append(_reply_entry(row, at))
     flush()
-    return dedupe_entries(_drop_answered_failures(entries))
+    from .history_events import dedupe_events
+    return dedupe_entries(dedupe_events(_drop_answered_failures(entries)))
 
 
 def _failed_turn_row(row: Any, content: str) -> bool:
@@ -1508,9 +1594,11 @@ def session_live(state_db: Path, session_id: str, entries: list[dict[str, Any]],
     said = next((e for e in reversed(entries) if e.get("kind") in ("assistant", "user", "note")), None)
     if (said and said.get("kind") == "assistant" and not said.get("update") and isinstance(said.get("at"), (int, float))
             and now - float(said["at"]) <= live_status.WINDOW_S and (not line or line.get("source") != "idle")):
-        # What the worker just said it's doing ("Fixing the test.") beats "Running a command".
-        first = re.split(r"(?<=[.!?])\s+", " ".join(_MD_MARKS.sub("", said.get("text") or "").split()), maxsplit=1)[0]
-        mine = live_status._clean(first.rstrip("."), live_status.NOW_CHARS)
+        # What the worker just said it's doing ("Fixing the test.") beats "Running a command"; a
+        # STATUS — DETAIL note gives its STATUS. Talk about a hiccup ("Using patch instead") never.
+        text = " ".join(_MD_MARKS.sub("", said.get("text") or "").split()).split(" — ", 1)[0]
+        first = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+        mine = None if live_status.recovery_talk(first) else live_status._clean(first.rstrip("."), live_status.NOW_CHARS)
         if mine:
             line = {**(line or {}), "now": mine}
     if not line or not line.get("now"):
@@ -1533,6 +1621,9 @@ def dedupe_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     last_text: dict[str, str] = {}
     for e in entries:
         kind = e.get("kind")
+        if e.get("event"):
+            out.append(e)  # producer identity, not matching prose, owns event deduplication
+            continue
         if kind in {"assistant", "note", "user"}:
             text = _norm(e.get("text") or "")
             prev = last_text.get(kind)

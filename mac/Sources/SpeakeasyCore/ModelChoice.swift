@@ -176,6 +176,7 @@ public struct ModelBadge: Equatable, Sendable {
     public var source: String
     /// Hermes reported it ran on this model (not just what was asked).
     public var served: Bool
+    public var unavailable = false
 
     public init(id: String, name: String, providerName: String = "", reasoning: ReasoningLevel? = nil,
                 source: String = "hermes", served: Bool = false) {
@@ -188,6 +189,7 @@ public struct ModelBadge: Equatable, Sendable {
         self.init(id: id, name: nonEmpty(o["name"]) ?? id, providerName: nonEmpty(o["provider_name"]) ?? "",
                   reasoning: (o["reasoning"] as? String).flatMap(ReasoningLevel.init(rawValue:)),
                   source: nonEmpty(o["source"]) ?? "hermes", served: o["served"] as? Bool ?? false)
+        unavailable = o["unavailable"] as? Bool ?? false
     }
 
     /// "GPT-5.5 · Medium".
@@ -236,7 +238,7 @@ extension ModelCatalog {
                  "reasoning_levels": ["none", "low", "medium", "high", "max"]],
                 ["id": "anthropic/claude-sonnet-5", "name": "Claude Sonnet 5", "provider": "anthropic", "provider_name": "Anthropic",
                  "reasoning_levels": ["none", "low", "medium", "high"]],
-                ["id": "anthropic/claude-haiku-4-5", "name": "Claude Haiku 4.5", "provider": "anthropic", "provider_name": "Anthropic",
+                ["id": "anthropic/claude-haiku-5-5", "name": "Claude Haiku 5.5", "provider": "anthropic", "provider_name": "Anthropic",
                  "reasoning_levels": ["none", "low", "medium", "high"]],
             ]],
             ["id": "studio", "name": "Studio", "local": true, "models": [

@@ -18,6 +18,11 @@ public struct NowHome: Equatable, Sendable {
     public var call: NowCall?
     /// The "Your call · 6 min" card after a call ends, until it's cleared or rolls over.
     public var callSummary: NowCallSummary?
+    /// SPK-208 (plugin 0.3.46+, capability `home_stream`): the same cards as one thread. Nil from an older plugin.
+    public var stream: NowStream?
+    /// The tracker pill's words at any volume ("3 need you · 5 running"), from the plugin; nil from an
+    /// older plugin (the app counts for itself). Counts, never a cut-off title.
+    public var pill: String?
 
     public struct Counts: Equatable, Sendable {
         public var needsYou = 0, stopped = 0, working = 0, waiting = 0, finishedUnread = 0, onItsOwn = 0
@@ -53,6 +58,8 @@ public struct NowHome: Equatable, Sendable {
         notice = nonEmpty((json["notice"] as? [String: Any])?["text"])
         call = NowCall(json: json["call"])
         callSummary = NowCallSummary(json: json["call_summary"])
+        stream = NowStream(json: json["stream"])
+        pill = nonEmpty(json["pill"])
     }
 
     /// Nothing live or new: Home shows a quiet "All caught up." instead of a header (build 69 drops
@@ -131,7 +138,7 @@ public struct NowBackgroundItem: Equatable, Sendable, Identifiable {
     }
     public init?(json: Any?) {
         guard let o = json as? [String: Any], let sid = nonEmpty(o["session_id"]) else { return nil }
-        self.init(sessionID: sid, title: nonEmpty(o["title"]) ?? "Untitled", line: nonEmpty(o["line"]) ?? "Working on it",
+        self.init(sessionID: sid, title: nonEmpty(o["title"]) ?? "Untitled", line: nonEmpty(o["line"]) ?? "",
                   sourceLabel: nonEmpty(o["source_label"]))
     }
 }
@@ -156,12 +163,30 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     public var unread: Bool
     public var idleSeconds: Int?
     public var thumbs: [String]
+    /// The same pictures with what Home draws for each: a person's caption (never a file name) and,
+    /// for a wide contact sheet, a readable crop (`hero`). Same order as `thumbs`.
+    public var pictures: [NowPicture] = []
+    /// The job's whole title when `title` is Home's short name for it (the job's own page shows this).
+    public var fullTitle: String?
+    /// A question's verdict said before it asked ("Misi's my pick, but I haven't checked tables
+    /// yet."): Home's thread shows it above what the task found. The line stays the question.
+    public var reply: String?
+    /// A question nobody answered that a newer one took over: when, and which card took over.
+    public var replacedAt: Date?
+    public var replacedBy: String?
+    /// Canceled from Home's chat: the card stays in the thread, closed ("Canceled.").
+    public var canceled = false
+    /// The model that did (or is doing) the job, as recorded by the plugin (what Hermes served once
+    /// known). Home's chat shows it under a job's card; nil when nothing was recorded.
+    public var workModel: ReplyAttribution?
     public var provenance: Provenance?
     public var fix: Fix?
     public var question: NowQuestion?
     /// On a call: `asking` (the question the voice is asking now, first on Home) or `heard` (the voice
     /// read this answer out, so it's already read).
     public var onCall: OnCall?
+    /// Created or explicitly brought into the current call (other work stays in the capsule).
+    public var onCurrentCall = false
     /// Asking on a call: a spoken answer may pick a choice (false: a risky one, it needs a tap).
     public var sayOK: Bool = true
     /// Asking on a call with a risky choice: "Can't be undone · Needs a tap".
@@ -203,8 +228,18 @@ public struct NowItem: Equatable, Sendable, Identifiable {
                   provenance: prov, fix: (((o["fix"] as? [String: Any])?["kind"]) as? String).flatMap(Fix.init(rawValue:)),
                   question: NowQuestion(json: o["question"]))
         onCall = (o["on_call"] as? String).flatMap(OnCall.init(rawValue:))
+        onCurrentCall = o["on_current_call"] as? Bool ?? false
         sayOK = o["say_ok"] as? Bool ?? true
         lockLine = nonEmpty(o["lock_line"])
+        pictures = (o["thumbs"] as? [Any] ?? []).compactMap(NowPicture.init(json:))
+        fullTitle = nonEmpty(o["full_title"])
+        reply = nonEmpty(o["reply"]).map { String($0.prefix(400)) }
+        workModel = ReplyAttribution(json: o["model"])
+        canceled = o["canceled"] as? Bool ?? false
+        if let r = o["replaced"] as? [String: Any] {
+            replacedAt = (r["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } ?? updatedAt ?? finishedAt
+            replacedBy = nonEmpty(r["by"])
+        }
     }
 
     /// The one footnote that says where a card came from ("From yesterday · 9:40 PM").
@@ -227,6 +262,27 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         case .later?: return "Back from Later"
         case nil: return nil
         }
+    }
+}
+
+/// One picture on a Home card (plugin 0.3.47+ adds caption/hero/aspect; older plugins send only url).
+public struct NowPicture: Equatable, Sendable {
+    public var url: String
+    public var caption: String?
+    /// For a wide contact sheet: the readable crop (`/voice/card-image/<run>/<n>?v=hero`).
+    public var hero: String?
+    public var aspect: Double?
+    public init(url: String, caption: String? = nil, hero: String? = nil, aspect: Double? = nil) {
+        self.url = url; self.caption = caption; self.hero = hero; self.aspect = aspect
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let url = nonEmpty(o["url"]) else { return nil }
+        self.init(url: url, caption: nonEmpty(o["caption"]).map { String($0.prefix(120)) },
+                  hero: nonEmpty(o["hero"]), aspect: (o["aspect"] as? NSNumber)?.doubleValue)
+    }
+    /// The card-image number in `url` (`/voice/card-image/<run>/<n>`).
+    public var number: Int? {
+        Int(url.split(separator: "?").first?.split(separator: "/").last ?? "")
     }
 }
 
@@ -334,5 +390,292 @@ public struct EarlierKind: Equatable, Sendable, Identifiable {
     public static func query(_ on: Set<String>) -> String {
         let picked = all.filter(on.contains)
         return (picked.isEmpty ? ["conversations"] : picked).joined(separator: ",")
+    }
+}
+
+// MARK: - Home as one stream (SPK-208)
+
+/// A picture, clip or file the user sent with a Home message (SPK-220): enough to draw it in the
+/// thread (a poster from the app's own cache, or a labeled tile). Never a path.
+public struct SentFile: Equatable, Sendable, Identifiable {
+    public enum Kind: String, Sendable { case video, picture, file }
+    public var id: String
+    public var kind: Kind
+    public var name: String?
+    public var mime: String?
+    /// video: its length in seconds.
+    public var duration: TimeInterval?
+    public init(id: String, kind: Kind, name: String? = nil, mime: String? = nil, duration: TimeInterval? = nil) {
+        self.id = id; self.kind = kind; self.name = name; self.mime = mime; self.duration = duration
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["id"]) else { return nil }
+        let mime = nonEmpty(o["mime"])
+        let kind = (o["kind"] as? String).flatMap(Kind.init(rawValue:))
+            ?? (mime?.hasPrefix("video/") == true ? .video : mime?.hasPrefix("image/") == true ? .picture : .file)
+        let duration = (o["duration"] as? NSNumber)?.doubleValue
+        self.init(id: id, kind: kind, name: nonEmpty(o["name"]), mime: mime,
+                  duration: duration.flatMap { $0.isFinite && $0 > 0 ? $0 : nil })
+    }
+    /// "0:12", "1:05": a clip's length as a chip shows it.
+    public static func clock(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+    /// The short label a tile shows: "Video · 0:12", a file's name, or "Photo".
+    public var label: String {
+        switch kind {
+        case .video: return duration.map { "Video · " + Self.clock($0) } ?? "Video"
+        case .picture: return name ?? "Photo"
+        case .file: return name ?? "File"
+        }
+    }
+    /// What VoiceOver reads: "Video, 12 seconds", "Photo", "File, lease.pdf".
+    public var spoken: String {
+        switch kind {
+        case .video:
+            guard let d = duration else { return "Video" }
+            let s = max(1, Int(d.rounded()))
+            if s < 60 { return "Video, \(s) second\(s == 1 ? "" : "s")" }
+            let m = s / 60, r = s % 60
+            return "Video, \(m) minute\(m == 1 ? "" : "s")" + (r > 0 ? " \(r) second\(r == 1 ? "" : "s")" : "")
+        case .picture: return "Photo"
+        case .file: return name.map { "File, \($0)" } ?? "File"
+        }
+    }
+    /// The SF Symbol for a tile with no poster.
+    public var symbol: String {
+        switch kind {
+        case .video: return "video.fill"
+        case .picture: return "photo"
+        case .file: return "doc"
+        }
+    }
+}
+
+/// Home as a single thread: the user's asks and their cards in time order. A card keeps one id, so it
+/// updates in place; older seen stretches arrive folded ("This morning · 6 done").
+public struct NowStream: Equatable, Sendable {
+    public struct Entry: Equatable, Sendable, Identifiable {
+        /// `message`: Home's chat (plugins with `home_chat`): your words or the coordinator's reply.
+        public enum Kind: String, Sendable { case ask, card, group, message }
+        public enum Role: String, Sendable { case user, assistant }
+        /// A question, confirm or checkout is a widget in the thread: open -> confirmed -> done;
+        /// replaced: nobody answered it and a newer question took over (it stays, closed, saying when).
+        public enum Widget: String, Sendable { case open, confirmed, done, replaced }
+        public var id: String
+        public var kind: Kind
+        public var at: Date
+        /// ask: what the user asked.
+        public var text: String?
+        /// ask and card: the Home item this entry belongs to.
+        public var itemID: String?
+        public var widget: Widget?
+        /// widget `replaced`: when the newer question took over.
+        public var replacedAt: Date?
+        /// group: the plain line ("This morning · 6 done") and the items it folds.
+        public var line: String?
+        public var itemIDs: [String]
+        /// message: who said it, which model wrote a reply, a voice note's length, the job it started.
+        public var role: Role?
+        public var attribution: ReplyAttribution?
+        public var voiceDuration: TimeInterval?
+        public var runID: String?
+        /// message (yours): the client id it was sent with, so the app's "sending" bubble gives way to it.
+        public var clientID: String?
+        /// message (yours): the pictures, clips and files sent with it (its `text` may be empty then).
+        public var files: [SentFile]
+        public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
+                    line: String? = nil, itemIDs: [String] = [], role: Role? = nil, attribution: ReplyAttribution? = nil,
+                    voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil,
+                    files: [SentFile] = []) {
+            self.id = id; self.kind = kind; self.at = at; self.text = text; self.itemID = itemID; self.widget = widget
+            self.line = line; self.itemIDs = itemIDs
+            self.role = role; self.attribution = attribution; self.voiceDuration = voiceDuration; self.runID = runID
+            self.clientID = clientID; self.files = files
+        }
+        public init?(json: Any?) {
+            guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
+                  let kind = (o["kind"] as? String).flatMap(Kind.init(rawValue:)),
+                  let at = (o["at"] as? NSNumber)?.doubleValue else { return nil }
+            let role = (o["role"] as? String).flatMap(Role.init(rawValue:))
+            let files = (o["files"] as? [Any] ?? []).compactMap(SentFile.init(json:))
+            if kind == .message && (role == nil || (nonEmpty(o["text"]) == nil && files.isEmpty)) { return nil }
+            self.init(id: id, kind: kind, at: Date(timeIntervalSince1970: at), text: nonEmpty(o["text"]),
+                      itemID: nonEmpty(o["item_id"]), widget: (o["widget"] as? String).flatMap(Widget.init(rawValue:)),
+                      line: nonEmpty(o["line"]), itemIDs: (o["item_ids"] as? [Any] ?? []).compactMap(nonEmpty),
+                      role: role, attribution: role == .assistant ? ReplyAttribution(json: o["model"]) : nil,
+                      voiceDuration: ((o["voice"] as? [String: Any])?["duration"] as? NSNumber)?.doubleValue,
+                      runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]), files: files)
+            replacedAt = (o["replaced_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+        }
+    }
+    public var entries: [Entry]
+    /// Home's chat has messages (plugins with `home_chat`): the thread shows even with no cards.
+    public var hasMessages: Bool { entries.contains { $0.kind == .message } }
+    /// Item ids waiting on the user, for the count on the work strip.
+    public var needsYou: [String]
+    public init(entries: [Entry] = [], needsYou: [String] = []) { self.entries = entries; self.needsYou = needsYou }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any] else { return nil }
+        self.init(entries: (o["entries"] as? [Any] ?? []).compactMap(Entry.init(json:)),
+                  needsYou: (o["needs_you"] as? [Any] ?? []).compactMap(nonEmpty))
+    }
+}
+
+/// `POST /voice/home/message`'s reply: your message, the coordinator's reply (none when it only
+/// started a job and had nothing to add), what it did and the job it started or followed up.
+public struct HomeChatReply: Equatable, Sendable {
+    public enum Action: String, Sendable { case none, start, followUp = "follow_up", cancel, failed }
+    public var message: NowStream.Entry?
+    public var reply: NowStream.Entry?
+    public var action: Action
+    public var runID: String?
+    public var sessionID: String?
+    public init(message: NowStream.Entry? = nil, reply: NowStream.Entry? = nil, action: Action = .none,
+                runID: String? = nil, sessionID: String? = nil) {
+        self.message = message; self.reply = reply; self.action = action; self.runID = runID; self.sessionID = sessionID
+    }
+    public init?(json: [String: Any]) {
+        guard json["ok"] as? Bool == true else { return nil }
+        self.init(message: NowStream.Entry(json: json["message"]), reply: NowStream.Entry(json: json["reply"]),
+                  action: (json["action"] as? String).flatMap(Action.init(rawValue:)) ?? .none,
+                  runID: nonEmpty(json["run_id"]), sessionID: nonEmpty(json["session_id"]))
+    }
+}
+
+/// Home chat's model (servers with `home_chat`, `GET /voice/home/model`): the coordinator model in
+/// use, why (`chosen` on the Home chip, `auto` from the user's connected models, `main`...), and the
+/// chip's choices.
+public struct HomeModelStatus: Equatable, Sendable {
+    public struct Option: Equatable, Sendable, Identifiable {
+        public var id: String
+        public var name: String
+        public var providerName: String
+        public init(id: String, name: String, providerName: String = "") {
+            self.id = id; self.name = name; self.providerName = providerName
+        }
+        init?(json: Any?) {
+            guard let d = json as? [String: Any], let id = d["id"] as? String, !id.isEmpty else { return nil }
+            self.init(id: id, name: (d["name"] as? String) ?? id, providerName: (d["provider_name"] as? String) ?? "")
+        }
+    }
+    public var model: Option?
+    public var source: String
+    public var auto: Option?
+    public var options: [Option]
+    /// Set when the chosen model didn't answer last time (another one replied).
+    public var note: String?
+    /// The model jobs started from Home run on (plugins with `work` in `/voice/home/model`): what
+    /// Home's chip shows and picks. The fields above are the coordinator's, a secondary choice.
+    public var work: Work?
+    public struct Work: Equatable, Sendable {
+        public var model: Option?
+        /// `chosen` on Home's chip, else `default` (the user's Hermes default model).
+        public var source: String
+        public var defaultModel: Option?
+        /// The few models the picker lists first (the default, then each provider's newest).
+        public var options: [Option]
+        /// Every other connected model, behind "More…" in the picker (newer plugins).
+        public var more: [Option]
+        public init(model: Option?, source: String, defaultModel: Option?, options: [Option], more: [Option] = []) {
+            self.model = model; self.source = source; self.defaultModel = defaultModel; self.options = options
+            self.more = more
+        }
+        init?(json: Any?) {
+            guard let d = json as? [String: Any] else { return nil }
+            self.init(model: Option(json: d["model"]), source: (d["source"] as? String) ?? "default",
+                      defaultModel: Option(json: d["default"]),
+                      options: ((d["options"] as? [Any]) ?? []).compactMap { Option(json: $0) },
+                      more: ((d["more"] as? [Any]) ?? []).compactMap { Option(json: $0) })
+        }
+        public var chosen: Bool { source == "chosen" }
+    }
+    public init(model: Option?, source: String, auto: Option?, options: [Option], note: String? = nil, work: Work? = nil) {
+        self.model = model; self.source = source; self.auto = auto; self.options = options; self.note = note
+        self.work = work
+    }
+    public init(json: [String: Any]) {
+        let c = (json["coordinator"] as? [String: Any]) ?? json
+        self.init(model: Option(json: c["model"]), source: (c["source"] as? String) ?? "",
+                  auto: Option(json: c["auto"]),
+                  options: ((c["options"] as? [Any]) ?? []).compactMap { Option(json: $0) },
+                  note: (c["note"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                  work: Work(json: json["work"]))
+    }
+    /// The coordinator's model was picked by the user (otherwise Auto or a fallback is in use).
+    public var chosen: Bool { source == "chosen" }
+    /// How the picker names Auto: the fast model it picked, or — when none of the approved fast
+    /// models is connected — the user's work model, which the coordinator then uses.
+    public var autoLabel: String {
+        if let auto { return "Auto · \(auto.name)" }
+        return source == "work" ? "Auto · same as your work model" : "Auto"
+    }
+}
+
+/// How Home's model picker presents a model: a provider glyph (an SF Symbol, never a brand logo)
+/// and one plain line about what it's good for. Read from the id and provider only.
+public extension HomeModelStatus.Option {
+    private var provider: String { (id.split(separator: "/").first.map(String.init) ?? "").lowercased() }
+    private var lowered: String { (id + " " + name).lowercased() }
+
+    /// The provider's glyph in the picker.
+    var glyph: String {
+        let p = provider + " " + providerName.lowercased()
+        if lowered.contains("claude") || p.contains("anthropic") { return "asterisk" }
+        if lowered.contains("gemini") || p.contains("google") { return "sparkle" }
+        if lowered.contains("grok") || p.contains("xai") { return "bolt" }
+        if lowered.contains("gpt") || p.contains("openai") || p.contains("codex") { return "circle.hexagonpath" }
+        if p.contains("openrouter") { return "arrow.triangle.branch" }
+        if p.contains("studio") || p.contains("local") || p.contains("ollama") || p.contains("lmstudio") || p.contains("custom") {
+            return "desktopcomputer"
+        }
+        return "cpu"
+    }
+
+    /// One plain line: what the model is good for, else who makes it.
+    var blurb: String {
+        let m = lowered
+        let p = provider + " " + providerName.lowercased()
+        if m.contains("opus") { return "Most capable. Best for long, hard jobs." }
+        if m.contains("sonnet") { return "Fast and capable. Good for most jobs." }
+        if m.contains("haiku") { return "Quickest. Best for light, simple jobs." }
+        if m.range(of: #"\b(mini|nano|flash|lite|fast)\b"#, options: .regularExpression) != nil
+            || m.contains("-mini") || m.contains("-nano") || m.contains("-flash") || m.contains("-fast") {
+            return "Small and quick. Best for light jobs."
+        }
+        if p.contains("studio") || p.contains("local") || p.contains("ollama") || p.contains("lmstudio") {
+            return "Runs on your own computer."
+        }
+        if m.contains("gemini") { return "Google's model for most jobs." }
+        if m.contains("grok") { return "xAI's model for most jobs." }
+        if m.contains("gpt") || m.contains("codex") { return "OpenAI's model for most jobs." }
+        return providerName.isEmpty ? "One of your connected models." : "From \(providerName)."
+    }
+}
+
+/// One row of Recent: a previous task, finished or not.
+public struct NowRecentItem: Equatable, Sendable, Identifiable {
+    public var id: String
+    public var title: String
+    public var state: String
+    public var at: Date
+    public var sessionID: String?
+    public var line: String?
+    public init(id: String, title: String, state: String, at: Date, sessionID: String? = nil, line: String? = nil) {
+        self.id = id; self.title = title; self.state = state; self.at = at; self.sessionID = sessionID; self.line = line
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["id"]), let at = (o["at"] as? NSNumber)?.doubleValue else { return nil }
+        self.init(id: id, title: nonEmpty(o["title"]) ?? "Untitled", state: nonEmpty(o["state"]) ?? "completed",
+                  at: Date(timeIntervalSince1970: at), sessionID: nonEmpty(o["session_id"]), line: nonEmpty(o["line"]))
+    }
+    /// "Done", "Stopped", "In progress" in plain words.
+    public var statusWords: String {
+        switch state {
+        case "completed": return "Done"
+        case "failed", "interrupted", "cancelled": return "Stopped"
+        default: return "In progress"
+        }
     }
 }

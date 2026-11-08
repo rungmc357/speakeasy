@@ -14,18 +14,38 @@ public struct ModelPickerState: Equatable, Sendable {
     public var model: ModelOption?
     public var reasoning: ReasoningLevel?
 
-    public init(catalog: ModelCatalog, chatChoice: ModelChoice?) {
+    private var authoritative: ModelBadge?
+    private var existingConversation: Bool
+    private var initialModel: String?
+    private var initialReasoning: ReasoningLevel?
+
+    public init(catalog: ModelCatalog, chatChoice: ModelChoice?, nextModel: ModelBadge? = nil,
+                existingConversation: Bool = false) {
         self.catalog = catalog
         self.chatChoice = chatChoice.flatMap { $0.isEmpty ? nil : $0 }
-        let (model, reasoning) = catalog.effective(self.chatChoice)
-        self.model = model
-        self.reasoning = reasoning
+        self.authoritative = nextModel
+        self.existingConversation = existingConversation
+        if let nextModel {
+            self.model = catalog.option(nextModel.id) ?? ModelOption(id: nextModel.id, name: nextModel.name,
+                provider: "", providerName: nextModel.providerName, levels: [])
+            self.reasoning = nextModel.reasoning
+        } else if existingConversation && self.chatChoice == nil {
+            self.model = nil; self.reasoning = nil
+        } else {
+            let (model, reasoning) = catalog.effective(self.chatChoice)
+            self.model = model; self.reasoning = reasoning
+        }
+        initialModel = self.model?.id; initialReasoning = self.reasoning
     }
 
-    /// "GPT-5.5 · Medium".
-    public var chipLabel: String { catalog.chipLabel(chatChoice) }
-    /// The chip shows the chat follows the default (a quieter style).
-    public var followsDefault: Bool { chatChoice == nil }
+    /// The server's next-send target, not the current app default or historical served model.
+    public var chipLabel: String {
+        if let authoritative { return authoritative.label + (authoritative.unavailable ? " · Unavailable" : "") }
+        if existingConversation && chatChoice == nil { return "Model unknown" }
+        return catalog.chipLabel(chatChoice)
+    }
+    /// Only new chats/default-resolved conversations follow the app default.
+    public var followsDefault: Bool { authoritative.map { ["default", "hermes"].contains($0.source) } ?? (!existingConversation && chatChoice == nil) }
     /// The segmented control's levels (none: hidden, the model doesn't reason).
     public var levels: [ReasoningLevel] { model?.levels ?? [] }
 
@@ -46,10 +66,9 @@ public struct ModelPickerState: Equatable, Sendable {
     /// The session header's "worked on by" line is shown only when the chat ran on something other
     /// than what the composer's chip says now (the chip is the one place the model shows otherwise).
     public func headerShows(_ badge: ModelBadge) -> Bool {
-        let (m, r) = catalog.effective(chatChoice)
-        guard let m else { return true }
-        if m.id != badge.id { return true }
-        if let ran = badge.reasoning, let now = r, !m.levels.isEmpty { return ran != now }
+        guard let id = initialModel else { return true }
+        if id != badge.id { return true }
+        if let ran = badge.reasoning, let now = initialReasoning { return ran != now }
         return false
     }
 
@@ -60,13 +79,14 @@ public struct ModelPickerState: Equatable, Sendable {
 
     /// The sheet's selection differs from what the chat runs on now.
     public var changed: Bool {
-        let (m, r) = catalog.effective(chatChoice)
-        return m?.id != model?.id || (levels.isEmpty ? false : r != reasoning)
+        return initialModel != model?.id || (levels.isEmpty ? false : initialReasoning != reasoning)
     }
 
     /// Apply: the chat's new pick (also for "Make default", so the chat shows it at once: a chat that
     /// followed the default keeps following it).
     public mutating func apply(_ scope: Scope) {
+        authoritative = nil
+        initialModel = model?.id; initialReasoning = reasoning
         switch scope {
         case .chat:
             chatChoice = selection
@@ -85,6 +105,8 @@ public struct ModelPickerState: Equatable, Sendable {
     /// Back to the default for this chat.
     public mutating func useDefault() {
         chatChoice = nil
+        authoritative = nil; existingConversation = false
         (model, reasoning) = catalog.effective(nil)
+        initialModel = model?.id; initialReasoning = reasoning
     }
 }

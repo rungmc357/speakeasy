@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import urllib.parse
 from pathlib import Path
@@ -182,6 +183,7 @@ def thread_commentary(text: Any) -> str | None:
 
 def interim_progress(event: dict[str, Any]) -> tuple[str, str] | None:
     """Parse only explicitly user-facing STATUS/DETAIL commentary; never summarize tools."""
+    from .live_status import recovery_talk as _recovery_talk
     short_status = event.get("short_status")
     detail = event.get("detail")
     text = event.get("text")
@@ -191,7 +193,9 @@ def interim_progress(event: dict[str, Any]) -> tuple[str, str] | None:
         if status_match:
             short_status = status_match.group("status")
             detail = detail_match.group("detail") if detail_match else short_status
-        elif valid_short_status(text):
+        elif valid_short_status(text) and not _recovery_talk(text):
+            # A bare "-ing" sentence counts, but never the agent's talk about a hiccup
+            # ("Using patch instead"): that is how it fixes its own step, not what the job is doing.
             short_status, detail = text, text
     safe_status = valid_short_status(short_status)
     safe_detail = safe_user_text(detail, 500)
@@ -214,7 +218,7 @@ def derive_tool_status(tool: Any, preview: Any) -> tuple[str, str] | None:
     if text and _preview_is_unsafe(text):
         return None
     if tool in {"read_file", "search_files"}:
-        return "Checking project files", "Reading files in the project."
+        return "Reading files", "Reading files it needs for this."
     if tool == "chat_history_lookup":
         detail = safe_user_text(text, 200) if text and not HOME_PATH_RE.search(text) else None
         return "Checking past conversations", detail or "Looking through earlier conversations."
@@ -565,9 +569,25 @@ def public_result(result: Any) -> Any:
         from .views import settled_all
         clean["views"] = settled_all(clean["views"])   # a stored result is a finished task: no progress bars
     if isinstance(clean.get("cards"), list):
-        clean["cards"] = [{k: v for k, v in card.items() if k != "path"} if isinstance(card, dict) else card
-                          for card in clean["cards"]]
+        clean["cards"] = [_public_card(card) if isinstance(card, dict) else card for card in clean["cards"]]
     return clean
+
+
+def _public_card(card: dict[str, Any]) -> dict[str, Any]:
+    """A result card for the apps: no server path. A picture whose file is gone says so
+    (``available: false``) so no surface draws a dead tile; its place in the list (and every other
+    card's ``/voice/card-image/<run>/<n>``) stays the same. A caption is a person's words, never the
+    file's name."""
+    out = {k: v for k, v in card.items() if k != "path"}
+    if card.get("kind") == "image":
+        path = card.get("path")
+        if isinstance(path, str) and not os.path.isfile(os.path.expanduser(path)) and not card.get("image_url"):
+            out["available"] = False
+        from .home_words import picture_caption
+        caption = picture_caption(card.get("caption"), card.get("title"), card.get("name"), card.get("alt"))
+        if caption:
+            out["caption"] = caption
+    return out
 
 
 def delivery_text(result: dict[str, Any] | None) -> str:
@@ -681,7 +701,8 @@ def screen_claims_backed(spoken: str, full: str, has_cards: bool) -> str:
     return " ".join(kept).strip()
 
 
-def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: str = "Done. The details are in the app.") -> dict[str, Any] | None:
+def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: str = "Done. The details are in the app.",
+                 asked: str | None = None) -> dict[str, Any] | None:
     """Split a final answer into the spoken register and the full display register.
 
     Also strips `product-cards` and `email-draft` fenced payloads (drafts go to `_email_drafts`).
@@ -729,6 +750,11 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         if any(numbers):
             question["images"] = numbers
     full = safe_full_text(output)
+    from .views import shape as shape_views
+    # Artifacts must be grounded in the answer, or they go. The SPOKEN line is part of the answer
+    # the user gets (often the only place a count or version is said), so it counts too.
+    # A work card's title may also come from the user's own ask (``asked``: the task's request).
+    views = shape_views(views, output + ("\n" + spoken_raw if spoken_raw else ""), asked or "")
     spoken = safe_user_text(spoken_raw, 500) if spoken_raw else None
     if not spoken and full:
         spoken = safe_user_text(spoken_from(full), 500)
@@ -750,13 +776,16 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         spoken = screen_claims_backed(spoken, full or "", bool(views or cards)) or None
     if not spoken:
         spoken = fallback_spoken
+    said_first = spoken
     if question:
         # The decision is the point: a one-line status, then the question, so the user answers it.
         lead = re.split(r"(?<=[.!?])\s+", spoken.strip())[0] if spoken != fallback_spoken else ""
         if lead.endswith("?"):
             lead = ""
-        spoken = safe_user_text((lead + " " + spoken_question(question)).strip(), 500) or spoken_question(question)
+        spoken = safe_user_text((lead + " " + spoken_question(question, lead)).strip(), 500) or spoken_question(question)
         views = [question] + [v for v in views if v.get("kind") != "question"]
+        from .views import drop_steps_the_question_asks
+        views = drop_steps_the_question_asks(views, question)
     if question:
         # The written answer (chat, task details) keeps the question so it can be answered there too.
         listed = "\n".join(f"{i + 1}. {option_text(o)}" + (" (recommended)" if question.get("recommended") == i else "")
@@ -782,6 +811,11 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         result["label"] = label
     if not question and (headline := outcome_headline(spoken if spoken != fallback_spoken else None, full)):
         result["headline"] = headline  # what came of it, never the voice's opener; the side model may refine it
+    elif question and (reply := outcome_headline(said_first if said_first != fallback_spoken else None)):
+        # A question's Home line is the question itself; the verdict said before asking ("Misi's my
+        # pick, but I haven't checked tables yet.") is the reply shown above what the task found.
+        if reply.rstrip(".!").lower() != str(question.get("question") or "").rstrip("?").lower():
+            result["reply"] = reply
     return result
 
 
@@ -1063,8 +1097,13 @@ def clean_headline(raw: Any) -> str | None:
 
 
 def _first_outcome(text: str | None) -> str | None:
-    for _, sentence in _sentences(str(text or "")):
-        if sentence.endswith("?") or is_opener(sentence):
+    # "[Offline drafts spec](https://…)" reads as its words, never "[…]()".
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", str(text or ""))
+    for _, sentence in _sentences(text):
+        # A statement that ends on the question it raises ("It's in review, and one question is open:
+        # should a draft keep its photos?") is an outcome; a sentence that only asks is not.
+        asks = sentence.endswith("?") and not (": " in sentence and len(sentence.split(": ", 1)[0].split()) >= 4)
+        if asks or is_opener(sentence):
             continue
         line = _HEADLINE_LEAD.sub("", sentence).strip(" —–-")
         if line:
@@ -1082,11 +1121,82 @@ def outcome_headline(spoken: str | None, full: str | None = None) -> str | None:
     if said and written and written.lower().startswith(said.rstrip(".!").lower()) and len(written) <= 140:
         line = written
     if line and len(line) > 140:
-        line = line[:139].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+        # Too long for one line: end at the last clause that fits ("It's fixed and tested, but it won't
+        # reach a build until the merge."), never mid-thought with an ellipsis.
+        head = line[:140]
+        cut = max(head.rfind(", but "), head.rfind(", so "), head.rfind("; "), head.rfind(", and "), head.rfind(": "))
+        cut = cut if cut >= 50 else head.rfind(", ")
+        if cut >= 50:
+            line = line[:cut].rstrip(" ,;:") + "."
+        else:
+            line = line[:139].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
     return line
 
 
 NAMES_LINE = "Names to leave out of the title: "
+
+
+# D4: a reply leads with its verdict. A first line that is only a count ("3 PRs need review.") or the
+# card's own heading said again ("Errors per hour: 270.") is worth ONE rewrite by the side model
+# (calls.shape_result); this check needs no model. Anything that says why or what to do stays.
+_COUNT_LEAD = re.compile(
+    r"(?i)^(?:there (?:are|is|were|was) |you have |you've got |i found |found )?"
+    r"(?:\d[\d,]*|no|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a few|several|many)\b")
+_VERDICT_WORDS = re.compile(
+    r"(?i)\b(?:because|since|due|blocked|block\w*|fail\w*|broke\w*|break\w*|stuck|conflict\w*|merge\w*|ready|safe|fine|"
+    r"urgent|overdue|fix\w*|should|rebase|rerun|retry|flaky|wait(?:ing)? on|only|all|none|both|but|so|first|"
+    r"spik\w*|up|down|normal|worse|better|clear|good|bad|late|early|cheap\w*|best)\b")
+_CLAUSE = re.compile(r"[,;:\u2014\u2013]| - ")
+_CARD_KEYS = ("title", "label", "value", "unit", "state", "scope", "source", "name", "place", "repo")
+
+
+def bare_count(sentence: str | None) -> bool:
+    """"3 PRs need review." / "There are 5 open issues.": a count and nothing that says what it means."""
+    text = " ".join(str(sentence or "").split()).strip()
+    if not text or not _COUNT_LEAD.match(text) or _CLAUSE.search(text.rstrip(".!")):
+        return False
+    return len(text.split()) <= 7 and not _VERDICT_WORDS.search(text)
+
+
+def _card_words(views: Any) -> set[str]:
+    words: set[str] = set()
+    for view in views or []:
+        if not isinstance(view, dict):
+            continue
+        for key in _CARD_KEYS:
+            if isinstance(view.get(key), (str, int, float)):
+                words |= set(re.findall(r"[a-z0-9]+", str(view[key]).lower()))
+    return words - {"the", "a", "an", "of", "in", "on", "for", "to", "and", "is", "are", "per"}
+
+
+def restates_card(sentence: str | None, views: Any) -> bool:
+    """A short first line made only of the card's own heading words ("Errors per hour: 270.")."""
+    said = set(re.findall(r"[a-z0-9]+", str(sentence or "").lower())) - {
+        "the", "a", "an", "of", "in", "on", "for", "to", "and", "is", "are", "per", "here", "s", "it", "your", "this"}
+    card = _card_words(views)
+    if not said or not card or len(said) > 10:
+        return False
+    return len(said - card) <= 1 and len(said & card) >= 2
+
+
+def weak_reply(sentence: str | None, views: Any = None) -> bool:
+    """D4's cheap check: the first line is a bare count or restates the card."""
+    return bare_count(sentence) or restates_card(sentence, views)
+
+
+VERDICT_WORDS = 25
+
+
+def verdict_line(raw: Any, views: Any = None) -> str | None:
+    """A side-model rewrite, checked: one statement of at most VERDICT_WORDS words that isn't itself
+    weak, an opener or a question. None = keep the original line."""
+    text = safe_user_text(raw, 300)
+    if not text:
+        return None
+    text = " ".join(text.split()).strip(" \"'“”")
+    if not text or text.endswith("?") or is_opener(text) or len(text.split()) > VERDICT_WORDS or weak_reply(text, views):
+        return None
+    return text[0].upper() + text[1:]
 
 
 def names_in(text: str | None) -> list[str]:

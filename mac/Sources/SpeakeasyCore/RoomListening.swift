@@ -105,7 +105,7 @@ public enum RoomUnavailability: Equatable, Sendable {
         case .noTranscriber: return "On-device transcription isn't available on this device"
         case .micDenied: return "Allow Speakeasy to use the microphone in Settings › Apps › Speakeasy"
         #endif
-        case .pluginTooOld: return "Your Hermes runs an older Speakeasy plugin: update it, then run hermes voice reload"
+        case .pluginTooOld: return "This needs a newer Speakeasy on your Hermes. Update it from Settings."
         case .languageNotSupported(let language): return "On-device transcription doesn't support \(language) yet"
         case .modelDownloadFailed: return "Couldn't download the speech model · check the connection and try again"
         case .noMicrophone: return "No microphone found"

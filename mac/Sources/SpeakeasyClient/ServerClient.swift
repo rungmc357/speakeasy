@@ -383,9 +383,11 @@ public final class ServerClient: @unchecked Sendable {
         return WorkInfo(json: object["work"])
     }
 
-    public func image(runID: String, index: Int) async throws -> Data {
+    /// *hero*: for a wide contact sheet, its readable crop (plugin 0.3.47+; an older one ignores it).
+    public func image(runID: String, index: Int, hero: Bool = false) async throws -> Data {
         guard (1...8).contains(index) else { throw HTTPError(status: 400, message: "Invalid card") }
-        let (data, response) = try await session.data(for: request("/voice/card-image/\(escape(runID))/\(index)"))
+        let path = "/voice/card-image/\(escape(runID))/\(index)" + (hero ? "?v=hero" : "")
+        let (data, response) = try await session.data(for: request(path))
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               http.mimeType?.hasPrefix("image/") == true, !data.isEmpty, data.count <= 8_000_000 else {
             throw HTTPError(status: (response as? HTTPURLResponse)?.statusCode ?? 502, message: "Image unavailable")
@@ -552,6 +554,35 @@ public final class ServerClient: @unchecked Sendable {
 
     // MARK: History (servers with `history`; docs/API.md "History")
 
+    /// Home's chat (servers with `home_chat`): the coordinator replies, and starts or follows up a job
+    /// only for real work. Idempotent on *clientID*.
+    public func homeMessage(text: String, attachments: [String] = [], clientID: String = UUID().uuidString,
+                            choice: ModelChoice? = nil) async throws -> HomeChatReply {
+        var body: [String: Any] = ["text": text.trimmingCharacters(in: .whitespacesAndNewlines), "client_id": clientID]
+        if !attachments.isEmpty { body["attachments"] = attachments }
+        if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
+        let reply = try await post("/voice/home/message", body)
+        guard let parsed = HomeChatReply(json: reply) else {
+            throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't take that message.")
+        }
+        return parsed
+    }
+
+    /// Home chat's model (servers with `home_chat`).
+    public func homeModel() async throws -> HomeModelStatus {
+        HomeModelStatus(json: try await json("/voice/home/model"))
+    }
+
+    /// The coordinator's model (the secondary row in Home's model menu); nil goes back to Auto.
+    public func setHomeModel(_ id: String?) async throws -> HomeModelStatus {
+        HomeModelStatus(json: try await post("/voice/home/model", ["model": id.map { $0 as Any } ?? NSNull()]))
+    }
+
+    /// Home's chip: the model jobs started from Home run on; nil goes back to the Hermes default.
+    public func setHomeWorkModel(_ id: String?) async throws -> HomeModelStatus {
+        HomeModelStatus(json: try await post("/voice/home/model", ["work_model": id.map { $0 as Any } ?? NSNull()]))
+    }
+
     /// One page of every Hermes session, newest first.
     public func history(query: String = "", source: String? = nil, cursor: String? = nil) async throws -> HistoryPage {
         HistoryPage(json: try await json(HistoryPage.path(query: query, source: source, cursor: cursor)))
@@ -661,13 +692,14 @@ public final class ServerClient: @unchecked Sendable {
     /// `HTTPError`s with the plugin's reason: 409 too_many / too_large / ended, 410 closed,
     /// 413 too_large, 415 unsupported.
     public func uploadAttachment(interactionID: String, _ attachment: EncodedAttachment, as kind: AttachmentUploadKind,
-                                 captureID: String? = nil, app: String? = nil) async throws -> String {
+                                 captureID: String? = nil, app: String? = nil,
+                                 progress: (@Sendable (Double) -> Void)? = nil) async throws -> String {
         let headers = attachmentUploadHeaders(kind: kind, mimeType: attachment.mimeType, filename: attachment.filename,
                                               captureID: captureID, app: app)
         // Up to 10 MB over Tailscale: give a file longer than the usual 30 s.
-        let timeout: TimeInterval = attachment.data.count > 1_000_000 ? 120 : 30
+        let timeout: TimeInterval = attachment.mimeType.hasPrefix("video/") ? 180 : (attachment.data.count > 1_000_000 ? 120 : 30)
         let req = request(SharingRoute.attachments(interactionID), method: "POST", headers: headers, timeout: timeout)
-        let (data, response) = try await sessionFor(timeout).upload(for: req, from: attachment.data)
+        let (data, response) = try await sessionFor(timeout).upload(for: req, from: attachment.data, delegate: UploadProgress(progress))
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw HTTPError(status: status, body: data, fallback: "Upload HTTP \(status)") }
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -685,7 +717,7 @@ public final class ServerClient: @unchecked Sendable {
                                 progress: (@Sendable (Double) -> Void)? = nil) async throws -> StagedAttachmentReply {
         precondition(kind != .screen, "screen captures go to a call")
         let headers = attachmentUploadHeaders(kind: kind, mimeType: attachment.mimeType, filename: attachment.filename)
-        let timeout: TimeInterval = attachment.data.count > 1_000_000 ? 120 : 30
+        let timeout: TimeInterval = attachment.mimeType.hasPrefix("video/") ? 180 : (attachment.data.count > 1_000_000 ? 120 : 30)
         let req = request(StagedAttachmentRoute.stage, method: "POST", headers: headers, timeout: timeout)
         let delegate = UploadProgress(progress)
         let (data, response) = try await sessionFor(timeout).upload(for: req, from: attachment.data, delegate: delegate)
@@ -701,6 +733,15 @@ public final class ServerClient: @unchecked Sendable {
     /// The x on a staged chip. 404 = already gone (sent, removed or expired).
     public func removeStagedAttachment(id: String) async throws {
         _ = try await json(StagedAttachmentRoute.remove(id), method: "DELETE")
+    }
+
+    /// Recover a staged thumbnail after Share-to-app handoff; bytes stay on the paired path.
+    public func stagedAttachmentPreview(id: String) async throws -> Data {
+        let req = request(StagedAttachmentRoute.remove(id) + "/preview", method: "GET")
+        let (data, response) = try await sessionFor(30).data(for: req)
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+              data.count <= AttachmentPolicy.maxImageBytes else { throw URLError(.badServerResponse) }
+        return data
     }
 
     /// A recorded voice message's audio, transcribed by Hermes the way a Telegram voice note is

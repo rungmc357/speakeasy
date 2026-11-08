@@ -13,7 +13,7 @@ enum NowMacShots {
             do {
                 try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
                 let now = MacNowModel.shared
-                now.demo = MacDemoNow.home()
+                now.demo = snapshotHome()
                 await now.refresh()
                 let voice = VoicePanelModel()
                 voice.state.connection = .live
@@ -54,15 +54,66 @@ enum NowMacShots {
                                    size: NSSize(width: 720, height: 640), path: "\(dir)/home-narrow-\(appearance).png")
                     try await shot(HistoryRootView(store: store, voice: voice),
                                    size: NSSize(width: 1400, height: 700), path: "\(dir)/home-wide-\(appearance).png")
+                    // SPK-198: off a call, Home's composer with the round call button.
+                    let idleVoice = VoicePanelModel()
+                    let composer = MacHomeComposerModel.shared
+                    composer.demo = true
+                    composer.recorder = SilentRecorder()
+                    composer.voiceNotesSupported = true
+                    try await shot(HistoryRootView(store: store, voice: idleVoice),
+                                   size: NSSize(width: 1400, height: 700), path: "\(dir)/home-composer-\(appearance).png")
+                    try await shot(VStack(spacing: 0) {
+                        MacNowWorkList(now: now, store: store, onClose: {})
+                        MacHomeBottomBar(voice: idleVoice, composer: composer)
+                    }, size: NSSize(width: 460, height: 600), path: "\(dir)/work-\(appearance).png")
+                    try await shot(MacNowRecent(now: now, store: store),
+                                   size: NSSize(width: 460, height: 500), path: "\(dir)/recent-\(appearance).png")
+                    now.demo = NowHome(rev: 2, asOf: Date(), sentence: "All quiet.", counts: NowHome.Counts(), items: [],
+                                       backgroundRunning: 0)
+                    await now.refresh()
+                    try await shot(HistoryRootView(store: store, voice: idleVoice),
+                                   size: NSSize(width: 1400, height: 700), path: "\(dir)/home-empty-\(appearance).png")
+                    composer.fill(HomeSuggestions.today()[0])
+                    try await shot(HistoryRootView(store: store, voice: idleVoice),
+                                   size: NSSize(width: 720, height: 640), path: "\(dir)/home-typing-\(appearance).png")
+                    composer.send()
+                    precondition(now.visible.first?.kind == .working, "A sent message must show as a working card")
+                    precondition(composer.draft.isEmpty, "Sending must empty the box")
+                    try await shot(HistoryRootView(store: store, voice: idleVoice),
+                                   size: NSSize(width: 720, height: 640), path: "\(dir)/home-sent-\(appearance).png")
+                    #if DEBUG
+                    composer.previewRecording(seconds: 7, level: 0.6)
+                    try await shot(HistoryRootView(store: store, voice: idleVoice),
+                                   size: NSSize(width: 720, height: 640), path: "\(dir)/home-memo-\(appearance).png")
+                    composer.cancelRecording()
+                    #endif
+                    for p in now.pending { now.dropPending(p.id) }
+                    now.demo = snapshotHome()
+                    await now.refresh()
                 }
                 store.stop(); now.stop(); panel.hide()
-                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; 10 screenshots")
+                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; Home composer send; 20 screenshots")
                 NSApp.terminate(nil)
             } catch {
                 print("NOW_MAC_SMOKE FAILED: \(error)")
                 exit(1)
             }
         }
+    }
+
+    private static func snapshotHome() -> NowHome {
+        if let path = ProcessInfo.processInfo.environment["SPEAKEASY_NOW_FIXTURE"],
+           let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return NowHome(json: object)
+        }
+        var home = MacDemoNow.home()
+        home.stream = NowStream(entries: home.items.reversed().flatMap { item in
+            let at = item.startedAt ?? item.finishedAt ?? item.updatedAt ?? home.asOf
+            return [NowStream.Entry(id: "a:" + item.id, kind: .ask, at: at, text: item.title, itemID: item.id),
+                    NowStream.Entry(id: "c:" + item.id, kind: .card, at: at, itemID: item.id)]
+        }, needsYou: home.items.filter { $0.kind == .question }.map(\.id))
+        return home
     }
 
     private static func shot<V: View>(_ root: V, size: NSSize, path: String) async throws {

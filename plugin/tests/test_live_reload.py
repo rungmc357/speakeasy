@@ -240,3 +240,31 @@ def test_a_down_server_backs_off_and_records_every_attempt(plugin):
     assert waits[0] < waits[1] <= mod.RETRY_MAX_S + 1
     r.retry_at = 0.0
     assert r.tick() == "recovered" and _health(port)["version"] == "1.0.5"
+
+
+def test_a_module_the_running_code_imports_later_is_kept(plugin):
+    """The first pairing lazily imports address_drop; the check used to evict it mid-import (KeyError)."""
+    r, pkg, port, name, _ = plugin
+    lazy = f"{name}.address_drop"
+    sys.modules.pop(lazy, None)
+    r.modules.pop(lazy, None)
+    started, finish = threading.Event(), threading.Event()
+    seen = {}
+
+    def slow_import():
+        # Same shape as the real race: the import is in progress when the check runs.
+        spec = importlib.util.find_spec(lazy)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[lazy] = mod
+        started.set(); finish.wait(5)
+        spec.loader.exec_module(mod)
+        seen["mod"] = sys.modules[lazy]
+
+    t = threading.Thread(target=slow_import); t.start()
+    assert started.wait(5)
+    assert r.tick() is None                     # nothing was re-imported underneath: nothing to restore
+    finish.set(); t.join(5)
+    assert seen["mod"] is sys.modules[lazy]     # the import finished and is still there
+    assert r.modules[lazy] is sys.modules[lazy]
+    assert r.tick() is None
+    assert _health(port)["version"] == "1.0.0"

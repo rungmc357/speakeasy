@@ -229,6 +229,15 @@ def job_progress(status: str, created: float | None, settled_at: float | None, p
     return out
 
 
+def _current_steps(result: Any, status: Any) -> Any:
+    """A stored result's next steps as they read now (home_words.expire_steps)."""
+    if not isinstance(result, dict) or not isinstance(result.get("views"), list):
+        return result
+    from .home_words import expire_steps
+    from .runstate import TERMINAL
+    return {**result, "views": expire_steps(result["views"], status in TERMINAL, time.time())}
+
+
 class StateStore:
     def __init__(self, path: Path, hermes_home: Path | None = None):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -591,6 +600,22 @@ class StateStore:
         except ValueError:
             return None
         return value if isinstance(value, dict) else None
+
+    def reply_model_runs(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
+        """Persisted per-turn evidence, including ended turns, not just the latest job."""
+        from .reply_models import object_value
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT model, created, coalesce(settled_at, updated), status FROM runs WHERE session_id=? ORDER BY created",
+                (session_id,)).fetchall()
+        out = []
+        for row in rows:
+            record, start, end, status = row
+            if start is None:
+                continue
+            end = float(end) if end is not None and status not in {'running', 'starting', 'waiting_for_approval', 'resolving_approval'} else None
+            out.append({'start': float(start), 'end': end, 'record': object_value(record)})
+        return {session_id: out}
 
     def served_model(self, key: str, runtime: dict[str, Any], bare: bool = False) -> bool:
         """Hermes said which provider/model served the run (its ``runtime``): kept beside what was asked.
@@ -1876,6 +1901,29 @@ class StateStore:
                             "at": float(updated or 0)})
         return out
 
+    def call_written_answers(self, interaction_id: str) -> list[dict[str, Any]]:
+        """Written answers for this call only, in completion order (no carried work)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT delegation_id, title, result_json FROM runs WHERE interaction_id = ? "
+                "AND status = 'completed' AND result_json IS NOT NULL ORDER BY COALESCE(settled_at, updated)",
+                (interaction_id,)).fetchall()
+        out = []
+        for task_id, title, raw in rows:
+            if not task_id or task_id.startswith("choice_"):
+                continue
+            try:
+                result = json.loads(raw)
+                if not isinstance(result, dict):
+                    continue
+                full = result.get("full") or result.get("spoken")
+                if isinstance(full, str) and full.strip():
+                    out.append({"task_id": task_id, "title": title or "", "full": full,
+                                "spoken": result.get("spoken") or ""})
+            except (ValueError, TypeError):
+                continue
+        return out
+
     def calls_from_tasks(self, since_s: float = 7 * 86400) -> list[dict[str, Any]]:
         """Recent calls reconstructed from their tasks: what was asked, how it ended, the answer."""
         with self._lock:
@@ -2568,7 +2616,7 @@ class StateStore:
             "events": [{"kind": kind, "text": text, "at": created} for kind, text, created in reversed(events)],
             "short_status": display_status, "detail": display_detail,
             "source_run_id": actual_run_id, "updated_at": display_updated,
-            "status_source": source, "result": public_result(result),
+            "status_source": source, "result": _current_steps(public_result(result), status),
             "title": title, "summary": summary, "dismissed": bool(dismissed),
             "email_drafts": self.drafts_for(key),
             "plan": concrete_plan(self.plan(key), next((t for k, t, _ in reversed(events) if k == "request"), None),
@@ -2672,7 +2720,8 @@ class StateStore:
         # Live activity (capability job_activity): activity, findings, touched, hero; each only when known.
         activity_state = self.activity_state(key)
         work.update(activity_mod.public(activity_state, detail=activity_detail))
-        self._live_line(work, key, activity_state, created, authored_at, status_source, progress_updated, title)
+        self._live_line(work, key, activity_state, created, authored_at, status_source, progress_updated, title,
+                        opened=activity_detail)
         self._drop_misheard(work, key)
         live = self.public_live_image(key)
         if live is not None:
@@ -2697,10 +2746,12 @@ class StateStore:
     # -- the live line (live_status.py) -------------------------------------------------------
     def _live_line(self, work: dict[str, Any], key: str, state: dict[str, Any] | None, created: float | None,
                    authored_at: float | None, status_source: str | None, progress_updated: float | None,
-                   title: str | None) -> None:
+                   title: str | None, opened: bool = False) -> None:
         """A running task's ``now_line`` / ``so_far`` from what it really did (live_status.py), and its
         ``short_status`` / ``detail`` from them unless the task itself wrote a status recently. The
-        handoff guess ("Investigating the stopped task") stops reading as "now" after a minute."""
+        handoff guess ("Investigating the stopped task") stops reading as "now" after a minute.
+        *opened*: the read is someone opening the task (its view or session page), the only read
+        that may ask the side model for a line; liveness loops and pushes never do."""
         if work["status"] in TERMINAL or work["status"] in NOT_STARTED or work["status"] in {
                 "waiting_for_approval", "cancel_requested"} or work.get("queued_behind") or work.get("waiting"):
             return
@@ -2710,7 +2761,7 @@ class StateStore:
         try:
             if summarizer is not None:
                 live = summarizer.line(key, state, request=request, started=created,
-                                       on_ready=(lambda: on_ready(key)) if on_ready else None)
+                                       on_ready=(lambda: on_ready(key)) if on_ready else None, ask=opened)
             else:
                 live = live_status.deterministic(state, now=time.time(), started=created)
         except Exception:

@@ -77,6 +77,27 @@ def test_the_list_and_page_never_show_plumbing(server, state):
     assert not any("speakeasy-question" in (t or "") or "Voice:" in (t or "") or "looking at" in (t or "") for t in texts)
 
 
+@pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "interrupted"])
+def test_cached_working_card_refreshes_to_its_own_terminal_run_after_unrelated_turns(service, state, outcome):
+    sid = "speakeasy_task_old_card"
+    add_session(state, sid, "api_server", at=NOW - 5)
+    add_msg(state, sid, "user", "Fix the shelf export", at=NOW - 40)
+    store = service.store
+    store.reserve_run("old_card", "vi_card", "d_card", 0)
+    store.set_session("old_card", sid)
+    store.update_run("old_card", "run_old_card", "running")
+    first = service.history_session(sid, {})["session"]
+    assert first["jobs"][0]["status"] == "running"
+    assert store.transition("old_card", outcome, expect={"running"})
+    add_msg(state, sid, "user", "Check a different shelf", at=NOW - 2)
+    add_msg(state, sid, "assistant", "That shelf is available.", at=NOW - 1)
+    fresh = service.history_session(sid, {})["session"]
+    assert fresh["jobs"][0]["run_id"] == "run_old_card"
+    assert fresh["jobs"][0]["status"] == outcome
+    assert fresh["state"] != "running"
+    assert fresh["entries"][-1]["text"] == "That shelf is available."
+
+
 # -- (A) one truth for which question still waits ----------------------------------------------------
 
 def test_an_answered_question_closes_everywhere_and_shows_once(server, service, hermes, state):
@@ -131,6 +152,8 @@ def test_new_chat_reply_names_its_session_at_once(server, service, state):
 
 
 def test_linked_chat_replies_continue_one_session_and_fold_into_the_chat_row(server, service, hermes, state):
+    # This fixture predates recorded model metadata: explicitly choose Hermes' default.
+    service.store.set_model_choice("session:d1", "default", None)
     status, first = post(server, "/voice/history/d1/message", {"text": "Order them please"})
     assert status == 200 and first["via"] == "linked"
     key = service.store.key_for_run(first["run_id"])
@@ -156,6 +179,7 @@ def test_linked_chat_replies_continue_one_session_and_fold_into_the_chat_row(ser
 
 
 def test_a_linked_chat_whose_task_was_cleared_still_continues_its_session(server, service, hermes, state):
+    service.store.set_model_choice("session:t1", "default", None)
     _, first = post(server, "/voice/history/t1/message", {"text": "Which can go outside?"})
     key = service.store.key_for_run(first["run_id"])
     linked = wait_for(lambda: service.store.session_for(key))

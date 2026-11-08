@@ -1,6 +1,7 @@
 """Per-chat model and reasoning (docs/API.md "Models", speakeasy/models.py): Hermes' catalog, the
 choice saved per chat / task, and what each run is sent. Invented catalog (fakes.model_options_payload)."""
 import json
+import sqlite3
 import time
 
 import pytest
@@ -60,7 +61,7 @@ def test_models_lists_signed_in_providers_with_friendly_names_and_levels(server,
     qwen = next(p for p in body["providers"] if p["id"] == "studio-qwen")
     assert qwen["local"] is True and qwen["models"][0]["reasoning_levels"] == []   # doesn't reason
     assert body["default"] == {"model": "anthropic/claude-opus-5-5", "reasoning": None, "source": "hermes"}
-    assert body["fast"]["model"] == "anthropic/claude-haiku-4-5" and body["fast"]["reasoning"] == "low"
+    assert body["fast"]["model"] == "anthropic/claude-haiku-5-5" and body["fast"]["reasoning"] == "low"
     assert body["smart"]["model"] == "anthropic/claude-opus-5-5" and body["smart"]["reasoning"] == "high"
     assert [lvl["id"] for lvl in body["levels"]] == list(MD.LEVELS)
 
@@ -156,37 +157,42 @@ def test_new_chat_choice_runs_the_job_and_sticks_to_its_chat(server, service, he
 
 
 def test_use_for_this_chat_persists_and_threads_into_a_session_job(server, service, hermes, state, catalog):
-    status, body = put(server, "/voice/history/api_other/model", {"model": "anthropic/claude-sonnet-5",
+    status, body = put(server, "/voice/history/api_other/model", {"model": "anthropic/claude-sonnet-5-5",
                                                                    "reasoning": "low"})
     assert status == 200, body
-    assert body["model_choice"] == {"model": "anthropic/claude-sonnet-5", "reasoning": "low"}
-    assert body["next_model"]["name"] == "Claude Sonnet 5" and body["next_model"]["reasoning"] == "low"
+    assert body["model_choice"] == {"model": "anthropic/claude-sonnet-5-5", "reasoning": "low"}
+    assert body["next_model"]["name"] == "Claude Sonnet 5.5" and body["next_model"]["reasoning"] == "low"
     # Survives a restart: it's in the store, not memory.
     assert service.store.model_choice("session:api_other")["reasoning"] == "low"
     post(server, "/voice/history/api_other/message", {"text": "Now for twelve people"})
     call = wait_for(lambda: hermes.calls)[-1]
-    assert call["session_id"] == "api_other" and call["model"] == "claude-sonnet-5"
+    assert call["session_id"] == "api_other" and call["model"] == "claude-sonnet-5-5"
     assert call["model_options"]["reasoning"]["effort"] == "low"
     # Reasoning alone keeps the model; "default" clears a half.
     put(server, "/voice/history/api_other/model", {"reasoning": "none"})
     assert service.store.model_choice("session:api_other") == {
-        **service.store.model_choice("session:api_other"), "model": "anthropic/claude-sonnet-5", "reasoning": "none"}
+        **service.store.model_choice("session:api_other"), "model": "anthropic/claude-sonnet-5-5", "reasoning": "none"}
     put(server, "/voice/history/api_other/model", {"model": "default", "reasoning": "default"})
-    assert service.store.model_choice("session:api_other") is None
+    assert service.store.model_choice("session:api_other")["model"] == "default"
     assert get(server, "/voice/history/api_other")[1]["session"]["model_choice"] is None
 
 
 def test_switching_model_clamps_the_chats_level(server, service, state, catalog):
     put(server, "/voice/history/api_other/model", {"model": "anthropic/claude-opus-5-5", "reasoning": "max"})
-    put(server, "/voice/history/api_other/model", {"model": "anthropic/claude-haiku-4-5"})
+    put(server, "/voice/history/api_other/model", {"model": "anthropic/claude-haiku-5-5"})
     assert service.store.model_choice("session:api_other")["reasoning"] == "high"
 
 
 def test_a_message_carrying_a_choice_sets_it_for_the_chat(server, service, hermes, state, catalog):
+    # Existing Hermes model is known, but Speakeasy has never saved an override.
+    with sqlite3.connect(state) as db:
+        db.execute("ALTER TABLE sessions ADD COLUMN model TEXT")
+        db.execute("UPDATE sessions SET model='openai-codex/gpt-6.1-sol' WHERE id='api_other'")
     status, body = post(server, "/voice/history/api_other/message", {"text": "Halve it", "reasoning": "high"})
     assert status == 200, body
     call = wait_for(lambda: hermes.calls)[-1]
-    assert "model" not in call and call["model_options"] == {"reasoning": {"enabled": True, "effort": "high"}}
+    assert call["provider"] == "openai-codex" and call["model"] == "gpt-6.1-sol"
+    assert call["model_options"] == {"reasoning": {"enabled": True, "effort": "high"}}
     assert service.store.model_choice("session:api_other") == {
         **service.store.model_choice("session:api_other"), "model": None, "reasoning": "high"}
 
@@ -199,11 +205,11 @@ def test_linked_tasks_use_their_chats_choice(server, service, hermes, state, cat
     assert call["session_id"] != "d1" and call["model"] == "gpt-5.5" and call["provider"] == "openai-codex"
     # A later change to the chat reaches the linked task's follow-up too.
     wait_for(lambda: service.store.work(body["run_id"])["status"] == "completed")
-    put(server, "/voice/history/d1/model", {"model": "anthropic/claude-haiku-4-5", "reasoning": "low"})
+    put(server, "/voice/history/d1/model", {"model": "anthropic/claude-haiku-5-5", "reasoning": "low"})
     before = len(hermes.calls)
     post(server, "/voice/history/d1/message", {"text": "And the screws"})
     wait_for(lambda: len(hermes.calls) > before)
-    assert hermes.calls[-1]["model"] == "claude-haiku-4-5"
+    assert hermes.calls[-1]["model"] == "claude-haiku-5-5"
     assert hermes.calls[-1]["model_options"]["reasoning"]["effort"] == "low"
 
 
@@ -246,7 +252,7 @@ def test_saying_use_the_smart_model_runs_that_task_on_it(server, service, hermes
     worker = service.workers[-1]
     worker.delegate("call_fast", "Use the fast model for this: what time does the bakery open?")
     call = wait_for(lambda: hermes.calls)[-1]
-    assert call["model"] == "claude-haiku-4-5" and call["model_options"]["reasoning"]["effort"] == "low"
+    assert call["model"] == "claude-haiku-5-5" and call["model_options"]["reasoning"]["effort"] == "low"
     # Hermes sees the run a moment before Speakeasy records the id it got back.
     key = wait_for(lambda: service.store.key_for_run(call["run_id"]))
     assert wait_for(lambda: service.store.run_model(key))["preset"] == "fast"
@@ -272,9 +278,9 @@ def test_fast_and_smart_follow_settings(server, service, hermes, catalog):
 
 def test_store_migrates_and_keeps_choices(home, service):
     from speakeasy.store import StateStore
-    service.store.set_model_choice("session:abc", "anthropic/claude-sonnet-5", None)
+    service.store.set_model_choice("session:abc", "anthropic/claude-sonnet-5-5", None)
     again = StateStore(service.dir / "state.sqlite3", hermes_home=home)
-    assert again.model_choice("session:abc")["model"] == "anthropic/claude-sonnet-5"
+    assert again.model_choice("session:abc")["model"] == "anthropic/claude-sonnet-5-5"
     again.set_model_choice("session:abc", None, None)
     assert again.model_choice("session:abc") is None
     assert json.dumps(MD.run_fields({"model": "a/b", "reasoning": "none"})) == json.dumps(

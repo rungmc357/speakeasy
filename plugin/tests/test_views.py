@@ -12,6 +12,15 @@ def test_unknown_kind_and_bad_fields_are_dropped():
     assert v == {"kind": "quote", "symbol": "ACME", "price": 12.5, "points": [1.0, 3.0]}
 
 
+def test_weather_rows_with_only_a_label_are_left_out():
+    v = views.clean({"kind": "weather", "place": "Springfield", "temp": 51, "high": 57, "low": 36,
+                     "days": [{"label": "6am"}, {"label": "9am", "icon": "cloud"}]})
+    assert "days" not in v and v["high"] == 57
+    v = views.clean({"kind": "weather", "place": "Springfield", "temp": 51,
+                     "hours": [{"label": "6am", "temp": 40}, {"label": "9am"}]})
+    assert v["hours"] == [{"label": "6am", "temp": 40.0}]
+
+
 def test_lists_are_capped_and_rows_validated():
     v = views.clean({"kind": "list", "title": "Errands", "items": [{"text": f"item {i}", "done": "yes"} for i in range(40)]})
     assert len(v["items"]) == 20 and "done" not in v["items"][0]
@@ -125,3 +134,17 @@ def test_views_rule_asks_charts_for_metric_order_and_real_freshness_only():
     rule = P.VIEWS_RULE
     assert "metric" in rule and "high_first|low_first|as_listed" in rule and "order_by" in rule
     assert "source/as_of only from the data, never guessed" in rule
+
+
+def test_rows_keep_the_lists_real_total_only_when_more_than_sent():
+    rows = [{"ref": f"SPK-{n}", "name": f"Invented issue {n}", "state": "Backlog"} for n in range(12)]
+    v = views.clean({"kind": "rows", "source": "Linear", "entity": "issue", "total": 13, "items": rows})
+    assert v["total"] == 13   # "1 more not shown" rather than a count that disagrees with the reply
+    for bad in (12, 3, True, 10 ** 6):
+        assert "total" not in views.clean({"kind": "rows", "entity": "issue", "total": bad, "items": rows})
+
+
+def test_an_agent_rows_corner_is_its_time_and_the_check_in_is_said_once():
+    v = views.clean({"kind": "jobs", "items": [{"name": "Home integration", "elapsed": "about 19 min at last check-in",
+                                                 "status": "Merging the composer; last check-in about 3:00 AM"}]})
+    assert v["items"][0]["elapsed"] == "19 min" and v["items"][0]["status"] == "Merging the composer"

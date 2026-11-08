@@ -126,18 +126,16 @@ def test_unsupported_or_wrong_uploads_are_refused(server, kind, ctype, data, nam
     assert stage(server, data, kind, ctype, name)[0] == code
 
 
-MP4_HEAD = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"   # a 4 s clip's first bytes (invented)
-
-
 @pytest.mark.parametrize("ctype,name", [("video/mp4", "porch-4s.mp4"), ("video/quicktime", "porch-4s.mov")])
-def test_video_attachments_is_advertised_only_when_staging_takes_videos(server, ctype, name):
-    """SPK-230: the composers offer videos only with ``video_attachments``. Staging refuses them
-    today, so the flag is listed and off; turning it on must come with an upload path that takes them."""
+def test_video_attachments_is_advertised_with_staging_that_takes_videos(server, service, ctype, name):
+    """SPK-230: the composers offer videos only with ``video_attachments``, so it's on exactly when
+    staging takes the video types. Bad video bytes are still refused (test_video_attachments.py)."""
     status = http(server.base_url, "GET", "/voice/status", token=server.token)[1]
-    assert status["capabilities"]["video_attachments"] is False
-    assert ctype not in status["attachments"]["file_types"]
-    code, body = stage(server, MP4_HEAD + b"\x00" * 4096, "file", ctype, name)
-    assert code == 415 and body["reason"] == "unsupported"
+    assert status["capabilities"]["video_attachments"] is True
+    assert ctype in status["attachments"]["file_types"]
+    upload = service.check_stage("device", {"X-Speakeasy-Kind": "file", "Content-Type": ctype,
+                                            "X-Speakeasy-Filename": name}, 4096)
+    assert upload["mime"] == ctype and upload["size"] == 4096
 
 
 def test_oversized_uploads_are_refused_before_the_body_is_read(server):

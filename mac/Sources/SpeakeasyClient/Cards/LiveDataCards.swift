@@ -63,14 +63,16 @@ struct WeatherCard: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(card["place"].string ?? "Weather").font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
-                    Text(ViewCard.degrees(card["temp"].double)).font(.system(size: 38, weight: .light))
+                    Text(card.weatherHeadline).font(.system(size: 38, weight: .light))
                     Text(sentenceCase(card["condition"].string ?? "")).font(.system(size: 11.5)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
                     Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 30))
-                    Text("H \(ViewCard.degrees(card["high"].double))  L \(ViewCard.degrees(card["low"].double))")
-                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    if card["temp"].double != nil {
+                        Text(card.weatherHighLow)
+                            .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    }
                     if let rain = card["rain"].double, rain > 0 {
                         Label("\(Int(rain))%", systemImage: "drop.fill").font(.system(size: 10.5)).foregroundStyle(.blue)
                     }
@@ -98,12 +100,25 @@ struct WeatherCard: View {
                 VStack(spacing: 5) {
                     ForEach(Array(days.prefix(7).enumerated()), id: \.offset) { _, d in
                         HStack(spacing: 8) {
-                            Text(d["label"].string ?? "").font(.system(size: 11)).frame(width: 42, alignment: .leading)
+                            // A day name stays one line ("Tuesday" used to wrap to "Tuesda / y" on Home).
+                            Text(d["label"].string ?? "").font(.system(size: 13)).lineLimit(1).minimumScaleFactor(0.7)
+                                .frame(width: 58, alignment: .leading)
                             Image(systemName: weatherSymbol(d["icon"].string)).symbolRenderingMode(.multicolor)
-                                .font(.system(size: 12)).frame(width: 18)
-                            Text(ViewCard.degrees(d["low"].double)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                                .font(.system(size: 16)).frame(width: 22)
+                            // A real chance of rain (30% and up) under the icon's day, as the designs say it:
+                            // "take an umbrella Thursday" needs the number on the card.
+                            Group {
+                                if let rain = d["rain"].double, rain >= 30 {
+                                    Text("\(Int(rain))%").font(.system(size: 11, weight: .semibold).monospacedDigit()).foregroundStyle(.blue)
+                                } else { Text("") }
+                            }
+                            .frame(width: 30, alignment: .leading)
+                            // A day with no low shows no low (not a dash) and its bar is only its high,
+                            // never a bar stretched down to the week's lowest temperature.
+                            Text(d["low"].double == nil ? "" : ViewCard.degrees(d["low"].double))
+                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
                                 .frame(width: 30, alignment: .trailing)
-                            TempBar(low: d["low"].double ?? lo, high: d["high"].double ?? hi, min: lo, max: hi)
+                            TempBar(low: d["low"].double ?? d["high"].double ?? lo, high: d["high"].double ?? hi, min: lo, max: hi)
                             Text(ViewCard.degrees(d["high"].double)).font(.system(size: 11, weight: .medium).monospacedDigit())
                                 .frame(width: 30, alignment: .leading)
                         }
@@ -153,15 +168,17 @@ struct WeatherNow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 26))
-            Text(ViewCard.degrees(card["temp"].double)).font(.system(size: 30, weight: .light)).lineLimit(1).fixedSize()
+            Text(card.weatherHeadline).font(.system(size: 30, weight: .light)).lineLimit(1).fixedSize()
             VStack(alignment: .leading, spacing: 1) {
                 Text(sentenceCase(card["condition"].string ?? "")).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
                 Text(card["place"].string ?? "Weather").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 3) {
-                Text("H \(ViewCard.degrees(card["high"].double))  L \(ViewCard.degrees(card["low"].double))")
-                    .font(.system(size: 11, weight: .medium).monospacedDigit()).lineLimit(1)
+                if card["temp"].double != nil {
+                    Text(card.weatherHighLow)
+                        .font(.system(size: 11, weight: .medium).monospacedDigit()).lineLimit(1)
+                }
                 if let rain = card["rain"].double, rain > 0 {
                     Label("\(Int(rain))%", systemImage: "drop.fill").font(.system(size: 10.5)).foregroundStyle(.blue)
                 }
@@ -335,3 +352,4 @@ func parseISO(_ text: String) -> Date? {
     f.formatOptions = [.withInternetDateTime]
     return f.date(from: text)
 }
+

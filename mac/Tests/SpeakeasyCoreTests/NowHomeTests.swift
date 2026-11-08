@@ -109,4 +109,99 @@ final class NowHomeTests: XCTestCase {
         XCTAssertFalse(h.caughtUp)
         XCTAssertEqual(h.clearable.map(\.id), ["s:a"])
     }
+
+    // SPK-208: Home as one stream.
+    func testDecodesTheStreamAsAsksAndCardsInTimeOrder() throws {
+        let home = NowHome(json: try contract())
+        let stream = try XCTUnwrap(home.stream)
+        XCTAssertEqual(stream.entries.map(\.at), stream.entries.map(\.at).sorted())
+        let ids = Set(home.items.map(\.id))
+        for entry in stream.entries where entry.kind != .group { XCTAssertTrue(ids.contains(try XCTUnwrap(entry.itemID))) }
+        let asks = stream.entries.filter { $0.kind == .ask }
+        XCTAssertEqual(asks.first?.text, "Desk hunt")
+        let question = try XCTUnwrap(stream.entries.first { $0.kind == .card && $0.itemID == home.items.first?.id })
+        XCTAssertEqual(question.widget, .open)
+        XCTAssertEqual(stream.needsYou, [try XCTUnwrap(home.items.first?.id)])
+    }
+
+    // Real-data fixes: short title + whole title, picture captions/hero crops, replaced questions, the pill.
+    func testRealDataFieldsDecode() throws {
+        let home = NowHome(json: [
+            "pill": "3 need you \u{00B7} 5 running",
+            "items": [
+                ["id": "s:a", "kind": "new_answer", "title": "Fix picture sending",
+                 "full_title": "Fix picture sending and carousels in the shared thread after the last update",
+                 "thumbs": [["url": "/voice/card-image/run_a/1", "caption": "Before and after", "aspect": 4.2,
+                             "hero": "/voice/card-image/run_a/1?v=hero"],
+                            ["url": "/voice/card-image/run_a/3"]]],
+                ["id": "q:b", "kind": "waiting", "title": "Pick a dinner spot", "line": "Replaced by a newer question.",
+                 "replaced": ["at": 1_000, "by": "q:c"]],
+            ],
+            "stream": ["entries": [["id": "c:b", "kind": "card", "at": 900, "item_id": "q:b", "widget": "replaced",
+                                    "replaced_at": 1_000]], "needs_you": []],
+        ])
+        XCTAssertEqual(home.pill, "3 need you \u{00B7} 5 running")
+        let a = home.items[0]
+        XCTAssertEqual(a.title, "Fix picture sending")
+        XCTAssertEqual(a.fullTitle, "Fix picture sending and carousels in the shared thread after the last update")
+        XCTAssertEqual(a.thumbs, ["/voice/card-image/run_a/1", "/voice/card-image/run_a/3"])
+        XCTAssertEqual(a.pictures.map(\.caption), ["Before and after", nil])
+        XCTAssertEqual(a.pictures.map(\.number), [1, 3])
+        XCTAssertEqual(a.pictures.first?.hero, "/voice/card-image/run_a/1?v=hero")
+        XCTAssertNil(a.replacedAt)
+        let b = home.items[1]
+        XCTAssertEqual(b.replacedAt, Date(timeIntervalSince1970: 1_000))
+        XCTAssertEqual(b.replacedBy, "q:c")
+        let entry = try XCTUnwrap(home.stream?.entries.first)
+        XCTAssertEqual(entry.widget, .replaced)
+        XCTAssertEqual(entry.replacedAt, Date(timeIntervalSince1970: 1_000))
+        // An older plugin: no pill, url-only thumbs, no full title.
+        let old = NowHome(json: ["items": [["id": "s:x", "kind": "working", "title": "T",
+                                            "thumbs": [["url": "/voice/card-image/r/2"]]]]])
+        XCTAssertNil(old.pill)
+        XCTAssertNil(old.items[0].fullTitle)
+        XCTAssertEqual(old.items[0].pictures, [NowPicture(url: "/voice/card-image/r/2")])
+    }
+
+    // SPK-220: a message sent with a clip carries it (and may have no words).
+    func testAMessageCarriesItsFilesAndMayHaveNoWords() throws {
+        let stream = try XCTUnwrap(NowStream(json: ["entries": [
+            ["id": "m:hu_1", "kind": "message", "role": "user", "text": "", "at": 100, "client_id": "c1",
+             "files": [["id": "att_1", "kind": "video", "mime": "video/mp4", "name": "porch.mp4", "duration": 12.2],
+                       ["id": "att_2", "kind": "picture", "mime": "image/jpeg"],
+                       ["id": "att_3", "mime": "application/pdf", "name": "lease.pdf"],
+                       ["kind": "video"]]],
+            ["id": "m:hu_2", "kind": "message", "role": "user", "text": "", "at": 101],
+            ["id": "m:hu_3", "kind": "message", "role": "user", "text": "look", "at": 102],
+        ], "needs_you": []]))
+        XCTAssertEqual(stream.entries.map(\.id), ["m:hu_1", "m:hu_3"])   // no words and no files: dropped
+        let m = stream.entries[0]
+        XCTAssertNil(m.text)
+        XCTAssertEqual(m.clientID, "c1")
+        XCTAssertEqual(m.files, [SentFile(id: "att_1", kind: .video, name: "porch.mp4", mime: "video/mp4", duration: 12.2),
+                                 SentFile(id: "att_2", kind: .picture, mime: "image/jpeg"),
+                                 SentFile(id: "att_3", kind: .file, name: "lease.pdf", mime: "application/pdf")])
+        XCTAssertEqual(m.files.map(\.label), ["Video \u{00B7} 0:12", "Photo", "lease.pdf"])
+        XCTAssertEqual(m.files.map(\.spoken), ["Video, 12 seconds", "Photo", "File, lease.pdf"])
+        XCTAssertEqual(m.files.map(\.symbol), ["video.fill", "photo", "doc"])
+        XCTAssertEqual(stream.entries[1].files, [])
+        XCTAssertEqual(SentFile.clock(65), "1:05")
+        XCTAssertEqual(SentFile(id: "v", kind: .video, duration: 61).spoken, "Video, 1 minute 1 second")
+    }
+
+    func testAnOlderPluginHasNoStreamAndAGroupDecodes() {
+        XCTAssertNil(NowHome(json: ["rev": 1]).stream)
+        let group = NowStream(json: ["entries": [["id": "g:morning", "kind": "group", "at": 100, "line": "This morning \u{00B7} 6 done",
+                                                  "item_ids": ["a", "b"]]], "needs_you": []])
+        XCTAssertEqual(group?.entries.first?.line, "This morning \u{00B7} 6 done")
+        XCTAssertEqual(group?.entries.first?.itemIDs, ["a", "b"])
+        XCTAssertNil(NowStream.Entry(json: ["id": "x", "kind": "mystery", "at": 1]), "an unknown kind is dropped, not shown")
+    }
+
+    func testRecentRowsSayDoneStoppedOrInProgress() throws {
+        let rows = ["completed", "failed", "running"].compactMap {
+            NowRecentItem(json: ["id": "t:\($0)", "title": "Plan the trip", "state": $0, "at": 5])
+        }
+        XCTAssertEqual(rows.map(\.statusWords), ["Done", "Stopped", "In progress"])
+    }
 }

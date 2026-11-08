@@ -42,7 +42,23 @@ final class MacNowLayoutTests: XCTestCase {
         }
         let items = [item("a1", .newAnswer), item("q1", .question), item("w1", .working),
                      item("a2", .newAnswer), item("a3", .newAnswer), item("s1", .stopped)]
-        XCTAssertEqual(MacNowLayout.menuItems(items).map(\.id), ["q1", "w1", "a1", "a2"])
+        XCTAssertEqual(MacNowLayout.menuItems(items).map(\.id), ["q1", "w1", "a1", "a2", "s1"])
+    }
+
+    func testPopoverOffACallShowsOneStoppedRowAloneOrMixed() {
+        func item(_ id: String, _ kind: NowItem.Kind) -> NowItem {
+            NowItem(id: id, kind: kind, title: "Example", line: "Example activity.")
+        }
+        XCTAssertEqual(MacNowLayout.menuItems([item("s1", .stopped), item("s2", .stopped)]).map(\.id), ["s1"])
+        XCTAssertEqual(MacNowLayout.menuItems([item("w1", .working), item("s1", .stopped)]).map(\.id), ["w1", "s1"])
+        XCTAssertTrue(MacNowLayout.menuItems([item("s1", .stopped)], onCall: true).isEmpty)
+    }
+
+    func testItemPathKeepsThePrefixColonAndEncodesTheRest() {
+        XCTAssertEqual(NowItemPath.segment("s:s_a"), "s:s_a")
+        XCTAssertEqual(NowItemPath.segment("t:run 1/x?y"), "t:run%201%2Fx%3Fy")
+        XCTAssertEqual(NowItemPath.segment("c:a:b"), "c:a%3Ab")
+        XCTAssertEqual(NowItemPath.segment("weird:id"), "weird%3Aid")
     }
 
     func testCallClock() {

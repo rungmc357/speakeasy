@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import logging
 import os
 import re
 import threading
@@ -28,17 +29,21 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import runstate as RS
 from .failures import NO_REASON, UNKNOWN, failure_reason
+from .home_words import (clean_ask, collapse, fold_duplicates, hero_box, near_duplicate, picture_caption,
+                         pill_text, replaced_questions, short_title, status_line)
 
 ROLLOVER_HOUR = 4
 OPENED_GRACE_S = 6 * 3600       # a seen answer opened in the 6 h before a rollover stays to the next one
 UNREAD_KEPT_S = 3 * 86400       # how far back Home looks for candidates
 ANSWER_KEPT_S = 12 * 3600       # a finished answer leaves Home once opened, or 12 h after it finished (it stays in Earlier)
+CHAT_KEPT_S = 24 * 3600         # a job started from Home's chat stays in that thread as long as its messages (home_chat.SHOWN_S)
 ANSWER_CARD_S = 4 * 3600        # an answer older than this folds into the one "Earlier today · N" row (earlier.today)
 EARLIER_TODAY_ITEMS = 20
 BASELINE_GRACE_S = 3600         # first use of Home: answers older than this count as seen, so an upgrade never floods it
 DISMISS_KEPT_S = 7 * 86400
 ROLLOVER_NOTICES = 3            # "Moved 3 seen answers to Earlier." on the first three mornings that move any
 MAX_ITEMS = 60
+RECENT_KEPT_S = 14 * 86400      # Recent looks back this far
 BACKGROUND_ITEMS = 5
 LIVE_LINES = 8                  # Hermes conversations (not Speakeasy tasks) given a live line per build
 LINE_CHARS = 90
@@ -70,6 +75,7 @@ _HTTPS_RE = re.compile(r"https://[^\s<>\"']{4,500}")
 # "Your call" card shows for at most this long after the call (or until the next 4 AM / cleared).
 TALKING_S = 600
 CALL_CARD_S = 6 * 3600
+CALL_LIST_KEEP = 3              # the call card lists this many jobs/answers (four when that's all), then "N more"
 
 
 def number(n: int) -> str:
@@ -252,8 +258,9 @@ class NowModel:
             title = _clip(self.store.title(key) or self.store.request_text(key) or "", TITLE_CHARS)
             if not title:
                 continue
-            if not carried:
-                things.append(title)
+            title = short_title(title) or title
+            if not carried and not any(near_duplicate(title, t) for t in things):
+                things.append(title)   # near-duplicate jobs from one call are one thing it started
             status, settled = self.store.run_settled(key)
             row = self.store.run_row(key) or {}
             for sid in (self.store.linked_source(key), row.get("session_id")):
@@ -266,7 +273,7 @@ class NowModel:
                 result = self.store.work(idem_key=key) or {}
                 result = result.get("result") or {}
                 said = result.get("headline") or first_sentence(result.get("spoken") or "")
-                if said:
+                if said and not any(near_duplicate(said, h, 0.7) for h in heard):
                     heard.append(_clip(said, 120))
                     heard_text.append(" ".join(str(result.get(k) or "") for k in ("spoken", "full", "headline")))
         # Inline answers the voice gave with no task (a time, a flight, a number) leave a line too.
@@ -275,6 +282,8 @@ class NowModel:
         if opens is None and self._session_opens(getattr(call, "live_session_id", None)):
             opens = call.live_session_id
         minutes = max(1, round((call.ended_at - call.started_at) / 60))
+        shown_things, more_things = collapse(things, CALL_LIST_KEEP)
+        shown_answers, more_answers = collapse(heard, CALL_LIST_KEEP)
         return {"id": f"call:{call.interaction_id}", "interaction_id": call.interaction_id,
                 "title": f"Your call \u00b7 {minutes} min", "started_at": round(call.started_at, 3),
                 "ended_at": round(call.ended_at, 3), "minutes": minutes,
@@ -283,9 +292,10 @@ class NowModel:
                 "session_id": opens, "run_id": None,
                 # Build 68 draws "Started " + things; a title glued onto "Started" reads wrong, so each
                 # thing leads with a (zero-width-spaced) colon: "Started: Check the flight time."
-                "things": [THING_LEAD + t for t in things[:4]],
-                "more_things": max(0, len(things) - 4), "decisions": decisions[:3],
-                "answers": heard[:6],
+                # A few rows, then "N more": a 10-job call must not grow the card past the screen.
+                "things": [THING_LEAD + t for t in shown_things],
+                "more_things": more_things, "decisions": decisions[:3],
+                "answers": shown_answers, "more_answers": more_answers,
                 "line": call_line(things, answered, asking, decisions, heard)}
 
     _last_call_id: str | None = None
@@ -322,6 +332,27 @@ class NowModel:
                 full = None
         return _clip(full_title(name, full) or name, TITLE_CHARS)
 
+    def _named(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Home's card title is a short name (home_words.short_title); the whole one stays as
+        ``full_title`` for the job's own page."""
+        whole = item.get("title")
+        if not isinstance(whole, str) or not whole:
+            return item
+        head, sep, more = whole.rpartition(" \u00b7 ")
+        group = re.fullmatch(r"(.+?)((?: and)? \d+ more)?", whole)
+        if item.get("kind") == STOPPED and str(item.get("id") or "").startswith("g:") and group:
+            # A folded group names its jobs: "<job> · <job> and 1 more"; each name is shortened.
+            names = [short_title(n) or n for n in group.group(1).split(" \u00b7 ")]
+            short = " \u00b7 ".join(names) + (group.group(2) or "")
+        elif sep and re.fullmatch(r"\d+ more", more):      # "<first job> · 2 more"
+            short = f"{short_title(head) or head}{sep}{more}"
+        else:
+            short = short_title(whole)
+        if short and short != whole:
+            item["full_title"] = whole
+            item["title"] = short
+        return item
+
     def call_state(self, call: Any, now: float) -> dict[str, Any]:
         """What Home needs from a live call: which task the voice is on (and since when), which
         answers it read out, and which tasks belong to it. Vision Pro's focus wins over the voice's."""
@@ -353,6 +384,18 @@ class NowModel:
         return line
 
     # -- one Speakeasy task ----------------------------------------------------------------------
+    def _work_model(self, key: str) -> dict[str, Any] | None:
+        """The job's model for Home's card: what Hermes served once known, else what the job was
+        started on (a pick, or the Hermes default it was sent to). None when nothing is known."""
+        try:
+            record = self.store.run_model(key)
+            described = self.svc.describe_model(record) if record else None
+        except Exception:
+            return None
+        if not described:
+            return None
+        return {k: described.get(k) for k in ("id", "name", "provider", "provider_name", "reasoning")}
+
     def _task_item(self, row: dict[str, Any], work: dict[str, Any], open_question: bool,
                    approvals: dict[str, dict[str, Any]], read_at: float | None, edge: float,
                    cleared: float, now: float, call: Any,
@@ -371,6 +414,9 @@ class NowModel:
                                 "started_at": started, "updated_at": float(row.get("updated") or started or now)}
         if finished is not None:
             item["finished_at"] = finished
+        badge = self._work_model(row["key"])
+        if badge:
+            item["model"] = badge   # the model that did (or is doing) the work: Home's job cards say it
         approval = approvals.get(row["key"])
         question = result.get("question") if isinstance(result.get("question"), dict) else None
         if approval is not None:
@@ -386,12 +432,14 @@ class NowModel:
                             question={**q, "expired": {"at": q["expires_at"]}})
             else:
                 item.update(kind=QUESTION, id=f"q:{run_id}", line=_clip(q["prompt"], 240), question=q)
+                if result.get("reply"):
+                    item["reply"] = _clip(result["reply"], 240)  # said above what it found, in the thread
         elif status in RS.ASKING:
             item.update(kind=QUESTION, id=f"q:{run_id}", line="Hermes needs your OK to go on.",
                         question={"shape": "approval", "prompt": "Hermes needs your OK to go on.",
                                   "asked_at": float(row.get("updated") or now)})
         elif status in RS.UNDER_WAY or status in {RS.RunState.CANCEL_REQUESTED, RS.RunState.AMBIGUOUS}:
-            line = plain_line(work.get("now_line") or work.get("short_status"), work.get("short_status"))
+            line = live_line(work.get("now_line") or work.get("short_status"), work.get("short_status"))
             item.update(kind=WORKING, line=_clip(line, LINE_CHARS))
             if isinstance(work.get("quiet_s"), (int, float)) and work["quiet_s"] >= 120:
                 item["idle_seconds"] = int(work["quiet_s"])
@@ -401,7 +449,12 @@ class NowModel:
                 f"Starts when \u201c{behind}\u201d finishes." if behind else "Waiting for another task."), LINE_CHARS))
             item["waiting_on"] = _clip(behind, 60) if behind else "another task"
         elif status in {RS.RunState.FAILED, RS.RunState.INTERRUPTED}:
-            if seen or (finished or now) < max(edge, cleared):
+            # Clear is an answers-only cutoff: unread stopped work is not an answer, so only the
+            # rollover (not Clear) moves it to Earlier.
+            if self._in_chat(run_id):
+                if (finished or now) < cleared:
+                    return None
+            elif seen or (finished or now) < edge:
                 return None  # opened: it lives in its conversation (Earlier) from here
             kind = row.get("failure") or (UNKNOWN if status == RS.RunState.FAILED else None)
             fix = "retry" if status == RS.RunState.INTERRUPTED else FIX.get(kind or "", "open")
@@ -428,15 +481,33 @@ class NowModel:
                 if seen and from_a_call(row):
                     left = self._opened(row["key"]) or (read_at is not None and finished is not None
                                                         and read_at + 1 >= finished)
-                if not on_this_call and (left or at < max(edge, cleared) or now - at > ANSWER_KEPT_S):
+                if self._in_chat(run_id):
+                    # Started from Home's chat: its result is a message in that thread, so it stays
+                    # while the thread does (seen or not), not by the leave rules for answers.
+                    if at < cleared or now - at > CHAT_KEPT_S:
+                        return None
+                    left, on_this_call = False, True
+                # Clear is explicit: it moves the call's answers too. Hearing one only keeps it under
+                # the call card when Clear was not used.
+                if at < cleared or (not on_this_call and (left or at < edge or now - at > ANSWER_KEPT_S)):
                     return None
                 if from_a_call(row) and self._last_call_id == row.get("interaction_id"):
                     item["call_id"] = f"call:{row['interaction_id']}"
                 item.update(kind=SEEN_ANSWER if seen else NEW_ANSWER, line=line, unread=not seen)
+        elif status == RS.RunState.CANCELLED and self._in_chat(run_id):
+            # Canceled from Home's chat: the job's card stays in the thread, closed and saying so,
+            # like the reply above it ("Canceling the coffee shop search."). A card that vanished
+            # left the thread's reply pointing at nothing. Replaced by a corrected run, it leaves
+            # (superseded): the new run's card speaks.
+            if (finished or now) < cleared or now - (finished or now) > CHAT_KEPT_S:
+                return None
+            item.update(kind=SEEN_ANSWER, line="Canceled.", unread=False, canceled=True)
         else:
-            return None  # cancelled, rejected: nothing to look at
+            return None  # cancelled outside the chat, rejected: nothing to look at
         item.setdefault("id", f"s:{session}" if session else f"t:{run_id or row['key']}")
         item.setdefault("unread", False)
+        if self._in_chat(run_id):
+            item["in_chat"] = True   # Home's chat started it: it lives in the thread beside its messages
         came = origin(finished, now, self._zone) if finished is not None and item["kind"] in {
             NEW_ANSWER, SEEN_ANSWER, STOPPED} else None
         if came is not None:
@@ -447,6 +518,8 @@ class NowModel:
             if started_call and (started or 0) < started_call:
                 item["provenance"] = {"kind": "earlier_call", "at": started}
         task_id = (call_info or {}).get("keys", {}).get(row["key"])
+        item["on_current_call"] = bool(call is not None and (
+            row.get("interaction_id") == call.interaction_id or task_id is not None))
         if task_id is not None:
             if item["kind"] in {NEW_ANSWER, SEEN_ANSWER} and task_id in call_info["spoken"]:
                 # Told on the call: already read; the card keeps its own answer line.
@@ -462,15 +535,35 @@ class NowModel:
         thumbs = _thumbs(result, run_id, self._raw_cards(run_id) if (result.get("cards")) else None)
         if thumbs:
             item["thumbs"] = thumbs
+        # For "replaced" questions and one card per thing a call asked (build()).
+        if from_a_call(row):
+            item["_call"] = row["interaction_id"]
+        if item["kind"] == QUESTION and approval is None and status not in RS.ASKING:
+            item["_asked"] = float((item.get("question") or {}).get("asked_at") or finished or now)
+            item["_topic"] = (item.get("question") or {}).get("prompt") or title
         return item
 
     # -- the whole list --------------------------------------------------------------------------
+    @staticmethod
+    def _threads_by_id(items: list[dict[str, Any]]) -> dict[str, Any]:
+        """The conversation each card's job runs in: a newer question there replaces an older one."""
+        return {i["id"]: i.get("session_id") for i in items}
+
+    def _in_chat(self, run_id: Any) -> bool:
+        return bool(run_id) and str(run_id) in getattr(self, "_chat_runs", set())
+
     def build(self, tz: str | None = None, *, peek: bool = False, every: bool = False) -> dict[str, Any]:
         now = self.clock()
         zone_ = zone(tz)
         edge = rollover(now, zone_)
         cleared = self._meta_float("now_cleared_at")
         self._zone = zone_
+        chat = getattr(self.svc, "home_chat", None)
+        try:
+            self._chat_runs = chat.started_runs() if chat is not None else set()
+            self._chat_runs |= self._chat_children(self._chat_runs)
+        except Exception:
+            self._chat_runs = set()
         self._baseline = self._meta_float("now_baseline_at")
         if not self._baseline:
             # First use of Home (or of this rule, after an upgrade): older answers count as seen.
@@ -495,6 +588,7 @@ class NowModel:
         by_place: dict[str, dict[str, Any]] = {}
         by_thread: dict[str, dict[str, Any]] = {}
         items: list[dict[str, Any]] = []
+        answered_keys: set[str] = set()
         gone = superseded(rows)
         threads = thread_keys(rows)
         live_interaction = getattr(call, "interaction_id", None) if call is not None else None
@@ -509,6 +603,9 @@ class NowModel:
             if item is None:
                 continue
             item["_thread"] = threads.get(row["key"]) or place
+            item["_run_key"] = row["key"]
+            if row.get("answered"):
+                answered_keys.add(row["key"])
             held = by_place.get(place)
             if held is not None:
                 # One card per conversation, except a question, which keeps its own card.
@@ -557,8 +654,8 @@ class NowModel:
                 if s.get("state") == "running":
                     line = self._session_line(sid) if lines_left > 0 else None
                     lines_left -= 1
-                    background.append({"session_id": sid, "title": _clip(s.get("title"), TITLE_CHARS),
-                                       "line": _clip(plain_line(line), LINE_CHARS),
+                    background.append({"session_id": sid, "title": short_title(_clip(s.get("title"), TITLE_CHARS)),
+                                       "line": _clip(live_line(line), LINE_CHARS),
                                        "source": s.get("source"), "source_label": s.get("source_label"),
                                        "started_at": s.get("last_activity")})
                 continue
@@ -568,7 +665,7 @@ class NowModel:
             if s.get("state") == "running":
                 line = self._session_line(sid) if lines_left > 0 else None
                 lines_left -= 1
-                items.append({**base, "kind": WORKING, "line": _clip(plain_line(line), LINE_CHARS)})
+                items.append({**base, "kind": WORKING, "line": _clip(live_line(line), LINE_CHARS)})
             elif s.get("unread") and str(s.get("source") or "").lower() not in OTHER_SURFACES and float(
                     s.get("last_activity") or 0) >= max(
                     edge, cleared, self._baseline - BASELINE_GRACE_S, now - ANSWER_KEPT_S):
@@ -577,13 +674,18 @@ class NowModel:
         items = group_stopped(items)
         items = self._apply_later(items, now)
         items = self._apply_dismissed(items, now)
+        items = mark_replaced(items, self._threads_by_id(items))
         everything = list(items)  # what find() searches: also what folds into "Earlier today"
+        items = fold_call_duplicates(items)
+        for i in items:
+            self._named(i)
         items, earlier_today = fold_earlier(items, now)
         items = order(items, self._first_seen(items, now))
         # On a call: the question the voice is asking right now goes first (tier 0).
         items.sort(key=lambda i: 0 if i.get("on_call") == "asking" else 1)
         total = len(items)
         items = items[:MAX_ITEMS]
+        stream = self._stream(items, answered_keys, now, zone_)
         focus = None
         for i in items:
             i["tier"] = 0 if i.get("on_call") == "asking" else TIER[i["kind"]]
@@ -592,6 +694,9 @@ class NowModel:
             i.pop("_task_id", None)
             i.pop("_thread", None)
             i.pop("_cause", None)
+            i.pop("_run_key", None)
+            for k in ("_call", "_asked", "_topic"):
+                i.pop(k, None)
         counts = {"needs_you": sum(i["kind"] == QUESTION for i in items),
                   "stopped": sum(i["kind"] == STOPPED for i in items),
                   "working": sum(i["kind"] == WORKING for i in items),
@@ -606,11 +711,16 @@ class NowModel:
             "call": ({"interaction_id": call.interaction_id, "started_at": getattr(call, "started_at", None),
                       "focus": focus, "focus_label": "Talking about this" if focus else None}
                      if call is not None else None),
-            "call_summary": self._undismissed_call(self.call_summary(ended, now) if ended is not None else None),
+            "call_summary": self._undismissed_call(
+                self._latered_call(self.call_summary(ended, now) if ended is not None else None, now)),
             "items": items, "background": {"running": len(background), "items": background[:BACKGROUND_ITEMS]},
             # "Earlier today · N": answers more than 4 h old, one row instead of N cards. Outside
             # ``items`` so a build 68 app (which knows no such row) simply doesn't show it.
             "earlier": {"today_more": max(0, total - len(items)), "today": earlier_today},
+            "stream": stream,
+            # The tracker pill's words at any volume ("3 need you · 5 running"): counts, never a cut title.
+            "pill": pill_text(counts["needs_you"], counts["working"] + counts["on_its_own_running"],
+                              one_title=next((i["title"] for i in items if i["kind"] == QUESTION), None)),
         }
         body["rev"] = self._rev(body)
         body["as_of"] = round(now, 3)
@@ -619,6 +729,99 @@ class NowModel:
         body["notice"] = None if peek else self._notice(rows, marks, edge, cleared)
         self._last_sessions = {i["session_id"] for i in items if i.get("session_id")}
         return body
+
+    def _stream(self, items: list[dict[str, Any]], answered: set[str], now: float, zone_: dt.tzinfo) -> dict[str, Any]:
+        """The same cards as one thread: each ask, then its card, in time order (stream.py)."""
+        from .stream import build_stream
+        asks: dict[str, str] = {}
+        try:
+            assistant = self.svc.settings.get().get("assistant_name")
+        except Exception:
+            assistant = None
+        for i in items:
+            key = i.get("_run_key")
+            if key:
+                try:
+                    text = self.store.request_text(key)
+                except Exception:
+                    text = None
+                if text:
+                    asks[i["id"]] = clean_ask(text, assistant) or text
+        marked = {i["id"] for i in items if i.get("_run_key") in answered}
+        chat = getattr(self.svc, "home_chat", None)
+        messages: list[dict[str, Any]] = []
+        from_chat: set[str] = set()
+        if chat is not None:
+            try:
+                messages = [chat.entry(r) for r in chat.shown(now)]
+                from_chat = chat.started_runs()
+                from_chat |= self._chat_descendants(items, from_chat)
+            except Exception:
+                logging.getLogger(__name__).debug("speakeasy: Home's chat messages failed", exc_info=True)
+        return build_stream(items, asks, marked, now, zone_, messages=messages, from_chat=from_chat)
+
+    def _chat_children(self, runs: set[str]) -> set[str]:
+        """Runs that continue a chat-born job (answering its question, a follow-up): they belong to
+        the chat too, so their result stays in the thread where the job's card was."""
+        if not runs:
+            return set()
+        with self.store._lock:
+            rows = self.store._db.execute(
+                "SELECT idem_key, run_id, parent FROM runs WHERE parent IS NOT NULL AND run_id IS NOT NULL").fetchall()
+            keys = dict(self.store._db.execute(
+                "SELECT idem_key, run_id FROM runs WHERE run_id IS NOT NULL").fetchall())
+        out: set[str] = set()
+        for _ in range(8):
+            grew = False
+            for key, run, parent in rows:
+                if run not in runs and run not in out and keys.get(parent) in runs | out:
+                    out.add(run)
+                    grew = True
+            if not grew:
+                break
+        return out
+
+    def _chat_descendants(self, items: list[dict[str, Any]], from_chat: set[str]) -> set[str]:
+        """Runs that continue a chat-born job (answering its question, a follow-up it spawned): their
+        card belongs to the chat too, so no "you asked" bubble repeats the job's internal request."""
+        if not from_chat:
+            return set()
+        with self.store._lock:
+            rows = self.store._db.execute("SELECT idem_key, run_id FROM runs WHERE run_id IS NOT NULL").fetchall()
+        run_of = {k: r for k, r in rows}
+        out: set[str] = set()
+        for item in items:
+            key, run = item.get("_run_key"), item.get("run_id")
+            if not key or not run or run in from_chat:
+                continue
+            seen: set[str] = set()
+            while key and key not in seen and len(seen) < 8:
+                seen.add(key)
+                key = self.store.parent_of(key)
+                if key and run_of.get(key) in from_chat:
+                    out.add(str(run))
+                    break
+        return out
+
+    def recent(self, tz: str | None = None, limit: int = 30) -> dict[str, Any]:
+        """``GET /voice/now/recent``: the last tasks, finished or not, whatever Home's leave rules did to
+        them, so \"Recent\" shows previous work without leaving Home. Newest first."""
+        now = self.clock()
+        name = self.svc.settings.get()["assistant_name"]
+        out: list[dict[str, Any]] = []
+        for row in self.store.now_runs(since=now - RECENT_KEPT_S, limit=limit * 2):
+            work = self.store.work(idem_key=row["key"], assistant_name=name) or {}
+            status = str(getattr(work.get("status") or row["status"], "value", work.get("status") or row["status"]))
+            at = float(row.get("settled_at") or row.get("updated") or row.get("created") or 0)
+            result = work.get("result") or {}
+            out.append({"id": f"t:{work.get('run_id') or row['run_id'] or row['key']}", "title": self._title(work),
+                        "state": status, "at": at, "session_id": row.get("linked_source") or row.get("session_id"),
+                        "line": _clip(result.get("headline") or work.get("summary") or "", 140) or None,
+                        "dismissed": bool(row.get("dismissed")),
+                        "origin": origin(at, now, zone(tz))})
+            if len(out) >= limit:
+                break
+        return {"items": out, "as_of": round(now, 3)}
 
     def sessions_on_now(self) -> set[str]:
         """The conversations Home shows (Earlier's ``on_now`` / ``exclude_now``)."""
@@ -680,10 +883,19 @@ class NowModel:
     @staticmethod
     def dismiss_signature(item: dict[str, Any]) -> str:
         """What a dismissed card must change for it to come back: a new answer, a new question, a
-        new run (a working card's line changing doesn't count)."""
-        return hashlib.sha256(json.dumps([item.get("kind"), item.get("finished_at"), item.get("run_id"),
-                                          (item.get("question") or {}).get("prompt")],
-                                         sort_keys=True, default=str).encode()).hexdigest()[:16]
+        new run (a working card's line changing doesn't count).
+
+        A call recap has no kind, finished_at, run_id or question, so its own material is what it
+        comes back on: what the call did, what it answered, what it was asked, and what it still
+        asks. That is how an answer landing a few seconds after hang-up brings the card back
+        (SPK-221); with the usual four fields it was the same four nulls forever."""
+        if "kind" not in item and item.get("interaction_id"):
+            material: list[Any] = [item.get("things"), item.get("answers"), item.get("decisions"),
+                                   item.get("line"), item.get("more_things")]
+        else:
+            material = [item.get("kind"), item.get("finished_at"), item.get("run_id"),
+                        (item.get("question") or {}).get("prompt")]
+        return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
     def dismissed(self) -> dict[str, dict[str, Any]]:
         try:
@@ -728,6 +940,14 @@ class NowModel:
             return card
         mark = self.dismissed().get(card["id"]) or {}
         return None if mark.get("sig") == self.dismiss_signature(card) else card
+
+    def _latered_call(self, card: dict[str, Any] | None, now: float) -> dict[str, Any] | None:
+        """The call card takes Later like any other card (SPK-221): off Home until its time or until
+        it changes, waking with the same "put off" provenance, and back at once when undone."""
+        if not card:
+            return card
+        kept = self._apply_later([card], now)
+        return kept[0] if kept else None
 
     # -- rev, notice -----------------------------------------------------------------------------
     def _rev(self, body: dict[str, Any]) -> int:
@@ -830,12 +1050,12 @@ def thread_keys(rows: list[dict[str, Any]]) -> dict[str, str]:
 
 
 def superseded(rows: list[dict[str, Any]]) -> set[str]:
-    """Stopped tasks a later run replaced: a later task in the same conversation (the chat it
+    """Stopped (or canceled) tasks a later run replaced: a later task in the same conversation (the chat it
     continues or its Hermes session) that finished or is still going, or a retry/follow-up of it.
     *rows* are newest first."""
     out: set[str] = set()
     for n, r in enumerate(rows):
-        if _state(r.get("status")) not in {"failed", "interrupted"}:
+        if _state(r.get("status")) not in {"failed", "interrupted", "cancelled"}:
             continue
         mine = {x for x in (r.get("linked_source"), r.get("session_id")) if x}
         when = float(r.get("created") or r.get("settled_at") or 0)
@@ -895,6 +1115,63 @@ def group_stopped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+REPLACED_LINE = "Replaced by a newer question."
+
+
+def mark_replaced(items: list[dict[str, Any]], threads: dict[str, Any]) -> list[dict[str, Any]]:
+    """A question nobody answered that a newer one took over (same conversation, or the same call
+    asking about the same thing again) is no longer waiting on the user: it keeps its card, in a
+    "replaced" state that names when, and leaves the needs-you count."""
+    qs = []
+    for i in items:
+        if "_asked" not in i:
+            continue
+        qs.append({"id": i["id"], "thread": threads.get(i["id"]), "asked_at": i["_asked"], "answered": False,
+                   "call": i.get("_call"), "topic": i.get("_topic") or i.get("title")})
+    gone = replaced_questions(qs)
+    # The same call asking about the same thing again replaces the earlier ask too.
+    by_call: dict[Any, list[dict[str, Any]]] = {}
+    for q in qs:
+        if q["call"]:
+            by_call.setdefault(q["call"], []).append(q)
+    for group in by_call.values():
+        group.sort(key=lambda q: q["asked_at"])
+        for n, older in enumerate(group):
+            if older["id"] in gone:
+                continue
+            newer = next((q for q in group[n + 1:] if q["asked_at"] > older["asked_at"]
+                          and near_duplicate(older["topic"], q["topic"], 0.5)), None)
+            if newer is not None:
+                gone[older["id"]] = {"by": newer["id"], "at": newer["asked_at"]}
+    if not gone:
+        return items
+    for i in items:
+        mark = gone.get(i["id"])
+        if mark is None:
+            continue
+        i["replaced"] = {"by": mark["by"], "at": mark["at"]}
+        if i["kind"] == QUESTION:
+            i.update(kind=WAITING, line=REPLACED_LINE, unread=False)
+            if isinstance(i.get("question"), dict):
+                i["question"] = {**i["question"], "replaced": {"at": mark["at"], "by": mark["by"]}}
+    return items
+
+
+def fold_call_duplicates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One call, one card per thing it asked for: near-duplicate jobs from the same call (\"Fix
+    picture sending and carousels\" twice, worded apart) fold into the newest live one, which
+    counts the rest as ``also``. Questions and stopped work keep their own cards."""
+    foldable = {WORKING, NEW_ANSWER, SEEN_ANSWER}
+    for i in items:
+        if i.get("_call") and i["kind"] in foldable:
+            # Work the live call brought in or is talking about stays its own card.
+            i["_fold"] = (i["_call"], i["kind"] == WORKING, bool(i.get("on_current_call")), i.get("on_call"))
+    out = fold_duplicates(items, key="title", group="_fold")
+    for i in items:
+        i.pop("_fold", None)
+    return out
+
+
 def fold_earlier(items: list[dict[str, Any]], now: float,
                  keep_s: float = ANSWER_CARD_S) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Answers more than 4 h old leave Home's cards for one "Earlier today · N" row. An answer on
@@ -902,7 +1179,8 @@ def fold_earlier(items: list[dict[str, Any]], now: float,
     keep, old = [], []
     for i in items:
         at = i.get("finished_at")
-        if i["kind"] in ANSWERS and not i.get("on_call") and not i.get("call_id") and at is not None \
+        if i["kind"] in ANSWERS and not i.get("on_call") and not i.get("call_id") and not i.get("in_chat") \
+                and at is not None \
                 and now - float(at) > keep_s:
             old.append(i)
         else:
@@ -987,7 +1265,8 @@ _PLAIN_AFTER_RUNNING = frozenset({"the", "a", "an", "your", "some", "tests", "te
 
 def plain_line(line: str | None, fallback: str | None = None) -> str:
     """A live line fit for Home: the line itself when it's plain words, else the task's last plain
-    status (*fallback*), else "Working…"."""
+    status (*fallback*), else nothing: a running card says only real status, never a stock
+    "Working…" placeholder."""
     def ok(text: str | None) -> bool:
         if not text or not text.strip() or _RAW_BITS.search(text):
             return False
@@ -997,7 +1276,32 @@ def plain_line(line: str | None, fallback: str | None = None) -> str:
         return line.strip()
     if ok(fallback):
         return fallback.strip()
-    return "Working\u2026"
+    return ""
+
+
+# Placeholders that say nothing about the work (history.session_live's floor, old stock lines).
+_STOCK_LINES = frozenset({"working", "working on it", "running a command", "thinking", "on it"})
+
+
+_URL_PATH = re.compile(r"(?i)\b((?:[a-z0-9-]+\.)+[a-z]{2,})/\S*")
+
+
+def live_line(line: str | None, fallback: str | None = None) -> str:
+    """A running card's one short present-tense line (home_words.status_line): the newest real
+    step, else the task's last plain status, else nothing (the card shows only its title until the
+    job reports a real step). Never tool narration, never a three-clause worker report, never a
+    stock "Working…"."""
+    for text in (line, fallback):
+        if text and text.strip().rstrip(".\u2026").lower() in _STOCK_LINES:
+            continue
+        if text:
+            # "Reading api.example.com/v1/forecast" -> "Reading api.example.com": the site, not its path.
+            text = _URL_PATH.sub(r"\1", text)
+        if text and plain_line(text):
+            short = status_line(text)
+            if short:
+                return short
+    return ""
 
 
 THING_LEAD = "\u200b: "
@@ -1086,7 +1390,7 @@ def _image_there(card: dict[str, Any]) -> bool:
 
 
 def _thumbs(result: dict[str, Any], run_id: str | None, raw: list[Any] | None = None) -> list[dict[str, Any]]:
-    """The newest two pictures a task produced that can still be shown (never file chips, never a
+    """Up to six pictures in answer order that can still be shown (never file chips, never a
     picture whose file is gone: the app would draw an empty tile)."""
     cards = result.get("cards") if isinstance(result, dict) else None
     if not run_id or not isinstance(cards, list):
@@ -1094,7 +1398,34 @@ def _thumbs(result: dict[str, Any], run_id: str | None, raw: list[Any] | None = 
     raw = raw if isinstance(raw, list) else cards
     nums = [n + 1 for n, c in enumerate(cards[:8]) if isinstance(c, dict) and c.get("kind") == "image"
             and n < len(raw) and isinstance(raw[n], dict) and _image_there(raw[n])]
-    return [{"url": f"/voice/card-image/{run_id}/{n}"} for n in nums[-2:]]
+    out = []
+    for n in nums[:6]:
+        card = raw[n - 1]
+        thumb: dict[str, Any] = {"url": f"/voice/card-image/{run_id}/{n}"}
+        caption = picture_caption(card.get("caption"), card.get("title"), card.get("name"), card.get("alt"))
+        if caption:
+            thumb["caption"] = caption     # words a person wrote, never the file's name
+        size = _picture_size(card.get("path"))
+        if size:
+            thumb["aspect"] = round(size[0] / size[1], 3)
+            if hero_box(*size):
+                # A wide contact sheet: the readable portrait crop a tile or thumbnail shows.
+                thumb["hero"] = f"/voice/card-image/{run_id}/{n}?v=hero"
+        out.append(thumb)
+    return out
+
+
+def _picture_size(path: Any) -> tuple[int, int] | None:
+    """(width, height) from the file's header only, or None."""
+    if not isinstance(path, str):
+        return None
+    try:
+        from PIL import Image
+        with Image.open(os.path.expanduser(path)) as img:
+            w, h = img.size
+        return (w, h) if w > 0 and h > 0 else None
+    except Exception:
+        return None
 
 
 def option_text(item: dict[str, Any], option_id: str) -> str | None:

@@ -38,4 +38,43 @@ final class EventTimesTests: XCTestCase {
     func testTwentyFourHourLocaleKeepsBothTimes() {
         XCTAssertEqual(span("2026-03-02T14:00:00Z", "2026-03-02T15:00:00Z", Locale(identifier: "en_GB")), "09:00 – 10:00")
     }
+
+    // SPK-231 card reps: tracker and GitHub data arrive as raw ISO times; a card's corner reads them.
+    func testStampReadsLikeACardCorner() {
+        let now = EventTimes.date("2026-11-08T15:00:00Z")!   // 10:00 AM Sun Nov 8 in New York
+        func stamp(_ s: String) -> String? {
+            EventTimes.stamp(s, now: now, calendar: cal, locale: us)?.replacingOccurrences(of: "\u{202F}", with: " ")
+        }
+        XCTAssertEqual(stamp("2026-11-08T06:53:24Z"), "1:53 AM")
+        XCTAssertEqual(stamp("2026-11-07T20:12:00Z"), "Yesterday")
+        XCTAssertEqual(stamp("2026-11-04T12:00:00Z"), "Wed")
+        XCTAssertEqual(stamp("2026-10-29T00:29:29Z"), "Oct 28")
+        XCTAssertEqual(stamp("2025-10-29T12:00:00Z"), "Oct 29, 2025")
+        XCTAssertEqual(stamp("2026-11-08"), "Today")
+        XCTAssertEqual(stamp("2026-10-28"), "Oct 28")
+        XCTAssertEqual(stamp("2h ago"), "2h ago")   // the agent's own words pass through
+        // A stamp the agent copied from a tracker reads like the others (SPK-231 reps).
+        XCTAssertEqual(stamp("Nov 8, 2:50 AM ET"), "2:50 AM")
+        XCTAssertEqual(stamp("Nov 7 7:20 PM"), "Yesterday")
+        XCTAssertEqual(stamp("Last seen 2:48 AM ET"), "Last seen 2:48 AM ET")
+        // An inbox's day-and-time ("Today 7:12 AM") fits the corner as the part a corner shows.
+        XCTAssertEqual(stamp("Today 7:12 AM"), "7:12 AM")
+        XCTAssertEqual(stamp("Sat 9:03 PM"), "Sat")
+        XCTAssertEqual(stamp("Yesterday, 6 PM"), "Yesterday")
+        XCTAssertEqual(stamp("Today at noon"), "Today at noon")
+        func clockTime(_ s: String) -> String? {
+            EventTimes.clockTime(s, now: now, calendar: cal, locale: us)?.replacingOccurrences(of: "\u{202F}", with: " ")
+        }
+        XCTAssertEqual(clockTime("Nov 8, 2:50 AM ET"), "2:50 AM")
+        XCTAssertEqual(clockTime("2026-11-08T06:53:24Z"), "1:53 AM")
+        XCTAssertEqual(clockTime("Next"), "Next")
+        XCTAssertNil(EventTimes.stamp("  ", now: now, calendar: cal, locale: us))
+    }
+
+    func testCalendarDayHeadingIsWords() {
+        let now = EventTimes.date("2026-11-08T15:00:00Z")!
+        XCTAssertEqual(EventTimes.dayTitle("2026-11-09", now: now, calendar: cal, locale: us), "Monday, November 9")
+        XCTAssertEqual(EventTimes.dayTitle("2027-01-04", now: now, calendar: cal, locale: us), "Monday, January 4, 2027")
+        XCTAssertEqual(EventTimes.dayTitle("Tomorrow", now: now, calendar: cal, locale: us), "Tomorrow")
+    }
 }

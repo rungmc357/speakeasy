@@ -149,3 +149,90 @@ def test_an_unconfirmed_run_can_be_dismissed(tmp_path):
     store = StateStore(tmp_path / "se.sqlite3")
     unconfirmed_run(store, "k9", "run_nine", "s9", age_s=60)
     assert store.dismiss(["run_nine"]) == ["run_nine"]
+
+
+class FakeHermes:
+    """Hermes' run records (GET /v1/runs/{id}); a run id not in *runs* raises like an unreachable server."""
+
+    def __init__(self, runs):
+        self.runs, self.asked = runs, []
+
+    def get_run(self, run_id):
+        self.asked.append(run_id)
+        if run_id not in self.runs:
+            raise RuntimeError("unreachable")
+        return self.runs[run_id]
+
+
+def test_a_reloaded_away_run_settles_from_hermes_while_its_thread_goes_on(tmp_path):
+    """A plugin reload dropped the follower of a task that kept working; the reload's sweep asked
+    Hermes once (still running) and left it unconfirmed. The run finished, the thread it was
+    started from went on with unrelated turns, and the card still read Working underneath them:
+    the next pass asks Hermes again and settles it with the task's own answer at once."""
+    db = tmp_path / "state.db"
+    hermes_db(db, [("task_s", None, [("user", "fix the gap", None), ("assistant", "", '[{"id": "x"}]'),
+                                     ("tool", "{}", None), ("assistant", "Gap fixed; tests pass.", None)]),
+                   ("thread_s", "t1", [("user", "how is build 70?", None), ("assistant", "Build 70 status.", None)])])
+    store = StateStore(tmp_path / "se.sqlite3")
+    unconfirmed_run(store, "old", "run_old", "task_s", age_s=30)  # the session only just went quiet
+    store.link_history("old", "thread_s")
+    hermes = FakeHermes({"run_old": {"status": "running"}})
+    assert recovery.sweep(store, db, lambda: (), {}, hermes=hermes) == []  # still working: left alone
+    assert status(store, "old") == "ambiguous"
+    hermes.runs["run_old"] = {"status": "completed", "output": "Gap fixed; tests pass."}
+    assert recovery.sweep(store, db, lambda: (), {}, hermes=hermes) == [("old", "completed")]
+    work = store.work(idem_key="old")
+    assert work["status"] == "completed" and "Gap fixed" in work["result"]["full"]
+    assert "Build 70" not in work["result"]["full"]  # never the thread's newer, unrelated reply
+    assert not work.get("now_line") and not work.get("quiet_s")  # no "No new steps · N min" any more
+    assert recovery.sweep(store, db, lambda: (), {}, hermes=hermes) == []  # settled once
+
+
+def test_an_unconfirmed_run_takes_each_final_status_from_hermes(tmp_path):
+    db = tmp_path / "state.db"
+    hermes_db(db, [])
+    store = StateStore(tmp_path / "se.sqlite3")
+    finals = {"run_f": {"status": "failed", "error": "boom"}, "run_c": {"status": "cancelled"},
+              "run_i": {"status": "interrupted"}, "run_d": {"status": "completed", "output": "Done it."}}
+    for i, run_id in enumerate(finals):
+        unconfirmed_run(store, f"k{i}", run_id, f"s{i}", age_s=30)
+    out = dict(recovery.sweep(store, db, lambda: (), {}, hermes=FakeHermes(finals)))
+    assert out == {"k0": "failed", "k1": "cancelled", "k2": "interrupted", "k3": "completed"}
+    assert store.work(idem_key="k3")["result"]["full"] == "Done it."
+
+
+def test_a_still_running_or_unreachable_run_falls_back_to_its_session(tmp_path):
+    """Hermes says it is still working (a retry, a live worker) or can't be asked: nothing is
+    settled from Hermes; the session sweep keeps its own quiet rule."""
+    db = tmp_path / "state.db"
+    hermes_db(db, [("s_live", None, [("user", "go", None), ("assistant", "", '[{"id": "x"}]')]),
+                   ("s_gone", None, [("user", "go", None), ("assistant", "All done.", None)])])
+    store = StateStore(tmp_path / "se.sqlite3")
+    unconfirmed_run(store, "live", "run_live", "s_live", age_s=10 * 60)
+    unconfirmed_run(store, "gone", "run_gone", "s_gone", age_s=10 * 60)
+    hermes = FakeHermes({"run_live": {"status": "running"}})  # run_gone: Hermes can't be reached
+    assert recovery.sweep(store, db, lambda: (), {}, hermes=hermes) == [("gone", "completed")]
+    assert status(store, "live") == "ambiguous"
+    assert sorted(hermes.asked) == ["run_gone", "run_live"]
+
+
+def test_positive_liveness_does_not_complete_a_quiet_retry_from_an_older_answer(tmp_path):
+    db = tmp_path / "state.db"
+    hermes_db(db, [("retry_s", None, [("assistant", "Earlier attempt finished.", None)])])
+    store = StateStore(tmp_path / "se.sqlite3")
+    unconfirmed_run(store, "retry", "run_retry", "retry_s", age_s=4 * 3600)
+    hermes = FakeHermes({"run_retry": {"status": "running"}})
+    assert recovery.sweep(store, db, lambda: (), {}, hermes=hermes) == []
+    assert status(store, "retry") == "ambiguous"
+    assert not store.work(idem_key="retry").get("result")
+
+
+def test_a_run_settled_meanwhile_is_not_overwritten_from_hermes(tmp_path):
+    db = tmp_path / "state.db"
+    hermes_db(db, [])
+    store = StateStore(tmp_path / "se.sqlite3")
+    unconfirmed_run(store, "k", "run_k", "s_k", age_s=30)
+    store.transition("k", "cancelled", expect={"ambiguous"})  # the user stopped it meanwhile
+    hermes = FakeHermes({"run_k": {"status": "completed", "output": "late"}})
+    assert recovery.sweep(store, db, lambda: (), {}, hermes=hermes) == []
+    assert status(store, "k") == "cancelled"
