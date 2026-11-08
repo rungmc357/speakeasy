@@ -1050,6 +1050,9 @@ class Handler(BaseHTTPRequestHandler):
             if chat_model:  # Use for this chat (models.py)
                 self._reply(200, self.service.set_session_model(unquote(chat_model.group(1)), self._body()))
                 return
+            if self.route == "/voice/projects/selected":  # SPK-254: the Home project chip
+                self._reply(200, self.service.project_select(self._body()))
+                return
             project_notes = re.fullmatch(rf"/voice/projects/{_ID}/notes", self.route)
             if project_notes:  # SPK-254: a project's standing notes
                 self._reply(200, self.service.project_notes(project_notes.group(1), self._body()))

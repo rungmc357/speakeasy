@@ -487,6 +487,18 @@ class HomeChat:
             self.store._db.execute("INSERT INTO home_jobs (message_id, run_id, at) VALUES (?,?,?)",
                                    (mid, run_id, self.clock()))
 
+    def _chip_filed(self, chip: str | None, run_id: Any) -> None:
+        """A job the Home chip filed (not the person's words): its card may ask once about another
+        project its words name (projects.mark_auto)."""
+        if not chip or not isinstance(run_id, str):
+            return
+        key = self.svc.store.key_for_run(run_id)
+        if key:
+            try:
+                self.svc.projects.mark_auto(key)
+            except Exception:  # noqa: BLE001
+                logger.debug("speakeasy: couldn't mark a chip-filed job", exc_info=True)
+
     def _link(self, mid: str, run_id: str | None, action: str) -> None:
         with self.store._lock, self.store._db:
             self.store._db.execute("UPDATE home_messages SET run_id=?, action=? WHERE id=?", (run_id, action, mid))
@@ -653,6 +665,14 @@ class HomeChat:
             except Exception:  # noqa: BLE001 - filing is a bonus; the job still starts
                 hit = None
             filed_to = hit[0] if hit else None
+        # The composer's project chip: with a project selected, every job from Home is filed there
+        # (its standing notes go in), unless the person's own words named another project.
+        chip = None
+        if projects is not None and not filed_to and action in {"start", "follow_up"}:
+            try:
+                chip = projects.selected()
+            except Exception:  # noqa: BLE001
+                chip = None
         try:
             if action == "start":
                 # A voice memo's job gets the ask the coordinator wrote for it, like a typed message:
@@ -662,16 +682,25 @@ class HomeChat:
                 words = decided.get("request") or job_text or text or look_words(files)
                 job_body = {"text": words, "source": "voice_message" if voice else "typed"}
                 self._job_choice(job_body, body)
-                if filed_to:
-                    job_body["project_id"] = filed_to
+                if filed_to or chip:
+                    job_body["project_id"] = filed_to or chip
                 if ids:
                     job_body["attachments"] = ids
                 if client_id:
                     job_body["client_id"] = ("hj" + client_id)[:128]
                 started = self.svc.start_job(job_body, device_id)
                 run_id = started.get("run_id")
+                self._chip_filed(chip, run_id)
             elif action == "follow_up":
                 run_id = decided["run_id"]
+                if chip:
+                    # A follow-up to a job that isn't in any project joins the selected one.
+                    key = self.svc.store.key_for_run(run_id) if isinstance(run_id, str) else None
+                    if key:
+                        try:
+                            projects.auto_file(key)
+                        except Exception:  # noqa: BLE001 - filing is a bonus
+                            logger.debug("speakeasy: couldn't file the follow-up", exc_info=True)
                 msg = {"text": job_text or decided.get("request") or text,
                        "source": "voice_message" if voice else "typed"}
                 if ids:
@@ -701,12 +730,13 @@ class HomeChat:
             # "Those are two different tasks": each further ask in the message is its own job.
             job_body = {"text": words, "source": "voice_message" if voice else "typed"}
             self._job_choice(job_body, body)
-            if filed_to:
-                job_body["project_id"] = filed_to
+            if filed_to or chip:
+                job_body["project_id"] = filed_to or chip
             if client_id:
                 job_body["client_id"] = (f"hx{n}" + client_id)[:128]
             try:
                 more = self.svc.start_job(job_body, device_id)
+                self._chip_filed(chip, more.get("run_id"))
             except Exception as exc:
                 logger.info("speakeasy: Home's second job didn't start (%s)", type(exc).__name__)
                 self._add("assistant", "One of those didn't go through. Ask me again for it.", self.clock(),

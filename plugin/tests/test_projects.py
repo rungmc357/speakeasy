@@ -216,3 +216,112 @@ def test_accepting_the_offer_files_its_chats(server, service, state):
     assert status == 201, body
     assert body["project"]["chats"] == 3 and body["project"]["jobs"] == 3
     assert "offer" not in get(server, "/voice/projects")[1]
+
+
+# -- the Home project chip: where Home works -------------------------------------------------------
+
+def test_selected_project_is_stored_plugin_side_and_reads_back(server, service, state):
+    pid = make_project(service, "Lantern")
+    assert get(server, "/voice/projects")[1].get("selected") is None          # Home by default
+    assert put(server, "/voice/projects/selected", {"project_id": pid}) == (200, {"ok": True, "selected": pid})
+    assert get(server, "/voice/projects")[1]["selected"] == pid               # every device reads the same
+    assert put(server, "/voice/projects/selected", {"project_id": "p_nope"})[0] == 404
+    assert put(server, "/voice/projects/selected", {"project_id": 3})[0] == 400
+    assert put(server, "/voice/projects/selected", {"project_id": None})[1]["selected"] is None
+    assert "selected" not in get(server, "/voice/projects")[1]
+
+
+def test_chip_files_a_typed_home_job_and_back_to_home_leaves_it_unfiled(service, monkeypatch):
+    pid = make_project(service, "Lantern")
+    sent = []
+    monkeypatch.setattr(service.home_chat, "_decide", lambda *a, **k: (
+        {"reply": "On it.", "action": "start", "run_id": None, "request": "Fix the sign-in screen"}, None))
+    monkeypatch.setattr(service, "start_job", lambda body, device_id=None: sent.append(body) or {"run_id": None})
+    service.projects.select({"project_id": pid})
+    service.home_chat._turn("fix the sign-in screen", None, [], {}, None, None, None)
+    assert sent[-1]["project_id"] == pid
+    other = make_project(service, "Garden shed")   # switching mid-session: new jobs follow the chip
+    service.projects.select({"project_id": other})
+    service.home_chat._turn("fix the sign-in screen", None, [], {}, None, None, None)
+    assert sent[-1]["project_id"] == other
+    service.projects.select({"project_id": None})
+    service.home_chat._turn("fix the sign-in screen", None, [], {}, None, None, None)
+    assert "project_id" not in sent[-1]
+
+
+def test_chip_files_the_real_job_and_its_notes_go_in(server, service, hermes, state):
+    pid = make_project(service, "Lantern")
+    put(server, f"/voice/projects/{pid}/notes", {"notes": "Swift 6 only. Tests on the small phone."})
+    put(server, "/voice/projects/selected", {"project_id": pid})
+    status, _ = post(server, "/voice/home/message", {"text": "Find why the checkout test fails"})
+    assert status in (200, 202)
+    call = wait_for(lambda: next((c for c in hermes.calls if "checkout test" in str(c["input"])), None))
+    assert "Swift 6 only." in str(call["input"])
+    _, page = wait_for(lambda: (lambda r: r if r[1]["jobs"] else None)(get(server, f"/voice/projects/{pid}")))
+    assert len(page["jobs"]) == 1
+
+
+def test_chip_files_a_job_started_on_a_call(server, service, hermes, state):
+    from test_tasks import start_call
+    pid = make_project(service, "Lantern")
+    put(server, f"/voice/projects/{pid}/notes", {"notes": "Walnut only."})
+    put(server, "/voice/projects/selected", {"project_id": pid})
+    _, worker = start_call(server, service)
+    worker.delegate("call_shelf", "Size the shelf brackets")
+    call = wait_for(lambda: next((c for c in hermes.calls if "shelf brackets" in str(c["input"])), None))
+    assert "Walnut only." in str(call["input"])
+    _, page = wait_for(lambda: (lambda r: r if r[1]["jobs"] else None)(get(server, f"/voice/projects/{pid}")))
+    assert len(page["jobs"]) == 1
+
+
+def test_call_job_with_home_selected_stays_unfiled(server, service, hermes, state):
+    from test_tasks import start_call
+    pid = make_project(service, "Lantern")
+    _, worker = start_call(server, service)
+    worker.delegate("call_cafe", "Find a quiet cafe near the office")
+    wait_for(lambda: next((c for c in hermes.calls if "quiet cafe" in str(c["input"])), None))
+    assert get(server, f"/voice/projects/{pid}")[1]["jobs"] == []
+
+
+def test_chip_filed_job_naming_another_project_asks_once_never_moves(service):
+    proj = service.projects
+    lantern, shed = make_project(service, "Lantern"), make_project(service, "Garden shed")
+    proj.select({"project_id": lantern})
+    key = "k_auto_1"
+    proj.link("job", key, lantern)
+    proj.mark_auto(key)
+    projects, links = proj._read(), proj._links()
+    fields = proj.card_fields(key, ["Plan the garden shed roof"], projects, links, lantern)
+    assert fields["project"]["id"] == lantern and fields["project_suggestion"]["id"] == shed
+    # Same words on a job the person filed by hand: no question.
+    proj.link("job", "k_hand", lantern)
+    assert "project_suggestion" not in proj.card_fields("k_hand", ["Plan the garden shed roof"], projects,
+                                                        proj._links(), lantern)
+    # Answered once: never again.
+    proj.asked(key)
+    assert "project_suggestion" not in proj.card_fields(key, ["Plan the garden shed roof"], projects,
+                                                        proj._links(), lantern)
+
+
+def test_no_suggestion_chips_while_working_in_a_project(service):
+    proj = service.projects
+    lantern, shed = make_project(service, "Lantern"), make_project(service, "Garden shed")
+    projects = proj._read()
+    assert proj.card_fields("k_new", ["Plan the garden shed roof"], projects, {}, None)["project_suggestion"]["id"] == shed
+    assert proj.card_fields("k_new", ["Plan the garden shed roof"], projects, {}, lantern) == {}
+
+
+def test_panel_rows_say_running_and_last_activity(server, service, hermes, state):
+    pid = make_project(service, "Lantern")
+    hermes.hold = True
+    try:
+        _, started = post(server, "/voice/work", {"text": "Fix the lantern build", "project_id": pid})
+        row = wait_for(lambda: (lambda r: r if r.get("running") else None)(get(server, "/voice/projects")[1]["projects"][0]))
+        assert row["running"] == 1 and row["active_at"] > 0
+    finally:
+        hermes.hold = False
+    for run in list(hermes.runs.values()):   # the held run finishes
+        run["status"] = "completed"
+        run["done"].set()
+    row = wait_for(lambda: (lambda r: r if not r.get("running") else None)(get(server, "/voice/projects")[1]["projects"][0]))
+    assert row["active_at"] > 0

@@ -5151,6 +5151,12 @@ class SidebandWorker:
                                          others=[] if self.VOICELESS else self.call_so_far(task_id), skill=skill,
                                          names_hint=P.task_vocabulary_line(self.names, self.vocabulary()))
         self.store.set_meta("turn_context:" + session_id, context[-MAX_TRANSCRIPT:])
+        project_auto = getattr(self.store, "project_auto", None)  # SPK-254: Home's project chip
+        if project_auto is not None and not self.VOICELESS:
+            try:
+                project_auto(idem)   # a job started on a call files into the project Home works in
+            except Exception:  # noqa: BLE001 - filing is a bonus; the job still starts
+                logger.debug("speakeasy: couldn't file a call's job", exc_info=True)
         project_brief = getattr(self.store, "project_brief", None)  # SPK-254: a filed job's standing notes
         if project_brief is not None:
             try:

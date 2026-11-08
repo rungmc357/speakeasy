@@ -188,7 +188,8 @@ CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking
 # ``stream`` entries of kind ``message`` (user / assistant) interleave with the job cards.
 CAPABILITIES["home_chat"] = True
 # SPK-254: GET/POST /voice/projects, GET /voice/projects/{id}, PUT /voice/projects/{id}/notes,
-# POST /voice/projects/file, POST /voice/projects/offer/dismiss, ``project_id`` on POST /voice/work,
+# POST /voice/projects/file, POST /voice/projects/offer/dismiss, PUT /voice/projects/selected (the
+# Home chip; GET /voice/projects carries ``selected``), ``project_id`` on POST /voice/work,
 # ``project`` on history rows and ``project`` / ``project_suggestion`` on Home's job cards. Off on a
 # Hermes without first-class projects.
 CAPABILITIES["projects"] = P_.available()
@@ -437,6 +438,7 @@ class VoiceService(SecureInputMixin):
         # SPK-254: Hermes' projects plus Speakeasy's chat/job links (projects.py).
         self.projects = P_.Projects(self.store, self.home, lambda: self.rt.state_db)
         self.store.project_brief = self.projects.for_start  # a filed job's standing notes, in its brief
+        self.store.project_auto = self.projects.auto_file  # a call's job joins the project Home works in
         self.history_events.after_change = self._now_changed
         self.rt.history_events = self.history_events
         Q.wire(self.store, self.rt)  # every closed question: decision_resolved + the push withdrawn
@@ -3902,6 +3904,12 @@ class VoiceService(SecureInputMixin):
             key = (self.store.key_for_run(run_id) or self.store.key_for_task(run_id)) if isinstance(run_id, str) else None
             if not key:
                 raise ServiceError(404, "I couldn't find that task.")
+            job = self.projects._job_key(key)
+            if self.projects.is_auto(job):
+                self.projects.asked(key)
+                if project == "":
+                    # Declining "file into X?" on a job the Home chip filed keeps it where it is.
+                    return {"ok": True, "run_id": run_id, "project_id": self.projects.project_of_key(key)}
             self.projects.link("job", self.projects._job_key(key), project if project else "")
             session = self.store.session_for(key)
             if session and project:
@@ -3912,6 +3920,14 @@ class VoiceService(SecureInputMixin):
 
         out = self._projects_call(go)
         self._projects_changed()
+        return out
+
+    def project_select(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``PUT /voice/projects/selected {project_id}``: the project Home works in (the composer chip,
+        the call dock and the side panel share it), or null for Home."""
+        out = self._projects_call(lambda: self.projects.select(body))
+        self._projects_changed()
+        self._now_changed()
         return out
 
     def project_offer_dismiss(self, body: dict[str, Any]) -> dict[str, Any]:

@@ -589,6 +589,7 @@ class NowModel:
         # SPK-254: a job card says its project once filed, else offers the one project its words name.
         known_projects = projects._read() if projects is not None else []
         project_links = projects._links() if known_projects else {}
+        project_selected = projects.selected(known_projects) if known_projects else None
         by_place: dict[str, dict[str, Any]] = {}
         by_thread: dict[str, dict[str, Any]] = {}
         items: list[dict[str, Any]] = []
@@ -611,7 +612,7 @@ class NowModel:
             if known_projects:
                 item.update(projects.card_fields(
                     row["key"], (item.get("title") or "", self.store.request_text(row["key"]) or ""),
-                    known_projects, project_links))
+                    known_projects, project_links, project_selected))
             if row.get("answered"):
                 answered_keys.add(row["key"])
             held = by_place.get(place)

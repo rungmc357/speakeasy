@@ -30,6 +30,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import runstate as RS
+
 logger = logging.getLogger(__name__)
 
 NAME_MAX = 60
@@ -40,6 +42,9 @@ COLORS = ("blue", "teal", "green", "yellow", "orange", "red", "pink", "purple", 
 OFFER_AFTER = 3           # chats on one subject before "Make a project for X?"
 OFFER_WINDOW_S = 21 * 86400
 PENDING_S = 120.0         # a "for X, ..." job is matched to its start within this long
+SELECTED_META = "projects_home_selected"   # the composer chip: where Home files new work
+AUTO_META = "project_auto:"                 # + job key: filed by the chip, not by words or a tap
+ASKED_META = "project_asked:"               # + job key: its once-only "file into X?" was answered
 
 # Leading words that start most requests: never a subject ("Find ...", "Check ...").
 _NOT_SUBJECTS = set("""
@@ -311,9 +316,19 @@ class Projects:
             pid = self.project_of_key(key, links)
             if pid:
                 jobs.setdefault(pid, set()).add(self._job_key(key))
-        rows = [self._summary(p, {"chats": len(chats.get(p.id, ())), "jobs": len(jobs.get(p.id, ()))})
-                for p in projects]
+        live, active = self._activity(links)
+        rows = []
+        for p in projects:
+            row = self._summary(p, {"chats": len(chats.get(p.id, ())), "jobs": len(jobs.get(p.id, ()))})
+            if live.get(p.id):
+                row["running"] = live[p.id]
+            if active.get(p.id):
+                row["active_at"] = round(active[p.id], 3)
+            rows.append(row)
         out: dict[str, Any] = {"projects": rows}
+        selected = self.selected(projects)
+        if selected:
+            out["selected"] = selected
         offer = self.offer(projects)
         if offer:
             out["offer"] = offer
@@ -335,6 +350,82 @@ class Projects:
             if board:
                 out["board"] = board
         return out
+
+    def _activity(self, links: dict[tuple[str, str], str]) -> tuple[dict[str, int], dict[str, float]]:
+        """({project id: running jobs}, {project id: newest activity}) for the panel's quiet line
+        ("2 running" or "3h ago"). Activity is a filed job's last update or a chat's filing time."""
+        with self.store._lock:
+            rows = self.store._db.execute(
+                "SELECT idem_key, status, COALESCE(updated, created) FROM runs "
+                "WHERE status != 'rejected' AND COALESCE(dismissed,0)=0 ORDER BY rowid DESC LIMIT 2000").fetchall()
+        live: dict[str, set[str]] = {}
+        active: dict[str, float] = {}
+        for key, status, at in rows:
+            pid = self.project_of_key(key, links)
+            if not pid:
+                continue
+            if status in RS.LIVE:
+                live.setdefault(pid, set()).add(self._job_key(key))
+            if at and float(at) > active.get(pid, 0.0):
+                active[pid] = float(at)
+        with self.store._lock:
+            for pid, at in self.store._db.execute(
+                    "SELECT project_id, MAX(at) FROM project_links WHERE project_id != '' GROUP BY project_id"):
+                if at and float(at) > active.get(pid, 0.0):
+                    active[pid] = float(at)
+        return {k: len(v) for k, v in live.items()}, active
+
+    # -- where Home works: the composer's project chip ------------------------------------------
+
+    def selected(self, projects: list[Any] | None = None) -> str | None:
+        """The project Home works in (the composer's chip), or None for Home itself. Stored here so
+        the phone and the Mac agree; a project that no longer exists reads as Home."""
+        pid = self.store.get_meta(SELECTED_META) or ""
+        if not pid:
+            return None
+        projects = self._read() if projects is None else projects
+        return pid if any(p.id == pid for p in projects) else None
+
+    def select(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``PUT /voice/projects/selected {project_id: id | null}``: where new work from Home (typed,
+        voice memos, follow-ups, calls) is filed. null = Home, not in a project."""
+        if not isinstance(body, dict) or set(body) != {"project_id"}:
+            raise ProjectError(400, "Send {\"project_id\": a project's id, or null for Home}.")
+        pid = body["project_id"]
+        if pid is not None and (not isinstance(pid, str) or not pid):
+            raise ProjectError(400, "project_id is a project's id, or null for Home.")
+        pid = self._get(pid).id if pid else None
+        self.store.set_meta(SELECTED_META, pid or "")
+        return {"ok": True, "selected": pid}
+
+    def auto_file(self, key: str) -> str | None:
+        """File a job started from Home (or on a call) into the selected project, unless the job is
+        already filed, declined or its chat is in a project. Returns the project id it was filed into."""
+        pid = self.selected()
+        if not pid:
+            return None
+        job = self._job_key(key)
+        links = self._links()
+        if ("job", job) in links:
+            return None
+        session = self.store.session_for(key)
+        if session and (("session", session) in links or session in self._cwd_projects()):
+            return None
+        self.link("job", job, pid)
+        self.mark_auto(key)
+        return pid
+
+    def mark_auto(self, key: str) -> None:
+        """This job was filed by the Home chip, not by the person's words or a tap: if its words name
+        another project, its card asks once ("Garden shed?") instead of moving it silently."""
+        self.store.set_meta(AUTO_META + self._job_key(key), "1")
+
+    def is_auto(self, job: str) -> bool:
+        return bool(self.store.get_meta(AUTO_META + job)) and not self.store.get_meta(ASKED_META + job)
+
+    def asked(self, key: str) -> None:
+        """The once-only "file into X?" on an auto-filed job was answered (moved or declined)."""
+        self.store.set_meta(ASKED_META + self._job_key(key), "1")
 
     # -- standing notes -------------------------------------------------------------------------
 
@@ -435,7 +526,7 @@ class Projects:
         return {"id": hits[0].id, "name": hits[0].name}
 
     def card_fields(self, key: str, words: Iterable[str], projects: list[Any],
-                    links: dict[tuple[str, str], str]) -> dict[str, Any]:
+                    links: dict[tuple[str, str], str], selected: str | None = None) -> dict[str, Any]:
         """What a Home job card shows: ``project`` once filed, else ``project_suggestion`` (the chip),
         unless the person declined it for this job."""
         if not projects:
@@ -447,9 +538,19 @@ class Projects:
             filed = links.get(("session", session)) if session else None
         if filed:
             p = next((p for p in projects if p.id == filed), None)
-            return {"project": {"id": p.id, "name": p.name}} if p else {}
+            if not p:
+                return {}
+            out: dict[str, Any] = {"project": {"id": p.id, "name": p.name}}
+            if self.is_auto(job):
+                # Filed by the Home chip, but its words name another project: ask once, never move it.
+                got = self.suggest(words, projects)
+                if got and got["id"] != p.id:
+                    out["project_suggestion"] = got
+            return out
         if filed == "":
             return {}   # declined
+        if selected:
+            return {}   # Home is working in a project: its chip files new work; no suggestions
         got = self.suggest(words, projects)
         return {"project_suggestion": got} if got else {}
 
