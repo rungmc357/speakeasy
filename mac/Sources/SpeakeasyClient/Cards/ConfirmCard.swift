@@ -96,16 +96,24 @@ struct ConfirmCard: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(card["items"].array.enumerated()), id: \.offset) { _, item in
                 HStack(alignment: .top, spacing: 12) {
-                    ArtifactPhoto(url: item["photo_url"].url, symbol: "headphones")
-                        .frame(width: compact ? 58 : 72, height: compact ? 58 : 72)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    // No product photo: the text takes the row (a grey box with a glyph read as a missing image).
+                    if item["photo_url"].url != nil {
+                        ArtifactPhoto(url: item["photo_url"].url, symbol: "shippingbox")
+                            .frame(width: compact ? 58 : 72, height: compact ? 58 : 72)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(AgentMarkdown.attributed(item["name"].string ?? "")).font(.body.weight(.semibold))
+                        // One item the title already names ("Buy Oakline Standing Desk 60 in."): its row
+                        // keeps the variant and quantity, not the same name a second time.
+                        let named = card["items"].array.count == 1 && (item["name"].string).map { n in
+                            (card["title"].string ?? "").localizedCaseInsensitiveContains(n) } == true
+                        if !named {
+                            Text(AgentMarkdown.attributed(item["name"].string ?? "")).font(.body.weight(.semibold))
+                        }
                         if let description = item["description"].string {
                             Text(AgentMarkdown.attributed(description)).font(.caption).foregroundStyle(.secondary)
                         }
-                        Text([item["quantity"].string.map { "Qty \($0)" }, item["size"].string, item["colour"].string]
-                            .compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                        Text(ConfirmCard.itemFacts(item)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
                 }
@@ -257,5 +265,18 @@ struct ConfirmActionBar: View {
             .frame(minWidth: 420, minHeight: 320)
             #endif
         }
+    }
+}
+
+extension ConfirmCard {
+    /// "Qty 1 · 60 in. · Walnut top, black frame" under a name that already says 60 in. and a
+    /// description that already says the colour: each fact once.
+    static func itemFacts(_ item: JSONValue) -> String {
+        let said = [item["name"].string, item["description"].string].compactMap { $0 }.joined(separator: " ").lowercased()
+        let facts = [item["size"].string, item["colour"].string].compactMap { $0 }
+            // "Walnut / black" under "Walnut top, black frame" says it twice: every word already said goes.
+            .filter { f in !said.contains(f.lowercased())
+                && !f.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).allSatisfy { said.contains($0) } }
+        return ([item["quantity"].string.map { "Qty \($0)" }].compactMap { $0 } + facts).joined(separator: " · ")
     }
 }

@@ -432,6 +432,8 @@ class NowModel:
                             question={**q, "expired": {"at": q["expires_at"]}})
             else:
                 item.update(kind=QUESTION, id=f"q:{run_id}", line=_clip(q["prompt"], 240), question=q)
+                if result.get("reply"):
+                    item["reply"] = _clip(result["reply"], 240)  # said above what it found, in the thread
         elif status in RS.ASKING:
             item.update(kind=QUESTION, id=f"q:{run_id}", line="Hermes needs your OK to go on.",
                         question={"shape": "approval", "prompt": "Hermes needs your OK to go on.",

@@ -101,10 +101,18 @@ struct WeatherCard: View {
                     ForEach(Array(days.prefix(7).enumerated()), id: \.offset) { _, d in
                         HStack(spacing: 8) {
                             // A day name stays one line ("Tuesday" used to wrap to "Tuesda / y" on Home).
-                            Text(d["label"].string ?? "").font(.system(size: 11)).lineLimit(1).minimumScaleFactor(0.7)
+                            Text(d["label"].string ?? "").font(.system(size: 13)).lineLimit(1).minimumScaleFactor(0.7)
                                 .frame(width: 58, alignment: .leading)
                             Image(systemName: weatherSymbol(d["icon"].string)).symbolRenderingMode(.multicolor)
-                                .font(.system(size: 12)).frame(width: 18)
+                                .font(.system(size: 16)).frame(width: 22)
+                            // A real chance of rain (30% and up) under the icon's day, as the designs say it:
+                            // "take an umbrella Thursday" needs the number on the card.
+                            Group {
+                                if let rain = d["rain"].double, rain >= 30 {
+                                    Text("\(Int(rain))%").font(.system(size: 11, weight: .semibold).monospacedDigit()).foregroundStyle(.blue)
+                                } else { Text("") }
+                            }
+                            .frame(width: 30, alignment: .leading)
                             // A day with no low shows no low (not a dash) and its bar is only its high,
                             // never a bar stretched down to the week's lowest temperature.
                             Text(d["low"].double == nil ? "" : ViewCard.degrees(d["low"].double))

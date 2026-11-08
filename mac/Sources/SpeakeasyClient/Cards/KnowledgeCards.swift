@@ -216,8 +216,8 @@ struct StatsCard: View {
                 KeyValueRows(rows: card["rows"].array)
             } else {
                 let items = card["items"].array
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                    ForEach(Array(items.prefix(8).enumerated()), id: \.offset) { _, s in
+                PairGrid(count: min(items.count, 8), spacing: 8) { n in
+                    let s = items[n]
                         VStack(alignment: .leading, spacing: 2) {
                             Text(s["label"].string ?? "").font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
                             Text(s["value"].string ?? "").font(.system(size: 16, weight: .semibold).monospacedDigit()).lineLimit(1)
@@ -227,9 +227,8 @@ struct StatsCard: View {
                                     .foregroundStyle(s["good"].bool == true ? Color.green : s["good"].bool == false ? Color.red : Color.secondary)
                             }
                         }
-                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.05)))
-                    }
                 }
             }
         }

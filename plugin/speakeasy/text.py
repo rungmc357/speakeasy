@@ -776,13 +776,16 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         spoken = screen_claims_backed(spoken, full or "", bool(views or cards)) or None
     if not spoken:
         spoken = fallback_spoken
+    said_first = spoken
     if question:
         # The decision is the point: a one-line status, then the question, so the user answers it.
         lead = re.split(r"(?<=[.!?])\s+", spoken.strip())[0] if spoken != fallback_spoken else ""
         if lead.endswith("?"):
             lead = ""
-        spoken = safe_user_text((lead + " " + spoken_question(question)).strip(), 500) or spoken_question(question)
+        spoken = safe_user_text((lead + " " + spoken_question(question, lead)).strip(), 500) or spoken_question(question)
         views = [question] + [v for v in views if v.get("kind") != "question"]
+        from .views import drop_steps_the_question_asks
+        views = drop_steps_the_question_asks(views, question)
     if question:
         # The written answer (chat, task details) keeps the question so it can be answered there too.
         listed = "\n".join(f"{i + 1}. {option_text(o)}" + (" (recommended)" if question.get("recommended") == i else "")
@@ -808,6 +811,11 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         result["label"] = label
     if not question and (headline := outcome_headline(spoken if spoken != fallback_spoken else None, full)):
         result["headline"] = headline  # what came of it, never the voice's opener; the side model may refine it
+    elif question and (reply := outcome_headline(said_first if said_first != fallback_spoken else None)):
+        # A question's Home line is the question itself; the verdict said before asking ("Misi's my
+        # pick, but I haven't checked tables yet.") is the reply shown above what the task found.
+        if reply.rstrip(".!").lower() != str(question.get("question") or "").rstrip("?").lower():
+            result["reply"] = reply
     return result
 
 
@@ -1089,8 +1097,13 @@ def clean_headline(raw: Any) -> str | None:
 
 
 def _first_outcome(text: str | None) -> str | None:
-    for _, sentence in _sentences(str(text or "")):
-        if sentence.endswith("?") or is_opener(sentence):
+    # "[Offline drafts spec](https://…)" reads as its words, never "[…]()".
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", str(text or ""))
+    for _, sentence in _sentences(text):
+        # A statement that ends on the question it raises ("It's in review, and one question is open:
+        # should a draft keep its photos?") is an outcome; a sentence that only asks is not.
+        asks = sentence.endswith("?") and not (": " in sentence and len(sentence.split(": ", 1)[0].split()) >= 4)
+        if asks or is_opener(sentence):
             continue
         line = _HEADLINE_LEAD.sub("", sentence).strip(" —–-")
         if line:
@@ -1108,7 +1121,15 @@ def outcome_headline(spoken: str | None, full: str | None = None) -> str | None:
     if said and written and written.lower().startswith(said.rstrip(".!").lower()) and len(written) <= 140:
         line = written
     if line and len(line) > 140:
-        line = line[:139].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+        # Too long for one line: end at the last clause that fits ("It's fixed and tested, but it won't
+        # reach a build until the merge."), never mid-thought with an ellipsis.
+        head = line[:140]
+        cut = max(head.rfind(", but "), head.rfind(", so "), head.rfind("; "), head.rfind(", and "), head.rfind(": "))
+        cut = cut if cut >= 50 else head.rfind(", ")
+        if cut >= 50:
+            line = line[:cut].rstrip(" ,;:") + "."
+        else:
+            line = line[:139].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
     return line
 
 

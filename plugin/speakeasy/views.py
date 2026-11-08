@@ -50,7 +50,7 @@ CATALOG: dict[str, dict[str, Any]] = {
     # Places and getting around
     "place": {"name": S, "category": S, "address": S, "rating": N, "reviews": N, "price": S, "open_now": B,
               "hours_today": S, "phone": S, "url": URL, "photo_url": URL, "lat": N, "lon": N, "distance": S},
-    "places": {"title": S, "items": ({"name": S, "category": S, "rating": N, "price": S, "open_now": B,
+    "places": {"title": S, "items": ({"name": S, "category": S, "area": S, "rating": N, "price": S, "open_now": B,
                                       "distance": S, "url": URL, "photo_url": URL, "lat": N, "lon": N}, 8)},
     "route": {"origin": S, "destination": S, "mode": S, "minutes": N, "distance": S, "leave_by": S, "arrive_by": S,
               "traffic": S, "steps": (S, 8), "lat": N, "lon": N, "dest_lat": N, "dest_lon": N},
@@ -112,7 +112,7 @@ CATALOG: dict[str, dict[str, Any]] = {
     "compare": {"title": S, "options": ({"name": S, "sub": S, "price": S, "why": S, "url": URL, "photo_url": URL,
                                          "facts": (S, 3)}, 6),
                 "winner": N, "why": S, "reasons": (S, 3), "caveat": S},
-    "status": {"scope": S, "items": ({"name": S, "role": S, "state": S, "value": S, "unit": S, "note": S,
+    "status": {"source": S, "scope": S, "items": ({"name": S, "role": S, "state": S, "value": S, "unit": S, "note": S,
                                       "history": (N, 24), "url": URL}, 12)},
     "draft": {"channel": S, "to": S, "subject": S, "body": S, "send_as": S, "thread": S, "revision": N,
               "changes": S},
@@ -121,12 +121,12 @@ CATALOG: dict[str, dict[str, Any]] = {
                                                                          "state": S, "url": URL, "address": S,
                                                                          "lat": N, "lon": N}, 10)}, 10)},
     # P4: rows of things to act on (pull requests, inbox triage, to-dos, bills, alerts).
-    "rows": {"title": S, "entity": S, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S, "when": S,
-                                                 "amount": S, "url": URL}, 12)},
+    "rows": {"source": S, "scope": S, "title": S, "entity": S, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S,
+                                                             "who": S, "when": S, "amount": S, "url": URL}, 12)},
     # P6: one number that matters, which way it moves, and the series behind it.
     "metric": {"label": S, "value": S, "unit": S, "delta": S, "good": B,
                "points": ({"label": S, "value": N, "mark": S}, 31),
-               "threshold": N, "threshold_label": S, "source": S, "as_of": S},
+               "threshold": N, "threshold_label": S, "source": S, "scope": S, "as_of": S},
     # P7: one thing to open (an album, an article, a paper, a contract, a file) with a short list.
     "preview": {"entity": S, "title": S, "creator": S, "sub": S, "year": S, "photo_url": URL, "url": URL,
                 "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "summary": S, "list_label": S,
@@ -137,7 +137,7 @@ CATALOG: dict[str, dict[str, Any]] = {
               "labels": (S, 4), "note": S, "updated": S, "image": IMG, "url": URL},
     # One pull request explained: where it stands and why, in one plain line, with its checks.
     "pr": {"repo": S, "number": N, "title": S, "state": S, "reason": S, "files": N, "checks": (
-        {"name": S, "state": S, "note": S}, 6), "when": S, "url": URL, "diff_url": URL},
+        {"name": S, "state": S, "note": S}, 40), "when": S, "url": URL, "diff_url": URL},
     # Work that is running: one quiet status line each, what needs the user first.
     "jobs": {"title": S, "items": ({"name": S, "status": S, "elapsed": S, "needs_you": B, "ask": S,
                                     "task_id": S}, 8)},
@@ -272,11 +272,17 @@ MAX_ACTIONS = 4
 
 def clean_actions(raw: Any) -> list[dict[str, Any]]:
     """A card's buttons (docs/API.md "Card actions"): ``id`` and ``label`` required; the server
-    decides what an id does when it is pressed."""
+    decides what an id does when it is pressed. A button the agent offers on a work card comes
+    without an id (``{label, primary}``): it gets ``do_N`` and goes back to the task as its words."""
     out: list[dict[str, Any]] = []
+    offered = 0
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
             continue
+        if "id" not in item and _str(item.get("label"), 40):
+            item = {**item, "id": f"do_{offered}", "label": _label(_str(item.get("label"), 40) or ""),
+                    "style": "primary" if item.get("primary") is True else item.get("style") or "secondary"}
+            offered += 1
         action_id, label = item.get("id"), _str(item.get("label"), 24)
         if not isinstance(action_id, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,23}", action_id) or not label:
             continue
@@ -287,6 +293,24 @@ def clean_actions(raw: Any) -> list[dict[str, Any]]:
             action["value"] = "brightness"
         out.append(action)
         if len(out) == MAX_ACTIONS:
+            break
+    return out
+
+
+MAX_LINKS = 2
+
+
+def clean_links(raw: Any) -> list[dict[str, str]]:
+    """Pages a card's buttons open (``Logs``, ``Open in Sentry``): a short label and a real https
+    URL; the app opens them, nothing reaches the server."""
+    out: list[dict[str, str]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        label, url = _label(_str(item.get("label"), 40) or ""), _field(URL, item.get("url"))
+        if label and url and all(o["url"] != url for o in out):
+            out.append({"label": label, "url": url})
+        if len(out) == MAX_LINKS:
             break
     return out
 
@@ -307,6 +331,8 @@ def clean(raw: Any, running: bool = False) -> dict[str, Any] | None:
     body = _tidy(kind, _object(shape, raw))
     if body and (actions := clean_actions(raw.get("actions"))):
         body["actions"] = actions
+    if body and (links := clean_links(raw.get("links"))):
+        body["links"] = links
     view = {"kind": kind, **body} if body else None
     if view is None or running:
         return view
@@ -387,7 +413,29 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             body["sort"] = word
     if kind == "before_after" and not ("before" in body or "after" in body):
         return {}
+    if kind in ("metric", "status", "rows") and isinstance(body.get("scope"), str):
+        # "fieldnote-ios · FIELDNOTE-IOS-3KD": a tracker's issue key is not what the card is about.
+        parts = [p.strip() for p in body["scope"].split("·")]
+        kept = [p for p in parts if p and not re.fullmatch(r"(?:[A-Z][A-Z0-9]*-)+[A-Z0-9]+", p)]
+        body["scope"] = " · ".join(kept)
+        if not kept:
+            body.pop("scope")
+    if kind == "stats":
+        # "Shared notes crash (FIELDNOTE-IOS-3KD)": the tracker's key is not a heading; and a word
+        # value reads as a word ("Fatal", not "fatal"), like the label above it.
+        if isinstance(body.get("title"), str):
+            body["title"] = _TRACKER_KEY.sub("", body["title"]).strip() or body["title"]
+        for item in body.get("items") or []:
+            v = item.get("value")
+            if isinstance(v, str) and re.fullmatch(r"[a-z][a-z ]*", v):
+                item["value"] = _cap_first(v.replace("_", " "))
     if kind == "weather":
+        # The model writes the sky in words ("Light drizzle") and rarely the icon: without one every
+        # row drew the same cloud, "Clear" included.
+        for row in [body, *(body.get("hours") or []), *(body.get("days") or [])]:
+            if isinstance(row, dict) and not row.get("icon") and isinstance(row.get("condition"), str):
+                if icon := condition_icon(row["condition"]):
+                    row["icon"] = icon
         # A row that is only a label ("6am" with no temperature) draws an empty bar: no row
         # beats an empty one, and an hour or day list of nothing but labels is left out.
         for rows in ("hours", "days"):
@@ -424,19 +472,73 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
     if kind == "status":
         items = [{**i, "state": i["state"].lower()} for i in body.get("items") or []
                  if i.get("name") and str(i.get("state", "")).lower() in STATUS_STATES]
+        for i in items:
+            role = i.get("role")
+            if isinstance(role, str) and len(role) > 24 and " \u00b7 " in role:
+                i["role"] = role.split(" \u00b7 ")[0]   # "Production · pg 8.13 bump" cut to "Production · pg 8.13 b…"
+            if isinstance(i.get("note"), str) and _COMMAND_NOTE.search(i["note"]):
+                i.pop("note")
+            elif isinstance(i.get("note"), str):
+                i["note"] = _first_clause(i["note"])
+            name = i["name"].strip()
+            if re.fullmatch(r"[a-z0-9]+(?:[-_][a-z0-9]+){2,}", name):
+                # "wiki-session-writeback-curator": a job's file name, read as words. Two-part slugs
+                # ("fieldnote-api") are the names people use for projects and stay as written.
+                name = re.sub(r"[-_]", " ", name)
+            i["name"] = name[0].upper() + name[1:] if name[:1].islower() and " " in name else name
+        scope_words = {w.lower() for w in re.findall(r"[A-Za-z0-9]+", str(body.get("scope") or ""))}
+        heads = {re.split(r"[-_ ]", i["name"], maxsplit=1)[0].lower() for i in items}
+        if len(items) >= 2 and len(heads) == 1 and heads <= scope_words:
+            # "Fieldnote deploys": fieldnote-api, fieldnote-web -> api, web (cut to "Fieldnote-a…" in a tile).
+            for i in items:
+                rest = re.split(r"[-_ ]", i["name"], maxsplit=1)
+                if len(rest) == 2 and rest[1].strip():
+                    i["name"] = _cap_first(rest[1].strip()) if len(rest[1].strip()) > 3 else rest[1].strip().upper()
+        if isinstance(body.get("scope"), str):
+            # "Scheduled jobs (partial list, ~3 AM snapshot)": the aside is the agent's caveat; the answer says it.
+            body = {**body, "scope": _PAREN_ASIDE.sub("", body["scope"]).strip() or body["scope"]}
         return {**body, "items": items} if body.get("scope") and items else {}
     if kind == "draft":
         channel = str(body.get("channel", "")).lower()
         if channel not in DRAFT_CHANNELS or not body.get("to") or not body.get("body"):
             return {}
-        return {**body, "channel": channel}
+        # "Priya Raman (#fieldnote-ios, thread reply)": the aside is the agent's note about where it
+        # goes (the thread field says that); the recipient is the name before it.
+        to = re.sub(r"\s*\([^()]*\)\s*$", "", body["to"]).strip() or body["to"]
+        return {**body, "channel": channel, "to": to}
     if kind == "timeline":
         days = []
         for day in body.get("days") or []:
-            items = [_coords(i) for i in day.get("items") or [] if i.get("when") and i.get("what")]
+            # A step still to come often has no time yet ("Combine into one build"): it reads "Next"
+            # rather than being dropped, which left a release timeline with only its past.
+            items = [_coords({**i, "when": i.get("when") or (
+                         # Under a day already headed "Next", a filler "Next" on every step said it three times.
+                         None if str(day.get("label", "")).strip().lower() in ("next", "up next", "still to do")
+                         and str(i.get("state", "")).lower() != "now"
+                         else "Now" if str(i.get("state", "")).lower() == "now" else "Next")})
+                     for i in day.get("items") or []
+                     if i.get("what") and (i.get("when") or str(i.get("state", "")).lower() in ("now", "next"))]
+            items = [{k: v for k, v in i.items() if v is not None} for i in items]
             items = [i if str(i.get("state", "")).lower() in TIMELINE_STATES else {k: v for k, v in i.items() if k != "state"}
                      for i in items]
             items = [{**i, "state": i["state"].lower()} if "state" in i else i for i in items]
+            for i in items:
+                # "SPK-208 Home is now a chat": a step reads as what happened; the key is tracker filing.
+                # "SPK-243 added; 32 ready" keeps its key: without it "Added; 32 ready" says nothing.
+                what = re.sub(r"^(?:[A-Z][A-Z0-9]*-\d+|#\d+)[:\s\u2014-]+(?=\S+\s+\S)(?![a-z]+ed\b)", "", i["what"].strip())
+                i["what"] = _cap_first(what) if what != i["what"].strip() else what
+                keys = re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", i["what"])
+                if len(keys) >= 2:
+                    # "Lanes SPK-172, SPK-218 and SPK-223 land": the words without the list of keys.
+                    bare = re.sub(r"\s*\(?\b[A-Z][A-Z0-9]*-\d+\b\)?(?:\s*(?:,|and|&)\s*)?", " ", i["what"])
+                    bare = re.sub(r"\s{2,}", " ", bare).strip(" ,;:\u2014-")
+                    if len(bare.split()) >= 2:
+                        i["what"] = bare
+                    elif bare:   # "Land SPK-172, SPK-197, SPK-217": "Land 3 issues"
+                        i["what"] = f"{_cap_first(bare)} {len(keys)} issues"
+                # A note that is a list of keys ("Includes SPK-232, SPK-233, SPK-241") says nothing to read.
+                if isinstance(i.get("note"), str) and len(re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b|#\d+", i["note"])) >= 3:
+                    i.pop("note")
             if day.get("label") and items:
                 days.append({**day, "items": items})
         return {**body, "days": days} if days else {}
@@ -449,11 +551,34 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             out["entity"] = out["entity"].lower()
         else:
             out.pop("entity", None)
+        for i in items:
+            # A worker's or database id ("t_98ab845a") is not a reference anyone uses; the row keeps
+            # its name and loses the ref rather than show machine text.
+            ref = i.get("ref")
+            if isinstance(ref, str) and _INTERNAL_ID.fullmatch(ref.strip()):
+                i.pop("ref")
+            elif isinstance(ref, str) and not re.search(r"\d", ref):
+                # A sender or owner ("Dana Whitfield") in the ref slot: it's who, not which. It leads
+                # the note instead, so the row's mono reference column holds only numbers.
+                i.pop("ref")
+                i["note"] = f"{ref.strip()} · {i['note']}" if i.get("note") else ref.strip()
+        _fill_ref_urls(items)
+        states = {str(i.get("state", "")).strip().lower() for i in items}
+        if len(items) >= 3 and len(states) == 1 and "" not in states:
+            # "Open" on every row says nothing a row can't: the title can say it once.
+            for i in items:
+                i.pop("state")
+        if out.get("entity") in ("pr", "issue"):
+            for i in items:
+                i["name"] = _cap_first(_work_title(i["name"]))
+                if i.get("state"):
+                    i["state"] = _cap_first(i["state"])
         return out
     if kind == "metric":
         if not body.get("label") or not body.get("value"):
             return {}
         out = dict(body)
+        out["label"] = _TRACKER_KEY.sub("", out["label"]).strip() or out["label"]   # no "(FIELDNOTE-IOS-3KD)"
         points = out.get("points") or []
         if points and (len(points) < 2 or any("label" not in pt or "value" not in pt for pt in points)):
             out.pop("points")   # a series is all of it or none of it, never a chart cut short
@@ -462,28 +587,102 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         entity = str(body.get("entity", "")).lower()
         if entity not in PREVIEW_ENTITIES or not body.get("title"):
             return {}
-        return _entity_item(entity, {**body, "entity": entity})
+        out = _entity_item(entity, {**body, "entity": entity})
+        said = _norm(out.get("summary") or "")
+        if isinstance(out.get("list"), list):
+            # A key point that only restates the summary ("Goal: drafts keep attachments") is said twice.
+            kept = [x for x in out["list"] if not (isinstance(x, str) and _restates(x, said))]
+            out["list"] = kept
+            if len(kept) == 1 and isinstance(kept[0], str) and out.get("summary"):
+                # One numbered "key point" is a list of one: it reads as the summary's next sentence.
+                point = kept[0].strip().rstrip(".")
+                out["summary"] = out["summary"].rstrip().rstrip(".") + ". " + point[0].upper() + point[1:] + "."
+                kept = []
+            if not kept:
+                out.pop("list")
+                out.pop("list_label", None)
+        if isinstance(out.get("flags"), list):
+            listed = _norm(" ".join(x for x in out.get("list") or [] if isinstance(x, str)))
+            out["flags"] = [f for f in out["flags"] if not (isinstance(f, str) and _restates(f, listed))]
+            if not out["flags"]:
+                out.pop("flags")
+        return out
     if kind == "issue":
         if not body.get("title"):
             return {}
         out = _tone(dict(body), TAG_TONES)
         source = str(out.get("source", "")).lower()
         out["source"] = source if source in ISSUE_SOURCES else "other"
+        out["title"] = _work_title(out["title"])
+        if re.fullmatch(r"(?i)\s*(?:unassigned|no one|nobody|none|-)\s*", str(out.get("assignee") or "x")):
+            out.pop("assignee")   # "Unassigned" filled a whole line with nothing (SPK-231 reps)
+        if "priority" in out:
+            word = _priority(out["priority"])
+            out.pop("priority")
+            if word:
+                out["priority"] = word
+        if out.get("state"):
+            out["state"] = _cap_first(out["state"])
+        if "labels" in out:
+            labels = _topic_labels(out["labels"], out.get("state"), out.get("priority"))
+            out.pop("labels")
+            if labels:
+                out["labels"] = labels
         return out
     if kind == "pr":
         state = str(body.get("state", "")).lower()
-        if not body.get("title") or not body.get("reason") or state not in PR_STATES:
+        if not body.get("title") and body.get("checks") and body.get("number"):
+            # Asked only about CI ("how did CI do on 147753"), the agent read the checks, not the PR:
+            # the card is that PR's checks, named by its number, with no state it didn't see.
+            body = {**body, "title": f"Checks on #{int(body['number'])}"}
+            if state not in PR_STATES:
+                state = "failing" if any(str(c.get("state", "")).lower() == "failed" for c in body["checks"]) else ""
+        if not body.get("title") or not body.get("reason") or state not in PR_STATES and not (state == "" and body.get("checks")):
             return {}
-        out = {**body, "state": state, "reason": body["reason"][:160]}
+        out = {**body, "reason": body["reason"][:160], "title": _work_title(body["title"])}
+        if state:
+            out["state"] = state
+        else:
+            out.pop("state", None)
+        repo = str(out.get("repo") or "")
+        if not out.get("url") and out.get("number") and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+            # owner/repo and a number name exactly one GitHub page: the card can open it.
+            out["url"] = f"https://github.com/{repo}/pull/{int(out['number'])}"
         if "number" in out and not (float(out["number"]).is_integer() and out["number"] > 0):
             out.pop("number")
         elif "number" in out:
             out["number"] = int(out["number"])
         checks = [{**c, "state": c["state"].lower()} for c in out.get("checks") or []
                   if c.get("name") and str(c.get("state", "")).lower() in CHECK_STATES]
+        for c in checks:
+            if c.get("note") and re.search(r"(?i)action[_ ]required|awaiting approval|needs approval", c["note"]):
+                c["note"] = "Waiting for approval to run"   # an empty pending circle read as queued
+            elif c.get("note") and _MACHINE_NOTE.search(c["note"]):
+                c.pop("note")   # the state already says it; raw CI words are worse than none
+        notes = [c.get("note") for c in checks]
+        if len(checks) > 1 and notes[0] and all(n == notes[0] for n in notes):
+            for c in checks:   # one reason on every check ("Needs a maintainer to approve") is the card's reason
+                c.pop("note")
         out.pop("checks", None)
         if checks:
-            out["checks"] = checks
+            # What failed or is still going first, six at most (older apps list them all); the card
+            # counts the rest from checks_total ("9 more skipped"), so fifteen skips aren't a wall.
+            order = {"failed": 0, "running": 1, "pending": 2, "passed": 3, "skipped": 4}
+            ranked = [c for _, c in sorted(enumerate(checks), key=lambda p: (order.get(p[1]["state"], 5), p[0]))]
+            out["checks"] = ranked[:6]
+            if len(ranked) > 6:
+                out["checks_total"] = len(ranked)
+                rest = {c["state"] for c in ranked[6:]}
+                if len(rest) == 1:
+                    out["checks_rest"] = rest.pop()
+            # The agent often lists a few checks and counts the rest in words ("All 15 checks were
+            # skipped"): the card's "2 more" then undercounts. Take the count the reason gives.
+            said = re.search(r"\b(all )?(\d{1,3}) (?:CI )?checks\b", out.get("reason") or "", re.I)
+            if said and len(ranked) < int(said.group(2)) <= 300:
+                out["checks_total"] = int(said.group(2))
+                states = {c["state"] for c in ranked}
+                if said.group(1) and len(states) == 1:
+                    out["checks_rest"] = states.pop()
         return out
     if kind == "jobs":
         items = [i for i in body.get("items") or [] if i.get("name") and i.get("status")]
@@ -492,6 +691,18 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 i["ask"] = _label(i["ask"])
             if not i.get("needs_you"):
                 i.pop("ask", None)
+            # A job that is stuck or missed its run isn't live work: it reads as trouble (amber), and
+            # one that only ran earlier ("last ran 3 AM") as idle, not under the green live dot.
+            low = i["status"].lower()
+            if not i.get("needs_you") and re.search(r"\b(?:missed|stuck|stall(?:ed|ing)?|fail(?:ed|ing)?|error|hung|holding up|timed out|crash)", low):
+                i["state"] = "warn"
+            elif not i.get("needs_you") and re.search(r"\b(?:last ran|ran at|idle|paused|scheduled for|next run|waiting to run)\b", low):
+                i["state"] = "idle"
+            if i["name"][:1].islower() and " " in i["name"]:
+                i["name"] = i["name"][0].upper() + i["name"][1:]   # "personal daily journal writeback" heads a row
+            if isinstance(i.get("elapsed"), str):
+                # "about 19 min" pushed the name onto two lines; a card corner is exact enough as "19 min".
+                i["elapsed"] = re.sub(r"(?i)^(?:about|around|roughly|approx\.?|~)\s*", "", i["elapsed"].strip())
         return {**body, "items": items} if items else {}
     if kind == "site":
         return body if body.get("url") else {}
@@ -500,12 +711,148 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         if not items:
             return {}
         out = {**body, "items": items}
+        if isinstance(out.get("title"), str):
+            out["title"] = _PAREN_ASIDE.sub("", out["title"]).strip() or out["title"]
+        if isinstance(out.get("note"), str) and _restates(out["note"], _norm(out.get("title") or "")):
+            out.pop("note")
         nxt = [_label(n) for n in out.get("next") or [] if n]
         out.pop("next", None)
         if nxt:
             out["next"] = nxt
         return out
     return body
+
+
+# A commit-style prefix ("fix(gateway): ", "feat: ", "chore(deps)!: ") is how a branch is filed, not
+# what the change is; the card shows the words after it, capitalized like a title.
+_COMMIT_PREFIX = re.compile(r"^(?:feat|fix|chore|docs|refactor|perf|test|tests|build|ci|style|revert)"
+                            r"(?:\([^)]{1,40}\))?!?:\s+(?=\S)", re.I)
+_PRIORITY_WORDS = {"0": None, "1": "Urgent", "2": "High", "3": "Medium", "4": "Low",
+                   "no priority": None, "none": None, "p0": "Urgent", "p1": "High", "p2": "Medium", "p3": "Low"}
+
+
+# Worker/database ids, commit SHAs, UUIDs and CI run ids (8+ digits; PR and issue numbers stay shorter).
+_INTERNAL_ID = re.compile(r"(?i)#?(?:[a-z]{1,4}_[0-9a-f]{6,}|[0-9a-f]{12,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{20,}|\d{8,})")
+# Machine words in a check's note: CI states in snake_case and bare commit SHAs ("action_required on 05396a4").
+_MACHINE_NOTE = re.compile(r"\b[a-z]+_[a-z_]+\b|\b[0-9a-f]{7,40}\b")
+# A command line in a note ("npm run build exited 1"): the state already says it failed.
+_COMMAND_NOTE = re.compile(r"(?i)\bexit(?:ed)?(?: with)?(?: code| status)? \d+\b|^(?:npm|yarn|pnpm|bun|make|cargo|go|pip|uv) \w")
+
+
+_SKY_WORDS = (   # first match wins: the strongest weather in the words
+    (r"thunder|storm|lightning", "storm"), (r"sleet|freezing|ice|hail", "sleet"), (r"snow|flurr", "snow"),
+    (r"heavy rain|downpour|pouring", "heavy_rain"), (r"drizzle|sprinkle", "drizzle"), (r"rain|shower", "rain"),
+    (r"fog|mist|haze|smoke", "fog"), (r"partly|mostly sunny|some sun|few clouds|scattered clouds|mix of sun", "cloud_sun"),
+    (r"overcast|cloud|grey|gray", "cloud"), (r"clear|sunny|fair|sun", "sun"),
+)
+
+
+def condition_icon(condition: str) -> str | None:
+    """The weather card's icon word for a sky written in words ("Rain showers" -> rain), or None."""
+    low = condition.lower()
+    return next((icon for pattern, icon in _SKY_WORDS if re.search(pattern, low)), None)
+
+
+def _fill_ref_urls(items: list[dict[str, Any]]) -> None:
+    """Rows the agent linked for some refs but not others ("SPK-196" linked, "SPK-207" not): when a
+    linked row's URL holds its own ref, the others get the same URL with theirs, so every row opens."""
+    template = None
+    for i in items:
+        ref, url = i.get("ref"), i.get("url")
+        if isinstance(ref, str) and isinstance(url, str) and url.startswith("https://"):
+            m = re.match(r"(https://[^?#]*/)" + re.escape(ref.strip()) + r"(?=$|[/?#])", url)
+            if m:
+                template = m.group(1)
+                break
+    if not template:
+        return
+    for i in items:
+        ref = i.get("ref")
+        if not i.get("url") and isinstance(ref, str) and re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", ref.strip()):
+            i["url"] = template + ref.strip()
+
+
+_TRACKER_KEY = re.compile(r"\s*\((?:[A-Z][A-Z0-9]*-)+[A-Z0-9]+\)\s*$")
+_PAREN_ASIDE = re.compile(r"\s*\([^()]{1,40}\)")
+
+
+def _first_clause(note: str, limit: int = 44) -> str:
+    """A tile's note as one short clause: "Very busy; 18.0 GB free, 206 GB disk free" -> "Very busy"."""
+    note = note.strip()
+    if len(note) <= limit:
+        return note
+    head = re.split(r"\s*[;\u2014]\s*|\.\s+", note)[0].strip()
+    if len(head) <= limit:
+        return head
+    parts = [p.strip() for p in head.split(",")]
+    out = parts[0]
+    for p in parts[1:]:
+        if len(out) + len(p) + 2 > limit:
+            break
+        out += ", " + p
+    return out
+
+
+def _restates(text: str, said: str) -> bool:
+    """Most of *text*'s content words already appear in *said* (a normalized string)."""
+    words = [w for w in _norm(re.sub(r"^\w+:\s*", "", text)).split() if len(w) > 2 and w not in _LABEL_STOP]
+    if not words or said.strip() == "":
+        return False
+    return sum(f" {w} " in said for w in words) * 4 >= len(words) * 3
+
+
+def _cap_first(text: str) -> str:
+    first = text.split(" ", 1)[0] if text else ""
+    if any(ch.isupper() for ch in first[1:]):
+        return text   # "iPhone Duo side panel", "macOS menu": the name's own casing
+    return text[:1].upper() + text[1:] if text and text[:1].islower() else text
+
+
+def _work_title(title: str, long: int = 56) -> str:
+    """An issue or pull request title as people read it: no commit-style prefix; and a long one
+    ("Build 70 iPhone: Jump to work shows while the work is on screen; new replies stop
+    auto-scrolling", three lines on a phone card) loses its scope prefix and its second clause
+    ("Jump to work shows while the work is on screen"). The tracker keeps the whole title."""
+    text = title.strip()
+    bare = _COMMIT_PREFIX.sub("", text)
+    out = _cap_first(bare) if bare != text else text
+    if len(out) > long:
+        head, sep, rest = out.partition(": ")
+        if sep and len(head.split()) <= 4 and len(rest.split()) >= 3:
+            out = _cap_first(rest.strip())
+    if len(out) > long:
+        clause = re.split(r"\s*(?:;|\s[\u2014\u2013]\s|\s-\s)\s*", out)[0].strip()
+        if len(clause.split()) >= 3:
+            out = clause
+    return out
+
+
+def _priority(value: Any) -> str | None:
+    """Tracker priority in words: Linear sends 0-4 (0 none, 1 urgent ... 4 low); a word passes through
+    without a trailing 'priority' (the card adds it). None: no priority worth a line."""
+    raw = str(value).strip()
+    key = raw.lower().removesuffix(" priority").strip()
+    key = key[:-2] if key.endswith(".0") else key
+    if key in _PRIORITY_WORDS:
+        return _PRIORITY_WORDS[key]
+    return _cap_first(raw[:-len(" priority")] if raw.lower().endswith(" priority") else raw) or None
+
+
+def _norm_label(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(text).lower())
+
+
+def _topic_labels(labels: list[Any], state: Any, priority: Any) -> list[str]:
+    """Labels that say what the issue is about: one that only repeats the state or priority
+    ("ready-to-ship" beside Ready to ship) is already on the card."""
+    said = {_norm_label(state), _norm_label(priority), ""}
+    out: list[str] = []
+    for label in labels:
+        if re.fullmatch(r"(?i)(?:build|release|cycle|sprint|milestone|v)[\s_-]?\d+(?:\.\d+)*", str(label).strip()):
+            continue   # "build-70": a release bucket, not what the issue is about
+        if _norm_label(label) not in said and _norm_label(label) not in {_norm_label(x) for x in out}:
+            out.append(str(label))
+    return out
 
 
 def _coords(item: dict[str, Any]) -> dict[str, Any]:
@@ -562,17 +909,21 @@ _LABEL_STOP = set("""a an the and or of to for in on at by with from via is are 
 these those as into over under up out off""".split())
 
 
-def _grounded_label(name: str, said: str, said_numbers: set[str]) -> bool:
+def _grounded_label(name: str, said: str, said_numbers: set[str], half: bool = False) -> bool:
     """A status tile's or row's name is a short label the agent writes for one line of its answer
     ("Mac tests", "Package needs a signature"), rarely that answer's exact words. It counts as said when
     the exact phrase is there, or when every number in it is said and at least two thirds of its words
     are (a one-word name must be said exactly). Values, refs and amounts stay exact (SPK-236)."""
     if _grounded_name(name, said):
         return True
+    head = re.split(r"\s+[\u2014\u2013+]\s+|\s+-\s+|\s*\(", name, maxsplit=1)[0].strip()
+    if head != name and len(_norm(head).split()) >= 2 and _grounded_label(head, said, said_numbers, half):
+        return True   # "Report builder \u2014 nightly": the job is named; the qualifier is its detail
     words = [w for w in _norm(name).split() if w not in _LABEL_STOP]
     if len(words) < 2 or not _numbers(name) <= said_numbers:
         return False
-    return sum(f" {w} " in said for w in words) * 3 >= len(words) * 2
+    hits = sum(f" {w} " in said for w in words)
+    return hits * 2 >= len(words) if half else hits * 3 >= len(words) * 2
 
 
 def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
@@ -580,9 +931,13 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
     (it is never repaired: repaired cards were how wrong content got through). Status and rows names
     are labels, checked word by word (``_grounded_label``); entity names stay exact."""
     said, nums = _norm(answer), _numbers(answer)
+    # "six pieces of work" says the 6 on the card (spoken-style answers spell small numbers out).
+    from .home_words import digits
+    nums |= _numbers(digits(answer or ""))
     kind = view.get("kind")
     names: list[str] = []
     labels: list[str] = []
+    loose: list[str] = []
     values: list[Any] = []
     if kind == "explore":
         for sec in view["sections"]:
@@ -598,16 +953,27 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
             labels.append(i["name"])
             values += [i.get("value")] if i.get("value") else []
     elif kind == "draft":
-        names.append(view["to"])
+        # A recipient's full name ("Priya Raman") is usually said by first name in the answer.
+        (loose if len(_norm(view["to"]).split()) > 1 else names).append(view["to"])
     elif kind == "timeline":
         for day in view["days"]:
             values.append(day["label"])
             for it in day["items"]:
-                values.append(it["when"])
+                # "Nov 8, 2:50 AM" said as "2:50 AM today": the clock time is what pins the step.
+                if it.get("when") is not None:
+                    when = str(it["when"])
+                    clock = re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:AM|PM|am|pm)\b", when)
+                    values.append(clock.group(0) if clock and "," in when else it["when"])
                 names += [it["where"]] if it.get("where") else []
     elif kind == "rows":
         for i in view["items"]:
-            labels.append(i["name"])
+            # A row pinned by a ticket ref the answer says ("SPK-196") is that ticket; its name is the
+            # agent's short description of it, so half its words are enough.
+            ref = i.get("ref")
+            if ref and _numbers(str(ref)) and _grounded_name(str(ref), said):
+                loose.append(i["name"])
+            else:
+                labels.append(i["name"])
             values += [i[k] for k in ("ref", "amount") if i.get(k)]
     elif kind == "metric":
         # The line itself prints no numbers; only marked points show theirs, so only those are checked.
@@ -616,45 +982,91 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
     elif kind == "preview":
         names += [view["title"]] + ([view["creator"]] if view.get("creator") else [])
     elif kind in ("issue", "pr"):
-        # A ticket's or PR's title is a short label the agent writes for it, often in the words the
-        # user gave it ("make an issue: the Save button hides behind the keyboard"): it counts as said
-        # when the answer or the user's own ask says it (as a label, two thirds of its words). The
-        # ref and number stay exact against the answer.
+        # The ticket is pinned by its ref or number; its title, copied from the tracker, is rarely
+        # quoted whole in the answer, so with the ref said it is checked as a label (SPK-231 reps).
+        # Otherwise the title is a short label the agent writes, often in the user's own words
+        # ("make an issue: the Save button hides behind the keyboard"): it counts as said when the
+        # answer or the user's own ask says it as a label. The ref and number stay exact.
         title = view["title"]
-        if not (_grounded_label(title, said, nums)
-                or (asked and _grounded_label(title, _norm(asked), _numbers(asked)))):
+        ref = view.get("ref") if kind == "issue" else view.get("number")
+        pinned = ref is not None and _numbers(str(ref)) and _grounded_value(ref, nums) and _grounded_name(str(ref), said)
+        in_ask = bool(asked) and _grounded_label(title, _norm(asked), _numbers(asked))
+        if not (in_ask or (_grounded_label(title, said, nums) if pinned else _grounded_name(title, said))):
             return False
-        if kind == "issue":
-            values += [view["ref"]] if view.get("ref") else []
-        else:
-            values += [view["number"]] if view.get("number") is not None else []
+        values += [ref] if ref not in (None, "") else []
     elif kind == "jobs":
-        names += [i["name"] for i in view["items"]]
+        # Job names come from the board and the answer says them in its own words: labels.
+        labels += [i["name"] for i in view["items"]]
     elif kind == "site":
         names += [view["title"]] if view.get("title") else []
     # mockups: the pictures are the task's own renders and their captions describe them; nothing to check.
     if kind == "explore":
         values += [it["day"] for sec in view["sections"] for it in sec["items"] if it.get("day")]
     return (all(_grounded_name(n, said) for n in names) and all(_grounded_label(n, said, nums) for n in labels)
+            and all(_grounded_label(n, said, nums, half=True) for n in loose)
             and all(_grounded_value(v, nums) for v in values))
 
 
+# A button whose words change something outside the card asks first (the phone shows the label in a
+# confirm dialog). Only steps that look, fetch or prepare (Check, Show, Pull stack trace, Draft a reply,
+# Rerun failed checks) go straight to the task; anything else (Restart, Rebase, Redeploy, Add a fix) confirms.
+_READ_ONLY = re.compile(
+    r"(?i)^(?:check|show|see|view|find|get|pull|fetch|read|inspect|open|look|list|compare|explain|summari[sz]e|"
+    r"draft|preview|test|diagnose|investigate|trace|watch|track|search|re-?run|retry|refresh|recheck|load|"
+    r"download|copy|count|estimate|map|plan|review)\b")
+MAX_OFFERED = 2
+# Interrupts or destroys something: drawn in the warning tint, always confirmed.
+_HARMFUL = re.compile(r"(?i)^(?:restart|reboot|stop|kill|delete|remove|drop|roll\s*back|rollback|revert|cancel|"
+                      r"disable|turn\s+off|refund)\b")
+
+
+def _offered(view: dict[str, Any]) -> list[dict[str, Any]]:
+    """The buttons the agent offered on a work card (``do_N``), at most two, the first it marked
+    primary kept primary; anything consequential confirms first."""
+    out: list[dict[str, Any]] = []
+    for a in view.get("actions") or []:
+        if not str(a.get("id", "")).startswith("do_") or len(out) == MAX_OFFERED:
+            continue
+        if re.match(r"(?i)^(?:open|view|visit|go to)\b", a["label"]):
+            continue   # opening a page is a link the phone opens, not words sent to the task ("Open #66526")
+        primary = a.get("style") == "primary" and not any(o["style"] == "primary" for o in out)
+        harmful = bool(_HARMFUL.match(a["label"]))
+        out.append({**a, "style": "primary" if primary and not harmful else "destructive" if harmful else "secondary",
+                    "confirm": a.get("confirm") is True or harmful or not _READ_ONLY.match(a["label"])})
+    if out and not any(o["style"] == "primary" for o in out):
+        # One button leads, as the designs end a card; never one that interrupts or destroys something.
+        first = next((o for o in out if o["style"] == "secondary"), None)
+        if first:
+            first["style"] = "primary"
+    return out
+
+
 def _artifact_actions(view: dict[str, Any]) -> dict[str, Any]:
-    """Buttons are set here, never by the agent: Send on a draft and Go with on a compare reach the
-    task as a follow-up, and both always confirm first."""
+    """Send on a draft, Go with on a compare, Fix on a stuck PR and a mockup's next steps are set
+    here and reach the task as a follow-up (Send and Go with always confirm first). Other work cards
+    keep up to two buttons the agent offered for its next step (Rerun failed, Restart api-2); those
+    reach the task as their own words, the consequential ones after a confirm."""
+    offered = _offered(view) if view["kind"] not in ("draft", "compare", "mockups") else []
     view.pop("actions", None)
+    if offered:
+        view["actions"] = offered
     if view["kind"] == "draft":
         view["actions"] = [{"id": "send", "label": "Send", "style": "primary", "confirm": True}]
     elif view["kind"] == "compare":
         # Cut at a word ("Go with REI Co-op", never "Go with REI Co-op Rainie").
         label = _label("Go with " + view["options"][view["winner"]]["name"]) or "Go with this"
         view["actions"] = [{"id": "go", "label": label, "style": "primary", "confirm": True}]
-    elif view["kind"] == "pr" and view["state"] in ("conflicts", "failing"):
+    elif view["kind"] == "pr" and view.get("state") in ("conflicts", "failing") and not offered:
+        # The agent's own next steps (Rebase on main, Rerun failed) say it better than a generic Fix.
         label = "Fix conflicts" if view["state"] == "conflicts" else "Fix the checks"
         view["actions"] = [{"id": "fix", "label": label, "style": "primary", "confirm": False}]
     elif view["kind"] == "mockups" and view.get("next"):
         view["actions"] = [{"id": f"next_{i}", "label": n, "style": "secondary", "confirm": False}
                            for i, n in enumerate(view["next"])]
+    if offered and view.get("actions") is not offered:
+        # The server's button leads; an offered one that says something else follows it.
+        said = {a["label"].lower() for a in view["actions"]}
+        view["actions"] += [{**a, "style": "secondary"} for a in offered if a["label"].lower() not in said][:1]
     return view
 
 
@@ -703,6 +1115,77 @@ def _day_actions(view: dict[str, Any]) -> dict[str, Any]:
         later = view["events"][pairs[0][1]].get("title") or "the later one"
         view["actions"] = [{"id": "move", "label": _label("Move " + later) or "Move it", "style": "secondary",
                             "confirm": False}]
+    free = view.get("free")
+    if isinstance(free, list) and free:
+        # "Before 9:30 AM" and "After 7:00 PM" are the whole morning and evening, not a gap worth
+        # naming; and ":00" is noise ("1:30\u20136:00 PM" reads "1:30\u20136 PM").
+        inner = [f for f in free if isinstance(f, str) and not re.match(r"(?i)(?:before|after|until|from)\b", f)]
+        view["free"] = [re.sub(r":00(?=\s*(?:[AaPp][Mm]|\u2013|-|$))", "", f) for f in (inner or free) if isinstance(f, str)]
+    return view
+
+
+def _unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
+    """A card line that repeats the reply (the reply sits right above the card on Home) is said
+    twice: a PR's reason, an issue's note, a release preview's summary or a site's line that restates
+    the answer's opening or the spoken line goes; the reply keeps it."""
+    text = (answer or "").strip()
+    opening = _norm(" ".join(re.split(r"(?<=[.!?])\s+", text)[:2]))
+    # The spoken line is the answer's last paragraph (split_result appends it): its first sentence is
+    # the reply shown above the card.
+    last = text.rsplit("\n", 1)[-1] if "\n" in text else ""
+    reply = _norm(re.split(r"(?<=[.!?])\s+", last.strip())[0]) if last.strip() else ""
+    for key in {"pr": ("reason",), "issue": ("note",), "preview": ("summary",), "site": ("sub",)}.get(view.get("kind"), ()):
+        if isinstance(view.get(key), str) and (_restates(view[key], opening) or (reply and _restates(view[key], reply))):
+            view = {k: v for k, v in view.items() if k != key}
+    states = {c.get("state") for c in view.get("checks") or []}
+    if view.get("kind") == "pr" and len(states) == 1 and states <= {"skipped", "passed"} and isinstance(view.get("reason"), str) \
+            and re.search(r"(?i)\b(skipped|passed|didn't run|never ran|nothing ran)\b", view["reason"]):
+        # "All 15 skipped" under "All 15 checks were skipped, so nothing was tested": the checks line says it.
+        view = {k: v for k, v in view.items() if k != "reason"}
+    return view
+
+
+def _urls_in(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        return set().union(*(_urls_in(v) for k, v in value.items() if k != "links")) if value else set()
+    if isinstance(value, list):
+        return set().union(*(_urls_in(v) for v in value)) if value else set()
+    return {value} if isinstance(value, str) and value.startswith("https://") else set()
+
+
+_NUMBER_WORDS = {w: n for n, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
+    "seventeen eighteen nineteen twenty".split())}
+
+
+def _checks_counted(view: dict[str, Any], answer: str) -> dict[str, Any]:
+    """A PR card listing six of fifteen skipped checks, when the answer says "all 15 checks were
+    skipped" (or "fifteen"), counts the rest instead of reading "All 6 skipped"."""
+    checks = view.get("checks") or []
+    if view.get("kind") != "pr" or not checks or view.get("checks_total"):
+        return view
+    said = re.search(r"\b(all |every one of )?(?:the |your )?(\d{1,3}|" + "|".join(_NUMBER_WORDS) + r") (?:CI )?(?:checks|jobs)\b",
+                     answer or "", re.I)
+    if not said:
+        return view
+    n = int(said.group(2)) if said.group(2).isdigit() else _NUMBER_WORDS[said.group(2).lower()]
+    if not len(checks) < n <= 300:
+        return view
+    view = {**view, "checks_total": n}
+    states = {c["state"] for c in checks}
+    if said.group(1) and len(states) == 1:
+        view["checks_rest"] = next(iter(states))
+    return view
+
+
+def _soft_unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
+    """A document preview's maker the answer never names is left off, not the card (a name, never a
+    number: a figure or time the answer doesn't back still drops the card, which is never repaired)."""
+    said = _norm(answer)
+    if (view.get("kind") == "preview" and view.get("creator") and view.get("entity") != "media"
+            and not _grounded_name(view["creator"], said)):
+        # A document's maker is a detail; an album's artist is what makes it the right album, so it stays checked.
+        view = {k: v for k, v in view.items() if k != "creator"}
     return view
 
 
@@ -715,17 +1198,75 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
             out.append(_day_actions(view))
             continue
         if view.get("kind") not in ARTIFACTS:
+            if any(str(a.get("id", "")).startswith("do_") for a in view.get("actions") or []):
+                # Older kinds keep an offered next step too, under the same rules (two, confirm first).
+                view = {**view, "actions": [a for a in view["actions"] if not str(a.get("id", "")).startswith("do_")]
+                        + _offered(view)}
+            if view.get("links"):
+                own = _urls_in(view)   # a page the card already opens (a tile's Website) isn't a second button
+                view = {**view, "links": [lk for lk in view["links"] if lk["url"] not in own]}
+                if not view["links"]:
+                    view.pop("links")
             out.append(view)
             continue
-        if kept >= MAX_ARTIFACTS or not grounded(view, answer, asked):
+        if kept >= MAX_ARTIFACTS:
             continue
-        out.append(_artifact_actions(view))
+        view = _checks_counted(_soft_unsaid(view, answer), answer)
+        if not grounded(view, answer, asked):
+            continue
+        if view.get("links"):
+            # "Misi website" under a tile with its own Website, "Open #66526" beside that row's arrow:
+            # a page the card already opens is not a second button.
+            own = _urls_in(view)
+            view = {**view, "links": [lk for lk in view["links"] if lk["url"] not in own]}
+            if not view["links"]:
+                view.pop("links")
+        out.append(_artifact_actions(_unsaid(view, answer)))
         kept += 1
+    return out
+
+
+def _card_subject(view: dict[str, Any]) -> str:
+    """What a card is about, in a few words, for the words a pressed button sends its task:
+    "PR #147753", "SPK-233", "Vercel · fieldnote-web"."""
+    kind = view.get("kind")
+    if kind == "pr" and view.get("number"):
+        return f"PR #{_count(view['number'])}"
+    if kind == "issue" and view.get("ref"):
+        return str(view["ref"])
+    seen: list[str] = []
+    for key in ("source", "scope", "title", "label"):
+        part = view.get(key)
+        if isinstance(part, str) and part.strip() and part.lower() not in (s.lower() for s in seen):
+            seen.append(part.strip())
+    return " · ".join(seen[:2])
+
+
+def drop_steps_the_question_asks(views: list[dict[str, Any]], question: dict[str, Any]) -> list[dict[str, Any]]:
+    """A question whose options are the places (or options) a card shows is the choice: the card's
+    offered steps ("Check Misi tables", "Check Lilia tables") asked it a second time, so they go."""
+    asked = {_norm(option_text(o)) for o in question.get("options") or []}
+    out = []
+    for v in views:
+        items = v.get("items") if v.get("kind") == "places" else v.get("options") if v.get("kind") == "compare" else None
+        names = {_norm(str(i.get("name", ""))) for i in items or [] if isinstance(i, dict)}
+        if names and asked and len(asked & names) >= 2 and any(str(a.get("id", "")).startswith("do_") for a in v.get("actions") or []):
+            v = {**v, "actions": [a for a in v["actions"] if not str(a.get("id", "")).startswith("do_")]}
+            if not v["actions"]:
+                v.pop("actions")
+        out.append(v)
     return out
 
 
 def follow_up(view: dict[str, Any], action: str) -> str | None:
     """What an artifact's button says to its task, in plain words (the agent does the sending)."""
+    if action.startswith("do_"):
+        # A button the agent offered: its own words and what card it was on ("Rerun failed (PR #418).").
+        label = next((a.get("label") for a in view.get("actions") or [] if a.get("id") == action), None)
+        if not label:
+            return None
+        about = _card_subject(view)
+        return label + (f" ({about})." if about else ".")
     if view.get("kind") == "draft" and action == "send":
         channel = {"email": "email", "x": "post"}.get(view["channel"], "message")
         return f"Send the {channel} to {view['to']} exactly as drafted on the card."
@@ -881,16 +1422,40 @@ def extract_question(output: str) -> tuple[str, dict[str, Any] | None]:
     return rest, view
 
 
-def spoken_question(view: dict[str, Any]) -> str:
-    """How the voice reads a question card: the question, the options, and the suggestion."""
+# Words that start a sentence but are not names: these lose their capital mid-sentence
+# ("Quick question: which ..."). Anything else (Misi, Lilia, PR 147753) keeps its casing.
+_PLAIN_LEADS = frozenset("""
+a an the this that these those it its my your our their one two three four five first second last
+which what when where who whom whose why how should shall would will could can do does did is are was were
+have has had may might must want need yes no not none neither either both all any each every some other
+keep skip stop start wait go shoot lock leave use pick try ship hold move cancel send buy book check fix
+ask show make take add drop merge pull push run build open close approve reject accept decline retry
+just only now later today tonight tomorrow
+""".split())
+
+
+def soft_lower(text: str) -> str:
+    """Lowercase a sentence-initial word for mid-sentence use, unless it is (or may be) a name."""
+    word = re.split(r"[\s,.;:!?]", text, maxsplit=1)[0]
+    if word and word.lower() in _PLAIN_LEADS and word[1:] == word[1:].lower():
+        return text[0].lower() + text[1:]
+    return text
+
+
+def spoken_question(view: dict[str, Any], lead: str = "") -> str:
+    """How the voice reads a question card: the question, the options, and the suggestion.
+
+    The suggestion is skipped when the lead sentence already named it ("My pick is Misi.")."""
     opts = [option_text(o).rstrip(".") for o in view["options"]]
     said = view["question"].rstrip()
     if not said.endswith("?"):
         said = said.rstrip(".") + "?"
     listed = ", ".join(opts[:-1]) + f", or {opts[-1]}" if len(opts) > 2 else f"{opts[0]} or {opts[1]}"
-    out = f"Quick question: {said[0].lower() + said[1:]} {listed}."
+    out = f"Quick question: {soft_lower(said)} {listed}."
     if any(view.get("images") or []):
         out = out[:-1] + ". They're on screen."
     if "recommended" in view:
-        out += f" I'd go with {opts[view['recommended']].lower()}."
+        pick = opts[view["recommended"]]
+        if pick.lower() not in lead.lower():
+            out += f" I'd go with {soft_lower(pick)}."
     return out

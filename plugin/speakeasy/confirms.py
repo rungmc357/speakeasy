@@ -89,6 +89,8 @@ def clean(raw: Any) -> dict | None:
         if Decimal(out["subtotal"]) + Decimal(out["tax"]) + Decimal(out["shipping"]) != Decimal(out["total"]):
             return None
         source = raw.get("items")
+        if source is None and isinstance(details.get("items"), list):
+            source = details["items"]   # agents often nest the cart inside details; same checks apply
         if not isinstance(source, list) or not 1 <= len(source) <= 30:
             return None
         for item in source:
@@ -132,7 +134,10 @@ def clean(raw: Any) -> dict | None:
         described = int(leading) if leading.isdecimal() else words.get(leading)
         if count is not None and described is not None and described != int(count):
             return None
-    view = {"kind": "confirm", "type": kind, "title": raw["title"].strip(), "details": out}
+    # "Buy Oakline Standing Desk 60 in. — $423.53": the total is the card's last line and its button;
+    # in the title it is said three times.
+    title = re.sub(r"\s*(?:[\u2014\u2013-]|,|for)\s*[$\u20ac\u00a3]\s?[\d,]+(?:\.\d{2})?\s*$", "", raw["title"].strip()) or raw["title"].strip()
+    view = {"kind": "confirm", "type": kind, "title": title, "details": out}
     if items:
         view["items"] = items
     if fields:

@@ -48,7 +48,7 @@ struct DayCard: View {
         let events = Array(card["events"].array.prefix(fit.rows(12)))
         let pairs = DayOverlaps.pairs(events)
         CardBox {
-            CardHeader(icon: "calendar", title: card["title"].string ?? card["date"].string ?? "Today",
+            CardHeader(icon: "calendar", title: card["title"].string ?? EventTimes.dayTitle(card["date"].string) ?? "Today",
                        trailing: style.capsHeaders || events.isEmpty ? nil : "\(card["events"].array.count) event\(card["events"].array.count == 1 ? "" : "s")")
             if events.isEmpty {
                 Text("Nothing scheduled.").font(.system(size: style.capsHeaders ? 12 : 15)).foregroundStyle(style.secondary)
@@ -257,7 +257,27 @@ struct PlaceCard: View {
 struct PlacesCard: View {
     let card: ViewCard
     @Environment(\.cardFit) private var fit
+    /// The places as carousel tiles (the designs' picks: photo or name, one line of facts, Maps and
+    /// Website), the category as the tile's line and a closed place said so.
+    static func tiles(_ card: ViewCard) -> JSONValue {
+        let items: [JSONValue] = card["items"].array.prefix(6).map { p in
+            guard case .object(var o) = p else { return p }
+            let sub = [p["category"].string, p["area"].string].compactMap { $0 }.joined(separator: " · ")
+            if !sub.isEmpty, o["sub"] == nil { o["sub"] = .string(sub) }
+            if p["open_now"].bool == false { o["state"] = .string("Closed now") }
+            if let d = p["distance"].string { o["facts"] = .array([.string(d)]) }
+            return .object(o)
+        }
+        return .object(["label": .string(card["title"].string ?? "Places"), "entity": .string("place"), "items": .array(items)])
+    }
     var body: some View {
+        if fit != .compact {
+            ExploreSection(section: Self.tiles(card))
+        } else {
+            list
+        }
+    }
+    private var list: some View {
         CardBox {
             CardHeader(icon: "mappin.and.ellipse", title: card["title"].string ?? "Places")
             ForEach(Array(card["items"].array.prefix(fit.rows(6)).enumerated()), id: \.offset) { i, p in

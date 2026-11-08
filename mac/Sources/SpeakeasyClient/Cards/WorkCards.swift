@@ -141,6 +141,45 @@ struct SourceMark: View {
     }
     static let pr = SourceMark(symbol: "arrow.triangle.pull", color: Color(hex: 0x24292f))
     static let site = SourceMark(symbol: "globe", color: Color(hex: 0x2a2d33))
+
+    /// The mark for an app a card names as its source ("Vercel", "Sentry", "Servers"); nil for a
+    /// name it doesn't know (the header then shows the words alone, never a made-up logo).
+    static func app(_ source: String?) -> SourceMark? {
+        let key = (source ?? "").lowercased()
+        let marks: [(String, String, UInt32)] = [
+            ("linear", "line.3.horizontal.decrease", 0x5e6ad2), ("github", "smallcircle.filled.circle", 0x24292f),
+            ("jira", "square.stack.3d.up.fill", 0x1868db), ("vercel", "triangle.fill", 0x111111),
+            ("sentry", "exclamationmark.triangle.fill", 0x362d59), ("gmail", "envelope.fill", 0xc5221f),
+            ("mail", "envelope.fill", 0x1a73e8), ("slack", "number", 0x4a154b), ("notion", "doc.text.fill", 0x191919),
+            ("figma", "pencil.and.outline", 0xa259ff), ("cloudflare", "cloud.fill", 0xf38020), ("aws", "cloud.fill", 0x232f3e),
+            ("calendar", "calendar", 0xd93025), ("servers", "server.rack", 0x4a4f57), ("studios", "server.rack", 0x4a4f57),
+            ("cron", "clock.fill", 0x4a4f57), ("scheduled", "clock.fill", 0x4a4f57), ("testflight", "airplane", 0x1c8cf6),
+        ]
+        guard let hit = marks.first(where: { key.contains($0.0) }) else { return nil }
+        return SourceMark(symbol: hit.1, color: Color(hex: hit.2))
+    }
+}
+
+/// The app a card's facts came from and what they belong to ("Vercel · fieldnote-web"), with the
+/// app's small mark when it is one the app knows.
+struct AppHeader: View {
+    let parts: [String]
+    let source: String?
+    var body: some View {
+        if !parts.isEmpty {
+            HStack(spacing: 8) {
+                if let mark = SourceMark.app(source) {
+                    Image(systemName: mark.symbol).font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white)
+                        .frame(width: 20, height: 20)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(mark.color))
+                        .accessibilityHidden(true)
+                }
+                Text(parts.joined(separator: " · ")).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
 }
 
 func sourceName(_ source: String?) -> String? {
@@ -167,7 +206,7 @@ struct IssueCard: View {
                 Text([sourceName(card["source"].string), card["ref"].string].compactMap { $0 }.joined(separator: " · "))
                     .font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
                 Spacer(minLength: 8)
-                if let when = card["updated"].string { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
+                if let when = EventTimes.stamp(card["updated"].string) { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
             }
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -204,10 +243,20 @@ struct PRCard: View {
         CardBox {
             HStack(spacing: 10) {
                 SourceMark.pr
-                Text([card["repo"].string, card["number"].string.map { "#\($0)" }].compactMap { $0 }.joined(separator: " · "))
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
+                // "owner/repo · #418"; when that can't fit beside the time, the repo's own name (an
+                // owner like NousResearch cut to "NousResearch/he…" said nothing).
+                // A title that already names the number ("Checks on #147753") keeps it there only.
+                let number = PRCard.headerNumber(card)
+                let repo = card["repo"].string
+                ViewThatFits(in: .horizontal) {
+                    ForEach([repo, repo?.split(separator: "/").last.map(String.init)].compactMap { $0 }.removingDuplicates() + [""], id: \.self) { name in
+                        Text([name.isEmpty ? nil : name, number].compactMap { $0 }.joined(separator: " · "))
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
+                            .fixedSize(horizontal: name != "", vertical: false)
+                    }
+                }
                 Spacer(minLength: 8)
-                if let when = card["when"].string { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
+                if let when = EventTimes.stamp(card["when"].string) { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
             }
             Text(card["title"].string ?? "").font(.title3.weight(.semibold)).foregroundStyle(style.ink)
                 .fixedSize(horizontal: false, vertical: true)
@@ -224,12 +273,57 @@ struct PRCard: View {
             }
             let checks = card["checks"].array
             if !checks.isEmpty, fit != .compact {
+                let rows = Self.checkRows(checks, total: card["checks_total"].double.map(Int.init), restState: card["checks_rest"].string)
+                // Every check in one state ("didn't run" four times): the icon and the count line say it once.
+                let states = Set(checks.map { $0["state"].string ?? "" })
+                let same = states.count == 1
+                let total = max(Int(card["checks_total"].double ?? 0), checks.count)
+                let restSame = total == checks.count || card["checks_rest"].string == states.first
+                if same, restSame, let only = states.first, ["skipped", "passed"].contains(only), total > 2 {
+                    // Fifteen checks that all skipped (or all passed) are one fact, not a list of names.
+                    HStack(spacing: 8) {
+                        Image(systemName: only == "passed" ? "checkmark.circle.fill" : "minus.circle.fill")
+                            .foregroundStyle(only == "passed" ? style.tone("good") : style.faint)
+                        Text("All \(total) \(only)").font(.subheadline.weight(.medium)).foregroundStyle(style.ink)
+                        Spacer(minLength: 0)
+                    }
+                    .cardWell(style)
+                } else {
                 VStack(alignment: .leading, spacing: 7) {
-                    ForEach(Array(checks.enumerated()), id: \.offset) { _, check in checkRow(check) }
+                    // One shared state is said once, but only as the summary line above says it; checks
+                    // all waiting on approval drew three bare circles with no word (SPK-231 reps).
+                    ForEach(Array(rows.shown.enumerated()), id: \.offset) { _, check in checkRow(check, word: !same || !["skipped", "passed"].contains(states.first ?? "")) }
+                    if let rest = rows.rest {
+                        Text(rest).font(.footnote).foregroundStyle(style.faint)
+                    }
                 }
                 .cardWell(style)
+                }
             }
         }
+    }
+    static func headerNumber(_ card: ViewCard) -> String? {
+        guard let n = card["number"].string else { return nil }
+        let tag = "#" + n
+        let title: String = card["title"].string ?? ""
+        return title.contains(tag) ? nil : tag
+    }
+    /// Checks as the card lists them: what failed or is still running first, at most five; the rest
+    /// as one line ("10 more skipped"). Fifteen identical "Skipped" rows were a wall, not news.
+    /// *total*: how many the PR has when the server sent only some (``checks_total``), and
+    /// *restState* the one state all the unsent ones share.
+    static func checkRows(_ checks: [JSONValue], cap: Int = 4, total: Int? = nil, restState: String? = nil) -> (shown: [JSONValue], rest: String?) {
+        let order = ["failed": 0, "running": 1, "pending": 2, "passed": 3, "skipped": 4]
+        let sorted = checks.enumerated().sorted {
+            (order[$0.element["state"].string ?? ""] ?? 5, $0.offset) < (order[$1.element["state"].string ?? ""] ?? 5, $1.offset)
+        }.map(\.element)
+        let all = max(total ?? 0, sorted.count)
+        guard all > cap + 1 else { return (sorted, nil) }
+        let shown = Array(sorted.prefix(cap)), left = sorted.dropFirst(cap)
+        var states = Set(left.map { $0["state"].string ?? "" })
+        if all > sorted.count { states.insert(restState ?? "") }
+        let word = states.count == 1 && !(states.first ?? "").isEmpty ? " " + (states.first ?? "") : ""
+        return (shown, "\(all - shown.count) more\(word)")
     }
     private var stateIcon: String {
         switch card["state"].string {
@@ -241,7 +335,7 @@ struct PRCard: View {
         default: return "checkmark.circle.fill"
         }
     }
-    private func checkRow(_ check: JSONValue) -> some View {
+    private func checkRow(_ check: JSONValue, word: Bool = true) -> some View {
         let state = check["state"].string ?? ""
         let (icon, tint): (String, Color) = {
             switch state {
@@ -251,13 +345,17 @@ struct PRCard: View {
             default: return ("minus.circle.fill", style.faint)
             }
         }()
-        let note = check["note"].string ?? (state == "skipped" ? "didn't run" : state)
+        let note = check["note"].string ?? ["skipped": "didn't run", "pending": "waiting", "running": "running",
+                                            "failed": "failed", "passed": "passed"][state] ?? state
         return HStack(spacing: 8) {
             Image(systemName: icon).font(.footnote).foregroundStyle(tint)
             Text(check["name"].string ?? "").font(.footnote.weight(.medium)).foregroundStyle(style.ink)
-            Text(note).font(.footnote).foregroundStyle(style.secondary).lineLimit(1)
+            if word || check["note"].string != nil {
+                Text(note).font(.footnote).foregroundStyle(style.secondary).lineLimit(1)
+            }
         }
         .accessibilityElement(children: .combine)
+        .accessibilityValue(word ? "" : note)
     }
 }
 
@@ -295,7 +393,12 @@ struct JobsCard: View {
                 if let t = item["elapsed"].string { Text(t).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                if needs { Circle().fill(style.needsYou).frame(width: 6, height: 6).frame(width: 12) } else { CardLiveDot() }
+                let state = item["state"].string   // the server's read of the status: warn (stuck, missed) or idle
+                if needs || state == "warn" {
+                    Circle().fill(needs ? style.needsYou : style.tone("warn")).frame(width: 6, height: 6).frame(width: 12)
+                } else if state == "idle" {
+                    Circle().fill(style.faint).frame(width: 6, height: 6).frame(width: 12)
+                } else { CardLiveDot() }
                 Text(item["status"].string ?? "").font(.footnote).foregroundStyle(needs ? style.needsYou : style.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -351,9 +454,9 @@ struct MockupsCard: View {
     var body: some View {
         let items = card["items"].array
         CardBox {
-            CardHeader(icon: "rectangle.stack", title: [card["title"].string, "\(items.count) screen\(items.count == 1 ? "" : "s")"]
-                .compactMap { $0 }.joined(separator: " · "), trailing: items.count > 2 ? "Swipe" : nil)
-            if let note = card["note"].string {
+            // The screens show how many there are and that they scroll: no count, no "Swipe".
+            CardHeader(icon: "rectangle.stack", title: card["title"].string ?? "Screens", trailing: nil)
+            if let note = card["note"].string, !MockupsCard.restates(note, count: items.count) {
                 Text(note).font(.subheadline).foregroundStyle(style.secondary).fixedSize(horizontal: false, vertical: true)
             }
             ScrollView(.horizontal) {
@@ -372,6 +475,17 @@ struct MockupsCard: View {
             }
             .scrollIndicators(.hidden)
         }
+    }
+}
+
+extension MockupsCard {
+    /// A note that only counts the screens ("Three Home screens, light theme") says what the row shows;
+    /// one with something else to say ("Spacing tightened per your note") stays.
+    static func restates(_ note: String, count: Int) -> Bool {
+        let words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+        let n = count < words.count ? words[count] : "\(count)"
+        let low = note.lowercased()
+        return low.range(of: #"^(\#(n)|\#(count))\b"#, options: .regularExpression) != nil && note.count <= 48
     }
 }
 
@@ -404,6 +518,17 @@ public enum CardLinks {
     public static let inCardActions: Set<String> = ["calendar_day"]
 
     public static func links(_ card: ViewCard) -> [Link] {
+        let own = kindLinks(card)
+        // Pages the agent linked for the card's next step ("Logs", "Open in Sentry"), after the card's own.
+        let offered = card["links"].array.prefix(2).enumerated().compactMap { n, l -> Link? in
+            guard let url = l["url"].url, url.scheme == "https", let label = l["label"].string, !label.isEmpty,
+                  !own.contains(where: { $0.url == url }), url != card["url"].url else { return nil }   // the card opens its own page
+            return Link(id: "link\(n)", label: label, symbol: "arrow.up.right", url: url)
+        }
+        return own + offered
+    }
+
+    static func kindLinks(_ card: ViewCard) -> [Link] {
         switch card.kind {
         case "pr":
             guard let url = card["url"].url else { return [] }
@@ -418,8 +543,21 @@ public enum CardLinks {
             guard let url = card["url"].url else { return [] }
             let preview = (card["sub"].string ?? "").lowercased().contains("preview")
             return [Link(id: "open", label: preview ? "Open preview" : "Open site", symbol: "arrow.up.right", url: url)]
+        case "status":
+            // A deploy card's ready preview is the thing to open (the design's "Open preview"); a tile's
+            // tap still opens any link, so only a preview earns a button.
+            let item = card["items"].array.first { i in
+                i["url"].url != nil && ["ok", "on"].contains(i["state"].string ?? "")
+                    && "\(i["role"].string ?? "") \(i["name"].string ?? "")".lowercased().contains("preview")
+            }
+            guard let url = item?["url"].url else { return [] }
+            return [Link(id: "preview", label: "Open preview", symbol: "arrow.up.right", url: url)]
         default:
             return []
         }
     }
+}
+
+extension Array where Element: Hashable {
+    func removingDuplicates() -> [Element] { var seen = Set<Element>(); return filter { seen.insert($0).inserted } }
 }

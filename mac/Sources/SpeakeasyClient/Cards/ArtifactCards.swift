@@ -84,7 +84,20 @@ struct EntityTile: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.artifactOpener) private var opener
     var body: some View {
+        let pictured = item["photo_url"].url != nil || item["image"].double != nil
         VStack(alignment: .leading, spacing: 0) {
+            if !pictured {
+                // No photo found: the name on the card's own surface, not a grey square standing in
+                // for a picture (reviewers read even a small glyph tile as a missing image).
+                HStack(alignment: .center, spacing: 10) {
+                    Text(item["name"].string ?? "").font(.system(size: 18, weight: .bold)).lineLimit(2)
+                    Spacer(minLength: 0)
+                    if let when = item["when"].string {
+                        Text(when).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                .padding([.horizontal, .top], 12)
+            } else {
             ZStack(alignment: .bottomLeading) {
                 ArtifactPhoto(url: item["photo_url"].url, symbol: ArtifactLinks.symbol(entity, item: item), number: item["image"].double.map { Int($0) })
                     .frame(height: 138).frame(maxWidth: .infinity).clipped()
@@ -99,9 +112,16 @@ struct EntityTile: View {
                         .background(Capsule().fill(.ultraThinMaterial)).environment(\.colorScheme, .dark).padding(10)
                 }
             }
+            }
             VStack(alignment: .leading, spacing: 4) {
-                let first = [item["sub"].string ?? item["creator"].string, item["city"].string, item["price"].string,
-                             item["rating"].double.map { String(format: "★ %.1f", $0) }, item["state"].string].compactMap { $0 }
+                let sub = item["sub"].string ?? item["creator"].string
+                // "Old Town, Springfield · Springfield": the city only when the line doesn't already say it.
+                let city = item["city"].string.flatMap { c in sub?.localizedCaseInsensitiveContains(c) == true ? nil : c }
+                // The rating leads (the reason it's on the list), then what it is and the price; a
+                // trailing borough ("Williamsburg, Brooklyn") gives way first, never "$$$…".
+                let shortSub = entity == "place" ? sub.map { $0.replacingOccurrences(of: #",\s*[^,·]+$"#, with: "", options: .regularExpression) } : sub
+                let first = [item["rating"].double.map { String(format: "★ %.1f", $0) }, shortSub, city, item["price"].string,
+                             item["state"].string].compactMap { $0 }
                 if !first.isEmpty { Text(first.joined(separator: " · ")).font(.system(size: 14)).lineLimit(1) }
                 let facts = item["facts"].strings
                 if !facts.isEmpty { Text(facts.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2) }
@@ -309,10 +329,44 @@ struct StatusTilesCard: View {
         let order: [String: Int] = ["needs_you": 0, "bad": 1, "warn": 2, "info": 3, "on": 4, "ok": 5, "off": 6]
         let sorted = items.enumerated().sorted { (order[$0.element["state"].string ?? ""] ?? 9, $0.offset) < (order[$1.element["state"].string ?? ""] ?? 9, $1.offset) }.map(\.element)
         VStack(alignment: .leading, spacing: 10) {
-            if let scope = card["scope"].string { Text(scope).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10, alignment: .top), GridItem(.flexible(), spacing: 10, alignment: .top)], spacing: 10) {
-                ForEach(Array(sorted.prefix(fit == .compact ? 4 : 12).enumerated()), id: \.offset) { _, item in
-                    StatusTile(item: item).onTapGesture { if let url = item["url"].url { openURL(url) } }
+            // The app the facts came from, then what they are about ("Vercel · fieldnote-web"), as the designs head a card.
+            let head = [card["source"].string, card["scope"].string].compactMap { $0 }.removingDuplicates()
+            AppHeader(parts: head, source: card["source"].string)
+            // Past four, or with names too long for half a row ("Codex usage threshold + reset alerts"
+            // cut to "Codex usage thr…" in a tile), status reads as rows.
+            let longNames = sorted.prefix(4).contains { ($0["name"].string ?? "").count > 22 }
+            if items.count > 4 || longNames {
+                // Past four, tiles turn into a wall of repeated state words ("Check" seven times):
+                // one row each, what's wrong first, the state word at the end.
+                let cap = fit == .compact ? 4 : 6
+                // Every row in one state ("Needs a look" six times): say it once, under the heading,
+                // and let the rows keep their width for their names.
+                let states = Set(sorted.map { $0["state"].string ?? "" })
+                let words = Set(sorted.map { StatusTile.word(for: $0) })
+                let shared = states.count == 1 && words.count == 1 && sorted.allSatisfy { $0["value"].string == nil } ? states.first : nil
+                if let shared, let word = words.first, !word.isEmpty {
+                    Text(sorted.count == 2 ? "Both: \(word.lowercased())" : "All \(sorted.count): \(word.lowercased())")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(StatusTile.color(shared)).padding(.top, -6)
+                }
+                VStack(spacing: 0) {
+                    ForEach(Array(sorted.prefix(cap).enumerated()), id: \.offset) { n, item in
+                        if n > 0 { Divider().overlay(look.hairline) }
+                        StatusRow(item: item, sayState: shared == nil).onTapGesture { if let url = item["url"].url { openURL(url) } }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(look.well))
+                if sorted.count > cap {
+                    // The sort puts trouble first, so what's left is either all fine or said in the answer.
+                    let rest = sorted.dropFirst(cap)
+                    let fine = rest.allSatisfy { ["ok", "on", "off", "info"].contains($0["state"].string ?? "") }
+                    Text(fine ? "\(rest.count) more, all fine" : "\(rest.count) more")
+                        .font(.system(size: 12.5)).foregroundStyle(.secondary)
+                }
+            } else {
+                // Two to a row, equal heights; an odd last tile takes the whole row (three tiles left a hole).
+                PairGrid(count: min(sorted.count, 4), spacing: 10, leadSpans: true) { n in
+                    StatusTile(item: sorted[n]).onTapGesture { if let url = sorted[n]["url"].url { openURL(url) } }
                 }
             }
         }
@@ -329,8 +383,28 @@ struct StatusTile: View {
         default: return .secondary
         }
     }
+    /// The state word for one item: a deploy or build whose note says it failed reads "Failed", not
+    /// "Down" (the site behind it may be up on the last good deploy).
+    static func word(for item: JSONValue) -> String {
+        let state = item["state"].string
+        let note = item["note"].string ?? ""
+        func says(_ re: String) -> Bool { note.range(of: re, options: [.regularExpression, .caseInsensitive]) != nil }
+        if state == "bad" || state == "warn" {
+            // A job's trouble in its own word: "Missed 9:00 AM run" is Missed, a run that never ends is Stuck.
+            if says(#"\bfail"#) { return "Failed" }
+            if says(#"\bmissed\b"#) { return "Missed" }
+            if says(#"\b(stuck|running since|hung)\b"#) { return "Stuck" }
+            // A scheduled job (its role is its schedule: "every 5m", "daily 9:30 AM") that stopped
+            // running missed its runs; it isn't a server that's "Down".
+            let role = item["role"].string ?? ""
+            if role.range(of: #"\b(every|daily|hourly|weekly|monthly|nightly|\d+x)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                return "Missed"
+            }
+        }
+        return word(state)
+    }
     static func word(_ state: String?) -> String {
-        ["ok": "OK", "on": "On", "off": "Off", "warn": "Check", "bad": "Down", "needs_you": "Needs you", "info": "Info"][state ?? ""] ?? ""
+        ["ok": "OK", "on": "On", "off": "Off", "warn": "Needs a look", "bad": "Down", "needs_you": "Needs you", "info": "Info"][state ?? ""] ?? ""
     }
     var body: some View {
         let state = item["state"].string
@@ -345,18 +419,78 @@ struct StatusTile: View {
                 Text(value).font(.system(size: 26, weight: .bold)).lineLimit(1).minimumScaleFactor(0.6).padding(.top, 2)
                 if let unit = item["unit"].string { Text(unit).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
             } else {
-                Text(Self.word(state)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(state) : .primary).padding(.top, 2)
+                Text(Self.word(for: item)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(state) : .primary).padding(.top, 2)
             }
             let history = item["history"].doubles
             if history.count >= 3 { Spark(points: history).frame(height: 18) }
             if let note = item["note"].string { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2) }
         }
-        .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+        .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(loud ? Self.color(state).opacity(0.08) : look.well))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(loud ? Self.color(state).opacity(0.7) : look.hairline))
         .accessibilityElement(children: .combine)
     }
 }
+
+/// Cells two to a row with equal heights per row; an odd cell spans both columns: the last one, or
+/// with `leadSpans` the first (a status card's trouble, sorted first, gets the wide tile).
+struct PairGrid<Cell: View>: View {
+    let count: Int
+    var spacing: CGFloat = 10
+    var leadSpans = false
+    @ViewBuilder let cell: (Int) -> Cell
+    var body: some View {
+        let lead = leadSpans && count % 2 == 1
+        Grid(alignment: .topLeading, horizontalSpacing: spacing, verticalSpacing: spacing) {
+            if lead { GridRow { cell(0).gridCellColumns(2) } }
+            ForEach(Array(stride(from: lead ? 1 : 0, to: count, by: 2)), id: \.self) { n in
+                if n + 1 < count {
+                    GridRow { cell(n); cell(n + 1) }
+                } else {
+                    GridRow { cell(n).gridCellColumns(2) }
+                }
+            }
+        }
+    }
+}
+
+/// One status as a row (cards with more than four): dot, name, the note under it, and the value or
+/// state word at the end.
+struct StatusRow: View {
+    let item: JSONValue
+    /// False when the card says the one state every row shares above the rows.
+    var sayState = true
+    var body: some View {
+        let state = item["state"].string
+        let loud = state == "needs_you" || state == "warn" || state == "bad"
+        HStack(alignment: .center, spacing: 10) {
+            Circle().fill(StatusTile.color(state)).frame(width: 8, height: 8)
+            // A short figure ("38% CPU", "Missed") sits at the end; a long one ("9:31 AM yesterday last
+            // run") took half the row and wrapped the name, so it joins the line under the name.
+            let figure = [item["value"].string, item["unit"].string].compactMap({ $0 }).joined(separator: " ").nonEmpty
+            let long = (figure?.count ?? 0) > 12
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)   // a long job name wraps, never "Codex usage thresh…"
+                if let note = [item["note"].string ?? item["role"].string, long ? figure : nil].compactMap({ $0 }).joined(separator: " · ").nonEmpty {
+                    Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            if let trailing = (long ? nil : figure)
+                ?? (sayState && state != "info" ? StatusTile.word(for: item) : nil) {   // "Info" said nothing
+                Text(trailing)
+                    .font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(loud ? StatusTile.color(state) : .secondary).lineLimit(1).fixedSize()
+            }
+        }
+        .padding(.vertical, 10)
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private extension String { var nonEmpty: String? { isEmpty ? nil : self } }
 
 /// A plain line through the points (no axes, no fill).
 struct Spark: View {
