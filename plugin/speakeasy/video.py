@@ -49,11 +49,18 @@ def prepare(path: Path, folder, transcribe=None, on_failure=None) -> dict:
                          "-protocol_whitelist", "file,pipe", "-ss", f"{at:.3f}", "-i", str(path),
                          "-frames:v", "1", "-vf", "scale=960:960:force_original_aspect_ratio=decrease",
                          "-pix_fmt", "yuvj420p", "-f", "image2pipe", "-c:v", "mjpeg", "-threads", "1", "pipe:1"])
-            if not data or len(data) > 500_000:
-                raise ValueError("frame unavailable")
+            if not data:
+                # Nothing at this time: the picture stopped before the container did (a screen
+                # recording of a still screen, a low-frame-rate clip, audio longer than video).
+                # Keep the frames that exist rather than refusing the whole video.
+                continue
+            if len(data) > 500_000:
+                raise ValueError("frame too large")
             saved = folder.save(data, f"video-frame-{index + 1}.jpg")
             created.append(str(saved))
             frames.append({"seconds": round(at, 3), "path": str(saved)})
+        if not frames:
+            raise ValueError("no frame could be read")
         media = {"duration": round(duration, 3), "frames": frames,
                  "mode": "sampled_frames", "audio_status": "no_audio"}
         if any(s.get("codec_type") == "audio" for s in streams):

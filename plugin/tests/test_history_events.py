@@ -118,3 +118,22 @@ def test_server_returns_typed_event_and_safe_older_client_note(server, service):
     assert entry['event']['state'] == 'completed'
     assert entry['event']['summary'].endswith('not shipped.')
     assert 'Assignee:' not in entry['text']
+
+
+def test_api_run_submission_is_the_users_message_not_an_event():
+    # Hermes marks every API-server run input internal_notification with its submission id;
+    # a Speakeasy task brief or typed follow-up must stay the user's bubble.
+    meta = json.dumps({'gateway_input_owner': 'example-owner', 'submission_id': 'run_example01'})
+    text = ('[Speakeasy follow-up] The user typed in the Speakeasy app: Find why the checkout test fails.\n\n'
+            'Same rules as the first message in this session: keep the STATUS/DETAIL lines while you work '
+            'and end with the DONE: and SPOKEN: lines.')
+    assert event_for(row(text=text, metadata=meta)) is None
+    entry = history.build_entries([row(text=text, metadata=meta)])[0]
+    assert entry['kind'] == 'user'
+    assert 'event' not in entry
+    assert 'Find why the checkout test fails' in entry['text']
+
+
+def test_kanban_wake_with_submission_metadata_is_still_an_event():
+    meta = json.dumps({'gateway_input_owner': 'example-owner', 'submission_id': 'run_example02'})
+    assert event_for(row(metadata=meta))['title'] == 'Build native reminders'

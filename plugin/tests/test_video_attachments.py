@@ -164,3 +164,22 @@ def test_removing_video_deletes_original_and_all_derived_copies(server, service,
     status, _ = http(server.base_url, "DELETE", "/voice/attachments/" + staged["id"], token=server.token)
     assert status == 200
     assert all(not Path(path).exists() for path in paths)
+
+
+@pytest.mark.parametrize("video_input,extra", [
+    # A clip whose picture stops before its sound does (container longer than the video stream).
+    ("testsrc2=size=180x320:rate=4:duration=1", ["-f", "lavfi", "-i", "sine=frequency=440:duration=3"]),
+    # Two frames a second apart in a two-second container, like a screen recording of a still screen.
+    ("testsrc2=size=180x320:rate=1:duration=2", []),
+])
+def test_clip_whose_picture_ends_early_keeps_the_frames_it_has(tmp_path, video_input, extra):
+    path = tmp_path / "still-screen.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", video_input, *extra,
+                    "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p", *(["-c:a", "aac"] if extra else []),
+                    str(path)], check=True, timeout=20)
+    folder = A.SharedFolder(tmp_path / "shared")
+    prepared = video.prepare(path, folder)
+    assert 1 <= len(prepared["frames"]) < video.FRAME_COUNT
+    assert all(Path(f["path"]).stat().st_size > 0 for f in prepared["frames"])
+    times = [f["seconds"] for f in prepared["frames"]]
+    assert times == sorted(times) and times[0] == 0

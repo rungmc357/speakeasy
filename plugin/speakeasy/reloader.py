@@ -163,11 +163,16 @@ class LiveReloader:
                 return self._recover()
             outcome = None
             owned = self._owned()
-            if any(owned.get(name) is not mod for name, mod in self.modules.items()) or set(owned) - set(self.modules):
+            if any(owned.get(name) is not mod for name, mod in self.modules.items()):
                 self._restore(self.modules)
                 outcome = "restored"
                 logger.info("speakeasy: plugin files were re-imported underneath the running server; "
                             "kept the running code until the update loads")
+            else:
+                # Only new names: the running code lazily imported a module it hadn't used yet (the
+                # first pairing imports address_drop). Adopt it. Restoring here evicted the module
+                # while its import was still running, so that request failed with a KeyError.
+                self.modules.update({name: mod for name, mod in owned.items() if name not in self.modules})
             forced = (self.state_dir / REQUEST_FILE).exists()
             current = fingerprint(self.plugin_dir)
             steady = current == self.seen_fp
