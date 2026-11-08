@@ -325,3 +325,26 @@ def test_a_timeline_step_keeps_its_said_time_without_the_unsaid_date():
     # An unsaid time is never repaired: the card goes.
     assert not views.shape([{**tl, "days": [{"label": "Done", "items": [{"when": "Mar 4, 8:12 PM", "what": "Fix added", "state": "done"}]}]}],
                            "The fix was added, so build 12 is done.")
+
+
+def test_rows_total_goes_when_a_step_or_the_scope_already_counts_the_rest():
+    rows = [{"name": "Invented reply A", "state": "Today"}, {"name": "Invented reply B", "state": "This week"}]
+    v = views.clean({"kind": "rows", "entity": "email", "total": 4, "items": rows,
+                     "actions": [{"id": "archive", "label": "Archive 2 others"}]})
+    assert "total" not in v
+    v = views.clean({"kind": "rows", "entity": "email", "total": 4, "scope": "Needs a reply · 2 of 4", "items": rows})
+    assert "total" not in v
+    assert views.clean({"kind": "rows", "entity": "email", "total": 4, "items": rows})["total"] == 4
+
+
+def test_a_preview_flag_that_a_section_already_names_goes():
+    p = views.clean({"kind": "preview", "entity": "document", "title": "Invented spec",
+                     "list": ["Open question: photos on deleted notes", "Out of scope: sharing"],
+                     "flags": ["Open question blocks sign-off"]})
+    assert "flags" not in p
+
+
+def test_a_tile_reading_zero_is_said_by_no():
+    s = views.clean({"kind": "status", "source": "Servers", "scope": "Scheduled jobs", "items": [{"name": "Recorded errors", "state": "ok", "value": "0"}]})
+    assert views.grounded(s, "No recorded errors since the morning.")
+    assert not views.grounded(s, "Recorded errors since the morning are fine.")

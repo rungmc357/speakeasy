@@ -331,6 +331,10 @@ def clean(raw: Any, running: bool = False) -> dict[str, Any] | None:
     body = _tidy(kind, _object(shape, raw))
     if body and (actions := clean_actions(raw.get("actions"))):
         body["actions"] = actions
+        if kind == "rows" and body.get("total"):
+            rest = body["total"] - len(body.get("items") or [])
+            if any(re.search(rf"\b{rest} (?:others?|more|rest|remaining)\b", a.get("label", ""), re.I) for a in actions):
+                body.pop("total")   # "Archive 2 others" is where the rest go; no "2 more not shown" too
     if body and (links := clean_links(raw.get("links"))):
         body["links"] = links
     view = {"kind": kind, **body} if body else None
@@ -560,6 +564,10 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             out.pop("total", None)
         else:
             out["total"] = int(total)
+            # The scope already counts the rest ("Needs a reply · 2 of 4"): a "2 more not shown" line
+            # said it a second time. (A step for them, "Archive 2 others", is checked with the actions.)
+            if re.search(rf"\b{len(items)} of {out['total']}\b", str(out.get("scope") or "")):
+                out.pop("total")
         if str(out.get("entity", "")).lower() in ROW_ENTITIES:
             out["entity"] = out["entity"].lower()
         else:
@@ -616,7 +624,11 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 out.pop("list_label", None)
         if isinstance(out.get("flags"), list):
             listed = _norm(" ".join(x for x in out.get("list") or [] if isinstance(x, str)))
-            out["flags"] = [f for f in out["flags"] if not (isinstance(f, str) and _restates(f, listed))]
+            # "Open question blocks sign-off" over a section "Open question: photos on deleted notes":
+            # the section already names it, and the reply says it a third time.
+            leads = {_norm(x.split(":", 1)[0]).strip() for x in out.get("list") or [] if isinstance(x, str) and ":" in x}
+            out["flags"] = [f for f in out["flags"] if not (isinstance(f, str) and (
+                _restates(f, listed) or any(lead and _norm(f).strip().startswith(lead) for lead in leads)))]
             if not out["flags"]:
                 out.pop("flags")
         return out
@@ -951,6 +963,9 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
     # "six pieces of work" says the 6 on the card (spoken-style answers spell small numbers out).
     from .home_words import digits
     nums |= _numbers(digits(answer or ""))
+    # "No job is erroring" / "none failed" says the 0 on an errors tile.
+    if re.search(r"(?i)\b(?:no|none|nothing|zero|nobody|never)\b", answer or ""):
+        nums.add("0")
     kind = view.get("kind")
     names: list[str] = []
     labels: list[str] = []

@@ -284,11 +284,26 @@ struct PRCard: View {
                 if same, restSame, let only = states.first, ["skipped", "passed", "pending"].contains(only), total > 2 {
                     // Fifteen checks that all skipped (or all passed, or all wait their turn) are one
                     // fact, not a list of names: three identical "waiting" rows filled a third of the card.
+                    VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
                         Image(systemName: only == "passed" ? "checkmark.circle.fill" : only == "pending" ? "clock.fill" : "minus.circle.fill")
                             .foregroundStyle(only == "passed" ? style.tone("good") : style.faint)
                         Text(only == "pending" ? "All \(total) waiting to run" : "All \(total) \(only)").font(.subheadline.weight(.medium)).foregroundStyle(style.ink)
                         Spacer(minLength: 0)
+                    }
+                    // Groups the agent named with what's in them ("Docker (5 checks)": build, test,
+                    // publish) say what didn't run; bare names would be the wall again.
+                    let grouped = checks.filter { $0["note"].string != nil }
+                    if !grouped.isEmpty && grouped.count <= 4 {
+                        ForEach(Array(grouped.enumerated()), id: \.offset) { _, check in
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(check["name"].string ?? "").font(.footnote.weight(.medium)).foregroundStyle(style.ink)
+                                Text(check["note"].string ?? "").font(.footnote).foregroundStyle(style.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.leading, 26)
+                        }
+                    }
                     }
                     .cardWell(style)
                 } else {
@@ -471,7 +486,7 @@ struct MockupsCard: View {
                                         label: item["caption"].string ?? "Screen \(i + 1)", fill: true)
                             if let caption = item["caption"].string {
                                 // One quiet line under each screen, as the designs label them ("Welcome").
-                                Text(caption).font(.caption).foregroundStyle(style.secondary).lineLimit(1)
+                                Text(caption).font(.caption).foregroundStyle(style.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                                     .frame(width: 124, alignment: .leading)
                             }
                         }

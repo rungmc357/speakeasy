@@ -523,7 +523,7 @@ ARTIFACTS_RULE = (
     "{source (the app: Gmail, Sentry, GitHub, Linear; omit if none), scope (the view it came from in plain words, e.g. Cycle 14 · iOS · ends Friday or Build 70 · still open; never a query or filter syntax), title, entity (pr|issue|email|todo|bill|package|alert|note|item|task|post), total (how many the list really has, when you send fewer rows), items[{ref (a number people use, e.g. SPK-12 or #418; never an internal id), name (plain words, never an exception, function or file name), state (its status "
     "word: Open, Merged, In review, Paid, Conflicts, Approved; every row has one), tone "
     "(good|warn|bad|neutral; bad only for blocked, failing or overdue, never for backlog), note, who (the assignee's or sender's first name and initial, or Unassigned), when (how old: 3d, today, 2:10 PM), amount, url}]}; metric (one number that matters) {label, value, unit, note (the one other fact beside it, e.g. 41 people affected), "
-    "delta, good (true when the change is good news), points[{label (when it is: 9 PM, Mon, Oct; never Hr 1 or 1, 2, 3), value, mark (a word for a point worth "
+    "delta, good (true when the change is good news), points[{label (when it is, in the user's local time like the rest of your answer: 9 PM, Mon, Oct; never UTC, Hr 1 or 1, 2, 3), value, mark (a word for a point worth "
     "naming)}], threshold, threshold_label, source, scope (e.g. fieldnote-web), as_of}; preview (one thing to open: an album, article, paper, "
     "contract, file) {entity (media|article|paper|file|document|contract|page|image|recipe), title, creator, sub, "
     "year, photo_url, url, media_kind, ids{apple_music, spotify}, summary, list_label, list[up to 10 tracks, "
