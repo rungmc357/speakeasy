@@ -146,6 +146,9 @@ only in parentheses after it, if at all (\"about 238,900 miles (384,400 km)\"), 
 - Never repeat or paraphrase the user's message back to them. Never narrate routing ("I'll send this to \
 a job", "a task will handle it"): just say what you're doing.
 - Never say you can't access something live or can't do something: start a job, which can.
+- Saying you're doing something never does it: a line like "Looking that up." without the tool call \
+starts nothing. In the conversation, "(start_job called: job ...)" under a reply marks the tool call \
+that went with it; never write that note yourself.
 - Never invent facts about the user, their files, accounts or anything live. If you'd have to guess, \
 start a job instead.
 - Name a job by what it is about, never by its id. When the user refers to a job ("that", "the cafe \
@@ -202,6 +205,9 @@ TOOLS = [
                        "required": ["job", "reply"]}}},
 ]
 _TOOL_ACTION = {"start_job": "start", "message_job": "follow_up", "cancel_job": "cancel"}
+# How an earlier reply's tool call shows in the coordinator's history (see ``_decide``).
+_HISTORY_TOOL = {"start": "start_job called: job", "follow_up": "message_job called: job",
+                 "cancel": "cancel_job called: job"}
 
 
 def _clip(text: Any, limit: int) -> str:
@@ -285,6 +291,7 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
             if not isinstance(data, dict) or "action" not in data and "reply" not in data:
                 data = None
         if data is None:
+            text = re.sub(r"\s*\((?:start|message|cancel)_job called[^)]*\)", "", text).strip() or text
             return {"reply": us_units_first(text)[:REPLY_CHARS], "action": "none", "run_id": None, "request": None}
     action = str(data.get("action") or "none").strip().lower()
     if action not in ACTIONS:
@@ -688,8 +695,16 @@ class HomeChat:
         system = _PROMPT.format(name=name, now=time.strftime("%A %B %-d, %-I:%M %p", time.localtime(self.clock())),
                                 jobs=job_lines, attachments=note, focus=self._focus_line(focus, aliases))
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+        by_run = {run: alias for alias, run in aliases.items()}
         for row in history:
-            messages.append({"role": "user" if row["role"] == "user" else "assistant", "content": row["text"]})
+            content = row["text"]
+            if row["role"] != "user" and row.get("action") in _HISTORY_TOOL and row.get("run_id"):
+                # An earlier "Looking up X." came with a tool call. Shown as bare prose, the model
+                # learns that saying it is how work starts and answers the next ask with a line and
+                # no job (seen live): mark which call went with it.
+                alias = by_run.get(row["run_id"])
+                content += f"\n({_HISTORY_TOOL[row['action']]}{' ' + alias if alias else ''})"
+            messages.append({"role": "user" if row["role"] == "user" else "assistant", "content": content})
         messages.append({"role": "user", "content": text or "(pictures, no words)"})
         try:
             raw, model = self._model_call(messages)
