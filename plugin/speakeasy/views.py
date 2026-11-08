@@ -503,7 +503,10 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             for i in items:
                 rest = re.split(r"[-_ ]", i["name"], maxsplit=1)
                 if len(rest) == 2 and rest[1].strip():
-                    i["name"] = _cap_first(rest[1].strip()) if len(rest[1].strip()) > 3 else rest[1].strip().upper()
+                    part = rest[1].strip()
+                    # "api" is an acronym (API); "web" and "app" are words (Web, not WEB).
+                    acronym = part.lower() in {"api", "ios", "db", "cdn", "ui", "cli", "sdk", "ml", "ai", "mcp", "gpu", "cpu", "dns", "sql"}
+                    i["name"] = part.upper() if acronym else _cap_first(part)
         if isinstance(body.get("scope"), str):
             # "Scheduled jobs (partial list, ~3 AM snapshot)": the aside is the agent's caveat; the answer says it.
             body = {**body, "scope": _PAREN_ASIDE.sub("", body["scope"]).strip() or body["scope"]}
@@ -952,6 +955,8 @@ def _grounded_label(name: str, said: str, said_numbers: set[str], half: bool = F
     if len(words) < 2 or not _numbers(name) <= said_numbers:
         return False
     hits = sum(f" {w} " in said for w in words)
+    if len(words) >= 5 and hits >= 2 and hits * 5 >= len(words) * 2:
+        return True   # a tool's long name ("TRMNL X Desk Wallboard updater") the answer shortens ("TRMNL wallboard")
     return hits * 2 >= len(words) if half else hits * 3 >= len(words) * 2
 
 

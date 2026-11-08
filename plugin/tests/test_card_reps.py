@@ -348,3 +348,16 @@ def test_a_tile_reading_zero_is_said_by_no():
     s = views.clean({"kind": "status", "source": "Servers", "scope": "Scheduled jobs", "items": [{"name": "Recorded errors", "state": "ok", "value": "0"}]})
     assert views.grounded(s, "No recorded errors since the morning.")
     assert not views.grounded(s, "Recorded errors since the morning are fine.")
+
+
+def test_short_project_parts_read_as_words_unless_acronyms():
+    v = views.clean({"kind": "status", "scope": "Acmeweb deploys", "items": [
+        {"name": "acmeweb-web", "state": "ok"}, {"name": "acmeweb-api", "state": "bad"}]})
+    assert [i["name"] for i in v["items"]] == ["Web", "API"]
+
+
+def test_a_long_tool_name_the_answer_shortens_still_counts():
+    s = views.clean({"kind": "status", "scope": "Scheduled jobs", "items": [
+        {"name": "ACME X Desk Wallboard updater", "state": "warn", "note": "Missed runs since 9 AM"}]})
+    assert views.grounded(s, "The ACME wallboard missed its runs since 9 AM.")
+    assert not views.grounded(s, "The wallboard missed its runs since 9 AM.")   # one word is not the job
