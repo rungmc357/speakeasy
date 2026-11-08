@@ -20,6 +20,9 @@ public struct NowHome: Equatable, Sendable {
     public var callSummary: NowCallSummary?
     /// SPK-208 (plugin 0.3.46+, capability `home_stream`): the same cards as one thread. Nil from an older plugin.
     public var stream: NowStream?
+    /// The tracker pill's words at any volume ("3 need you · 5 running"), from the plugin; nil from an
+    /// older plugin (the app counts for itself). Counts, never a cut-off title.
+    public var pill: String?
 
     public struct Counts: Equatable, Sendable {
         public var needsYou = 0, stopped = 0, working = 0, waiting = 0, finishedUnread = 0, onItsOwn = 0
@@ -56,6 +59,7 @@ public struct NowHome: Equatable, Sendable {
         call = NowCall(json: json["call"])
         callSummary = NowCallSummary(json: json["call_summary"])
         stream = NowStream(json: json["stream"])
+        pill = nonEmpty(json["pill"])
     }
 
     /// Nothing live or new: Home shows a quiet "All caught up." instead of a header (build 69 drops
@@ -159,6 +163,14 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     public var unread: Bool
     public var idleSeconds: Int?
     public var thumbs: [String]
+    /// The same pictures with what Home draws for each: a person's caption (never a file name) and,
+    /// for a wide contact sheet, a readable crop (`hero`). Same order as `thumbs`.
+    public var pictures: [NowPicture] = []
+    /// The job's whole title when `title` is Home's short name for it (the job's own page shows this).
+    public var fullTitle: String?
+    /// A question nobody answered that a newer one took over: when, and which card took over.
+    public var replacedAt: Date?
+    public var replacedBy: String?
     public var provenance: Provenance?
     public var fix: Fix?
     public var question: NowQuestion?
@@ -211,6 +223,12 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         onCurrentCall = o["on_current_call"] as? Bool ?? false
         sayOK = o["say_ok"] as? Bool ?? true
         lockLine = nonEmpty(o["lock_line"])
+        pictures = (o["thumbs"] as? [Any] ?? []).compactMap(NowPicture.init(json:))
+        fullTitle = nonEmpty(o["full_title"])
+        if let r = o["replaced"] as? [String: Any] {
+            replacedAt = (r["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } ?? updatedAt ?? finishedAt
+            replacedBy = nonEmpty(r["by"])
+        }
     }
 
     /// The one footnote that says where a card came from ("From yesterday · 9:40 PM").
@@ -233,6 +251,27 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         case .later?: return "Back from Later"
         case nil: return nil
         }
+    }
+}
+
+/// One picture on a Home card (plugin 0.3.47+ adds caption/hero/aspect; older plugins send only url).
+public struct NowPicture: Equatable, Sendable {
+    public var url: String
+    public var caption: String?
+    /// For a wide contact sheet: the readable crop (`/voice/card-image/<run>/<n>?v=hero`).
+    public var hero: String?
+    public var aspect: Double?
+    public init(url: String, caption: String? = nil, hero: String? = nil, aspect: Double? = nil) {
+        self.url = url; self.caption = caption; self.hero = hero; self.aspect = aspect
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let url = nonEmpty(o["url"]) else { return nil }
+        self.init(url: url, caption: nonEmpty(o["caption"]).map { String($0.prefix(120)) },
+                  hero: nonEmpty(o["hero"]), aspect: (o["aspect"] as? NSNumber)?.doubleValue)
+    }
+    /// The card-image number in `url` (`/voice/card-image/<run>/<n>`).
+    public var number: Int? {
+        Int(url.split(separator: "?").first?.split(separator: "/").last ?? "")
     }
 }
 
@@ -352,8 +391,9 @@ public struct NowStream: Equatable, Sendable {
         /// `message`: Home's chat (plugins with `home_chat`): your words or the coordinator's reply.
         public enum Kind: String, Sendable { case ask, card, group, message }
         public enum Role: String, Sendable { case user, assistant }
-        /// A question, confirm or checkout is a widget in the thread: open -> confirmed -> done.
-        public enum Widget: String, Sendable { case open, confirmed, done }
+        /// A question, confirm or checkout is a widget in the thread: open -> confirmed -> done;
+        /// replaced: nobody answered it and a newer question took over (it stays, closed, saying when).
+        public enum Widget: String, Sendable { case open, confirmed, done, replaced }
         public var id: String
         public var kind: Kind
         public var at: Date
@@ -362,6 +402,8 @@ public struct NowStream: Equatable, Sendable {
         /// ask and card: the Home item this entry belongs to.
         public var itemID: String?
         public var widget: Widget?
+        /// widget `replaced`: when the newer question took over.
+        public var replacedAt: Date?
         /// group: the plain line ("This morning · 6 done") and the items it folds.
         public var line: String?
         public var itemIDs: [String]
@@ -392,6 +434,7 @@ public struct NowStream: Equatable, Sendable {
                       role: role, attribution: role == .assistant ? ReplyAttribution(json: o["model"]) : nil,
                       voiceDuration: ((o["voice"] as? [String: Any])?["duration"] as? NSNumber)?.doubleValue,
                       runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]))
+            replacedAt = (o["replaced_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
         }
     }
     public var entries: [Entry]

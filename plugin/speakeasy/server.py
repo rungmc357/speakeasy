@@ -639,7 +639,8 @@ class Handler(BaseHTTPRequestHandler):
             live = re.fullmatch(rf"/voice/live-image/{_ID}", path)
             shared = re.fullmatch(rf"/voice/shared-image/{_ID}/([1-9][0-9]?)", path)
             if image or live or shared:
-                data, mime = (self.service.card_image(image.group(1), int(image.group(2))) if image
+                data, mime = (self.service.card_image(image.group(1), int(image.group(2)),
+                                                      hero=self._query().get("v") == "hero") if image
                               else self.service.shared_image(shared.group(1), int(shared.group(2))) if shared
                               else self.service.live_image(live.group(1)))
                 self.send_response(200)

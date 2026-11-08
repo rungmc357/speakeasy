@@ -45,7 +45,10 @@ def thread_key(item: dict[str, Any]) -> str:
 
 
 def widget_state(item: dict[str, Any], answered: bool) -> str | None:
-    """open (waiting on you) -> confirmed (you answered, the work goes on) -> done (it finished)."""
+    """open (waiting on you) -> confirmed (you answered, the work goes on) -> done (it finished);
+    replaced: nobody answered it and a newer question took over (it stays, closed, saying when)."""
+    if item.get("replaced"):
+        return "replaced"
     kind = item.get("kind")
     if kind == "question":
         return "open"
@@ -104,6 +107,9 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
         widget = widget_state(item, item.get("_run_key") in answered or item["id"] in answered)
         if widget:
             entry["widget"] = widget
+            if widget == "replaced":
+                entry["replaced_at"] = item["replaced"].get("at")
+                entry["replaced_by"] = item["replaced"].get("by")
         entries.append(entry)
     entries.extend(messages or [])
     # An ask (or the chat message and reply that started a job) sorts just before its card even

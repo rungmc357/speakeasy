@@ -124,6 +124,45 @@ final class NowHomeTests: XCTestCase {
         XCTAssertEqual(stream.needsYou, [try XCTUnwrap(home.items.first?.id)])
     }
 
+    // Real-data fixes: short title + whole title, picture captions/hero crops, replaced questions, the pill.
+    func testRealDataFieldsDecode() throws {
+        let home = NowHome(json: [
+            "pill": "3 need you \u{00B7} 5 running",
+            "items": [
+                ["id": "s:a", "kind": "new_answer", "title": "Fix picture sending",
+                 "full_title": "Fix picture sending and carousels in the shared thread after the last update",
+                 "thumbs": [["url": "/voice/card-image/run_a/1", "caption": "Before and after", "aspect": 4.2,
+                             "hero": "/voice/card-image/run_a/1?v=hero"],
+                            ["url": "/voice/card-image/run_a/3"]]],
+                ["id": "q:b", "kind": "waiting", "title": "Pick a dinner spot", "line": "Replaced by a newer question.",
+                 "replaced": ["at": 1_000, "by": "q:c"]],
+            ],
+            "stream": ["entries": [["id": "c:b", "kind": "card", "at": 900, "item_id": "q:b", "widget": "replaced",
+                                    "replaced_at": 1_000]], "needs_you": []],
+        ])
+        XCTAssertEqual(home.pill, "3 need you \u{00B7} 5 running")
+        let a = home.items[0]
+        XCTAssertEqual(a.title, "Fix picture sending")
+        XCTAssertEqual(a.fullTitle, "Fix picture sending and carousels in the shared thread after the last update")
+        XCTAssertEqual(a.thumbs, ["/voice/card-image/run_a/1", "/voice/card-image/run_a/3"])
+        XCTAssertEqual(a.pictures.map(\.caption), ["Before and after", nil])
+        XCTAssertEqual(a.pictures.map(\.number), [1, 3])
+        XCTAssertEqual(a.pictures.first?.hero, "/voice/card-image/run_a/1?v=hero")
+        XCTAssertNil(a.replacedAt)
+        let b = home.items[1]
+        XCTAssertEqual(b.replacedAt, Date(timeIntervalSince1970: 1_000))
+        XCTAssertEqual(b.replacedBy, "q:c")
+        let entry = try XCTUnwrap(home.stream?.entries.first)
+        XCTAssertEqual(entry.widget, .replaced)
+        XCTAssertEqual(entry.replacedAt, Date(timeIntervalSince1970: 1_000))
+        // An older plugin: no pill, url-only thumbs, no full title.
+        let old = NowHome(json: ["items": [["id": "s:x", "kind": "working", "title": "T",
+                                            "thumbs": [["url": "/voice/card-image/r/2"]]]]])
+        XCTAssertNil(old.pill)
+        XCTAssertNil(old.items[0].fullTitle)
+        XCTAssertEqual(old.items[0].pictures, [NowPicture(url: "/voice/card-image/r/2")])
+    }
+
     func testAnOlderPluginHasNoStreamAndAGroupDecodes() {
         XCTAssertNil(NowHome(json: ["rev": 1]).stream)
         let group = NowStream(json: ["entries": [["id": "g:morning", "kind": "group", "at": 100, "line": "This morning \u{00B7} 6 done",

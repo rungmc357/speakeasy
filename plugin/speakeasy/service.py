@@ -4397,7 +4397,13 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(404, "card not found")
         return cards[index - 1]
 
-    def card_image(self, run_id: str, index: int) -> tuple[bytes, str]:
+    def card_image(self, run_id: str, index: int, hero: bool = False) -> tuple[bytes, str]:
+        """A result card's picture; *hero*: for a wide contact sheet, its readable portrait crop
+        (home_words.hero_crop), else the picture itself."""
+        if hero:
+            data, mime = self.card_image(run_id, index)
+            from .home_words import hero_crop
+            return hero_crop(data) or (data, mime)
         card = self._card(run_id, index)
         path = card.get("path") if card.get("kind") == "image" else None
         try:

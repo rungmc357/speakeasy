@@ -893,7 +893,8 @@ _TITLE_PROMPT = (
     "earlier task it continues or answers and the last turns of the call. Use that context to work out what "
     "a short request (\"Fix and ship\", \"Do both\", \"Yes, that one\") actually refers to.\n\n"
     "Rules:\n"
-    "- 4 to 8 words, sentence case, no quotes, no trailing punctuation.\n"
+    "- 4 to 8 words, about 40 characters at most (Home shows it on one short line), sentence case, no quotes, "
+    "no trailing punctuation, no issue numbers or internal code names.\n"
     "- Name the specific subject and what is being done about it: the product, place, person, file or "
     "topic, plus the action or question. Someone reading only the title must know what the task is.\n"
     "- Never a meta title about the conversation: no \"Continue previous discussion\", \"Follow up on "
@@ -945,6 +946,8 @@ def clean_task_title(raw: str | None, request: str = "") -> tuple[str | None, st
     words = text.split()
     if not 3 <= len(words) <= 9 or len(text) > 70:
         return None, f"{len(words)} words; it must be 4 to 8"
+    if len(text) > 48:
+        return None, f"{len(text)} characters; keep it to about 40"
     if words[-1].lower().strip(",:;") in _TITLE_TRANSCRIPT_TAIL:
         return None, "it ends mid-phrase"
     if TITLE_META.search(text):
