@@ -238,7 +238,7 @@ extension ModelCatalog {
                  "reasoning_levels": ["none", "low", "medium", "high", "max"]],
                 ["id": "anthropic/claude-sonnet-5", "name": "Claude Sonnet 5", "provider": "anthropic", "provider_name": "Anthropic",
                  "reasoning_levels": ["none", "low", "medium", "high"]],
-                ["id": "anthropic/claude-haiku-4-5", "name": "Claude Haiku 4.5", "provider": "anthropic", "provider_name": "Anthropic",
+                ["id": "anthropic/claude-haiku-5-5", "name": "Claude Haiku 5.5", "provider": "anthropic", "provider_name": "Anthropic",
                  "reasoning_levels": ["none", "low", "medium", "high"]],
             ]],
             ["id": "studio", "name": "Studio", "local": true, "models": [

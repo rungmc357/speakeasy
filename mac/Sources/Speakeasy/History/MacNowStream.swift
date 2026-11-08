@@ -65,31 +65,24 @@ struct MacNowThread: View {
                 .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
         }.accessibilityIdentifier("mac-now-ask")
     }
-    /// The coordinator's reply in Home's chat: plain text on the left, the model under it.
+    /// The coordinator's reply in Home's chat: plain text on the left. No model under it (N13):
+    /// Home's model lives in the composer chip; session threads keep per-message models.
     private func reply(_ text: String, _ attribution: ReplyAttribution?) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(AgentMarkdown.attributed(text)).font(.callout).textSelection(.enabled)
-                if let attribution {
-                    Text(attribution.label).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
+            Text(AgentMarkdown.attributed(text)).font(.callout).textSelection(.enabled)
             .padding(12)
             .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16))
             Spacer(minLength: 32)
         }.accessibilityIdentifier("mac-now-reply")
     }
     private func card(_ item: NowItem) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            MacNowCard(item: item, now: now, focused: now.home?.call?.focus == item.id) {
-                if let sid = item.sessionID { store.open(sid) }
-            }
-            // The model that did the work (Home's chip picks it), under the card like a reply's.
-            if let model = item.workModel {
-                Text(model.label).font(.caption2).foregroundStyle(.secondary).padding(.leading, 12)
-                    .accessibilityLabel("Worked on by \(model.label)")
-            }
-        }.id(item.id)
+        MacNowCard(item: item, now: now, focused: now.home?.call?.focus == item.id) {
+            if let sid = item.sessionID { store.open(sid) }
+        }
+        // The model that did the work is a detail, not a line under every card (N13): on hover,
+        // and on the job's own page.
+        .help(item.workModel.map { "Worked on by \($0.label)" } ?? "")
+        .id(item.id)
     }
 }
 

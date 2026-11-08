@@ -574,15 +574,20 @@ public struct HomeModelStatus: Equatable, Sendable {
         /// `chosen` on Home's chip, else `default` (the user's Hermes default model).
         public var source: String
         public var defaultModel: Option?
+        /// The few models the picker lists first (the default, then each provider's newest).
         public var options: [Option]
-        public init(model: Option?, source: String, defaultModel: Option?, options: [Option]) {
+        /// Every other connected model, behind "More…" in the picker (newer plugins).
+        public var more: [Option]
+        public init(model: Option?, source: String, defaultModel: Option?, options: [Option], more: [Option] = []) {
             self.model = model; self.source = source; self.defaultModel = defaultModel; self.options = options
+            self.more = more
         }
         init?(json: Any?) {
             guard let d = json as? [String: Any] else { return nil }
             self.init(model: Option(json: d["model"]), source: (d["source"] as? String) ?? "default",
                       defaultModel: Option(json: d["default"]),
-                      options: ((d["options"] as? [Any]) ?? []).compactMap { Option(json: $0) })
+                      options: ((d["options"] as? [Any]) ?? []).compactMap { Option(json: $0) },
+                      more: ((d["more"] as? [Any]) ?? []).compactMap { Option(json: $0) })
         }
         public var chosen: Bool { source == "chosen" }
     }
@@ -600,6 +605,47 @@ public struct HomeModelStatus: Equatable, Sendable {
     }
     /// The coordinator's model was picked by the user (otherwise Auto or a fallback is in use).
     public var chosen: Bool { source == "chosen" }
+}
+
+/// How Home's model picker presents a model: a provider glyph (an SF Symbol, never a brand logo)
+/// and one plain line about what it's good for. Read from the id and provider only.
+public extension HomeModelStatus.Option {
+    private var provider: String { (id.split(separator: "/").first.map(String.init) ?? "").lowercased() }
+    private var lowered: String { (id + " " + name).lowercased() }
+
+    /// The provider's glyph in the picker.
+    var glyph: String {
+        let p = provider + " " + providerName.lowercased()
+        if lowered.contains("claude") || p.contains("anthropic") { return "asterisk" }
+        if lowered.contains("gemini") || p.contains("google") { return "sparkle" }
+        if lowered.contains("grok") || p.contains("xai") { return "bolt" }
+        if lowered.contains("gpt") || p.contains("openai") || p.contains("codex") { return "circle.hexagonpath" }
+        if p.contains("openrouter") { return "arrow.triangle.branch" }
+        if p.contains("studio") || p.contains("local") || p.contains("ollama") || p.contains("lmstudio") || p.contains("custom") {
+            return "desktopcomputer"
+        }
+        return "cpu"
+    }
+
+    /// One plain line: what the model is good for, else who makes it.
+    var blurb: String {
+        let m = lowered
+        let p = provider + " " + providerName.lowercased()
+        if m.contains("opus") { return "Most capable. Best for long, hard jobs." }
+        if m.contains("sonnet") { return "Fast and capable. Good for most jobs." }
+        if m.contains("haiku") { return "Quickest. Best for light, simple jobs." }
+        if m.range(of: #"\b(mini|nano|flash|lite|fast)\b"#, options: .regularExpression) != nil
+            || m.contains("-mini") || m.contains("-nano") || m.contains("-flash") || m.contains("-fast") {
+            return "Small and quick. Best for light jobs."
+        }
+        if p.contains("studio") || p.contains("local") || p.contains("ollama") || p.contains("lmstudio") {
+            return "Runs on your own computer."
+        }
+        if m.contains("gemini") { return "Google's model for most jobs." }
+        if m.contains("grok") { return "xAI's model for most jobs." }
+        if m.contains("gpt") || m.contains("codex") { return "OpenAI's model for most jobs." }
+        return providerName.isEmpty ? "One of your connected models." : "From \(providerName)."
+    }
 }
 
 /// One row of Recent: a previous task, finished or not.

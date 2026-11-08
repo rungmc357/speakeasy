@@ -10,8 +10,8 @@ final class ModelChoiceTests: XCTestCase {
                 ["id": "anthropic/claude-opus-5-5", "model": "claude-opus-5-5", "provider": "anthropic",
                  "provider_name": "Anthropic", "name": "Claude Opus 5.5", "default": true,
                  "reasoning_levels": ["none", "low", "medium", "high", "max"]],
-                ["id": "anthropic/claude-haiku-4-5", "model": "claude-haiku-4-5", "provider": "anthropic",
-                 "provider_name": "Anthropic", "name": "Claude Haiku 4.5", "default": false,
+                ["id": "anthropic/claude-haiku-5-5", "model": "claude-haiku-5-5", "provider": "anthropic",
+                 "provider_name": "Anthropic", "name": "Claude Haiku 5.5", "default": false,
                  "reasoning_levels": ["none", "low", "medium", "high"]],
             ]],
             ["id": "openai-codex", "name": "OpenAI Codex", "models": [
@@ -25,7 +25,7 @@ final class ModelChoiceTests: XCTestCase {
         ],
         "default": ["model": "anthropic/claude-opus-5-5", "reasoning": "medium", "source": "hermes"],
         "hermes_default": ["model": "anthropic/claude-opus-5-5", "reasoning": "medium"],
-        "fast": ["model": "anthropic/claude-haiku-4-5", "reasoning": "low"],
+        "fast": ["model": "anthropic/claude-haiku-5-5", "reasoning": "low"],
         "smart": ["model": "anthropic/claude-opus-5-5", "reasoning": "high"],
     ]
     var catalog: ModelCatalog { ModelCatalog(json: Self.json) }
@@ -37,7 +37,7 @@ final class ModelChoiceTests: XCTestCase {
         XCTAssertTrue(c.providers[2].local)
         XCTAssertEqual(c.option("openai-codex/gpt-5.5")?.levels, [.low, .medium, .high, .xhigh])
         XCTAssertEqual(c.defaultChoice, ModelChoice(model: "anthropic/claude-opus-5-5", reasoning: .medium))
-        XCTAssertEqual(c.fast.model, "anthropic/claude-haiku-4-5")
+        XCTAssertEqual(c.fast.model, "anthropic/claude-haiku-5-5")
         XCTAssertFalse(ModelCatalog(json: ["available": false, "providers": []]).available)
         XCTAssertFalse(ModelCatalog(json: nil).available)
     }
@@ -68,7 +68,7 @@ final class ModelChoiceTests: XCTestCase {
         XCTAssertEqual(s.model?.id, "anthropic/claude-opus-5-5")
         s.select(.max)
         XCTAssertEqual(s.reasoning, .max)
-        s.select(catalog.option("anthropic/claude-haiku-4-5")!)
+        s.select(catalog.option("anthropic/claude-haiku-5-5")!)
         XCTAssertEqual(s.reasoning, .high, "Haiku has no Max: nearest weaker")
         s.select(catalog.option("studio-qwen/qwen3.8-coder")!)
         XCTAssertTrue(s.levels.isEmpty)
@@ -96,15 +96,15 @@ final class ModelChoiceTests: XCTestCase {
         XCTAssertFalse(s.changed)
 
         var d = ModelPickerState(catalog: catalog, chatChoice: nil)
-        d.select(catalog.option("anthropic/claude-haiku-4-5")!)
+        d.select(catalog.option("anthropic/claude-haiku-5-5")!)
         d.select(.low)
         d.apply(.makeDefault)
         XCTAssertNil(d.chatChoice, "a chat following the default keeps following it")
-        XCTAssertEqual(d.catalog.defaultChoice, ModelChoice(model: "anthropic/claude-haiku-4-5", reasoning: .low))
-        XCTAssertEqual(d.catalog.allModels.filter(\.isDefault).map(\.id), ["anthropic/claude-haiku-4-5"])
-        XCTAssertEqual(d.chipLabel, "Claude Haiku 4.5 · Low")
+        XCTAssertEqual(d.catalog.defaultChoice, ModelChoice(model: "anthropic/claude-haiku-5-5", reasoning: .low))
+        XCTAssertEqual(d.catalog.allModels.filter(\.isDefault).map(\.id), ["anthropic/claude-haiku-5-5"])
+        XCTAssertEqual(d.chipLabel, "Claude Haiku 5.5 · Low")
         d.useDefault()
-        XCTAssertEqual(d.model?.id, "anthropic/claude-haiku-4-5")
+        XCTAssertEqual(d.model?.id, "anthropic/claude-haiku-5-5")
     }
 
     func testRequestEncoding() throws {
@@ -148,7 +148,7 @@ final class ModelChoiceTests: XCTestCase {
         XCTAssertFalse(picker.followsDefault)
         XCTAssertFalse(picker.changed)
         var changedDefault = catalog
-        changedDefault.defaultChoice = ModelChoice(model: "anthropic/claude-haiku-4-5", reasoning: .low)
+        changedDefault.defaultChoice = ModelChoice(model: "anthropic/claude-haiku-5-5", reasoning: .low)
         XCTAssertEqual(ModelPickerState(catalog: changedDefault, chatChoice: nil, nextModel: next,
             existingConversation: true).chipLabel, picker.chipLabel)
     }

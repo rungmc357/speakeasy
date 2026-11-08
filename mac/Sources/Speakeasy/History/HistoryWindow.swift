@@ -728,7 +728,7 @@ enum HistoryShots {
                 }
                 precondition(backend.sessionModels.isEmpty, "navigation wrote a preference")
                 var pick = store.picker!
-                pick.select(ModelCatalog.sample.option("anthropic/claude-haiku-4-5")!)
+                pick.select(ModelCatalog.sample.option("anthropic/claude-haiku-5-5")!)
                 pick.select(.low)
                 backend.modelSaveDelay = 200_000_000
                 store.applyModel(pick, scope: .chat)
@@ -737,7 +737,7 @@ enum HistoryShots {
                 store.send()
                 precondition(backend.sent.isEmpty && store.draft == "Must not send during save", "Back bypassed save")
                 try? await Task.sleep(nanoseconds: 600_000_000)
-                precondition(store.picker?.chipLabel == "Claude Haiku 4.5 · Low", "linked page did not refresh")
+                precondition(store.picker?.chipLabel == "Claude Haiku 5.5 · Low", "linked page did not refresh")
                 store.draft = "Confirmed route"
                 store.send()
                 try? await Task.sleep(nanoseconds: 100_000_000)
