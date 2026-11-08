@@ -138,7 +138,7 @@ struct EntityTile: View {
                         }
                         HStack(spacing: 8) {
                             ForEach(Array(actions.enumerated()), id: \.offset) { i, a in
-                                PillButton(title: a.title, icon: a.icon, primary: i == 0, iconOnly: i > 0) { run(a) }.fixedSize()
+                                PillButton(title: a.title, icon: a.icon, primary: i == 0 && entity == "product", iconOnly: i > 0) { run(a) }.fixedSize()   // the card's own next step owns the accent; a Maps on every tile was three gold fills
                             }
                             Spacer(minLength: 0)
                         }
@@ -327,7 +327,10 @@ struct StatusTilesCard: View {
     var body: some View {
         let items = card["items"].array
         let order: [String: Int] = ["needs_you": 0, "bad": 1, "warn": 2, "info": 3, "on": 4, "ok": 5, "off": 6]
-        let sorted = items.enumerated().sorted { (order[$0.element["state"].string ?? ""] ?? 9, $0.offset) < (order[$1.element["state"].string ?? ""] ?? 9, $1.offset) }.map(\.element)
+        // Trouble first; among it a job that is stuck leads, because it's usually why the others missed
+        // their runs (the cause sat last, under the jobs it held up).
+        func rank(_ item: JSONValue) -> Int { StatusTile.word(for: item) == "Stuck" ? 0 : (order[item["state"].string ?? ""] ?? 9) + 1 }
+        let sorted = items.enumerated().sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }.map(\.element)
         VStack(alignment: .leading, spacing: 10) {
             // The app the facts came from, then what they are about ("Vercel · fieldnote-web"), as the designs head a card.
             let head = [card["source"].string, card["scope"].string].compactMap { $0 }.removingDuplicates()
@@ -403,6 +406,12 @@ struct StatusTile: View {
         }
         return word(state)
     }
+    /// The colour of the word the tile shows: "Missed" and "Failed" are red whether the agent said warn or bad.
+    static func color(for item: JSONValue) -> Color {
+        let state = item["state"].string
+        guard state == "warn" || state == "bad", item["value"].string == nil else { return color(state) }
+        switch word(for: item) { case "Failed", "Down": return look.bad; case "Missed", "Stuck": return look.warn; default: return color(state) }
+    }
     static func word(_ state: String?) -> String {
         ["ok": "OK", "on": "On", "off": "Off", "warn": "Needs a look", "bad": "Down", "needs_you": "Needs you", "info": "Info"][state ?? ""] ?? ""
     }
@@ -411,7 +420,7 @@ struct StatusTile: View {
         let loud = state == "needs_you" || state == "warn" || state == "bad"
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
-                Circle().fill(Self.color(state)).frame(width: 8, height: 8)
+                Circle().fill(Self.color(for: item)).frame(width: 8, height: 8)
                 Text(item["name"].string ?? "").font(.system(size: 16, weight: .semibold)).lineLimit(1)
             }
             if let role = item["role"].string { Text(role).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
@@ -419,7 +428,7 @@ struct StatusTile: View {
                 Text(value).font(.system(size: 26, weight: .bold)).lineLimit(1).minimumScaleFactor(0.6).padding(.top, 2)
                 if let unit = item["unit"].string { Text(unit).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
             } else {
-                Text(Self.word(for: item)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(state) : .primary).padding(.top, 2)
+                Text(Self.word(for: item)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(for: item) : .primary).padding(.top, 2)
             }
             let history = item["history"].doubles
             if history.count >= 3 { Spark(points: history).frame(height: 18) }
@@ -464,7 +473,7 @@ struct StatusRow: View {
         let state = item["state"].string
         let loud = state == "needs_you" || state == "warn" || state == "bad"
         HStack(alignment: .center, spacing: 10) {
-            Circle().fill(StatusTile.color(state)).frame(width: 8, height: 8)
+            Circle().fill(StatusTile.color(for: item)).frame(width: 8, height: 8)
             // A short figure ("38% CPU", "Missed") sits at the end; a long one ("9:31 AM yesterday last
             // run") took half the row and wrapped the name, so it joins the line under the name.
             let figure = [item["value"].string, item["unit"].string].compactMap({ $0 }).joined(separator: " ").nonEmpty
@@ -481,7 +490,7 @@ struct StatusRow: View {
                 ?? (sayState && state != "info" ? StatusTile.word(for: item) : nil) {   // "Info" said nothing
                 Text(trailing)
                     .font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                    .foregroundStyle(loud ? StatusTile.color(state) : .secondary).lineLimit(1).fixedSize()
+                    .foregroundStyle(loud ? StatusTile.color(for: item) : .secondary).lineLimit(1).fixedSize()
             }
         }
         .padding(.vertical, 10)

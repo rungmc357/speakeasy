@@ -213,11 +213,13 @@ struct IssueCard: View {
                     Text(card["title"].string ?? "").font(.title3.weight(.semibold)).foregroundStyle(style.ink)
                         .fixedSize(horizontal: false, vertical: true)
                     if let state = card["state"].string {
-                        CardTag(icon: "circle.lefthalf.filled", text: state, tint: style.tone(card["tone"].string ?? "warn"))
+                        let tone = StateWords.tone(state, given: card["tone"].string) ?? "warn"
+                        CardTag(icon: StateWords.symbol(state, tone: tone), text: state, tint: style.tone(tone))
                     }
                     VStack(alignment: .leading, spacing: 7) {
                         let who = [card["assignee"].string, card["priority"].string.map { "\($0) priority" }].compactMap { $0 }
-                        if !who.isEmpty { CardFactLine(icon: "person.fill", text: who.joined(separator: " · ")) }
+                        // No assignee: the line is the priority, so its glyph is the priority's, not a person.
+                        if !who.isEmpty { CardFactLine(icon: card["assignee"].string == nil ? "chart.bar.fill" : "person.fill", text: who.joined(separator: " · ")) }
                         let labels = card["labels"].strings
                         if !labels.isEmpty { CardFactLine(icon: "tag.fill", text: labels.joined(separator: ", ")) }
                         if let note = card["note"].string, fit != .compact { CardFactLine(icon: "text.bubble", text: note) }
@@ -279,12 +281,13 @@ struct PRCard: View {
                 let same = states.count == 1
                 let total = max(Int(card["checks_total"].double ?? 0), checks.count)
                 let restSame = total == checks.count || card["checks_rest"].string == states.first
-                if same, restSame, let only = states.first, ["skipped", "passed"].contains(only), total > 2 {
-                    // Fifteen checks that all skipped (or all passed) are one fact, not a list of names.
+                if same, restSame, let only = states.first, ["skipped", "passed", "pending"].contains(only), total > 2 {
+                    // Fifteen checks that all skipped (or all passed, or all wait their turn) are one
+                    // fact, not a list of names: three identical "waiting" rows filled a third of the card.
                     HStack(spacing: 8) {
-                        Image(systemName: only == "passed" ? "checkmark.circle.fill" : "minus.circle.fill")
+                        Image(systemName: only == "passed" ? "checkmark.circle.fill" : only == "pending" ? "clock.fill" : "minus.circle.fill")
                             .foregroundStyle(only == "passed" ? style.tone("good") : style.faint)
-                        Text("All \(total) \(only)").font(.subheadline.weight(.medium)).foregroundStyle(style.ink)
+                        Text(only == "pending" ? "All \(total) waiting to run" : "All \(total) \(only)").font(.subheadline.weight(.medium)).foregroundStyle(style.ink)
                         Spacer(minLength: 0)
                     }
                     .cardWell(style)
@@ -456,7 +459,8 @@ struct MockupsCard: View {
         CardBox {
             // The screens show how many there are and that they scroll: no count, no "Swipe".
             CardHeader(icon: "rectangle.stack", title: card["title"].string ?? "Screens", trailing: nil)
-            if let note = card["note"].string, !MockupsCard.restates(note, count: items.count) {
+            if let note = card["note"].string, !MockupsCard.restates(note, count: items.count),
+               !MockupsCard.listsCaptions(note, items.compactMap { $0["caption"].string }) {
                 Text(note).font(.subheadline).foregroundStyle(style.secondary).fixedSize(horizontal: false, vertical: true)
             }
             ScrollView(.horizontal) {
@@ -466,8 +470,9 @@ struct MockupsCard: View {
                             CardPicture(value: item["image"], height: fit == .compact ? 170 : 248, corner: 18,
                                         label: item["caption"].string ?? "Screen \(i + 1)", fill: true)
                             if let caption = item["caption"].string {
-                                Text(caption).font(.footnote.weight(.medium)).foregroundStyle(style.secondary).lineLimit(2)
-                                    .frame(width: 132, alignment: .leading)
+                                // One quiet line under each screen, as the designs label them ("Welcome").
+                                Text(caption).font(.caption).foregroundStyle(style.secondary).lineLimit(1)
+                                    .frame(width: 124, alignment: .leading)
                             }
                         }
                     }
@@ -486,6 +491,16 @@ extension MockupsCard {
         let n = count < words.count ? words[count] : "\(count)"
         let low = note.lowercased()
         return low.range(of: #"^(\#(n)|\#(count))\b"#, options: .regularExpression) != nil && note.count <= 48
+    }
+    /// A note that names the screens the captions already name ("Light theme: idle, finished job,
+    /// decision waiting") says them a second time, right above the third.
+    static func listsCaptions(_ note: String, _ captions: [String]) -> Bool {
+        let low = note.lowercased()
+        let named = captions.filter { cap in
+            let key = cap.lowercased().split(separator: " ").first { $0.count > 3 }.map(String.init) ?? cap.lowercased()
+            return low.contains(key)
+        }
+        return captions.count >= 2 && named.count >= 2
     }
 }
 

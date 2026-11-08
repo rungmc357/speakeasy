@@ -121,7 +121,7 @@ CATALOG: dict[str, dict[str, Any]] = {
                                                                          "state": S, "url": URL, "address": S,
                                                                          "lat": N, "lon": N}, 10)}, 10)},
     # P4: rows of things to act on (pull requests, inbox triage, to-dos, bills, alerts).
-    "rows": {"source": S, "scope": S, "title": S, "entity": S, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S,
+    "rows": {"source": S, "scope": S, "title": S, "entity": S, "total": N, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S,
                                                              "who": S, "when": S, "amount": S, "url": URL}, 12)},
     # P6: one number that matters, which way it moves, and the series behind it.
     "metric": {"label": S, "value": S, "unit": S, "delta": S, "good": B,
@@ -417,6 +417,12 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         # "fieldnote-ios · FIELDNOTE-IOS-3KD": a tracker's issue key is not what the card is about.
         parts = [p.strip() for p in body["scope"].split("·")]
         kept = [p for p in parts if p and not re.fullmatch(r"(?:[A-Z][A-Z0-9]*-)+[A-Z0-9]+", p)]
+        # "10 open, sorted by last activity": how the list is ordered is not the view it came from, and
+        # it cut the header mid-word. The clause goes; "10 open" stays.
+        kept = [re.sub(r"(?i),?\s*(?:sorted|ordered|newest|oldest) (?:by|first)\b.*$", "", p).strip() for p in kept]
+        kept = [p for p in kept if p]
+        # "NousResearch/hermes-agent": the repo reads by its name; the owner adds width, not meaning.
+        kept = [re.sub(r"^[A-Za-z0-9_.-]+/([A-Za-z0-9_.-]+)$", r"\1", p) if len(kept) > 1 else p for p in kept]
         body["scope"] = " · ".join(kept)
         if not kept:
             body.pop("scope")
@@ -547,6 +553,13 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         if not items:
             return {}
         out = {**body, "items": items}
+        # How many the list really has when fewer rows were sent ("13 left", 12 rows): the card says
+        # "1 more not shown" instead of a count that disagrees with the reply. Never fewer than sent.
+        total = out.get("total")
+        if not isinstance(total, (int, float)) or isinstance(total, bool) or int(total) <= len(items) or total > 10000:
+            out.pop("total", None)
+        else:
+            out["total"] = int(total)
         if str(out.get("entity", "")).lower() in ROW_ENTITIES:
             out["entity"] = out["entity"].lower()
         else:
@@ -703,6 +716,10 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             if isinstance(i.get("elapsed"), str):
                 # "about 19 min" pushed the name onto two lines; a card corner is exact enough as "19 min".
                 i["elapsed"] = re.sub(r"(?i)^(?:about|around|roughly|approx\.?|~)\s*", "", i["elapsed"].strip())
+                # "19 min at last check-in" squeezed both titles onto two lines: the corner is the time.
+                i["elapsed"] = re.sub(r"(?i)\s+(?:at|as of|since|by) (?:the )?last check[- ]?in\b.*$", "", i["elapsed"]).strip()
+                # ...and the status line saying that check-in again ("…; last check-in about 3:00 AM") goes.
+                i["status"] = re.sub(r"(?i)[;,]\s*(?:last|latest) check[- ]?in\b[^;,.]*\.?$", "", i["status"]).strip() or i["status"]
         return {**body, "items": items} if items else {}
     if kind == "site":
         return body if body.get("url") else {}
@@ -991,7 +1008,13 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
         ref = view.get("ref") if kind == "issue" else view.get("number")
         pinned = ref is not None and _numbers(str(ref)) and _grounded_value(ref, nums) and _grounded_name(str(ref), said)
         in_ask = bool(asked) and _grounded_label(title, _norm(asked), _numbers(asked))
-        if not (in_ask or (_grounded_label(title, said, nums) if pinned else _grounded_name(title, said))):
+        # With its exact ref said, the title is the tracker's own text (copied, not composed): it needs
+        # only two of its words in the answer, so the answer is about that ticket. A PR card whose answer
+        # said "PR 66526 ... typing ... turn" but not "Revoke typing lease on turn completion" whole
+        # vanished, and the reply sat above nothing (SPK-231 r17).
+        tracker_words = [w for w in _norm(title).split() if w not in _LABEL_STOP]
+        about = pinned and _numbers(title) <= nums and sum(f" {w} " in said for w in tracker_words) >= min(2, len(tracker_words))
+        if not (in_ask or about or (_grounded_label(title, said, nums) if pinned else _grounded_name(title, said))):
             return False
         values += [ref] if ref not in (None, "") else []
     elif kind == "jobs":

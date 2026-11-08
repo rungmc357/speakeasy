@@ -294,3 +294,17 @@ def test_timeline_keeps_unscheduled_next_steps_and_counts_a_bare_key_list():
     nxt = v["days"][1]["items"]
     # Under a day headed "Next", a step still to come carries no filler "Next"; the running one says Now.
     assert [(i.get("when"), i["what"]) for i in nxt] == [("Now", "Land 3 issues"), (None, "Ship the new build")]
+
+
+def test_a_pr_said_by_number_keeps_its_tracker_title_with_two_of_its_words():
+    pr = views.clean({"kind": "pr", "repo": "acme/widgets", "number": 4182, "title": "Revoke the paint lease on job completion",
+                      "state": "conflicts", "reason": "Main moved since the last rebase."})
+    assert views.grounded(pr, "PR 4182 is stuck: the paint job conflicts with main.")
+    assert not views.grounded(pr, "PR 4183 is stuck: the paint job conflicts with main.")   # wrong number
+    assert not views.grounded(pr, "PR 4182 is stuck behind main.")   # not about that title
+
+
+def test_row_scope_drops_the_sort_clause_and_the_repo_owner():
+    rows = views.clean({"kind": "rows", "entity": "pr", "scope": "acme/widgets · 10 open, sorted by last activity",
+                        "items": [{"ref": "#12", "name": "Fix the thing", "state": "Stale"}]})
+    assert rows["scope"] == "widgets · 10 open"

@@ -121,7 +121,10 @@ struct RowsCard: View {
         let items = card["items"].array
         let entity = card["entity"].string ?? "item"
         // Six rows read at a glance (a 13-row wall on Home did not); the rest are in the answer.
-        let cap = fit == .compact ? 3 : 6
+        let cap = expanded ? items.count : (fit == .compact ? 3 : 6)
+        // The list's own count ("13 left") when fewer rows were sent: "6 more" under 6 of 13 rows said
+        // 12 and disagreed with the reply.
+        let total = max(card["total"].double.map(Int.init) ?? items.count, items.count)
         VStack(alignment: .leading, spacing: 8) {
             // The view the rows came from leads ("Cycle 14 · iOS · ends Friday"), else the app and the title.
             let head = card["scope"].string.map { [$0] }
@@ -130,9 +133,48 @@ struct RowsCard: View {
             ForEach(Array(items.prefix(cap).enumerated()), id: \.offset) { _, item in
                 ActionRow(item: item, entity: entity)
             }
-            if items.count > cap {
-                Text("\(items.count - cap) more").font(.system(size: 12.5)).foregroundStyle(.secondary)
+            if total > min(cap, items.count) {
+                let rest = total - min(cap, items.count)
+                if items.count > cap {
+                    // A control, not a caption: the rest open in place.
+                    Button { withAnimation(.snappy) { expanded = true } } label: {
+                        HStack(spacing: 6) {
+                            Text("Show \(rest) more").font(.system(size: 13.5, weight: .semibold))
+                            Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundStyle(gold).frame(maxWidth: .infinity, minHeight: 36)
+                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(look.well))
+                    }
+                    .buttonStyle(.plain).accessibilityIdentifier("rows-show-more")
+                } else {
+                    // Rows the answer didn't send: say how many, quietly; there is nothing to open.
+                    Text("\(rest) more not shown").font(.system(size: 12.5)).foregroundStyle(.secondary)
+                }
             }
+        }
+    }
+    @State private var expanded = false
+}
+
+/// One status word, one colour, on every card: "Missed" is red on every row, "Backlog" is never the
+/// orange of "Waiting on Geo". Words it doesn't know keep the tone the agent gave.
+enum StateWords {
+    static func tone(_ state: String?, given: String?) -> String? {
+        guard let s = state?.lowercased().trimmingCharacters(in: .whitespaces), !s.isEmpty else { return given }
+        func has(_ re: String) -> Bool { s.range(of: re, options: .regularExpression) != nil }
+        if has(#"^(done|merged|shipped|ready( to ship)?|paid|approved|passed|live|fixed|delivered|completed?|confirmed|sent)$"#) { return "good" }
+        if has(#"^(blocked|failed|failing|overdue|conflicts?|missed|down|crash(ed|ing)?|declined|waiting on .+|needs you)$"#) { return "bad" }
+        if has(#"^(in progress|rebasing|running|stuck|due .+|today|building|deploying|started)$"#) { return "warn" }
+        if has(#"^(backlog|todo|to do|canceled|cancelled|open|draft|in review|review|skipped|idle|queued|triage|stale)$"#) { return "neutral" }
+        return given
+    }
+    /// The tracker glyph for a state: a check when it's done, a half circle only while it moves.
+    static func symbol(_ state: String?, tone: String?) -> String {
+        switch tone {
+        case "good": return "checkmark.circle.fill"
+        case "bad": return "exclamationmark.circle.fill"
+        case "warn": return "circle.lefthalf.filled"
+        default: return (state ?? "").lowercased().contains("review") ? "circle.righthalf.filled" : "circle.dashed"
         }
     }
 }
@@ -145,7 +187,8 @@ struct ActionRow: View {
         switch t { case "good": return look.good; case "warn": return look.warn; case "bad": return look.bad; default: return .secondary }
     }
     var body: some View {
-        let tone = item["tone"].string
+        // A known status word sets its colour (Backlog grey, Waiting on Geo red); otherwise the agent's tone.
+        let tone = StateWords.tone(item["state"].string, given: item["tone"].string)
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: ArtifactLinks.symbol(entity)).font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(tone == nil ? gold : Self.tone(tone))
