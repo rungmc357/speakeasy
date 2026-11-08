@@ -494,8 +494,16 @@ class NowModel:
                 if from_a_call(row) and self._last_call_id == row.get("interaction_id"):
                     item["call_id"] = f"call:{row['interaction_id']}"
                 item.update(kind=SEEN_ANSWER if seen else NEW_ANSWER, line=line, unread=not seen)
+        elif status == RS.RunState.CANCELLED and self._in_chat(run_id):
+            # Canceled from Home's chat: the job's card stays in the thread, closed and saying so,
+            # like the reply above it ("Canceling the coffee shop search."). A card that vanished
+            # left the thread's reply pointing at nothing. Replaced by a corrected run, it leaves
+            # (superseded): the new run's card speaks.
+            if (finished or now) < cleared or now - (finished or now) > CHAT_KEPT_S:
+                return None
+            item.update(kind=SEEN_ANSWER, line="Canceled.", unread=False, canceled=True)
         else:
-            return None  # cancelled, rejected: nothing to look at
+            return None  # cancelled outside the chat, rejected: nothing to look at
         item.setdefault("id", f"s:{session}" if session else f"t:{run_id or row['key']}")
         item.setdefault("unread", False)
         if self._in_chat(run_id):
@@ -1042,12 +1050,12 @@ def thread_keys(rows: list[dict[str, Any]]) -> dict[str, str]:
 
 
 def superseded(rows: list[dict[str, Any]]) -> set[str]:
-    """Stopped tasks a later run replaced: a later task in the same conversation (the chat it
+    """Stopped (or canceled) tasks a later run replaced: a later task in the same conversation (the chat it
     continues or its Hermes session) that finished or is still going, or a retry/follow-up of it.
     *rows* are newest first."""
     out: set[str] = set()
     for n, r in enumerate(rows):
-        if _state(r.get("status")) not in {"failed", "interrupted"}:
+        if _state(r.get("status")) not in {"failed", "interrupted", "cancelled"}:
             continue
         mine = {x for x in (r.get("linked_source"), r.get("session_id")) if x}
         when = float(r.get("created") or r.get("settled_at") or 0)

@@ -583,3 +583,21 @@ def test_the_coordinator_sends_cards_and_made_things_to_a_job():
     """A 'show it as a card' ask is a job (jobs draw cards); chat replies stay plain prose."""
     assert "jobs draw cards" in HC._PROMPT
     assert "no code blocks, tables, box drawing" in HC._PROMPT
+
+
+def test_a_canceled_job_keeps_its_card_in_the_thread_saying_so(server, service, hermes):
+    hermes.hold = True
+    coordinator(service, {"reply": "Looking.", "action": "start", "request": "Compare two standing desks"})
+    first = post(server, {"text": "compare two standing desks", "client_id": "c_k1"})[1]
+    wait_for(lambda: hermes.calls)
+    wait_for(lambda: [e for e in stream(server) if e["kind"] == "card"])
+    coordinator(service, {"reply": "Canceling the desk comparison.", "action": "cancel", "job": "j1"})
+    assert post(server, {"text": "cancel that", "client_id": "c_k2"})[1]["action"] == "cancel"
+
+    def canceled():
+        now = http(server.base_url, "GET", "/voice/now?tz=America/New_York", None, server.token)[1]
+        return [i for i in now["items"] if i.get("run_id") == first["run_id"] and i.get("canceled")]
+    item = wait_for(canceled)[0]
+    assert item["kind"] == "seen_answer" and item["line"] == "Canceled." and item["unread"] is False
+    cards = [e for e in stream(server) if e["kind"] == "card"]
+    assert len(cards) == 1   # the card stays, closed; the reply above it still points at something

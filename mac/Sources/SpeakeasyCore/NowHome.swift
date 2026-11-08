@@ -174,6 +174,8 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     /// A question nobody answered that a newer one took over: when, and which card took over.
     public var replacedAt: Date?
     public var replacedBy: String?
+    /// Canceled from Home's chat: the card stays in the thread, closed ("Canceled.").
+    public var canceled = false
     /// The model that did (or is doing) the job, as recorded by the plugin (what Hermes served once
     /// known). Home's chat shows it under a job's card; nil when nothing was recorded.
     public var workModel: ReplyAttribution?
@@ -233,6 +235,7 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         fullTitle = nonEmpty(o["full_title"])
         reply = nonEmpty(o["reply"]).map { String($0.prefix(400)) }
         workModel = ReplyAttribution(json: o["model"])
+        canceled = o["canceled"] as? Bool ?? false
         if let r = o["replaced"] as? [String: Any] {
             replacedAt = (r["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } ?? updatedAt ?? finishedAt
             replacedBy = nonEmpty(r["by"])
