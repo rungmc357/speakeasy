@@ -292,4 +292,5 @@ def test_timeline_keeps_unscheduled_next_steps_and_counts_a_bare_key_list():
                                     {"what": "Ship the new build", "state": "next"},
                                     {"what": "A step with no time or state"}]}]})
     nxt = v["days"][1]["items"]
-    assert [(i["when"], i["what"]) for i in nxt] == [("Now", "Land 3 issues"), ("Next", "Ship the new build")]
+    # Under a day headed "Next", a step still to come carries no filler "Next"; the running one says Now.
+    assert [(i.get("when"), i["what"]) for i in nxt] == [("Now", "Land 3 issues"), (None, "Ship the new build")]

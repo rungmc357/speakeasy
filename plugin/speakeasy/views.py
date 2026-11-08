@@ -50,7 +50,7 @@ CATALOG: dict[str, dict[str, Any]] = {
     # Places and getting around
     "place": {"name": S, "category": S, "address": S, "rating": N, "reviews": N, "price": S, "open_now": B,
               "hours_today": S, "phone": S, "url": URL, "photo_url": URL, "lat": N, "lon": N, "distance": S},
-    "places": {"title": S, "items": ({"name": S, "category": S, "rating": N, "price": S, "open_now": B,
+    "places": {"title": S, "items": ({"name": S, "category": S, "area": S, "rating": N, "price": S, "open_now": B,
                                       "distance": S, "url": URL, "photo_url": URL, "lat": N, "lon": N}, 8)},
     "route": {"origin": S, "destination": S, "mode": S, "minutes": N, "distance": S, "leave_by": S, "arrive_by": S,
               "traffic": S, "steps": (S, 8), "lat": N, "lon": N, "dest_lat": N, "dest_lon": N},
@@ -511,9 +511,14 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         for day in body.get("days") or []:
             # A step still to come often has no time yet ("Combine into one build"): it reads "Next"
             # rather than being dropped, which left a release timeline with only its past.
-            items = [_coords({**i, "when": i.get("when") or ("Now" if str(i.get("state", "")).lower() == "now" else "Next")})
+            items = [_coords({**i, "when": i.get("when") or (
+                         # Under a day already headed "Next", a filler "Next" on every step said it three times.
+                         None if str(day.get("label", "")).strip().lower() in ("next", "up next", "still to do")
+                         and str(i.get("state", "")).lower() != "now"
+                         else "Now" if str(i.get("state", "")).lower() == "now" else "Next")})
                      for i in day.get("items") or []
                      if i.get("what") and (i.get("when") or str(i.get("state", "")).lower() in ("now", "next"))]
+            items = [{k: v for k, v in i.items() if v is not None} for i in items]
             items = [i if str(i.get("state", "")).lower() in TIMELINE_STATES else {k: v for k, v in i.items() if k != "state"}
                      for i in items]
             items = [{**i, "state": i["state"].lower()} if "state" in i else i for i in items]
@@ -1132,6 +1137,14 @@ def _unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
     return view
 
 
+def _urls_in(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        return set().union(*(_urls_in(v) for k, v in value.items() if k != "links")) if value else set()
+    if isinstance(value, list):
+        return set().union(*(_urls_in(v) for v in value)) if value else set()
+    return {value} if isinstance(value, str) and value.startswith("https://") else set()
+
+
 def _soft_unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
     """Optional facts the answer never says go, not the card: a release step's time ("2:50 AM" only in
     the card) or a preview's maker. Nothing is rewritten; an unbacked detail is simply left off, so
@@ -1171,6 +1184,11 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
                 # Older kinds keep an offered next step too, under the same rules (two, confirm first).
                 view = {**view, "actions": [a for a in view["actions"] if not str(a.get("id", "")).startswith("do_")]
                         + _offered(view)}
+            if view.get("links"):
+                own = _urls_in(view)   # a page the card already opens (a tile's Website) isn't a second button
+                view = {**view, "links": [lk for lk in view["links"] if lk["url"] not in own]}
+                if not view["links"]:
+                    view.pop("links")
             out.append(view)
             continue
         if kept >= MAX_ARTIFACTS:
@@ -1178,6 +1196,13 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
         view = _soft_unsaid(view, answer)
         if not grounded(view, answer, asked):
             continue
+        if view.get("links"):
+            # "Misi website" under a tile with its own Website, "Open #66526" beside that row's arrow:
+            # a page the card already opens is not a second button.
+            own = _urls_in(view)
+            view = {**view, "links": [lk for lk in view["links"] if lk["url"] not in own]}
+            if not view["links"]:
+                view.pop("links")
         out.append(_artifact_actions(_unsaid(view, answer)))
         kept += 1
     return out

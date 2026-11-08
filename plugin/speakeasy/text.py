@@ -1113,7 +1113,15 @@ def outcome_headline(spoken: str | None, full: str | None = None) -> str | None:
     if said and written and written.lower().startswith(said.rstrip(".!").lower()) and len(written) <= 140:
         line = written
     if line and len(line) > 140:
-        line = line[:139].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+        # Too long for one line: end at the last clause that fits ("It's fixed and tested, but it won't
+        # reach a build until the merge."), never mid-thought with an ellipsis.
+        head = line[:140]
+        cut = max(head.rfind(", but "), head.rfind(", so "), head.rfind("; "), head.rfind(", and "), head.rfind(": "))
+        cut = cut if cut >= 50 else head.rfind(", ")
+        if cut >= 50:
+            line = line[:cut].rstrip(" ,;:") + "."
+        else:
+            line = line[:139].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
     return line
 
 

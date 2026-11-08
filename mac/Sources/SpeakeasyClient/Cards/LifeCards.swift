@@ -262,7 +262,8 @@ struct PlacesCard: View {
     static func tiles(_ card: ViewCard) -> JSONValue {
         let items: [JSONValue] = card["items"].array.prefix(6).map { p in
             guard case .object(var o) = p else { return p }
-            if let c = p["category"].string, o["sub"] == nil { o["sub"] = .string(c) }
+            let sub = [p["category"].string, p["area"].string].compactMap { $0 }.joined(separator: " · ")
+            if !sub.isEmpty, o["sub"] == nil { o["sub"] = .string(sub) }
             if p["open_now"].bool == false { o["state"] = .string("Closed now") }
             if let d = p["distance"].string { o["facts"] = .array([.string(d)]) }
             return .object(o)

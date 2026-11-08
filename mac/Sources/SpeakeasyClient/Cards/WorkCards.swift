@@ -290,7 +290,9 @@ struct PRCard: View {
                     .cardWell(style)
                 } else {
                 VStack(alignment: .leading, spacing: 7) {
-                    ForEach(Array(rows.shown.enumerated()), id: \.offset) { _, check in checkRow(check, word: !same) }
+                    // One shared state is said once, but only as the summary line above says it; checks
+                    // all waiting on approval drew three bare circles with no word (SPK-231 reps).
+                    ForEach(Array(rows.shown.enumerated()), id: \.offset) { _, check in checkRow(check, word: !same || !["skipped", "passed"].contains(states.first ?? "")) }
                     if let rest = rows.rest {
                         Text(rest).font(.footnote).foregroundStyle(style.faint)
                     }
@@ -343,7 +345,8 @@ struct PRCard: View {
             default: return ("minus.circle.fill", style.faint)
             }
         }()
-        let note = check["note"].string ?? (state == "skipped" ? "didn't run" : state)
+        let note = check["note"].string ?? ["skipped": "didn't run", "pending": "waiting", "running": "running",
+                                            "failed": "failed", "passed": "passed"][state] ?? state
         return HStack(spacing: 8) {
             Image(systemName: icon).font(.footnote).foregroundStyle(tint)
             Text(check["name"].string ?? "").font(.footnote.weight(.medium)).foregroundStyle(style.ink)

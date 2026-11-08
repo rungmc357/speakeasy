@@ -87,12 +87,9 @@ struct EntityTile: View {
         let pictured = item["photo_url"].url != nil || item["image"].double != nil
         VStack(alignment: .leading, spacing: 0) {
             if !pictured {
-                // No photo found: the name on the card's own surface with a small mark, not a big
-                // grey tile with a lone pin standing in for a picture.
+                // No photo found: the name on the card's own surface, not a grey square standing in
+                // for a picture (reviewers read even a small glyph tile as a missing image).
                 HStack(alignment: .center, spacing: 10) {
-                    Image(systemName: ArtifactLinks.symbol(entity, item: item)).font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.secondary).frame(width: 34, height: 34)
-                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.06)))
                     Text(item["name"].string ?? "").font(.system(size: 18, weight: .bold)).lineLimit(2)
                     Spacer(minLength: 0)
                     if let when = item["when"].string {
