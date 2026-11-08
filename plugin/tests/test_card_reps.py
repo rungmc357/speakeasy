@@ -386,3 +386,9 @@ def test_move_button_names_the_event_without_cutting_it():
         {"start": "2030-01-02T13:00:00-05:00", "end": "2030-01-02T13:30:00-05:00", "title": "Investor update call"}]}
     out = views.shape([views.clean(day)], "")
     assert out[0]["actions"][0]["label"] == "Move the call"
+
+
+def test_a_two_word_label_is_named_by_its_head_noun():
+    s = views.clean({"kind": "status", "scope": "Scheduled jobs", "items": [{"name": "Cron scheduler", "state": "bad", "note": "Stopped at 3 AM"}]})
+    assert views.grounded(s, "The scheduler stopped at 3 AM.")
+    assert not views.grounded(s, "The cron stopped at 3 AM.")   # the qualifier alone is not the thing

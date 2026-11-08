@@ -966,6 +966,8 @@ def _grounded_label(name: str, said: str, said_numbers: set[str], half: bool = F
     if len(words) < 2 or not _numbers(name) <= said_numbers:
         return False
     hits = sum(f" {w} " in said for w in words)
+    if len(words) == 2 and len(words[-1]) > 3 and f" {words[-1]} " in said and not half:
+        return True   # "Cron scheduler" where the answer says "the scheduler": the head noun names it
     if len(words) >= 5 and hits >= 2 and hits * 5 >= len(words) * 2:
         return True   # a tool's long name ("TRMNL X Desk Wallboard updater") the answer shortens ("TRMNL wallboard")
     return hits * 2 >= len(words) if half else hits * 3 >= len(words) * 2
