@@ -361,3 +361,12 @@ def test_a_long_tool_name_the_answer_shortens_still_counts():
         {"name": "ACME X Desk Wallboard updater", "state": "warn", "note": "Missed runs since 9 AM"}]})
     assert views.grounded(s, "The ACME wallboard missed its runs since 9 AM.")
     assert not views.grounded(s, "The wallboard missed its runs since 9 AM.")   # one word is not the job
+
+
+def test_a_tile_without_a_figure_takes_the_one_its_note_leads_with():
+    s = views.clean({"kind": "status", "scope": "Invented hosts", "items": [
+        {"name": "alpha", "state": "warn", "note": "Load 26; others under 2.5"},
+        {"name": "beta", "state": "ok", "note": "Quiet, up 3 days"}]})
+    a, b = s["items"]
+    assert (a["value"], a["unit"], a["note"]) == ("26", "load", "Others under 2.5")
+    assert "value" not in b and b["note"] == "Quiet, up 3 days"

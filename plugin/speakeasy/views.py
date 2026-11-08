@@ -490,6 +490,17 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 i.pop("note")
             elif isinstance(i.get("note"), str):
                 i["note"] = _first_clause(i["note"])
+            if not i.get("value") and isinstance(i.get("note"), str):
+                # "Load 26; others under 2.5" on a tile with no figure: the tile's number is the 26 (the
+                # design's big value), its unit the word, and the note what's left. A tile showing
+                # "Needs a look" where a number belonged said less than its own note.
+                m = re.match(r"(?i)^(load|cpu|memory|disk|queue|errors?|jobs? waiting|requests?)\s+(?:at\s+|of\s+)?(\d[\d.,]*%?)\s*(?:[;,\u2014-]\s*(.*))?$", i["note"].strip())
+                if m:
+                    i["value"], i["unit"] = m.group(2), m.group(1).lower()
+                    if m.group(3):
+                        i["note"] = m.group(3)[:1].upper() + m.group(3)[1:]
+                    else:
+                        i.pop("note")
             name = i["name"].strip()
             if re.fullmatch(r"[a-z0-9]+(?:[-_][a-z0-9]+){2,}", name):
                 # "wiki-session-writeback-curator": a job's file name, read as words. Two-part slugs
