@@ -403,3 +403,9 @@ def test_look_only_asks_keep_only_steps_that_look():
     assert [(a["label"], a["style"]) for a in out[0]["actions"]] == [("Show conflicts", "primary")]
     out = views.shape([views.clean(pr)], answer, "where is PR 4182?")
     assert "Fix conflicts" in [a["label"] for a in out[0]["actions"]]
+
+
+def test_a_status_card_with_only_its_app_named_is_kept():
+    s = views.clean({"kind": "status", "source": "Servers", "items": [{"name": "alpha", "state": "bad", "value": "88%", "unit": "disk used"}]})
+    assert s and s["source"] == "Servers"
+    assert views.clean({"kind": "status", "items": [{"name": "alpha", "state": "bad"}]}) is None

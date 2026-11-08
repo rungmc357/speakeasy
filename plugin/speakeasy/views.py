@@ -521,7 +521,9 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         if isinstance(body.get("scope"), str):
             # "Scheduled jobs (partial list, ~3 AM snapshot)": the aside is the agent's caveat; the answer says it.
             body = {**body, "scope": _PAREN_ASIDE.sub("", body["scope"]).strip() or body["scope"]}
-        return {**body, "items": items} if body.get("scope") and items else {}
+        # The app heads the card when the agent named no view ("Servers"): a status card the agent
+        # sent without a scope vanished whole, and its reply sat above nothing (SPK-231 pub-r25).
+        return {**body, "items": items} if (body.get("scope") or body.get("source")) and items else {}
     if kind == "draft":
         channel = str(body.get("channel", "")).lower()
         if channel not in DRAFT_CHANNELS or not body.get("to") or not body.get("body"):
