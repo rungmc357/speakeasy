@@ -958,6 +958,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var openaiKey: Bool = false
     /// Voice notes: the recording itself is the message (`POST …/voice-message`), like a Telegram voice note.
     public var voiceNotes: Bool = false
+    /// Staged attachments may be videos (MP4, QuickTime): the composers offer them (VideoAttachments.swift).
+    public var videoAttachments: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -978,6 +980,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
         case voiceNotes = "voice_notes"
         case now
+        case videoAttachments = "video_attachments"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1005,5 +1008,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         now = (try? c.decodeIfPresent(Bool.self, forKey: .now)) ?? false
         approvalRules = (try? c.decodeIfPresent(Bool.self, forKey: .approvalRules)) ?? false
         openaiKey = (try? c.decodeIfPresent(Bool.self, forKey: .openaiKey)) ?? false
+        videoAttachments = (try? c.decodeIfPresent(Bool.self, forKey: .videoAttachments)) ?? false
     }
 }

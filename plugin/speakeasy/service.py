@@ -108,6 +108,10 @@ CAPABILITIES["files"] = True
 # POST /voice/attachments (+ DELETE /voice/attachments/{id}): pictures and files staged on a device,
 # then sent with a typed message or new job by id (``attachments`` on /voice/work[/{id}/message]).
 CAPABILITIES["attachments"] = True
+# Videos (MP4, QuickTime) among those staged files. Off: staging takes only PDF and text (415 for a
+# video), so the composers leave videos out and say Hermes needs a newer Speakeasy (SPK-230). The
+# video upload path (SPK-220) turns this on in the same change that makes check_stage take them.
+CAPABILITIES["video_attachments"] = False
 # GET /voice/secrets + POST /voice/secrets/{id}: a key a skill needs, or the Mac password for one sudo
 # command, typed into a secure card and handed to Hermes, never to the model (secure_input.py).
 CAPABILITIES["secret_input"] = True

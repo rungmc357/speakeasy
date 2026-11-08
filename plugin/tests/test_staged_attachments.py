@@ -126,6 +126,20 @@ def test_unsupported_or_wrong_uploads_are_refused(server, kind, ctype, data, nam
     assert stage(server, data, kind, ctype, name)[0] == code
 
 
+MP4_HEAD = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"   # a 4 s clip's first bytes (invented)
+
+
+@pytest.mark.parametrize("ctype,name", [("video/mp4", "porch-4s.mp4"), ("video/quicktime", "porch-4s.mov")])
+def test_video_attachments_is_advertised_only_when_staging_takes_videos(server, ctype, name):
+    """SPK-230: the composers offer videos only with ``video_attachments``. Staging refuses them
+    today, so the flag is listed and off; turning it on must come with an upload path that takes them."""
+    status = http(server.base_url, "GET", "/voice/status", token=server.token)[1]
+    assert status["capabilities"]["video_attachments"] is False
+    assert ctype not in status["attachments"]["file_types"]
+    code, body = stage(server, MP4_HEAD + b"\x00" * 4096, "file", ctype, name)
+    assert code == 415 and body["reason"] == "unsupported"
+
+
 def test_oversized_uploads_are_refused_before_the_body_is_read(server):
     status, body = stage(server, b"\xff\xd8\xff" + b"\x00" * (A.MAX_IMAGE_BYTES + 1))
     assert status == 413 and body["reason"] == "too_large"

@@ -1020,9 +1020,15 @@ size-checked before any of the body is read.
 
 `200 {"id": "att_…", "kind": "picture" | "file", "name", "size", "expires_in": 1800}`. Errors: `400`
 bad headers or empty, `401`, `409 {"reason": "too_many"}`, `413 {"reason": "too_large"}`,
-`415 {"reason": "unsupported"}` (HEIC, other types, bytes that aren't what they say). Logs carry kind
+`415 {"reason": "unsupported"}` (HEIC, videos, other types, bytes that aren't what they say). Logs carry kind
 and size only, never bytes or names. `DELETE /voice/attachments/{id}` → `200 {"id", "removed": true}`,
 `404` once sent, removed or expired.
+
+Videos: capability `video_attachments` (SPK-230). It is listed and `false` until staging takes MP4 and
+QuickTime; plugins before it don't list it. Apps offer videos in a composer's picker and drop only
+when it's `true`; otherwise a video gets "Sending videos needs a newer Speakeasy on your Hermes.
+Update it from Settings." and no upload. A video dropped on a call still goes through the call's own
+upload as a plain file.
 
 ### Where a spoken follow-up went
 
@@ -2119,7 +2125,7 @@ Readiness. `voice_ready` is true when the chosen provider can start a call. `age
 `unknown` until the first check), plus the Look at this limits. Apps hide screen sharing and refuse
 drops when it's missing, `images` is false or `vision` is `none`.
 `capabilities` lists newer features this server supports: `card_actions`, `job_progress`,
-`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules`, `task_stop`, `openai_key` (each `true`). A missing object or flag means an older server:
+`spoken_choices`, `summary_points`, `task_messages`, `input_text`, `job_activity`, `tool_log`, `job_subagents`, `history`, `secret_input`, `model_choice`, `schedules`, `task_stop`, `openai_key` (each `true`); `video_attachments` is listed `false` until staging takes videos. A missing object or flag means an older server:
 hide the matching controls and keep the old behaviour.
 
 ### Agent kind
