@@ -121,7 +121,10 @@ struct RowsCard: View {
         let items = card["items"].array
         let entity = card["entity"].string ?? "item"
         // Six rows read at a glance (a 13-row wall on Home did not); the rest are in the answer.
-        let cap = fit == .compact ? 3 : 6
+        let cap = expanded ? items.count : (fit == .compact ? 3 : 5)
+        // The list's own count ("13 left") when fewer rows were sent: "6 more" under 6 of 13 rows said
+        // 12 and disagreed with the reply.
+        let total = max(card["total"].double.map(Int.init) ?? items.count, items.count)
         VStack(alignment: .leading, spacing: 8) {
             // The view the rows came from leads ("Cycle 14 · iOS · ends Friday"), else the app and the title.
             let head = card["scope"].string.map { [$0] }
@@ -130,9 +133,50 @@ struct RowsCard: View {
             ForEach(Array(items.prefix(cap).enumerated()), id: \.offset) { _, item in
                 ActionRow(item: item, entity: entity)
             }
-            if items.count > cap {
-                Text("\(items.count - cap) more").font(.system(size: 12.5)).foregroundStyle(.secondary)
+            if total > min(cap, items.count) {
+                let rest = total - min(cap, items.count)
+                if items.count > cap {
+                    // A control, not a caption: the rest open in place.
+                    Button { withAnimation(.snappy) { expanded = true } } label: {
+                        HStack(spacing: 6) {
+                            Text("Show \(rest) more").font(.system(size: 13.5, weight: .semibold))
+                            Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundStyle(gold).frame(maxWidth: .infinity, minHeight: 36)
+                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(look.well))
+                    }
+                    .buttonStyle(.plain).accessibilityIdentifier("rows-show-more")
+                } else {
+                    // Rows the answer didn't send: say how many, quietly; there is nothing to open.
+                    Text("\(rest) more not shown").font(.system(size: 12.5)).foregroundStyle(.secondary)
+                }
             }
+        }
+    }
+    @State private var expanded = false
+}
+
+/// One status word, one colour, on every card: "Missed" is red on every row, "Backlog" is never the
+/// orange of "Waiting on Geo". Words it doesn't know keep the tone the agent gave.
+enum StateWords {
+    static func tone(_ state: String?, given: String?) -> String? {
+        guard let s = state?.lowercased().trimmingCharacters(in: .whitespaces), !s.isEmpty else { return given }
+        func has(_ re: String) -> Bool { s.range(of: re, options: .regularExpression) != nil }
+        if has(#"^(done|merged|shipped|ready( to ship)?|paid|approved|passed|live|fixed|delivered|completed?|confirmed|sent)$"#) { return "good" }
+        if has(#"^(blocked|failed|failing|overdue|conflicts?|missed|down|crash(ed|ing)?|declined|waiting on .+|needs you|your call|needs (a )?decision|decide)$"#) { return "bad" }
+        // Fresh activity is news, not trouble: blue, so it stands apart from both amber and grey.
+        if has(#"^(new activity|new comments?|new reply|needs review|review requested|unread)$"#) { return "info" }
+        if has(#"^(in progress|rebasing|running|stuck|stale|due .+|today|tomorrow|building|deploying|started)$"#) { return "warn" }
+        if has(#"^(backlog|todo|to do|canceled|cancelled|open|draft|in review|review|skipped|idle|queued|triage|quiet|this week|later)$"#) { return "neutral" }
+        return given
+    }
+    /// The tracker glyph for a state: a check when it's done, a half circle only while it moves.
+    static func symbol(_ state: String?, tone: String?) -> String {
+        switch tone {
+        case "good": return "checkmark.circle.fill"
+        case "bad": return "exclamationmark.circle.fill"
+        case "warn": return "circle.lefthalf.filled"
+        default: return (state ?? "").lowercased().contains("review") ? "circle.righthalf.filled" : "circle.dashed"
         }
     }
 }
@@ -142,10 +186,11 @@ struct ActionRow: View {
     let entity: String
     @Environment(\.openURL) private var openURL
     static func tone(_ t: String?) -> Color {
-        switch t { case "good": return look.good; case "warn": return look.warn; case "bad": return look.bad; default: return .secondary }
+        switch t { case "good": return look.good; case "warn": return look.warn; case "bad": return look.bad; case "accent", "info": return look.info; default: return .secondary }
     }
     var body: some View {
-        let tone = item["tone"].string
+        // A known status word sets its colour (Backlog grey, Waiting on Geo red); otherwise the agent's tone.
+        let tone = StateWords.tone(item["state"].string, given: item["tone"].string)
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: ArtifactLinks.symbol(entity)).font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(tone == nil ? gold : Self.tone(tone))
@@ -167,16 +212,28 @@ struct ActionRow: View {
                     Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                HStack(spacing: 6) {
-                    if let state = item["state"].string {
-                        Text(state).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
-                            .padding(.horizontal, 7).padding(.vertical, 2.5)
-                            .foregroundStyle(tone == nil ? Color.primary : Self.tone(tone))
-                            .background(Capsule().fill((tone == nil ? Color.primary : Self.tone(tone)).opacity(0.12)))
-                            .fixedSize().layoutPriority(1)   // the note gives way, never the status word ("Due Mon…")
+                // Line two is the chip with who and how old (short, always fits); the note, when there is
+                // one, is its own quiet line under it, so no row strands a chip alone or cuts the note.
+                let meta = [inline ? nil : ref, item["who"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
+                let note = item["note"].string
+                let chip = item["state"].string.map { state in
+                    Text(state).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
+                        .padding(.horizontal, 7).padding(.vertical, 2.5)
+                        .foregroundStyle(tone == nil ? Color.primary : Self.tone(tone))
+                        .background(Capsule().fill((tone == nil ? Color.primary : Self.tone(tone)).opacity(0.12)))
+                        .fixedSize()
+                }
+                // Chip and note share a line when the note fits whole; else the note takes its own line
+                // under the chip (beside it, it was cut to nothing: "Unread · Dana · Confirm pr…").
+                if chip != nil || !meta.isEmpty {
+                    HStack(spacing: 6) {
+                        chip
+                        if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
                     }
-                    let meta = [inline ? nil : ref, item["who"].string, item["note"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
-                    if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
+                }
+                if let note {
+                    Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 6)
@@ -204,10 +261,12 @@ struct MetricCard: View {
     var body: some View {
         let points = card["points"].array
         VStack(alignment: .leading, spacing: 8) {
-            // The app heads the card ("Sentry · crashes per hour"), as the designs do; the footer keeps the time.
+            // The app heads the card ("Sentry · fieldnote-ios"), as the designs do; what the number counts
+            // sits under it, whole (in the header it was cut: "Shared notes crashes p…").
             let label = card["label"].string ?? ""
-            AppHeader(parts: [card["source"].string, card["scope"].string, label].compactMap { $0 }.filter { !$0.isEmpty }.removingDuplicates(),
-                      source: card["source"].string)
+            let where_ = [card["source"].string, card["scope"].string].compactMap { $0 }.filter { !$0.isEmpty }.removingDuplicates()
+            AppHeader(parts: where_.isEmpty ? [label] : where_, source: card["source"].string)
+            VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(card["value"].string ?? "").font(.system(size: fit == .compact ? 30 : 40, weight: .bold)).monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.6)
@@ -221,6 +280,13 @@ struct MetricCard: View {
                     Text(delta).font(.system(size: 14, weight: .bold)).monospacedDigit().foregroundStyle(color)
                         .padding(.horizontal, 8).padding(.vertical, 3).background(Capsule().fill(color.opacity(0.13)))
                 }
+            }
+            // "crashes per hour · 41 people affected": what it counts, and the one fact beside it.
+            let sub = [where_.isEmpty || label.isEmpty ? nil : label, card["note"].string]
+                .compactMap { $0 }.joined(separator: " · ")
+            if !sub.isEmpty {
+                Text(sub).font(.system(size: 13.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             }
             if points.count >= 2 {
                 MetricLine(points: points, threshold: card["threshold"].double, thresholdLabel: card["threshold_label"].string,
@@ -268,8 +334,11 @@ struct MetricLine: View {
             let all = values + (threshold.map { [$0] } ?? [])
             let lo = all.min() ?? 0, hi = all.max() ?? 1, span = max(hi - lo, 0.0001)
             let w = geo.size.width, h = geo.size.height
+            // Room above the line for a mark's word ("Peak"): a peak at the very top put its label
+            // under the dot, on the falling line.
+            let top: CGFloat = showMarks && points.contains { $0["mark"].string != nil } ? 20 : 7
             let at = { (i: Int, v: Double) in
-                CGPoint(x: w * CGFloat(i) / CGFloat(max(values.count - 1, 1)), y: (h - 14) * (1 - CGFloat((v - lo) / span)) + 7)
+                CGPoint(x: w * CGFloat(i) / CGFloat(max(values.count - 1, 1)), y: (h - 7 - top) * (1 - CGFloat((v - lo) / span)) + top)
             }
             ZStack(alignment: .topLeading) {
                 if let t = threshold {
@@ -292,7 +361,7 @@ struct MetricLine: View {
                             let c = at(i, v)
                             Circle().fill(gold).frame(width: 8, height: 8).position(c)
                             Text(mark).font(.system(size: 10.5, weight: .semibold)).lineLimit(1).fixedSize()
-                                .position(x: min(max(c.x, 36), w - 36), y: c.y > 20 ? c.y - 12 : c.y + 12)
+                                .position(x: min(max(c.x, 36), w - 36), y: c.y - 13)
                         }
                     }
                 }
@@ -369,8 +438,13 @@ struct PreviewCard: View {
                         .padding(.vertical, 6)
                         .overlay(alignment: .bottom) { if i < shown.count - 1 { Divider().padding(.leading, 28) } }
                     }
-                    if shown.count < list.count {
-                        Text("\(list.count - shown.count) more").font(.system(size: 12.5)).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, 6)
+                    // The count the header gives ("10 changes") when the list sent fewer: "3 more" under 6
+                    // of a 10-change build disagreed with the line above it.
+                    let said = (card["sub"].string ?? "").range(of: #"\b(\d{1,3}) (?:changes|issues|fixes|items)\b"#, options: .regularExpression)
+                        .flatMap { Int((card["sub"].string ?? "")[$0].split(separator: " ")[0]) } ?? 0
+                    let total = max(list.count, said)
+                    if shown.count < total {
+                        Text("\(total - shown.count) more").font(.system(size: 12.5)).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, 6)
                     }
                 }
             }

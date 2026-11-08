@@ -134,3 +134,17 @@ def test_views_rule_asks_charts_for_metric_order_and_real_freshness_only():
     rule = P.VIEWS_RULE
     assert "metric" in rule and "high_first|low_first|as_listed" in rule and "order_by" in rule
     assert "source/as_of only from the data, never guessed" in rule
+
+
+def test_rows_keep_the_lists_real_total_only_when_more_than_sent():
+    rows = [{"ref": f"SPK-{n}", "name": f"Invented issue {n}", "state": "Backlog"} for n in range(12)]
+    v = views.clean({"kind": "rows", "source": "Linear", "entity": "issue", "total": 13, "items": rows})
+    assert v["total"] == 13   # "1 more not shown" rather than a count that disagrees with the reply
+    for bad in (12, 3, True, 10 ** 6):
+        assert "total" not in views.clean({"kind": "rows", "entity": "issue", "total": bad, "items": rows})
+
+
+def test_an_agent_rows_corner_is_its_time_and_the_check_in_is_said_once():
+    v = views.clean({"kind": "jobs", "items": [{"name": "Home integration", "elapsed": "about 19 min at last check-in",
+                                                 "status": "Merging the composer; last check-in about 3:00 AM"}]})
+    assert v["items"][0]["elapsed"] == "19 min" and v["items"][0]["status"] == "Merging the composer"

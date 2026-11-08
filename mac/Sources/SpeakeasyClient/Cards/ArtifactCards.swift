@@ -118,7 +118,7 @@ struct EntityTile: View {
                 // "Old Town, Springfield · Springfield": the city only when the line doesn't already say it.
                 let city = item["city"].string.flatMap { c in sub?.localizedCaseInsensitiveContains(c) == true ? nil : c }
                 // The rating leads (the reason it's on the list), then what it is and the price; a
-                // trailing borough ("Riverside, Springfield") gives way first, never "$$$…".
+                // trailing district ("Riverside, Springfield") gives way first, never "$$$…".
                 let shortSub = entity == "place" ? sub.map { $0.replacingOccurrences(of: #",\s*[^,·]+$"#, with: "", options: .regularExpression) } : sub
                 let first = [item["rating"].double.map { String(format: "★ %.1f", $0) }, shortSub, city, item["price"].string,
                              item["state"].string].compactMap { $0 }
@@ -138,7 +138,7 @@ struct EntityTile: View {
                         }
                         HStack(spacing: 8) {
                             ForEach(Array(actions.enumerated()), id: \.offset) { i, a in
-                                PillButton(title: a.title, icon: a.icon, primary: i == 0, iconOnly: i > 0) { run(a) }.fixedSize()
+                                PillButton(title: a.title, icon: a.icon, primary: i == 0 && entity == "product", iconOnly: i > 0) { run(a) }.fixedSize()   // the card's own next step owns the accent; a Maps on every tile was three gold fills
                             }
                             Spacer(minLength: 0)
                         }
@@ -327,7 +327,10 @@ struct StatusTilesCard: View {
     var body: some View {
         let items = card["items"].array
         let order: [String: Int] = ["needs_you": 0, "bad": 1, "warn": 2, "info": 3, "on": 4, "ok": 5, "off": 6]
-        let sorted = items.enumerated().sorted { (order[$0.element["state"].string ?? ""] ?? 9, $0.offset) < (order[$1.element["state"].string ?? ""] ?? 9, $1.offset) }.map(\.element)
+        // Trouble first; among it a job that is stuck leads, because it's usually why the others missed
+        // their runs (the cause sat last, under the jobs it held up).
+        let rank = { (item: JSONValue) -> Int in StatusTile.word(for: item) == "Stuck" ? 0 : (order[item["state"].string ?? ""] ?? 9) + 1 }
+        let sorted = items.enumerated().sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }.map(\.element)
         VStack(alignment: .leading, spacing: 10) {
             // The app the facts came from, then what they are about ("Vercel · fieldnote-web"), as the designs head a card.
             let head = [card["source"].string, card["scope"].string].compactMap { $0 }.removingDuplicates()
@@ -394,6 +397,8 @@ struct StatusTile: View {
             if says(#"\bfail"#) { return "Failed" }
             if says(#"\bmissed\b"#) { return "Missed" }
             if says(#"\b(stuck|running since|hung)\b"#) { return "Stuck" }
+            // A server that still answers but is drowning is overloaded, not "Down".
+            if says(#"\b(overload|overloaded|struggling|out of memory|memory nearly gone|load climbing)\b"#) { return "Overloaded" }
             // A scheduled job (its role is its schedule: "every 5m", "daily 9:30 AM") that stopped
             // running missed its runs; it isn't a server that's "Down".
             let role = item["role"].string ?? ""
@@ -403,6 +408,12 @@ struct StatusTile: View {
         }
         return word(state)
     }
+    /// The colour of the word the tile shows: "Missed" and "Failed" are red whether the agent said warn or bad.
+    static func color(for item: JSONValue) -> Color {
+        let state = item["state"].string
+        guard state == "warn" || state == "bad", item["value"].string == nil else { return color(state) }
+        switch word(for: item) { case "Failed", "Down", "Overloaded": return look.bad; case "Missed", "Stuck": return look.warn; default: return color(state) }
+    }
     static func word(_ state: String?) -> String {
         ["ok": "OK", "on": "On", "off": "Off", "warn": "Needs a look", "bad": "Down", "needs_you": "Needs you", "info": "Info"][state ?? ""] ?? ""
     }
@@ -411,18 +422,25 @@ struct StatusTile: View {
         let loud = state == "needs_you" || state == "warn" || state == "bad"
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
-                Circle().fill(Self.color(state)).frame(width: 8, height: 8)
+                Circle().fill(Self.color(for: item)).frame(width: 8, height: 8)
                 Text(item["name"].string ?? "").font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                if loud, item["value"].string != nil {
+                    // "8h" alone said nothing about what went wrong: the word rides beside the name.
+                    Spacer(minLength: 4)
+                    Text(Self.word(for: item)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Self.color(for: item))
+                        .lineLimit(1).fixedSize()
+                }
             }
             if let role = item["role"].string { Text(role).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
             if let value = item["value"].string {
                 Text(value).font(.system(size: 26, weight: .bold)).lineLimit(1).minimumScaleFactor(0.6).padding(.top, 2)
                 if let unit = item["unit"].string { Text(unit).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
             } else {
-                Text(Self.word(for: item)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(state) : .primary).padding(.top, 2)
+                Text(Self.word(for: item)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(for: item) : .primary).padding(.top, 2)
             }
             let history = item["history"].doubles
-            if history.count >= 3 { Spark(points: history).frame(height: 18) }
+            // A trend needs a handful of points; three drew a crude V that read as the opposite of the note.
+            if history.count >= 5 { Spark(points: history, tint: loud ? Self.color(for: item) : gold).frame(height: 18) }
             if let note = item["note"].string { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2) }
         }
         .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -464,7 +482,7 @@ struct StatusRow: View {
         let state = item["state"].string
         let loud = state == "needs_you" || state == "warn" || state == "bad"
         HStack(alignment: .center, spacing: 10) {
-            Circle().fill(StatusTile.color(state)).frame(width: 8, height: 8)
+            Circle().fill(StatusTile.color(for: item)).frame(width: 8, height: 8)
             // A short figure ("38% CPU", "Missed") sits at the end; a long one ("9:31 AM yesterday last
             // run") took half the row and wrapped the name, so it joins the line under the name.
             let figure = [item["value"].string, item["unit"].string].compactMap({ $0 }).joined(separator: " ").nonEmpty
@@ -481,7 +499,7 @@ struct StatusRow: View {
                 ?? (sayState && state != "info" ? StatusTile.word(for: item) : nil) {   // "Info" said nothing
                 Text(trailing)
                     .font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                    .foregroundStyle(loud ? StatusTile.color(state) : .secondary).lineLimit(1).fixedSize()
+                    .foregroundStyle(loud ? StatusTile.color(for: item) : .secondary).lineLimit(1).fixedSize()
             }
         }
         .padding(.vertical, 10)
@@ -495,6 +513,7 @@ private extension String { var nonEmpty: String? { isEmpty ? nil : self } }
 /// A plain line through the points (no axes, no fill).
 struct Spark: View {
     let points: [Double]
+    var tint: Color = gold
     var body: some View {
         GeometryReader { geo in
             let lo = points.min() ?? 0, hi = points.max() ?? 1, span = max(hi - lo, 0.0001)
@@ -505,7 +524,7 @@ struct Spark: View {
                     if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
                 }
             }
-            .stroke(gold, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            .stroke(tint, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
         }
         .accessibilityHidden(true)
     }

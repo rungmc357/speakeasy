@@ -121,12 +121,12 @@ CATALOG: dict[str, dict[str, Any]] = {
                                                                          "state": S, "url": URL, "address": S,
                                                                          "lat": N, "lon": N}, 10)}, 10)},
     # P4: rows of things to act on (pull requests, inbox triage, to-dos, bills, alerts).
-    "rows": {"source": S, "scope": S, "title": S, "entity": S, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S,
+    "rows": {"source": S, "scope": S, "title": S, "entity": S, "total": N, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S,
                                                              "who": S, "when": S, "amount": S, "url": URL}, 12)},
     # P6: one number that matters, which way it moves, and the series behind it.
     "metric": {"label": S, "value": S, "unit": S, "delta": S, "good": B,
                "points": ({"label": S, "value": N, "mark": S}, 31),
-               "threshold": N, "threshold_label": S, "source": S, "scope": S, "as_of": S},
+               "threshold": N, "threshold_label": S, "source": S, "scope": S, "as_of": S, "note": S},
     # P7: one thing to open (an album, an article, a paper, a contract, a file) with a short list.
     "preview": {"entity": S, "title": S, "creator": S, "sub": S, "year": S, "photo_url": URL, "url": URL,
                 "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "summary": S, "list_label": S,
@@ -331,6 +331,10 @@ def clean(raw: Any, running: bool = False) -> dict[str, Any] | None:
     body = _tidy(kind, _object(shape, raw))
     if body and (actions := clean_actions(raw.get("actions"))):
         body["actions"] = actions
+        if kind == "rows" and body.get("total"):
+            rest = body["total"] - len(body.get("items") or [])
+            if any(re.search(rf"\b{rest} (?:others?|more|rest|remaining)\b", a.get("label", ""), re.I) for a in actions):
+                body.pop("total")   # "Archive 2 others" is where the rest go; no "2 more not shown" too
     if body and (links := clean_links(raw.get("links"))):
         body["links"] = links
     view = {"kind": kind, **body} if body else None
@@ -417,6 +421,12 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         # "fieldnote-ios · FIELDNOTE-IOS-3KD": a tracker's issue key is not what the card is about.
         parts = [p.strip() for p in body["scope"].split("·")]
         kept = [p for p in parts if p and not re.fullmatch(r"(?:[A-Z][A-Z0-9]*-)+[A-Z0-9]+", p)]
+        # "10 open, sorted by last activity": how the list is ordered is not the view it came from, and
+        # it cut the header mid-word. The clause goes; "10 open" stays.
+        kept = [re.sub(r"(?i),?\s*(?:sorted|ordered|newest|oldest) (?:by|first)\b.*$", "", p).strip() for p in kept]
+        kept = [p for p in kept if p]
+        # "NousResearch/hermes-agent": the repo reads by its name; the owner adds width, not meaning.
+        kept = [re.sub(r"^[A-Za-z0-9_.-]+/([A-Za-z0-9_.-]+)$", r"\1", p) if len(kept) > 1 else p for p in kept]
         body["scope"] = " · ".join(kept)
         if not kept:
             body.pop("scope")
@@ -480,6 +490,17 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 i.pop("note")
             elif isinstance(i.get("note"), str):
                 i["note"] = _first_clause(i["note"])
+            if not i.get("value") and isinstance(i.get("note"), str):
+                # "Load 26; others under 2.5" on a tile with no figure: the tile's number is the 26 (the
+                # design's big value), its unit the word, and the note what's left. A tile showing
+                # "Needs a look" where a number belonged said less than its own note.
+                m = re.match(r"(?i)^(load|cpu|memory|disk|queue|errors?|jobs? waiting|requests?)\s+(?:at\s+|of\s+)?(\d[\d.,]*%?)\s*(?:[;,\u2014-]\s*(.*))?$", i["note"].strip())
+                if m:
+                    i["value"], i["unit"] = m.group(2), m.group(1).lower()
+                    if m.group(3):
+                        i["note"] = m.group(3)[:1].upper() + m.group(3)[1:]
+                    else:
+                        i.pop("note")
             name = i["name"].strip()
             if re.fullmatch(r"[a-z0-9]+(?:[-_][a-z0-9]+){2,}", name):
                 # "wiki-session-writeback-curator": a job's file name, read as words. Two-part slugs
@@ -493,11 +514,16 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             for i in items:
                 rest = re.split(r"[-_ ]", i["name"], maxsplit=1)
                 if len(rest) == 2 and rest[1].strip():
-                    i["name"] = _cap_first(rest[1].strip()) if len(rest[1].strip()) > 3 else rest[1].strip().upper()
+                    part = rest[1].strip()
+                    # "api" is an acronym (API); "web" and "app" are words (Web, not WEB).
+                    acronym = part.lower() in {"api", "ios", "db", "cdn", "ui", "cli", "sdk", "ml", "ai", "mcp", "gpu", "cpu", "dns", "sql"}
+                    i["name"] = part.upper() if acronym else _cap_first(part)
         if isinstance(body.get("scope"), str):
             # "Scheduled jobs (partial list, ~3 AM snapshot)": the aside is the agent's caveat; the answer says it.
             body = {**body, "scope": _PAREN_ASIDE.sub("", body["scope"]).strip() or body["scope"]}
-        return {**body, "items": items} if body.get("scope") and items else {}
+        # The app heads the card when the agent named no view ("Servers"): a status card the agent
+        # sent without a scope vanished whole, and its reply sat above nothing (SPK-231 pub-r25).
+        return {**body, "items": items} if (body.get("scope") or body.get("source")) and items else {}
     if kind == "draft":
         channel = str(body.get("channel", "")).lower()
         if channel not in DRAFT_CHANNELS or not body.get("to") or not body.get("body"):
@@ -547,6 +573,17 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         if not items:
             return {}
         out = {**body, "items": items}
+        # How many the list really has when fewer rows were sent ("13 left", 12 rows): the card says
+        # "1 more not shown" instead of a count that disagrees with the reply. Never fewer than sent.
+        total = out.get("total")
+        if not isinstance(total, (int, float)) or isinstance(total, bool) or int(total) <= len(items) or total > 10000:
+            out.pop("total", None)
+        else:
+            out["total"] = int(total)
+            # The scope already counts the rest ("Needs a reply · 2 of 4"): a "2 more not shown" line
+            # said it a second time. (A step for them, "Archive 2 others", is checked with the actions.)
+            if re.search(rf"\b{len(items)} of {out['total']}\b", str(out.get("scope") or "")):
+                out.pop("total")
         if str(out.get("entity", "")).lower() in ROW_ENTITIES:
             out["entity"] = out["entity"].lower()
         else:
@@ -603,7 +640,11 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 out.pop("list_label", None)
         if isinstance(out.get("flags"), list):
             listed = _norm(" ".join(x for x in out.get("list") or [] if isinstance(x, str)))
-            out["flags"] = [f for f in out["flags"] if not (isinstance(f, str) and _restates(f, listed))]
+            # "Open question blocks sign-off" over a section "Open question: photos on deleted notes":
+            # the section already names it, and the reply says it a third time.
+            leads = {_norm(x.split(":", 1)[0]).strip() for x in out.get("list") or [] if isinstance(x, str) and ":" in x}
+            out["flags"] = [f for f in out["flags"] if not (isinstance(f, str) and (
+                _restates(f, listed) or any(lead and _norm(f).strip().startswith(lead) for lead in leads)))]
             if not out["flags"]:
                 out.pop("flags")
         return out
@@ -710,6 +751,10 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             if isinstance(i.get("elapsed"), str):
                 # "about 19 min" pushed the name onto two lines; a card corner is exact enough as "19 min".
                 i["elapsed"] = re.sub(r"(?i)^(?:about|around|roughly|approx\.?|~)\s*", "", i["elapsed"].strip())
+                # "19 min at last check-in" squeezed both titles onto two lines: the corner is the time.
+                i["elapsed"] = re.sub(r"(?i)\s+(?:at|as of|since|by) (?:the )?last check[- ]?in\b.*$", "", i["elapsed"]).strip()
+                # ...and the status line saying that check-in again ("…; last check-in about 3:00 AM") goes.
+                i["status"] = re.sub(r"(?i)[;,]\s*(?:last|latest) check[- ]?in\b[^;,.]*\.?$", "", i["status"]).strip() or i["status"]
         return {**body, "items": items} if items else {}
     if kind == "site":
         return body if body.get("url") else {}
@@ -930,6 +975,10 @@ def _grounded_label(name: str, said: str, said_numbers: set[str], half: bool = F
     if len(words) < 2 or not _numbers(name) <= said_numbers:
         return False
     hits = sum(f" {w} " in said for w in words)
+    if len(words) == 2 and len(words[-1]) > 3 and f" {words[-1]} " in said and not half:
+        return True   # "Cron scheduler" where the answer says "the scheduler": the head noun names it
+    if len(words) >= 5 and hits >= 2 and hits * 5 >= len(words) * 2:
+        return True   # a tool's long name ("Acme X Kitchen Display refresher") the answer shortens ("Acme display")
     return hits * 2 >= len(words) if half else hits * 3 >= len(words) * 2
 
 
@@ -941,6 +990,9 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
     # "six pieces of work" says the 6 on the card (spoken-style answers spell small numbers out).
     from .home_words import digits
     nums |= _numbers(digits(answer or ""))
+    # "No job is erroring" / "none failed" says the 0 on an errors tile.
+    if re.search(r"(?i)\b(?:no|none|nothing|zero|nobody|never)\b", answer or ""):
+        nums.add("0")
     kind = view.get("kind")
     names: list[str] = []
     labels: list[str] = []
@@ -986,6 +1038,7 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
         # The line itself prints no numbers; only marked points show theirs, so only those are checked.
         values += [view["value"]] + [view[k] for k in ("delta", "threshold") if view.get(k) is not None]
         values += [pt["value"] for pt in view.get("points") or [] if pt.get("mark")]
+        loose += [view["note"]] if view.get("note") else []   # "41 people affected": its number said, half its words
     elif kind == "preview":
         names += [view["title"]] + ([view["creator"]] if view.get("creator") else [])
     elif kind in ("issue", "pr"):
@@ -998,7 +1051,13 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
         ref = view.get("ref") if kind == "issue" else view.get("number")
         pinned = ref is not None and _numbers(str(ref)) and _grounded_value(ref, nums) and _grounded_name(str(ref), said)
         in_ask = bool(asked) and _grounded_label(title, _norm(asked), _numbers(asked))
-        if not (in_ask or (_grounded_label(title, said, nums) if pinned else _grounded_name(title, said))):
+        # With its exact ref said, the title is the tracker's own text (copied, not composed): it needs
+        # only two of its words in the answer, so the answer is about that ticket. A PR card whose answer
+        # said "PR 66526 ... typing ... turn" but not "Revoke typing lease on turn completion" whole
+        # vanished, and the reply sat above nothing (SPK-231 r17).
+        tracker_words = [w for w in _norm(title).split() if w not in _LABEL_STOP]
+        about = pinned and _numbers(title) <= nums and sum(f" {w} " in said for w in tracker_words) >= min(2, len(tracker_words))
+        if not (in_ask or about or (_grounded_label(title, said, nums) if pinned else _grounded_name(title, said))):
             return False
         values += [ref] if ref not in (None, "") else []
     elif kind == "jobs":
@@ -1022,6 +1081,9 @@ _READ_ONLY = re.compile(
     r"draft|preview|test|diagnose|investigate|trace|watch|track|search|re-?run|retry|refresh|recheck|load|"
     r"download|copy|count|estimate|map|plan|review)\b")
 MAX_OFFERED = 2
+# The user asked only to be told ("just tell me", "don't change anything", "read-only").
+_LOOK_ONLY = re.compile(r"(?i)\b(?:just tell me|don'?t (?:change|touch|fix|do) anything|do not (?:change|touch) anything|"
+                        r"without changing|read[- ]only|no changes|only look|just look|don'?t change it)\b")
 # Interrupts or destroys something: drawn in the warning tint, always confirmed.
 _HARMFUL = re.compile(r"(?i)^(?:restart|reboot|stop|kill|delete|remove|drop|roll\s*back|rollback|revert|cancel|"
                       r"disable|turn\s+off|refund)\b")
@@ -1036,6 +1098,8 @@ def _offered(view: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if re.match(r"(?i)^(?:open|view|visit|go to)\b", a["label"]):
             continue   # opening a page is a link the phone opens, not words sent to the task ("Open #66526")
+        if view.get("url") and re.match(r"(?i)^(?:read|see|show)(?: me)? (?:the )?(?:full|whole|entire|complete) ", a["label"]):
+            continue   # "Read full spec" beside the card's own Open: two buttons to one document
         primary = a.get("style") == "primary" and not any(o["style"] == "primary" for o in out)
         harmful = bool(_HARMFUL.match(a["label"]))
         out.append({**a, "style": "primary" if primary and not harmful else "destructive" if harmful else "secondary",
@@ -1120,7 +1184,12 @@ def _day_actions(view: dict[str, Any]) -> dict[str, Any]:
     pairs = day_overlaps(view)
     if pairs and not view.get("actions"):
         later = view["events"][pairs[0][1]].get("title") or "the later one"
-        view["actions"] = [{"id": "move", "label": _label("Move " + later) or "Move it", "style": "secondary",
+        # "Move Investor update" (cut, title-cased mid-sentence) -> "Move the investor call": the
+        # title's last word names the kind of event; a short title stays whole.
+        name = later if len("Move " + later) <= 24 else "the " + later.split()[-1].lower()
+        if len(later.split()) > 1 and name == later and later[:1].isupper() and not later.split()[0].isupper():
+            name = later[0].lower() + later[1:] if later.split()[0].lower() in ("lunch", "dinner", "coffee", "breakfast", "call", "meeting") else later
+        view["actions"] = [{"id": "move", "label": _label("Move " + name) or "Move it", "style": "secondary",
                             "confirm": False}]
     free = view.get("free")
     if isinstance(free, list) and free:
@@ -1193,6 +1262,22 @@ def _soft_unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
             and not _grounded_name(view["creator"], said)):
         # A document's maker is a detail; an album's artist is what makes it the right album, so it stays checked.
         view = {k: v for k, v in view.items() if k != "creator"}
+    if view.get("kind") == "timeline":
+        # "Nov 8, 2:50 AM" where the answer said "today at 2:50 AM": the time is backed; the date
+        # beside it is the day's own label. Only the date goes; an unsaid time still drops the card.
+        nums = _numbers(answer)
+        days = []
+        for day in view.get("days") or []:
+            items = []
+            for it in day.get("items") or []:
+                when = it.get("when")
+                if isinstance(when, str) and not _grounded_value(when, nums):
+                    m = re.fullmatch(r"[A-Z][a-z]{2,8}\.? \d{1,2}, (\d{1,2}(?::\d{2})? ?[AP]M)", when.strip())
+                    if m and _grounded_value(m.group(1), nums):
+                        it = {**it, "when": m.group(1)}
+                items.append(it)
+            days.append({**day, "items": items})
+        view = {**view, "days": days}
     return view
 
 
@@ -1228,7 +1313,17 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
             view = {**view, "links": [lk for lk in view["links"] if lk["url"] not in own]}
             if not view["links"]:
                 view.pop("links")
-        out.append(_artifact_actions(_unsaid(view, answer)))
+        view = _artifact_actions(_unsaid(view, answer))
+        if _LOOK_ONLY.search(asked or "") and view.get("actions"):
+            # "Just tell me, don't change anything": a step that changes something ("Fix conflicts",
+            # "Rerun checks") is not what was asked; looking further ("Show conflicts") still is.
+            view["actions"] = [a for a in view["actions"] if not str(a.get("id", "")).startswith(("do_", "fix"))
+                               or (_READ_ONLY.match(a.get("label", "")) and not re.match(r"(?i)^re-?run|retry|refresh", a.get("label", "")))]
+            if not view["actions"]:
+                view.pop("actions")
+            elif not any(a.get("style") == "primary" for a in view["actions"]):
+                view["actions"][0] = {**view["actions"][0], "style": "primary"}
+        out.append(view)
         kept += 1
     return out
 

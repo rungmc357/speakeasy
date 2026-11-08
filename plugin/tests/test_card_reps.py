@@ -188,7 +188,7 @@ def test_calendar_move_label_cuts_at_a_word_and_free_time_names_real_gaps():
         {"start": "2026-11-09T13:00:00-05:00", "end": "2026-11-09T13:30:00-05:00", "title": "Investor update call"}],
         "free": ["Before 9:30 AM", "9:45\u201311:00 AM", "1:30\u20136:00 PM", "After 7:00 PM"]}
     out = views.shape([day], "")[0]
-    assert out["actions"][0]["label"] == "Move Investor update"
+    assert out["actions"][0]["label"] == "Move the call"   # never cut mid-title ("Move Investor update")
     assert out["free"] == ["9:45\u201311 AM", "1:30\u20136 PM"]
 
 
@@ -303,3 +303,118 @@ def test_an_issue_note_that_only_restates_its_fields_goes():
     assert "note" not in V._artifact("issue", body)
     kept = V._artifact("issue", {**body, "note": "Blocks the release checklist until fixed"})
     assert kept["note"] == "Blocks the release checklist until fixed"
+
+
+def test_a_pr_said_by_number_keeps_its_tracker_title_with_two_of_its_words():
+    pr = views.clean({"kind": "pr", "repo": "acme/widgets", "number": 4182, "title": "Revoke the paint lease on job completion",
+                      "state": "conflicts", "reason": "Main moved since the last rebase."})
+    assert views.grounded(pr, "PR 4182 is stuck: the paint job conflicts with main.")
+    assert not views.grounded(pr, "PR 4183 is stuck: the paint job conflicts with main.")   # wrong number
+    assert not views.grounded(pr, "PR 4182 is stuck behind main.")   # not about that title
+
+
+def test_row_scope_drops_the_sort_clause_and_the_repo_owner():
+    rows = views.clean({"kind": "rows", "entity": "pr", "scope": "acme/widgets · 10 open, sorted by last activity",
+                        "items": [{"ref": "#12", "name": "Fix the thing", "state": "Stale"}]})
+    assert rows["scope"] == "widgets · 10 open"
+
+
+def test_a_metrics_side_note_must_be_said():
+    m = views.clean({"kind": "metric", "label": "Crashes per hour", "value": "56", "note": "41 people affected"})
+    assert m["note"] == "41 people affected"
+    assert views.grounded(m, "56 crashes in the last hour, hitting 41 people.")
+    assert not views.grounded(m, "56 crashes in the last hour, hitting 40 people.")
+
+
+def test_a_timeline_step_keeps_its_said_time_without_the_unsaid_date():
+    tl = {"kind": "timeline", "title": "Build 12", "days": [{"label": "Done", "items": [
+        {"when": "Mar 4, 2:50 AM", "what": "Fix added", "state": "done"}]}]}
+    out = views.shape([tl], "The fix was added today at 2:50 AM, so build 12 is done.")
+    assert out and out[0]["days"][0]["items"][0]["when"] == "2:50 AM"
+    # An unsaid time is never repaired: the card goes.
+    assert not views.shape([{**tl, "days": [{"label": "Done", "items": [{"when": "Mar 4, 8:12 PM", "what": "Fix added", "state": "done"}]}]}],
+                           "The fix was added, so build 12 is done.")
+
+
+def test_rows_total_goes_when_a_step_or_the_scope_already_counts_the_rest():
+    rows = [{"name": "Invented reply A", "state": "Today"}, {"name": "Invented reply B", "state": "This week"}]
+    v = views.clean({"kind": "rows", "entity": "email", "total": 4, "items": rows,
+                     "actions": [{"id": "archive", "label": "Archive 2 others"}]})
+    assert "total" not in v
+    v = views.clean({"kind": "rows", "entity": "email", "total": 4, "scope": "Needs a reply · 2 of 4", "items": rows})
+    assert "total" not in v
+    assert views.clean({"kind": "rows", "entity": "email", "total": 4, "items": rows})["total"] == 4
+
+
+def test_a_preview_flag_that_a_section_already_names_goes():
+    p = views.clean({"kind": "preview", "entity": "document", "title": "Invented spec",
+                     "list": ["Open question: photos on deleted notes", "Out of scope: sharing"],
+                     "flags": ["Open question blocks sign-off"]})
+    assert "flags" not in p
+
+
+def test_a_tile_reading_zero_is_said_by_no():
+    s = views.clean({"kind": "status", "source": "Servers", "scope": "Scheduled jobs", "items": [{"name": "Recorded errors", "state": "ok", "value": "0"}]})
+    assert views.grounded(s, "No recorded errors since the morning.")
+    assert not views.grounded(s, "Recorded errors since the morning are fine.")
+
+
+def test_short_project_parts_read_as_words_unless_acronyms():
+    v = views.clean({"kind": "status", "scope": "Acmeweb deploys", "items": [
+        {"name": "acmeweb-web", "state": "ok"}, {"name": "acmeweb-api", "state": "bad"}]})
+    assert [i["name"] for i in v["items"]] == ["Web", "API"]
+
+
+def test_a_long_tool_name_the_answer_shortens_still_counts():
+    s = views.clean({"kind": "status", "scope": "Scheduled jobs", "items": [
+        {"name": "ACME X Kitchen Display refresher", "state": "warn", "note": "Missed runs since 9 AM"}]})
+    assert views.grounded(s, "The ACME display missed its runs since 9 AM.")
+    assert not views.grounded(s, "The display missed its runs since 9 AM.")   # one word is not the job
+
+
+def test_a_tile_without_a_figure_takes_the_one_its_note_leads_with():
+    s = views.clean({"kind": "status", "scope": "Invented hosts", "items": [
+        {"name": "alpha", "state": "warn", "note": "Load 26; others under 2.5"},
+        {"name": "beta", "state": "ok", "note": "Quiet, up 3 days"}]})
+    a, b = s["items"]
+    assert (a["value"], a["unit"], a["note"]) == ("26", "load", "Others under 2.5")
+    assert "value" not in b and b["note"] == "Quiet, up 3 days"
+
+
+def test_read_full_beside_the_cards_own_open_goes():
+    p = views.clean({"kind": "preview", "entity": "document", "title": "Invented spec", "url": "https://example.com/spec",
+                     "summary": "It covers drafts.", "actions": [{"id": "do_0", "label": "Read full spec", "style": "primary"},
+                                                                {"id": "do_1", "label": "Summarize comments"}]})
+    out = views.shape([p], "Invented spec covers drafts.")
+    assert [a["label"] for a in out[0].get("actions", [])] == ["Summarize comments"]
+
+
+def test_move_button_names_the_event_without_cutting_it():
+    day = {"kind": "calendar_day", "date": "2030-01-02", "events": [
+        {"start": "2030-01-02T12:30:00-05:00", "end": "2030-01-02T13:30:00-05:00", "title": "Lunch with Sam"},
+        {"start": "2030-01-02T13:00:00-05:00", "end": "2030-01-02T13:30:00-05:00", "title": "Investor update call"}]}
+    out = views.shape([views.clean(day)], "")
+    assert out[0]["actions"][0]["label"] == "Move the call"
+
+
+def test_a_two_word_label_is_named_by_its_head_noun():
+    s = views.clean({"kind": "status", "scope": "Scheduled jobs", "items": [{"name": "Cron scheduler", "state": "bad", "note": "Stopped at 3 AM"}]})
+    assert views.grounded(s, "The scheduler stopped at 3 AM.")
+    assert not views.grounded(s, "The cron stopped at 3 AM.")   # the qualifier alone is not the thing
+
+
+def test_look_only_asks_keep_only_steps_that_look():
+    pr = {"kind": "pr", "repo": "acme/widgets", "number": 4182, "title": "Fix the paint lease", "state": "conflicts",
+          "reason": "Main moved.", "actions": [{"id": "do_0", "label": "Fix conflicts", "style": "primary"},
+                                              {"id": "do_1", "label": "Show conflicts"}]}
+    answer = "PR 4182, Fix the paint lease, conflicts: main moved."
+    out = views.shape([views.clean(pr)], answer, "where is PR 4182? just tell me, don't change anything")
+    assert [(a["label"], a["style"]) for a in out[0]["actions"]] == [("Show conflicts", "primary")]
+    out = views.shape([views.clean(pr)], answer, "where is PR 4182?")
+    assert "Fix conflicts" in [a["label"] for a in out[0]["actions"]]
+
+
+def test_a_status_card_with_only_its_app_named_is_kept():
+    s = views.clean({"kind": "status", "source": "Servers", "items": [{"name": "alpha", "state": "bad", "value": "88%", "unit": "disk used"}]})
+    assert s and s["source"] == "Servers"
+    assert views.clean({"kind": "status", "items": [{"name": "alpha", "state": "bad"}]}) is None

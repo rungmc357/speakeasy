@@ -109,10 +109,14 @@ struct DayCard: View {
         return "These overlap by \(span)"
     }
 
-    /// The first event still to come that has a call link gets Join.
+    /// The call starting within 15 minutes (or under way) gets Join; a standup tomorrow at 9:30 is not
+    /// something to join now, and its gold button pulled the eye from the clash.
     private func nextIndex(_ events: [JSONValue]) -> Int? {
-        events.firstIndex { e in
-            e["join_url"].url != nil && (e["end"].string.flatMap(EventTimes.date).map { $0 > Date() } ?? true)
+        let now = Date()
+        return events.firstIndex { e in
+            guard e["join_url"].url != nil, let start = e["start"].string.flatMap(EventTimes.date) else { return false }
+            let end = e["end"].string.flatMap(EventTimes.date) ?? start.addingTimeInterval(1800)
+            return start.timeIntervalSince(now) <= 15 * 60 && end > now
         }
     }
 
