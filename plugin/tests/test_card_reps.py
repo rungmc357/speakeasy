@@ -80,7 +80,7 @@ def test_draft_recipient_loses_the_aside_and_counts_by_first_name():
 
 def test_checkout_cart_nested_in_details_is_read_with_the_same_checks():
     raw = {"kind": "confirm", "type": "checkout", "title": "Buy the desk for $423.53", "details": {
-        "merchant": "Desks Co", "address": "Brooklyn, NY", "delivery": "Tue", "payment_last4": "4242",
+        "merchant": "Desks Co", "address": "Springfield, IL", "delivery": "Tue", "payment_last4": "4242",
         "subtotal": "389.00", "tax": "34.53", "shipping": "0.00", "total": "423.53", "currency": "USD",
         "checkout_url": "https://desks.example/checkout", "total_source": "merchant_final",
         "items": [{"name": "Standing desk", "quantity": 1}]}}

@@ -118,7 +118,7 @@ struct EntityTile: View {
                 // "Old Town, Springfield · Springfield": the city only when the line doesn't already say it.
                 let city = item["city"].string.flatMap { c in sub?.localizedCaseInsensitiveContains(c) == true ? nil : c }
                 // The rating leads (the reason it's on the list), then what it is and the price; a
-                // trailing borough ("Williamsburg, Brooklyn") gives way first, never "$$$…".
+                // trailing borough ("Riverside, Springfield") gives way first, never "$$$…".
                 let shortSub = entity == "place" ? sub.map { $0.replacingOccurrences(of: #",\s*[^,·]+$"#, with: "", options: .regularExpression) } : sub
                 let first = [item["rating"].double.map { String(format: "★ %.1f", $0) }, shortSub, city, item["price"].string,
                              item["state"].string].compactMap { $0 }
