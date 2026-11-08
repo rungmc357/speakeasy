@@ -249,6 +249,52 @@ struct PRCard: View {
     @Environment(\.cardStyle) private var style
     @Environment(\.cardFit) private var fit
     var body: some View {
+        if PRCard.ciOnly(card), fit != .compact { ciBody } else { prBody }
+    }
+    /// Asked only about CI, the agent read the checks, not the PR: the card is the design's CI card
+    /// ("CI · #418"), one tile per check or check group, not a PR title over one summary pill.
+    static func ciOnly(_ card: ViewCard) -> Bool {
+        let checks = card["checks"].array
+        return card["state"].string == nil && (card["title"].string ?? "").hasPrefix("Checks on") && (2...4).contains(checks.count)
+    }
+    private var ciBody: some View {
+        let checks = card["checks"].array
+        let number = card["number"].string.map { "#" + $0 }
+        return CardBox {
+            HStack(spacing: 8) {
+                SourceMark.pr
+                Text(["CI", number, card["repo"].string?.split(separator: "/").last.map(String.init)].compactMap { $0 }.joined(separator: " · "))
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(style.secondary).lineLimit(1)
+                Spacer(minLength: 8)
+                if let when = EventTimes.stamp(card["when"].string) { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
+            }
+            PairGrid(count: checks.count, spacing: 10) { n in ciTile(checks[n]) }
+        }
+    }
+    private func ciTile(_ check: JSONValue) -> some View {
+        let state = check["state"].string ?? ""
+        let raw = check["name"].string ?? ""
+        // "Docker (5 checks)": the name, and the 5 as the tile's figure.
+        let count = raw.range(of: #"\((\d+) checks?\)"#, options: .regularExpression).map { String(raw[$0]).filter(\.isNumber) }
+        let name = raw.replacingOccurrences(of: #"\s*\(\d+ checks?\)"#, with: "", options: .regularExpression)
+        let tint: Color = state == "failed" ? style.bad : state == "passed" ? style.good : style.faint
+        let word = ["failed": "failed", "passed": "passed", "skipped": "skipped", "running": "running", "pending": "waiting to run"][state] ?? state
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Circle().fill(tint).frame(width: 7, height: 7)
+                Text(name).font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
+            }
+            Text(count ?? word.prefix(1).uppercased() + word.dropFirst()).font(.title2.weight(.bold)).foregroundStyle(style.ink).lineLimit(1)
+            if count != nil { Text(word).font(.footnote).foregroundStyle(style.secondary) }
+            if let note = check["note"].string {
+                Text(note).font(.footnote).foregroundStyle(style.faint).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(state == "failed" ? style.bad.opacity(0.08) : style.well))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(state == "failed" ? style.bad.opacity(0.6) : style.hairline))
+    }
+    private var prBody: some View {
         CardBox {
             HStack(spacing: 10) {
                 SourceMark.pr
