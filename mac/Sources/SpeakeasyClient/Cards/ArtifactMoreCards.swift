@@ -163,9 +163,11 @@ enum StateWords {
         guard let s = state?.lowercased().trimmingCharacters(in: .whitespaces), !s.isEmpty else { return given }
         func has(_ re: String) -> Bool { s.range(of: re, options: .regularExpression) != nil }
         if has(#"^(done|merged|shipped|ready( to ship)?|paid|approved|passed|live|fixed|delivered|completed?|confirmed|sent)$"#) { return "good" }
-        if has(#"^(blocked|failed|failing|overdue|conflicts?|missed|down|crash(ed|ing)?|declined|waiting on .+|needs you)$"#) { return "bad" }
-        if has(#"^(in progress|rebasing|running|stuck|due .+|today|building|deploying|started)$"#) { return "warn" }
-        if has(#"^(backlog|todo|to do|canceled|cancelled|open|draft|in review|review|skipped|idle|queued|triage|stale)$"#) { return "neutral" }
+        if has(#"^(blocked|failed|failing|overdue|conflicts?|missed|down|crash(ed|ing)?|declined|waiting on .+|needs you|your call|needs (a )?decision|decide)$"#) { return "bad" }
+        // Fresh activity is news, not trouble: the accent, so it stands apart from both amber and grey.
+        if has(#"^(new activity|new comments?|new reply|needs review|review requested|unread)$"#) { return "accent" }
+        if has(#"^(in progress|rebasing|running|stuck|stale|due .+|today|tomorrow|building|deploying|started)$"#) { return "warn" }
+        if has(#"^(backlog|todo|to do|canceled|cancelled|open|draft|in review|review|skipped|idle|queued|triage|quiet|this week|later)$"#) { return "neutral" }
         return given
     }
     /// The tracker glyph for a state: a check when it's done, a half circle only while it moves.
@@ -184,7 +186,7 @@ struct ActionRow: View {
     let entity: String
     @Environment(\.openURL) private var openURL
     static func tone(_ t: String?) -> Color {
-        switch t { case "good": return look.good; case "warn": return look.warn; case "bad": return look.bad; default: return .secondary }
+        switch t { case "good": return look.good; case "warn": return look.warn; case "bad": return look.bad; case "accent": return gold; default: return .secondary }
     }
     var body: some View {
         // A known status word sets its colour (Backlog grey, Waiting on Geo red); otherwise the agent's tone.
@@ -210,7 +212,10 @@ struct ActionRow: View {
                     Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                let meta = [inline ? nil : ref, item["who"].string, item["note"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
+                // Line two is the chip with who and how old (short, always fits); the note, when there is
+                // one, is its own quiet line under it, so no row strands a chip alone or cuts the note.
+                let meta = [inline ? nil : ref, item["who"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
+                let note = item["note"].string
                 let chip = item["state"].string.map { state in
                     Text(state).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
                         .padding(.horizontal, 7).padding(.vertical, 2.5)
@@ -220,15 +225,15 @@ struct ActionRow: View {
                 }
                 // Chip and note share a line when the note fits whole; else the note takes its own line
                 // under the chip (beside it, it was cut to nothing: "Unread · Dana · Confirm pr…").
-                ViewThatFits(in: .horizontal) {
+                if chip != nil || !meta.isEmpty {
                     HStack(spacing: 6) {
                         chip
-                        if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1).fixedSize() }
+                        if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
                     }
-                    VStack(alignment: .leading, spacing: 3) {
-                        chip
-                        if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true) }
-                    }
+                }
+                if let note {
+                    Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 6)

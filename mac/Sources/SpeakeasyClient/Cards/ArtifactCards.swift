@@ -422,6 +422,12 @@ struct StatusTile: View {
             HStack(spacing: 7) {
                 Circle().fill(Self.color(for: item)).frame(width: 8, height: 8)
                 Text(item["name"].string ?? "").font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                if loud, item["value"].string != nil {
+                    // "8h" alone said nothing about what went wrong: the word rides beside the name.
+                    Spacer(minLength: 4)
+                    Text(Self.word(for: item)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Self.color(for: item))
+                        .lineLimit(1).fixedSize()
+                }
             }
             if let role = item["role"].string { Text(role).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
             if let value = item["value"].string {
@@ -431,7 +437,8 @@ struct StatusTile: View {
                 Text(Self.word(for: item)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(for: item) : .primary).padding(.top, 2)
             }
             let history = item["history"].doubles
-            if history.count >= 3 { Spark(points: history).frame(height: 18) }
+            // A trend needs a handful of points; three drew a crude V that read as the opposite of the note.
+            if history.count >= 5 { Spark(points: history, tint: loud ? Self.color(for: item) : gold).frame(height: 18) }
             if let note = item["note"].string { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2) }
         }
         .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -504,6 +511,7 @@ private extension String { var nonEmpty: String? { isEmpty ? nil : self } }
 /// A plain line through the points (no axes, no fill).
 struct Spark: View {
     let points: [Double]
+    var tint: Color = gold
     var body: some View {
         GeometryReader { geo in
             let lo = points.min() ?? 0, hi = points.max() ?? 1, span = max(hi - lo, 0.0001)
@@ -514,7 +522,7 @@ struct Spark: View {
                     if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
                 }
             }
-            .stroke(gold, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            .stroke(tint, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
         }
         .accessibilityHidden(true)
     }
