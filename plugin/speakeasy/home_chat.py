@@ -761,12 +761,38 @@ class HomeChat:
                 featured += [f"{prow.get('slug')}/{m}" for m in (prow.get("featured_models") or [])[:3]
                              if isinstance(m, str)]
         names = {row(m)["name"] for m in ids}
+        # The short list shows each model family once, at its newest version ("most recent"): an
+        # older family member (or the default's own older versions) waits under More….
+        fam_of: dict[str, str] = {}
+        ver_of: dict[str, tuple[int, ...]] = {}
+
+        def family(mid: str) -> str:
+            if mid not in fam_of:
+                bare = re.sub(r"\d+([._-]\d+)*", " ", row(mid)["name"]).lower()
+                fam_of[mid] = " ".join(re.sub(r"[-_.]", " ", bare).split()) or mid
+            return fam_of[mid]
+
+        def version(mid: str) -> tuple[int, ...]:
+            if mid not in ver_of:
+                ver_of[mid] = _version(str((entries.get(mid) or {}).get("model") or mid))
+            return ver_of[mid]
+
+        tops: dict[str, tuple[int, ...]] = {}
+        for o in entries:
+            if version(o)[:3] > tops.get(family(o), (-1,)):
+                tops[family(o)] = version(o)[:3]
+
+        def newest(mid: str) -> bool:
+            return version(mid)[:3] >= tops.get(family(mid), (-1,))
+        held = {family(m) for m in ids}
         for mid in featured + list(entries):
             if len(ids) >= WORK_OPTIONS:
                 break
-            if mid in entries and mid not in ids and row(mid)["name"] not in names:
+            if (mid in entries and mid not in ids and row(mid)["name"] not in names
+                    and family(mid) not in held and newest(mid)):
                 ids.append(mid)
                 names.add(row(mid)["name"])
+                held.add(family(mid))
         more: list[str] = []
         for mid in entries:   # "More…" in the picker: every other connected model, one row per name
             if len(more) >= 60:
@@ -774,6 +800,8 @@ class HomeChat:
             if mid not in ids and row(mid)["name"] not in names:
                 more.append(mid)
                 names.add(row(mid)["name"])
+        # Newest first under More… too, so an old version sits below the current ones.
+        more.sort(key=lambda m: (family(m), tuple(-n for n in version(m))))
         return {"model": row(picked["model"]) if picked["model"] else None, "source": picked["source"],
                 "default": row(default) if default else None, "options": [row(m) for m in ids],
                 "more": [row(m) for m in more]}

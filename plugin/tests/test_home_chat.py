@@ -248,6 +248,24 @@ def test_fast_replies_list_sonnet_and_haiku_only_never_the_main_model(server, se
     assert len(listed) == len(set(listed)) and "openai-codex/gpt-5.5" in listed
 
 
+def test_work_short_list_shows_each_family_once_at_its_newest_version(server, service, monkeypatch):
+    """N13 "5 most recent": an older version of a family (even the default's own) waits under
+    More…, newest first; different families (GPT-5.5 and GPT-5.4 Mini) both stay."""
+    chat = service.home_chat
+    monkeypatch.setattr(service, "catalog", _Catalog(_entries(
+        "anthropic/claude-opus-5", "anthropic/claude-opus-5-5", "anthropic/claude-opus-4-8",
+        "anthropic/claude-sonnet-4-5", "anthropic/claude-sonnet-5-5", "openai-codex/gpt-5.4-mini", "openai-codex/gpt-5.5")))
+    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "claude-opus-5-5", "provider": "anthropic"}})
+    w = http(server.base_url, "GET", "/voice/home/model", None, server.token)[1]["work"]
+    short = [o["id"] for o in w["options"]]
+    assert short[0] == "anthropic/claude-opus-5-5"
+    assert set(short) == {"anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "openai-codex/gpt-5.4-mini",
+                          "openai-codex/gpt-5.5"}
+    more = [o["id"] for o in w["more"]]
+    assert more.index("anthropic/claude-opus-5") < more.index("anthropic/claude-opus-4-8")
+    assert "anthropic/claude-sonnet-4-5" in more
+
+
 class _Catalog:
     """The cached Hermes model list. ``raw`` would fetch: selection must never call it."""
     def __init__(self, payload):
