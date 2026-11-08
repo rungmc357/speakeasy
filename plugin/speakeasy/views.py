@@ -121,12 +121,12 @@ CATALOG: dict[str, dict[str, Any]] = {
                                                                          "state": S, "url": URL, "address": S,
                                                                          "lat": N, "lon": N}, 10)}, 10)},
     # P4: rows of things to act on (pull requests, inbox triage, to-dos, bills, alerts).
-    "rows": {"source": S, "title": S, "entity": S, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S, "when": S,
-                                                 "amount": S, "url": URL}, 12)},
+    "rows": {"source": S, "scope": S, "title": S, "entity": S, "items": ({"ref": S, "name": S, "state": S, "tone": S, "note": S,
+                                                             "who": S, "when": S, "amount": S, "url": URL}, 12)},
     # P6: one number that matters, which way it moves, and the series behind it.
     "metric": {"label": S, "value": S, "unit": S, "delta": S, "good": B,
                "points": ({"label": S, "value": N, "mark": S}, 31),
-               "threshold": N, "threshold_label": S, "source": S, "as_of": S},
+               "threshold": N, "threshold_label": S, "source": S, "scope": S, "as_of": S},
     # P7: one thing to open (an album, an article, a paper, a contract, a file) with a short list.
     "preview": {"entity": S, "title": S, "creator": S, "sub": S, "year": S, "photo_url": URL, "url": URL,
                 "media_kind": S, "ids": {"apple_music": S, "spotify": S}, "summary": S, "list_label": S,
@@ -272,11 +272,17 @@ MAX_ACTIONS = 4
 
 def clean_actions(raw: Any) -> list[dict[str, Any]]:
     """A card's buttons (docs/API.md "Card actions"): ``id`` and ``label`` required; the server
-    decides what an id does when it is pressed."""
+    decides what an id does when it is pressed. A button the agent offers on a work card comes
+    without an id (``{label, primary}``): it gets ``do_N`` and goes back to the task as its words."""
     out: list[dict[str, Any]] = []
+    offered = 0
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
             continue
+        if "id" not in item and _str(item.get("label"), 40):
+            item = {**item, "id": f"do_{offered}", "label": _label(_str(item.get("label"), 40) or ""),
+                    "style": "primary" if item.get("primary") is True else item.get("style") or "secondary"}
+            offered += 1
         action_id, label = item.get("id"), _str(item.get("label"), 24)
         if not isinstance(action_id, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,23}", action_id) or not label:
             continue
@@ -287,6 +293,24 @@ def clean_actions(raw: Any) -> list[dict[str, Any]]:
             action["value"] = "brightness"
         out.append(action)
         if len(out) == MAX_ACTIONS:
+            break
+    return out
+
+
+MAX_LINKS = 2
+
+
+def clean_links(raw: Any) -> list[dict[str, str]]:
+    """Pages a card's buttons open (``Logs``, ``Open in Sentry``): a short label and a real https
+    URL; the app opens them, nothing reaches the server."""
+    out: list[dict[str, str]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        label, url = _label(_str(item.get("label"), 40) or ""), _field(URL, item.get("url"))
+        if label and url and all(o["url"] != url for o in out):
+            out.append({"label": label, "url": url})
+        if len(out) == MAX_LINKS:
             break
     return out
 
@@ -307,6 +331,8 @@ def clean(raw: Any, running: bool = False) -> dict[str, Any] | None:
     body = _tidy(kind, _object(shape, raw))
     if body and (actions := clean_actions(raw.get("actions"))):
         body["actions"] = actions
+    if body and (links := clean_links(raw.get("links"))):
+        body["links"] = links
     view = {"kind": kind, **body} if body else None
     if view is None or running:
         return view
@@ -387,6 +413,13 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             body["sort"] = word
     if kind == "before_after" and not ("before" in body or "after" in body):
         return {}
+    if kind in ("metric", "status", "rows") and isinstance(body.get("scope"), str):
+        # "fieldnote-ios · FIELDNOTE-IOS-3KD": a tracker's issue key is not what the card is about.
+        parts = [p.strip() for p in body["scope"].split("·")]
+        kept = [p for p in parts if p and not re.fullmatch(r"(?:[A-Z][A-Z0-9]*-)+[A-Z0-9]+", p)]
+        body["scope"] = " · ".join(kept)
+        if not kept:
+            body.pop("scope")
     if kind == "stats":
         # "Shared notes crash (FIELDNOTE-IOS-3KD)": the tracker's key is not a heading; and a word
         # value reads as a word ("Fatal", not "fatal"), like the label above it.
@@ -962,22 +995,64 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
             and all(_grounded_value(v, nums) for v in values))
 
 
+# A button whose words change something outside the card asks first (the phone shows the label in a
+# confirm dialog). Only steps that look, fetch or prepare (Check, Show, Pull stack trace, Draft a reply,
+# Rerun failed checks) go straight to the task; anything else (Restart, Rebase, Redeploy, Add a fix) confirms.
+_READ_ONLY = re.compile(
+    r"(?i)^(?:check|show|see|view|find|get|pull|fetch|read|inspect|open|look|list|compare|explain|summari[sz]e|"
+    r"draft|preview|test|diagnose|investigate|trace|watch|track|search|re-?run|retry|refresh|recheck|load|"
+    r"download|copy|count|estimate|map|plan|review)\b")
+MAX_OFFERED = 2
+# Interrupts or destroys something: drawn in the warning tint, always confirmed.
+_HARMFUL = re.compile(r"(?i)^(?:restart|reboot|stop|kill|delete|remove|drop|roll\s*back|rollback|revert|cancel|"
+                      r"disable|turn\s+off|refund)\b")
+
+
+def _offered(view: dict[str, Any]) -> list[dict[str, Any]]:
+    """The buttons the agent offered on a work card (``do_N``), at most two, the first it marked
+    primary kept primary; anything consequential confirms first."""
+    out: list[dict[str, Any]] = []
+    for a in view.get("actions") or []:
+        if not str(a.get("id", "")).startswith("do_") or len(out) == MAX_OFFERED:
+            continue
+        primary = a.get("style") == "primary" and not any(o["style"] == "primary" for o in out)
+        harmful = bool(_HARMFUL.match(a["label"]))
+        out.append({**a, "style": "primary" if primary and not harmful else "destructive" if harmful else "secondary",
+                    "confirm": a.get("confirm") is True or harmful or not _READ_ONLY.match(a["label"])})
+    if out and not any(o["style"] == "primary" for o in out):
+        # One button leads, as the designs end a card; never one that interrupts or destroys something.
+        first = next((o for o in out if o["style"] == "secondary"), None)
+        if first:
+            first["style"] = "primary"
+    return out
+
+
 def _artifact_actions(view: dict[str, Any]) -> dict[str, Any]:
-    """Buttons are set here, never by the agent: Send on a draft and Go with on a compare reach the
-    task as a follow-up, and both always confirm first."""
+    """Send on a draft, Go with on a compare, Fix on a stuck PR and a mockup's next steps are set
+    here and reach the task as a follow-up (Send and Go with always confirm first). Other work cards
+    keep up to two buttons the agent offered for its next step (Rerun failed, Restart api-2); those
+    reach the task as their own words, the consequential ones after a confirm."""
+    offered = _offered(view) if view["kind"] not in ("draft", "compare", "mockups") else []
     view.pop("actions", None)
+    if offered:
+        view["actions"] = offered
     if view["kind"] == "draft":
         view["actions"] = [{"id": "send", "label": "Send", "style": "primary", "confirm": True}]
     elif view["kind"] == "compare":
         # Cut at a word ("Go with REI Co-op", never "Go with REI Co-op Rainie").
         label = _label("Go with " + view["options"][view["winner"]]["name"]) or "Go with this"
         view["actions"] = [{"id": "go", "label": label, "style": "primary", "confirm": True}]
-    elif view["kind"] == "pr" and view.get("state") in ("conflicts", "failing"):
+    elif view["kind"] == "pr" and view.get("state") in ("conflicts", "failing") and not offered:
+        # The agent's own next steps (Rebase on main, Rerun failed) say it better than a generic Fix.
         label = "Fix conflicts" if view["state"] == "conflicts" else "Fix the checks"
         view["actions"] = [{"id": "fix", "label": label, "style": "primary", "confirm": False}]
     elif view["kind"] == "mockups" and view.get("next"):
         view["actions"] = [{"id": f"next_{i}", "label": n, "style": "secondary", "confirm": False}
                            for i, n in enumerate(view["next"])]
+    if offered and view.get("actions") is not offered:
+        # The server's button leads; an offered one that says something else follows it.
+        said = {a["label"].lower() for a in view["actions"]}
+        view["actions"] += [{**a, "style": "secondary"} for a in offered if a["label"].lower() not in said][:1]
     return view
 
 
@@ -1054,6 +1129,10 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
             out.append(_day_actions(view))
             continue
         if view.get("kind") not in ARTIFACTS:
+            if any(str(a.get("id", "")).startswith("do_") for a in view.get("actions") or []):
+                # Older kinds keep an offered next step too, under the same rules (two, confirm first).
+                view = {**view, "actions": [a for a in view["actions"] if not str(a.get("id", "")).startswith("do_")]
+                        + _offered(view)}
             out.append(view)
             continue
         if kept >= MAX_ARTIFACTS or not grounded(view, answer, asked):
@@ -1063,8 +1142,31 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
     return out
 
 
+def _card_subject(view: dict[str, Any]) -> str:
+    """What a card is about, in a few words, for the words a pressed button sends its task:
+    "PR #147753", "SPK-233", "Vercel · fieldnote-web"."""
+    kind = view.get("kind")
+    if kind == "pr" and view.get("number"):
+        return f"PR #{_count(view['number'])}"
+    if kind == "issue" and view.get("ref"):
+        return str(view["ref"])
+    seen: list[str] = []
+    for key in ("source", "scope", "title", "label"):
+        part = view.get(key)
+        if isinstance(part, str) and part.strip() and part.lower() not in (s.lower() for s in seen):
+            seen.append(part.strip())
+    return " · ".join(seen[:2])
+
+
 def follow_up(view: dict[str, Any], action: str) -> str | None:
     """What an artifact's button says to its task, in plain words (the agent does the sending)."""
+    if action.startswith("do_"):
+        # A button the agent offered: its own words and what card it was on ("Rerun failed (PR #418).").
+        label = next((a.get("label") for a in view.get("actions") or [] if a.get("id") == action), None)
+        if not label:
+            return None
+        about = _card_subject(view)
+        return label + (f" ({about})." if about else ".")
     if view.get("kind") == "draft" and action == "send":
         channel = {"email": "email", "x": "post"}.get(view["channel"], "message")
         return f"Send the {channel} to {view['to']} exactly as drafted on the card."

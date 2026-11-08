@@ -236,6 +236,56 @@ def test_send_on_a_draft_reaches_the_task_as_a_follow_up_and_nothing_else():
         VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "delete_all"})
 
 
+SERVERS = {"kind": "status", "source": "Servers", "scope": "fieldnote-prod", "items": [
+    {"name": "api-2", "state": "bad", "note": "Not answering since 3:12 PM"},
+    {"name": "worker", "state": "warn", "value": "1,240", "unit": "jobs waiting"}],
+    "actions": [{"label": "Restart api-2"}, {"label": "Drain the queue"}, {"label": "Third one"}],
+    "links": [{"label": "api-2 logs", "url": "https://logs.example.com/api-2"},
+              {"label": "Bad", "url": "javascript:alert(1)"}, {"label": "Dup", "url": "https://logs.example.com/api-2"}]}
+SERVERS_SAID = "api-2 is down, not answering since 3:12 PM, and the worker has 1,240 jobs waiting."
+
+
+def test_a_work_card_keeps_two_offered_next_steps_and_harmful_ones_confirm():
+    [view] = views.shape([views.clean(SERVERS)], SERVERS_SAID, "is everything up?")
+    assert view["actions"] == [
+        {"id": "do_0", "label": "Restart api-2", "style": "destructive", "confirm": True},
+        {"id": "do_1", "label": "Drain the queue", "style": "primary", "confirm": True}]
+    assert view["links"] == [{"label": "api-2 logs", "url": "https://logs.example.com/api-2"}]
+    assert views.follow_up(view, "do_0") == "Restart api-2 (Servers · fieldnote-prod)."
+    assert views.follow_up(view, "do_9") is None
+
+
+def test_an_offered_step_replaces_the_generic_fix_and_sends_its_own_words():
+    from types import SimpleNamespace
+
+    from speakeasy.service import VoiceService
+
+    pr = {"kind": "pr", "repo": "fieldnote/app", "number": 418, "title": "Share sheet fix", "state": "failing",
+          "reason": "UI tests failed on the share sheet.",
+          "checks": [{"name": "UI tests", "state": "failed"}], "url": "https://github.com/fieldnote/app/pull/418",
+          "actions": [{"label": "Rerun failed", "primary": True}, {"id": "fix", "label": "Smuggled"}]}
+    [view] = views.shape([views.clean(pr)], "PR #418 Share sheet fix is failing UI tests.", "")
+    assert [a["label"] for a in view["actions"]] == ["Rerun failed"]
+    assert view["actions"][0]["style"] == "primary" and not view["actions"][0]["confirm"]
+    sent = []
+    fake = SimpleNamespace(store=SimpleNamespace(run_result=lambda run: ("key_1", {"views": [view]})),
+                           task_message=lambda run, body: sent.append((run, body)))
+    assert VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "do_0"})["ok"] is True
+    assert sent == [("run_abc123", {"text": "Rerun failed (PR #418).", "source": "typed"})]
+    with pytest.raises(Exception):
+        VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "fix"})
+    # Without an offered step the generic Fix stays.
+    [plain] = views.shape([views.clean({**pr, "actions": []})], "PR #418 Share sheet fix is failing UI tests.", "")
+    assert [a["label"] for a in plain["actions"]] == ["Fix the checks"]
+
+
+def test_a_draft_ignores_offered_buttons():
+    draft = {"kind": "draft", "channel": "email", "to": "Sam Rivera", "body": "Thursday works.",
+             "actions": [{"label": "Send now", "primary": True}]}
+    [view] = views.shape([views.clean(draft)], "A reply to Sam Rivera.", "")
+    assert [a["id"] for a in view["actions"]] == ["send"]
+
+
 # -- timeline (P2), rows (P4), metric (P6), preview (P7) ---------------------------------------------------
 
 TRIP_DAYS = {"kind": "timeline", "title": "Porto trip", "days": [

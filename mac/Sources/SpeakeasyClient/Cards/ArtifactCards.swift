@@ -331,7 +331,7 @@ struct StatusTilesCard: View {
         VStack(alignment: .leading, spacing: 10) {
             // The app the facts came from, then what they are about ("Vercel · fieldnote-web"), as the designs head a card.
             let head = [card["source"].string, card["scope"].string].compactMap { $0 }.removingDuplicates()
-            if !head.isEmpty { Text(head.joined(separator: " · ")).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
+            AppHeader(parts: head, source: card["source"].string)
             if items.count > 4 {
                 // Past four, tiles turn into a wall of repeated state words ("Check" seven times):
                 // one row each, what's wrong first, the state word at the end.
@@ -391,6 +391,12 @@ struct StatusTile: View {
             if says(#"\bfail"#) { return "Failed" }
             if says(#"\bmissed\b"#) { return "Missed" }
             if says(#"\b(stuck|running since|hung)\b"#) { return "Stuck" }
+            // A scheduled job (its role is its schedule: "every 5m", "daily 9:30 AM") that stopped
+            // running missed its runs; it isn't a server that's "Down".
+            let role = item["role"].string ?? ""
+            if role.range(of: #"\b(every|daily|hourly|weekly|monthly|nightly|\d+x)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                return "Missed"
+            }
         }
         return word(state)
     }
@@ -453,7 +459,8 @@ struct StatusRow: View {
         HStack(alignment: .center, spacing: 10) {
             Circle().fill(StatusTile.color(state)).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)   // a long job name wraps, never "Codex usage thresh…"
                 if let note = item["note"].string ?? item["role"].string {
                     Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1)
                 }

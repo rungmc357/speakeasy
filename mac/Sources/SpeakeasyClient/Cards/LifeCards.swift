@@ -257,7 +257,26 @@ struct PlaceCard: View {
 struct PlacesCard: View {
     let card: ViewCard
     @Environment(\.cardFit) private var fit
+    /// The places as carousel tiles (the designs' picks: photo or name, one line of facts, Maps and
+    /// Website), the category as the tile's line and a closed place said so.
+    static func tiles(_ card: ViewCard) -> JSONValue {
+        let items: [JSONValue] = card["items"].array.prefix(6).map { p in
+            guard case .object(var o) = p else { return p }
+            if let c = p["category"].string, o["sub"] == nil { o["sub"] = .string(c) }
+            if p["open_now"].bool == false { o["state"] = .string("Closed now") }
+            if let d = p["distance"].string { o["facts"] = .array([.string(d)]) }
+            return .object(o)
+        }
+        return .object(["label": .string(card["title"].string ?? "Places"), "entity": .string("place"), "items": .array(items)])
+    }
     var body: some View {
+        if fit != .compact {
+            ExploreSection(section: Self.tiles(card))
+        } else {
+            list
+        }
+    }
+    private var list: some View {
         CardBox {
             CardHeader(icon: "mappin.and.ellipse", title: card["title"].string ?? "Places")
             ForEach(Array(card["items"].array.prefix(fit.rows(6)).enumerated()), id: \.offset) { i, p in

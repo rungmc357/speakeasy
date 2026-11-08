@@ -141,6 +141,45 @@ struct SourceMark: View {
     }
     static let pr = SourceMark(symbol: "arrow.triangle.pull", color: Color(hex: 0x24292f))
     static let site = SourceMark(symbol: "globe", color: Color(hex: 0x2a2d33))
+
+    /// The mark for an app a card names as its source ("Vercel", "Sentry", "Servers"); nil for a
+    /// name it doesn't know (the header then shows the words alone, never a made-up logo).
+    static func app(_ source: String?) -> SourceMark? {
+        let key = (source ?? "").lowercased()
+        let marks: [(String, String, UInt32)] = [
+            ("linear", "line.3.horizontal.decrease", 0x5e6ad2), ("github", "smallcircle.filled.circle", 0x24292f),
+            ("jira", "square.stack.3d.up.fill", 0x1868db), ("vercel", "triangle.fill", 0x111111),
+            ("sentry", "exclamationmark.triangle.fill", 0x362d59), ("gmail", "envelope.fill", 0xc5221f),
+            ("mail", "envelope.fill", 0x1a73e8), ("slack", "number", 0x4a154b), ("notion", "doc.text.fill", 0x191919),
+            ("figma", "pencil.and.outline", 0xa259ff), ("cloudflare", "cloud.fill", 0xf38020), ("aws", "cloud.fill", 0x232f3e),
+            ("calendar", "calendar", 0xd93025), ("servers", "server.rack", 0x4a4f57), ("studios", "server.rack", 0x4a4f57),
+            ("cron", "clock.fill", 0x4a4f57), ("scheduled", "clock.fill", 0x4a4f57), ("testflight", "airplane", 0x1c8cf6),
+        ]
+        guard let hit = marks.first(where: { key.contains($0.0) }) else { return nil }
+        return SourceMark(symbol: hit.1, color: Color(hex: hit.2))
+    }
+}
+
+/// The app a card's facts came from and what they belong to ("Vercel · fieldnote-web"), with the
+/// app's small mark when it is one the app knows.
+struct AppHeader: View {
+    let parts: [String]
+    let source: String?
+    var body: some View {
+        if !parts.isEmpty {
+            HStack(spacing: 8) {
+                if let mark = SourceMark.app(source) {
+                    Image(systemName: mark.symbol).font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white)
+                        .frame(width: 20, height: 20)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(mark.color))
+                        .accessibilityHidden(true)
+                }
+                Text(parts.joined(separator: " · ")).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
 }
 
 func sourceName(_ source: String?) -> String? {
@@ -476,6 +515,17 @@ public enum CardLinks {
     public static let inCardActions: Set<String> = ["calendar_day"]
 
     public static func links(_ card: ViewCard) -> [Link] {
+        let own = kindLinks(card)
+        // Pages the agent linked for the card's next step ("Logs", "Open in Sentry"), after the card's own.
+        let offered = card["links"].array.prefix(2).enumerated().compactMap { n, l -> Link? in
+            guard let url = l["url"].url, url.scheme == "https", let label = l["label"].string, !label.isEmpty,
+                  !own.contains(where: { $0.url == url }) else { return nil }
+            return Link(id: "link\(n)", label: label, symbol: "arrow.up.right", url: url)
+        }
+        return own + offered
+    }
+
+    static func kindLinks(_ card: ViewCard) -> [Link] {
         switch card.kind {
         case "pr":
             guard let url = card["url"].url else { return [] }

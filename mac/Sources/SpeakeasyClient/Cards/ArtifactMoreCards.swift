@@ -123,8 +123,10 @@ struct RowsCard: View {
         // Six rows read at a glance (a 13-row wall on Home did not); the rest are in the answer.
         let cap = fit == .compact ? 3 : 6
         VStack(alignment: .leading, spacing: 8) {
-            let head = [card["source"].string, card["title"].string].compactMap { $0 }.removingDuplicates()
-            if !head.isEmpty { Text(head.joined(separator: " · ")).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
+            // The view the rows came from leads ("Cycle 14 · iOS · ends Friday"), else the app and the title.
+            let head = card["scope"].string.map { [$0] }
+                ?? [card["source"].string, card["title"].string].compactMap { $0 }.removingDuplicates()
+            AppHeader(parts: head, source: card["source"].string)
             ForEach(Array(items.prefix(cap).enumerated()), id: \.offset) { _, item in
                 ActionRow(item: item, entity: entity)
             }
@@ -173,7 +175,7 @@ struct ActionRow: View {
                             .background(Capsule().fill((tone == nil ? Color.primary : Self.tone(tone)).opacity(0.12)))
                             .fixedSize().layoutPriority(1)   // the note gives way, never the status word ("Due Mon…")
                     }
-                    let meta = [inline ? nil : ref, item["note"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
+                    let meta = [inline ? nil : ref, item["who"].string, item["note"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
                     if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
                 }
             }
@@ -204,8 +206,8 @@ struct MetricCard: View {
         VStack(alignment: .leading, spacing: 8) {
             // The app heads the card ("Sentry · crashes per hour"), as the designs do; the footer keeps the time.
             let label = card["label"].string ?? ""
-            Text([card["source"].string, label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
-                .font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+            AppHeader(parts: [card["source"].string, card["scope"].string, label].compactMap { $0 }.filter { !$0.isEmpty }.removingDuplicates(),
+                      source: card["source"].string)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(card["value"].string ?? "").font(.system(size: fit == .compact ? 30 : 40, weight: .bold)).monospacedDigit()
                     .lineLimit(1).minimumScaleFactor(0.6)
