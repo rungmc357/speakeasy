@@ -132,7 +132,9 @@ public struct NowWorkStrip: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(source).font(.caption).foregroundStyle(.secondary)
                 Text(AgentMarkdown.attributed(title)).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Text(AgentMarkdown.attributed(line)).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                if !line.isEmpty {   // before a job's first real step: its title alone
+                    Text(AgentMarkdown.attributed(line)).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                }
             }
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
