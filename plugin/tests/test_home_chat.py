@@ -331,6 +331,23 @@ def test_a_job_from_home_runs_on_the_work_model_and_its_card_says_so(server, ser
     assert item["model"]["id"].endswith("claude-opus-5-5") and item["model"]["name"]
 
 
+def test_a_default_job_from_home_names_the_hermes_default_on_its_card(server, service, hermes, monkeypatch):
+    monkeypatch.setattr(service, "catalog", _ReadCatalog(_entries("acme/big-model-3", "anthropic/claude-haiku-5-5")))
+    monkeypatch.setattr(service.home_chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"}})
+    service.store.set_meta(HC.WORK_META, "")   # nothing picked on the chip
+    coordinator(service, {"tool": "start_job", "text": "", "args": {"request": "Compare two standing desks",
+                                                                    "reply": "Comparing them."}})
+    started = post(server, {"text": "compare two standing desks", "client_id": "c_wd"})[1]
+    wait_for(lambda: hermes.calls)
+
+    def card():
+        items = http(server.base_url, "GET", "/voice/now?tz=America/New_York", None, server.token)[1].get("items") or []
+        return next((i for i in items if i.get("run_id") == started["run_id"] and i.get("model")), None)
+    # The fake Hermes reports it ran the job on its default (Opus): the card names what actually ran,
+    # never the coordinator's fast model.
+    assert wait_for(card)["model"]["id"] == "anthropic/claude-opus-5-5"
+
+
 def test_a_selected_job_is_the_coordinators_context(server, service, hermes):
     coordinator(service, {"reply": "Looking.", "action": "start", "request": "Compare two standing desks"})
     first = post(server, {"text": "compare two standing desks", "client_id": "c_f1"})[1]

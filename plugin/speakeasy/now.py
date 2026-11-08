@@ -385,19 +385,16 @@ class NowModel:
 
     # -- one Speakeasy task ----------------------------------------------------------------------
     def _work_model(self, key: str) -> dict[str, Any] | None:
-        """The job's model as the per-message attribution badge: what Hermes served once known,
-        else what the job was started on. None when nothing was recorded (no guess)."""
+        """The job's model for Home's card: what Hermes served once known, else what the job was
+        started on (a pick, or the Hermes default it was sent to). None when nothing is known."""
         try:
             record = self.store.run_model(key)
+            described = self.svc.describe_model(record) if record else None
         except Exception:
             return None
-        if not record:
+        if not described:
             return None
-        from . import reply_models as RM
-        try:
-            return RM.badge(record, "run")
-        except Exception:
-            return None
+        return {k: described.get(k) for k in ("id", "name", "provider", "provider_name", "reasoning")}
 
     def _task_item(self, row: dict[str, Any], work: dict[str, Any], open_question: bool,
                    approvals: dict[str, dict[str, Any]], read_at: float | None, edge: float,
