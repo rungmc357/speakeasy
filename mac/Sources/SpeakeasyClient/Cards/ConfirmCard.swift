@@ -25,7 +25,7 @@ struct ConfirmCard: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: style.capsHeaders ? 10 : CleanGrid.glyphGap) {
                 if style.capsHeaders {
                     Image(systemName: state == "done" ? "checkmark.circle.fill" : symbol)
                         .font(.system(size: 20)).foregroundStyle(style.emphasis)
@@ -33,8 +33,8 @@ struct ConfirmCard: View {
                     Image(systemName: state == "done" ? "checkmark" : symbol)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(state == "done" ? style.good : state == "pending" ? style.needsYou : style.secondary)
-                        .frame(width: 32, height: 32)
-                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(style.well))
+                        .frame(width: CleanGrid.glyphTile, height: CleanGrid.glyphTile)
+                        .background(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).fill(style.well))
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(stateTitle).font(.caption.weight(.semibold))

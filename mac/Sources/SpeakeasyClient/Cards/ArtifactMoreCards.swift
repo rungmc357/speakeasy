@@ -172,6 +172,12 @@ enum StateWords {
     }
     /// The tracker glyph for a state: a check when it's done, a half circle only while it moves.
     static func symbol(_ state: String?, tone: String?) -> String {
+        let words = (state ?? "").lowercased()
+        // Waiting on a person ("Needs Theo", "Waiting on Geo") is not the same as moving: a raised
+        // hand, so it never wears In progress's half circle beside it.
+        if tone != "good", words.hasPrefix("needs ") || words.hasPrefix("waiting on") || words.contains("blocked") {
+            return "hand.raised.fill"
+        }
         switch tone {
         case "good": return "checkmark.circle.fill"
         case "bad": return "exclamationmark.circle.fill"
@@ -192,10 +198,13 @@ struct ActionRow: View {
         // A known status word sets its colour (Backlog grey, Waiting on Geo red); otherwise the agent's tone.
         let tone = StateWords.tone(item["state"].string, given: item["tone"].string)
         HStack(alignment: .center, spacing: 12) {
-            Image(systemName: ArtifactLinks.symbol(entity)).font(.system(size: 14, weight: .semibold))
+            // A row with a status wears the tracker's glyph for it (done a check, moving a half
+            // circle, waiting dashed), so "In progress" and "Needs Theo" never share one mark.
+            let glyph = item["state"].string != nil ? StateWords.symbol(item["state"].string, tone: tone) : ArtifactLinks.symbol(entity)
+            Image(systemName: glyph).font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(tone == nil ? gold : Self.tone(tone))
-                .frame(width: 34, height: 34)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill((tone == nil ? gold : Self.tone(tone)).opacity(0.14)))
+                .frame(width: CleanGrid.rowGlyph, height: CleanGrid.rowGlyph)
+                .background(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).fill((tone == nil ? gold : Self.tone(tone)).opacity(0.14)))
             VStack(alignment: .leading, spacing: 3) {
                 // A short ref ("#418", "SPK-12") leads the name; a long one ("FIELDNOTE-IOS-3KD") squeezed
                 // the name into a letter-wide column, so it moves to the line under it.
@@ -207,11 +216,15 @@ struct ActionRow: View {
                 // A time fits the corner ("2:48 AM"); a phrase ("Last seen 2:48 AM ET") joins the note line.
                 let when = EventTimes.stamp(item["when"].string)
                 let corner = (when?.count ?? 0) <= 9
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    if let ref, inline { Text(ref).font(.system(size: 13, weight: .medium).monospacedDigit()).foregroundStyle(.secondary).fixedSize() }
-                    Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                // One text: the ref leads and a second line wraps back to the row's edge, never under
+                // the name alone in a hanging column ("FN-148  Onboarding: three / design directions").
+                let name = Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold))
+                Group {
+                    if let ref, inline {
+                        Text("\(Text(ref).font(.system(size: 13, weight: .medium).monospacedDigit()).foregroundColor(.secondary))\u{2002}\(name)")
+                    } else { name }
                 }
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 // Line two is the chip with who and how old (short, always fits); the note, when there is
                 // one, is its own quiet line under it, so no row strands a chip alone or cuts the note.
                 let meta = [inline ? nil : ref, item["who"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
@@ -385,7 +398,7 @@ struct PreviewCard: View {
         let square = entity == "media"
         let doc = DocPreview.isDocument(entity)
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .top, spacing: doc ? CleanGrid.glyphGap : 14) {
                 if !doc, card["photo_url"].url != nil || music {
                     ArtifactPhoto(url: card["photo_url"].url, symbol: ArtifactLinks.symbol(entity, item: item))
                         .frame(width: square ? (fit == .compact ? 72 : 112) : (fit == .compact ? 56 : 84),
@@ -396,8 +409,8 @@ struct PreviewCard: View {
                     // app's own glyph when it's named, not a big grey tile standing in for a picture.
                     Image(systemName: (doc ? DocPreview.appSymbol(card["app"].string) : nil) ?? ArtifactLinks.symbol(entity, item: item))
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.secondary).frame(width: 36, height: 36)
-                        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.06)))
+                        .foregroundStyle(.secondary).frame(width: CleanGrid.glyphTile, height: CleanGrid.glyphTile)
+                        .background(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).fill(Color.primary.opacity(0.06)))
                         .accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: 4) {
@@ -410,7 +423,7 @@ struct PreviewCard: View {
                     }
                     if music {
                         PillButton(title: "Play", icon: "play.fill", primary: true) { opener.play(item) }.fixedSize().padding(.top, 6)
-                    } else if let url = card["url"].url {
+                    } else if !doc, let url = card["url"].url {
                         PillButton(title: "Open", icon: "arrow.up.right", primary: true) { openURL(url) }.fixedSize().padding(.top, 6)
                     }
                 }
@@ -456,6 +469,11 @@ struct PreviewCard: View {
                         Text("\(total - shown.count) more").font(.system(size: 12.5)).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, 6)
                     }
                 }
+            }
+            // A document's Open is the card's action, at the card's edge under what it says (in the
+            // title's indented column it made a second left edge beside the body).
+            if doc, !music, let url = card["url"].url {
+                PillButton(title: "Open", icon: "arrow.up.right", primary: true) { openURL(url) }.fixedSize()
             }
         }
     }
