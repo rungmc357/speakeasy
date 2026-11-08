@@ -913,10 +913,22 @@ class HomeChat:
                             type(exc).__name__)
                 if route.get("model"):
                     self._mark_failed(f"{route['provider']}/{route['model']}")
-                main = self._config().get("model")
                 tried = (route.get("provider"), route.get("model"))
                 response = None
-                if (isinstance(main, dict) and main.get("default") and main.get("provider")
+                # On Auto, the next approved fast model first (the same model through another
+                # provider, then the next family), so a reply never jumps to the top tier while a
+                # fast one answers. One more attempt at most: the user is waiting.
+                if route.get("source") == "auto":
+                    nxt = self.route()
+                    if nxt.get("source") == "auto" and (nxt.get("provider"), nxt.get("model")) != tried:
+                        try:
+                            response = call_llm(provider=nxt["provider"], model=nxt["model"], **kwargs)
+                            route = nxt
+                        except Exception:
+                            self._mark_failed(f"{nxt['provider']}/{nxt['model']}")
+                            response = None
+                main = self._config().get("model")
+                if (response is None and isinstance(main, dict) and main.get("default") and main.get("provider")
                         and (str(main["provider"]), str(main["default"])) != tried):
                     try:
                         route = {"provider": str(main["provider"]), "model": str(main["default"]), "source": "main"}

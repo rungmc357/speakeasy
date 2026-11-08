@@ -544,8 +544,22 @@ def test_a_listed_model_that_fails_falls_back_and_auto_skips_it(service, monkeyp
         return _R()
     monkeypatch.setattr(HC.host_mod, "aux_client", lambda: (call_llm, lambda r: r.choices[0].message.content))
     answer, served = chat._model_call([{"role": "user", "content": "hi"}])
-    assert answer == "Hi!" and called == ["claude-haiku-5-5", "big-model-3"]
+    # Auto tries the next approved fast model before the main (often top-tier) model.
+    assert answer == "Hi!" and called == ["claude-haiku-5-5", "gpt-5-mini"]
     assert chat.route() == {"provider": "openai-api", "model": "gpt-5-mini", "source": "auto"}
+    # With no other fast model left, the main model still answers.
+    called.clear()
+    # (Haiku failed above, so Auto skips it.)
+    monkeypatch.setattr(service, "catalog", _Catalog(_entries("acme/big-model-3", "anthropic/claude-sonnet-5-5",
+                                                              "anthropic/claude-haiku-5-5")))
+    def call_llm2(provider=None, model=None, task=None, **kw):
+        called.append(str(model or task))
+        if model == "claude-sonnet-5-5":
+            raise PermissionError("not signed in")
+        return _R()
+    monkeypatch.setattr(HC.host_mod, "aux_client", lambda: (call_llm2, lambda r: r.choices[0].message.content))
+    answer, served = chat._model_call([{"role": "user", "content": "hi"}])
+    assert answer == "Hi!" and called == ["claude-sonnet-5-5", "big-model-3"]
     # A chosen model that fails keeps the choice but says so on the chip.
     service.store.set_meta(HC.CHOICE_META, "anthropic/claude-haiku-5-5")
     status = chat.model_status()
