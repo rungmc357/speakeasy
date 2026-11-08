@@ -258,3 +258,13 @@ public enum DayOverlaps {
         Set(pairs(events).flatMap { [$0.0, $0.1] })
     }
 }
+
+extension ViewCard {
+    /// "H 57°  L 36°", or just "L 36°" when the big number already is the high (a forecast for one
+    /// day): the same high said twice on one card reads as padding.
+    public var weatherHighLow: String {
+        let high = ViewCard.degrees(self["high"].double), low = ViewCard.degrees(self["low"].double)
+        if let temp = self["temp"].double, ViewCard.degrees(temp) == high { return "L \(low)" }
+        return "H \(high)  L \(low)"
+    }
+}

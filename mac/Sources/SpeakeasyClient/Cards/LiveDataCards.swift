@@ -70,7 +70,7 @@ struct WeatherCard: View {
                 VStack(alignment: .trailing, spacing: 4) {
                     Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 30))
                     if card["temp"].double != nil {
-                        Text("H \(ViewCard.degrees(card["high"].double))  L \(ViewCard.degrees(card["low"].double))")
+                        Text(card.weatherHighLow)
                             .font(.system(size: 11, weight: .medium).monospacedDigit())
                     }
                     if let rain = card["rain"].double, rain > 0 {
@@ -176,7 +176,7 @@ struct WeatherNow: View {
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 3) {
                 if card["temp"].double != nil {
-                    Text("H \(ViewCard.degrees(card["high"].double))  L \(ViewCard.degrees(card["low"].double))")
+                    Text(card.weatherHighLow)
                         .font(.system(size: 11, weight: .medium).monospacedDigit()).lineLimit(1)
                 }
                 if let rain = card["rain"].double, rain > 0 {
@@ -352,3 +352,4 @@ func parseISO(_ text: String) -> Date? {
     f.formatOptions = [.withInternetDateTime]
     return f.date(from: text)
 }
+
