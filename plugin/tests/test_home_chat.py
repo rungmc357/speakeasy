@@ -334,6 +334,17 @@ def test_two_asks_in_one_message_are_two_jobs(server, service, hermes):
     assert not [e for e in cards if e["kind"] == "ask"]       # both jobs are the chat's: no "you asked" echo
 
 
+def test_a_second_job_with_no_line_of_its_own_is_still_named_in_the_reply(server, service, hermes):
+    coordinator(service, {"tool": "start_job", "text": "",
+                          "args": {"request": "Find a hardware store open Sunday near downtown Denver",
+                                   "reply": "Looking for a hardware store open Sunday near downtown Denver.",
+                                   "more_jobs": ["Find a well reviewed bike repair shop in Boulder"]}})
+    body = post(server, {"text": "hardware store open sunday in denver, and a bike repair shop in boulder",
+                         "client_id": "c_two2"})[1]
+    assert body["reply"]["text"] == ("Looking for a hardware store open Sunday near downtown Denver. "
+                                     "Also on it: well reviewed bike repair shop.")
+
+
 class _ReadCatalog(_Catalog):
     """A model list the job route may read (choosing a job's model checks the id against it)."""
     hermes_reasoning = None

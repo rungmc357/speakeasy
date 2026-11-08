@@ -324,8 +324,16 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
         first = extra.pop(0)
         action, request, reply = "start", first["request"], (reply or first["reply"])
     if extra:
-        # One reply line for the whole message: the extra jobs' own lines join the first.
+        # One reply line for the whole message: the extra jobs' own lines join the first. A job with
+        # no line of its own (more_jobs, or a second call with an empty reply) is still named, so
+        # the reply never reads as if only the first ask started (seen live on two asks).
+        from .home_words import short_title
         lines = [reply] + [e["reply"] for e in extra if e["reply"] and e["reply"] not in reply]
+        for e in extra:
+            if not e["reply"]:
+                title = short_title(e["request"])
+                if title and title.lower() not in " ".join(lines).lower():
+                    lines.append(f"Also on it: {title[0].lower() + title[1:] if title[1:2].islower() else title}.")
         reply = " ".join(x for x in lines if x)
     return {"reply": us_units_first(reply)[:REPLY_CHARS], "action": action, "run_id": run_id, "request": request,
             "extra": [e["request"] for e in extra]}
