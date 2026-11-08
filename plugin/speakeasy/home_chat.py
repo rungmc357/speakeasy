@@ -125,12 +125,20 @@ def parrots(sentence: str, asked: str) -> bool:
     return len(_ack_words(sentence) & _ack_words(asked)) >= 3
 
 
+# The app's own mechanics are never said to the user: the coordinator is told it can't see an
+# attachment so that it starts a job, and once read that back as its reply ("I can't see the picture
+# or file you attached. Start a job so one can look at it"). The job is already starting.
+_MECHANICS = re.compile(r"(?i)\b(?:can'?t|cannot|can not|unable to|don'?t)\s+(?:see|view|open|watch)\b.*"
+                        r"\b(?:picture|photo|image|file|video|clip|attach)"
+                        r"|\bstart(?:ing)? (?:a|the) job\b|\b(?:start_job|follow_up|a job (?:can|will) look)\b")
+
+
 def acknowledgement(reply: str, asked: str) -> str:
     """The start-of-job reply without the ask read back: parroting sentences go, "On it." leads."""
     sentences = [s for s in re.split(r"(?<=[.!?])\s+", (reply or "").strip()) if s]
     if not sentences:
         return reply
-    kept = [s for s in sentences if not parrots(s, asked)]
+    kept = [s for s in sentences if not parrots(s, asked) and not _MECHANICS.search(s)]
     if len(kept) == len(sentences):
         return reply
     if not kept or kept[0] != sentences[0]:
@@ -380,8 +388,8 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
         # Prose plus a start_job: the first ask is the main action.
         first = extra.pop(0)
         action, request, reply = "start", first["request"], (reply or first["reply"])
-    if action == "start" and not extra and request:
-        reply = acknowledgement(reply, request)   # R2: never the ask read back
+    if action in {"start", "follow_up"} and not extra:
+        reply = acknowledgement(reply, request or "")   # R2: never the ask read back, nor the app's mechanics
     if extra:
         # One reply line for the whole message: the extra jobs' own lines join the first. A job with
         # no line of its own (more_jobs, or a second call with an empty reply) is still named, so
@@ -801,8 +809,9 @@ class HomeChat:
                 attachments: int, focus: str | None = None, unkept: str | None = None) -> tuple[dict[str, Any] | None, dict | None]:
         job_lines, aliases = jobs if isinstance(jobs, tuple) else (jobs, {})
         name = (self.svc.settings.get() or {}).get("assistant_name") or "Hermes"
-        note = (f"- The user attached {attachments} picture(s) or file(s) you can't see: use \"start\" (or "
-                "\"follow_up\" for the job they're about) so a job looks at them.\n") if attachments else ""
+        note = (f"- The user attached {attachments} picture(s), video(s) or file(s). Only a job can open them: use "
+                "\"start\" (or \"follow_up\" for the job they're about). Your reply is a short acknowledgement "
+                "(\"Looking now.\"); never say you can't see them or explain how jobs work.\n") if attachments else ""
         system = _PROMPT.format(name=name, now=time.strftime("%A %B %-d, %-I:%M %p", time.localtime(self.clock())),
                                 jobs=job_lines, attachments=note, focus=self._focus_line(focus, aliases))
         messages: list[dict[str, str]] = [{"role": "system", "content": system}]

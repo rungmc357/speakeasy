@@ -106,3 +106,19 @@ def test_parse_trims_a_parroting_start_reply():
     chat = HC.parse({"tool": "start_job", "text": "", "args": {"request": "Find a dentist open Saturday",
                                                                "reply": "Looking now."}}, {})
     assert chat["reply"] == "Looking now."
+
+
+def test_the_start_line_never_explains_the_apps_mechanics():
+    # Seen live on a video sent from Home: the coordinator read its own instruction back.
+    said = "I can't see the picture or file you attached. Start a job so one can look at it"
+    assert HC.acknowledgement(said, "") == HC.ACK
+    assert HC.acknowledgement("Looking now.", "") == "Looking now."
+    assert HC.acknowledgement("On it. I can't open the clip myself, so a job will look at it.", "") == "On it."
+    # An answer that happens to mention files is kept.
+    assert HC.acknowledgement("On it. The sharing link is in the files tab.", "") == "On it. The sharing link is in the files tab."
+
+
+def test_a_start_with_no_request_still_gets_a_clean_line():
+    parsed = HC.parse({"tool": "start_job", "args": {"reply": "I can't see the video you attached. Starting a job to look."},
+                       "text": ""}, {})
+    assert parsed and parsed["action"] == "start" and parsed["reply"] == HC.ACK
