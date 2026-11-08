@@ -96,7 +96,7 @@ struct ConfirmCard: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(card["items"].array.enumerated()), id: \.offset) { _, item in
                 HStack(alignment: .top, spacing: 12) {
-                    ArtifactPhoto(url: item["photo_url"].url, symbol: "headphones")
+                    ArtifactPhoto(url: item["photo_url"].url, symbol: "shippingbox")
                         .frame(width: compact ? 58 : 72, height: compact ? 58 : 72)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     VStack(alignment: .leading, spacing: 4) {

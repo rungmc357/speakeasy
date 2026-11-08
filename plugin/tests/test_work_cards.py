@@ -180,6 +180,6 @@ def test_day_without_overlap_or_with_word_times_offers_nothing():
 
 def test_brief_names_the_work_cards_and_their_facts():
     rule = builder.ARTIFACTS_RULE
-    for words in ("issue (", "pr (", "jobs (", "site (", "mockups (", "reason (one plain line", "needs_you",
+    for words in ("issue (", "pr (", "jobs (", "site (", "mockups (", "reason (one plain sentence", "needs_you",
                   "join_url"):
         assert words in rule or words in builder.VIEWS_RULE, words

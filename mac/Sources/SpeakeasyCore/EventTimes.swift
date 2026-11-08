@@ -30,6 +30,43 @@ public enum EventTimes {
         return date(v).map { clock($0, calendar: calendar, locale: locale) } ?? v
     }
 
+    /// When something last changed, as a card's corner reads it: a machine timestamp becomes "2:41 AM"
+    /// today, "Yesterday", the weekday within the week, else "Nov 2" (with the year when it differs).
+    /// Words the agent wrote ("2h ago") pass through. Tracker and GitHub data arrive as raw ISO times.
+    public static func stamp(_ value: String?, now: Date = Date(), calendar: Calendar = .current,
+                             locale: Locale = .current) -> String? {
+        guard let v = clean(value) else { return nil }
+        // A bare day ("2026-10-29", GitHub's search dates) has no clock time to show.
+        let dayOnly = v.count == 10 && v.first?.isNumber == true && v.filter({ $0 == "-" }).count == 2
+        let bare: Date? = dayOnly ? {
+            let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = calendar
+            f.timeZone = calendar.timeZone; f.dateFormat = "yyyy-MM-dd"; return f.date(from: v)
+        }() : nil
+        guard let d = bare ?? date(v) else { return v }
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: d), to: calendar.startOfDay(for: now)).day ?? 0
+        if days <= 0 { return bare != nil ? "Today" : clock(d, calendar: calendar, locale: locale) }
+        if days == 1 { return "Yesterday" }
+        let f = DateFormatter(); f.calendar = calendar; f.locale = locale; f.timeZone = calendar.timeZone
+        if days < 7 { f.setLocalizedDateFormatFromTemplate("EEE"); return f.string(from: d) }
+        let sameYear = calendar.component(.year, from: d) == calendar.component(.year, from: now)
+        f.setLocalizedDateFormatFromTemplate(sameYear ? "MMMd" : "MMMdyyyy")
+        return f.string(from: d)
+    }
+
+    /// A calendar day as a heading: "2026-11-09" becomes "Monday, November 9" (with the year when it
+    /// differs from now's). Anything that isn't a bare ISO day passes through as written.
+    public static func dayTitle(_ value: String?, now: Date = Date(), calendar: Calendar = .current,
+                                locale: Locale = .current) -> String? {
+        guard let v = clean(value) else { return nil }
+        let p = DateFormatter(); p.locale = Locale(identifier: "en_US_POSIX"); p.calendar = calendar
+        p.timeZone = calendar.timeZone; p.dateFormat = "yyyy-MM-dd"
+        guard v.count == 10, let d = p.date(from: v) else { return v }
+        let f = DateFormatter(); f.locale = locale; f.calendar = calendar; f.timeZone = calendar.timeZone
+        let sameYear = calendar.component(.year, from: d) == calendar.component(.year, from: now)
+        f.setLocalizedDateFormatFromTemplate(sameYear ? "EEEEMMMMd" : "EEEEMMMMdyyyy")
+        return f.string(from: d)
+    }
+
     /// A machine timestamp ("2026-03-02T14:00:00Z", with or without seconds, fraction or zone).
     public static func date(_ value: String) -> Date? {
         let v = value.trimmingCharacters(in: .whitespaces)

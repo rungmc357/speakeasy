@@ -89,6 +89,8 @@ def clean(raw: Any) -> dict | None:
         if Decimal(out["subtotal"]) + Decimal(out["tax"]) + Decimal(out["shipping"]) != Decimal(out["total"]):
             return None
         source = raw.get("items")
+        if source is None and isinstance(details.get("items"), list):
+            source = details["items"]   # agents often nest the cart inside details; same checks apply
         if not isinstance(source, list) or not 1 <= len(source) <= 30:
             return None
         for item in source:

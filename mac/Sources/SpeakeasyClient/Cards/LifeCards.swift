@@ -48,7 +48,7 @@ struct DayCard: View {
         let events = Array(card["events"].array.prefix(fit.rows(12)))
         let pairs = DayOverlaps.pairs(events)
         CardBox {
-            CardHeader(icon: "calendar", title: card["title"].string ?? card["date"].string ?? "Today",
+            CardHeader(icon: "calendar", title: card["title"].string ?? EventTimes.dayTitle(card["date"].string) ?? "Today",
                        trailing: style.capsHeaders || events.isEmpty ? nil : "\(card["events"].array.count) event\(card["events"].array.count == 1 ? "" : "s")")
             if events.isEmpty {
                 Text("Nothing scheduled.").font(.system(size: style.capsHeaders ? 12 : 15)).foregroundStyle(style.secondary)

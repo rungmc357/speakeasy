@@ -429,7 +429,10 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         channel = str(body.get("channel", "")).lower()
         if channel not in DRAFT_CHANNELS or not body.get("to") or not body.get("body"):
             return {}
-        return {**body, "channel": channel}
+        # "Priya Raman (#fieldnote-ios, thread reply)": the aside is the agent's note about where it
+        # goes (the thread field says that); the recipient is the name before it.
+        to = re.sub(r"\s*\([^()]*\)\s*$", "", body["to"]).strip() or body["to"]
+        return {**body, "channel": channel, "to": to}
     if kind == "timeline":
         days = []
         for day in body.get("days") or []:
@@ -449,6 +452,22 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             out["entity"] = out["entity"].lower()
         else:
             out.pop("entity", None)
+        for i in items:
+            # A worker's or database id ("t_98ab845a") is not a reference anyone uses; the row keeps
+            # its name and loses the ref rather than show machine text.
+            ref = i.get("ref")
+            if isinstance(ref, str) and _INTERNAL_ID.fullmatch(ref.strip()):
+                i.pop("ref")
+            elif isinstance(ref, str) and not re.search(r"\d", ref):
+                # A sender or owner ("Dana Whitfield") in the ref slot: it's who, not which. It leads
+                # the note instead, so the row's mono reference column holds only numbers.
+                i.pop("ref")
+                i["note"] = f"{ref.strip()} · {i['note']}" if i.get("note") else ref.strip()
+        if out.get("entity") in ("pr", "issue"):
+            for i in items:
+                i["name"] = _cap_first(_work_title(i["name"]))
+                if i.get("state"):
+                    i["state"] = _cap_first(i["state"])
         return out
     if kind == "metric":
         if not body.get("label") or not body.get("value"):
@@ -469,18 +488,34 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         out = _tone(dict(body), TAG_TONES)
         source = str(out.get("source", "")).lower()
         out["source"] = source if source in ISSUE_SOURCES else "other"
+        out["title"] = _work_title(out["title"])
+        if "priority" in out:
+            word = _priority(out["priority"])
+            out.pop("priority")
+            if word:
+                out["priority"] = word
+        if out.get("state"):
+            out["state"] = _cap_first(out["state"])
+        if "labels" in out:
+            labels = _topic_labels(out["labels"], out.get("state"), out.get("priority"))
+            out.pop("labels")
+            if labels:
+                out["labels"] = labels
         return out
     if kind == "pr":
         state = str(body.get("state", "")).lower()
         if not body.get("title") or not body.get("reason") or state not in PR_STATES:
             return {}
-        out = {**body, "state": state, "reason": body["reason"][:160]}
+        out = {**body, "state": state, "reason": body["reason"][:160], "title": _work_title(body["title"])}
         if "number" in out and not (float(out["number"]).is_integer() and out["number"] > 0):
             out.pop("number")
         elif "number" in out:
             out["number"] = int(out["number"])
         checks = [{**c, "state": c["state"].lower()} for c in out.get("checks") or []
                   if c.get("name") and str(c.get("state", "")).lower() in CHECK_STATES]
+        for c in checks:
+            if c.get("note") and _MACHINE_NOTE.search(c["note"]):
+                c.pop("note")   # the state already says it; raw CI words are worse than none
         out.pop("checks", None)
         if checks:
             out["checks"] = checks
@@ -506,6 +541,56 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             out["next"] = nxt
         return out
     return body
+
+
+# A commit-style prefix ("fix(gateway): ", "feat: ", "chore(deps)!: ") is how a branch is filed, not
+# what the change is; the card shows the words after it, capitalized like a title.
+_COMMIT_PREFIX = re.compile(r"^(?:feat|fix|chore|docs|refactor|perf|test|tests|build|ci|style|revert)"
+                            r"(?:\([^)]{1,40}\))?!?:\s+(?=\S)", re.I)
+_PRIORITY_WORDS = {"0": None, "1": "Urgent", "2": "High", "3": "Medium", "4": "Low",
+                   "no priority": None, "none": None, "p0": "Urgent", "p1": "High", "p2": "Medium", "p3": "Low"}
+
+
+# Worker/database ids, commit SHAs, UUIDs and CI run ids (8+ digits; PR and issue numbers stay shorter).
+_INTERNAL_ID = re.compile(r"(?i)#?(?:[a-z]{1,4}_[0-9a-f]{6,}|[0-9a-f]{12,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{20,}|\d{8,})")
+# Machine words in a check's note: CI states in snake_case and bare commit SHAs ("action_required on 05396a4").
+_MACHINE_NOTE = re.compile(r"\b[a-z]+_[a-z_]+\b|\b[0-9a-f]{7,40}\b")
+
+
+def _cap_first(text: str) -> str:
+    return text[:1].upper() + text[1:] if text and text[:1].islower() else text
+
+
+def _work_title(title: str) -> str:
+    """An issue or pull request title as people read it: no commit-style prefix."""
+    bare = _COMMIT_PREFIX.sub("", title.strip())
+    return _cap_first(bare) if bare != title.strip() else title.strip()
+
+
+def _priority(value: Any) -> str | None:
+    """Tracker priority in words: Linear sends 0-4 (0 none, 1 urgent ... 4 low); a word passes through
+    without a trailing 'priority' (the card adds it). None: no priority worth a line."""
+    raw = str(value).strip()
+    key = raw.lower().removesuffix(" priority").strip()
+    key = key[:-2] if key.endswith(".0") else key
+    if key in _PRIORITY_WORDS:
+        return _PRIORITY_WORDS[key]
+    return _cap_first(raw[:-len(" priority")] if raw.lower().endswith(" priority") else raw) or None
+
+
+def _norm_label(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(text).lower())
+
+
+def _topic_labels(labels: list[Any], state: Any, priority: Any) -> list[str]:
+    """Labels that say what the issue is about: one that only repeats the state or priority
+    ("ready-to-ship" beside Ready to ship) is already on the card."""
+    said = {_norm_label(state), _norm_label(priority), ""}
+    out: list[str] = []
+    for label in labels:
+        if _norm_label(label) not in said and _norm_label(label) not in {_norm_label(x) for x in out}:
+            out.append(str(label))
+    return out
 
 
 def _coords(item: dict[str, Any]) -> dict[str, Any]:
@@ -562,7 +647,7 @@ _LABEL_STOP = set("""a an the and or of to for in on at by with from via is are 
 these those as into over under up out off""".split())
 
 
-def _grounded_label(name: str, said: str, said_numbers: set[str]) -> bool:
+def _grounded_label(name: str, said: str, said_numbers: set[str], half: bool = False) -> bool:
     """A status tile's or row's name is a short label the agent writes for one line of its answer
     ("Mac tests", "Package needs a signature"), rarely that answer's exact words. It counts as said when
     the exact phrase is there, or when every number in it is said and at least two thirds of its words
@@ -572,7 +657,8 @@ def _grounded_label(name: str, said: str, said_numbers: set[str]) -> bool:
     words = [w for w in _norm(name).split() if w not in _LABEL_STOP]
     if len(words) < 2 or not _numbers(name) <= said_numbers:
         return False
-    return sum(f" {w} " in said for w in words) * 3 >= len(words) * 2
+    hits = sum(f" {w} " in said for w in words)
+    return hits * 2 >= len(words) if half else hits * 3 >= len(words) * 2
 
 
 def grounded(view: dict[str, Any], answer: str) -> bool:
@@ -580,9 +666,13 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
     (it is never repaired: repaired cards were how wrong content got through). Status and rows names
     are labels, checked word by word (``_grounded_label``); entity names stay exact."""
     said, nums = _norm(answer), _numbers(answer)
+    # "six pieces of work" says the 6 on the card (spoken-style answers spell small numbers out).
+    from .home_words import digits
+    nums |= _numbers(digits(answer or ""))
     kind = view.get("kind")
     names: list[str] = []
     labels: list[str] = []
+    loose: list[str] = []
     values: list[Any] = []
     if kind == "explore":
         for sec in view["sections"]:
@@ -598,7 +688,8 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
             labels.append(i["name"])
             values += [i.get("value")] if i.get("value") else []
     elif kind == "draft":
-        names.append(view["to"])
+        # A recipient's full name ("Priya Raman") is usually said by first name in the answer.
+        (loose if len(_norm(view["to"]).split()) > 1 else names).append(view["to"])
     elif kind == "timeline":
         for day in view["days"]:
             values.append(day["label"])
@@ -607,7 +698,13 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
                 names += [it["where"]] if it.get("where") else []
     elif kind == "rows":
         for i in view["items"]:
-            labels.append(i["name"])
+            # A row pinned by a ticket ref the answer says ("SPK-196") is that ticket; its name is the
+            # agent's short description of it, so half its words are enough.
+            ref = i.get("ref")
+            if ref and _numbers(str(ref)) and _grounded_name(str(ref), said):
+                loose.append(i["name"])
+            else:
+                labels.append(i["name"])
             values += [i[k] for k in ("ref", "amount") if i.get(k)]
     elif kind == "metric":
         # The line itself prints no numbers; only marked points show theirs, so only those are checked.
@@ -615,20 +712,25 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
         values += [pt["value"] for pt in view.get("points") or [] if pt.get("mark")]
     elif kind == "preview":
         names += [view["title"]] + ([view["creator"]] if view.get("creator") else [])
-    elif kind == "issue":
-        names.append(view["title"])
-        values += [view["ref"]] if view.get("ref") else []
-    elif kind == "pr":
-        names.append(view["title"])
-        values += [view["number"]] if view.get("number") is not None else []
+    elif kind in ("issue", "pr"):
+        # The ticket is pinned by its ref or number; its title, copied from the tracker, is rarely
+        # quoted whole in the answer, so with the ref said it is checked as a label (SPK-231 reps).
+        ref = view.get("ref") if kind == "issue" else view.get("number")
+        if ref is not None and _numbers(str(ref)) and _grounded_value(ref, nums) and _grounded_name(str(ref), said):
+            labels.append(view["title"])
+        else:
+            names.append(view["title"])
+        values += [ref] if ref is not None else []
     elif kind == "jobs":
-        names += [i["name"] for i in view["items"]]
+        # Job names come from the board and the answer says them in its own words: labels.
+        labels += [i["name"] for i in view["items"]]
     elif kind == "site":
         names += [view["title"]] if view.get("title") else []
     # mockups: the pictures are the task's own renders and their captions describe them; nothing to check.
     if kind == "explore":
         values += [it["day"] for sec in view["sections"] for it in sec["items"] if it.get("day")]
     return (all(_grounded_name(n, said) for n in names) and all(_grounded_label(n, said, nums) for n in labels)
+            and all(_grounded_label(n, said, nums, half=True) for n in loose)
             and all(_grounded_value(v, nums) for v in values))
 
 

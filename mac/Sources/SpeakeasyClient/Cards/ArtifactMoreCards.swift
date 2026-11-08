@@ -120,7 +120,8 @@ struct RowsCard: View {
     var body: some View {
         let items = card["items"].array
         let entity = card["entity"].string ?? "item"
-        let cap = fit == .compact ? 3 : 12
+        // Six rows read at a glance (a 13-row wall on Home did not); the rest are in the answer.
+        let cap = fit == .compact ? 3 : 6
         VStack(alignment: .leading, spacing: 8) {
             if let title = card["title"].string { Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
             ForEach(Array(items.prefix(cap).enumerated()), id: \.offset) { _, item in
@@ -165,7 +166,7 @@ struct ActionRow: View {
             Spacer(minLength: 6)
             VStack(alignment: .trailing, spacing: 3) {
                 if let amount = item["amount"].string { Text(amount).font(.system(size: 15, weight: .bold)).monospacedDigit() }
-                if let when = item["when"].string { Text(when).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1) }
+                if let when = EventTimes.stamp(item["when"].string) { Text(when).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1) }
             }
             if let url = item["url"].url {
                 PillButton(title: "Open", icon: "arrow.up.right", primary: false, iconOnly: true) { openURL(url) }.fixedSize()

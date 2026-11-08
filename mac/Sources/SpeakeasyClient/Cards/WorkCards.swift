@@ -167,7 +167,7 @@ struct IssueCard: View {
                 Text([sourceName(card["source"].string), card["ref"].string].compactMap { $0 }.joined(separator: " · "))
                     .font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
                 Spacer(minLength: 8)
-                if let when = card["updated"].string { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
+                if let when = EventTimes.stamp(card["updated"].string) { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
             }
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -204,10 +204,19 @@ struct PRCard: View {
         CardBox {
             HStack(spacing: 10) {
                 SourceMark.pr
-                Text([card["repo"].string, card["number"].string.map { "#\($0)" }].compactMap { $0 }.joined(separator: " · "))
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
+                // "owner/repo · #418"; when that can't fit beside the time, the repo's own name (an
+                // owner like NousResearch cut to "NousResearch/he…" said nothing).
+                let number = card["number"].string.map { "#\($0)" }
+                let repo = card["repo"].string
+                ViewThatFits(in: .horizontal) {
+                    ForEach([repo, repo?.split(separator: "/").last.map(String.init)].compactMap { $0 }.removingDuplicates() + [""], id: \.self) { name in
+                        Text([name.isEmpty ? nil : name, number].compactMap { $0 }.joined(separator: " · "))
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
+                            .fixedSize(horizontal: name != "", vertical: false)
+                    }
+                }
                 Spacer(minLength: 8)
-                if let when = card["when"].string { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
+                if let when = EventTimes.stamp(card["when"].string) { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
             }
             Text(card["title"].string ?? "").font(.title3.weight(.semibold)).foregroundStyle(style.ink)
                 .fixedSize(horizontal: false, vertical: true)
@@ -422,4 +431,8 @@ public enum CardLinks {
             return []
         }
     }
+}
+
+private extension Array where Element: Hashable {
+    func removingDuplicates() -> [Element] { var seen = Set<Element>(); return filter { seen.insert($0).inserted } }
 }

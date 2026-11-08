@@ -104,7 +104,7 @@ struct CardLine: View {
         case "explore": return card["title"].string ?? card["sections"].array.first?["label"].string ?? "Ideas"
         case "status": return card["scope"].string ?? "Status"
         case "metric": return card["label"].string ?? "Number"
-        case "calendar_day": return card["title"].string ?? card["date"].string ?? "Today"
+        case "calendar_day": return card["title"].string ?? EventTimes.dayTitle(card["date"].string) ?? "Today"
         default: return card.summary
         }
     }

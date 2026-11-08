@@ -310,9 +310,30 @@ struct StatusTilesCard: View {
         let sorted = items.enumerated().sorted { (order[$0.element["state"].string ?? ""] ?? 9, $0.offset) < (order[$1.element["state"].string ?? ""] ?? 9, $1.offset) }.map(\.element)
         VStack(alignment: .leading, spacing: 10) {
             if let scope = card["scope"].string { Text(scope).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10, alignment: .top), GridItem(.flexible(), spacing: 10, alignment: .top)], spacing: 10) {
-                ForEach(Array(sorted.prefix(fit == .compact ? 4 : 12).enumerated()), id: \.offset) { _, item in
-                    StatusTile(item: item).onTapGesture { if let url = item["url"].url { openURL(url) } }
+            if items.count > 4 {
+                // Past four, tiles turn into a wall of repeated state words ("Check" seven times):
+                // one row each, what's wrong first, the state word at the end.
+                let cap = fit == .compact ? 4 : 6
+                VStack(spacing: 0) {
+                    ForEach(Array(sorted.prefix(cap).enumerated()), id: \.offset) { n, item in
+                        if n > 0 { Divider().overlay(look.hairline) }
+                        StatusRow(item: item).onTapGesture { if let url = item["url"].url { openURL(url) } }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(look.well))
+                if sorted.count > cap {
+                    // The sort puts trouble first, so what's left is either all fine or said in the answer.
+                    let rest = sorted.dropFirst(cap)
+                    let fine = rest.allSatisfy { ["ok", "on", "off", "info"].contains($0["state"].string ?? "") }
+                    Text(fine ? "\(rest.count) more, all fine" : "\(rest.count) more in the answer")
+                        .font(.system(size: 12.5)).foregroundStyle(.secondary)
+                }
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10, alignment: .top), GridItem(.flexible(), spacing: 10, alignment: .top)], spacing: 10) {
+                    ForEach(Array(sorted.prefix(4).enumerated()), id: \.offset) { _, item in
+                        StatusTile(item: item).onTapGesture { if let url = item["url"].url { openURL(url) } }
+                    }
                 }
             }
         }
@@ -330,7 +351,7 @@ struct StatusTile: View {
         }
     }
     static func word(_ state: String?) -> String {
-        ["ok": "OK", "on": "On", "off": "Off", "warn": "Check", "bad": "Down", "needs_you": "Needs you", "info": "Info"][state ?? ""] ?? ""
+        ["ok": "OK", "on": "On", "off": "Off", "warn": "Needs a look", "bad": "Down", "needs_you": "Needs you", "info": "Info"][state ?? ""] ?? ""
     }
     var body: some View {
         let state = item["state"].string
@@ -357,6 +378,34 @@ struct StatusTile: View {
         .accessibilityElement(children: .combine)
     }
 }
+
+/// One status as a row (cards with more than four): dot, name, the note under it, and the value or
+/// state word at the end.
+struct StatusRow: View {
+    let item: JSONValue
+    var body: some View {
+        let state = item["state"].string
+        let loud = state == "needs_you" || state == "warn" || state == "bad"
+        HStack(alignment: .center, spacing: 10) {
+            Circle().fill(StatusTile.color(state)).frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                if let note = item["note"].string ?? item["role"].string {
+                    Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 8)
+            Text([item["value"].string, item["unit"].string].compactMap { $0 }.joined(separator: " ").nonEmpty ?? StatusTile.word(state))
+                .font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                .foregroundStyle(loud ? StatusTile.color(state) : .secondary).lineLimit(1).fixedSize()
+        }
+        .padding(.vertical, 10)
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private extension String { var nonEmpty: String? { isEmpty ? nil : self } }
 
 /// A plain line through the points (no axes, no fill).
 struct Spark: View {
