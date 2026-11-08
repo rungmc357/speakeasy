@@ -783,6 +783,8 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
             lead = ""
         spoken = safe_user_text((lead + " " + spoken_question(question, lead)).strip(), 500) or spoken_question(question)
         views = [question] + [v for v in views if v.get("kind") != "question"]
+        from .views import drop_steps_the_question_asks
+        views = drop_steps_the_question_asks(views, question)
     if question:
         # The written answer (chat, task details) keeps the question so it can be answered there too.
         listed = "\n".join(f"{i + 1}. {option_text(o)}" + (" (recommended)" if question.get("recommended") == i else "")

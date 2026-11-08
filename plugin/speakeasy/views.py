@@ -524,7 +524,8 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             items = [{**i, "state": i["state"].lower()} if "state" in i else i for i in items]
             for i in items:
                 # "SPK-208 Home is now a chat": a step reads as what happened; the key is tracker filing.
-                what = re.sub(r"^(?:[A-Z][A-Z0-9]*-\d+|#\d+)[:\s\u2014-]+(?=\S+\s+\S)", "", i["what"].strip())
+                # "SPK-243 added; 32 ready" keeps its key: without it "Added; 32 ready" says nothing.
+                what = re.sub(r"^(?:[A-Z][A-Z0-9]*-\d+|#\d+)[:\s\u2014-]+(?=\S+\s+\S)(?![a-z]+ed\b)", "", i["what"].strip())
                 i["what"] = _cap_first(what) if what != i["what"].strip() else what
                 keys = re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", i["what"])
                 if len(keys) >= 2:
@@ -1145,6 +1146,31 @@ def _urls_in(value: Any) -> set[str]:
     return {value} if isinstance(value, str) and value.startswith("https://") else set()
 
 
+_NUMBER_WORDS = {w: n for n, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
+    "seventeen eighteen nineteen twenty".split())}
+
+
+def _checks_counted(view: dict[str, Any], answer: str) -> dict[str, Any]:
+    """A PR card listing six of fifteen skipped checks, when the answer says "all 15 checks were
+    skipped" (or "fifteen"), counts the rest instead of reading "All 6 skipped"."""
+    checks = view.get("checks") or []
+    if view.get("kind") != "pr" or not checks or view.get("checks_total"):
+        return view
+    said = re.search(r"\b(all |every one of )?(?:the |your )?(\d{1,3}|" + "|".join(_NUMBER_WORDS) + r") (?:CI )?(?:checks|jobs)\b",
+                     answer or "", re.I)
+    if not said:
+        return view
+    n = int(said.group(2)) if said.group(2).isdigit() else _NUMBER_WORDS[said.group(2).lower()]
+    if not len(checks) < n <= 300:
+        return view
+    view = {**view, "checks_total": n}
+    states = {c["state"] for c in checks}
+    if said.group(1) and len(states) == 1:
+        view["checks_rest"] = next(iter(states))
+    return view
+
+
 def _soft_unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
     """Optional facts the answer never says go, not the card: a release step's time ("2:50 AM" only in
     the card) or a preview's maker. Nothing is rewritten; an unbacked detail is simply left off, so
@@ -1193,7 +1219,7 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
             continue
         if kept >= MAX_ARTIFACTS:
             continue
-        view = _soft_unsaid(view, answer)
+        view = _checks_counted(_soft_unsaid(view, answer), answer)
         if not grounded(view, answer, asked):
             continue
         if view.get("links"):
@@ -1222,6 +1248,22 @@ def _card_subject(view: dict[str, Any]) -> str:
         if isinstance(part, str) and part.strip() and part.lower() not in (s.lower() for s in seen):
             seen.append(part.strip())
     return " · ".join(seen[:2])
+
+
+def drop_steps_the_question_asks(views: list[dict[str, Any]], question: dict[str, Any]) -> list[dict[str, Any]]:
+    """A question whose options are the places (or options) a card shows is the choice: the card's
+    offered steps ("Check Misi tables", "Check Lilia tables") asked it a second time, so they go."""
+    asked = {_norm(option_text(o)) for o in question.get("options") or []}
+    out = []
+    for v in views:
+        items = v.get("items") if v.get("kind") == "places" else v.get("options") if v.get("kind") == "compare" else None
+        names = {_norm(str(i.get("name", ""))) for i in items or [] if isinstance(i, dict)}
+        if names and asked and len(asked & names) >= 2 and any(str(a.get("id", "")).startswith("do_") for a in v.get("actions") or []):
+            v = {**v, "actions": [a for a in v["actions"] if not str(a.get("id", "")).startswith("do_")]}
+            if not v["actions"]:
+                v.pop("actions")
+        out.append(v)
+    return out
 
 
 def follow_up(view: dict[str, Any], action: str) -> str | None:

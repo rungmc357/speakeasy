@@ -117,8 +117,11 @@ struct EntityTile: View {
                 let sub = item["sub"].string ?? item["creator"].string
                 // "Old Town, Springfield · Springfield": the city only when the line doesn't already say it.
                 let city = item["city"].string.flatMap { c in sub?.localizedCaseInsensitiveContains(c) == true ? nil : c }
-                let first = [sub, city, item["price"].string,
-                             item["rating"].double.map { String(format: "★ %.1f", $0) }, item["state"].string].compactMap { $0 }
+                // The rating leads (the reason it's on the list), then what it is and the price; a
+                // trailing borough ("Williamsburg, Brooklyn") gives way first, never "$$$…".
+                let shortSub = entity == "place" ? sub.map { $0.replacingOccurrences(of: #",\s*[^,·]+$"#, with: "", options: .regularExpression) } : sub
+                let first = [item["rating"].double.map { String(format: "★ %.1f", $0) }, shortSub, city, item["price"].string,
+                             item["state"].string].compactMap { $0 }
                 if !first.isEmpty { Text(first.joined(separator: " · ")).font(.system(size: 14)).lineLimit(1) }
                 let facts = item["facts"].strings
                 if !facts.isEmpty { Text(facts.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2) }
@@ -329,7 +332,10 @@ struct StatusTilesCard: View {
             // The app the facts came from, then what they are about ("Vercel · fieldnote-web"), as the designs head a card.
             let head = [card["source"].string, card["scope"].string].compactMap { $0 }.removingDuplicates()
             AppHeader(parts: head, source: card["source"].string)
-            if items.count > 4 {
+            // Past four, or with names too long for half a row ("Codex usage threshold + reset alerts"
+            // cut to "Codex usage thr…" in a tile), status reads as rows.
+            let longNames = sorted.prefix(4).contains { ($0["name"].string ?? "").count > 22 }
+            if items.count > 4 || longNames {
                 // Past four, tiles turn into a wall of repeated state words ("Check" seven times):
                 // one row each, what's wrong first, the state word at the end.
                 let cap = fit == .compact ? 4 : 6

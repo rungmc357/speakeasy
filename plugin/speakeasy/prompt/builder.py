@@ -542,7 +542,7 @@ ARTIFACTS_RULE = (
     "never app links or layout. Pick by what it is: one pull request or its CI is a pr card (CI results are its checks; give its title and state when you know them); "
     "agents, workers or tasks are a jobs card; a count that changes over time (errors, crashes, signups) is ONE metric "
     "card (value the latest or peak, points the series, always, whenever the tool returned one; source the app it came from), never stats, rows or a chart for it; what shipped in a release or build is ONE "
-    "preview (entity document, title the build or version, sub the tracker and when it shipped in at most 5 words like Linear · shipped Tuesday, summary one sentence, "
+    "preview (entity document, title the build or version, sub the tracker, how many changes and when it shipped in at most 7 words like Linear · 14 changes · shipped Tuesday, summary one sentence on what changed for the person using it (never version numbers or where it was uploaded), "
     "list_label What shipped, list each shipped change in at most 6 plain words, no flags), and where a release stands now is a timeline of its stages (a day for what's done and one for what comes next, each step "
     "in a few plain words with its time, the steps still to come marked next), not rows; a row's state is its status word (at most 2 words). "
     "For each visual thing in a carousel, find its real photo_url from its own site, "

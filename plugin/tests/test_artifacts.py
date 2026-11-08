@@ -434,3 +434,15 @@ def test_a_number_said_only_in_the_spoken_line_grounds_the_card():
         {"name": "Installed on this Mac", "state": "ok", "value": "0.3.35"}]}]) + "\n```\n"
         "SPOKEN: Version 0.3.35 is installed on this Mac.")
     assert [v["kind"] for v in (split_result(out, ()) or {}).get("views", [])] == ["status"]
+
+
+def test_pr_checks_count_from_the_answer_and_a_question_owns_its_choice():
+    pr = {"kind": "pr", "repo": "fieldnote/app", "number": 418, "title": "Checks on #418", "reason": "Every job was skipped.",
+          "checks": [{"name": f"Job {n}", "state": "skipped"} for n in range(6)]}
+    [card] = views.shape([views.clean(pr)], "CI didn't test #418: all fifteen checks were skipped.", "")
+    assert card["checks_total"] == 15 and card["checks_rest"] == "skipped"
+    places = views.clean({"kind": "places", "title": "Dinner", "items": [{"name": "Rosa"}, {"name": "Luce"}],
+                          "actions": [{"label": "Check Rosa tables"}, {"label": "Check Luce tables"}]})
+    question = {"kind": "question", "question": "Which one?", "options": ["Rosa", "Luce"]}
+    [_, kept] = views.drop_steps_the_question_asks([question, places], question)
+    assert "actions" not in kept and [i["name"] for i in kept["items"]] == ["Rosa", "Luce"]
