@@ -308,3 +308,23 @@ def test_page_shows_the_words_and_folds_an_appended_report_into_the_reply(servic
         assert bad not in blob, bad
     row = next(s for s in H.list_sessions(path)["sessions"] if s["id"] == sid)
     assert row["title"] == "Use the green paint for the door."
+
+
+# SPK-256: the shape the release leak scan found on real rows: a steer (out-of-band wrapper) of several
+# lines, then a report a *subagent* started, in each of Hermes' exit wordings. Invented words/commands.
+SUBAGENT_REPORT = ("[IMPORTANT: Background process proc_7c6b5a4f3e2d {head}.\n"
+                   "Started by subagent sa-0-9a8b7c6d of delegation deleg_0f1e2d3c. Task: \"Repaint the shed door "
+                   "and the gate (blue 2.1, green 1.4) to the porch in...\"\n"
+                   "Command: rm -rf ~/scratch/paint/run-*.out; bash ~/scratch/paint/check.sh > ~/scratch/paint/out.log 2>&1\n"
+                   "Output:\nzsh:1: no matches found: ~/scratch/paint/run-*.out\n]")
+
+
+@pytest.mark.parametrize("head", ["completed normally (exit code 0)", "exited (exit code 1)",
+                                  "exited (exit code -15, SIGTERM)", "exited (exit code 143, SIGTERM)"])
+def test_a_subagent_started_report_after_a_multi_line_steer_is_cut_out(head):
+    words = "From the porch: the gate needs a second coat.\nDo the door after it dries. Keep the shed as is."
+    raw = OOB.format(words + "\n" + SUBAGENT_REPORT.format(head=head))
+    assert H.user_parts(raw) == ("user", words, ["A background job finished"])
+    kind, shown = H.user_words(raw)
+    for bad in ("IMPORTANT", "proc_", "subagent", "Command:", "Output:", "OUT-OF-BAND"):
+        assert bad not in shown, bad
