@@ -131,9 +131,52 @@ _HIDDEN_RES = (
     (re.compile(r"^\s*\[ASYNC DELEGATION"), "A helper finished"),
     (re.compile(r"^\s*\[IMPORTANT: \d+ background subagent delegations? completed"), "Helpers finished"),
     (re.compile(r"^\s*\[IMPORTANT: Background process"), "A background job finished"),
+    (re.compile(r"^\s*\[IMPORTANT: \d+ background process results arrived"), "A background job finished"),
     (re.compile(r"(?m)^\s*\[INTERNAL NOTIFICATION\b"), None),
     (re.compile(r"^\s*\[Cron delivery", re.I), None),
 )
+# A background-process report Hermes appended after the person's own words in one row (SPK-244):
+# "…words\n[IMPORTANT: Background process proc_1 completed normally (exit code 0).\nStarted by
+# subagent …\nCommand: …\nOutput:\n…]" (tools/process_registry_notifications.py), when the gateway
+# merges a report into a turn the person sent. (A row ending in the gateway's "[INTERNAL NOTIFICATION
+# — …]" footer is a notification row as a whole, never the person's: it stays hidden.) It starts a
+# line (or follows a space after the words, with Hermes' exact head), never one quoted inside a
+# sentence. Its output is arbitrary text, so brackets inside it don't balance: the report ends at the
+# first "]" before a blank line, the next notice, or the end of the row.
+_BG_NOTICE = re.compile(r"(?m)(?:^[ \t]*|(?<=[ \t]))\[(?:IMPORTANT: Background process \S+ (?=[^\n]*\(exit code|matched watch "
+                        r"pattern)|Background process \S+ heartbeat #)")
+_BG_NOTICE_STRICT = re.compile(r"\[IMPORTANT: Background process proc_\w+ [^\n]*\(exit code|\[IMPORTANT: Background process "
+                               r"proc_\w+ matched watch pattern|\[Background process proc_\w+ heartbeat #")
+_BG_NOTICE_END = re.compile(r"\][ \t]*(?=\n[ \t]*\n|\n[ \t]*\[(?:INTERNAL NOTIFICATION|IMPORTANT: |Background process )|\s*$)")
+BACKGROUND_STEP = "A background job finished"
+# What's left of a chat row once its report is cut can be only gateway tags (a sender tag "[pebble42]",
+# a trigger-id line): every line one bracketed block. That's no words of the person's.
+_SENDER_ONLY = re.compile(r"(?:[ \t]*\[[^\n]*\][ \t]*(?:\n|$)|[ \t]*\n)+")
+
+
+def drop_background_notices(text: str) -> tuple[str, list[str]]:
+    """(the person's words, the steps) of a row whose words carry Hermes' background-process reports
+    after them: each report is cut out (with a gateway notification line right after it) and becomes
+    one plain step ("A background job finished", once however many) for the reply's work. A row
+    without one is unchanged."""
+    steps: list[str] = []
+    for _ in range(6):
+        m = next((m for m in _BG_NOTICE.finditer(text) if text[:m.start()].strip()), None)
+        if not m:
+            break
+        start = m.start()
+        bracket = text.index("[", start)
+        line_start = not text[text.rfind("\n", 0, start) + 1:bracket].strip()
+        if not line_start and not _BG_NOTICE_STRICT.match(text, bracket):
+            break   # mid-line: only Hermes' exact head counts (a sentence quoting the words stays)
+        end = _BG_NOTICE_END.search(text, bracket)
+        stop = end.end() if end else len(text)
+        rest = text[stop:].strip()
+        text = (text[:start].rstrip() + ("\n\n" + rest if rest else "")).strip()
+        steps.append(BACKGROUND_STEP)
+    return text, steps[:1]
+
+
 # A Speakeasy task prompt: the person's words are the last "User:" line of its transcript.
 # A Speakeasy task's brief: a call's ("gave you by voice", over the call transcript) or a message
 # typed in the app ("sent you as a message in the Speakeasy app", over the typed messages).
@@ -600,7 +643,26 @@ def user_words(content: str) -> tuple[str, str]:
     """(kind, text) for a user row: ``user`` with the person's words; ``note`` for the one thing
     worth a quiet line (earlier messages summarized, a Kanban card); ``hidden`` for Hermes talking to
     itself (helper and background-job reports, internal notifications, system notes), whose text is
-    the plain step the reply's work shows for it ("A helper finished") or empty."""
+    the plain step the reply's work shows for it ("A helper finished") or empty. A background-job
+    report appended after the person's words is cut out of them (``user_parts`` gives its step)."""
+    kind, text, _ = user_parts(content)
+    return kind, text
+
+
+def user_parts(content: str) -> tuple[str, str, list[str]]:
+    """``user_words`` plus the steps of Hermes reports cut out of the person's words (SPK-244: a
+    background job that finished, appended to the same row): a page shows them as one quiet step in
+    the reply's work, never as the person's words."""
+    cut: list[str] = []
+    kind, text = _user_words(content, cut)
+    if not cut:
+        return kind, text, []
+    if kind == "hidden" or not text.strip() or _SENDER_ONLY.fullmatch(text.strip()):
+        return "hidden", (text if kind == "hidden" else "") or cut[0], []
+    return kind, text, cut[:1] if kind == "user" else []
+
+
+def _user_words(content: str, cut: list[str] | None = None) -> tuple[str, str]:
     if isinstance(content, str):
         content = _MESSAGE_ID.sub("", content)
     if not isinstance(content, str):
@@ -623,6 +685,13 @@ def user_words(content: str) -> tuple[str, str]:
         text = strip_gateway(text) if text != before else text
         if text == before:
             break
+    # A background-job report merged after the person's words (SPK-244): cut out of them, one step for
+    # the reply's work. A row that is itself Hermes talking (a report, a batch header, a notification
+    # with the gateway's footer) or a Speakeasy brief stays as it was.
+    if cut is not None and not any(p.match(text) for p, _ in _HIDDEN_RES) \
+            and not _SPEAKEASY_BRIEF.search(text[:2000]):
+        text, steps = drop_background_notices(text)
+        cut.extend(steps)
     for pattern, step in _HIDDEN_RES:
         if pattern.search(text[:6000]):
             return "hidden", step or ""
@@ -1508,12 +1577,14 @@ def build_entries(rows: list[Any], *, worker: bool = False) -> list[dict[str, An
             tracker.observe(event, now=at)
         elif role == "user":
             flush()
-            kind, text = user_words(content)
+            kind, text, cut = user_parts(content)
             if kind == "hidden":
                 if text:
                     pending.append((text, at, row["id"]))
                 continue
             pending.clear()   # a report nothing answered stays out
+            # A report cut from the person's words (SPK-244): one step in the reply that follows.
+            pending.extend((step, at, row["id"]) for step in cut)
             if kind == "note" and text == COMPACTED:
                 divider(row["id"], at)
             elif text.strip():
