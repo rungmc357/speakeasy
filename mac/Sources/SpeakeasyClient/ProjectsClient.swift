@@ -41,6 +41,12 @@ extension ServerClient {
                            body: try JSONSerialization.data(withJSONObject: ["notes": notes]))
     }
 
+    /// Where Home works: a project's id, or nil for Home (`PUT /voice/projects/selected`).
+    public func selectProject(_ projectID: String?) async throws {
+        _ = try await json("/voice/projects/selected", method: "PUT",
+                           body: try JSONSerialization.data(withJSONObject: ["project_id": projectID.map { $0 as Any } ?? NSNull()]))
+    }
+
     public func dismissProjectOffer(_ subject: String) async throws {
         _ = try await post("/voice/projects/offer/dismiss", ["subject": subject])
     }
@@ -67,4 +73,5 @@ public final class LiveProjectsBackend: ProjectsBackend {
         try await client().setProjectNotes(notes, projectID: projectID)
     }
     public func dismissOffer(_ subject: String) async throws { try await client().dismissProjectOffer(subject) }
+    public func select(_ projectID: String?) async throws { try await client().selectProject(projectID) }
 }

@@ -98,4 +98,126 @@ final class ProjectsTests: XCTestCase {
         XCTAssertEqual(page.chats.map(\.id), ["s1"])
         XCTAssertEqual(page.chats.first?.project?.name, "Compost")
     }
+
+    // MARK: Where Home works (the chip, the call dock, "Working in", the side panel)
+
+    func testListReadsSelectedOnlyWhenThatProjectExists() {
+        let list = ProjectList(json: ["projects": [["id": "p1", "name": "Garden shed"]], "selected": "p1"])
+        XCTAssertEqual(list.selected, "p1")
+        let stale = ProjectList(json: ["projects": [["id": "p1", "name": "Garden shed"]], "selected": "gone"])
+        XCTAssertNil(stale.selected)
+    }
+
+    @MainActor
+    func testChipSaysHomeUntilAProjectIsChosen() async {
+        let model = ProjectsModel(backend: DemoProjectsBackend())
+        model.supported = true
+        await model.reload()
+        XCTAssertTrue(model.showsChip)
+        XCTAssertNil(model.selected)
+        XCTAssertEqual(model.chipSymbol, "house")
+        XCTAssertEqual(model.chipName, "Home")
+        XCTAssertNotEqual(model.chipName.lowercased(), "no project")
+        XCTAssertEqual(HomeSpace.homeRow, "Home \u{2014} not in a project")
+    }
+
+    @MainActor
+    func testSelectingAProjectSetsTheChipAndTheServerAndBackToHomeClearsIt() async {
+        let demo = DemoProjectsBackend()
+        let model = ProjectsModel(backend: demo)
+        model.supported = true
+        await model.reload()
+        await model.select("p_shed")
+        XCTAssertEqual(model.chipName, "Garden shed")
+        XCTAssertEqual(model.chipSymbol, "hammer")
+        XCTAssertEqual(demo.list.selected, "p_shed")
+        // Switching mid-session: the next jobs follow the new choice.
+        await model.select("p_trip")
+        XCTAssertEqual(demo.list.selected, "p_trip")
+        XCTAssertEqual(model.chipName, "Lakeside trip")
+        await model.select(nil)
+        XCTAssertNil(demo.list.selected)
+        XCTAssertEqual(model.chipName, "Home")
+    }
+
+    @MainActor
+    func testSidebarSelectionAndChipShareOneValue() async {
+        // Phone and Mac read the same stored value: a second model on the same server agrees.
+        let demo = DemoProjectsBackend()
+        let phone = ProjectsModel(backend: demo), mac = ProjectsModel(backend: demo)
+        phone.supported = true; mac.supported = true
+        await phone.reload(); await mac.reload()
+        await phone.select("p_lantern")
+        await mac.reload()
+        XCTAssertEqual(mac.selected?.id, "p_lantern")
+        XCTAssertEqual(mac.chipName, "Lantern app")
+    }
+
+    @MainActor
+    func testRefusedSelectionPutsTheOldChoiceBack() async {
+        @MainActor final class Refuses: ProjectsBackend {
+            func projects() async throws -> ProjectList { ProjectList(projects: [HermesProject(id: "p1", name: "Garden shed")]) }
+            func page(_ id: String) async throws -> ProjectPage { ProjectPage(project: HermesProject(id: id, name: "x")) }
+            func create(_ p: NewProject) async throws -> HermesProject { HermesProject(id: "n", name: p.name) }
+            func file(session: HistorySession, into projectID: String?) async throws {}
+            func file(runID: String, into projectID: String?) async throws {}
+            func setNotes(_ notes: String, for projectID: String) async throws {}
+            func dismissOffer(_ subject: String) async throws {}
+            func select(_ projectID: String?) async throws { throw URLError(.timedOut) }
+        }
+        let model = ProjectsModel(backend: Refuses())
+        model.supported = true
+        await model.reload()
+        await model.select("p1")
+        XCTAssertNil(model.selected)
+        XCTAssertEqual(model.chipName, "Home")
+        XCTAssertNotNil(model.error)
+    }
+
+    @MainActor
+    func testNewProjectFromTheChipSheetBecomesWhereHomeWorks() async {
+        let demo = DemoProjectsBackend()
+        let model = ProjectsModel(backend: demo)
+        model.supported = true
+        await model.reload()
+        let made = await model.create(NewProject(name: "Compost", icon: "leaf", select: true))
+        XCTAssertEqual(model.selected?.id, made?.id)
+        XCTAssertEqual(demo.list.selected, made?.id)
+    }
+
+    func testOlderServerHidesTheChip() async {
+        let model = await ProjectsModel(backend: DemoProjectsBackend())
+        let shows = await model.showsChip
+        XCTAssertFalse(shows)
+    }
+
+    func testActivityLineSaysRunningElseAge() {
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "America/New_York")!
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(HermesProject(id: "a", name: "A", running: 2, activeAt: now).activityLine(now: now, calendar: cal), "2 running")
+        XCTAssertEqual(HermesProject(id: "a", name: "A", activeAt: now.addingTimeInterval(-600)).activityLine(now: now, calendar: cal), "10m ago")
+        XCTAssertEqual(HermesProject(id: "a", name: "A", activeAt: now.addingTimeInterval(-86400 - 60)).activityLine(now: now, calendar: cal), "Yesterday")
+        XCTAssertEqual(HermesProject(id: "a", name: "A", chats: 2).activityLine(now: now, calendar: cal), "2 chats")
+    }
+
+    func testPageTabsShowBoardOnlyWhenABoardIsBound() {
+        XCTAssertEqual(ProjectPage(project: HermesProject(id: "a", name: "A")).tabs, [.chats, .work])
+        XCTAssertEqual(ProjectPage(project: HermesProject(id: "a", name: "A", board: "lantern")).tabs, [.chats, .work, .board])
+        XCTAssertEqual(ProjectTab.allCases.map(\.label), ["Chats", "Work", "Board"])
+    }
+
+    @MainActor
+    func testExpandingAProjectLoadsItsThreeNewestChats() async {
+        let model = ProjectsModel(backend: DemoProjectsBackend())
+        model.supported = true
+        await model.reload()
+        model.toggleExpanded("p_shed")
+        XCTAssertTrue(model.expanded.contains("p_shed"))
+        await model.loadPage("p_shed")
+        let recent = model.pages["p_shed"]?.recentChats() ?? []
+        XCTAssertLessThanOrEqual(recent.count, 3)
+        XCTAssertFalse(recent.isEmpty)
+        model.toggleExpanded("p_shed")
+        XCTAssertFalse(model.expanded.contains("p_shed"))
+    }
 }

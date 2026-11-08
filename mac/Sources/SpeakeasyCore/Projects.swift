@@ -51,12 +51,18 @@ public struct HermesProject: Equatable, Sendable, Identifiable, Hashable {
     public var jobs: Int
     /// Standing notes added to every job filed into it.
     public var notes: String
+    /// Jobs filed into it that are running now (the panel's quiet "2 running").
+    public var running: Int
+    /// Its newest activity: a filed job's last update or a chat filed into it.
+    public var activeAt: Date?
 
     public init(id: String, slug: String = "", name: String, icon: String? = nil, color: ProjectColor? = nil,
-                board: String? = nil, hasFolders: Bool = false, chats: Int = 0, jobs: Int = 0, notes: String = "") {
+                board: String? = nil, hasFolders: Bool = false, chats: Int = 0, jobs: Int = 0, notes: String = "",
+                running: Int = 0, activeAt: Date? = nil) {
         self.id = id; self.slug = slug.isEmpty ? id : slug; self.name = name
         self.icon = ProjectSymbols.valid(icon) ? icon : nil; self.color = color
         self.board = board; self.hasFolders = hasFolders; self.chats = chats; self.jobs = jobs; self.notes = notes
+        self.running = max(0, running); self.activeAt = activeAt
     }
 
     public init?(json: Any?) {
@@ -64,7 +70,9 @@ public struct HermesProject: Equatable, Sendable, Identifiable, Hashable {
         self.init(id: id, slug: nonEmpty(o["slug"]) ?? id, name: String(name.prefix(60)), icon: nonEmpty(o["icon"]),
                   color: (o["color"] as? String).flatMap(ProjectColor.init(rawValue:)), board: nonEmpty(o["board"]),
                   hasFolders: o["has_folders"] as? Bool ?? false, chats: (o["chats"] as? NSNumber)?.intValue ?? 0,
-                  jobs: (o["jobs"] as? NSNumber)?.intValue ?? 0, notes: String((nonEmpty(o["notes"]) ?? "").prefix(1200)))
+                  jobs: (o["jobs"] as? NSNumber)?.intValue ?? 0, notes: String((nonEmpty(o["notes"]) ?? "").prefix(1200)),
+                  running: (o["running"] as? NSNumber)?.intValue ?? 0,
+                  activeAt: (o["active_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) })
     }
 
     public var symbol: String { icon ?? ProjectSymbols.fallback }
@@ -77,6 +85,31 @@ public struct HermesProject: Equatable, Sendable, Identifiable, Hashable {
         if jobs > 0 { parts.append("\(jobs) job\(jobs == 1 ? "" : "s")") }
         return parts.isEmpty ? "No chats yet" : parts.joined(separator: " \u{00B7} ")
     }
+
+    /// The side panel's quiet second line: "2 running" while work runs, else how long since anything
+    /// happened ("3h ago", "Yesterday", "Mar 4"), else the counts.
+    public func activityLine(now: Date = Date(), calendar: Calendar = .current) -> String {
+        if running > 0 { return "\(running) running" }
+        guard let at = activeAt else { return countLine }
+        let s = max(0, now.timeIntervalSince(at))
+        if s < 60 { return "Just now" }
+        if s < 3600 { return "\(Int(s / 60))m ago" }
+        if calendar.isDate(at, inSameDayAs: now) { return "\(Int(s / 3600))h ago" }
+        if let y = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(at, inSameDayAs: y) { return "Yesterday" }
+        let f = DateFormatter()
+        f.calendar = calendar; f.timeZone = calendar.timeZone; f.locale = Locale(identifier: "en_US")
+        f.setLocalizedDateFormatFromTemplate(calendar.isDate(at, equalTo: now, toGranularity: .year) ? "MMMd" : "MMMdyyyy")
+        return f.string(from: at)
+    }
+}
+
+/// Where Home works: the composer's project chip, the call dock's chip, the "Working in" line and
+/// the side panel's selection all read this one value. nil = Home, not in a project.
+public enum HomeSpace {
+    public static let homeSymbol = "house"
+    public static let homeName = "Home"
+    /// The chip's sheet's first row.
+    public static let homeRow = "Home \u{2014} not in a project"
 }
 
 /// "Make a project for X?": three or more recent chats share a subject and no project has it.
@@ -94,10 +127,16 @@ public struct ProjectOffer: Equatable, Sendable {
 public struct ProjectList: Equatable, Sendable {
     public var projects: [HermesProject]
     public var offer: ProjectOffer?
-    public init(projects: [HermesProject] = [], offer: ProjectOffer? = nil) { self.projects = projects; self.offer = offer }
+    /// The project Home works in (stored by the plugin so every device agrees); nil = Home.
+    public var selected: String?
+    public init(projects: [HermesProject] = [], offer: ProjectOffer? = nil, selected: String? = nil) {
+        self.projects = projects; self.offer = offer; self.selected = selected
+    }
     public init(json: [String: Any]) {
         projects = (json["projects"] as? [Any] ?? []).compactMap(HermesProject.init(json:))
         offer = ProjectOffer(json: json["offer"])
+        let sel = nonEmpty(json["selected"])
+        selected = projects.contains { $0.id == sel } ? sel : nil
     }
     /// The side panel shows its Projects section when there is a project or an offer to make one:
     /// with neither, the panel is exactly what it was before projects existed.
@@ -147,6 +186,25 @@ public struct ProjectPage: Equatable, Sendable {
     }
     public var running: [ProjectJob] { jobs.filter(\.isRunning) }
     public var done: [ProjectJob] { jobs.filter { !$0.isRunning } }
+    /// The page's segments: Board only when a Kanban board is bound to the project.
+    public var tabs: [ProjectTab] { board == nil && project.board == nil ? [.chats, .work] : [.chats, .work, .board] }
+    /// The newest chats first (the side panel's inline preview shows three).
+    public func recentChats(_ limit: Int = 3) -> [HistorySession] {
+        Array(chats.sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }.prefix(limit))
+    }
+}
+
+/// A project page's segmented control.
+public enum ProjectTab: String, CaseIterable, Sendable, Identifiable {
+    case chats, work, board
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .chats: return "Chats"
+        case .work: return "Work"
+        case .board: return "Board"
+        }
+    }
 }
 
 /// The Projects state every surface shares (the panel section, project pages, Move to project, the
@@ -170,16 +228,58 @@ public final class ProjectsModel: ObservableObject {
         didSet { if supported && !oldValue { Task { await reload() } }; if !supported { list = ProjectList(); pages = [:] } }
     }
     public var backend: ProjectsBackend?
+    private var selecting = 0
 
     public init(backend: ProjectsBackend? = nil) { self.backend = backend }
 
     public var showsSection: Bool { supported && list.showsSection }
     public func project(_ id: String) -> HermesProject? { list.projects.first { $0.id == id } }
 
+    /// The project Home works in, nil for Home. The chip, the call dock, "Working in" and the panel's
+    /// selection all read this.
+    public var selected: HermesProject? {
+        guard supported, let id = list.selected else { return nil }
+        return project(id)
+    }
+    /// The chip's symbol and name: "house" + "Home" until a project is chosen (never "No project").
+    public var chipSymbol: String { selected?.symbol ?? HomeSpace.homeSymbol }
+    public var chipName: String { selected?.name ?? HomeSpace.homeName }
+    /// The chip appears only on servers with projects (an older Hermes: Home looks as before).
+    public var showsChip: Bool { supported && loaded }
+    /// The chip's sheet is open.
+    @Published public var choosing = false
+    /// Which projects are expanded inline in the side panel.
+    @Published public var expanded: Set<String> = []
+
+    /// Choose where Home works (nil = Home). Applied at once; put back when the server refuses.
+    /// Selecting a project in the side panel calls this too: one notion of "where I'm working".
+    public func select(_ projectID: String?) async {
+        let before = list.selected
+        guard projectID != before else { return }
+        list.selected = projectID
+        selecting += 1
+        defer { selecting -= 1 }
+        do {
+            try await backend?.select(projectID)
+            error = nil
+        } catch {
+            list.selected = before
+            self.error = error.localizedDescription
+        }
+    }
+
+    public func toggleExpanded(_ id: String) {
+        if expanded.contains(id) { expanded.remove(id) } else {
+            expanded.insert(id)
+            if pages[id] == nil { Task { await loadPage(id) } }
+        }
+    }
+
     public func reload() async {
         guard supported, let backend else { return }
         do {
-            let fresh = try await backend.projects()
+            var fresh = try await backend.projects()
+            if fresh.selected != list.selected, selecting > 0 { fresh.selected = list.selected }
             if fresh != list { list = fresh }
             loaded = true
         } catch {
@@ -209,6 +309,7 @@ public final class ProjectsModel: ObservableObject {
             if !list.projects.contains(where: { $0.id == made.id }) { list.projects.append(made) }
             if project.fromOffer != nil { list.offer = nil }
             error = nil
+            if project.select { await select(made.id) }
             Task { await reload() }
             return made
         } catch {
@@ -283,8 +384,12 @@ public struct NewProject: Equatable, Sendable, Identifiable {
     public var color: ProjectColor?
     public var fromOffer: String?
     public var sessions: [String]
-    public init(name: String, icon: String? = nil, color: ProjectColor? = nil, fromOffer: String? = nil, sessions: [String] = []) {
+    /// Made from the Home chip's sheet: Home starts working in it right away (not sent to the server).
+    public var select: Bool
+    public init(name: String, icon: String? = nil, color: ProjectColor? = nil, fromOffer: String? = nil, sessions: [String] = [],
+                select: Bool = false) {
         self.name = name; self.icon = icon; self.color = color; self.fromOffer = fromOffer; self.sessions = sessions
+        self.select = select
     }
     /// The trimmed name, nil when empty or too long (60 characters, the plugin's limit).
     public var cleanName: String? {
@@ -312,6 +417,8 @@ public protocol ProjectsBackend: AnyObject {
     func file(runID: String, into projectID: String?) async throws
     func setNotes(_ notes: String, for projectID: String) async throws
     func dismissOffer(_ subject: String) async throws
+    /// Where Home works (nil = Home): `PUT /voice/projects/selected`.
+    func select(_ projectID: String?) async throws
 }
 
 /// Invented projects for demos, screenshots and UI tests (no real names or places).
@@ -321,13 +428,16 @@ public final class DemoProjectsBackend: ProjectsBackend {
     public var pages: [String: ProjectPage]
     public private(set) var filed: [(String, String?)] = []
 
-    public init(empty: Bool = false, offer: Bool = false) {
+    public init(empty: Bool = false, offer: Bool = false, selected: String? = nil) {
         let now = Date()
         let shed = HermesProject(id: "p_shed", name: "Garden shed", icon: "hammer", color: .green, chats: 3, jobs: 2,
-                                 notes: "Measurements in inches. Cedar, not pine.")
+                                 notes: "Measurements in inches. Cedar, not pine.", running: 1,
+                                 activeAt: now.addingTimeInterval(-240))
         let lantern = HermesProject(id: "p_lantern", name: "Lantern app", icon: "chevron.left.forwardslash.chevron.right",
-                                    color: .blue, board: "lantern", hasFolders: true, chats: 1, jobs: 0)
-        let trip = HermesProject(id: "p_trip", name: "Lakeside trip", icon: "airplane", color: .orange, chats: 1)
+                                    color: .blue, board: "lantern", hasFolders: true, chats: 1, jobs: 0,
+                                    activeAt: now.addingTimeInterval(-5400))
+        let trip = HermesProject(id: "p_trip", name: "Lakeside trip", icon: "airplane", color: .orange, chats: 1,
+                                 activeAt: now.addingTimeInterval(-2 * 86400))
         let office = HermesProject(id: "p_office", name: "Home office", icon: "desktopcomputer", color: .purple)
         list = empty ? ProjectList() : ProjectList(projects: [shed, lantern, trip, office])
         let chats = [
@@ -356,6 +466,7 @@ public final class DemoProjectsBackend: ProjectsBackend {
                                    lastActivity: now.addingTimeInterval(-2 * 86400), preview: "Two cabins sleep four and allow dogs.")]),
                  "p_office": ProjectPage(project: office)]
         if offer { list.offer = ProjectOffer(subject: "Compost", chats: 3) }
+        list.selected = selected
     }
 
     public func projects() async throws -> ProjectList { list }
@@ -397,6 +508,7 @@ public final class DemoProjectsBackend: ProjectsBackend {
         pages[projectID]?.project.notes = notes
     }
     public func dismissOffer(_ subject: String) async throws { list.offer = nil }
+    public func select(_ projectID: String?) async throws { list.selected = projectID }
 }
 
 public enum ServerClientError: Error, LocalizedError, Equatable {
