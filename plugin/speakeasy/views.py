@@ -1137,6 +1137,11 @@ def _unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
     for key in {"pr": ("reason",), "issue": ("note",), "preview": ("summary",), "site": ("sub",)}.get(view.get("kind"), ()):
         if isinstance(view.get(key), str) and (_restates(view[key], opening) or (reply and _restates(view[key], reply))):
             view = {k: v for k, v in view.items() if k != key}
+    states = {c.get("state") for c in view.get("checks") or []}
+    if view.get("kind") == "pr" and len(states) == 1 and states <= {"skipped", "passed"} and isinstance(view.get("reason"), str) \
+            and re.search(r"(?i)\b(skipped|passed|didn't run|never ran|nothing ran)\b", view["reason"]):
+        # "All 15 skipped" under "All 15 checks were skipped, so nothing was tested": the checks line says it.
+        view = {k: v for k, v in view.items() if k != "reason"}
     return view
 
 
