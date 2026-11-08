@@ -2,13 +2,17 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Plugin 0.3.47 — Home is a chat
+## Plugin 0.3.47 · iPhone build 71 — Home is a chat
 
-- **Home talks back.** What you type on Home now goes to your assistant first, and it answers right there in the thread. Saying hi, a quick question, or "thanks" gets a reply, not a task card. *(plugin; needs iPhone build 70 or the next Mac app to show the replies)*
+- **Home talks back.** What you type on Home now goes to your assistant first, and it answers right there in the thread. Saying hi, a quick question, or "thanks" gets a reply, not a task card. *(plugin; needs iPhone build 71 or the next Mac app to show the replies)*
 - **Real work still runs as a job.** When a message needs doing ("find a quiet cafe near the river"), you get a one-line reply and the job's card right under it, which updates in place until the answer lands. *(plugin)*
 - **Follow-ups go to the right job.** "Will I need an umbrella?" is answered from the forecast job you just ran; "actually, Portland, Oregon" corrects the running search; "cancel that" stops it. *(plugin)*
 - **Two asks, two jobs.** "Find a hardware store open Sunday and look up how long to boil an egg" starts two jobs, each with its own card. *(plugin)*
-- **A quick model answers, and you can change it.** Home picks a fast chat model you already have connected in Hermes (it only reads your list; it never tests your models or changes your settings), names it under each reply, and the chip above the Home composer lets you pick another. *(plugin; the chip needs the next iPhone build)*
+- **Pick the model your jobs run on.** The chip above the Home composer chooses the model Home's jobs use (your Hermes default unless you change it), each family shown once at its newest version with the rest under More…. Chat replies stay quick on Auto: the newest Sonnet, GPT Terra or Haiku you already have connected in Hermes, read from your list (it never test-calls your models or changes your settings). With none of those connected, the chat uses your work model. Home's chat shows no model name on each message. *(plugin + iPhone build 71)*
+- **Answers come as cards.** A finished job leads with a card made for it (a forecast, a list with a winner, a pull request's checks, a status board, a document preview), with up to two buttons for the next step, under a reply that starts with the verdict. *(plugin + iPhone build 71)*
+- **Send a video clip to Home.** It shows in the thread as its poster with a play mark and its length, and the job sees it. *(plugin + iPhone build 71)*
+- **Running jobs say what they are doing** in one live line ("Reading the reviews"), never a placeholder or a spinner, and a canceled job's card stays in the thread saying Canceled. *(plugin + iPhone build 71)*
+- **Conversations fixes.** The list no longer sticks on Archived when you switch views, a call shows once in the Live Activity, and running jobs are easy to find. *(iPhone build 71)*
 - **Voice memos to Home** get the same reply-or-job treatment, transcribed by your Hermes. *(plugin)*
 - **Other chats stay out of Home's thread.** A running Discord or Telegram conversation shows in the Work strip, and only joins the thread when it needs you. *(plugin)*
 

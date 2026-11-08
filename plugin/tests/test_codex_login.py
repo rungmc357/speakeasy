@@ -76,7 +76,8 @@ def test_device_flow_returns_url_and_code_then_signs_in(tmp_path, codex_home):
     assert flow.start(binary)["user_code"] == USER_CODE  # one flow at a time: the same code again
     assert wait_for(lambda: flow.status()["state"] == "signed_in")
     assert signed == [binary]
-    assert flow.flow.process.poll() is not None  # the child is gone once it's done
+    # The child is gone once it's done (it exits just after reporting the sign-in; wait, don't race it).
+    assert wait_for(lambda: flow.flow.process.poll() is not None)
     log = fake_log(codex_home)
     assert log.count("account/login/start") == 1 and '"type": "chatgptDeviceCode"' in log
     assert "argv app-server --stdio" in log and "login --device-auth" not in log

@@ -34,7 +34,9 @@ def test_a_spoken_choice_becomes_a_card_and_a_tap_answers_the_voice(server, serv
     session, worker = start_call(server, service)
     said(worker, "Do you want the quick summary ")
     said(worker, "or the full report?", at=12)
-    task = wait_for(lambda: _choice_task(server), timeout=5)
+    # The card is listed from the moment its row is reserved; its question lands a moment later.
+    task = wait_for(lambda: (t := _choice_task(server)) and (t.get("result") or {}).get("question") and t,
+                    timeout=5)
     question = task["result"]["question"]
     assert [o["text"] if isinstance(o, dict) else o for o in question["options"]] == ["The quick summary", "The full report"]
     assert task["title"] == "Do you want the quick summary or the full report?"
