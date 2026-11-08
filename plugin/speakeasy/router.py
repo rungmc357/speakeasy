@@ -1264,7 +1264,8 @@ _HEADLINE_PROMPT = (
     "(\"Build 66 fix dropped; nothing shipped\", \"Kitchen lights set to 30% at sunset\", "
     "\"Oolong picks: three teas under $20\"). Use only what the reply says. Never an acknowledgment or opener "
     "(\"Okay\", \"Got it\", \"Sure thing\", \"I'm dropping it\"), never what the agent is about to do, never a "
-    "question, no names of people. Reply with JSON only: {\"headline\": \"...\"}"
+    "question, no names of people, never a bare count (\"3 PRs need review\"): lead with what it means. "
+    "Reply with JSON only: {\"headline\": \"...\"}"
 )
 
 
@@ -1296,6 +1297,45 @@ def result_headline(request: str, report: str, timeout: float = 10.0) -> str | N
     except ValueError:
         return None
     return clean_headline(data.get("headline")) if isinstance(data, dict) else None
+
+
+_VERDICT_PROMPT = (
+    "An AI agent finished a task and its reply opens with a weak first line: a bare count (\"3 PRs need review.\") "
+    "or the card's own heading said again. Rewrite that first line so it leads with the verdict: what it means "
+    "for the user or what to do next, in one plain sentence of at most 25 words, using only facts in the reply "
+    "(\"Two PRs are blocked on CI; the fix is a rebase.\"). Never a bare count, never a question, no opener. "
+    "Reply with JSON only: {\"line\": \"...\"}"
+)
+
+
+def verdict_rewrite(request: str, report: str, line: str, timeout: float = 10.0) -> str | None:
+    """D4: ONE rewrite of a weak first line (calls.shape_result asks at most once per answer). The
+    caller vets the words (text.verdict_line) and keeps the original line when this is None or unusable."""
+    text = str(report or "").strip()
+    if not text or not str(line or "").strip():
+        return None
+    try:
+        call_llm, _ = host_mod.aux_client()
+    except Exception:
+        return None
+    try:
+        with _profile_scope():
+            response = call_llm(task="title_generation",
+                                messages=[{"role": "system", "content": _VERDICT_PROMPT},
+                                          {"role": "user", "content": f"Request: {str(request or '')[:400]}\n\n"
+                                                                      f"Weak first line: {line}\n\nReply:\n{text[:3000]}"}],
+                                max_tokens=160, temperature=None, timeout=timeout,
+                                reasoning_config={"enabled": False})
+        raw = (response.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.info("speakeasy: verdict rewrite unavailable (%s)", type(exc).__name__)
+        return None
+    match = re.search(r"\{.*\}", raw, re.S)
+    try:
+        data = json.loads(match.group(0)) if match else {}
+    except ValueError:
+        return None
+    return data.get("line") if isinstance(data, dict) and isinstance(data.get("line"), str) else None
 
 
 def clean_status(raw: str) -> str | None:

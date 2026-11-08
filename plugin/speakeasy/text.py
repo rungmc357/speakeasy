@@ -1136,6 +1136,69 @@ def outcome_headline(spoken: str | None, full: str | None = None) -> str | None:
 NAMES_LINE = "Names to leave out of the title: "
 
 
+# D4: a reply leads with its verdict. A first line that is only a count ("3 PRs need review.") or the
+# card's own heading said again ("Errors per hour: 270.") is worth ONE rewrite by the side model
+# (calls.shape_result); this check needs no model. Anything that says why or what to do stays.
+_COUNT_LEAD = re.compile(
+    r"(?i)^(?:there (?:are|is|were|was) |you have |you've got |i found |found )?"
+    r"(?:\d[\d,]*|no|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|a few|several|many)\b")
+_VERDICT_WORDS = re.compile(
+    r"(?i)\b(?:because|since|due|blocked|block\w*|fail\w*|broke\w*|break\w*|stuck|conflict\w*|merge\w*|ready|safe|fine|"
+    r"urgent|overdue|fix\w*|should|rebase|rerun|retry|flaky|wait(?:ing)? on|only|all|none|both|but|so|first|"
+    r"spik\w*|up|down|normal|worse|better|clear|good|bad|late|early|cheap\w*|best)\b")
+_CLAUSE = re.compile(r"[,;:\u2014\u2013]| - ")
+_CARD_KEYS = ("title", "label", "value", "unit", "state", "scope", "source", "name", "place", "repo")
+
+
+def bare_count(sentence: str | None) -> bool:
+    """"3 PRs need review." / "There are 5 open issues.": a count and nothing that says what it means."""
+    text = " ".join(str(sentence or "").split()).strip()
+    if not text or not _COUNT_LEAD.match(text) or _CLAUSE.search(text.rstrip(".!")):
+        return False
+    return len(text.split()) <= 7 and not _VERDICT_WORDS.search(text)
+
+
+def _card_words(views: Any) -> set[str]:
+    words: set[str] = set()
+    for view in views or []:
+        if not isinstance(view, dict):
+            continue
+        for key in _CARD_KEYS:
+            if isinstance(view.get(key), (str, int, float)):
+                words |= set(re.findall(r"[a-z0-9]+", str(view[key]).lower()))
+    return words - {"the", "a", "an", "of", "in", "on", "for", "to", "and", "is", "are", "per"}
+
+
+def restates_card(sentence: str | None, views: Any) -> bool:
+    """A short first line made only of the card's own heading words ("Errors per hour: 270.")."""
+    said = set(re.findall(r"[a-z0-9]+", str(sentence or "").lower())) - {
+        "the", "a", "an", "of", "in", "on", "for", "to", "and", "is", "are", "per", "here", "s", "it", "your", "this"}
+    card = _card_words(views)
+    if not said or not card or len(said) > 10:
+        return False
+    return len(said - card) <= 1 and len(said & card) >= 2
+
+
+def weak_reply(sentence: str | None, views: Any = None) -> bool:
+    """D4's cheap check: the first line is a bare count or restates the card."""
+    return bare_count(sentence) or restates_card(sentence, views)
+
+
+VERDICT_WORDS = 25
+
+
+def verdict_line(raw: Any, views: Any = None) -> str | None:
+    """A side-model rewrite, checked: one statement of at most VERDICT_WORDS words that isn't itself
+    weak, an opener or a question. None = keep the original line."""
+    text = safe_user_text(raw, 300)
+    if not text:
+        return None
+    text = " ".join(text.split()).strip(" \"'“”")
+    if not text or text.endswith("?") or is_opener(text) or len(text.split()) > VERDICT_WORDS or weak_reply(text, views):
+        return None
+    return text[0].upper() + text[1:]
+
+
 def names_in(text: str | None) -> list[str]:
     """The names a titler input (``title_input``) says to leave out."""
     match = re.search(r"(?m)^" + re.escape(NAMES_LINE) + r"(.+)$", str(text or ""))

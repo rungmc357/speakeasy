@@ -104,6 +104,40 @@ def claims_work(reply: str | None) -> bool:
     return bool(_CLAIMS_WORK.search(reply or ""))
 
 
+# R2: the line said when a job starts is an acknowledgement ("On it.", "Looking now."), never the ask
+# read back ("On it — finding a rain jacket under $100 in waterproof..."). A sentence that repeats the
+# job's request is replaced; any other sentence (an answer to another part of the message) stays.
+ACK = "On it."
+_ACK_STOP = {"the", "and", "for", "with", "from", "that", "this", "your", "you", "find", "finding", "look", "looking",
+             "check", "checking", "search", "searching", "get", "getting", "some", "any", "now", "under", "about",
+             "into", "out", "let", "me", "will", "i'm", "it's", "on", "it", "what", "which", "good", "best"}
+
+
+def _ack_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9$]+", (text or "").lower().replace("'s", ""))
+            if (len(w) > 2 or w.isdigit()) and w not in _ACK_STOP}
+
+
+def parrots(sentence: str, asked: str) -> bool:
+    """True when *sentence* reads the ask back: five words or more sharing three of the ask's words."""
+    if len(sentence.split()) < 5:
+        return False
+    return len(_ack_words(sentence) & _ack_words(asked)) >= 3
+
+
+def acknowledgement(reply: str, asked: str) -> str:
+    """The start-of-job reply without the ask read back: parroting sentences go, "On it." leads."""
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", (reply or "").strip()) if s]
+    if not sentences:
+        return reply
+    kept = [s for s in sentences if not parrots(s, asked)]
+    if len(kept) == len(sentences):
+        return reply
+    if not kept or kept[0] != sentences[0]:
+        kept.insert(0, ACK)
+    return " ".join(kept)
+
+
 def _version(model: str) -> tuple[int, ...]:
     """Newest first within a family: the version digits in the id (dates count as one big number)."""
     return tuple(int(n) for n in re.findall(r"\d+", model)[:4])
@@ -141,8 +175,9 @@ or anything about the user you don't already know. Anything the user wants shown
 pull request, a chart, a draft, a document, a picture, a list to keep) is a job too: jobs draw cards, \
 your reply can't.
 - start_job for new work. "request" is the task in self-contained words (resolve "it", "that", "the one \
-you mentioned" from the conversation); "reply" is one short line in your own words about what you're \
-doing ("Looking for a quiet cafe near the river."). Never "Starting task".
+you mentioned" from the conversation); "reply" is a short acknowledgement ("On it.", "Looking now.", \
+"Checking.") with at most a few words of its own; never read the ask back ("On it, finding a rain jacket \
+under $100" is wrong: the user just said that). Never "Starting task".
 - message_job when the message changes, corrects, answers or adds to an existing job, or asks it to do \
 more with its result ("make it shorter", "actually Friday", "also check the price"). "job" is its id.
 - cancel_job to stop a running job. "job" is its id.
@@ -150,7 +185,7 @@ more with its result ("make it shorter", "actually Friday", "also check the pric
 dentist and find a birthday gift" is two jobs). Never merge unrelated asks into one job, and never \
 drop one: each ask is either answered in your reply or gets its own job. When you start a job and \
 the same message also asks something you can answer yourself, answer it in that job's reply too \
-("Looking for a hardware store open Sunday. A soft-boiled egg takes about 6 minutes.").
+("On it. A soft-boiled egg takes about 6 minutes.").
 
 Rules:
 - Plain prose only: no code blocks, tables, box drawing or mock-ups of cards in your reply.
@@ -188,10 +223,9 @@ def us_units_first(text: str) -> str:
         return f"{qual}{m.group('u').strip()} ({m.group('m').strip()})"
     return _METRIC_FIRST.sub(swap, text or "")
 
-_REPLY = {"type": "string", "description": "One short line to the user, in your own words, about what you're doing."}
-_START_REPLY = {"type": "string", "description": "One short line to the user, in your own words, about what you're "
-                "doing (every job you start, including more_jobs), plus the answer to any other part of the "
-                "message you can answer yourself."}
+_REPLY = {"type": "string", "description": "A short acknowledgement (On it.), never the ask read back."}
+_START_REPLY = {"type": "string", "description": "A short acknowledgement (On it., Looking now.) that never reads "
+                "the ask back, plus the answer to any other part of the message you can answer yourself."}
 _JOB = {"type": "string", "description": "The job's id from the list (j1, j2, ...)."}
 TOOLS = [
     {"type": "function", "function": {
@@ -323,6 +357,8 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
         # Prose plus a start_job: the first ask is the main action.
         first = extra.pop(0)
         action, request, reply = "start", first["request"], (reply or first["reply"])
+    if action == "start" and not extra and request:
+        reply = acknowledgement(reply, request)   # R2: never the ask read back
     if extra:
         # One reply line for the whole message: the extra jobs' own lines join the first. A job with
         # no line of its own (more_jobs, or a second call with an empty reply) is still named, so
