@@ -199,6 +199,18 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
         return sign + (f.string(from: NSNumber(value: abs(value))) ?? String(format: "%.2f", abs(value)))
     }
 
+    /// A weather card's big number: the temperature now, or for a forecast with no "now" (tomorrow,
+    /// Monday) its high and low ("55° / 35°"), never a bare dash.
+    public var weatherHeadline: String {
+        if let now = self["temp"].double { return Self.degrees(now) }
+        switch (self["high"].double, self["low"].double) {
+        case let (high?, low?): return "\(Self.degrees(high)) / \(Self.degrees(low))"
+        case let (high?, nil): return Self.degrees(high)
+        case let (nil, low?): return Self.degrees(low)
+        default: return Self.degrees(nil)
+        }
+    }
+
     public static func degrees(_ value: Double?) -> String { value.map { "\(Int($0.rounded()))°" } ?? "–" }
 }
 

@@ -1258,6 +1258,9 @@ def plain_line(line: str | None, fallback: str | None = None) -> str:
 _STOCK_LINES = frozenset({"working", "working on it", "running a command", "thinking", "on it"})
 
 
+_URL_PATH = re.compile(r"(?i)\b((?:[a-z0-9-]+\.)+[a-z]{2,})/\S*")
+
+
 def live_line(line: str | None, fallback: str | None = None) -> str:
     """A running card's one short present-tense line (home_words.status_line): the newest real
     step, else the task's last plain status, else nothing (the card shows only its title until the
@@ -1266,6 +1269,9 @@ def live_line(line: str | None, fallback: str | None = None) -> str:
     for text in (line, fallback):
         if text and text.strip().rstrip(".\u2026").lower() in _STOCK_LINES:
             continue
+        if text:
+            # "Reading api.example.com/v1/forecast" -> "Reading api.example.com": the site, not its path.
+            text = _URL_PATH.sub(r"\1", text)
         if text and plain_line(text):
             short = status_line(text)
             if short:
