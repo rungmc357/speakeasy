@@ -142,3 +142,11 @@ def test_the_headline_model_never_returns_an_opener(monkeypatch, real_result_hea
     monkeypatch.setitem(sys.modules, "agent.auxiliary_client", aux)
     assert real_result_headline("drop it", "Okay, I'm dropping it.") is None
     assert real_result_headline("drop it", "Okay, I'm dropping it.") == "Card fix dropped from build 66"
+
+
+def test_a_statement_ending_on_its_open_question_is_the_headline_and_links_read_as_words():
+    from speakeasy.text import outcome_headline
+    said = "It's in review with Priya, and one question is still open: should a draft keep its photos?"
+    assert outcome_headline(said, "I found the spec: [Offline drafts](https://notes.example/x).") == said
+    assert outcome_headline("Should I book it?", "I found the spec: [Offline drafts](https://notes.example/x).") \
+        == "I found the spec: Offline drafts."

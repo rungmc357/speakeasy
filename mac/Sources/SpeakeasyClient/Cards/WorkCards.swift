@@ -519,7 +519,7 @@ public enum CardLinks {
         // Pages the agent linked for the card's next step ("Logs", "Open in Sentry"), after the card's own.
         let offered = card["links"].array.prefix(2).enumerated().compactMap { n, l -> Link? in
             guard let url = l["url"].url, url.scheme == "https", let label = l["label"].string, !label.isEmpty,
-                  !own.contains(where: { $0.url == url }) else { return nil }
+                  !own.contains(where: { $0.url == url }), url != card["url"].url else { return nil }   // the card opens its own page
             return Link(id: "link\(n)", label: label, symbol: "arrow.up.right", url: url)
         }
         return own + offered

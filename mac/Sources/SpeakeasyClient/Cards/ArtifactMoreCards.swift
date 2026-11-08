@@ -131,7 +131,7 @@ struct RowsCard: View {
                 ActionRow(item: item, entity: entity)
             }
             if items.count > cap {
-                Text("\(items.count - cap) more in the answer").font(.system(size: 12.5)).foregroundStyle(.secondary)
+                Text("\(items.count - cap) more").font(.system(size: 12.5)).foregroundStyle(.secondary)
             }
         }
     }

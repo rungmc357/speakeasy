@@ -1089,8 +1089,13 @@ def clean_headline(raw: Any) -> str | None:
 
 
 def _first_outcome(text: str | None) -> str | None:
-    for _, sentence in _sentences(str(text or "")):
-        if sentence.endswith("?") or is_opener(sentence):
+    # "[Offline drafts spec](https://…)" reads as its words, never "[…]()".
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", str(text or ""))
+    for _, sentence in _sentences(text):
+        # A statement that ends on the question it raises ("It's in review, and one question is open:
+        # should a draft keep its photos?") is an outcome; a sentence that only asks is not.
+        asks = sentence.endswith("?") and not (": " in sentence and len(sentence.split(": ", 1)[0].split()) >= 4)
+        if asks or is_opener(sentence):
             continue
         line = _HEADLINE_LEAD.sub("", sentence).strip(" —–-")
         if line:

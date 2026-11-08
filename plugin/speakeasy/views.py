@@ -608,6 +608,8 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         source = str(out.get("source", "")).lower()
         out["source"] = source if source in ISSUE_SOURCES else "other"
         out["title"] = _work_title(out["title"])
+        if re.fullmatch(r"(?i)\s*(?:unassigned|no one|nobody|none|-)\s*", str(out.get("assignee") or "x")):
+            out.pop("assignee")   # "Unassigned" filled a whole line with nothing (SPK-231 reps)
         if "priority" in out:
             word = _priority(out["priority"])
             out.pop("priority")
@@ -951,7 +953,11 @@ def grounded(view: dict[str, Any], answer: str, asked: str = "") -> bool:
         for day in view["days"]:
             values.append(day["label"])
             for it in day["items"]:
-                values.append(it["when"])
+                # "Nov 8, 2:50 AM" said as "2:50 AM today": the clock time is what pins the step.
+                if it.get("when") is not None:
+                    when = str(it["when"])
+                    clock = re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:AM|PM|am|pm)\b", when)
+                    values.append(clock.group(0) if clock and "," in when else it["when"])
                 names += [it["where"]] if it.get("where") else []
     elif kind == "rows":
         for i in view["items"]:
@@ -1111,12 +1117,44 @@ def _day_actions(view: dict[str, Any]) -> dict[str, Any]:
 
 
 def _unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
-    """A card line that repeats the answer's opening (the reply sits right above the card on Home)
-    is said twice: a PR's reason or an issue's note that restates it goes; the reply keeps it."""
-    opening = _norm(" ".join(re.split(r"(?<=[.!?])\s+", (answer or "").strip())[:2]))
-    for key in {"pr": ("reason",), "issue": ("note",)}.get(view.get("kind"), ()):
-        if isinstance(view.get(key), str) and _restates(view[key], opening):
+    """A card line that repeats the reply (the reply sits right above the card on Home) is said
+    twice: a PR's reason, an issue's note, a release preview's summary or a site's line that restates
+    the answer's opening or the spoken line goes; the reply keeps it."""
+    text = (answer or "").strip()
+    opening = _norm(" ".join(re.split(r"(?<=[.!?])\s+", text)[:2]))
+    # The spoken line is the answer's last paragraph (split_result appends it): its first sentence is
+    # the reply shown above the card.
+    last = text.rsplit("\n", 1)[-1] if "\n" in text else ""
+    reply = _norm(re.split(r"(?<=[.!?])\s+", last.strip())[0]) if last.strip() else ""
+    for key in {"pr": ("reason",), "issue": ("note",), "preview": ("summary",), "site": ("sub",)}.get(view.get("kind"), ()):
+        if isinstance(view.get(key), str) and (_restates(view[key], opening) or (reply and _restates(view[key], reply))):
             view = {k: v for k, v in view.items() if k != key}
+    return view
+
+
+def _soft_unsaid(view: dict[str, Any], answer: str) -> dict[str, Any]:
+    """Optional facts the answer never says go, not the card: a release step's time ("2:50 AM" only in
+    the card) or a preview's maker. Nothing is rewritten; an unbacked detail is simply left off, so
+    every fact still shown is one the answer says."""
+    said, nums = _norm(answer), _numbers(answer)
+    if view.get("kind") == "timeline":
+        days = []
+        for day in view["days"]:
+            items = []
+            for it in day["items"]:
+                when = it.get("when")
+                if when is not None:
+                    clock = re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:AM|PM|am|pm)\b", str(when))
+                    ok = _grounded_value(when, nums) or (clock and "," in str(when) and _grounded_value(clock.group(0), nums))
+                    if not ok:
+                        it = {k: v for k, v in it.items() if k != "when"}
+                items.append(it)
+            days.append({**day, "items": items})
+        view = {**view, "days": days}
+    if (view.get("kind") == "preview" and view.get("creator") and view.get("entity") != "media"
+            and not _grounded_name(view["creator"], said)):
+        # A document's maker is a detail; an album's artist is what makes it the right album, so it stays checked.
+        view = {k: v for k, v in view.items() if k != "creator"}
     return view
 
 
@@ -1135,7 +1173,10 @@ def shape(views: list[dict[str, Any]], answer: str, asked: str = "") -> list[dic
                         + _offered(view)}
             out.append(view)
             continue
-        if kept >= MAX_ARTIFACTS or not grounded(view, answer, asked):
+        if kept >= MAX_ARTIFACTS:
+            continue
+        view = _soft_unsaid(view, answer)
+        if not grounded(view, answer, asked):
             continue
         out.append(_artifact_actions(_unsaid(view, answer)))
         kept += 1

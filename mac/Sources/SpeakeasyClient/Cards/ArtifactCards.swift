@@ -357,12 +357,12 @@ struct StatusTilesCard: View {
                     // The sort puts trouble first, so what's left is either all fine or said in the answer.
                     let rest = sorted.dropFirst(cap)
                     let fine = rest.allSatisfy { ["ok", "on", "off", "info"].contains($0["state"].string ?? "") }
-                    Text(fine ? "\(rest.count) more, all fine" : "\(rest.count) more in the answer")
+                    Text(fine ? "\(rest.count) more, all fine" : "\(rest.count) more")
                         .font(.system(size: 12.5)).foregroundStyle(.secondary)
                 }
             } else {
                 // Two to a row, equal heights; an odd last tile takes the whole row (three tiles left a hole).
-                PairGrid(count: min(sorted.count, 4), spacing: 10) { n in
+                PairGrid(count: min(sorted.count, 4), spacing: 10, leadSpans: true) { n in
                     StatusTile(item: sorted[n]).onTapGesture { if let url = sorted[n]["url"].url { openURL(url) } }
                 }
             }
@@ -429,14 +429,18 @@ struct StatusTile: View {
     }
 }
 
-/// Cells two to a row with equal heights per row; an odd last cell spans both columns.
+/// Cells two to a row with equal heights per row; an odd cell spans both columns: the last one, or
+/// with `leadSpans` the first (a status card's trouble, sorted first, gets the wide tile).
 struct PairGrid<Cell: View>: View {
     let count: Int
     var spacing: CGFloat = 10
+    var leadSpans = false
     @ViewBuilder let cell: (Int) -> Cell
     var body: some View {
+        let lead = leadSpans && count % 2 == 1
         Grid(alignment: .topLeading, horizontalSpacing: spacing, verticalSpacing: spacing) {
-            ForEach(Array(stride(from: 0, to: count, by: 2)), id: \.self) { n in
+            if lead { GridRow { cell(0).gridCellColumns(2) } }
+            ForEach(Array(stride(from: lead ? 1 : 0, to: count, by: 2)), id: \.self) { n in
                 if n + 1 < count {
                     GridRow { cell(n); cell(n + 1) }
                 } else {
@@ -458,15 +462,19 @@ struct StatusRow: View {
         let loud = state == "needs_you" || state == "warn" || state == "bad"
         HStack(alignment: .center, spacing: 10) {
             Circle().fill(StatusTile.color(state)).frame(width: 8, height: 8)
+            // A short figure ("38% CPU", "Missed") sits at the end; a long one ("9:31 AM yesterday last
+            // run") took half the row and wrapped the name, so it joins the line under the name.
+            let figure = [item["value"].string, item["unit"].string].compactMap({ $0 }).joined(separator: " ").nonEmpty
+            let long = (figure?.count ?? 0) > 12
             VStack(alignment: .leading, spacing: 2) {
                 Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)   // a long job name wraps, never "Codex usage thresh…"
-                if let note = item["note"].string ?? item["role"].string {
-                    Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1)
+                if let note = [item["note"].string ?? item["role"].string, long ? figure : nil].compactMap({ $0 }).joined(separator: " · ").nonEmpty {
+                    Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
             Spacer(minLength: 8)
-            if let trailing = [item["value"].string, item["unit"].string].compactMap({ $0 }).joined(separator: " ").nonEmpty
+            if let trailing = (long ? nil : figure)
                 ?? (sayState && state != "info" ? StatusTile.word(for: item) : nil) {   // "Info" said nothing
                 Text(trailing)
                     .font(.system(size: 13, weight: .semibold)).monospacedDigit()
