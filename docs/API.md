@@ -1099,6 +1099,11 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
   also get `now` {rev} events (older apps never see them).
 - One read state: `POST /voice/history/{id}/read` marks that conversation's answers seen, and
   `POST /voice/tasks/{run_id}/seen` marks its conversation read.
+- Reserved (SPK-238, not served yet): capability `saved_calls` for `GET /voice/calls/{id}` (reopen a
+  saved call, SPK-204) and `now_recent` for `GET /voice/now/recent` (Home's Recent). Apps ask only when
+  the flag is on; without it they say "Update Speakeasy on your Hermes to see this." and never read the
+  unknown-route 404 as a call that's gone. The plugin turns each flag on in the release that serves its
+  route (`service.py` `ROUTE_CAPABILITIES`, `tests/test_route_capabilities.py`).
 
 `POST /voice/now/{id}/later {until?: epoch, on_change?: true}`: off Home until then, or until the
 item changes; it comes back with `provenance.kind = "later"`. `DELETE /voice/now/{id}/later` brings it

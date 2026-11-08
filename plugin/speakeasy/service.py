@@ -178,6 +178,15 @@ CAPABILITIES["agent_model"] = True
 CAPABILITIES["now"] = True
 CAPABILITIES["now_dismiss"] = True  # build 69: POST/DELETE /voice/now/{id}/dismiss, DELETE /voice/now/clear-seen (Undo)
 CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking/heard), call_summary
+# SPK-238: the flag that names each route the apps ask for only when it's advertised. A plugin
+# without the route answers it with the unknown-route 404, which build 70 read as "This call is no
+# longer saved" (a saved call) or showed nothing (Home's Recent); apps without the flag say "Update
+# Speakeasy on your Hermes to see this." instead. Turn a flag on in the release that serves its
+# route, never before (test_route_capabilities.py holds the two together).
+ROUTE_CAPABILITIES = {
+    "saved_calls": "/voice/calls/{id}",  # SPK-204: reopen a saved call from Home
+    "now_recent": "/voice/now/recent",   # Home's Recent
+}
 
 
 

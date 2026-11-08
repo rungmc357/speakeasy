@@ -958,6 +958,10 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var openaiKey: Bool = false
     /// Voice notes: the recording itself is the message (`POST …/voice-message`), like a Telegram voice note.
     public var voiceNotes: Bool = false
+    /// Reopen a saved call from Home (`GET /voice/calls/{id}`, SPK-204). PluginFeatureGate.swift.
+    public var savedCalls: Bool = false
+    /// Home's Recent (`GET /voice/now/recent`). PluginFeatureGate.swift.
+    public var nowRecent: Bool = false
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -978,6 +982,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
         case voiceNotes = "voice_notes"
         case now
+        case savedCalls = "saved_calls", nowRecent = "now_recent"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1003,6 +1008,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false
         files = (try? c.decodeIfPresent(Bool.self, forKey: .files)) ?? false
         now = (try? c.decodeIfPresent(Bool.self, forKey: .now)) ?? false
+        savedCalls = (try? c.decodeIfPresent(Bool.self, forKey: .savedCalls)) ?? false
+        nowRecent = (try? c.decodeIfPresent(Bool.self, forKey: .nowRecent)) ?? false
         approvalRules = (try? c.decodeIfPresent(Bool.self, forKey: .approvalRules)) ?? false
         openaiKey = (try? c.decodeIfPresent(Bool.self, forKey: .openaiKey)) ?? false
     }
