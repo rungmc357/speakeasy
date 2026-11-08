@@ -179,6 +179,11 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     /// The model that did (or is doing) the job, as recorded by the plugin (what Hermes served once
     /// known). Home's chat shows it under a job's card; nil when nothing was recorded.
     public var workModel: ReplyAttribution?
+    /// SPK-254: the project this job is filed into (servers with `projects`).
+    public var project: ProjectRef?
+    /// SPK-254: the one existing project the job's own words name, offered as a one-tap chip
+    /// ("Lantern?"). Never set once filed or declined; nothing is filed until the person taps it.
+    public var projectSuggestion: ProjectRef?
     public var provenance: Provenance?
     public var fix: Fix?
     public var question: NowQuestion?
@@ -235,6 +240,8 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         fullTitle = nonEmpty(o["full_title"])
         reply = nonEmpty(o["reply"]).map { String($0.prefix(400)) }
         workModel = ReplyAttribution(json: o["model"])
+        project = ProjectRef(json: o["project"])
+        projectSuggestion = project == nil ? ProjectRef(json: o["project_suggestion"]) : nil
         canceled = o["canceled"] as? Bool ?? false
         if let r = o["replaced"] as? [String: Any] {
             replacedAt = (r["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } ?? updatedAt ?? finishedAt

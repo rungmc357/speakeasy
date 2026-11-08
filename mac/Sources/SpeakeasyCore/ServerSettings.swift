@@ -963,7 +963,9 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     /// Home is a chat (SPK-208): `POST /voice/home/message` (+ `/voice/home/voice-message`) reaches a
     /// coordinator that replies in the thread and starts jobs only for real work.
     public var homeChat: Bool = false
-
+    /// Hermes' projects in Speakeasy (SPK-254): `GET/POST /voice/projects`, a project page, filing
+    /// chats and jobs, and the job card's project suggestion. Off on a Hermes without projects.
+    public var projects: Bool = false
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
                 history: Bool = false, callNoLimit: Bool = false, modelChoice: Bool = false, codexLogin: Bool = false,
@@ -982,7 +984,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case messageModes = "message_modes", questionState = "question_state", agents
         case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
         case voiceNotes = "voice_notes", newVoiceNotes = "new_voice_notes"
-        case now, homeChat = "home_chat"
+        case now, homeChat = "home_chat", projects
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1005,6 +1007,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         voiceNotes = (try? c.decodeIfPresent(Bool.self, forKey: .voiceNotes)) ?? false
         newVoiceNotes = (try? c.decodeIfPresent(Bool.self, forKey: .newVoiceNotes)) ?? false
         homeChat = (try? c.decodeIfPresent(Bool.self, forKey: .homeChat)) ?? false
+        projects = (try? c.decodeIfPresent(Bool.self, forKey: .projects)) ?? false
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false

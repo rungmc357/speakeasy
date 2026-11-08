@@ -31,6 +31,8 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
     public var automated: Bool
     /// Servers with `agents`: the Hermes profile this chat talks to, when it isn't Speakeasy's own.
     public var agent: AgentInfo?
+    /// Servers with `projects` (SPK-254): the project this conversation is in, if any.
+    public var project: ProjectRef?
 
     public init(id: String, title: String, source: String, sourceLabel: String, lastActivity: Date?,
                 preview: String = "", state: State = .idle, runIDs: [String] = [], match: String? = nil,
@@ -55,6 +57,7 @@ public struct HistorySession: Equatable, Sendable, Identifiable, Hashable {
                   automated: o["automated"] as? Bool ?? false)
         if automated && state == .needsYou { state = .idle }
         agent = AgentInfo(json: o["agent"])
+        project = ProjectRef(json: o["project"])
     }
 
     /// The deep link that opens this conversation in any Speakeasy app.
