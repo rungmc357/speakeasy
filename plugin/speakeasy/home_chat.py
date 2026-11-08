@@ -25,6 +25,11 @@ keeps it fast. Its model (``route``), first that applies:
    from Hermes' own model list, never by calling a model);
 4. the user's main model; then the Speakeasy routing model.
 
+Home's model chip picks the WORK model (``work`` in ``GET /voice/home/model``, ``{"work_model": id}``
+on POST): the model the jobs started from Home run on. Unset, jobs run on the user's Hermes default
+model. The coordinator's own model above is a secondary choice in the same menu (``{"model": id}``).
+Changing one never changes the other, and neither writes Hermes' default or auxiliary models.
+
 Nothing here writes the user's Hermes config. Live calls keep their own routing; this is only Home's
 composer.
 """
@@ -56,7 +61,9 @@ RESULT_CHARS = 1600           # a finished job's answer, for "what did it find?"
 JOBS = 8
 ACTIONS = {"none", "start", "follow_up", "cancel"}
 EXTRA_JOBS = 3                # "two asks in one message are two jobs": at most this many more per message
-CHOICE_META = "home_model"    # the Home chip's pick, a catalog id ("provider/model"); unset = Auto
+CHOICE_META = "home_model"    # the coordinator's model pick, a catalog id ("provider/model"); unset = Auto
+WORK_META = "home_work_model"  # the Home chip's pick: the model jobs started from Home run on; unset = Hermes' default
+WORK_OPTIONS = 6
 FAILED_META = "home_model_failed"   # {model id: when it last failed}: listed in Hermes but not answering
 FAILED_S = 24 * 3600          # Auto skips a model that failed in real use for this long (never probed)
 
@@ -498,9 +505,7 @@ class HomeChat:
                 # Without a written ask, the job hears the memo itself.
                 words = decided.get("request") or job_text or text
                 job_body = {"text": words, "source": "voice_message" if voice else "typed"}
-                for k in ("model", "reasoning", "agent"):
-                    if body.get(k) is not None:
-                        job_body[k] = body[k]
+                self._job_choice(job_body, body)
                 if ids:
                     job_body["attachments"] = ids
                 if client_id:
@@ -537,9 +542,7 @@ class HomeChat:
         for n, words in enumerate(decided.get("extra") or []):
             # "Those are two different tasks": each further ask in the message is its own job.
             job_body = {"text": words, "source": "voice_message" if voice else "typed"}
-            for k in ("model", "reasoning", "agent"):
-                if body.get(k) is not None:
-                    job_body[k] = body[k]
+            self._job_choice(job_body, body)
             if client_id:
                 job_body["client_id"] = (f"hx{n}" + client_id)[:128]
             try:
@@ -558,6 +561,68 @@ class HomeChat:
         reply = self._rows("WHERE id=?", (reply_row,), limit=1)[0] if reply_row else None
         logger.info("speakeasy: Home message handled (%s)", action)
         return self._reply(user, reply, started=started)
+
+    def _job_choice(self, job_body: dict[str, Any], body: dict[str, Any]) -> None:
+        """A job started from Home runs on the work model: what the message itself names, else the
+        Home chip's pick, else nothing (the user's Hermes default). Never the coordinator's model."""
+        for k in ("model", "reasoning", "agent"):
+            if body.get(k) is not None:
+                job_body[k] = body[k]
+        if "model" not in job_body and "agent" not in job_body:
+            picked = self.work_route()
+            if picked.get("source") == "chosen":
+                job_body["model"] = picked["model"]
+
+    def _hermes_default(self) -> str | None:
+        """The user's Hermes default model id, from the cached model list or config (no model call)."""
+        catalog = getattr(self.svc, "catalog", None)
+        raw = catalog.peek() if catalog is not None else None
+        if raw is not None:
+            try:
+                got = catalog.hermes_default(raw)
+            except Exception:
+                got = None
+            if got:
+                return got
+        main = self._config().get("model")
+        if isinstance(main, dict) and main.get("default") and main.get("provider"):
+            return f"{main['provider']}/{main['default']}"
+        return None
+
+    def work_route(self) -> dict[str, Any]:
+        """The model Home's jobs run on: ``{"model": id | None, "source": "chosen" | "default"}``.
+        ``default`` = the user's Hermes default model (nothing extra is sent; Hermes decides)."""
+        entries = self._entries()
+        chosen = self.store.get_meta(WORK_META) or ""
+        if chosen and (entries is None or chosen in entries):
+            return {"model": chosen, "source": "chosen"}
+        return {"model": self._hermes_default(), "source": "default"}
+
+    def _work_status(self, entries: dict[str, dict[str, Any]], row: Callable[[str], dict[str, Any]]) -> dict[str, Any]:
+        """The chip's half of ``GET /voice/home/model``: the work model and a few choices (the
+        Hermes default first, then each connected provider's featured models, one row per model)."""
+        picked = self.work_route()
+        default = self._hermes_default()
+        ids: list[str] = []
+        for mid in (default, picked["model"] if picked["source"] == "chosen" else None):
+            if mid and mid not in ids:
+                ids.append(mid)
+        catalog = getattr(self.svc, "catalog", None)
+        raw = catalog.peek() if catalog is not None else None
+        featured: list[str] = []
+        for prow in (raw or {}).get("providers") or []:
+            if isinstance(prow, dict):
+                featured += [f"{prow.get('slug')}/{m}" for m in (prow.get("featured_models") or [])[:3]
+                             if isinstance(m, str)]
+        names = {row(m)["name"] for m in ids}
+        for mid in featured + list(entries):
+            if len(ids) >= WORK_OPTIONS:
+                break
+            if mid in entries and mid not in ids and row(mid)["name"] not in names:
+                ids.append(mid)
+                names.add(row(mid)["name"])
+        return {"model": row(picked["model"]) if picked["model"] else None, "source": picked["source"],
+                "default": row(default) if default else None, "options": [row(m) for m in ids]}
 
     def _delete(self, mid: str) -> None:
         with self.store._lock, self.store._db:
@@ -827,16 +892,22 @@ class HomeChat:
             if mid == current or r["name"] not in {x["name"] for x in rows}:   # one row per model, not per provider
                 rows.append(r)
         rows = rows[:4] + [r for r in rows[4:] if r["id"] in {current, f"{(self._config().get('model') or {}).get('provider')}/{(self._config().get('model') or {}).get('default')}"}]
-        return {"model": row(current) if current else None, "source": route.get("source"),
-                "auto": row(auto) if auto else None, "options": rows, "note": note}
+        coordinator = {"model": row(current) if current else None, "source": route.get("source"),
+                       "auto": row(auto) if auto else None, "options": rows, "note": note}
+        # Top level = the coordinator (kept for older apps); ``work`` = what Home's chip picks.
+        return {**coordinator, "coordinator": dict(coordinator), "work": self._work_status(entries, row)}
 
     def choose_model(self, body: dict[str, Any]) -> dict[str, Any]:
-        """``POST /voice/home/model {"model": "provider/model" | null}``: the chip's pick (null = Auto)."""
-        if not isinstance(body, dict) or set(body) - {"model"}:
-            raise self._error(400, "Send {\"model\": id} or {\"model\": null}.")
-        mid = body.get("model")
-        if mid in (None, "", "auto"):
-            self.store.set_meta(CHOICE_META, "")
+        """``POST /voice/home/model``: ``{"work_model": id | null}`` sets the model Home's jobs run on
+        (null = the Hermes default); ``{"model": id | null}`` sets the coordinator's (null = Auto).
+        One at a time; the other stays as it was."""
+        if not isinstance(body, dict) or len(body) != 1 or set(body) - {"model", "work_model"}:
+            raise self._error(400, "Send {\"work_model\": id or null} or {\"model\": id or null}.")
+        work = "work_model" in body
+        meta = WORK_META if work else CHOICE_META
+        mid = body.get("work_model" if work else "model")
+        if mid in (None, "", "auto", "default"):
+            self.store.set_meta(meta, "")
             return self.model_status()
         if not isinstance(mid, str) or "/" not in mid or len(mid) > 200:
             raise self._error(400, "model must be a model id from the list.")
@@ -846,7 +917,7 @@ class HomeChat:
             entries = catalog.entries(catalog.raw()) if catalog is not None else {}
         if mid not in (entries or {}):
             raise self._error(400, "That model isn't one your Hermes has.")
-        self.store.set_meta(CHOICE_META, mid)
+        self.store.set_meta(meta, mid)
         return self.model_status()
 
     def task(self) -> str:

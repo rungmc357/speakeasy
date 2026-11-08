@@ -239,6 +239,48 @@ def test_the_home_chip_choice_wins_and_auto_comes_back(server, service, monkeypa
     assert status == 200 and body["source"] == "auto"
 
 
+def test_the_home_chip_picks_the_work_model_and_the_coordinator_stays_on_auto(server, service, monkeypatch):
+    """Geo (N8b): the Home chip is the model jobs run on (default: the Hermes default model, never the
+    fast coordinator); the coordinator stays on Auto; neither choice touches Hermes' config."""
+    chat = service.home_chat
+    monkeypatch.setattr(service, "catalog", _Catalog(_entries("acme/big-model-3", "acme/big-model-2",
+                                                              "anthropic/claude-haiku-5-5", "anthropic/claude-opus-5-5")))
+    cfg = {"model": {"default": "big-model-3", "provider": "acme"}}
+    monkeypatch.setattr(chat, "_config", lambda: cfg)
+    status, body = http(server.base_url, "GET", "/voice/home/model", None, server.token)
+    assert status == 200
+    assert body["work"]["source"] == "default" and body["work"]["model"]["id"] == "acme/big-model-3"
+    assert body["work"]["options"][0]["id"] == "acme/big-model-3"
+    assert "anthropic/claude-opus-5-5" in [o["id"] for o in body["work"]["options"]]
+    assert body["coordinator"]["source"] == "auto" and body["coordinator"]["model"]["id"] == "anthropic/claude-haiku-5-5"
+    started: list[dict] = []
+    monkeypatch.setattr(service, "start_job", lambda b, device_id=None: started.append(b) or
+                        {"run_id": f"run_{len(started)}", "session_id": None})
+    # Default: the job asks for no model (Hermes runs it on the user's default).
+    coordinator(service, {"tool": "start_job", "text": "", "args": {"request": "Find a dentist open Saturday",
+                                                                    "reply": "Looking."}})
+    chat.message({"text": "find a dentist open saturday", "client_id": "c_w1"}, None)
+    assert "model" not in started[-1]
+    status, body = http(server.base_url, "POST", "/voice/home/model", {"work_model": "anthropic/claude-opus-5-5"},
+                        server.token)
+    assert status == 200 and body["work"]["source"] == "chosen" and body["work"]["model"]["id"] == "anthropic/claude-opus-5-5"
+    assert body["coordinator"]["source"] == "auto" and chat.route()["source"] == "auto"
+    coordinator(service, {"tool": "start_job", "text": "", "args": {"request": "Find a birthday gift for a cyclist",
+                                                                    "more_jobs": ["Find a rain jacket under $100"],
+                                                                    "reply": "On both."}})
+    chat.message({"text": "gift for a cyclist and a rain jacket", "client_id": "c_w2"}, None)
+    assert [b.get("model") for b in started[-2:]] == ["anthropic/claude-opus-5-5"] * 2
+    # The coordinator's own pick is separate: changing it keeps the work model, and back.
+    body = http(server.base_url, "POST", "/voice/home/model", {"model": "acme/big-model-2"}, server.token)[1]
+    assert body["coordinator"]["source"] == "chosen" and body["work"]["model"]["id"] == "anthropic/claude-opus-5-5"
+    body = http(server.base_url, "POST", "/voice/home/model", {"work_model": None}, server.token)[1]
+    assert body["work"]["source"] == "default" and body["coordinator"]["model"]["id"] == "acme/big-model-2"
+    assert http(server.base_url, "POST", "/voice/home/model", {"work_model": "acme/nope"}, server.token)[0] == 400
+    assert http(server.base_url, "POST", "/voice/home/model", {"work_model": None, "model": None},
+                server.token)[0] == 400
+    assert cfg == {"model": {"default": "big-model-3", "provider": "acme"}}   # Hermes' config untouched
+
+
 def test_two_asks_in_one_message_are_two_jobs(server, service, hermes):
     coordinator(service, {"tool": "start_job", "text": "",
                           "args": {"request": "Find a dentist open Saturday", "reply": "Looking for a dentist."},
@@ -252,6 +294,41 @@ def test_two_asks_in_one_message_are_two_jobs(server, service, hermes):
     assert "dentist open Saturday" in sent and "birthday gift for a cyclist" in sent
     cards = wait_for(lambda: len([e for e in stream(server) if e["kind"] == "card"]) == 2 and stream(server))
     assert not [e for e in cards if e["kind"] == "ask"]       # both jobs are the chat's: no "you asked" echo
+
+
+class _ReadCatalog(_Catalog):
+    """A model list the job route may read (choosing a job's model checks the id against it)."""
+    hermes_reasoning = None
+
+    def raw(self, refresh=False):  # type: ignore[override]
+        return self.payload
+
+    def entries(self, raw):
+        from speakeasy import models as MD
+        return {k: {**v, "name": MD.friendly_name(v["model"]), "provider_name": v["provider"],
+                    "reasoning_levels": []} for k, v in (raw or {}).items()}
+
+    def hermes_default(self, raw=None):
+        return "acme/big-model-3"
+
+
+def test_a_job_from_home_runs_on_the_work_model_and_its_card_says_so(server, service, hermes, monkeypatch):
+    monkeypatch.setattr(service, "catalog", _ReadCatalog(_entries("acme/big-model-3", "anthropic/claude-haiku-5-5",
+                                                                  "anthropic/claude-opus-5-5")))
+    monkeypatch.setattr(service.home_chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"}})
+    assert http(server.base_url, "POST", "/voice/home/model", {"work_model": "anthropic/claude-opus-5-5"},
+                server.token)[0] == 200
+    coordinator(service, {"tool": "start_job", "text": "", "args": {"request": "Compare two standing desks",
+                                                                    "reply": "Comparing them."}})
+    started = post(server, {"text": "compare two standing desks", "client_id": "c_wm"})[1]
+    wait_for(lambda: hermes.calls)
+    assert hermes.calls[-1].get("model") == "claude-opus-5-5" or "claude-opus-5-5" in json.dumps(hermes.calls[-1])
+
+    def card():
+        items = http(server.base_url, "GET", "/voice/now?tz=America/New_York", None, server.token)[1].get("items") or []
+        return next((i for i in items if i.get("run_id") == started["run_id"] and i.get("model")), None)
+    item = wait_for(card)
+    assert item["model"]["id"].endswith("claude-opus-5-5") and item["model"]["name"]
 
 
 def test_a_selected_job_is_the_coordinators_context(server, service, hermes):

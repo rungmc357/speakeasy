@@ -384,6 +384,21 @@ class NowModel:
         return line
 
     # -- one Speakeasy task ----------------------------------------------------------------------
+    def _work_model(self, key: str) -> dict[str, Any] | None:
+        """The job's model as the per-message attribution badge: what Hermes served once known,
+        else what the job was started on. None when nothing was recorded (no guess)."""
+        try:
+            record = self.store.run_model(key)
+        except Exception:
+            return None
+        if not record:
+            return None
+        from . import reply_models as RM
+        try:
+            return RM.badge(record, "run")
+        except Exception:
+            return None
+
     def _task_item(self, row: dict[str, Any], work: dict[str, Any], open_question: bool,
                    approvals: dict[str, dict[str, Any]], read_at: float | None, edge: float,
                    cleared: float, now: float, call: Any,
@@ -402,6 +417,9 @@ class NowModel:
                                 "started_at": started, "updated_at": float(row.get("updated") or started or now)}
         if finished is not None:
             item["finished_at"] = finished
+        badge = self._work_model(row["key"])
+        if badge:
+            item["model"] = badge   # the model that did (or is doing) the work: Home's job cards say it
         approval = approvals.get(row["key"])
         question = result.get("question") if isinstance(result.get("question"), dict) else None
         if approval is not None:
