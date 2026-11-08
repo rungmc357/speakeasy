@@ -174,7 +174,8 @@ def us_units_first(text: str) -> str:
 
 _REPLY = {"type": "string", "description": "One short line to the user, in your own words, about what you're doing."}
 _START_REPLY = {"type": "string", "description": "One short line to the user, in your own words, about what you're "
-                "doing, plus the answer to any other part of the message you can answer yourself."}
+                "doing (every job you start, including more_jobs), plus the answer to any other part of the "
+                "message you can answer yourself."}
 _JOB = {"type": "string", "description": "The job's id from the list (j1, j2, ...)."}
 TOOLS = [
     {"type": "function", "function": {
