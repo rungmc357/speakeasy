@@ -121,7 +121,7 @@ struct RowsCard: View {
         let items = card["items"].array
         let entity = card["entity"].string ?? "item"
         // Six rows read at a glance (a 13-row wall on Home did not); the rest are in the answer.
-        let cap = expanded ? items.count : (fit == .compact ? 3 : 6)
+        let cap = expanded ? items.count : (fit == .compact ? 3 : 5)
         // The list's own count ("13 left") when fewer rows were sent: "6 more" under 6 of 13 rows said
         // 12 and disagreed with the reply.
         let total = max(card["total"].double.map(Int.init) ?? items.count, items.count)
@@ -334,8 +334,11 @@ struct MetricLine: View {
             let all = values + (threshold.map { [$0] } ?? [])
             let lo = all.min() ?? 0, hi = all.max() ?? 1, span = max(hi - lo, 0.0001)
             let w = geo.size.width, h = geo.size.height
+            // Room above the line for a mark's word ("Peak"): a peak at the very top put its label
+            // under the dot, on the falling line.
+            let top: CGFloat = showMarks && points.contains { $0["mark"].string != nil } ? 20 : 7
             let at = { (i: Int, v: Double) in
-                CGPoint(x: w * CGFloat(i) / CGFloat(max(values.count - 1, 1)), y: (h - 14) * (1 - CGFloat((v - lo) / span)) + 7)
+                CGPoint(x: w * CGFloat(i) / CGFloat(max(values.count - 1, 1)), y: (h - 7 - top) * (1 - CGFloat((v - lo) / span)) + top)
             }
             ZStack(alignment: .topLeading) {
                 if let t = threshold {
@@ -358,7 +361,7 @@ struct MetricLine: View {
                             let c = at(i, v)
                             Circle().fill(gold).frame(width: 8, height: 8).position(c)
                             Text(mark).font(.system(size: 10.5, weight: .semibold)).lineLimit(1).fixedSize()
-                                .position(x: min(max(c.x, 36), w - 36), y: c.y > 20 ? c.y - 12 : c.y + 12)
+                                .position(x: min(max(c.x, 36), w - 36), y: c.y - 13)
                         }
                     }
                 }
