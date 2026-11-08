@@ -628,6 +628,13 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             out.pop("labels")
             if labels:
                 out["labels"] = labels
+        if isinstance(out.get("note"), str):
+            # "High priority, in progress, nobody assigned" under the state tag and the priority line:
+            # a note that only restates the card's own fields goes.
+            fields = " ".join(str(out.get(k) or "") for k in ("state", "priority", "assignee"))
+            fields += " priority assigned unassigned nobody owner" if "assignee" not in out else " priority"
+            if _restates(re.sub(r"(?i)\b(?:no ?one|nobody|not|yet|is|and)\b", " ", out["note"]), f" {_norm(fields)} "):
+                out.pop("note")
         return out
     if kind == "pr":
         state = str(body.get("state", "")).lower()

@@ -217,7 +217,9 @@ struct IssueCard: View {
                     }
                     VStack(alignment: .leading, spacing: 7) {
                         let who = [card["assignee"].string, card["priority"].string.map { "\($0) priority" }].compactMap { $0 }
-                        if !who.isEmpty { CardFactLine(icon: "person.fill", text: who.joined(separator: " · ")) }
+                        // No assignee: the priority alone wears a priority mark, not a person.
+                        if !who.isEmpty { CardFactLine(icon: card["assignee"].string == nil ? "chart.bar.fill" : "person.fill",
+                                                       text: who.joined(separator: " · ")) }
                         let labels = card["labels"].strings
                         if !labels.isEmpty { CardFactLine(icon: "tag.fill", text: labels.joined(separator: ", ")) }
                         if let note = card["note"].string, fit != .compact { CardFactLine(icon: "text.bubble", text: note) }

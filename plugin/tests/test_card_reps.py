@@ -294,3 +294,12 @@ def test_timeline_keeps_unscheduled_next_steps_and_counts_a_bare_key_list():
     nxt = v["days"][1]["items"]
     # Under a day headed "Next", a step still to come carries no filler "Next"; the running one says Now.
     assert [(i.get("when"), i["what"]) for i in nxt] == [("Now", "Land 3 issues"), (None, "Ship the new build")]
+
+
+def test_an_issue_note_that_only_restates_its_fields_goes():
+    from speakeasy import views as V
+    body = {"source": "linear", "ref": "DEMO-7", "title": "Search field loses focus on rotate", "state": "In Progress",
+            "priority": "high", "assignee": "Unassigned", "note": "High priority, in progress, nobody assigned"}
+    assert "note" not in V._artifact("issue", body)
+    kept = V._artifact("issue", {**body, "note": "Blocks the release checklist until fixed"})
+    assert kept["note"] == "Blocks the release checklist until fixed"
