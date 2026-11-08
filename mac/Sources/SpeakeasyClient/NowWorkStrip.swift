@@ -117,7 +117,11 @@ public struct NowWorkStrip: View {
                             }
                         }.scrollTargetLayout()
                     }
-                    .scrollTargetBehavior(.paging).scrollPosition(id: $page).scrollIndicators(.hidden)
+                    // Leading anchors: Home's thread sets a bottom default anchor that this pager would
+                    // otherwise inherit, which left it showing the end of one page and the start of
+                    // the next (seen live on the strip).
+                    .scrollTargetBehavior(.paging).scrollPosition(id: $page, anchor: .leading)
+                    .defaultScrollAnchor(.leading).scrollIndicators(.hidden)
                     .frame(height: 92)
                     HStack(spacing: 5) {
                         ForEach(keys, id: \.self) { key in
