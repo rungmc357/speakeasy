@@ -65,7 +65,9 @@ final class KanbanBoardTests: XCTestCase {
         ], "suggested": "garden"])
         XCTAssertEqual(list.suggested, "garden")
         XCTAssertEqual(list.boards[0].subtitle, "1 running · 1 needs you · 2 ready")
-        XCTAssertEqual(list.boards[1].subtitle, "Nothing going on")
+        XCTAssertEqual(list.boards[1].subtitle, "No cards")
+        // Board-scoped: an empty board never says nothing is going on (calls and chats may be running).
+        for column in KanbanCard.Column.allCases { XCTAssertTrue(column.emptyLine.hasPrefix("No cards"), column.emptyLine) }
     }
 
     func testRemembersPickAndFallsBackToSuggested() async throws {
