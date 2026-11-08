@@ -548,12 +548,31 @@ def _grounded_value(value: Any, said_numbers: set[str]) -> bool:
     return _numbers(str(value)) <= said_numbers
 
 
+_LABEL_STOP = set("""a an the and or of to for in on at by with from via is are was be your you my our its it this that
+these those as into over under up out off""".split())
+
+
+def _grounded_label(name: str, said: str, said_numbers: set[str]) -> bool:
+    """A status tile's or row's name is a short label the agent writes for one line of its answer
+    ("Mac tests", "Package needs a signature"), rarely that answer's exact words. It counts as said when
+    the exact phrase is there, or when every number in it is said and at least two thirds of its words
+    are (a one-word name must be said exactly). Values, refs and amounts stay exact (SPK-236)."""
+    if _grounded_name(name, said):
+        return True
+    words = [w for w in _norm(name).split() if w not in _LABEL_STOP]
+    if len(words) < 2 or not _numbers(name) <= said_numbers:
+        return False
+    return sum(f" {w} " in said for w in words) * 3 >= len(words) * 2
+
+
 def grounded(view: dict[str, Any], answer: str) -> bool:
     """Every name and number on an artifact appears in the answer text. One miss and the card goes
-    (it is never repaired: repaired cards were how wrong content got through)."""
+    (it is never repaired: repaired cards were how wrong content got through). Status and rows names
+    are labels, checked word by word (``_grounded_label``); entity names stay exact."""
     said, nums = _norm(answer), _numbers(answer)
     kind = view.get("kind")
     names: list[str] = []
+    labels: list[str] = []
     values: list[Any] = []
     if kind == "explore":
         for sec in view["sections"]:
@@ -566,7 +585,7 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
             values += [o.get("price")] if o.get("price") else []
     elif kind == "status":
         for i in view["items"]:
-            names.append(i["name"])
+            labels.append(i["name"])
             values += [i.get("value")] if i.get("value") else []
     elif kind == "draft":
         names.append(view["to"])
@@ -578,7 +597,7 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
                 names += [it["where"]] if it.get("where") else []
     elif kind == "rows":
         for i in view["items"]:
-            names.append(i["name"])
+            labels.append(i["name"])
             values += [i[k] for k in ("ref", "amount") if i.get(k)]
     elif kind == "metric":
         # The line itself prints no numbers; only marked points show theirs, so only those are checked.
@@ -599,7 +618,8 @@ def grounded(view: dict[str, Any], answer: str) -> bool:
     # mockups: the pictures are the task's own renders and their captions describe them; nothing to check.
     if kind == "explore":
         values += [it["day"] for sec in view["sections"] for it in sec["items"] if it.get("day")]
-    return all(_grounded_name(n, said) for n in names) and all(_grounded_value(v, nums) for v in values)
+    return (all(_grounded_name(n, said) for n in names) and all(_grounded_label(n, said, nums) for n in labels)
+            and all(_grounded_value(v, nums) for v in values))
 
 
 def _artifact_actions(view: dict[str, Any]) -> dict[str, Any]:

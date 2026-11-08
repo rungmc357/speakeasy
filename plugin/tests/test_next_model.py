@@ -95,11 +95,14 @@ def test_unavailable_or_unknown_is_not_silently_replaced(linked, model):
         sent(s)
 
 
-def test_unknown_existing_route_blocks_send_and_explicit_default_is_deliberate(linked):
+def test_chat_with_no_recorded_model_runs_on_the_default_like_build_69(linked):
+    """SPK-228: no recorded model is not an unknown route; it sends on the default with its effort."""
     s = linked
-    assert page(s, "parent")["next_model"]["id"] == "unknown"
-    with pytest.raises(ServiceError, match="unavailable or unknown"):
-        s.history_message("parent", {"text": "Continue the plan"})
+    predicted = page(s, "parent")["next_model"]
+    assert (predicted["id"], predicted["reasoning"]) == (OPUS, "medium")
+    assert not predicted.get("unavailable")
+    assert sent(s, "parent") == {"provider": "anthropic", "model": "claude-opus-5-5",
+                                 "model_options": {"reasoning": {"enabled": True, "effort": "medium"}}}
     s.set_session_model("parent", {"model": "default", "reasoning": "default"})
     assert page(s, "parent")["next_model"]["id"] == OPUS
     assert page(s, "parent")["model_choice"] is None

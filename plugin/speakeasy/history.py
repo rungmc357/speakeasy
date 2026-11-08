@@ -1303,6 +1303,10 @@ def session_meta(state_db: Path, session_id: str) -> dict[str, Any] | None:
         config_value = object_value(result.pop("model_config", None))
         # Return only selection metadata, never endpoints or credentials in the config.
         result["model_provider"] = clean(config_value.get("provider"), 80)
+        if not result["model_provider"] and "billing_provider" in cols:
+            # Real Hermes records the serving provider here; its model_config is bookkeeping only.
+            billed = db.execute("SELECT billing_provider FROM sessions WHERE id=?", (tip,)).fetchone()
+            result["model_provider"] = clean(billed[0], 80) if billed and isinstance(billed[0], str) else None
         effort = config_value.get("reasoning_effort")
         result["model_reasoning"] = effort if effort in {"none", "minimal", "low", "medium", "high", "xhigh", "max"} else None
         return result
