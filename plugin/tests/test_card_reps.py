@@ -358,9 +358,9 @@ def test_short_project_parts_read_as_words_unless_acronyms():
 
 def test_a_long_tool_name_the_answer_shortens_still_counts():
     s = views.clean({"kind": "status", "scope": "Scheduled jobs", "items": [
-        {"name": "ACME X Desk Wallboard updater", "state": "warn", "note": "Missed runs since 9 AM"}]})
-    assert views.grounded(s, "The ACME wallboard missed its runs since 9 AM.")
-    assert not views.grounded(s, "The wallboard missed its runs since 9 AM.")   # one word is not the job
+        {"name": "ACME X Kitchen Display refresher", "state": "warn", "note": "Missed runs since 9 AM"}]})
+    assert views.grounded(s, "The ACME display missed its runs since 9 AM.")
+    assert not views.grounded(s, "The display missed its runs since 9 AM.")   # one word is not the job
 
 
 def test_a_tile_without_a_figure_takes_the_one_its_note_leads_with():
