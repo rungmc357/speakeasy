@@ -486,6 +486,7 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 # the note instead, so the row's mono reference column holds only numbers.
                 i.pop("ref")
                 i["note"] = f"{ref.strip()} · {i['note']}" if i.get("note") else ref.strip()
+        _fill_ref_urls(items)
         states = {str(i.get("state", "")).strip().lower() for i in items}
         if len(items) >= 3 and len(states) == 1 and "" not in states:
             # "Open" on every row says nothing a row can't: the title can say it once.
@@ -661,6 +662,25 @@ def condition_icon(condition: str) -> str | None:
     """The weather card's icon word for a sky written in words ("Rain showers" -> rain), or None."""
     low = condition.lower()
     return next((icon for pattern, icon in _SKY_WORDS if re.search(pattern, low)), None)
+
+
+def _fill_ref_urls(items: list[dict[str, Any]]) -> None:
+    """Rows the agent linked for some refs but not others ("SPK-196" linked, "SPK-207" not): when a
+    linked row's URL holds its own ref, the others get the same URL with theirs, so every row opens."""
+    template = None
+    for i in items:
+        ref, url = i.get("ref"), i.get("url")
+        if isinstance(ref, str) and isinstance(url, str) and url.startswith("https://"):
+            m = re.match(r"(https://[^?#]*/)" + re.escape(ref.strip()) + r"(?=$|[/?#])", url)
+            if m:
+                template = m.group(1)
+                break
+    if not template:
+        return
+    for i in items:
+        ref = i.get("ref")
+        if not i.get("url") and isinstance(ref, str) and re.fullmatch(r"[A-Z][A-Z0-9]*-\d+", ref.strip()):
+            i["url"] = template + ref.strip()
 
 
 _TRACKER_KEY = re.compile(r"\s*\((?:[A-Z][A-Z0-9]*-)+[A-Z0-9]+\)\s*$")

@@ -153,7 +153,7 @@ struct ActionRow: View {
                 // A short ref ("#418", "SPK-12") leads the name; a long one ("FIELDNOTE-IOS-3KD") squeezed
                 // the name into a letter-wide column, so it moves to the line under it.
                 let ref = item["ref"].string
-                let inline = (ref?.count ?? 0) <= 5   // "#418", "FN-12"; "#66526" took a third of the row
+                let inline = (ref?.count ?? 0) <= 7   // "#418", "SPK-207" lead the name as the designs do; "FIELDNOTE-IOS-3KD" took a third of the row
                 // A time fits the corner ("2:48 AM"); a phrase ("Last seen 2:48 AM ET") joins the note line.
                 let when = EventTimes.stamp(item["when"].string)
                 let corner = (when?.count ?? 0) <= 9

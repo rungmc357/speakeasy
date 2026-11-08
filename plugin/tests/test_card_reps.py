@@ -230,3 +230,12 @@ def test_jobs_elapsed_loses_about_and_a_lone_key_point_joins_the_summary():
                      "list_label": "Key points", "list": ["Out of scope: shared folders"]})
     assert "list" not in v and "list_label" not in v
     assert v["summary"] == "Goal: edits made offline merge cleanly. Out of scope: shared folders."
+
+
+def test_rows_fill_tracker_links_from_one_linked_row():
+    v = views.clean({"kind": "rows", "entity": "issue", "items": [
+        {"ref": "ACME-12", "name": "Fix sync", "state": "Done", "url": "https://tracker.example/acme/issue/ACME-12/fix-sync"},
+        {"ref": "ACME-14", "name": "Offline drafts", "state": "Open"},
+        {"ref": "#99", "name": "Not a tracker key", "state": "Open"}]})
+    assert v["items"][1]["url"] == "https://tracker.example/acme/issue/ACME-14"
+    assert "url" not in v["items"][2]
