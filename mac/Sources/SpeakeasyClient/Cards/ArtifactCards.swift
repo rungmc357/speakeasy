@@ -330,10 +330,9 @@ struct StatusTilesCard: View {
                         .font(.system(size: 12.5)).foregroundStyle(.secondary)
                 }
             } else {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10, alignment: .top), GridItem(.flexible(), spacing: 10, alignment: .top)], spacing: 10) {
-                    ForEach(Array(sorted.prefix(4).enumerated()), id: \.offset) { _, item in
-                        StatusTile(item: item).onTapGesture { if let url = item["url"].url { openURL(url) } }
-                    }
+                // Two to a row, equal heights; an odd last tile takes the whole row (three tiles left a hole).
+                PairGrid(count: min(sorted.count, 4), spacing: 10) { n in
+                    StatusTile(item: sorted[n]).onTapGesture { if let url = sorted[n]["url"].url { openURL(url) } }
                 }
             }
         }
@@ -372,10 +371,28 @@ struct StatusTile: View {
             if history.count >= 3 { Spark(points: history).frame(height: 18) }
             if let note = item["note"].string { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2) }
         }
-        .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+        .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(loud ? Self.color(state).opacity(0.08) : look.well))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(loud ? Self.color(state).opacity(0.7) : look.hairline))
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Cells two to a row with equal heights per row; an odd last cell spans both columns.
+struct PairGrid<Cell: View>: View {
+    let count: Int
+    var spacing: CGFloat = 10
+    @ViewBuilder let cell: (Int) -> Cell
+    var body: some View {
+        Grid(alignment: .topLeading, horizontalSpacing: spacing, verticalSpacing: spacing) {
+            ForEach(Array(stride(from: 0, to: count, by: 2)), id: \.self) { n in
+                if n + 1 < count {
+                    GridRow { cell(n); cell(n + 1) }
+                } else {
+                    GridRow { cell(n).gridCellColumns(2) }
+                }
+            }
+        }
     }
 }
 

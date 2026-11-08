@@ -134,7 +134,10 @@ def clean(raw: Any) -> dict | None:
         described = int(leading) if leading.isdecimal() else words.get(leading)
         if count is not None and described is not None and described != int(count):
             return None
-    view = {"kind": "confirm", "type": kind, "title": raw["title"].strip(), "details": out}
+    # "Buy Oakline Standing Desk 60 in. — $423.53": the total is the card's last line and its button;
+    # in the title it is said three times.
+    title = re.sub(r"\s*(?:[\u2014\u2013-]|,|for)\s*[$\u20ac\u00a3]\s?[\d,]+(?:\.\d{2})?\s*$", "", raw["title"].strip()) or raw["title"].strip()
+    view = {"kind": "confirm", "type": kind, "title": title, "details": out}
     if items:
         view["items"] = items
     if fields:

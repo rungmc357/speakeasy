@@ -125,9 +125,14 @@ def short_title(title: Any, limit: int = TITLE_MAX) -> str:
     if not text:
         return ""
     text = _BOOKKEEPING.sub("", text)
-    text = _HANDLE.sub("", text)
-    text = _PAREN.sub("", text)
+    kept = _PAREN.sub("", text)
+    text = _PAREN.sub("", _HANDLE.sub("", text))
     text = _trim_end(re.sub(r"\s{2,}", " ", text).strip(" ,;:-\u2013\u2014"))
+    short = _words(text)
+    if len(_words(kept)) > len(short) and (len(short) < 2 or len(short) <= 3 and short[-1].lower() in
+                                           ("on", "at", "of", "in", "for", "to", "with", "about", "from")):
+        # The number was the subject ("CI on PR 147753" left "CI on", then "CI"): keep it.
+        text = _trim_end(re.sub(r"\s{2,}", " ", kept).strip(" ,;:-\u2013\u2014"))
     parts = [p for p in _HEAD_SPLIT.split(text) if p.strip()]
     if not parts:
         return ""

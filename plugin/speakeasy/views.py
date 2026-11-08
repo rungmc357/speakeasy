@@ -387,6 +387,15 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             body["sort"] = word
     if kind == "before_after" and not ("before" in body or "after" in body):
         return {}
+    if kind == "stats":
+        # "Shared notes crash (FIELDNOTE-IOS-3KD)": the tracker's key is not a heading; and a word
+        # value reads as a word ("Fatal", not "fatal"), like the label above it.
+        if isinstance(body.get("title"), str):
+            body["title"] = _TRACKER_KEY.sub("", body["title"]).strip() or body["title"]
+        for item in body.get("items") or []:
+            v = item.get("value")
+            if isinstance(v, str) and re.fullmatch(r"[a-z][a-z ]*", v):
+                item["value"] = _cap_first(v.replace("_", " "))
     if kind == "weather":
         # A row that is only a label ("6am" with no temperature) draws an empty bar: no row
         # beats an empty one, and an hour or day list of nothing but labels is left out.
@@ -424,6 +433,9 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
     if kind == "status":
         items = [{**i, "state": i["state"].lower()} for i in body.get("items") or []
                  if i.get("name") and str(i.get("state", "")).lower() in STATUS_STATES]
+        for i in items:
+            if isinstance(i.get("note"), str):
+                i["note"] = _first_clause(i["note"])
         return {**body, "items": items} if body.get("scope") and items else {}
     if kind == "draft":
         channel = str(body.get("channel", "")).lower()
@@ -463,6 +475,11 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 # the note instead, so the row's mono reference column holds only numbers.
                 i.pop("ref")
                 i["note"] = f"{ref.strip()} · {i['note']}" if i.get("note") else ref.strip()
+        states = {str(i.get("state", "")).strip().lower() for i in items}
+        if len(items) >= 3 and len(states) == 1 and "" not in states:
+            # "Open" on every row says nothing a row can't: the title can say it once.
+            for i in items:
+                i.pop("state")
         if out.get("entity") in ("pr", "issue"):
             for i in items:
                 i["name"] = _cap_first(_work_title(i["name"]))
@@ -481,7 +498,20 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         entity = str(body.get("entity", "")).lower()
         if entity not in PREVIEW_ENTITIES or not body.get("title"):
             return {}
-        return _entity_item(entity, {**body, "entity": entity})
+        out = _entity_item(entity, {**body, "entity": entity})
+        said = _norm(out.get("summary") or "")
+        if isinstance(out.get("list"), list):
+            # A key point that only restates the summary ("Goal: drafts keep attachments") is said twice.
+            kept = [x for x in out["list"] if not (isinstance(x, str) and _restates(x, said))]
+            out["list"] = kept
+            if not kept:
+                out.pop("list")
+        if isinstance(out.get("flags"), list):
+            listed = _norm(" ".join(x for x in out.get("list") or [] if isinstance(x, str)))
+            out["flags"] = [f for f in out["flags"] if not (isinstance(f, str) and _restates(f, listed))]
+            if not out["flags"]:
+                out.pop("flags")
+        return out
     if kind == "issue":
         if not body.get("title"):
             return {}
@@ -516,6 +546,10 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         for c in checks:
             if c.get("note") and _MACHINE_NOTE.search(c["note"]):
                 c.pop("note")   # the state already says it; raw CI words are worse than none
+        notes = [c.get("note") for c in checks]
+        if len(checks) > 1 and notes[0] and all(n == notes[0] for n in notes):
+            for c in checks:   # one reason on every check ("Needs a maintainer to approve") is the card's reason
+                c.pop("note")
         out.pop("checks", None)
         if checks:
             out["checks"] = checks
@@ -535,6 +569,10 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         if not items:
             return {}
         out = {**body, "items": items}
+        if isinstance(out.get("title"), str):
+            out["title"] = _PAREN_ASIDE.sub("", out["title"]).strip() or out["title"]
+        if isinstance(out.get("note"), str) and _restates(out["note"], _norm(out.get("title") or "")):
+            out.pop("note")
         nxt = [_label(n) for n in out.get("next") or [] if n]
         out.pop("next", None)
         if nxt:
@@ -555,6 +593,35 @@ _PRIORITY_WORDS = {"0": None, "1": "Urgent", "2": "High", "3": "Medium", "4": "L
 _INTERNAL_ID = re.compile(r"(?i)#?(?:[a-z]{1,4}_[0-9a-f]{6,}|[0-9a-f]{12,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{20,}|\d{8,})")
 # Machine words in a check's note: CI states in snake_case and bare commit SHAs ("action_required on 05396a4").
 _MACHINE_NOTE = re.compile(r"\b[a-z]+_[a-z_]+\b|\b[0-9a-f]{7,40}\b")
+
+
+_TRACKER_KEY = re.compile(r"\s*\((?:[A-Z][A-Z0-9]*-)+[A-Z0-9]+\)\s*$")
+_PAREN_ASIDE = re.compile(r"\s*\([^()]{1,40}\)")
+
+
+def _first_clause(note: str, limit: int = 44) -> str:
+    """A tile's note as one short clause: "Very busy; 18.0 GB free, 206 GB disk free" -> "Very busy"."""
+    note = note.strip()
+    if len(note) <= limit:
+        return note
+    head = re.split(r"\s*[;\u2014]\s*|\.\s+", note)[0].strip()
+    if len(head) <= limit:
+        return head
+    parts = [p.strip() for p in head.split(",")]
+    out = parts[0]
+    for p in parts[1:]:
+        if len(out) + len(p) + 2 > limit:
+            break
+        out += ", " + p
+    return out
+
+
+def _restates(text: str, said: str) -> bool:
+    """Most of *text*'s content words already appear in *said* (a normalized string)."""
+    words = [w for w in _norm(re.sub(r"^\w+:\s*", "", text)).split() if len(w) > 2 and w not in _LABEL_STOP]
+    if not words or said.strip() == "":
+        return False
+    return sum(f" {w} " in said for w in words) * 4 >= len(words) * 3
 
 
 def _cap_first(text: str) -> str:

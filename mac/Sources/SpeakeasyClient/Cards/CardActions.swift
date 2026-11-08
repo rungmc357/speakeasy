@@ -31,7 +31,8 @@ public struct CardActionBar: View {
     @MainActor static func serverActions(_ card: ViewCard, model: VoicePanelModel) -> [CardAction] {
         model.capabilities?.cardActions == true && !CardLinks.inCardActions.contains(card.kind) ? card.actions : []
     }
-    /// Copy is offered under cards whose text is worth pasting (a chart copies its numbers).
+    /// Copy is offered under cards whose text is worth pasting (a chart copies its numbers; a stats grid
+    /// alone under a lone Copy read as filler, SPK-231 reps).
     /// DEBUG `-demoNoCardCopy`: none, for website films that frame a chart on its own.
     static func copies(_ card: ViewCard) -> Bool {
         #if DEBUG
@@ -40,7 +41,7 @@ public struct CardActionBar: View {
         return copyKinds.contains(card.kind)
     }
     static let mapsKinds: Set<String> = ["place", "route", "transit"]
-    static let copyKinds: Set<String> = ["chart", "stats", "list", "steps", "fact", "conversion", "math", "translation",
+    static let copyKinds: Set<String> = ["chart", "list", "steps", "fact", "conversion", "math", "translation",
                                          "definition", "comparison", "nutrition", "message_draft", "draft"]
 
     public var body: some View {

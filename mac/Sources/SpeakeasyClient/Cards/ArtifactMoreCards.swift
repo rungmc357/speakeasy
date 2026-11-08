@@ -159,6 +159,7 @@ struct ActionRow: View {
                             .padding(.horizontal, 7).padding(.vertical, 2.5)
                             .foregroundStyle(tone == nil ? Color.primary : Self.tone(tone))
                             .background(Capsule().fill((tone == nil ? Color.primary : Self.tone(tone)).opacity(0.12)))
+                            .fixedSize().layoutPriority(1)   // the note gives way, never the status word ("Due Mon…")
                     }
                     if let note = item["note"].string { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
                 }
