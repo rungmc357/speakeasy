@@ -329,12 +329,13 @@ struct PRCard: View {
             }
             let checks = card["checks"].array
             if !checks.isEmpty, fit != .compact {
-                let rows = Self.checkRows(checks, total: card["checks_total"].double.map(Int.init), restState: card["checks_rest"].string)
+                let rows = PRChecks.rows(checks, total: card["checks_total"].double.map(Int.init), restState: card["checks_rest"].string)
                 // Every check in one state ("didn't run" four times): the icon and the count line say it once.
                 let states = Set(checks.map { $0["state"].string ?? "" })
                 let same = states.count == 1
-                let total = max(Int(card["checks_total"].double ?? 0), checks.count)
-                let restSame = total == checks.count || card["checks_rest"].string == states.first
+                let sent = checks.reduce(0) { $0 + PRChecks.weight($1) }
+                let total = max(Int(card["checks_total"].double ?? 0), sent)
+                let restSame = total == sent || card["checks_rest"].string == states.first
                 if same, restSame, let only = states.first, ["skipped", "passed", "pending"].contains(only), total > 2 {
                     // Fifteen checks that all skipped (or all passed, or all wait their turn) are one
                     // fact, not a list of names: three identical "waiting" rows filled a third of the card.
@@ -347,7 +348,7 @@ struct PRCard: View {
                     }
                     // Groups the agent named with what's in them ("Docker (5 checks)": build, test,
                     // publish) say what didn't run; bare names would be the wall again.
-                    let grouped = checks.filter { $0["note"].string != nil }
+                    let grouped = checks.filter { $0["note"].string != nil && $0["count"].double == nil }
                     if !grouped.isEmpty && grouped.count <= 4 {
                         ForEach(Array(grouped.enumerated()), id: \.offset) { _, check in
                             VStack(alignment: .leading, spacing: 1) {
@@ -380,22 +381,10 @@ struct PRCard: View {
         let title: String = card["title"].string ?? ""
         return title.contains(tag) ? nil : tag
     }
-    /// Checks as the card lists them: what failed or is still running first, at most five; the rest
-    /// as one line ("10 more skipped"). Fifteen identical "Skipped" rows were a wall, not news.
-    /// *total*: how many the PR has when the server sent only some (``checks_total``), and
-    /// *restState* the one state all the unsent ones share.
+    /// Checks as the card lists them (PRChecks.rows, SPK-231 D5): every failure by name, identical
+    /// waiting checks as one line, the rest counted ("10 more skipped").
     static func checkRows(_ checks: [JSONValue], cap: Int = 4, total: Int? = nil, restState: String? = nil) -> (shown: [JSONValue], rest: String?) {
-        let order = ["failed": 0, "running": 1, "pending": 2, "passed": 3, "skipped": 4]
-        let sorted = checks.enumerated().sorted {
-            (order[$0.element["state"].string ?? ""] ?? 5, $0.offset) < (order[$1.element["state"].string ?? ""] ?? 5, $1.offset)
-        }.map(\.element)
-        let all = max(total ?? 0, sorted.count)
-        guard all > cap + 1 else { return (sorted, nil) }
-        let shown = Array(sorted.prefix(cap)), left = sorted.dropFirst(cap)
-        var states = Set(left.map { $0["state"].string ?? "" })
-        if all > sorted.count { states.insert(restState ?? "") }
-        let word = states.count == 1 && !(states.first ?? "").isEmpty ? " " + (states.first ?? "") : ""
-        return (shown, "\(all - shown.count) more\(word)")
+        PRChecks.rows(checks, cap: cap, total: total, restState: restState)
     }
     private var stateIcon: String {
         switch card["state"].string {
@@ -419,6 +408,8 @@ struct PRCard: View {
         }()
         let note = check["note"].string ?? ["skipped": "didn't run", "pending": "waiting", "running": "running",
                                             "failed": "failed", "passed": "passed"][state] ?? state
+        // A collapsed row ("6 checks waiting") already says its state; no second word beside it.
+        let word = word && check["count"].double == nil
         return HStack(spacing: 8) {
             Image(systemName: icon).font(.footnote).foregroundStyle(tint)
             Text(check["name"].string ?? "").font(.footnote.weight(.medium)).foregroundStyle(style.ink)
