@@ -341,9 +341,9 @@ def model_options_payload() -> dict[str, Any]:
         "provider": "anthropic", "model": "claude-opus-5-5", "base_url": "",
         "providers": [
             {"slug": "anthropic", "name": "Anthropic", "is_current": True, "is_user_defined": False,
-             "authenticated": True, "models": ["claude-opus-5-5", "claude-sonnet-5", "claude-haiku-4-5"],
+             "authenticated": True, "models": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
              "featured_models": [], "capabilities": {"claude-opus-5-5": {"reasoning": True},
-                                                     "claude-haiku-4-5": {"reasoning": True}}},
+                                                     "claude-haiku-5-5": {"reasoning": True}}},
             {"slug": "openai-codex", "name": "OpenAI Codex", "is_current": False, "is_user_defined": False,
              "authenticated": True, "models": ["gpt-6.1-sol", "gpt-5.5", "gpt-5.4-mini"],
              "capabilities": {}},

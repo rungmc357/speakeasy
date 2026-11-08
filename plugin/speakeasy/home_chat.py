@@ -69,16 +69,22 @@ FAILED_S = 24 * 3600          # Auto skips a model that failed in real use for t
 
 # Approved coordinator models, best first. Home's coordinator answers chat and decides "reply, start
 # a job, message a job"; it needs to be quick, good at plain conversation and reliable with tool
-# calls. Each entry is (provider slug or None for any provider, model-id pattern); within one entry
-# the newest version the user has wins. Auto picks the first entry the user already has connected in
-# Hermes; the Home model chip overrides it. Keep this list short and current; swap entries here.
+# calls. Each entry is a model family: (preferred provider slug or None, model-id pattern). Auto picks
+# the first family the user already has connected in Hermes, and within a family only the NEWEST
+# version counts, from whichever provider serves it (the preferred provider first when it has that
+# version): an older family member is never picked while a newer one is connected. The Home model
+# chip overrides Auto. Measured on the real coordinator prompt (378 calls, invented asks graded
+# against a fixed answer key): Sonnet 5.5 routed 98% right at ~1.9 s, Haiku 5.5 93% at ~2.0 s,
+# Haiku 4.5 85%. The prompt is slim, so the mid tier costs no latency. Never the top tier (Opus):
+# that is the work model's job. Keep this list short and current; swap entries here.
 COORDINATOR_MODELS: list[tuple[str | None, str]] = [
-    ("anthropic", r"^claude-haiku-\d"),      # fast, good plain chat, dependable tool calls
-    (None, r"claude-haiku-\d"),              # the same model through another provider (OpenRouter, Bedrock...)
+    ("anthropic", r"(^|/)claude-sonnet-\d"),   # most accurate routing, as quick as Haiku on this prompt
+    ("anthropic", r"(^|/)claude-haiku-\d"),    # quick, good plain chat, dependable tool calls
     (None, r"(^|/)gpt-\d+(\.\d+)*-mini$"),
     (None, r"gemini-\d+(\.\d+)*-flash$"),
     (None, r"grok-\d+(\.\d+)*-fast"),
 ]
+FAST_OPTIONS = 2              # "Fast replies" rows besides Auto (one per family: Sonnet, Haiku)
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 _SMALL_TALK = re.compile(
@@ -150,19 +156,29 @@ def acknowledgement(reply: str, asked: str) -> str:
 
 
 def _version(model: str) -> tuple[int, ...]:
-    """Newest first within a family: the version digits in the id (dates count as one big number)."""
-    return tuple(int(n) for n in re.findall(r"\d+", model)[:4])
+    """Newest first within a family: the version digits in the id, then a release date (8 digits)
+    as a tiebreak, never as a version (``claude-haiku-4-5-20251001`` is 4.5)."""
+    nums = [int(n) for n in re.findall(r"\d+", model.rpartition("/")[2])]
+    head = [n for n in nums if n < 10000][:3]
+    dated = [n for n in nums if n >= 10000][:1]
+    return tuple(head + [0] * (3 - len(head)) + (dated or [0]))
 
 
 def approved(entries: dict[str, dict[str, Any]]) -> list[str]:
-    """The user's connected models that are approved coordinators, best first (COORDINATOR_MODELS
-    order, newest version first within an entry). Pure: reads only *entries*."""
+    """The user's connected models that are approved coordinators, best first: COORDINATOR_MODELS
+    order, and per family only its newest version (an older one never appears while a newer one is
+    connected), the preferred provider first, then others serving that same version. Pure: reads
+    only *entries*."""
     out: list[str] = []
     for provider, pattern in COORDINATOR_MODELS:
         rx = re.compile(pattern, re.I)
-        hits = [e for e in entries.values()
-                if (provider is None or e.get("provider") == provider) and rx.search(str(e.get("model") or ""))]
-        hits.sort(key=lambda e: _version(str(e["model"])), reverse=True)
+        hits = [e for e in entries.values() if rx.search(str(e.get("model") or ""))]
+        if not hits:
+            continue
+        top = max(_version(str(e["model"]))[:3] for e in hits)
+        hits = [e for e in hits if _version(str(e["model"]))[:3] == top]
+        hits.sort(key=lambda e: (provider is not None and e.get("provider") != provider,
+                                 tuple(-n for n in _version(str(e["model"])))))
         out += [e["id"] for e in hits if e["id"] not in out]
     return out
 
@@ -751,8 +767,16 @@ class HomeChat:
             if mid in entries and mid not in ids and row(mid)["name"] not in names:
                 ids.append(mid)
                 names.add(row(mid)["name"])
+        more: list[str] = []
+        for mid in entries:   # "More…" in the picker: every other connected model, one row per name
+            if len(more) >= 60:
+                break
+            if mid not in ids and row(mid)["name"] not in names:
+                more.append(mid)
+                names.add(row(mid)["name"])
         return {"model": row(picked["model"]) if picked["model"] else None, "source": picked["source"],
-                "default": row(default) if default else None, "options": [row(m) for m in ids]}
+                "default": row(default) if default else None, "options": [row(m) for m in ids],
+                "more": [row(m) for m in more]}
 
     def _delete(self, mid: str) -> None:
         with self.store._lock, self.store._db:
@@ -1013,13 +1037,11 @@ class HomeChat:
             aux = (self._config().get("auxiliary") or {}).get(route["task"]) or {}
             if isinstance(aux, dict) and aux.get("model"):
                 current = f"{aux.get('provider') or 'auto'}/{aux['model']}"
+        # "Fast replies": the approved coordinator families the user has (newest version each), never
+        # the user's main model (often the top tier, which is the work model's job), plus the
+        # user's own past pick while it is still connected, so the sheet shows what is in use.
         options = approved(entries)[:16]
-        main = self._config().get("model")
-        if isinstance(main, dict) and main.get("default") and main.get("provider"):
-            mid = f"{main['provider']}/{main['default']}"
-            if mid in entries and mid not in options:
-                options.append(mid)
-        if current and current in entries and current not in options:
+        if current and current in entries and current not in options and route.get("source") == "chosen":
             options.insert(0, current)
 
         def row(mid: str) -> dict[str, Any]:
@@ -1036,7 +1058,7 @@ class HomeChat:
             r = row(mid)
             if mid == current or r["name"] not in {x["name"] for x in rows}:   # one row per model, not per provider
                 rows.append(r)
-        rows = rows[:4] + [r for r in rows[4:] if r["id"] in {current, f"{(self._config().get('model') or {}).get('provider')}/{(self._config().get('model') or {}).get('default')}"}]
+        rows = rows[:FAST_OPTIONS] + [r for r in rows[FAST_OPTIONS:] if r["id"] == current]
         coordinator = {"model": row(current) if current else None, "source": route.get("source"),
                        "auto": row(auto) if auto else None, "options": rows, "note": note}
         # Top level = the coordinator (kept for older apps); ``work`` = what Home's chip picks.

@@ -136,6 +136,6 @@ def test_distinct_conversations_and_default_change(linked):
     s.store.set_model_choice("session:other", OPUS, "none")
     for sid in ("parent", "child", "other", "parent", "child"):
         assert page(s, sid)["next_model"]["id"] == (OPUS if sid == "other" else GPT)
-    s.settings.patch({"jobs": {"model": "anthropic/claude-haiku-4-5", "reasoning": "low"}})
+    s.settings.patch({"jobs": {"model": "anthropic/claude-haiku-5-5", "reasoning": "low"}})
     assert page(s, "child")["next_model"]["id"] == GPT
     assert page(s, "other")["next_model"]["reasoning"] == "none"

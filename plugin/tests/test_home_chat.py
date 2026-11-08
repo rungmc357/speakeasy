@@ -208,10 +208,44 @@ def _entries(*ids):
 def test_auto_picks_the_first_approved_model_the_user_has():
     have = _entries("acme/big-model-3", "openai-codex/gpt-5.4-mini", "anthropic/claude-haiku-4-5",
                     "anthropic/claude-haiku-5-5", "anthropic/claude-opus-5-5")
-    assert HC.pick_auto(have) == "anthropic/claude-haiku-5-5"        # list order, newest version first
-    assert HC.approved(have)[:3] == ["anthropic/claude-haiku-5-5", "anthropic/claude-haiku-4-5",
-                                     "openai-codex/gpt-5.4-mini"]
+    assert HC.pick_auto(have) == "anthropic/claude-haiku-5-5"        # list order, newest version only
+    assert HC.approved(have) == ["anthropic/claude-haiku-5-5", "openai-codex/gpt-5.4-mini"]
     assert HC.pick_auto(_entries("acme/big-model-3", "studio/qwen3.8-coder")) is None
+
+
+def test_auto_prefers_the_newest_sonnet_then_the_newest_haiku_never_opus():
+    """N8c (bench: Sonnet 5.5 98% @1.9 s, Haiku 5.5 93% @2.0 s, Haiku 4.5 85%): newest Sonnet first,
+    then newest Haiku; an older family member never shows while a newer one is connected."""
+    have = _entries("anthropic/claude-opus-5-5", "anthropic/claude-sonnet-4-5-20250929", "anthropic/claude-sonnet-5-5",
+                    "anthropic/claude-haiku-4-5-20251001", "anthropic/claude-haiku-5-5", "openai-codex/gpt-5.4-mini")
+    assert HC.pick_auto(have) == "anthropic/claude-sonnet-5-5"
+    assert HC.approved(have) == ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5", "openai-codex/gpt-5.4-mini"]
+    # A newer version through another provider beats an older one from the preferred provider.
+    other = _entries("anthropic/claude-haiku-4-5", "openrouter/anthropic/claude-haiku-5.5")
+    assert HC.approved(other) == ["openrouter/anthropic/claude-haiku-5.5"]
+    # Same version from two providers: the preferred (direct) provider first.
+    both = _entries("openrouter/anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5-5")
+    assert HC.approved(both) == ["anthropic/claude-sonnet-5-5", "openrouter/anthropic/claude-sonnet-5.5"]
+    # A release date is a tiebreak, never a version: 4.5 dated stays older than 5.5.
+    assert HC._version("claude-haiku-4-5-20251001") < HC._version("claude-haiku-5-5")
+    assert not any("opus" in m for m in HC.approved(have))
+
+
+def test_fast_replies_list_sonnet_and_haiku_only_never_the_main_model(server, service, monkeypatch):
+    chat = service.home_chat
+    monkeypatch.setattr(service, "catalog", _Catalog(_entries(
+        "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5",
+        "anthropic/claude-haiku-4-5", "openai-codex/gpt-5.4-mini", "openai-codex/gpt-5.5")))
+    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "claude-opus-5-5", "provider": "anthropic"}})
+    status, body = http(server.base_url, "GET", "/voice/home/model", None, server.token)
+    c = body["coordinator"]
+    assert status == 200 and c["source"] == "auto" and c["auto"]["id"] == "anthropic/claude-sonnet-5-5"
+    assert [o["id"] for o in c["options"]] == ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"]
+    # The work model (the chip's hero) is the Hermes default; "More…" lists the rest, one row each.
+    w = body["work"]
+    assert w["model"]["id"] == "anthropic/claude-opus-5-5" and len(w["options"]) <= HC.WORK_OPTIONS
+    listed = [o["id"] for o in w["options"] + w["more"]]
+    assert len(listed) == len(set(listed)) and "openai-codex/gpt-5.5" in listed
 
 
 class _Catalog:
@@ -268,7 +302,7 @@ def test_the_home_chip_choice_wins_and_auto_comes_back(server, service, monkeypa
     monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"}})
     status, body = http(server.base_url, "GET", "/voice/home/model", None, server.token)
     assert status == 200 and body["source"] == "auto" and body["model"]["id"] == "anthropic/claude-haiku-5-5"
-    assert [o["id"] for o in body["options"]] == ["anthropic/claude-haiku-5-5", "acme/big-model-3"]
+    assert [o["id"] for o in body["options"]] == ["anthropic/claude-haiku-5-5"]
     status, body = http(server.base_url, "POST", "/voice/home/model", {"model": "acme/big-model-3"}, server.token)
     assert status == 200 and body["source"] == "chosen" and body["model"]["id"] == "acme/big-model-3"
     assert chat.route() == {"provider": "acme", "model": "big-model-3", "source": "chosen"}
