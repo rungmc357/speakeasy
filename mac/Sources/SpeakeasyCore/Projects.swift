@@ -326,9 +326,9 @@ public final class DemoProjectsBackend: ProjectsBackend {
         let shed = HermesProject(id: "p_shed", name: "Garden shed", icon: "hammer", color: .green, chats: 3, jobs: 2,
                                  notes: "Measurements in inches. Cedar, not pine.")
         let lantern = HermesProject(id: "p_lantern", name: "Lantern app", icon: "chevron.left.forwardslash.chevron.right",
-                                    color: .blue, board: "lantern", hasFolders: true, chats: 5, jobs: 1)
-        let trip = HermesProject(id: "p_trip", name: "Lakeside trip", icon: "airplane", color: .orange, chats: 2)
-        let office = HermesProject(id: "p_office", name: "Home office", icon: "desktopcomputer", color: .purple, chats: 1)
+                                    color: .blue, board: "lantern", hasFolders: true, chats: 1, jobs: 0)
+        let trip = HermesProject(id: "p_trip", name: "Lakeside trip", icon: "airplane", color: .orange, chats: 1)
+        let office = HermesProject(id: "p_office", name: "Home office", icon: "desktopcomputer", color: .purple)
         list = empty ? ProjectList() : ProjectList(projects: [shed, lantern, trip, office])
         let chats = [
             HistorySession(id: "demo_shed_1", title: "Cedar board prices", source: "speakeasy", sourceLabel: "Speakeasy",
@@ -346,9 +346,15 @@ public final class DemoProjectsBackend: ProjectsBackend {
                        finishedAt: now.addingTimeInterval(-6900)),
         ]
         pages = ["p_shed": ProjectPage(project: shed, chats: chats, jobs: jobs),
-                 "p_lantern": ProjectPage(project: lantern, chats: [], jobs: [],
+                 "p_lantern": ProjectPage(project: lantern, chats: [
+                    HistorySession(id: "demo_lantern_1", title: "Wick timer off by a minute", source: "cli", sourceLabel: "Terminal",
+                                   lastActivity: now.addingTimeInterval(-5400), preview: "The timer counts seconds; the wick table uses minutes.")],
+                                          jobs: [],
                                           board: KanbanBoardSummary(slug: "lantern", name: "Lantern app", ready: 2, running: 1)),
-                 "p_trip": ProjectPage(project: trip)]
+                 "p_trip": ProjectPage(project: trip, chats: [
+                    HistorySession(id: "demo_trip_1", title: "Cabins near the lake in June", source: "speakeasy", sourceLabel: "Speakeasy",
+                                   lastActivity: now.addingTimeInterval(-2 * 86400), preview: "Two cabins sleep four and allow dogs.")]),
+                 "p_office": ProjectPage(project: office)]
         if offer { list.offer = ProjectOffer(subject: "Compost", chats: 3) }
     }
 
