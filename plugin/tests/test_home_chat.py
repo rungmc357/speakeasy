@@ -391,6 +391,38 @@ def test_a_voice_memo_with_two_asks_gives_each_job_only_its_own(service, monkeyp
     assert all(b["source"] == "voice_message" for b in started)
 
 
+def test_an_ask_listed_twice_starts_one_job(service, monkeypatch):
+    """A model that puts an ask in more_jobs and also calls start_job for it again starts it once."""
+    started: list[dict] = []
+    monkeypatch.setattr(service, "start_job", lambda body, device_id=None: started.append(body) or
+                        {"run_id": f"run_{len(started)}", "session_id": None})
+    coordinator(service, {"tool": "start_job", "text": "",
+                          "args": {"request": "Find a hardware store open Sunday near downtown Denver",
+                                   "more_jobs": ["Find a well reviewed bike repair shop in Boulder"],
+                                   "reply": "On both."},
+                          "more": [{"tool": "start_job", "args": {
+                              "request": "Find a well-reviewed bike repair shop in Boulder", "reply": ""}}]})
+    service.home_chat.message({"text": "hardware store in Denver, and separately a bike shop in Boulder",
+                               "client_id": "c_dup"}, None)
+    assert [b["text"] for b in started] == ["Find a hardware store open Sunday near downtown Denver",
+                                            "Find a well reviewed bike repair shop in Boulder"]
+
+
+def test_a_voice_memo_job_gets_the_ask_the_coordinator_wrote(service, monkeypatch):
+    """One job from a two-part memo whose other part the reply handles: the job gets its own ask, not
+    the whole memo (which made it do the other part and drop its own)."""
+    started: list[dict] = []
+    monkeypatch.setattr(service, "start_job", lambda body, device_id=None: started.append(body) or
+                        {"run_id": f"run_{len(started)}", "session_id": None})
+    coordinator(service, {"tool": "start_job", "text": "",
+                          "args": {"request": "Find a good rain jacket under $100", "more_jobs": [],
+                                   "reply": "Looking for a jacket. Which market did you mean?"}})
+    service.home_chat.message({"text": "market hours and a rain jacket", "client_id": "c_vm1"}, None,
+                              voice={"duration": 6.0}, job_text='[The user sent a voice message] "market hours and a rain jacket"')
+    assert [b["text"] for b in started] == ["Find a good rain jacket under $100"]
+    assert started[0]["source"] == "voice_message"
+
+
 @pytest.mark.parametrize("raw,shown", [
     ("The Moon is about 384,400 km (238,900 miles) away on average.",
      "The Moon is about 238,900 miles (384,400 km) away on average."),

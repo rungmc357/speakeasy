@@ -219,6 +219,25 @@ def _job_id(job: Any, aliases: dict[str, str], titles: dict[str, str]) -> str | 
     return None
 
 
+def _words(text: Any) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", str(text or "").lower())) - {"a", "an", "the", "and", "in", "on", "for", "to"}
+
+
+def _distinct(main: Any, extra: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Each ask once: models sometimes list an ask in ``more_jobs`` and also call ``start_job`` for it
+    again, which started the same search twice. A further ask that repeats (nearly word for word) the
+    main ask or an earlier one is dropped."""
+    kept: list[dict[str, str]] = []
+    seen = [_words(main)] if _words(main) else []
+    for e in extra:
+        w = _words(e["request"])
+        if not w or any(len(w & s) / len(w | s) >= 0.8 for s in seen):
+            continue
+        seen.append(w)
+        kept.append(e)
+    return kept
+
+
 def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = None) -> dict[str, Any] | None:
     """The coordinator's answer, checked: a tool call (``{"tool", "args", "text"}``), a legacy JSON reply,
     or plain text (chat). A follow-up/cancel must name a known job. None when it isn't usable (the caller
@@ -242,7 +261,7 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
             words = margs.get("request")
             if mname == "start_job" and isinstance(words, str) and words.strip():
                 extra.append({"request": " ".join(words.split()), "reply": str(margs.get("reply") or "").strip()})
-        data["extra"] = extra[:EXTRA_JOBS]
+        data["extra"] = _distinct(args.get("request"), extra)[:EXTRA_JOBS]
     else:
         text = raw.get("text") if isinstance(raw, dict) else raw
         if not isinstance(text, str) or not text.strip():
@@ -473,11 +492,11 @@ class HomeChat:
         action = decided["action"]
         try:
             if action == "start":
-                # A voice memo's job hears the memo itself (like a voice note in a chat), unless the
-                # memo held several asks: then each job gets only its own ask.
-                split = bool(decided.get("extra")) and decided.get("request")
-                words = (decided["request"] if split else None) or job_text \
-                    or (decided.get("request") if not voice else None) or text
+                # A voice memo's job gets the ask the coordinator wrote for it, like a typed message:
+                # the memo itself stays in the thread. Handing the job the whole memo made it do the
+                # part the reply had already handled (or asked about) and drop the ask it was for.
+                # Without a written ask, the job hears the memo itself.
+                words = decided.get("request") or job_text or text
                 job_body = {"text": words, "source": "voice_message" if voice else "typed"}
                 for k in ("model", "reasoning", "agent"):
                     if body.get(k) is not None:

@@ -44,19 +44,19 @@ public struct NowWorkStrip: View {
                         // One line at any volume: the counts, never a cut-off title.
                         HStack(spacing: 8) {
                             Text(pill).fixedSize().foregroundStyle(needs > 0 ? Color.accentColor : Color.primary)
-                            Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold)).accessibilityHidden(true)
                         }
                     }
                     HStack(spacing: 8) {
                         Text(running > 0 ? "\(running) running" : "Work").fixedSize()
                         if needs > 0 { Text("· \(needs) needs you").foregroundStyle(Color.accentColor).fixedSize() }
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold)).accessibilityHidden(true)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         HStack {
                             Text(running > 0 ? "\(running) running" : "Work").fixedSize()
                             Spacer(minLength: 0)
-                            Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold))
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2.weight(.semibold)).accessibilityHidden(true)
                         }
                         if needs > 0 { Text("\(needs) needs you").foregroundStyle(Color.accentColor).fixedSize(horizontal: false, vertical: true) }
                     }.padding(.vertical, 6)
@@ -77,8 +77,10 @@ public struct NowWorkStrip: View {
                     }
                     if open { onBoard() }
                 })
-                // One control: its words, not a second "Go Down" element for the chevron.
-                .accessibilityElement(children: .ignore)
+                // One control: its words, not a second "Go Down" element for the chevron. Combined
+                // (not ignored) so the element keeps its children's on-screen frame under the
+                // scroll-edge bar; an ignored container reported a frame below the drawn pill.
+                .accessibilityElement(children: .combine)
                 .accessibilityLabel(pillLabel)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { toggle() }
