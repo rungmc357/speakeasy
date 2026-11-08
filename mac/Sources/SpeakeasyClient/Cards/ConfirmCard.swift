@@ -104,8 +104,7 @@ struct ConfirmCard: View {
                         if let description = item["description"].string {
                             Text(AgentMarkdown.attributed(description)).font(.caption).foregroundStyle(.secondary)
                         }
-                        Text([item["quantity"].string.map { "Qty \($0)" }, item["size"].string, item["colour"].string]
-                            .compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                        Text(ConfirmCard.itemFacts(item)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
                 }
@@ -257,5 +256,16 @@ struct ConfirmActionBar: View {
             .frame(minWidth: 420, minHeight: 320)
             #endif
         }
+    }
+}
+
+extension ConfirmCard {
+    /// "Qty 1 · 60 in. · Walnut top, black frame" under a name that already says 60 in. and a
+    /// description that already says the colour: each fact once.
+    static func itemFacts(_ item: JSONValue) -> String {
+        let said = [item["name"].string, item["description"].string].compactMap { $0 }.joined(separator: " ").lowercased()
+        let facts = [item["size"].string, item["colour"].string].compactMap { $0 }
+            .filter { !said.contains($0.lowercased()) }
+        return ([item["quantity"].string.map { "Qty \($0)" }].compactMap { $0 } + facts).joined(separator: " · ")
     }
 }

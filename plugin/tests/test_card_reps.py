@@ -12,7 +12,8 @@ def test_pr_title_loses_its_commit_prefix_and_raw_ci_words():
                      "checks": [{"name": "CI", "state": "pending", "note": "action_required on 05396a4"},
                                 {"name": "Lint", "state": "passed", "note": "No new warnings"}]})
     assert v["title"] == "Keep draft photos"
-    assert "note" not in v["checks"][0] and v["checks"][1]["note"] == "No new warnings"
+    # raw CI words become plain ones (an empty pending circle read as queued)
+    assert v["checks"][0]["note"] == "Waiting for approval to run" and v["checks"][1]["note"] == "No new warnings"
 
 
 def test_plain_titles_are_untouched():
@@ -224,8 +225,8 @@ def test_pr_checks_take_the_count_the_reason_says():
 
 
 def test_jobs_elapsed_loses_about_and_a_lone_key_point_joins_the_summary():
-    v = views.clean({"kind": "jobs", "items": [{"name": "Index rebuild", "status": "Copying shards", "elapsed": "about 19 min"}]})
-    assert v["items"][0]["elapsed"] == "19 min"
+    v = views.clean({"kind": "jobs", "items": [{"name": "nightly index rebuild", "status": "Copying shards", "elapsed": "about 19 min"}]})
+    assert v["items"][0]["elapsed"] == "19 min" and v["items"][0]["name"] == "Nightly index rebuild"
     v = views.clean({"kind": "preview", "entity": "document", "title": "Sync spec", "summary": "Goal: edits made offline merge cleanly.",
                      "list_label": "Key points", "list": ["Out of scope: shared folders"]})
     assert "list" not in v and "list_label" not in v
@@ -258,3 +259,27 @@ def test_status_job_slugs_read_as_words_and_scope_loses_its_aside():
         {"name": "personal daily digest", "state": "info"}]})
     assert v["scope"] == "Scheduled jobs"
     assert [i["name"] for i in v["items"]] == ["Nightly photo index refresh", "acme-api", "Personal daily digest"]
+
+
+def test_jobs_rows_read_trouble_and_idle_from_their_status():
+    v = views.clean({"kind": "jobs", "items": [
+        {"name": "Nightly digest", "status": "9:00 AM run missed"},
+        {"name": "Feed poller", "status": "Runs every minute, last ran 3:00 AM"},
+        {"name": "Index rebuild", "status": "Copying shards"}]})
+    assert [i.get("state") for i in v["items"]] == ["warn", "idle", None]
+
+
+def test_status_names_lose_the_project_the_scope_names_and_timeline_key_lists_go():
+    v = views.clean({"kind": "status", "scope": "Acmeweb deploys", "items": [
+        {"name": "acmeweb-api", "state": "bad"}, {"name": "acmeweb-dashboard", "state": "ok"}]})
+    assert [i["name"] for i in v["items"]] == ["API", "Dashboard"]
+    v = views.clean({"kind": "timeline", "days": [{"label": "Next", "items": [
+        {"when": "Next", "what": "Lanes ACME-172, ACME-218 and ACME-223 land", "state": "next"}]}]})
+    assert v["days"][0]["items"][0]["what"] == "Lanes land"
+
+
+def test_checks_waiting_on_approval_say_so():
+    v = views.clean({"kind": "pr", "repo": "acme/widgets", "number": 77, "title": "Fix login", "state": "open",
+                     "reason": "Nothing ran yet.", "checks": [{"name": "Unit", "state": "pending", "note": "action_required"},
+                                                              {"name": "Lint", "state": "pending", "note": "Queued"}]})
+    assert v["checks"][0]["note"] == "Waiting for approval to run"

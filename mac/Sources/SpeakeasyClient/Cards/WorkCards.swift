@@ -351,7 +351,12 @@ struct JobsCard: View {
                 if let t = item["elapsed"].string { Text(t).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                if needs { Circle().fill(style.needsYou).frame(width: 6, height: 6).frame(width: 12) } else { CardLiveDot() }
+                let state = item["state"].string   // the server's read of the status: warn (stuck, missed) or idle
+                if needs || state == "warn" {
+                    Circle().fill(needs ? style.needsYou : style.tone("warn")).frame(width: 6, height: 6).frame(width: 12)
+                } else if state == "idle" {
+                    Circle().fill(style.faint).frame(width: 6, height: 6).frame(width: 12)
+                } else { CardLiveDot() }
                 Text(item["status"].string ?? "").font(.footnote).foregroundStyle(needs ? style.needsYou : style.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

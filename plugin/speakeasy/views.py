@@ -453,6 +453,14 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 # ("fieldnote-api") are the names people use for projects and stay as written.
                 name = re.sub(r"[-_]", " ", name)
             i["name"] = name[0].upper() + name[1:] if name[:1].islower() and " " in name else name
+        scope_words = {w.lower() for w in re.findall(r"[A-Za-z0-9]+", str(body.get("scope") or ""))}
+        heads = {re.split(r"[-_ ]", i["name"], maxsplit=1)[0].lower() for i in items}
+        if len(items) >= 2 and len(heads) == 1 and heads <= scope_words:
+            # "Fieldnote deploys": fieldnote-api, fieldnote-web -> api, web (cut to "Fieldnote-a…" in a tile).
+            for i in items:
+                rest = re.split(r"[-_ ]", i["name"], maxsplit=1)
+                if len(rest) == 2 and rest[1].strip():
+                    i["name"] = _cap_first(rest[1].strip()) if len(rest[1].strip()) > 3 else rest[1].strip().upper()
         if isinstance(body.get("scope"), str):
             # "Scheduled jobs (partial list, ~3 AM snapshot)": the aside is the agent's caveat; the answer says it.
             body = {**body, "scope": _PAREN_ASIDE.sub("", body["scope"]).strip() or body["scope"]}
@@ -476,6 +484,13 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 # "SPK-208 Home is now a chat": a step reads as what happened; the key is tracker filing.
                 what = re.sub(r"^(?:[A-Z][A-Z0-9]*-\d+|#\d+)[:\s\u2014-]+(?=\S+\s+\S)", "", i["what"].strip())
                 i["what"] = _cap_first(what) if what != i["what"].strip() else what
+                keys = re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b", i["what"])
+                if len(keys) >= 2:
+                    # "Lanes SPK-172, SPK-218 and SPK-223 land": the words without the list of keys.
+                    bare = re.sub(r"\s*\(?\b[A-Z][A-Z0-9]*-\d+\b\)?(?:\s*(?:,|and|&)\s*)?", " ", i["what"])
+                    bare = re.sub(r"\s{2,}", " ", bare).strip(" ,;:\u2014-")
+                    if len(bare.split()) >= 2:
+                        i["what"] = bare
                 # A note that is a list of keys ("Includes SPK-232, SPK-233, SPK-241") says nothing to read.
                 if isinstance(i.get("note"), str) and len(re.findall(r"\b[A-Z][A-Z0-9]*-\d+\b|#\d+", i["note"])) >= 3:
                     i.pop("note")
@@ -593,7 +608,9 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         checks = [{**c, "state": c["state"].lower()} for c in out.get("checks") or []
                   if c.get("name") and str(c.get("state", "")).lower() in CHECK_STATES]
         for c in checks:
-            if c.get("note") and _MACHINE_NOTE.search(c["note"]):
+            if c.get("note") and re.search(r"(?i)action[_ ]required|awaiting approval|needs approval", c["note"]):
+                c["note"] = "Waiting for approval to run"   # an empty pending circle read as queued
+            elif c.get("note") and _MACHINE_NOTE.search(c["note"]):
                 c.pop("note")   # the state already says it; raw CI words are worse than none
         notes = [c.get("note") for c in checks]
         if len(checks) > 1 and notes[0] and all(n == notes[0] for n in notes):
@@ -627,6 +644,15 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 i["ask"] = _label(i["ask"])
             if not i.get("needs_you"):
                 i.pop("ask", None)
+            # A job that is stuck or missed its run isn't live work: it reads as trouble (amber), and
+            # one that only ran earlier ("last ran 3 AM") as idle, not under the green live dot.
+            low = i["status"].lower()
+            if not i.get("needs_you") and re.search(r"\b(?:missed|stuck|stall(?:ed|ing)?|fail(?:ed|ing)?|error|hung|holding up|timed out|crash)", low):
+                i["state"] = "warn"
+            elif not i.get("needs_you") and re.search(r"\b(?:last ran|ran at|idle|paused|scheduled for|next run|waiting to run)\b", low):
+                i["state"] = "idle"
+            if i["name"][:1].islower() and " " in i["name"]:
+                i["name"] = i["name"][0].upper() + i["name"][1:]   # "personal daily journal writeback" heads a row
             if isinstance(i.get("elapsed"), str):
                 # "about 19 min" pushed the name onto two lines; a card corner is exact enough as "19 min".
                 i["elapsed"] = re.sub(r"(?i)^(?:about|around|roughly|approx\.?|~)\s*", "", i["elapsed"].strip())
