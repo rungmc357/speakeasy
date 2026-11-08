@@ -52,7 +52,7 @@ struct MacNowThread: View {
                 Label(file.label, systemImage: file.symbol)
                     .font(.callout).lineLimit(1).truncationMode(.middle)
                     .padding(.horizontal, 10).padding(.vertical, 8)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(file.spoken)
             }
@@ -62,7 +62,7 @@ struct MacNowThread: View {
         HStack {
             Spacer(minLength: 32)
             Text(text).font(.callout).padding(12)
-                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }.accessibilityIdentifier("mac-now-ask")
     }
     /// The coordinator's reply in Home's chat: plain text on the left. No model under it (N13):
@@ -71,7 +71,7 @@ struct MacNowThread: View {
         HStack {
             Text(AgentMarkdown.attributed(text)).font(.callout).textSelection(.enabled)
             .padding(12)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16))
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             Spacer(minLength: 32)
         }.accessibilityIdentifier("mac-now-reply")
     }
@@ -177,7 +177,7 @@ struct MacNowWorkList: View {
                     }.scrollTargetLayout()
                 }.scrollTargetBehavior(.viewAligned).defaultScrollAnchor(.leading)
             }
-        }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }.padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

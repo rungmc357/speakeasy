@@ -67,6 +67,9 @@ struct DayCard: View {
                         }
                     }
                     .cardWell(style, padding: style.capsHeaders ? 8 : 12)
+                    // The well reaches into the card's padding so its times and titles stay in the
+                    // same columns as the rows outside it (they sat 12 pt to the right).
+                    .padding(.horizontal, style.capsHeaders ? 0 : -12)
                     .accessibilityElement(children: .contain)
                 } else {
                     row(events[group[0]], next: group[0] == nextIndex(events))

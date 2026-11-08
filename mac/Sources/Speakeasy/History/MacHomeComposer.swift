@@ -307,7 +307,7 @@ private struct MacHomeBottomBarLive: View {
     var body: some View {
         if voice.state.connection.isOpen && !voice.state.workOnly {
             MacNowCallControls(voice: voice)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .accessibilityIdentifier("mac-home-call-dock")
         } else {
