@@ -389,3 +389,16 @@ def test_a_voice_memo_with_two_asks_gives_each_job_only_its_own(service, monkeyp
                               voice={"duration": 6.0}, job_text='[The user sent a voice message] "market hours and a rain jacket"')
     assert [b["text"] for b in started] == ["Find the farmers' market's Saturday hours", "Find a rain jacket under $100"]
     assert all(b["source"] == "voice_message" for b in started)
+
+
+@pytest.mark.parametrize("raw,shown", [
+    ("The Moon is about 384,400 km (238,900 miles) away on average.",
+     "The Moon is about 238,900 miles (384,400 km) away on average."),
+    ("It's 384,400 kilometers, or about 238,900 miles, from Earth.",
+     "It's about 238,900 miles (384,400 kilometers) from Earth."),
+    ("Expect 18°C (64°F) and light wind.", "Expect 64°F (18°C) and light wind."),
+    ("It's about 238,900 miles (384,400 km) away.", "It's about 238,900 miles (384,400 km) away."),
+    ("Three cafes within 2 miles.", "Three cafes within 2 miles."),
+])
+def test_replies_lead_with_us_units(raw, shown):
+    assert HC.us_units_first(raw) == shown

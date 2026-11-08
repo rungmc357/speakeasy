@@ -131,7 +131,8 @@ the same message also asks something you can answer yourself, answer it in that 
 ("Looking for a hardware store open Sunday. A soft-boiled egg takes about 6 minutes.").
 
 Rules:
-- Use US units first (miles, °F, pounds, inches).
+- Use US units: miles, feet, °F, pounds, inches, gallons, mph. Lead with the US number; add metric \
+only in parentheses after it, if at all (\"about 238,900 miles (384,400 km)\"), never metric first.
 - Never repeat or paraphrase the user's message back to them. Never narrate routing ("I'll send this to \
 a job", "a task will handle it"): just say what you're doing.
 - Never say you can't access something live or can't do something: start a job, which can.
@@ -143,6 +144,23 @@ one"), pick it from the list; if unclear, the newest one the conversation was ab
 Now: {now}.
 Jobs on Home (newest first):
 {jobs}"""
+
+_QUAL = r"(?:about |around |roughly |approximately |nearly |almost |~)"
+_NUM = r"-?\d[\d,]*(?:\.\d+)?"
+_METRIC = r"(?:km|kilometers?|kilometres?|meters?|metres?|m|cm|centimeters?|centimetres?|kg|kilograms?|°C|degrees Celsius|liters?|litres?|km/h|kph)"
+_US = r"(?:miles?|mi|feet|ft|foot|inches?|in|°F|degrees Fahrenheit|pounds?|lbs?|gallons?|mph)"
+_METRIC_FIRST = re.compile(
+    rf"(?P<q>{_QUAL})?(?P<m>{_NUM}\s?{_METRIC})\b(?P<sep>\s*\(\s*|,\s*or\s+|\s+or\s+|\s*/\s*|\s*\u2014\s*)"
+    rf"(?P<q2>{_QUAL})?(?P<u>{_NUM}\s?{_US})(?:\s*\)|,(?=\s))?", re.I)
+
+
+def us_units_first(text: str) -> str:
+    """A reply that leads with metric and gives the US figure second ("384,400 km (238,900 miles)")
+    is turned around: the US number first, metric in parentheses. Everything else is unchanged."""
+    def swap(m: re.Match) -> str:
+        qual = m.group("q") or m.group("q2") or ""
+        return f"{qual}{m.group('u').strip()} ({m.group('m').strip()})"
+    return _METRIC_FIRST.sub(swap, text or "")
 
 _REPLY = {"type": "string", "description": "One short line to the user, in your own words, about what you're doing."}
 _START_REPLY = {"type": "string", "description": "One short line to the user, in your own words, about what you're "
@@ -237,7 +255,7 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
             if not isinstance(data, dict) or "action" not in data and "reply" not in data:
                 data = None
         if data is None:
-            return {"reply": text[:REPLY_CHARS], "action": "none", "run_id": None, "request": None}
+            return {"reply": us_units_first(text)[:REPLY_CHARS], "action": "none", "run_id": None, "request": None}
     action = str(data.get("action") or "none").strip().lower()
     if action not in ACTIONS:
         return None
@@ -259,7 +277,7 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
         # One reply line for the whole message: the extra jobs' own lines join the first.
         lines = [reply] + [e["reply"] for e in extra if e["reply"] and e["reply"] not in reply]
         reply = " ".join(x for x in lines if x)
-    return {"reply": reply[:REPLY_CHARS], "action": action, "run_id": run_id, "request": request,
+    return {"reply": us_units_first(reply)[:REPLY_CHARS], "action": action, "run_id": run_id, "request": request,
             "extra": [e["request"] for e in extra]}
 
 

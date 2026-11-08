@@ -1240,7 +1240,8 @@ _PLAIN_AFTER_RUNNING = frozenset({"the", "a", "an", "your", "some", "tests", "te
 
 def plain_line(line: str | None, fallback: str | None = None) -> str:
     """A live line fit for Home: the line itself when it's plain words, else the task's last plain
-    status (*fallback*), else "Working…"."""
+    status (*fallback*), else nothing: a running card says only real status, never a stock
+    "Working…" placeholder."""
     def ok(text: str | None) -> bool:
         if not text or not text.strip() or _RAW_BITS.search(text):
             return False
@@ -1250,19 +1251,20 @@ def plain_line(line: str | None, fallback: str | None = None) -> str:
         return line.strip()
     if ok(fallback):
         return fallback.strip()
-    return "Working\u2026"
+    return ""
 
 
 def live_line(line: str | None, fallback: str | None = None) -> str:
     """A running card's one short present-tense line (home_words.status_line): the newest real
-    step, else the task's last plain status, else "Working…". Never tool narration, never a
-    three-clause worker report."""
+    step, else the task's last plain status, else nothing (the card shows only its title until the
+    job reports a real step). Never tool narration, never a three-clause worker report, never a
+    stock "Working…"."""
     for text in (line, fallback):
-        if text and plain_line(text) != "Working\u2026":
+        if text and plain_line(text):
             short = status_line(text)
             if short:
                 return short
-    return "Working\u2026"
+    return ""
 
 
 THING_LEAD = "\u200b: "

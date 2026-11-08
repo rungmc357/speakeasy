@@ -559,14 +559,14 @@ def test_the_now_reply_matches_the_contract_the_apps_decode(server, service, sta
 
 
 @pytest.mark.parametrize("raw,status,shown", [
-    ("Running sleep 240 + 3 commands", None, "Working\u2026"),
+    ("Running sleep 240 + 3 commands", None, ""),
     ("Running sleep 240 + 3 commands", "Checking the garden photos", "Checking the garden photos"),
-    ("Running cd ~/garden && make", None, "Working\u2026"),
-    ("Running web_search", None, "Working\u2026"),
+    ("Running cd ~/garden && make", None, ""),
+    ("Running web_search", None, ""),
     ("Running the tests after editing seeds.py", None, "Running the tests after editing seeds.py"),
     ("Editing seeds.py and beds.py", None, "Editing seeds.py and beds.py"),
     ("Comparing three desks", None, "Comparing three desks"),
-    (None, "Running ls -la", "Working\u2026"),
+    (None, "Running ls -la", ""),
 ])
 def test_home_live_lines_are_plain_words_never_raw_commands(raw, status, shown):
     assert N.plain_line(raw, status) == shown

@@ -83,7 +83,7 @@ def test_status_is_one_short_present_tense_line(raw, want):
 ])
 def test_tool_narration_is_never_a_status(raw):
     assert W.status_line(raw) is None
-    assert now_mod.live_line(raw) == "Working\u2026"
+    assert now_mod.live_line(raw) == ""
 
 
 def test_a_finished_job_has_no_status_line():
@@ -266,3 +266,11 @@ def test_a_ten_job_call_leaves_a_short_call_card_and_one_card_per_thing(server, 
     pic = next(i for i in body["items"] if "picture" in i["title"].lower())
     assert pic["also"] == 2
     assert body["pill"] == "All quiet"                                    # all done: nothing to count
+
+
+def test_a_job_with_no_real_step_yet_shows_no_stock_status():
+    """Before the first real status a running card shows its title alone: never "Working…"."""
+    assert now_mod.live_line(None) == ""
+    assert now_mod.live_line("", None) == ""
+    assert now_mod.live_line("Running web_search", "Running ls -la") == ""
+    assert now_mod.live_line("Comparing three desks") == "Comparing three desks"
