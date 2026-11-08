@@ -42,7 +42,7 @@ public enum EventTimes {
             let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.calendar = calendar
             f.timeZone = calendar.timeZone; f.dateFormat = "yyyy-MM-dd"; return f.date(from: v)
         }() : nil
-        guard let d = bare ?? date(v) ?? spoken(v, now: now, calendar: calendar) else { return v }
+        guard let d = bare ?? date(v) ?? spoken(v, now: now, calendar: calendar) else { return corner(v) }
         let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: d), to: calendar.startOfDay(for: now)).day ?? 0
         if days <= 0 { return bare != nil ? "Today" : clock(d, calendar: calendar, locale: locale) }
         if days == 1 { return "Yesterday" }
@@ -51,6 +51,24 @@ public enum EventTimes {
         let sameYear = calendar.component(.year, from: d) == calendar.component(.year, from: now)
         f.setLocalizedDateFormatFromTemplate(sameYear ? "MMMd" : "MMMdyyyy")
         return f.string(from: d)
+    }
+
+    /// A day word with a clock time, as an inbox writes it, cut to what a corner shows: "Today 7:12 AM"
+    /// -> "7:12 AM", "Sat 9:03 PM" / "Yesterday, 6 PM" -> the day. Anything else passes through.
+    static func corner(_ v: String) -> String {
+        let clockRe = #"\d{1,2}(?::\d{2})?\s?[AaPp]\.?[Mm]\.?(?:\s+(?:ET|EST|EDT|PT|PST|PDT|UTC))?"#
+        if let r = v.range(of: #"^(?:Today|Tonight|This morning|This afternoon|This evening),?\s+"# + clockRe + "$",
+                           options: [.regularExpression, .caseInsensitive]) {
+            let rest = v[r].replacingOccurrences(of: #"^[A-Za-z ]+?,?\s+(?=\d)"#, with: "", options: .regularExpression)
+            return rest.replacingOccurrences(of: #"\s+(?:ET|EST|EDT|PT|PST|PDT|UTC)$"#, with: "", options: .regularExpression)
+        }
+        let days = "Yesterday|Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat|Sun|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday"
+        if v.range(of: "^(?:\(days))\\.?,?\\s+" + clockRe + "$", options: [.regularExpression, .caseInsensitive]) != nil,
+           let word = v.split(whereSeparator: { $0 == " " || $0 == "," }).first {
+            let w = String(word).trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            return w.lowercased() == "yesterday" ? "Yesterday" : String(w.prefix(3)).capitalized
+        }
+        return v
     }
 
     /// A written stamp the agent copied ("Nov 8, 2:50 AM ET", "Nov 7 7:20 PM"): month, day and clock

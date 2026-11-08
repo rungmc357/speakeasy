@@ -147,7 +147,7 @@ def test_preview_key_points_that_restate_the_summary_go():
     v = views.clean({"kind": "preview", "entity": "document", "title": "Offline drafts spec",
                      "summary": "Drafts keep their photos when the phone is offline.",
                      "list": ["Goal: drafts keep their photos offline", "Sync resumes on reconnect"]})
-    assert v["list"] == ["Sync resumes on reconnect"]
+    assert "list" not in v and v["summary"].endswith("Sync resumes on reconnect.")   # a lone point joins the summary
 
 
 def test_confirm_title_drops_the_total_it_repeats():
@@ -195,3 +195,38 @@ def test_a_row_label_with_a_qualifier_counts_as_said_by_its_head():
     said, nums = views._norm("The wallboard updater and the backup job missed their runs."), set()
     assert views._grounded_label("Wallboard updater \u2014 daytime", said, nums)
     assert not views._grounded_label("Open lane", said, nums)
+
+
+def test_metric_label_drops_the_tracker_key():
+    v = views.clean({"kind": "metric", "label": "Sync failures (ACME-WEB-9QZ)", "value": "12", "unit": "per hour"})
+    assert v["label"] == "Sync failures"
+
+
+def test_weather_rows_get_an_icon_from_their_words():
+    v = views.clean({"kind": "weather", "place": "Testville", "temp": 50, "condition": "Clear", "days": [
+        {"label": "Sun", "high": 59, "low": 46, "condition": "Light drizzle"},
+        {"label": "Mon", "high": 56, "low": 44, "condition": "Mostly cloudy"},
+        {"label": "Tue", "high": 61, "low": 47, "condition": "Partly cloudy"},
+        {"label": "Thu", "high": 62, "low": 55, "condition": "Rain showers", "icon": "storm"}]})
+    assert v["icon"] == "sun"
+    assert [d["icon"] for d in v["days"]] == ["drizzle", "cloud", "cloud_sun", "storm"]
+
+
+def test_pr_checks_take_the_count_the_reason_says():
+    checks = [{"name": f"Job {n}", "state": "skipped"} for n in range(6)]
+    v = views.clean({"kind": "pr", "repo": "acme/widgets", "number": 4120, "title": "Checks on #4120",
+                     "reason": "All 15 checks were skipped, so CI never tested it.", "checks": checks})
+    assert v["checks_total"] == 15 and v["checks_rest"] == "skipped"
+    v = views.clean({"kind": "pr", "repo": "acme/widgets", "number": 4121, "title": "Fix login", "state": "failing",
+                     "reason": "2 of 9 checks failed on the login test.", "checks": [
+                         {"name": "Unit", "state": "failed"}, {"name": "Lint", "state": "passed"}]})
+    assert v["checks_total"] == 9 and "checks_rest" not in v
+
+
+def test_jobs_elapsed_loses_about_and_a_lone_key_point_joins_the_summary():
+    v = views.clean({"kind": "jobs", "items": [{"name": "Index rebuild", "status": "Copying shards", "elapsed": "about 19 min"}]})
+    assert v["items"][0]["elapsed"] == "19 min"
+    v = views.clean({"kind": "preview", "entity": "document", "title": "Sync spec", "summary": "Goal: edits made offline merge cleanly.",
+                     "list_label": "Key points", "list": ["Out of scope: shared folders"]})
+    assert "list" not in v and "list_label" not in v
+    assert v["summary"] == "Goal: edits made offline merge cleanly. Out of scope: shared folders."

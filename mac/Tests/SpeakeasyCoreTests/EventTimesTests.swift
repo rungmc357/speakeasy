@@ -57,6 +57,11 @@ final class EventTimesTests: XCTestCase {
         XCTAssertEqual(stamp("Nov 8, 2:50 AM ET"), "2:50 AM")
         XCTAssertEqual(stamp("Nov 7 7:20 PM"), "Yesterday")
         XCTAssertEqual(stamp("Last seen 2:48 AM ET"), "Last seen 2:48 AM ET")
+        // An inbox's day-and-time ("Today 7:12 AM") fits the corner as the part a corner shows.
+        XCTAssertEqual(stamp("Today 7:12 AM"), "7:12 AM")
+        XCTAssertEqual(stamp("Sat 9:03 PM"), "Sat")
+        XCTAssertEqual(stamp("Yesterday, 6 PM"), "Yesterday")
+        XCTAssertEqual(stamp("Today at noon"), "Today at noon")
         XCTAssertNil(EventTimes.stamp("  ", now: now, calendar: cal, locale: us))
     }
 

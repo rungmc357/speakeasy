@@ -336,10 +336,18 @@ struct StatusTilesCard: View {
                 // Past four, tiles turn into a wall of repeated state words ("Check" seven times):
                 // one row each, what's wrong first, the state word at the end.
                 let cap = fit == .compact ? 4 : 6
+                // Every row in one state ("Needs a look" six times): say it once, under the heading,
+                // and let the rows keep their width for their names.
+                let states = Set(sorted.map { $0["state"].string ?? "" })
+                let shared = states.count == 1 && sorted.allSatisfy { $0["value"].string == nil } ? states.first : nil
+                if let shared, !StatusTile.word(shared).isEmpty {
+                    Text(sorted.count == 2 ? "Both: \(StatusTile.word(shared).lowercased())" : "All \(sorted.count): \(StatusTile.word(shared).lowercased())")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(StatusTile.color(shared)).padding(.top, -6)
+                }
                 VStack(spacing: 0) {
                     ForEach(Array(sorted.prefix(cap).enumerated()), id: \.offset) { n, item in
                         if n > 0 { Divider().overlay(look.hairline) }
-                        StatusRow(item: item).onTapGesture { if let url = item["url"].url { openURL(url) } }
+                        StatusRow(item: item, sayState: shared == nil).onTapGesture { if let url = item["url"].url { openURL(url) } }
                     }
                 }
                 .padding(.horizontal, 12)
@@ -371,6 +379,13 @@ struct StatusTile: View {
         default: return .secondary
         }
     }
+    /// The state word for one item: a deploy or build whose note says it failed reads "Failed", not
+    /// "Down" (the site behind it may be up on the last good deploy).
+    static func word(for item: JSONValue) -> String {
+        let state = item["state"].string
+        if state == "bad", (item["note"].string ?? "").range(of: #"(?i)\bfail"#, options: .regularExpression) != nil { return "Failed" }
+        return word(state)
+    }
     static func word(_ state: String?) -> String {
         ["ok": "OK", "on": "On", "off": "Off", "warn": "Needs a look", "bad": "Down", "needs_you": "Needs you", "info": "Info"][state ?? ""] ?? ""
     }
@@ -387,7 +402,7 @@ struct StatusTile: View {
                 Text(value).font(.system(size: 26, weight: .bold)).lineLimit(1).minimumScaleFactor(0.6).padding(.top, 2)
                 if let unit = item["unit"].string { Text(unit).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
             } else {
-                Text(Self.word(state)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(state) : .primary).padding(.top, 2)
+                Text(Self.word(for: item)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(state) : .primary).padding(.top, 2)
             }
             let history = item["history"].doubles
             if history.count >= 3 { Spark(points: history).frame(height: 18) }
@@ -422,6 +437,8 @@ struct PairGrid<Cell: View>: View {
 /// state word at the end.
 struct StatusRow: View {
     let item: JSONValue
+    /// False when the card says the one state every row shares above the rows.
+    var sayState = true
     var body: some View {
         let state = item["state"].string
         let loud = state == "needs_you" || state == "warn" || state == "bad"
@@ -434,9 +451,12 @@ struct StatusRow: View {
                 }
             }
             Spacer(minLength: 8)
-            Text([item["value"].string, item["unit"].string].compactMap { $0 }.joined(separator: " ").nonEmpty ?? StatusTile.word(state))
-                .font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(loud ? StatusTile.color(state) : .secondary).lineLimit(1).fixedSize()
+            if let trailing = [item["value"].string, item["unit"].string].compactMap({ $0 }).joined(separator: " ").nonEmpty
+                ?? (sayState ? StatusTile.word(for: item) : nil) {
+                Text(trailing)
+                    .font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(loud ? StatusTile.color(state) : .secondary).lineLimit(1).fixedSize()
+            }
         }
         .padding(.vertical, 10)
         .frame(minHeight: 44)

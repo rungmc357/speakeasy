@@ -386,9 +386,9 @@ struct MockupsCard: View {
     var body: some View {
         let items = card["items"].array
         CardBox {
-            CardHeader(icon: "rectangle.stack", title: [card["title"].string, "\(items.count) screen\(items.count == 1 ? "" : "s")"]
-                .compactMap { $0 }.joined(separator: " · "), trailing: items.count > 2 ? "Swipe" : nil)
-            if let note = card["note"].string {
+            // The screens show how many there are and that they scroll: no count, no "Swipe".
+            CardHeader(icon: "rectangle.stack", title: card["title"].string ?? "Screens", trailing: nil)
+            if let note = card["note"].string, !MockupsCard.restates(note, count: items.count) {
                 Text(note).font(.subheadline).foregroundStyle(style.secondary).fixedSize(horizontal: false, vertical: true)
             }
             ScrollView(.horizontal) {
@@ -407,6 +407,17 @@ struct MockupsCard: View {
             }
             .scrollIndicators(.hidden)
         }
+    }
+}
+
+extension MockupsCard {
+    /// A note that only counts the screens ("Three Home screens, light theme") says what the row shows;
+    /// one with something else to say ("Spacing tightened per your note") stays.
+    static func restates(_ note: String, count: Int) -> Bool {
+        let words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+        let n = count < words.count ? words[count] : "\(count)"
+        let low = note.lowercased()
+        return low.range(of: #"^(\#(n)|\#(count))\b"#, options: .regularExpression) != nil && note.count <= 48
     }
 }
 

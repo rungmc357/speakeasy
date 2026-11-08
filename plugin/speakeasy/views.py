@@ -397,6 +397,12 @@ def _tidy(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             if isinstance(v, str) and re.fullmatch(r"[a-z][a-z ]*", v):
                 item["value"] = _cap_first(v.replace("_", " "))
     if kind == "weather":
+        # The model writes the sky in words ("Light drizzle") and rarely the icon: without one every
+        # row drew the same cloud, "Clear" included.
+        for row in [body, *(body.get("hours") or []), *(body.get("days") or [])]:
+            if isinstance(row, dict) and not row.get("icon") and isinstance(row.get("condition"), str):
+                if icon := condition_icon(row["condition"]):
+                    row["icon"] = icon
         # A row that is only a label ("6am" with no temperature) draws an empty bar: no row
         # beats an empty one, and an hour or day list of nothing but labels is left out.
         for rows in ("hours", "days"):
@@ -495,6 +501,7 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
         if not body.get("label") or not body.get("value"):
             return {}
         out = dict(body)
+        out["label"] = _TRACKER_KEY.sub("", out["label"]).strip() or out["label"]   # no "(FIELDNOTE-IOS-3KD)"
         points = out.get("points") or []
         if points and (len(points) < 2 or any("label" not in pt or "value" not in pt for pt in points)):
             out.pop("points")   # a series is all of it or none of it, never a chart cut short
@@ -509,8 +516,14 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
             # A key point that only restates the summary ("Goal: drafts keep attachments") is said twice.
             kept = [x for x in out["list"] if not (isinstance(x, str) and _restates(x, said))]
             out["list"] = kept
+            if len(kept) == 1 and isinstance(kept[0], str) and out.get("summary"):
+                # One numbered "key point" is a list of one: it reads as the summary's next sentence.
+                point = kept[0].strip().rstrip(".")
+                out["summary"] = out["summary"].rstrip().rstrip(".") + ". " + point[0].upper() + point[1:] + "."
+                kept = []
             if not kept:
                 out.pop("list")
+                out.pop("list_label", None)
         if isinstance(out.get("flags"), list):
             listed = _norm(" ".join(x for x in out.get("list") or [] if isinstance(x, str)))
             out["flags"] = [f for f in out["flags"] if not (isinstance(f, str) and _restates(f, listed))]
@@ -581,6 +594,14 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 rest = {c["state"] for c in ranked[6:]}
                 if len(rest) == 1:
                     out["checks_rest"] = rest.pop()
+            # The agent often lists a few checks and counts the rest in words ("All 15 checks were
+            # skipped"): the card's "2 more" then undercounts. Take the count the reason gives.
+            said = re.search(r"\b(all )?(\d{1,3}) (?:CI )?checks\b", out.get("reason") or "", re.I)
+            if said and len(ranked) < int(said.group(2)) <= 300:
+                out["checks_total"] = int(said.group(2))
+                states = {c["state"] for c in ranked}
+                if said.group(1) and len(states) == 1:
+                    out["checks_rest"] = states.pop()
         return out
     if kind == "jobs":
         items = [i for i in body.get("items") or [] if i.get("name") and i.get("status")]
@@ -589,6 +610,9 @@ def _artifact(kind: str, body: dict[str, Any]) -> dict[str, Any]:
                 i["ask"] = _label(i["ask"])
             if not i.get("needs_you"):
                 i.pop("ask", None)
+            if isinstance(i.get("elapsed"), str):
+                # "about 19 min" pushed the name onto two lines; a card corner is exact enough as "19 min".
+                i["elapsed"] = re.sub(r"(?i)^(?:about|around|roughly|approx\.?|~)\s*", "", i["elapsed"].strip())
         return {**body, "items": items} if items else {}
     if kind == "site":
         return body if body.get("url") else {}
@@ -623,6 +647,20 @@ _INTERNAL_ID = re.compile(r"(?i)#?(?:[a-z]{1,4}_[0-9a-f]{6,}|[0-9a-f]{12,}|[0-9a
 _MACHINE_NOTE = re.compile(r"\b[a-z]+_[a-z_]+\b|\b[0-9a-f]{7,40}\b")
 # A command line in a note ("npm run build exited 1"): the state already says it failed.
 _COMMAND_NOTE = re.compile(r"(?i)\bexit(?:ed)?(?: with)?(?: code| status)? \d+\b|^(?:npm|yarn|pnpm|bun|make|cargo|go|pip|uv) \w")
+
+
+_SKY_WORDS = (   # first match wins: the strongest weather in the words
+    (r"thunder|storm|lightning", "storm"), (r"sleet|freezing|ice|hail", "sleet"), (r"snow|flurr", "snow"),
+    (r"heavy rain|downpour|pouring", "heavy_rain"), (r"drizzle|sprinkle", "drizzle"), (r"rain|shower", "rain"),
+    (r"fog|mist|haze|smoke", "fog"), (r"partly|mostly sunny|some sun|few clouds|scattered clouds|mix of sun", "cloud_sun"),
+    (r"overcast|cloud|grey|gray", "cloud"), (r"clear|sunny|fair|sun", "sun"),
+)
+
+
+def condition_icon(condition: str) -> str | None:
+    """The weather card's icon word for a sky written in words ("Rain showers" -> rain), or None."""
+    low = condition.lower()
+    return next((icon for pattern, icon in _SKY_WORDS if re.search(pattern, low)), None)
 
 
 _TRACKER_KEY = re.compile(r"\s*\((?:[A-Z][A-Z0-9]*-)+[A-Z0-9]+\)\s*$")
@@ -1112,16 +1150,40 @@ def extract_question(output: str) -> tuple[str, dict[str, Any] | None]:
     return rest, view
 
 
-def spoken_question(view: dict[str, Any]) -> str:
-    """How the voice reads a question card: the question, the options, and the suggestion."""
+# Words that start a sentence but are not names: these lose their capital mid-sentence
+# ("Quick question: which ..."). Anything else (Misi, Lilia, PR 147753) keeps its casing.
+_PLAIN_LEADS = frozenset("""
+a an the this that these those it its my your our their one two three four five first second last
+which what when where who whom whose why how should shall would will could can do does did is are was were
+have has had may might must want need yes no not none neither either both all any each every some other
+keep skip stop start wait go shoot lock leave use pick try ship hold move cancel send buy book check fix
+ask show make take add drop merge pull push run build open close approve reject accept decline retry
+just only now later today tonight tomorrow
+""".split())
+
+
+def soft_lower(text: str) -> str:
+    """Lowercase a sentence-initial word for mid-sentence use, unless it is (or may be) a name."""
+    word = re.split(r"[\s,.;:!?]", text, maxsplit=1)[0]
+    if word and word.lower() in _PLAIN_LEADS and word[1:] == word[1:].lower():
+        return text[0].lower() + text[1:]
+    return text
+
+
+def spoken_question(view: dict[str, Any], lead: str = "") -> str:
+    """How the voice reads a question card: the question, the options, and the suggestion.
+
+    The suggestion is skipped when the lead sentence already named it ("My pick is Misi.")."""
     opts = [option_text(o).rstrip(".") for o in view["options"]]
     said = view["question"].rstrip()
     if not said.endswith("?"):
         said = said.rstrip(".") + "?"
     listed = ", ".join(opts[:-1]) + f", or {opts[-1]}" if len(opts) > 2 else f"{opts[0]} or {opts[1]}"
-    out = f"Quick question: {said[0].lower() + said[1:]} {listed}."
+    out = f"Quick question: {soft_lower(said)} {listed}."
     if any(view.get("images") or []):
         out = out[:-1] + ". They're on screen."
     if "recommended" in view:
-        out += f" I'd go with {opts[view['recommended']].lower()}."
+        pick = opts[view["recommended"]]
+        if pick.lower() not in lead.lower():
+            out += f" I'd go with {soft_lower(pick)}."
     return out

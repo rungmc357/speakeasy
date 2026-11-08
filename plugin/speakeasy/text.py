@@ -779,7 +779,7 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         lead = re.split(r"(?<=[.!?])\s+", spoken.strip())[0] if spoken != fallback_spoken else ""
         if lead.endswith("?"):
             lead = ""
-        spoken = safe_user_text((lead + " " + spoken_question(question)).strip(), 500) or spoken_question(question)
+        spoken = safe_user_text((lead + " " + spoken_question(question, lead)).strip(), 500) or spoken_question(question)
         views = [question] + [v for v in views if v.get("kind") != "question"]
     if question:
         # The written answer (chat, task details) keeps the question so it can be answered there too.

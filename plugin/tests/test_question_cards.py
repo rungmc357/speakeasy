@@ -78,3 +78,15 @@ def test_options_can_be_pictures(tmp_path):
     assert "_option_images" not in r["question"]
     outside = out.replace(str(tmp_path), "/etc")   # a picture outside the allowed folders is just left out
     assert "images" not in text.split_result(outside, (tmp_path,))["question"]
+
+
+def test_spoken_question_keeps_names_and_skips_a_pick_already_said():
+    from speakeasy.views import spoken_question
+    q = {"question": "Which one should I check for a table tonight?", "recommended": 0,
+         "options": [{"text": "Rosalind"}, {"text": "Barnaby's"}, {"text": "Via Nova"}]}
+    said = spoken_question(q)
+    assert said.startswith("Quick question: which one should I check")
+    assert said.endswith("I'd go with Rosalind.")
+    assert "I'd go with" not in spoken_question(q, "My pick is Rosalind in Fort Greene.")
+    q2 = {"question": "Ship it now or wait?", "options": ["Ship it now", "Wait a day"], "recommended": 1}
+    assert spoken_question(q2).endswith("I'd go with wait a day.")
