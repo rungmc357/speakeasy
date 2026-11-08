@@ -29,6 +29,12 @@ public struct NowWorkStrip: View {
     private var needs: Int { live.filter { $0.kind == .question }.count }
     private var running: Int { live.filter { $0.kind == .working }.count + background.count }
     private var keys: [String] { live.map { "i:" + $0.id } + background.map { "b:" + $0.id } }
+    /// What the pill says, read as one control.
+    var pillLabel: String {
+        if let pill { return pill }
+        let counts = running > 0 ? "\(running) running" : "Work"
+        return needs > 0 ? "\(counts) · \(needs) needs you" : counts
+    }
 
     public var body: some View {
         if !keys.isEmpty {
@@ -71,6 +77,9 @@ public struct NowWorkStrip: View {
                     }
                     if open { onBoard() }
                 })
+                // One control: its words, not a second "Go Down" element for the chevron.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(pillLabel)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { toggle() }
                 .accessibilityIdentifier("home-work-capsule")
