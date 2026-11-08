@@ -163,6 +163,32 @@ final class NowHomeTests: XCTestCase {
         XCTAssertEqual(old.items[0].pictures, [NowPicture(url: "/voice/card-image/r/2")])
     }
 
+    // SPK-220: a message sent with a clip carries it (and may have no words).
+    func testAMessageCarriesItsFilesAndMayHaveNoWords() throws {
+        let stream = try XCTUnwrap(NowStream(json: ["entries": [
+            ["id": "m:hu_1", "kind": "message", "role": "user", "text": "", "at": 100, "client_id": "c1",
+             "files": [["id": "att_1", "kind": "video", "mime": "video/mp4", "name": "porch.mp4", "duration": 12.2],
+                       ["id": "att_2", "kind": "picture", "mime": "image/jpeg"],
+                       ["id": "att_3", "mime": "application/pdf", "name": "lease.pdf"],
+                       ["kind": "video"]]],
+            ["id": "m:hu_2", "kind": "message", "role": "user", "text": "", "at": 101],
+            ["id": "m:hu_3", "kind": "message", "role": "user", "text": "look", "at": 102],
+        ], "needs_you": []]))
+        XCTAssertEqual(stream.entries.map(\.id), ["m:hu_1", "m:hu_3"])   // no words and no files: dropped
+        let m = stream.entries[0]
+        XCTAssertNil(m.text)
+        XCTAssertEqual(m.clientID, "c1")
+        XCTAssertEqual(m.files, [SentFile(id: "att_1", kind: .video, name: "porch.mp4", mime: "video/mp4", duration: 12.2),
+                                 SentFile(id: "att_2", kind: .picture, mime: "image/jpeg"),
+                                 SentFile(id: "att_3", kind: .file, name: "lease.pdf", mime: "application/pdf")])
+        XCTAssertEqual(m.files.map(\.label), ["Video \u{00B7} 0:12", "Photo", "lease.pdf"])
+        XCTAssertEqual(m.files.map(\.spoken), ["Video, 12 seconds", "Photo", "File, lease.pdf"])
+        XCTAssertEqual(m.files.map(\.symbol), ["video.fill", "photo", "doc"])
+        XCTAssertEqual(stream.entries[1].files, [])
+        XCTAssertEqual(SentFile.clock(65), "1:05")
+        XCTAssertEqual(SentFile(id: "v", kind: .video, duration: 61).spoken, "Video, 1 minute 1 second")
+    }
+
     func testAnOlderPluginHasNoStreamAndAGroupDecodes() {
         XCTAssertNil(NowHome(json: ["rev": 1]).stream)
         let group = NowStream(json: ["entries": [["id": "g:morning", "kind": "group", "at": 100, "line": "This morning \u{00B7} 6 done",

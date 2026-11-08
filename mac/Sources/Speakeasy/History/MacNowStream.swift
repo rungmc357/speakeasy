@@ -16,6 +16,7 @@ struct MacNowThread: View {
             case .ask:
                 if let text = entry.text, let id = entry.itemID, byID[id] != nil { ask(text) }
             case .message:
+                if entry.role == .user, !entry.files.isEmpty { sentFiles(entry.files) }
                 if let text = entry.text {
                     if entry.role == .user { ask(text) } else { reply(text, entry.attribution) }
                 }
@@ -41,6 +42,21 @@ struct MacNowThread: View {
             ask(item.title)
             card(item)
         }
+    }
+    /// What a Home message was sent with (SPK-220): one compact labeled tile per clip, picture or
+    /// file, right-aligned above the words (the Mac has no poster for the iPhone's upload).
+    private func sentFiles(_ files: [SentFile]) -> some View {
+        HStack(spacing: 6) {
+            Spacer(minLength: 32)
+            ForEach(files) { file in
+                Label(file.label, systemImage: file.symbol)
+                    .font(.callout).lineLimit(1).truncationMode(.middle)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(file.spoken)
+            }
+        }.accessibilityIdentifier("mac-now-chat-files")
     }
     private func ask(_ text: String) -> some View {
         HStack {

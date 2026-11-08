@@ -395,6 +395,64 @@ public struct EarlierKind: Equatable, Sendable, Identifiable {
 
 // MARK: - Home as one stream (SPK-208)
 
+/// A picture, clip or file the user sent with a Home message (SPK-220): enough to draw it in the
+/// thread (a poster from the app's own cache, or a labeled tile). Never a path.
+public struct SentFile: Equatable, Sendable, Identifiable {
+    public enum Kind: String, Sendable { case video, picture, file }
+    public var id: String
+    public var kind: Kind
+    public var name: String?
+    public var mime: String?
+    /// video: its length in seconds.
+    public var duration: TimeInterval?
+    public init(id: String, kind: Kind, name: String? = nil, mime: String? = nil, duration: TimeInterval? = nil) {
+        self.id = id; self.kind = kind; self.name = name; self.mime = mime; self.duration = duration
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["id"]) else { return nil }
+        let mime = nonEmpty(o["mime"])
+        let kind = (o["kind"] as? String).flatMap(Kind.init(rawValue:))
+            ?? (mime?.hasPrefix("video/") == true ? .video : mime?.hasPrefix("image/") == true ? .picture : .file)
+        let duration = (o["duration"] as? NSNumber)?.doubleValue
+        self.init(id: id, kind: kind, name: nonEmpty(o["name"]), mime: mime,
+                  duration: duration.flatMap { $0.isFinite && $0 > 0 ? $0 : nil })
+    }
+    /// "0:12", "1:05": a clip's length as a chip shows it.
+    public static func clock(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", s / 60, s % 60)
+    }
+    /// The short label a tile shows: "Video · 0:12", a file's name, or "Photo".
+    public var label: String {
+        switch kind {
+        case .video: return duration.map { "Video · " + Self.clock($0) } ?? "Video"
+        case .picture: return name ?? "Photo"
+        case .file: return name ?? "File"
+        }
+    }
+    /// What VoiceOver reads: "Video, 12 seconds", "Photo", "File, lease.pdf".
+    public var spoken: String {
+        switch kind {
+        case .video:
+            guard let d = duration else { return "Video" }
+            let s = max(1, Int(d.rounded()))
+            if s < 60 { return "Video, \(s) second\(s == 1 ? "" : "s")" }
+            let m = s / 60, r = s % 60
+            return "Video, \(m) minute\(m == 1 ? "" : "s")" + (r > 0 ? " \(r) second\(r == 1 ? "" : "s")" : "")
+        case .picture: return "Photo"
+        case .file: return name.map { "File, \($0)" } ?? "File"
+        }
+    }
+    /// The SF Symbol for a tile with no poster.
+    public var symbol: String {
+        switch kind {
+        case .video: return "video.fill"
+        case .picture: return "photo"
+        case .file: return "doc"
+        }
+    }
+}
+
 /// Home as a single thread: the user's asks and their cards in time order. A card keeps one id, so it
 /// updates in place; older seen stretches arrive folded ("This morning · 6 done").
 public struct NowStream: Equatable, Sendable {
@@ -425,26 +483,30 @@ public struct NowStream: Equatable, Sendable {
         public var runID: String?
         /// message (yours): the client id it was sent with, so the app's "sending" bubble gives way to it.
         public var clientID: String?
+        /// message (yours): the pictures, clips and files sent with it (its `text` may be empty then).
+        public var files: [SentFile]
         public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
                     line: String? = nil, itemIDs: [String] = [], role: Role? = nil, attribution: ReplyAttribution? = nil,
-                    voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil) {
+                    voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil,
+                    files: [SentFile] = []) {
             self.id = id; self.kind = kind; self.at = at; self.text = text; self.itemID = itemID; self.widget = widget
             self.line = line; self.itemIDs = itemIDs
             self.role = role; self.attribution = attribution; self.voiceDuration = voiceDuration; self.runID = runID
-            self.clientID = clientID
+            self.clientID = clientID; self.files = files
         }
         public init?(json: Any?) {
             guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
                   let kind = (o["kind"] as? String).flatMap(Kind.init(rawValue:)),
                   let at = (o["at"] as? NSNumber)?.doubleValue else { return nil }
             let role = (o["role"] as? String).flatMap(Role.init(rawValue:))
-            if kind == .message && (role == nil || nonEmpty(o["text"]) == nil) { return nil }
+            let files = (o["files"] as? [Any] ?? []).compactMap(SentFile.init(json:))
+            if kind == .message && (role == nil || (nonEmpty(o["text"]) == nil && files.isEmpty)) { return nil }
             self.init(id: id, kind: kind, at: Date(timeIntervalSince1970: at), text: nonEmpty(o["text"]),
                       itemID: nonEmpty(o["item_id"]), widget: (o["widget"] as? String).flatMap(Widget.init(rawValue:)),
                       line: nonEmpty(o["line"]), itemIDs: (o["item_ids"] as? [Any] ?? []).compactMap(nonEmpty),
                       role: role, attribution: role == .assistant ? ReplyAttribution(json: o["model"]) : nil,
                       voiceDuration: ((o["voice"] as? [String: Any])?["duration"] as? NSNumber)?.doubleValue,
-                      runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]))
+                      runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]), files: files)
             replacedAt = (o["replaced_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
         }
     }
