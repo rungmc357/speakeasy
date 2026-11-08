@@ -148,6 +148,18 @@ def short_title(title: Any, limit: int = TITLE_MAX) -> str:
         for candidate in variants:
             cut = _fit(candidate, limit, phrase_only=phrase_only)
             if cut and (len(_words(cut)) >= 2 or len(_words(candidate)) == 1):
+                if phrase_only and len(candidate) > limit:
+                    # "Get the weather forecast | for Chicago": a phrase cut that spends its room on
+                    # the ask verb loses the subject's place; without the verb, "Weather forecast for
+                    # Chicago" fits. Take that when it keeps more of the subject.
+                    stripped = _LEAD_ASK.sub("", candidate, count=1)
+                    lead_n = len(_words(candidate)) - len(_words(stripped))
+                    subject = _trim_end(_TAIL_DETAIL.sub("", stripped))
+                    if lead_n and subject != candidate:
+                        whole = subject if len(subject) <= limit else _fit(subject, limit, phrase_only=True)
+                        if (whole and len(_words(whole)) >= 2 and _ok_end(_words(whole))
+                                and len(_words(whole)) >= len(_words(cut)) - lead_n):
+                            return _cap(whole)
                 if not phrase_only and len(candidate) > limit:
                     # A cut mid-subject ("Create and display an invented") reads worse than the
                     # subject without its ask verb, when that subject fits whole in three words or more.
