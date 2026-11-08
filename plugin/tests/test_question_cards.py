@@ -90,3 +90,12 @@ def test_spoken_question_keeps_names_and_skips_a_pick_already_said():
     assert "I'd go with" not in spoken_question(q, "My pick is Rosalind in Fort Greene.")
     q2 = {"question": "Ship it now or wait?", "options": ["Ship it now", "Wait a day"], "recommended": 1}
     assert spoken_question(q2).endswith("I'd go with wait a day.")
+
+
+def test_a_question_keeps_the_verdict_said_before_it_as_its_reply():
+    # Home's thread shows this sentence above what the task found; the card's line stays the question.
+    r = text.split_result(ASK, ())
+    assert r["reply"] == "I sketched two layouts and priced the soil."
+    assert "headline" not in r
+    only_asks = ASK.replace("SPOKEN: I sketched two layouts and priced the soil.", "SPOKEN: Which layout should I order soil for?")
+    assert "reply" not in text.split_result(only_asks, ())

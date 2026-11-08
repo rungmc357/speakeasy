@@ -432,6 +432,7 @@ def test_answering_a_question_off_a_call_goes_to_the_task_that_asked(server, ser
     add_msg(state, sid, "assistant", "Four fit.", at=NOW - 5)
     wait_for(lambda: service.store.work(run_id)["status"] == "completed")
     item = next(i for i in service.now({})["items"] if i["kind"] == "question")
+    assert item["line"] == "Which desk?" and item["reply"] == "Four fit."   # the verdict said before it asked
     assert post(server, f"/voice/now/{item['id']}/answer", {"option_id": "o9"})[0] == 400
     hermes.responder = lambda prompt, sid: "Ordered the Oakline."
     status, got = post(server, f"/voice/now/{item['id']}/answer", {"option_id": "o1"})

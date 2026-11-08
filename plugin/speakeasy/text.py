@@ -776,6 +776,7 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         spoken = screen_claims_backed(spoken, full or "", bool(views or cards)) or None
     if not spoken:
         spoken = fallback_spoken
+    said_first = spoken
     if question:
         # The decision is the point: a one-line status, then the question, so the user answers it.
         lead = re.split(r"(?<=[.!?])\s+", spoken.strip())[0] if spoken != fallback_spoken else ""
@@ -810,6 +811,11 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
         result["label"] = label
     if not question and (headline := outcome_headline(spoken if spoken != fallback_spoken else None, full)):
         result["headline"] = headline  # what came of it, never the voice's opener; the side model may refine it
+    elif question and (reply := outcome_headline(said_first if said_first != fallback_spoken else None)):
+        # A question's Home line is the question itself; the verdict said before asking ("Misi's my
+        # pick, but I haven't checked tables yet.") is the reply shown above what the task found.
+        if reply.rstrip(".!").lower() != str(question.get("question") or "").rstrip("?").lower():
+            result["reply"] = reply
     return result
 
 

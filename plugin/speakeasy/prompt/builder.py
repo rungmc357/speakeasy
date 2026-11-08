@@ -557,6 +557,15 @@ ARTIFACTS_RULE = (
     "tools and access when asked; pressing one sends you its label as a message, and anything that changes something "
     "is confirmed first) and \"links\" [{\"label\": Logs, Open in Sentry, Website, \"url\": a real https page a tool returned "
     "or you visited}] (at most two). No button that only repeats the card or that you couldn't do. "
+    "The primary step acts on the one item your reply says comes first; when the user asked you not to change "
+    "anything, offer only steps that look (Diff, Show logs), never one that changes something. "
+    "A list of messages or alerts is triage: rows only for what needs the user (state the urgency: Today, This week), "
+    "scope how many of how many (Needs a reply · 3 of 31), and the rest as one step (Archive 28 others). "
+    "A document or page preview lists its real structure (list_label the section's name, e.g. Checklist or Open "
+    "questions; list its items), and the reply says who has to decide or what blocks it, not the open question again. "
+    "A metric card says what its number counts in label (Crashes in 24 hours), gives threshold when there is an alert "
+    "line or normal level, and marks the point where a release or change landed. "
+    "Any count you say must match the card: when you say thirteen are left, the card lists or counts all thirteen. "
 )
 
 QUESTION_RULE = (

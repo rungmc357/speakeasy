@@ -168,6 +168,9 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     public var pictures: [NowPicture] = []
     /// The job's whole title when `title` is Home's short name for it (the job's own page shows this).
     public var fullTitle: String?
+    /// A question's verdict said before it asked ("Misi's my pick, but I haven't checked tables
+    /// yet."): Home's thread shows it above what the task found. The line stays the question.
+    public var reply: String?
     /// A question nobody answered that a newer one took over: when, and which card took over.
     public var replacedAt: Date?
     public var replacedBy: String?
@@ -228,6 +231,7 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         lockLine = nonEmpty(o["lock_line"])
         pictures = (o["thumbs"] as? [Any] ?? []).compactMap(NowPicture.init(json:))
         fullTitle = nonEmpty(o["full_title"])
+        reply = nonEmpty(o["reply"]).map { String($0.prefix(400)) }
         workModel = ReplyAttribution(json: o["model"])
         if let r = o["replaced"] as? [String: Any] {
             replacedAt = (r["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } ?? updatedAt ?? finishedAt

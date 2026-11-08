@@ -103,7 +103,13 @@ struct ConfirmCard: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(AgentMarkdown.attributed(item["name"].string ?? "")).font(.body.weight(.semibold))
+                        // One item the title already names ("Buy Oakline Standing Desk 60 in."): its row
+                        // keeps the variant and quantity, not the same name a second time.
+                        let named = card["items"].array.count == 1 && (item["name"].string).map { n in
+                            (card["title"].string ?? "").localizedCaseInsensitiveContains(n) } == true
+                        if !named {
+                            Text(AgentMarkdown.attributed(item["name"].string ?? "")).font(.body.weight(.semibold))
+                        }
                         if let description = item["description"].string {
                             Text(AgentMarkdown.attributed(description)).font(.caption).foregroundStyle(.secondary)
                         }
@@ -268,7 +274,9 @@ extension ConfirmCard {
     static func itemFacts(_ item: JSONValue) -> String {
         let said = [item["name"].string, item["description"].string].compactMap { $0 }.joined(separator: " ").lowercased()
         let facts = [item["size"].string, item["colour"].string].compactMap { $0 }
-            .filter { !said.contains($0.lowercased()) }
+            // "Walnut / black" under "Walnut top, black frame" says it twice: every word already said goes.
+            .filter { f in !said.contains(f.lowercased())
+                && !f.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).allSatisfy { said.contains($0) } }
         return ([item["quantity"].string.map { "Qty \($0)" }].compactMap { $0 } + facts).joined(separator: " · ")
     }
 }
