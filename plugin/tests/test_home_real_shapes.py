@@ -274,3 +274,8 @@ def test_a_job_with_no_real_step_yet_shows_no_stock_status():
     assert now_mod.live_line("", None) == ""
     assert now_mod.live_line("Running web_search", "Running ls -la") == ""
     assert now_mod.live_line("Comparing three desks") == "Comparing three desks"
+
+
+@pytest.mark.parametrize("stock", ["Working on it", "Running a command", "Working\u2026", "working."])
+def test_stock_placeholders_are_not_a_status(stock):
+    assert now_mod.live_line(stock) == ""

@@ -1254,12 +1254,18 @@ def plain_line(line: str | None, fallback: str | None = None) -> str:
     return ""
 
 
+# Placeholders that say nothing about the work (history.session_live's floor, old stock lines).
+_STOCK_LINES = frozenset({"working", "working on it", "running a command", "thinking", "on it"})
+
+
 def live_line(line: str | None, fallback: str | None = None) -> str:
     """A running card's one short present-tense line (home_words.status_line): the newest real
     step, else the task's last plain status, else nothing (the card shows only its title until the
     job reports a real step). Never tool narration, never a three-clause worker report, never a
     stock "Working…"."""
     for text in (line, fallback):
+        if text and text.strip().rstrip(".\u2026").lower() in _STOCK_LINES:
+            continue
         if text and plain_line(text):
             short = status_line(text)
             if short:

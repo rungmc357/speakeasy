@@ -138,7 +138,7 @@ public struct NowBackgroundItem: Equatable, Sendable, Identifiable {
     }
     public init?(json: Any?) {
         guard let o = json as? [String: Any], let sid = nonEmpty(o["session_id"]) else { return nil }
-        self.init(sessionID: sid, title: nonEmpty(o["title"]) ?? "Untitled", line: nonEmpty(o["line"]) ?? "Working on it",
+        self.init(sessionID: sid, title: nonEmpty(o["title"]) ?? "Untitled", line: nonEmpty(o["line"]) ?? "",
                   sourceLabel: nonEmpty(o["source_label"]))
     }
 }

@@ -402,3 +402,9 @@ def test_a_voice_memo_with_two_asks_gives_each_job_only_its_own(service, monkeyp
 ])
 def test_replies_lead_with_us_units(raw, shown):
     assert HC.us_units_first(raw) == shown
+
+
+def test_the_coordinator_sends_cards_and_made_things_to_a_job():
+    """A 'show it as a card' ask is a job (jobs draw cards); chat replies stay plain prose."""
+    assert "jobs draw cards" in HC._PROMPT
+    assert "no code blocks, tables, box drawing" in HC._PROMPT

@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 import SpeakeasyCore
 
 /// Home's quiet island. Opening it reveals one live item at a time, never a second board.
@@ -72,6 +75,13 @@ public struct NowWorkStrip: View {
                 .accessibilityAction { toggle() }
                 .accessibilityIdentifier("home-work-capsule")
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                #if os(iOS)
+                // Typing needs the thread: an open strip folds back to the pill when the keyboard
+                // comes up, so it never covers the conversation above the composer.
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                    if expanded { withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.9)) { expanded = false } }
+                }
+                #endif
                 if expanded || pull > 0 {
                     VStack(spacing: 8) {
                     ScrollView(.horizontal) {
