@@ -332,7 +332,13 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
         for e in extra:
             if not e["reply"]:
                 title = short_title(e["request"])
-                if title and title.lower() not in " ".join(lines).lower():
+                said = " ".join(lines).lower()
+                # Named already in other words ("a good rain jacket under a hundred bucks" for "Find a
+                # good rain jacket under $100"): no second, clipped name for it.
+                asked = [w for w in re.findall(r"[a-z]+", e["request"].lower()) if len(w) > 3]
+                if asked and sum(w in said for w in asked) * 3 >= len(asked) * 2:
+                    continue
+                if title and title.lower() not in said:
                     lines.append(f"Also on it: {title[0].lower() + title[1:] if title[1:2].islower() else title}.")
         reply = " ".join(x for x in lines if x)
     return {"reply": us_units_first(reply)[:REPLY_CHARS], "action": action, "run_id": run_id, "request": request,

@@ -345,6 +345,16 @@ def test_a_second_job_with_no_line_of_its_own_is_still_named_in_the_reply(server
                                      "Also on it: well reviewed bike repair shop.")
 
 
+
+def test_a_second_job_the_reply_already_names_gets_no_clipped_second_name(server, service, hermes):
+    coordinator(service, {"tool": "start_job", "text": "",
+                          "args": {"request": "Find a farmers market open Saturday morning",
+                                   "reply": "Checking farmers markets and finding a good rain jacket under a hundred bucks.",
+                                   "more_jobs": ["Find a good rain jacket under one hundred dollars"]}})
+    body = post(server, {"text": "farmers market saturday and a rain jacket under a hundred", "client_id": "c_two3"})[1]
+    assert body["reply"]["text"] == "Checking farmers markets and finding a good rain jacket under a hundred bucks."
+    assert len(wait_for(lambda: len(hermes.calls) >= 2 and hermes.calls)) == 2
+
 class _ReadCatalog(_Catalog):
     """A model list the job route may read (choosing a job's model checks the id against it)."""
     hermes_reasoning = None
