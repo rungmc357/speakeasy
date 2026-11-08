@@ -100,12 +100,17 @@ struct WeatherCard: View {
                 VStack(spacing: 5) {
                     ForEach(Array(days.prefix(7).enumerated()), id: \.offset) { _, d in
                         HStack(spacing: 8) {
-                            Text(d["label"].string ?? "").font(.system(size: 11)).frame(width: 42, alignment: .leading)
+                            // A day name stays one line ("Tuesday" used to wrap to "Tuesda / y" on Home).
+                            Text(d["label"].string ?? "").font(.system(size: 11)).lineLimit(1).minimumScaleFactor(0.7)
+                                .frame(width: 58, alignment: .leading)
                             Image(systemName: weatherSymbol(d["icon"].string)).symbolRenderingMode(.multicolor)
                                 .font(.system(size: 12)).frame(width: 18)
-                            Text(ViewCard.degrees(d["low"].double)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                            // A day with no low shows no low (not a dash) and its bar is only its high,
+                            // never a bar stretched down to the week's lowest temperature.
+                            Text(d["low"].double == nil ? "" : ViewCard.degrees(d["low"].double))
+                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
                                 .frame(width: 30, alignment: .trailing)
-                            TempBar(low: d["low"].double ?? lo, high: d["high"].double ?? hi, min: lo, max: hi)
+                            TempBar(low: d["low"].double ?? d["high"].double ?? lo, high: d["high"].double ?? hi, min: lo, max: hi)
                             Text(ViewCard.degrees(d["high"].double)).font(.system(size: 11, weight: .medium).monospacedDigit())
                                 .frame(width: 30, alignment: .leading)
                         }

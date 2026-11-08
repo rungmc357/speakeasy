@@ -98,6 +98,15 @@ def test_decisions_compare_keeps_winner_and_gets_a_confirmed_go_button():
     assert card["actions"] == [{"id": "go", "label": "Go with Lift Pro", "style": "primary", "confirm": True}]
 
 
+def test_a_long_winner_name_cuts_the_go_button_at_a_word():
+    long = {**DESKS, "options": [{**o, "name": "Lift Pro Carbon"} if i == 1 else o for i, o in enumerate(DESKS["options"])]}
+    card = _result(DESK_ANSWER.replace("Lift Pro at", "Lift Pro Carbon at"), [long])["views"][0]
+    assert card["actions"][0]["label"] == "Go with Lift Pro Carbon"
+    longer = {**DESKS, "options": [{**o, "name": "Lift Pro Carbonfiber"} if i == 1 else o for i, o in enumerate(DESKS["options"])]}
+    card = _result(DESK_ANSWER.replace("Lift Pro at", "Lift Pro Carbonfiber at"), [longer])["views"][0]
+    assert card["actions"][0]["label"] == "Go with Lift Pro"          # never "Go with Lift Pro Carbonf"
+
+
 @pytest.mark.parametrize("change", [{"winner": None}, {"winner": 7}, {"winner": 0.5}, {"why": ""},
                                     {"why": "x" * 81}, {"options": [{"name": "Only one"}]}])
 def test_compare_without_a_real_winner_or_two_options_is_dropped(change):

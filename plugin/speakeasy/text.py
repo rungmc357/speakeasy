@@ -701,7 +701,8 @@ def screen_claims_backed(spoken: str, full: str, has_cards: bool) -> str:
     return " ".join(kept).strip()
 
 
-def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: str = "Done. The details are in the app.") -> dict[str, Any] | None:
+def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: str = "Done. The details are in the app.",
+                 asked: str | None = None) -> dict[str, Any] | None:
     """Split a final answer into the spoken register and the full display register.
 
     Also strips `product-cards` and `email-draft` fenced payloads (drafts go to `_email_drafts`).
@@ -752,7 +753,8 @@ def split_result(output: Any, image_roots: tuple[Path, ...], fallback_spoken: st
     from .views import shape as shape_views
     # Artifacts must be grounded in the answer, or they go. The SPOKEN line is part of the answer
     # the user gets (often the only place a count or version is said), so it counts too.
-    views = shape_views(views, output + ("\n" + spoken_raw if spoken_raw else ""))
+    # A work card's title may also come from the user's own ask (``asked``: the task's request).
+    views = shape_views(views, output + ("\n" + spoken_raw if spoken_raw else ""), asked or "")
     spoken = safe_user_text(spoken_raw, 500) if spoken_raw else None
     if not spoken and full:
         spoken = safe_user_text(spoken_from(full), 500)

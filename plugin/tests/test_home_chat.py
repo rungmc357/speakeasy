@@ -98,6 +98,26 @@ def test_follow_up_goes_to_the_named_job_and_the_coordinator_sees_its_result(ser
     assert not [t for t in tasks(server) if t.get("run_id") not in {first["run_id"], body["run_id"]}]
 
 
+def test_history_marks_the_tool_call_behind_an_earlier_reply(server, service, hermes):
+    # A reply that started a job reaches the next turn with its call marked, so the model never
+    # learns that writing "Checking the forecast." alone is how work starts; a chat reply stays bare.
+    coordinator(service, "Hey! What's up?")
+    post(server, {"text": "yo", "client_id": "c_h0"})
+    coordinator(service, {"tool": "start_job", "text": "", "args": {"request": "Weather for Saturday",
+                                                                       "reply": "Checking the forecast."}})
+    post(server, {"text": "weather saturday?", "client_id": "c_h1"})
+    wait_for(lambda: hermes.calls)
+    seen = coordinator(service, "Sure.")
+    post(server, {"text": "thanks", "client_id": "c_h2"})
+    replies = [m["content"] for m in seen[0] if m["role"] == "assistant"]
+    assert replies[0] == "Hey! What's up?"
+    assert replies[1].startswith("Checking the forecast.\n(start_job called: job j")
+    # A model that copies the note into its own reply never shows it.
+    coordinator(service, "Looking it up. (start_job called: job j2)")
+    body = post(server, {"text": "and sunday", "client_id": "c_h3"})[1]
+    assert body["reply"]["text"] == "Looking it up."
+
+
 def test_an_unknown_job_never_invents_a_reply(server, service, hermes):
     coordinator(service, {"reply": "Sure.", "action": "follow_up", "job": "j9"})
     status, body = post(server, {"text": "make it shorter", "client_id": "c_bad"})

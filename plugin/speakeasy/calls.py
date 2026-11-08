@@ -5925,7 +5925,7 @@ class SidebandWorker:
                 # The session chat stream (and its run status) carry no error field: a failed turn's
                 # reply is Hermes' failure message quoting the provider. Keep only what it means.
                 output, error = None, error or line
-            result = split_result(output, self.rt.image_roots())
+            result = split_result(output, self.rt.image_roots(), asked=self.store.request_text(idem))
             drafts = (result or {}).pop("_email_drafts", None) or []
             failed_as = (failures.failure_kind(error) or (None if result else failures.UNKNOWN)) if status == "failed" else None
             failure_hint = (None if failed_as in failures.REASONS else failures.failure_hint(error)) if status == "failed" else None
