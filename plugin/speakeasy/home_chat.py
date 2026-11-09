@@ -857,6 +857,16 @@ class HomeChat:
             said = decided["reply"]
             if clipped(said) or (said == last and said in ACKS):
                 decided = {**decided, "reply": pick_ack(decided.get("request") or text, avoid=last)}
+        answering = None   # the idem key of the question this message answers
+        if decided["action"] == "follow_up":
+            answering = self._asking(decided["run_id"])
+        elif decided["action"] == "start" and not decided.get("extra") and quote and quote.get("run_id"):
+            # A swipe-reply to a card that is asking (or was dismissed before anyone answered): the
+            # message is that question's answer, even when the coordinator read it as new work.
+            answering = self._asking(quote["run_id"])
+            if answering:
+                decided = {**decided, "action": "follow_up", "run_id": quote["run_id"],
+                           "request": decided.get("request")}
         reply_row = None
         if decided["reply"]:
             reply_id = self._add("assistant", decided["reply"], self.clock(), model=model, reply_to=user_id)
@@ -917,6 +927,15 @@ class HomeChat:
                 if client_id:
                     msg["client_id"] = ("hf" + client_id)[:128]
                 got = self.svc.task_message(run_id, msg, device_id)
+                if answering:
+                    # Recorded as the question's answer, in the user's own words, on every device:
+                    # the card leaves Paused / Needs you and shows what was chosen, as a tapped
+                    # option does (POST /voice/tasks/{run_id}/question/answer).
+                    self.store.close_question(answering, "answered", answer=text or job_text or "")
+                    try:
+                        self.svc._republish_all()
+                    except Exception:
+                        logger.debug("speakeasy: republish after a Home answer failed", exc_info=True)
                 run_id = got.get("run_id") or run_id
                 started = got
             elif action == "cancel":
@@ -1170,14 +1189,20 @@ class HomeChat:
             state = {"working": "running", "waiting": "waiting on another job", "question": "waiting on the user",
                      "new_answer": "finished", "seen_answer": "finished", "stopped": "stopped"}.get(
                          str(item.get("kind")), str(item.get("kind")))
+            # A dismissed card nobody answered: the job is paused on its question, not waiting on
+            # another job, and a reply to it is the answer (SPK-303).
+            paused = bool(item.get("dismissed_question"))
+            if paused:
+                state = "paused, waiting on the user"
             age = max(0, int(now - float(item.get("started_at") or now)))
             when = f"{age // 60} min ago" if age >= 60 else "just now"
             line = f"- {alias}: {_clip(item.get('title'), 120)} ({state}, started {when})"
-            if item.get("line"):
+            if item.get("line") and not paused:
                 line += f"\n  Now: {_clip(item['line'], 200)}"
             q = item.get("question") or {}
-            if item.get("kind") == "question" and q.get("prompt"):
-                line += f"\n  Asking the user: {_clip(q['prompt'], 300)}"
+            asked = q.get("prompt") if item.get("kind") == "question" else self._asked(item["run_id"]) if paused else ""
+            if asked:
+                line += f"\n  Asking the user: {_clip(asked, 300)}"
             if state == "finished":
                 answer = self._answer(item["run_id"])
                 if answer:
@@ -1185,6 +1210,30 @@ class HomeChat:
             lines.append(line)
         self._titles = titles
         return ("\n".join(lines) or "(none)"), aliases
+
+    def _asked(self, run_id: str) -> str:
+        """The question this job's result asks the user, else ""."""
+        try:
+            result = (self.store.work(run_id=run_id) or {}).get("result") or {}
+        except Exception:
+            return ""
+        asked = result.get("question")
+        text = asked.get("question") if isinstance(asked, dict) else asked
+        return " ".join(text.split()) if isinstance(text, str) else ""
+
+    # A question the user hasn't answered yet: still open, or closed without an answer by a ✕ or by
+    # the conversation going on. A message that answers it is recorded as its answer (SPK-303).
+    UNANSWERED = frozenset({"open", "dismissed", "moved_on"})
+
+    def _asking(self, run_id: str | None) -> str | None:
+        """The idem key of *run_id*'s task when its question waits on an answer, else None."""
+        if not run_id:
+            return None
+        try:
+            key = self.store.key_for_run(run_id)
+            return key if key and self.store.question_state(key) in self.UNANSWERED else None
+        except Exception:
+            return None
 
     def _answer(self, run_id: str) -> str:
         try:
