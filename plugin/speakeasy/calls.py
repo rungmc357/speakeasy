@@ -5850,6 +5850,11 @@ class SidebandWorker:
             return
         if cause:
             logger.warning("speakeasy: run %s stream ended early (%s)", backend.run_id, type(cause).__name__)
+        else:
+            # Hermes closed the stream before the run's final event (it drops a subscriber that reads
+            # too slowly): say so, with the run id, so a lost result can be traced (SPK-308).
+            logger.info("speakeasy: run %s stream ended before its final event (Hermes says %s)",
+                        backend.run_id, status or "nothing")
         detail = STREAM_ENDED_EARLY
         if not self.move(backend, "ambiguous") and backend.status in RS.FINAL:
             self.publish()

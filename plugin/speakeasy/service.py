@@ -89,6 +89,7 @@ PAUSE_NOTICE_AFTER_S = 15 * 60
 # got to is saved here by the old code and read by the new one.
 RESUME_SEQ_META = "resume_run_seq"
 # Stored statuses of a run Hermes took that the new code follows again when Hermes still runs it.
+LOST_RESULT_HANDOFF_S = 10.0  # how long a task's own worker gets to settle a run Hermes already finished
 RESUMABLE_RUN_STATES = frozenset({"running", "working", "cancel_requested"})
 # Hermes' own words for a run still going (GET /v1/runs/{id}).
 HERMES_LIVE_RUN = frozenset({"queued", "running", "working", "waiting_for_approval", "stopping"})
@@ -1409,12 +1410,87 @@ class VoiceService(SecureInputMixin):
         except Exception as exc:
             logger.warning("speakeasy: open-task sweep failed: %s", type(exc).__name__)
         try:
+            settled += self.settle_lost_results()
+        except Exception as exc:
+            logger.warning("speakeasy: finished-run check failed: %s", type(exc).__name__)
+        try:
             settled += sweep(self.store, self.home / "state.db", self.image_roots, LIVE_THREAD_WAITS,
                              hermes=self.hermes)
         except Exception as exc:
             logger.warning("speakeasy: stuck-task sweep failed: %s", type(exc).__name__)
         if settled:
             self.publish_all()
+        return settled
+
+    def _followed_runs(self) -> dict[str, tuple[Any, Any]]:
+        """Every open run this process follows: task key -> (its worker or None, its in-memory run)."""
+        with self.lock:
+            live = list(self.interactions.values())
+        pairs = [(i.worker, i) for i in live]
+        text = self._text_worker
+        if text is not None:
+            pairs.append((text, text.interaction))
+        out: dict[str, tuple[Any, Any]] = {}
+        for worker, interaction in pairs:
+            with interaction.lock:
+                for run in interaction.runs.values():
+                    if run.status in RS.OPEN and run.idem_key not in out:
+                        out[run.idem_key] = (worker, run)
+        return out
+
+    def settle_lost_results(self) -> list[tuple[str, str]]:
+        """Runs this process follows whose answer Hermes has had for a while but whose follower never
+        recorded it (SPK-308: the event handling backed up or stalled, and the job read "working"
+        long after it was done). Each one is handed to its worker's normal settle path (the answer,
+        its push, notices and the voice's note, exactly as its own final event would have), and
+        settled straight from Hermes' record when that worker can't do it promptly. Logged with the
+        run id, so a follower that loses a result is visible in errors.log."""
+        from . import recovery
+        followed = self._followed_runs()
+        seen = self.__dict__.setdefault("_lost_result_seen", {})
+        done, forgotten = recovery.finished_followed(
+            self.store, self.hermes, {k: str(b.run_id or "") for k, (_, b) in followed.items()}, seen)
+        settled: list[tuple[str, str]] = []
+        for key, final, reply in done:
+            worker, backend = followed[key]
+            stored = self.store.run_status(key)
+            if stored not in RS.OPEN:
+                continue
+            logger.warning("speakeasy: Hermes run %s ended (%s) but its result was never recorded; settling it now",
+                           backend.run_id, final)
+            event: dict[str, Any] = {"event": f"run.{final}"}
+            for field in ("output", "error", "pending_steer", "interrupted"):
+                if field in reply:
+                    event[field] = reply[field]
+            future = None
+            if worker is not None:
+                try:
+                    future = CALLS.on_loop_soon(worker.handle_hermes_event(backend, event), getattr(worker, "loop", None))
+                except Exception:
+                    future = None
+            deadline = time.monotonic() + LOST_RESULT_HANDOFF_S
+            while future is not None and time.monotonic() < deadline and self.store.run_status(key) in RS.OPEN:
+                time.sleep(0.05)
+            if self.store.run_status(key) in RS.OPEN:
+                if future is not None:
+                    future.cancel()
+                    logger.warning("speakeasy: the task's own worker could not settle run %s; settled from Hermes' record",
+                                   backend.run_id)
+                with_status = self.store.run_status(key)
+                if with_status in RS.OPEN:
+                    recovery.settle_from_hermes(self.store, key, with_status, final, reply, self.image_roots,
+                                                mirror=backend)
+            if self.store.run_status(key) == final:
+                seen.pop(key, None)
+                settled.append((key, final))
+        for key in forgotten:
+            worker, backend = followed[key]
+            stored = self.store.run_status(key)
+            if stored in RS.OPEN and stored != "ambiguous" and self.store.transition(
+                    key, "ambiguous", expect={stored}, mirror=backend):
+                logger.warning("speakeasy: Hermes no longer knows run %s, which was still being followed; "
+                               "it will be settled from its session", backend.run_id)
+                settled.append((key, "ambiguous"))
         return settled
 
     def followed_run_keys(self) -> set[str]:
