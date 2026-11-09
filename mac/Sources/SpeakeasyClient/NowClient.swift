@@ -66,6 +66,12 @@ extension ServerClient {
         _ = try await json("/voice/now/\(NowItemPath.segment(itemID))/dismiss", method: "DELETE")
     }
 
+    /// Try again on a Stopped card (SPK-307, capability `now_retry`): a job lost before Hermes saved its
+    /// conversation starts afresh from its own request; one with a conversation gets "Try again" in it.
+    public func nowRetry(_ itemID: String) async throws {
+        _ = try await post("/voice/now/\(NowItemPath.segment(itemID))/retry", [:])
+    }
+
     /// Earlier: one page of conversations for the checked kinds, never repeating Home, with the menu.
     public func earlier(kinds: Set<String>, query: String = "", cursor: String? = nil) async throws -> (HistoryPage, [EarlierKind]) {
         var path = "/voice/history?exclude_now=1&kinds=" + EarlierKind.query(kinds)

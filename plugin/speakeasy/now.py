@@ -472,6 +472,16 @@ class NowModel:
             kind = row.get("failure") or (UNKNOWN if status == RS.RunState.FAILED else None)
             fix = "retry" if status == RS.RunState.INTERRUPTED else FIX.get(kind or "", "open")
             reason = work.get("failure_reason") or failure_reason(status, row.get("failure"), row.get("failure_hint"))
+            if session and not self._session_opens(session):
+                # SPK-307: Hermes never saved its conversation (lost before it started), so the card
+                # links none ("I couldn't find that conversation"), and Try again starts it afresh
+                # (POST /voice/now/{id}/retry) instead of writing into a chat that isn't there. Its
+                # id stays the same (s:<session>), so a dismiss or Later still finds it.
+                item["session_id"] = None
+                if fix == "open":
+                    fix = "retry"
+            if not item.get("session_id"):
+                item["retry_fresh"] = True
             item.update(kind=STOPPED, line=_clip(stopped_line(title, reason, fix), 240), fix={"kind": fix})
             # What it stopped on, for folding several stopped jobs with one cause into one card.
             item["_cause"] = stopped_cause(status, row.get("failure"), row.get("failure_hint"), reason)
@@ -733,7 +743,8 @@ class NowModel:
             "stream": stream,
             # The tracker pill's words at any volume ("3 need you · 5 running"): counts, never a cut title.
             "pill": pill_text(counts["needs_you"], counts["working"] + counts["on_its_own_running"],
-                              one_title=next((i["title"] for i in items if i["kind"] == QUESTION), None)),
+                              one_title=next((i["title"] for i in items if i["kind"] == QUESTION), None),
+                              stopped=counts["stopped"]),
         }
         body["rev"] = self._rev(body)
         body["as_of"] = round(now, 3)
@@ -1118,12 +1129,18 @@ def group_stopped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         names = [g.get("title") or "A task" for g in group]
         title = " \u00b7 ".join(names[:2]) + (f" and {n - 2} more" if n > 2 else "")
         key = hashlib.sha256(json.dumps(sorted(str(g.get("run_id") or g["id"]) for g in group)).encode()).hexdigest()[:12]
-        merged = {**head, "id": f"g:stopped:{key}", "title": _clip(title, TITLE_CHARS),
+        # The newest member whose conversation Hermes has (SPK-307), never one that isn't there.
+        opens = next((g.get("session_id") for g in group if g.get("session_id")), None)
+        merged = {**head, "id": f"g:stopped:{key}", "title": _clip(title, TITLE_CHARS), "session_id": opens,
                   "line": _clip(f"{n} jobs stopped: {why_and_step}", 240),
                   "fix": {"kind": "open"}, "stopped_count": n,
                   "group": [{"run_id": g.get("run_id"), "session_id": g.get("session_id"), "title": g.get("title")}
                             for g in group]}
         merged.pop("thumbs", None)
+        if any(g.get("retry_fresh") for g in group):
+            merged["retry_fresh"] = True
+            merged["fix"] = {"kind": "retry"}
+            merged["line"] = merged["line"].replace("Open one to retry, or dismiss.", NEXT_STEP["retry"])
         out.append(merged)
     return out
 

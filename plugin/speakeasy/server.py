@@ -840,10 +840,12 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/now/clear-seen":
                 self._reply(200, self.service.now_clear_seen(self._body()))
                 return
-            now_act = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/(later|answer|approval|dismiss)", path)
+            now_act = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/(later|answer|approval|dismiss|retry)", path)
             if now_act:
                 item_id, act = _now_id(now_act.group(1)), now_act.group(2)
-                if act == "dismiss":
+                if act == "retry":
+                    self._reply(200, self.service.now_retry(item_id, self._body()))
+                elif act == "dismiss":
                     self._reply(200, self.service.now_dismiss(item_id, self._body()))
                 elif act == "later":
                     self._reply(200, self.service.now_later(item_id, self._body()))

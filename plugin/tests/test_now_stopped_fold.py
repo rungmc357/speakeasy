@@ -3,26 +3,52 @@ stopped jobs with one cause are one card, one card per conversation, and answers
 fold into one "Earlier today · N" row. Every fixture here is invented (shaped like real findings)."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from speakeasy import now as N
-from test_history import state  # noqa: F401
+from test_history import add_session, make_db, state  # noqa: F401
 from test_now import NY, _at, _clock, task
 
 NOON = _at(NY, 2026, 11, 6, 12, 0)
+_HERMES: dict[str, str] = {}
+
+
+@pytest.fixture(autouse=True)
+def _hermes_db(service):
+    """The conversations these fixtures name exist in Hermes (a stopped card only links one that does,
+    SPK-307), unless a test leaves its session out on purpose (``lost=True``)."""
+    path = service.rt.state_db
+    if not os.path.exists(path):
+        make_db(path, routed=True)
+    _HERMES["path"] = path
+    yield
+    _HERMES.clear()
+
+
+def _has(session):
+    if session and _HERMES.get("path"):
+        try:
+            add_session(_HERMES["path"], session, "api_server", title=session)
+        except Exception:
+            pass   # already there
 
 
 def _fail(store, key, kind=None, hint=None, *, session=None, request="Move the photo archive", settled=NOON - 60,
-          interaction="vi_typed_f"):
+          interaction="vi_typed_f", lost=False):
     task(store, key, "failed", session=session, request=request, settled=settled, created=settled - 5,
          interaction=interaction)
     store.set_failure(key, kind, hint)
+    if not lost:
+        _has(session)
 
 
 def _done(store, key, *, session=None, request="Move the photo archive", settled=NOON - 30, interaction="vi_typed_d",
           headline="Moved."):
     task(store, key, "completed", session=session, request=request, result={"spoken": headline, "headline": headline},
          settled=settled, created=settled - 5, interaction=interaction)
+    _has(session)
 
 
 def _stopped(body):
@@ -190,3 +216,112 @@ def test_pure_fold_keeps_call_answers_and_counts_folded_ones():
              {"id": "c", "kind": "working", "started_at": 0.0}]
     keep, today = N.fold_earlier(items, 5 * 3600)
     assert [i["id"] for i in keep] == ["b", "c"] and today["count"] == 3 and today["unread"] == 1
+
+
+# -- SPK-307: a stopped job Hermes never saved a conversation for -----------------------------------
+# Two jobs queued behind each other, Speakeasy restarted before either started: Home's card linked a
+# conversation Hermes never had ("I couldn't find that conversation") and Try again wrote into it.
+
+def test_a_lost_job_links_no_conversation_and_offers_try_again(service):
+    _clock(service, NOON)
+    _fail(service.store, "f1", None, "offline", session="speakeasy_task_gone", lost=True, request="Add a photo viewer")
+    body = service.now({"tz": NY})
+    (card,) = _stopped(body)
+    assert card["session_id"] is None
+    assert card["fix"] == {"kind": "retry"} and card["line"].endswith("Retry or dismiss.")
+    assert card["retry_fresh"] is True
+
+
+def test_a_lost_job_keeps_a_specific_fix(service):
+    _clock(service, NOON)
+    _fail(service.store, "f1", "billing", session="speakeasy_task_gone", lost=True)
+    (card,) = _stopped(service.now({"tz": NY}))
+    assert card["session_id"] is None and card["fix"] == {"kind": "credits"}
+
+
+def test_a_saved_conversation_still_opens(service):
+    _clock(service, NOON)
+    _fail(service.store, "f1", None, "offline", session="s_here")
+    (card,) = _stopped(service.now({"tz": NY}))
+    assert card["session_id"] == "s_here" and card["fix"] == {"kind": "open"} and not card.get("retry_fresh")
+
+
+def test_two_lost_jobs_fold_into_one_card_that_opens_nothing_missing_and_retries(service):
+    _clock(service, NOON)
+    store = service.store
+    _fail(store, "a", None, "offline", session="speakeasy_task_a", lost=True, request="Add a photo viewer",
+          settled=NOON - 120)
+    _fail(store, "b", None, "offline", session="speakeasy_task_b", lost=True, request="Build the call header",
+          settled=NOON - 119)
+    (card,) = _stopped(service.now({"tz": NY}))
+    assert card["stopped_count"] == 2 and card["session_id"] is None
+    assert card["fix"] == {"kind": "retry"} and card["line"].endswith("Retry or dismiss.")
+    assert "Open one" not in card["line"]
+
+
+def test_a_folded_card_opens_its_newest_saved_conversation(service):
+    _clock(service, NOON)
+    store = service.store
+    _fail(store, "a", None, "offline", session="s_saved", request="Add a photo viewer", settled=NOON - 120)
+    _fail(store, "b", None, "offline", session="speakeasy_task_b", lost=True, request="Build the call header",
+          settled=NOON - 119)
+    (card,) = _stopped(service.now({"tz": NY}))
+    assert card["stopped_count"] == 2 and card["session_id"] == "s_saved"
+
+
+def test_the_pill_counts_stopped_work_instead_of_all_quiet(service):
+    _clock(service, NOON)
+    _fail(service.store, "f1", None, "offline", session="speakeasy_task_gone", lost=True)
+    assert service.now({"tz": NY})["pill"] == "1 stopped"
+
+
+def test_pill_text_counts():
+    from speakeasy.home_words import pill_text
+    assert pill_text(0, 0) == "All quiet"
+    assert pill_text(0, 2, stopped=1) == "1 stopped \u00b7 2 running"
+    assert pill_text(1, 0, one_title="Pick a flight", stopped=1) == "1 needs you \u00b7 1 stopped"
+
+
+def test_try_again_starts_lost_jobs_afresh_from_their_requests_and_the_card_leaves(service, monkeypatch):
+    _clock(service, NOON)
+    store = service.store
+    _fail(store, "a", None, "offline", session="speakeasy_task_a", lost=True, request="Add a photo viewer",
+          settled=NOON - 120)
+    _fail(store, "b", None, "offline", session="s_saved", request="Build the call header", settled=NOON - 119)
+    calls = []
+
+    def fake_start(text, staged=None, session_id=None, **kw):
+        n = len(calls)
+        calls.append((text, session_id))
+        task(store, f"new{n}", "working", request=text, created=NOON - 10)
+        return {"ok": True, "run_id": f"run_new{n}", "session_id": None}
+    monkeypatch.setattr(service, "_start_job", fake_start)
+    (card,) = _stopped(service.now({"tz": NY}))
+    got = service.now_retry(card["id"], {})
+    assert sorted(calls) == [("Add a photo viewer", None), ("Try again", "s_saved")]
+    assert {s["fresh"] for s in got["started"]} == {True, False}
+    assert _stopped(service.now({"tz": NY})) == []
+
+
+def test_try_again_is_only_for_stopped_cards(service):
+    from speakeasy.service import ServiceError
+    _clock(service, NOON)
+    _done(service.store, "d1", session="s1")
+    item = service.now({"tz": NY})["items"][0]
+    with pytest.raises(ServiceError):
+        service.now_retry(item["id"], {})
+    with pytest.raises(ServiceError):
+        service.now_retry("s:nope", {})
+
+
+def test_try_again_route(server, service, monkeypatch):
+    from conftest import http
+    _clock(service, NOON)
+    _fail(service.store, "f1", None, "offline", session="speakeasy_task_gone", lost=True, request="Add a photo viewer")
+    monkeypatch.setattr(service, "_start_job", lambda text, staged=None, session_id=None, **kw:
+                        {"ok": True, "run_id": None, "session_id": None})
+    (card,) = _stopped(service.now({"tz": NY}))
+    from urllib.parse import quote
+    status, body = http(server.base_url, "POST", f"/voice/now/{quote(card['id'], safe='')}/retry", {},
+                        token=server.token)
+    assert status == 200 and body["started"][0]["fresh"] is True

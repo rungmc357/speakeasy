@@ -197,6 +197,7 @@ CAPABILITIES["agent_model"] = True
 CAPABILITIES["now"] = True
 CAPABILITIES["now_dismiss"] = True  # build 69: POST/DELETE /voice/now/{id}/dismiss, DELETE /voice/now/clear-seen (Undo)
 CAPABILITIES["saved_calls"] = True  # read-only call conversations, independent of provider sessions
+CAPABILITIES["now_retry"] = True  # SPK-307: POST /voice/now/{id}/retry; stopped cards carry retry_fresh
 CAPABILITIES["home_stream"] = True  # SPK-208: `stream` on /voice/now (one thread, asks + cards) and GET /voice/now/recent
 CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking/heard), call_summary
 # SPK-208: POST /voice/home/message (+ /voice/home/voice-message): Home is a chat with a coordinator;
@@ -3449,6 +3450,40 @@ class VoiceService(SecureInputMixin):
         model.set_dismissed(marks)
         self._now_changed()
         return {"ok": True, "id": item_id, "dismissed": True}
+
+    def now_retry(self, item_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/now/{id}/retry`` (SPK-307): Try again on a Stopped card, one job or a folded
+        group. A job whose conversation Hermes has gets "Try again" in it; one lost before Hermes saved
+        any (a restart while it waited) starts afresh from its own request. Each new job names the
+        stopped one as its parent, so the Stopped card leaves Home (``now.superseded``)."""
+        if body:
+            raise ServiceError(400, "body must be empty")
+        item = self.now_model.find(item_id)
+        if item is None:
+            raise ServiceError(404, "That card isn't on Home.")
+        if item.get("kind") != "stopped":
+            raise ServiceError(409, "Only a stopped job can be tried again.")
+        members = item.get("group") or [item]
+        started: list[dict[str, Any]] = []
+        for m in members:
+            key = self.store.key_for_run(m["run_id"]) if m.get("run_id") else None
+            sid = m.get("session_id")
+            request = self.store.request_text(key) if key else None
+            if sid:
+                got = self._start_job("Try again", session_id=sid)
+            elif request:
+                got = self._start_job(request)
+            else:
+                continue
+            new_key = self.store.key_for_run(got["run_id"]) if got.get("run_id") else None
+            if key and new_key:
+                self.store.set_parent(new_key, key)
+            started.append({"run_id": got.get("run_id"), "session_id": got.get("session_id"),
+                            "title": m.get("title"), "fresh": not sid})
+        if not started:
+            raise ServiceError(409, "I don't have what that job was asked, so I can't start it again.")
+        self._now_changed()
+        return {"ok": True, "id": item_id, "started": started}
 
     def now_answer(self, item_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /voice/now/{id}/answer {option_id} | {text}``: one way to answer a question card,

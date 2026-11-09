@@ -492,16 +492,20 @@ def replaced_questions(questions: list[dict[str, Any]]) -> dict[str, dict[str, A
 
 # -- tracker pill --------------------------------------------------------------------------------
 
-def pill_text(needs: int, running: int, *, one_title: str | None = None, limit: int = PILL_MAX) -> str:
+def pill_text(needs: int, running: int, *, one_title: str | None = None, limit: int = PILL_MAX,
+              stopped: int = 0) -> str:
     """The tracker pill's words at any volume: counts, never a title cut mid-way. A single thing
-    waiting on you names itself only when its short title fits."""
-    if needs == 1 and running == 0 and one_title:
+    waiting on you names itself only when its short title fits. Stopped work is counted too
+    (SPK-307): never "All quiet" over a Stopped card."""
+    if needs == 1 and running == 0 and not stopped and one_title:
         t = short_title(one_title, limit)
         if t and len(t) <= limit:
             return t
     parts = []
     if needs:
         parts.append(f"{needs} need{'s' if needs == 1 else ''} you")
+    if stopped:
+        parts.append(f"{stopped} stopped")
     if running:
         parts.append(f"{running} running")
     text = " \u00b7 ".join(parts) or "All quiet"
