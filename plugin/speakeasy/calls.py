@@ -1356,6 +1356,8 @@ class SidebandWorker:
             return  # the user named this conversation: their name stays (SPK-320)
 
         def name() -> str | None:
+            if self.store.user_title(session_id):
+                return None  # renamed by the user while this push waited (SPK-320)
             return self._no_names(self.store.title(idem))
 
         # Not a dispatch task: the end of a call never waits on a session's name.

@@ -69,6 +69,8 @@ def test_a_conversation_the_user_named_never_takes_a_later_task_name(server, ser
     worker.delegate("call_u", "Can you plan the wiring for the porch lamps")
     wait_for(lambda: _task_sessions(hermes), timeout=10)
     sid = next(iter(_task_sessions(hermes)))
+    # The row already carries its first name (the request's words) when the user renames it.
+    wait_for(lambda: hermes.session_titles.get(sid), timeout=10)
     service.store.set_user_title(sid, "Lamp project")
     with hermes.lock:
         hermes.session_titles[sid] = "Lamp project"

@@ -90,6 +90,9 @@ def push(hermes: Any, session_id: str, title_now: Callable[[], str | None], *,
                 return None  # renamed already (by its first topic, or by someone else)
         elif ours is not None and current not in (None, "", ours):
             return None  # renamed by someone else since: theirs stays
+        title = title_now()  # read again: the user may have renamed it while Hermes answered
+        if not title:
+            return None
         names = candidates(title)
         if current and current in names:
             _ours[session_id] = current
