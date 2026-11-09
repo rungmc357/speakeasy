@@ -99,6 +99,29 @@ def test_secrets_and_missing_files_never_list(server, made):
     assert all(f["name"] not in (".env", "gone.png") for f in body["files"])
 
 
+def test_each_file_names_the_reply_it_came_in(server, made):
+    """Open chat (SPK-265): the file's message id is the session page's own entry id, so the app can
+    scroll to that reply. A helper's file opens the parent chat with no message to point at."""
+    _, body = get(server, "/voice/files")
+    chart, plan = body["files"]
+    assert chart["message_id"] == "m5"           # the newest reply that handed it over
+    assert "message_id" not in plan
+    status, page = get(server, "/voice/history/d1")
+    assert status == 200
+    entry = next(e for e in page["session"]["entries"] if e["id"] == chart["message_id"])
+    assert [f["id"] for f in entry.get("files") or []] == [chart["id"]]
+
+
+def test_a_file_from_a_home_job_points_at_home(service, made, monkeypatch):
+    monkeypatch.setattr(service.home_chat, "started_runs", lambda: {"run_home"})
+    monkeypatch.setattr(service.store, "keys_for_session",
+                        lambda sid: [("k2", "run_later", "done"), ("k1", "run_home", "done")] if sid == "d1" else [])
+    rows = service.files_list({})["files"]
+    by_name = {r["name"]: r for r in rows}
+    assert by_name["porch-paint-chart.png"]["home_run"] == "run_home"
+    assert "home_run" not in by_name["garden-plan.pdf"]
+
+
 def test_kind_filter_search_and_chat_filter(server, made):
     assert [f["name"] for f in get(server, "/voice/files?kind=document")[1]["files"]] == ["garden-plan.pdf"]
     assert [f["name"] for f in get(server, "/voice/files?q=porch")[1]["files"]] == ["porch-paint-chart.png"]
