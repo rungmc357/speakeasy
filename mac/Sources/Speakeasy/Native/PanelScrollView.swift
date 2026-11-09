@@ -46,9 +46,7 @@ struct PanelScrollView<Content: View>: NSViewRepresentable {
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: PanelNSScrollView, context: Context) -> CGSize? {
         let width = proposal.width ?? Tokens.width
-        let height = min(max(nsView.contentHeight(for: width), minHeight), maxHeight)
-        // Offered less (the panel capped at the screen), give the room up and scroll instead.
-        return CGSize(width: width, height: proposal.height.map { min(height, $0) } ?? height)
+        return CGSize(width: width, height: min(max(nsView.contentHeight(for: width), minHeight), maxHeight))
     }
 }
 
