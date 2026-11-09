@@ -224,7 +224,7 @@ struct HistorySidebar: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("History").font(.system(size: 15, weight: .bold))
+            Text("Conversations").font(.system(size: 15, weight: .bold))
             Spacer()
             HistoryIconButton(symbol: "square.and.pencil", help: "New chat (⌘N)", prominent: store.target == .newChat) { store.newChat() }
                 .keyboardShortcut("n", modifiers: .command)

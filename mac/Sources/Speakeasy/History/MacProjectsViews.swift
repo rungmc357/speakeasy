@@ -109,7 +109,9 @@ struct MacProjectsSidebarSection: View {
             }
         }
         .padding(.trailing, 4)
-        .sidebarRowBackground(selected: on)
+        // Home's row says where Home works in its line; only a chosen project wears the selected
+        // surface, so the sidebar never shows two selected rows beside an open conversation.
+        .sidebarRowBackground(selected: on && id != nil)
     }
 
     @ViewBuilder private func inline(_ p: HermesProject) -> some View {
