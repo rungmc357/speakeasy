@@ -385,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
         reply instead of a reset connection. Never kept: the bytes are read and dropped."""
         if length <= 0:
             return
-        left, deadline = min(length, A.MAX_FILE_BYTES), time.monotonic() + DRAIN_MAX_S
+        left, deadline = min(length, A.MAX_VIDEO_BYTES), time.monotonic() + DRAIN_MAX_S
         try:
             self.connection.settimeout(DRAIN_RECV_S)
             while left > 0 and time.monotonic() < deadline:

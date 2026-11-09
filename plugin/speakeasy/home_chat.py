@@ -23,7 +23,8 @@ keeps it fast. Its model (``route``), first that applies:
 2. ``auxiliary.speakeasy_home`` when the user configured one in Hermes;
 3. Auto: the first model in ``COORDINATOR_MODELS`` the user already has connected in Hermes (read
    from Hermes' own model list, never by calling a model);
-4. the user's main model; then the Speakeasy routing model.
+4. none of those connected: the user's Home work model (the chip's pick, else their Hermes default),
+   so a user without a fast model chats on the model they chose; then the Speakeasy routing model.
 
 Home's model chip picks the WORK model (``work`` in ``GET /voice/home/model``, ``{"work_model": id}``
 on POST): the model the jobs started from Home run on. Unset, jobs run on the user's Hermes default
@@ -74,17 +75,20 @@ FAILED_S = 24 * 3600          # Auto skips a model that failed in real use for t
 # version counts, from whichever provider serves it (the preferred provider first when it has that
 # version): an older family member is never picked while a newer one is connected. The Home model
 # chip overrides Auto. Measured on the real coordinator prompt (378 calls, invented asks graded
-# against a fixed answer key): Sonnet 5.5 routed 98% right at ~1.9 s, Haiku 5.5 93% at ~2.0 s,
-# Haiku 4.5 85%. The prompt is slim, so the mid tier costs no latency. Never the top tier (Opus):
-# that is the work model's job. Keep this list short and current; swap entries here.
+# against a fixed answer key): Sonnet 5.5 routed 97-98% right at ~1.9 s, GPT-6.1 Terra 99% at ~2.0 s,
+# Haiku 5.5 93% at ~2.0 s, Haiku 4.5 85%. The prompt is slim, so the mid tier costs no latency. Never
+# the top tier (Opus) and never the small "Luna" tier: Opus is the work model's job, and small models
+# misroute follow-ups and corrections. Keep this list short and current; swap entries here.
 COORDINATOR_MODELS: list[tuple[str | None, str]] = [
     ("anthropic", r"(^|/)claude-sonnet-\d"),   # most accurate routing, as quick as Haiku on this prompt
+    (None, r"(^|/)gpt-\d+(\.\d+)*-terra$"),     # OpenAI-only users: the mid tier, as accurate as Sonnet
     ("anthropic", r"(^|/)claude-haiku-\d"),    # quick, good plain chat, dependable tool calls
     (None, r"(^|/)gpt-\d+(\.\d+)*-mini$"),
     (None, r"gemini-\d+(\.\d+)*-flash$"),
     (None, r"grok-\d+(\.\d+)*-fast"),
 ]
-FAST_OPTIONS = 2              # "Fast replies" rows besides Auto (one per family: Sonnet, Haiku)
+FAST_FAMILIES = 3             # "Fast replies" offers only these leading families (Sonnet, Terra, Haiku)
+FAST_OPTIONS = 3              # "Fast replies" rows besides Auto (one per connected family of those)
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 _SMALL_TALK = re.compile(
@@ -100,9 +104,10 @@ def small_talk(text: str) -> bool:
 # A chat reply that says work is under way ("Looking for a rain jacket under $100.", "Let me check")
 # promises a job; without a tool call it would start nothing.
 _CLAIMS_WORK = re.compile(
-    r"(?i)(?:^|[.!?]\s+|\band\s+)(?:"
+    r"(?i)(?:^|[.!?,]\s+|\band\s+)(?:"
     r"(?:i'?m\s+|i am\s+|now\s+)?(?:looking (?:for|up|into)|checking|searching|finding|pulling up|fetching|digging into)"
-    r"|(?:i'?ll|i will|let me)\s+(?:look|check|search|find|pull up|fetch|dig)"
+    r"|(?:i'?ll|i will|let me)\s+(?:look|check|search|find|pull up|fetch|dig|take a look|have a look|go look|see what)"
+    r"|(?:taking|having) a (?:quick )?look\b|give me a (?:sec|second|minute|moment)\b"
     # The acknowledgements the start line itself suggests ("Looking now.", "Checking now.") promise a
     # job too: seen live, "Looking now." with no tool call left an ask with no job.
     r"|(?:looking|checking|searching|digging in)\s+(?:now|on (?:it|that))\b|looking at (?:it|that|this) now\b"
@@ -113,10 +118,34 @@ def claims_work(reply: str | None) -> bool:
     return bool(_CLAIMS_WORK.search(reply or ""))
 
 
-# R2: the line said when a job starts is an acknowledgement ("On it.", "Looking now."), never the ask
-# read back ("On it — finding a rain jacket under $100 in waterproof..."). A sentence that repeats the
-# job's request is replaced; any other sentence (an answer to another part of the message) stays.
-ACK = "On it."
+# R2: the line said when a job starts is a warm, natural acknowledgement ("Let me take a look at where the
+# release is at."), never the whole ask read back ("On it — finding a rain jacket under $100 in
+# waterproof..."). A sentence that repeats the job's request is replaced with one of these lines
+# (varied by ask, never the same twice in a row); any other sentence (an answer to another part) stays.
+# Geo: Home should feel chatty, not a stream of "Checking." / "On it.".
+ACKS = ("Let me take a look.", "Sure, I'll look into that.", "Give me a minute on this one.",
+        "Let me dig into that.", "Okay, taking a look now.", "On it, back shortly with what I find.")
+ACK = ACKS[0]
+# Replies that are only a clipped stock acknowledgement: Home never posts one of these alone.
+_CLIPPED = re.compile(r"(?i)^\W*(?:on it|checking(?: now| on it)?|looking(?: now| into it)?|got it|ok(?:ay)?"
+                      r"|will do|sure|starting(?: task| now)?)\W*$")
+
+
+def pick_ack(asked: str = "", avoid: str | None = None) -> str:
+    """A natural acknowledgement chosen by the ask (stable for one ask), never *avoid* (the last line)."""
+    i = sum(map(ord, asked or "")) % len(ACKS)
+    for k in range(len(ACKS)):
+        line = ACKS[(i + k) % len(ACKS)]
+        if line != avoid:
+            return line
+    return ACKS[0]
+
+
+def clipped(reply: str | None) -> bool:
+    """True for a reply that is only a stock word or two ("On it.", "Checking.")."""
+    return bool(_CLIPPED.match(reply or ""))
+
+
 _ACK_STOP = {"the", "and", "for", "with", "from", "that", "this", "your", "you", "find", "finding", "look", "looking",
              "check", "checking", "search", "searching", "get", "getting", "some", "any", "now", "under", "about",
              "into", "out", "let", "me", "will", "i'm", "it's", "on", "it", "what", "which", "good", "best"}
@@ -128,10 +157,14 @@ def _ack_words(text: str) -> set[str]:
 
 
 def parrots(sentence: str, asked: str) -> bool:
-    """True when *sentence* reads the ask back: five words or more sharing three of the ask's words."""
+    """True when *sentence* reads the ask back: five words or more sharing three of the ask's words and
+    three quarters of them. Naming the topic ("pulling up dinner spots near you") is warm, not a
+    read-back; repeating every detail of the ask is."""
     if len(sentence.split()) < 5:
         return False
-    return len(_ack_words(sentence) & _ack_words(asked)) >= 3
+    ask = _ack_words(asked)
+    shared = len(_ack_words(sentence) & ask)
+    return shared >= 3 and shared * 4 >= len(ask) * 3
 
 
 # The app's own mechanics are never said to the user: the coordinator is told it can't see an
@@ -142,16 +175,19 @@ _MECHANICS = re.compile(r"(?i)\b(?:can'?t|cannot|can not|unable to|don'?t)\s+(?:
                         r"|\bstart(?:ing)? (?:a|the) job\b|\b(?:start_job|follow_up|a job (?:can|will) look)\b")
 
 
-def acknowledgement(reply: str, asked: str) -> str:
-    """The start-of-job reply without the ask read back: parroting sentences go, "On it." leads."""
+def acknowledgement(reply: str, asked: str, start: bool = True) -> str:
+    """The start-of-job reply without the ask read back: parroting sentences go and a natural
+    acknowledgement leads; a bare stock line ("On it.", "Checking.") becomes a natural one too."""
     sentences = [s for s in re.split(r"(?<=[.!?])\s+", (reply or "").strip()) if s]
     if not sentences:
         return reply
     kept = [s for s in sentences if not parrots(s, asked) and not _MECHANICS.search(s)]
-    if len(kept) == len(sentences):
+    if start and kept and kept[0] == sentences[0] and clipped(kept[0]):
+        kept[0] = pick_ack(asked)
+    elif len(kept) == len(sentences):
         return reply
-    if not kept or kept[0] != sentences[0]:
-        kept.insert(0, ACK)
+    elif not kept or kept[0] != sentences[0]:
+        kept.insert(0, pick_ack(asked))
     return " ".join(kept)
 
 
@@ -164,13 +200,14 @@ def _version(model: str) -> tuple[int, ...]:
     return tuple(head + [0] * (3 - len(head)) + (dated or [0]))
 
 
-def approved(entries: dict[str, dict[str, Any]]) -> list[str]:
+def approved(entries: dict[str, dict[str, Any]],
+             families: list[tuple[str | None, str]] | None = None) -> list[str]:
     """The user's connected models that are approved coordinators, best first: COORDINATOR_MODELS
     order, and per family only its newest version (an older one never appears while a newer one is
     connected), the preferred provider first, then others serving that same version. Pure: reads
     only *entries*."""
     out: list[str] = []
-    for provider, pattern in COORDINATOR_MODELS:
+    for provider, pattern in (COORDINATOR_MODELS if families is None else families):
         rx = re.compile(pattern, re.I)
         hits = [e for e in entries.values() if rx.search(str(e.get("model") or ""))]
         if not hits:
@@ -193,8 +230,14 @@ Speakeasy app. Home is one ongoing conversation. Behind you, jobs (full agent se
 user's computer, files, accounts and the web) do real work.
 
 Answer in plain text yourself for greetings, thanks, small talk, and anything you can answer from \
-general knowledge, this conversation, or the jobs listed below (their status and results). Keep it \
-conversational: usually one to three sentences, no headings, no lists unless asked.
+general knowledge, this conversation, or the jobs listed below (their status and results). Talk like a \
+sharp, friendly person texting a friend, not a ticket system: warm, natural, a little personality, usually \
+one to three sentences, no headings, no lists unless asked. Small talk gets real conversation: answer like \
+a person, have a light opinion, and you may ask something back. No emoji, no fake enthusiasm ("Great \
+question!", "Absolutely!"), no filler.
+When you answer about a job's status or result, lead with the useful thing, then add one human sentence \
+(what's next, what it means): "The release is on your phone. The design cleanup is next and should land \
+tonight."
 
 Use a tool instead when the message needs doing or live or personal information: searching, booking, \
 buying, files, code, email, calendar, messages, the user's machines or accounts, weather, prices, news, \
@@ -202,9 +245,13 @@ or anything about the user you don't already know. Anything the user wants shown
 pull request, a chart, a draft, a document, a picture, a list to keep) is a job too: jobs draw cards, \
 your reply can't.
 - start_job for new work. "request" is the task in self-contained words (resolve "it", "that", "the one \
-you mentioned" from the conversation); "reply" is a short acknowledgement ("On it.", "Looking now.", \
-"Checking.") with at most a few words of its own; never read the ask back ("On it, finding a rain jacket \
-under $100" is wrong: the user just said that). Never "Starting task".
+you mentioned" from the conversation); "reply" is one short, natural sentence that shows you heard \
+what they asked, the way a person would say it: "Let me take a look at where the release is at.", "Ooh, \
+good one. Pulling up dinner spots near you.", "Hm, I'll dig into why that test keeps failing." Vary \
+it; never a bare "On it." or "Checking.", never the same line as your last reply, and don't open every \
+reply the same way ("Sure, ..." every time reads canned). Name the topic in \
+a few words but never read the whole ask back with all its details ("Finding a waterproof rain jacket \
+under $100 in your size" is wrong: the user just said that). Never "Starting task".
 - message_job when the message changes, corrects, answers or adds to an existing job, or asks it to do \
 more with its result ("make it shorter", "actually Friday", "also check the price"). "job" is its id.
 - cancel_job to stop a running job. "job" is its id.
@@ -212,7 +259,7 @@ more with its result ("make it shorter", "actually Friday", "also check the pric
 dentist and find a birthday gift" is two jobs). Never merge unrelated asks into one job, and never \
 drop one: each ask is either answered in your reply or gets its own job. When you start a job and \
 the same message also asks something you can answer yourself, answer it in that job's reply too \
-("On it. A soft-boiled egg takes about 6 minutes.").
+("Let me find you one. And a soft-boiled egg takes about 6 minutes.").
 
 Rules:
 - Plain prose only: no code blocks, tables, box drawing or mock-ups of cards in your reply.
@@ -250,9 +297,11 @@ def us_units_first(text: str) -> str:
         return f"{qual}{m.group('u').strip()} ({m.group('m').strip()})"
     return _METRIC_FIRST.sub(swap, text or "")
 
-_REPLY = {"type": "string", "description": "A short acknowledgement (On it.), never the ask read back."}
-_START_REPLY = {"type": "string", "description": "A short acknowledgement (On it., Looking now.) that never reads "
-                "the ask back, plus the answer to any other part of the message you can answer yourself."}
+_REPLY = {"type": "string", "description": "One short, natural sentence that shows you heard them (\"Got it, "
+          "I'll make it shorter.\"), never a bare \"On it.\" and never the ask read back in full."}
+_START_REPLY = {"type": "string", "description": "One short, warm, natural sentence that names the topic (\"Let me "
+                "take a look at where the release is at.\"), never a bare \"On it.\" and never the whole ask read "
+                "back, plus the answer to any other part of the message you can answer yourself."}
 _JOB = {"type": "string", "description": "The job's id from the list (j1, j2, ...)."}
 TOOLS = [
     {"type": "function", "function": {
@@ -408,7 +457,7 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
         first = extra.pop(0)
         action, request, reply = "start", first["request"], (reply or first["reply"])
     if action in {"start", "follow_up"} and not extra:
-        reply = acknowledgement(reply, request or "")   # R2: never the ask read back, nor the app's mechanics
+        reply = acknowledgement(reply, request or "", start=action == "start")   # R2: never the ask read back, nor the app's mechanics
     if extra:
         # One reply line for the whole message: the extra jobs' own lines join the first. A job with
         # no line of its own (more_jobs, or a second call with an empty reply) is still named, so
@@ -648,6 +697,12 @@ class HomeChat:
             model = None
         if ids and decided["action"] in {"none", "cancel"}:
             decided = {**decided, "action": "start", "run_id": None}  # pictures always reach a job
+        if decided["action"] == "start" and decided["reply"]:
+            # Never the same canned line twice in a row, and never a bare "On it." (Geo: chattier Home).
+            last = next((m.get("text") for m in reversed(history) if m.get("role") == "assistant"), None)
+            said = decided["reply"]
+            if clipped(said) or (said == last and said in ACKS):
+                decided = {**decided, "reply": pick_ack(decided.get("request") or text, avoid=last)}
         reply_row = None
         if decided["reply"]:
             reply_id = self._add("assistant", decided["reply"], self.clock(), model=model, reply_to=user_id)
@@ -1060,6 +1115,12 @@ class HomeChat:
         if auto:
             provider, _, model = auto.partition("/")
             return {"provider": provider, "model": model, "source": "auto"}
+        # No approved fast model connected: the user's Home work model (the chip's pick, else their
+        # Hermes default), never a silent substitute.
+        work = str(self.work_route().get("model") or "")
+        provider, _, model = work.partition("/")
+        if provider and model:
+            return {"provider": provider, "model": model, "source": "work"}
         main = cfg.get("model")
         if isinstance(main, dict) and main.get("default") and main.get("provider"):
             return {"provider": str(main["provider"]), "model": str(main["default"]), "source": "main"}
@@ -1121,10 +1182,10 @@ class HomeChat:
             aux = (self._config().get("auxiliary") or {}).get(route["task"]) or {}
             if isinstance(aux, dict) and aux.get("model"):
                 current = f"{aux.get('provider') or 'auto'}/{aux['model']}"
-        # "Fast replies": the approved coordinator families the user has (newest version each), never
+        # "Fast replies": the Sonnet / Terra / Haiku families the user has (newest version each), never
         # the user's main model (often the top tier, which is the work model's job), plus the
         # user's own past pick while it is still connected, so the sheet shows what is in use.
-        options = approved(entries)[:16]
+        options = approved(entries, COORDINATOR_MODELS[:FAST_FAMILIES])[:16]
         if current and current in entries and current not in options and route.get("source") == "chosen":
             options.insert(0, current)
 

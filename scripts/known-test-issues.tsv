@@ -1,0 +1,5 @@
+# Known flaky plugin tests: a first-pass failure of one of these that passes on a solo retry is
+# attributed, not UNRESOLVED. One line each, tab-separated: <test id or test name> <SPK-N> <why>.
+# Every line needs an open issue; delete the line when the issue's fix lands.
+test_parallel_tasks_get_their_own_sessions	SPK-167	under load both tasks can land in one Hermes session (seen in a 12-way run)
+test_a_picture_from_a_thread_task_still_pops_up	SPK-167	picture card raced on apollo

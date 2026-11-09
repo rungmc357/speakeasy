@@ -47,7 +47,7 @@ def test_title_examples_read_like_a_person_wrote_them():
     assert W.short_title(LONG_TITLES[3]) == "Lantern v4: every work use case"
     assert W.short_title("Check the boiler") == "Check the boiler"       # short ones stay as they are
     # A long ask keeps its subject's place, not its ask verb (live: "Get the weather forecast").
-    assert W.short_title("Get the weather forecast for Chicago for tomorrow") == "Weather forecast for Chicago"
+    assert W.short_title("Get the weather forecast for Tucson for tomorrow") == "Weather forecast for Tucson"
     assert W.short_title("Look up the sunrise time in Boston for tomorrow") == "Sunrise time in Boston"
     assert W.short_title("iPhone layout pass") == "iPhone layout pass"     # brand casing kept
 

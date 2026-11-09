@@ -231,16 +231,18 @@ def test_auto_prefers_the_newest_sonnet_then_the_newest_haiku_never_opus():
     assert not any("opus" in m for m in HC.approved(have))
 
 
-def test_fast_replies_list_sonnet_and_haiku_only_never_the_main_model(server, service, monkeypatch):
+def test_fast_replies_list_sonnet_terra_and_haiku_only_never_the_main_model(server, service, monkeypatch):
     chat = service.home_chat
     monkeypatch.setattr(service, "catalog", _Catalog(_entries(
         "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5",
-        "anthropic/claude-haiku-4-5", "openai-codex/gpt-5.4-mini", "openai-codex/gpt-5.5")))
+        "anthropic/claude-haiku-4-5", "openai-codex/gpt-5.4-mini", "openai-codex/gpt-5.5",
+        "openai-codex/gpt-6.1-terra", "openai-codex/gpt-6.1-luna")))
     monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "claude-opus-5-5", "provider": "anthropic"}})
     status, body = http(server.base_url, "GET", "/voice/home/model", None, server.token)
     c = body["coordinator"]
     assert status == 200 and c["source"] == "auto" and c["auto"]["id"] == "anthropic/claude-sonnet-5-5"
-    assert [o["id"] for o in c["options"]] == ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"]
+    assert [o["id"] for o in c["options"]] == ["anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-terra",
+                                               "anthropic/claude-haiku-5-5"]
     # The work model (the chip's hero) is the Hermes default; "More…" lists the rest, one row each.
     w = body["work"]
     assert w["model"]["id"] == "anthropic/claude-opus-5-5" and len(w["options"]) <= HC.WORK_OPTIONS
@@ -292,9 +294,9 @@ def test_route_auto_then_fallbacks_and_never_calls_anything(service, monkeypatch
             "auxiliary": {"speakeasy_router": {"provider": "acme", "model": "tiny"}}}
     monkeypatch.setattr(chat, "_config", lambda: main)
     assert chat.route() == {"provider": "openai-codex", "model": "gpt-5.4-mini", "source": "auto"}
-    # None approved connected: the user's main model, then the routing model.
+    # None approved connected: the user's Home work model (here their Hermes default), then the routing model.
     catalog.payload = _entries("acme/big-model-3")
-    assert chat.route() == {"provider": "acme", "model": "big-model-3", "source": "main"}
+    assert chat.route() == {"provider": "acme", "model": "big-model-3", "source": "work"}
     monkeypatch.setattr(chat, "_config", lambda: {})
     assert chat.route() == {"task": "speakeasy_router", "source": "routing"}
     # An explicit speakeasy_home in Hermes' config beats Auto.
@@ -311,7 +313,34 @@ def test_model_list_not_read_yet_uses_the_main_model_and_warms_it(service, monke
     monkeypatch.setattr(service, "catalog", catalog)
     monkeypatch.setattr(service, "_warm_catalog", lambda: warmed.append(1))
     monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"}})
-    assert chat.route()["source"] == "main" and warmed and catalog.fetched == 0
+    assert chat.route()["source"] == "work" and warmed and catalog.fetched == 0
+
+
+def test_no_fast_model_connected_uses_the_home_work_model(service, monkeypatch):
+    """Geo (final): with no approved coordinator connected, Home's chat runs on the user's selected
+    Home work model (the chip's pick), else their Hermes default — never a silent substitute."""
+    chat = service.home_chat
+    catalog = _Catalog(_entries("acme/big-model-3", "acme/big-model-2", "studio/qwen3.8-coder"))
+    monkeypatch.setattr(service, "catalog", catalog)
+    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"}})
+    assert chat.route() == {"provider": "acme", "model": "big-model-3", "source": "work"}
+    service.store.set_meta(HC.WORK_META, "acme/big-model-2")
+    assert chat.route() == {"provider": "acme", "model": "big-model-2", "source": "work"}
+    assert chat.model_status()["coordinator"]["model"]["id"] == "acme/big-model-2"
+    # A fast model connected again: Auto picks it, whatever the work model is.
+    catalog.payload = _entries("acme/big-model-2", "openai-codex/gpt-6.1-terra")
+    assert chat.route() == {"provider": "openai-codex", "model": "gpt-6.1-terra", "source": "auto"}
+    assert catalog.fetched == 0
+
+
+def test_terra_comes_right_after_sonnet_and_luna_is_never_auto():
+    have = _entries("openai-codex/gpt-6.1-luna", "openai-codex/gpt-6.1-terra", "openai-codex/gpt-6.1",
+                    "anthropic/claude-haiku-5-5")
+    assert HC.pick_auto(have) == "openai-codex/gpt-6.1-terra"
+    assert HC.pick_auto(_entries("openai-codex/gpt-6.1-luna", "openai-codex/gpt-6.1")) is None
+    both = _entries("anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-terra", "anthropic/claude-haiku-5-5")
+    assert HC.approved(both)[:3] == ["anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-terra",
+                                     "anthropic/claude-haiku-5-5"]
 
 
 def test_the_home_chip_choice_wins_and_auto_comes_back(server, service, monkeypatch):
@@ -677,3 +706,19 @@ def test_a_canceled_job_keeps_its_card_in_the_thread_saying_so(server, service, 
     assert item["kind"] == "seen_answer" and item["line"] == "Canceled." and item["unread"] is False
     cards = [e for e in stream(server) if e["kind"] == "card"]
     assert len(cards) == 1   # the card stays, closed; the reply above it still points at something
+
+
+def test_two_starts_in_a_row_never_post_the_same_canned_line(server, service, hermes):
+    # Geo (build 71): Home read "On it." / "On it." / "Checking." — never a bare stock line, never
+    # the same line twice in a row.
+    coordinator(service, {"reply": "On it.", "action": "start", "request": "Find a birthday gift for a cyclist"})
+    post(server, {"text": "find a birthday gift for a cyclist", "client_id": "c_g1"})
+    wait_for(lambda: hermes.calls)
+    first = [e["text"] for e in stream(server) if e["kind"] == "message" and e.get("role") == "assistant"][-1]
+    assert first in HC.ACKS
+    # The model answers the next ask with the very same natural line: the second one differs.
+    coordinator(service, {"reply": first, "action": "start", "request": "Find a cheap bike light"})
+    post(server, {"text": "and a cheap bike light", "client_id": "c_g2"})
+    said = wait_for(lambda: [e["text"] for e in stream(server) if e["kind"] == "message"
+                             and e.get("role") == "assistant"][1:] or None)
+    assert said[-1] != first and said[-1] in HC.ACKS

@@ -41,7 +41,7 @@ def prepare(path: Path, folder, transcribe=None, on_failure=None) -> dict:
         if int(videos[0].get("width", 0)) * int(videos[0].get("height", 0)) > 9_000_000:
             raise ValueError("video resolution too large")
         if duration > MAX_SECONDS:
-            raise Refused(413, "too_large", "Videos can be up to 2 minutes and 10 MB. Trim the clip and try again.")
+            raise Refused(413, "too_large", "That clip is too long. Trim it to 2 minutes and try again.")
         frames = []
         for index in range(FRAME_COUNT):
             at = duration * index / FRAME_COUNT

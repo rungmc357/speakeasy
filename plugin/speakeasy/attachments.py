@@ -35,6 +35,14 @@ MAX_REQUEST_IMAGES = 4              # the attachments plus one screen capture
 MAX_IMAGE_BYTES = 2_500_000         # one re-encoded JPEG (the Mac aims for about 300 KB)
 MAX_REQUEST_IMAGE_BYTES = 6_500_000  # every image in one request, before base64
 MAX_FILE_BYTES = 10_000_000         # a non-image file, saved on the Hermes machine, never inlined
+MAX_VIDEO_BYTES = 25_000_000        # an MP4/MOV clip after the phone compresses it (up to 2 minutes)
+
+
+def max_upload_bytes(kind: str, mime: str | None) -> int:
+    """The cap for one upload: pictures, videos (compressed on the phone first), other files."""
+    if kind != "file":
+        return MAX_IMAGE_BYTES
+    return MAX_VIDEO_BYTES if mime in {"video/mp4", "video/quicktime"} else MAX_FILE_BYTES
 
 KINDS = ("screen", "picture", "file")
 IMAGE_KINDS = frozenset({"screen", "picture"})
