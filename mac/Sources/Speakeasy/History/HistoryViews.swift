@@ -234,7 +234,7 @@ struct HistorySidebar: View {
     private var search: some View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
-            TextField("Search sessions and messages", text: $store.searchText)
+            TextField("Search what was said", text: $store.searchText)
                 .textFieldStyle(.plain).font(.system(size: 12.5))
                 .focused($searchFocused)
                 .onExitCommand { store.searchText = ""; searchFocused = false }
