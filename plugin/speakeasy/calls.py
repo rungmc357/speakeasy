@@ -64,11 +64,15 @@ from .text import (ID_RE, MAX_TRANSCRIPT, TERMINAL, clean_transcript, delivery_t
 logger = logging.getLogger(__name__)
 
 
-# A greeting or a bare filler sound on its own is never work ("hey", "yo there", "um").
-GREETING_RE = re.compile(
-    r"(?i)^\s*(?:(?:hey|hi|hello|yo|sup|hiya|howdy|morning|evening|um+|uh+|hmm+|so|okay so|alright so)"
-    r"(?:\s+(?:there|again|man|buddy|dude|you|yo))?"
-    r"|what'?s up|whats up|wassup|how'?s it going|you there|are you there)\s*[.!?,]*\s*$")
+# A greeting, a bare filler sound or how-are-you small talk on its own is never work ("hey", "yo
+# there", "um", "hey, how's it going?", "good morning! how are you?"). Typed chats use it too
+# (service.start_job); SpeakeasyCore's NewChatSend.isSmallTalk mirrors it for older plugins.
+_HELLO = (r"(?:hey|hi|hello|yo|sup|hiya|howdy|good\s+(?:morning|afternoon|evening)|morning|evening"
+          r"|um+|uh+|hmm+|so|okay so|alright so)(?:\s+(?:there|again|man|buddy|dude|you|yo|all|everyone))?")
+_HOW = (r"(?:what'?s up|whats up|wassup|what'?s new|how'?s it going|how is it going"
+        r"|how(?:'re| are) (?:you|ya|things)(?:\s+doing)?(?:\s+today)?|how have you been"
+        r"|how'?s (?:your|the) (?:day|morning|evening|week)(?:\s+going)?|you there|are you there|you around)")
+GREETING_RE = re.compile(rf"(?i)^\s*(?:{_HELLO}(?:[\s,.!]+{_HOW})?|{_HOW})\s*[.!?,]*\s*$")
 SETTLE_S = 1.5         # wait this long after a handoff for the user to keep going
 SETTLE_MAX_S = 6.0     # and never longer than this in total
 ABSORB_WINDOW_S = 15.0 # a handoff of words already folded into an earlier task is dropped
@@ -186,7 +190,8 @@ def said_back(typed: str, said: str) -> bool:
 
 
 def is_greeting(request: str) -> bool:
-    return bool(GREETING_RE.match(request or ""))
+    # The iPhone keyboard types a curly apostrophe ("how’s it going").
+    return bool(GREETING_RE.match((request or "").replace("’", "'")))
 
 
 def whole_request(context: str, started: "set[str] | None" = None) -> str:
