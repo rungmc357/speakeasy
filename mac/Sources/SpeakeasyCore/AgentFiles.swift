@@ -294,7 +294,7 @@ public final class AgentFilesModel: ObservableObject {
                 guard mine == generation else { return }
                 // Nobody is waiting for the answer any more (the page went away): not a failure, and
                 // the next open loads again.
-                if WorkPoll.isCancellation(error) { return }
+                if WorkPollGate.isCancellation(error) { return }
                 if !retried, AgentFilesModel.worthRetrying(error) {
                     retried = true
                     try? await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
@@ -311,7 +311,7 @@ public final class AgentFilesModel: ObservableObject {
     /// A slow answer, a dropped connection or a server hiccup gets one quiet second try; a refusal
     /// (401, 404, a bad request) would only fail again.
     static func worthRetrying(_ error: Error) -> Bool {
-        if WorkPoll.isCancellation(error) { return false }
+        if WorkPollGate.isCancellation(error) { return false }
         if let status = (error as? StatusCarrying)?.status { return status == 0 || status >= 500 || status == 429 }
         return (error as NSError).domain == NSURLErrorDomain
     }
