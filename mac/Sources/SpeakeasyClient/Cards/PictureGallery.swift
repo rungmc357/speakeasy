@@ -10,7 +10,12 @@ public struct PictureGallery: View {
     public let load: (Int) async -> Data?
     @State private var loaded: [Int: Image] = [:]
     @State private var page: Int?
-    @State private var expanded: ImageCard?
+    /// Which picture the full-screen viewer shows. Kept apart from `showing` so paging inside the
+    /// viewer never changes the sheet's identity (that dismissed and re-presented it on every swipe).
+    @State private var viewing: Int?
+    @State private var showing = false
+    /// The reply the pictures were last loaded for; a refresh of the same reply keeps an open viewer.
+    @State private var loadedFor: String?
 
     public init(images: [ImageCard], identity: String, height: CGFloat = 220,
                 load: @escaping (Int) async -> Data?) {
@@ -25,8 +30,8 @@ public struct PictureGallery: View {
                 ScrollView(.horizontal) {
                     LazyHStack(spacing: 10) {
                         ForEach(visible) { card in
-                            Button { expanded = card } label: {
-                                loaded[card.number]!.resizable().scaledToFit()
+                            Button { viewing = card.number; showing = true } label: {
+                                (loaded[card.number] ?? Image(systemName: "photo")).resizable().scaledToFit()
                                     .frame(maxWidth: .infinity).frame(height: height)
                                     .background(Color.primary.opacity(0.04))
                                     .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -58,8 +63,17 @@ public struct PictureGallery: View {
             }
         }
         .task(id: identity + images.map { String($0.number) }.joined(separator: "/")) {
-            loaded = [:]; page = nil; expanded = nil
-            for card in images {
+            let numbers = Set(images.map(\.number))
+            if loadedFor == identity {
+                // Same reply, its picture list changed: keep what's still there, and the viewer open on it.
+                loaded = loaded.filter { numbers.contains($0.key) }
+                if let n = viewing, !numbers.contains(n) { showing = false; viewing = nil }
+                if let p = page, !numbers.contains(p) { page = nil }
+            } else {
+                loaded = [:]; page = nil; showing = false; viewing = nil
+            }
+            loadedFor = identity
+            for card in images where loaded[card.number] == nil {
                 guard !Task.isCancelled, let data = await load(card.number) else { continue }
                 guard !Task.isCancelled else { return }
                 #if os(macOS)
@@ -69,21 +83,25 @@ public struct PictureGallery: View {
                 #endif
             }
         }
-        .sheet(item: $expanded) { selected in
+        .sheet(isPresented: $showing, onDismiss: {
+            // Leave the inline gallery on the picture the person was last looking at.
+            if let n = viewing, visible.contains(where: { $0.number == n }) { page = n }
+        }) {
+            let current = visible.first { $0.number == viewing } ?? visible.first
             NavigationStack {
-                TabView(selection: Binding(get: { expanded?.number ?? selected.number }, set: { n in
-                    expanded = visible.first { $0.number == n }
-                })) {
+                TabView(selection: Binding(get: { viewing ?? current?.number ?? 0 }, set: { viewing = $0 })) {
                     ForEach(visible) { card in
-                        loaded[card.number]!.resizable().scaledToFit().tag(card.number)
+                        if let image = loaded[card.number] {
+                            image.resizable().scaledToFit().tag(card.number)
+                        }
                     }
                 }
                 #if os(iOS)
                 .tabViewStyle(.page)
                 #endif
                 .background(Color.black)
-                .navigationTitle(selected.name)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { expanded = nil } } }
+                .navigationTitle(current?.name ?? "")
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showing = false } } }
             }
             .frame(minWidth: 280, minHeight: 300)
             .preferredColorScheme(.dark)
