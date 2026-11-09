@@ -492,14 +492,22 @@ public struct NowStream: Equatable, Sendable {
         public var clientID: String?
         /// message (yours): the pictures, clips and files sent with it (its `text` may be empty then).
         public var files: [SentFile]
+        /// message (SPK-266): said aloud on a call (yours or the voice's), drawn with a small waveform.
+        /// False for words typed into a call and for Home's own chat.
+        public var spoken: Bool = false
+        /// message (SPK-266): the call it was said on.
+        public var callID: String?
+        /// message (yours, SPK-266): the job it asked for didn't go; the app offers Retry on it.
+        public var failed: Bool = false
         public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
                     line: String? = nil, itemIDs: [String] = [], role: Role? = nil, attribution: ReplyAttribution? = nil,
                     voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil,
-                    files: [SentFile] = []) {
+                    files: [SentFile] = [], spoken: Bool = false, callID: String? = nil, failed: Bool = false) {
             self.id = id; self.kind = kind; self.at = at; self.text = text; self.itemID = itemID; self.widget = widget
             self.line = line; self.itemIDs = itemIDs
             self.role = role; self.attribution = attribution; self.voiceDuration = voiceDuration; self.runID = runID
             self.clientID = clientID; self.files = files
+            self.spoken = spoken; self.callID = callID; self.failed = failed
         }
         public init?(json: Any?) {
             guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
@@ -508,12 +516,15 @@ public struct NowStream: Equatable, Sendable {
             let role = (o["role"] as? String).flatMap(Role.init(rawValue:))
             let files = (o["files"] as? [Any] ?? []).compactMap(SentFile.init(json:))
             if kind == .message && (role == nil || (nonEmpty(o["text"]) == nil && files.isEmpty)) { return nil }
+            let call = o["call"] as? [String: Any]
             self.init(id: id, kind: kind, at: Date(timeIntervalSince1970: at), text: nonEmpty(o["text"]),
                       itemID: nonEmpty(o["item_id"]), widget: (o["widget"] as? String).flatMap(Widget.init(rawValue:)),
                       line: nonEmpty(o["line"]), itemIDs: (o["item_ids"] as? [Any] ?? []).compactMap(nonEmpty),
                       role: role, attribution: role == .assistant ? ReplyAttribution(json: o["model"]) : nil,
                       voiceDuration: ((o["voice"] as? [String: Any])?["duration"] as? NSNumber)?.doubleValue,
-                      runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]), files: files)
+                      runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]), files: files,
+                      spoken: call != nil && (call?["typed"] as? Bool) != true, callID: nonEmpty(call?["id"]),
+                      failed: role == .user && (o["failed"] as? Bool) == true)
             replacedAt = (o["replaced_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
         }
     }

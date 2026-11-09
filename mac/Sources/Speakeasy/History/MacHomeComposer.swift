@@ -28,6 +28,9 @@ final class MacHomeComposerModel: ObservableObject {
     @Published var voiceNotesSupported = false
     /// Plugins with `home_chat`: Home is a chat with a coordinator (it replies; jobs only for real work).
     var homeChat = false
+    /// SPK-266: plugins with `call_thread`: during a call Home's composer stays above the call's
+    /// controls and what you type goes to Home's coordinator (never into the voice).
+    @Published var callTyping: CallTyping = .voice
     /// Home's model menu (plugins with `work` in `/voice/home/model`): the model jobs from Home run
     /// on, and the chat's own model as a secondary choice.
     @Published var homeModel: HomeModelStatus?
@@ -308,10 +311,17 @@ private struct MacHomeBottomBarLive: View {
     @ObservedObject var composer: MacHomeComposerModel
     var body: some View {
         if voice.state.connection.isOpen && !voice.state.workOnly {
-            MacNowCallControls(voice: voice)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .padding(.horizontal, 12).padding(.vertical, 10)
-                .accessibilityIdentifier("mac-home-call-dock")
+            VStack(spacing: 0) {
+                if composer.callTyping == .coordinator {
+                    // SPK-266: one thread for Home and the call: typing here reaches Home's coordinator.
+                    MacHomeComposerBar(model: composer, onCall: nil)
+                        .accessibilityIdentifier("mac-home-call-composer")
+                }
+                MacNowCallControls(voice: voice)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal, 12).padding(.vertical, 10)
+                    .accessibilityIdentifier("mac-home-call-dock")
+            }
         } else {
             MacHomeComposerBar(model: composer, onCall: voice.onStart)
                 .onChange(of: voice.state.connection.isOpen) { _, open in if open { composer.cancelRecording() } }

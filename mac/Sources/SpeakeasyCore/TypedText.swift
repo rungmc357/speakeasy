@@ -1,5 +1,22 @@
 import Foundation
 
+/// Where words typed during a call go (SPK-266, Geo 11-08: latest wins over "typing to the call =
+/// speaking"): to Home's coordinator, which answers in the thread and starts or follows jobs, while
+/// the voice only gets a quiet note. A plugin without `call_thread` still takes them as a spoken turn.
+public enum CallTyping: Equatable, Sendable {
+    case coordinator
+    case voice
+
+    public static func route(_ caps: ServerCapabilities?) -> CallTyping {
+        guard let caps else { return .voice }
+        return route(homeChat: caps.homeChat, callThread: caps.callThread)
+    }
+
+    public static func route(homeChat: Bool, callThread: Bool) -> CallTyping {
+        homeChat && callThread ? .coordinator : .voice
+    }
+}
+
 /// A turn typed on the call screen instead of spoken (`session.input_text`), for plugins whose
 /// `GET /voice/status` says `input_text: true`. Sent as `POST /voice/interactions/{id}/input-text`.
 ///

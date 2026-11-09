@@ -182,6 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.history.store.voiceNotesSupported = caps?.voiceNotes ?? false
                     MacHomeComposerModel.shared.voiceNotesSupported = caps?.newVoiceNotes ?? false
                     MacHomeComposerModel.shared.homeChat = caps?.homeChat ?? false
+                    MacHomeComposerModel.shared.callTyping = CallTyping.route(caps)
                     self.history.store.boardsSupported = caps?.boards ?? false
                     self.history.store.skillsSupported = caps?.slashSkills ?? false
                     self.history.store.filesSupported = caps?.files ?? false

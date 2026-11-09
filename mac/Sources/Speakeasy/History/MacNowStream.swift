@@ -9,7 +9,9 @@ struct MacNowThread: View {
     @State private var expanded: Set<String> = []
 
     var body: some View {
-        let scoped = now.home?.call == nil ? now.visible : now.visible.filter(\.onCurrentCall)
+        // SPK-266: on a `call_thread` plugin a call shows the whole thread, not a call-only slice.
+        let callOnly = now.home?.call != nil && MacHomeComposerModel.shared.callTyping != .coordinator
+        let scoped = !callOnly ? now.visible : now.visible.filter(\.onCurrentCall)
         let byID = Dictionary(scoped.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         ForEach(stream.entries) { entry in
             switch entry.kind {
@@ -18,7 +20,7 @@ struct MacNowThread: View {
             case .message:
                 if entry.role == .user, !entry.files.isEmpty { sentFiles(entry.files) }
                 if let text = entry.text {
-                    if entry.role == .user { ask(text) } else { reply(text, entry.attribution) }
+                    if entry.role == .user { ask(text, spoken: entry.spoken) } else { reply(text, entry.attribution, spoken: entry.spoken) }
                 }
             case .card:
                 if let id = entry.itemID, let item = byID[id] { card(item) }
@@ -58,22 +60,30 @@ struct MacNowThread: View {
             }
         }.accessibilityIdentifier("mac-now-chat-files")
     }
-    private func ask(_ text: String) -> some View {
+    /// SPK-266: `spoken` = said aloud on a call (yours or the voice's): a small waveform beside it.
+    private func ask(_ text: String, spoken: Bool = false) -> some View {
         HStack {
             Spacer(minLength: 32)
-            Text(text).font(.callout).padding(12)
-                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
-        }.accessibilityIdentifier("mac-now-ask")
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if spoken { Image(systemName: "waveform").font(.caption).foregroundStyle(.secondary).accessibilityLabel("Said on the call") }
+                Text(text).font(.callout).textSelection(.enabled)
+            }
+            .padding(12)
+            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16))
+        }.accessibilityIdentifier(spoken ? "mac-now-ask-spoken" : "mac-now-ask")
     }
     /// The coordinator's reply in Home's chat: plain text on the left. No model under it (N13):
     /// Home's model lives in the composer chip; session threads keep per-message models.
-    private func reply(_ text: String, _ attribution: ReplyAttribution?) -> some View {
+    private func reply(_ text: String, _ attribution: ReplyAttribution?, spoken: Bool = false) -> some View {
         HStack {
-            Text(AgentMarkdown.attributed(text)).font(.callout).textSelection(.enabled)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if spoken { Image(systemName: "waveform").font(.caption).foregroundStyle(.secondary).accessibilityLabel("Said on the call") }
+                Text(AgentMarkdown.attributed(text)).font(.callout).textSelection(.enabled)
+            }
             .padding(12)
             .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16))
             Spacer(minLength: 32)
-        }.accessibilityIdentifier("mac-now-reply")
+        }.accessibilityIdentifier(spoken ? "mac-now-reply-spoken" : "mac-now-reply")
     }
     private func card(_ item: NowItem) -> some View {
         MacNowCard(item: item, now: now, focused: now.home?.call?.focus == item.id) {

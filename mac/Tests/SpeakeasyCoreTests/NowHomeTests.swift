@@ -204,4 +204,31 @@ final class NowHomeTests: XCTestCase {
         }
         XCTAssertEqual(rows.map(\.statusWords), ["Done", "Stopped", "In progress"])
     }
+
+    // SPK-266: one thread for Home and the call.
+    func testSpokenCallTurnsDecodeWithTheirCallAndTypedOnesDont() throws {
+        let stream = try XCTUnwrap(NowStream(json: ["entries": [
+            ["id": "m:hu_1", "kind": "message", "role": "user", "text": "How's the patio quote?", "at": 10,
+             "call": ["id": "vi_1", "typed": false]],
+            ["id": "m:ha_1", "kind": "message", "role": "assistant", "text": "Nearly done.", "at": 11,
+             "call": ["id": "vi_1", "typed": false]],
+            ["id": "m:hu_2", "kind": "message", "role": "user", "text": "yo", "at": 12, "client_id": "c9", "failed": true],
+            ["id": "m:hu_3", "kind": "message", "role": "user", "text": "and the porch", "at": 13,
+             "call": ["id": "vi_1", "typed": true]],
+        ], "needs_you": []]))
+        XCTAssertEqual(stream.entries.map(\.spoken), [true, true, false, false])
+        XCTAssertEqual(stream.entries.map(\.callID), ["vi_1", "vi_1", nil, "vi_1"])
+        XCTAssertEqual(stream.entries.map(\.failed), [false, false, true, false])
+        XCTAssertNil(stream.entries[1].attribution, "no model label on Home (N13)")
+    }
+
+    func testTypingDuringACallGoesToHomesCoordinatorOnlyOnACallThreadPlugin() throws {
+        func caps(_ json: String) throws -> ServerCapabilities {
+            try JSONDecoder().decode(ServerCapabilities.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(CallTyping.route(try caps(#"{"home_chat": true, "call_thread": true}"#)), .coordinator)
+        XCTAssertEqual(CallTyping.route(try caps(#"{"home_chat": true}"#)), .voice, "an older plugin: the call takes it")
+        XCTAssertEqual(CallTyping.route(try caps(#"{"call_thread": true}"#)), .voice)
+        XCTAssertEqual(CallTyping.route(nil), .voice)
+    }
 }

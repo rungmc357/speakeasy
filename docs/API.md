@@ -299,6 +299,15 @@ A tap on a question card's option (or a typed answer). Body `{"task_id": "...", 
 
 ## POST /voice/interactions/{id}/input-text
 
+**Superseded on plugins with `call_thread` (SPK-266):** apps send words typed during a call to Home's
+coordinator (`POST /voice/home/message`), not into the voice: the message and the coordinator's reply
+are bubbles in Home's thread, jobs start or follow up exactly as on Home, a job it starts joins the
+call's own list, and the live voice gets one quiet background note (what was typed, what Home said,
+which job) that it never reads out or answers. The call's spoken turns, yours and the voice's, arrive
+as `message` entries in `/voice/now` `stream` with `call: {"id", "typed"}` (one entry per spoken turn,
+rewritten in place while it grows, kept after the call). A user message whose job didn't go carries
+`failed: true` so the app can offer Retry. This route stays for older apps.
+
 A turn typed on the call screen instead of spoken (plugin with `input_text: true` in
 `GET /voice/status`). Body `{"type": "session.input_text", "text": "...", "client_id": "..."}`, where
 `client_id` is optional and nothing else is allowed. The text is made one line (control characters and
