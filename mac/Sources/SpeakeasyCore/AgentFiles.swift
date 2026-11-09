@@ -464,7 +464,10 @@ public final class DemoAgentFilesBackend: AgentFilesBackend {
                       sessionID: "demo-" + id, chat: chat, source: source)
         }
         files = [
-            file("porchchart", "porch-paint-colors.png", .image, 182_400, 0.4 * h, "Porch repaint", "Discord · #build"),
+            // The porch chart opens its reply on the demo "Porch makeover" page (Open chat, SPK-265).
+            AgentFile(id: "porchchart", name: "porch-paint-colors.png", kind: .image, bytes: 182_400,
+                      at: now.addingTimeInterval(-0.4 * h), sessionID: "porch", chat: "Porch makeover",
+                      source: "Discord · #house", messageID: "p5"),
             file("seedplan", "spring-seed-plan.pdf", .document, 412_000, 1.2 * h, "Garden beds for spring", "Speakeasy"),
             file("shelfsketch", "walnut-shelf-sketch.png", .image, 960_000, 3 * h, "Walnut shelf brackets", "Discord · #build"),
             file("budget", "kitchen-budget.xlsx", .document, 38_200, 5 * h, "Kitchen refresh budget", "Telegram"),
