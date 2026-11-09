@@ -20,6 +20,35 @@ import Foundation
 /// Fenced code blocks are not handled here: split them out first with `MessageBlock.split`.
 public enum AgentMarkdown {
     public static func attributed(_ text: String, streaming: Bool = false) -> AttributedString {
+        // Finished text is parsed once (perf 73): Home and the session pages rebuild every reply when
+        // they come back on screen, and each parse ran a dozen regexes per line.
+        if streaming { return render(text, streaming: true) }
+        let key = text as NSString
+        if let hit = cache.object(forKey: key) { return hit.value }
+        let out = render(text, streaming: false)
+        cache.setObject(Box(out), forKey: key, cost: text.utf16.count)
+        return out
+    }
+
+    private final class Box: @unchecked Sendable { let value: AttributedString; init(_ v: AttributedString) { value = v } }
+    nonisolated(unsafe) private static let cache: NSCache<NSString, Box> = {
+        let c = NSCache<NSString, Box>()
+        c.totalCostLimit = 4 << 20   // characters of source text, about 4 MB
+        return c
+    }()
+
+    /// Compiled once per pattern (NSRegularExpression is thread-safe once built).
+    nonisolated(unsafe) private static var compiled: [String: NSRegularExpression] = [:]
+    private static let compiledLock = NSLock()
+    static func regex(_ pattern: String) -> NSRegularExpression? {
+        compiledLock.lock(); defer { compiledLock.unlock() }
+        if let re = compiled[pattern] { return re }
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        compiled[pattern] = re
+        return re
+    }
+
+    private static func render(_ text: String, streaming: Bool) -> AttributedString {
         var source = prepare(text)
         if streaming { source = hideUnclosed(source) }
         source = linkBareURLs(source)
@@ -76,13 +105,13 @@ public enum AgentMarkdown {
 
     /// The capture groups of the first match (empty strings for groups that didn't take part).
     static func groups(_ pattern: String, _ s: String) -> [String]? {
-        guard let re = try? NSRegularExpression(pattern: pattern),
+        guard let re = regex(pattern),
               let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { return nil }
         return (1..<max(m.numberOfRanges, 1)).map { i in Range(m.range(at: i), in: s).map { String(s[$0]) } ?? "" }
     }
 
     static func replace(_ pattern: String, _ s: String, _ template: String) -> String {
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return s }
+        guard let re = regex(pattern) else { return s }
         return re.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: template)
     }
 
@@ -107,7 +136,7 @@ public enum AgentMarkdown {
 
     static func linkBareURLs(_ s: String) -> String {
         guard s.contains("https://") || s.contains("http://") else { return s }
-        guard let regex = try? NSRegularExpression(pattern: #"(?<![\[(<`/])\bhttps?://[^\s<>()\[\]`]+"#) else { return s }
+        guard let regex = regex(#"(?<![\[(<`/])\bhttps?://[^\s<>()\[\]`]+"#) else { return s }
         var source = s
         let ns = s as NSString
         for match in regex.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
