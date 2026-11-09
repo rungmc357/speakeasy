@@ -55,6 +55,33 @@ def test_a_title_another_session_holds_gets_its_day_not_a_number(server, service
     assert "#" not in title
 
 
+def test_a_conversation_the_user_named_never_takes_a_later_task_name(server, service, hermes):
+    """SPK-320: a rename from the app always wins, even over the titler's name arriving later."""
+    from test_routing import start_call
+    gate = threading.Event()
+
+    def titler(text):
+        gate.wait(10)
+        return "Porch lamp wiring plan"
+
+    service.rt.title_call = titler
+    _, worker = start_call(server, service)
+    worker.delegate("call_u", "Can you plan the wiring for the porch lamps")
+    wait_for(lambda: _task_sessions(hermes), timeout=10)
+    sid = next(iter(_task_sessions(hermes)))
+    service.store.set_user_title(sid, "Lamp project")
+    with hermes.lock:
+        hermes.session_titles[sid] = "Lamp project"
+    sent = len(hermes.title_patches)
+    gate.set()
+    wait_for(lambda: any(service.store.title(k) == "Porch lamp wiring plan"
+                         for k, _, _ in service.store.keys_for_session(sid)), timeout=10)
+    import time as _t
+    _t.sleep(0.5)
+    assert hermes.session_titles[sid] == "Lamp project"
+    assert len(hermes.title_patches) == sent
+
+
 def test_names_never_reach_the_session_title(server, service, hermes):
     from test_routing import start_call
     service.settings.patch({"user_name": "Priya", "assistant_name": "Juniper"})

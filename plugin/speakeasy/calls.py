@@ -1352,6 +1352,8 @@ class SidebandWorker:
             if not session_id.startswith(TASK_SESSION_PREFIX) or self.store.title(idem) in (None, "", NEW_CHAT_TITLE):
                 return
             only_if = NEW_CHAT_TITLE
+        if self.store.user_title(session_id):
+            return  # the user named this conversation: their name stays (SPK-320)
 
         def name() -> str | None:
             return self._no_names(self.store.title(idem))

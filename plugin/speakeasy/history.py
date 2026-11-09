@@ -1028,12 +1028,50 @@ def _preview(db: sqlite3.Connection, session_id: str, linked: Sequence[str] = ()
 
 @dataclasses.dataclass
 class Linked:
-    """What Speakeasy knows of a session: its tasks (newest first) and their state."""
+    """What Speakeasy knows of a session: its tasks (newest first) and their state.
+
+    *current*: the newest task's own name (what the session is doing now). *ours*: every name
+    Speakeasy gave the session's tasks (and so may have set as its Hermes title). *user_title*: the
+    name the user gave it from the app, which always wins (SPK-320)."""
     keys: list[str]
     name: str | None
     running: bool
     needs_you: bool
     run_ids: list[str]
+    current: str | None = None
+    ours: frozenset[str] = frozenset()
+    user_title: str | None = None
+
+
+# session_titles.candidates: a name Hermes already had gets the day, then the day and time.
+_DAY_SUFFIX = re.compile(r"\s+\([A-Z][a-z]{2} \d{1,2}(?:, \d{1,2}:\d{2}[ap]m)?\)$")
+
+
+def title_key(title: str | None) -> str:
+    return " ".join(str(title or "").split())[:100].rstrip().casefold()
+
+
+def shown_title(session_id: str, stored: str | None, link: Linked | None) -> str | None:
+    """The name a conversation shows, when Speakeasy's tasks decide it (else None: the stored title).
+
+    A Speakeasy task's session is named once, after its first task, and later requests run in the
+    same session; the row kept that first name while the work moved on (SPK-320). So a session
+    Speakeasy minted shows its newest task's own name, unless its title is one nobody but the user
+    could have given it: a rename from the app (always wins) or any name that isn't one of its tasks'
+    (another Hermes app's rename). A chat Speakeasy only continues keeps its own name."""
+    if link is None:
+        return None
+    title = (stored or "").strip()
+    if not title:
+        return link.current or link.name
+    if not session_id.startswith(SPEAKEASY_PREFIX) or not link.current:
+        return None
+    if link.user_title and title_key(link.user_title) == title_key(title):
+        return None
+    base = title_key(_DAY_SUFFIX.sub("", title))
+    if base in link.ours or title_key(title) in link.ours:
+        return link.current
+    return None
 
 
 def parse_cursor(cursor: str | None) -> tuple[float, str] | None:
@@ -1242,8 +1280,7 @@ def list_sessions(state_db: Path, *, cursor: str | None = None, q: str = "", sou
             running = bool(link and link.running) or live(sid) or (link is None and _pending_turn(db, sid, now))
             automated_row = row["source"] in (*AUTOMATED_SOURCES, HELPER_SOURCE) and not speakeasy
             entry: dict[str, Any] = {
-                "id": sid, "title": (link.name if link and link.name and not (row["title"] or "").strip() else None)
-                or _title_from(row, first),
+                "id": sid, "title": shown_title(sid, row["title"], link) or _title_from(row, first),
                 "source": "speakeasy" if speakeasy else row["source"],
                 "source_label": source_label(row["source"], row["display_name"], row["chat_type"], speakeasy),
                 "last_activity": round(float(row["last"] or 0), 3), "preview": preview,
