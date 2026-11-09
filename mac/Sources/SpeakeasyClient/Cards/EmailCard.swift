@@ -285,7 +285,12 @@ struct EmailRecipientsRow: View {
         .accessibilityIdentifier("email-card-\(label.lowercased())")
     }
     @ViewBuilder private func name(_ p: EmailCardInfo.Person) -> some View {
-        if !p.name.isEmpty { Text(p.name).font(.system(size: 13.5, weight: .medium)).foregroundStyle(look.ink).lineLimit(1) }
+        if !p.name.isEmpty {
+            // "Pat Doe · Lark & Finch": the firm the ask named, only when the address is that firm's.
+            (Text(p.name).foregroundStyle(look.ink)
+                + Text(p.org.map { " · \($0)" } ?? "").foregroundStyle(look.secondary))
+                .font(.system(size: 13.5, weight: .medium)).lineLimit(1)
+        }
     }
     private func address(_ p: EmailCardInfo.Person) -> some View {
         Text(p.address).font(.system(size: 12.5)).foregroundStyle(look.secondary).lineLimit(1).truncationMode(.middle)
@@ -475,7 +480,11 @@ struct EmailPeopleEditor: View {
             ForEach(Array(people.enumerated()), id: \.offset) { index, p in
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 1) {
-                        if !p.name.isEmpty { Text(p.name).font(.system(size: 15, weight: .medium)).foregroundStyle(look.ink) }
+                        if !p.name.isEmpty {
+                            (Text(p.name).foregroundStyle(look.ink)
+                                + Text(p.org.map { " · \($0)" } ?? "").foregroundStyle(look.secondary))
+                                .font(.system(size: 15, weight: .medium))
+                        }
                         Text(p.address).font(.system(size: 13.5)).foregroundStyle(look.secondary).textSelection(.enabled)
                     }
                     Spacer(minLength: 4)

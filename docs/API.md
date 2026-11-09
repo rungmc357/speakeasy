@@ -1817,9 +1817,15 @@ answer. Invalid blocks are dropped, never shown half-parsed.
 
 Card-only optional fields (shown on the email card, never sent and never part of the hash):
 `thread_subject`, `thread_count` (1–999), `thread_last` (`{"from", "when", "text"}`, the message it
-replies to), `unresolved` (names the task couldn't find an address for), `notes` (what it changed
+replies to), `unresolved` (people the task couldn't find an address for), `orgs` (`{"Full Name":
+"Firm"}`, the firm the ask named beside a person), `notes` (what it changed
 or left out from the ask, and why), `attachments` (names). Malformed ones are dropped; the draft
 stays valid. The draft's stored JSON keeps them under `context`.
+
+An organisation named in the ask is never a missing recipient: the card's `unresolved` keeps people
+only (an entry that reads as a firm, e.g. has `&` or `LLP`, or matches a recipient's address domain,
+is dropped from it), and a firm shows as `org` on a recipient (`{"name", "address", "org"}`) only
+when that recipient's address domain matches the firm's name. Personal mail hosts never match.
 
 Each valid draft gets a `draft_id` and a `sha256` of its canonical JSON (the sendable fields only:
 keys sorted, compact separators, UTF-8). Drafts show on the task as `email_drafts` and in the SSE

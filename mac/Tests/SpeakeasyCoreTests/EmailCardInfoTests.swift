@@ -45,11 +45,36 @@ final class EmailCardInfoTests: XCTestCase {
     }
 
     func testAddingTheUnresolvedNameClearsIt() throws {
-        let info = try XCTUnwrap(EmailCardInfo(card()))
+        let info = try XCTUnwrap(EmailCardInfo(card(["unresolved": ["Jo Marsh"]])))
         var fields = info.fields
-        XCTAssertEqual(info.stillUnresolved(in: fields), ["Lark & Finch"])
-        fields.cc.append(.init(name: "Lark & Finch", address: "desk@larkfinch.example"))
+        XCTAssertEqual(info.stillUnresolved(in: fields), ["Jo Marsh"])
+        fields.cc.append(.init(name: "Jo Marsh", address: "jo@marsh.example"))
         XCTAssertEqual(info.stillUnresolved(in: fields), [])
+    }
+
+    /// "an email to Ben and Wren Mallory", Wren Mallory being Ben's firm: never a missing recipient.
+    func testAnOrganisationIsNeverAMissingRecipient() throws {
+        let info = try XCTUnwrap(EmailCardInfo(card()))   // an older server still lists "Lark & Finch"
+        XCTAssertEqual(info.stillUnresolved(in: info.fields), [])
+        let firm = try XCTUnwrap(EmailCardInfo(card([
+            "recipients": ["to": [["name": "Ben Tarlow", "address": "ben@wrenmallory.example", "org": "Wren Mallory"]]],
+            "unresolved": ["Wren Mallory", "Jo Marsh"]])))
+        XCTAssertEqual(firm.to.first?.org, "Wren Mallory")
+        XCTAssertEqual(firm.stillUnresolved(in: firm.fields), ["Jo Marsh"], "only a named person warns")
+        let byDomain = try XCTUnwrap(EmailCardInfo(card([
+            "recipients": ["to": [["name": "Ben Tarlow", "address": "ben@wrenmallory.example"]]],
+            "unresolved": ["Wren Mallory", "Pat"]])))
+        XCTAssertEqual(byDomain.stillUnresolved(in: byDomain.fields), ["Pat"])
+        XCTAssertFalse(EmailCardInfo.domain("pat@patterson.example", matches: "Pat"))
+        XCTAssertFalse(EmailCardInfo.domain("lark@icloud.com", matches: "Lark & Finch"))
+        XCTAssertTrue(EmailCardInfo.looksLikeOrg("Ostrow Holdings LLP"))
+        XCTAssertFalse(EmailCardInfo.looksLikeOrg("Jo Marsh"))
+    }
+
+    func testTheFirmIsNeverSent() {
+        let p = EmailCardInfo.Person(name: "Pat Doe", address: "pat@larkfinch.example", org: "Lark & Finch")
+        XCTAssertEqual(p.wire, "Pat Doe <pat@larkfinch.example>")
+        XCTAssertNil(EmailCardInfo.Person(name: "Pat Doe", address: "pat@example.org", org: "").org)
     }
 
     func testEditValueCarriesEveryFieldAndTheHash() throws {

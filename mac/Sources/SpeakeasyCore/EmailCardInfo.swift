@@ -7,7 +7,12 @@ public struct EmailCardInfo: Equatable, Sendable {
     public struct Person: Equatable, Sendable, Hashable {
         public var name: String
         public var address: String
-        public init(name: String, address: String) { self.name = name; self.address = address }
+        /// The firm the ask named beside this person, shown after the name ("Pat Doe · Lark & Finch");
+        /// the server sets it only when the address domain is that firm's. Never sent.
+        public var org: String?
+        public init(name: String, address: String, org: String? = nil) {
+            self.name = name; self.address = address; self.org = org.flatMap { $0.isEmpty ? nil : $0 }
+        }
 
         /// "Pat Doe <pat@example.org>" or "pat@example.org"; nil when there's no address in it.
         public init?(typed: String) {
@@ -71,7 +76,7 @@ public struct EmailCardInfo: Equatable, Sendable {
         func people(_ key: String) -> [Person] {
             card["recipients"][key].array.compactMap { p in
                 guard let address = p["address"].string, !address.isEmpty else { return nil }
-                return Person(name: p["name"].string ?? "", address: address)
+                return Person(name: p["name"].string ?? "", address: address, org: p["org"].string)
             }
         }
         to = people("to"); cc = people("cc"); bcc = people("bcc")
@@ -117,10 +122,45 @@ public struct EmailCardInfo: Equatable, Sendable {
 
     public var fields: Fields { Fields(to: to, cc: cc, bcc: bcc, subject: subject, body: body) }
 
-    /// Names the job couldn't find an address for that the user hasn't added since.
+    /// People the job couldn't find an address for that the user hasn't added since. An
+    /// organisation named in the ask is never a missing recipient ("email Ben and Wren Mallory",
+    /// Wren Mallory being Ben's firm): a name that reads as a firm, or is already shown beside a
+    /// recipient, or matches a recipient's address domain, never warns (older servers sent them).
     public func stillUnresolved(in fields: Fields) -> [String] {
-        let names = (fields.to + fields.cc + fields.bcc).map { $0.name.lowercased() }.joined(separator: " ")
-        return unresolved.filter { !names.contains($0.lowercased()) }
+        let everyone = fields.to + fields.cc + fields.bcc
+        let names = everyone.map { $0.name.lowercased() }.joined(separator: " ")
+        let orgs = Set(everyone.compactMap { $0.org?.lowercased() })
+        return unresolved.filter { entry in
+            !names.contains(entry.lowercased()) && !orgs.contains(entry.lowercased())
+                && !Self.looksLikeOrg(entry) && !everyone.contains { Self.domain($0.address, matches: entry) }
+        }
+    }
+
+    /// "Lark & Finch", "Ostrow Holdings LLP": a firm, not a person.
+    public static func looksLikeOrg(_ name: String) -> Bool {
+        name.range(of: #"(&|\+|\b(llp|llc|lp|inc|incorporated|corp|corporation|co|company|ltd|limited|plc|gmbh|ag|bv|pllc|group|partners|partnership|associates|capital|ventures|holdings|advisors|advisers|consulting|legal|foundation|labs|agency|realty|properties|cpas?|accountants|solicitors|attorneys)\b\.?)"#,
+                   options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// Whether an address's domain spells the firm's name ("Wren Mallory" ~ wrenmallory.example).
+    /// Personal mail hosts never match.
+    static func domain(_ address: String, matches org: String) -> Bool {
+        let host = address.split(separator: "@").last.map { $0.lowercased() } ?? ""
+        let parts = host.split(separator: ".").map(String.init)
+        guard parts.count >= 2 else { return false }
+        let secondLevel = parts.count >= 3 && ["co", "com", "org", "net", "ac", "gov"].contains(parts[parts.count - 2])
+            && parts[parts.count - 1].count == 2
+        let label = secondLevel ? parts[parts.count - 3] : parts[parts.count - 2]
+        let personal: Set<String> = ["gmail", "googlemail", "outlook", "hotmail", "live", "msn", "yahoo", "ymail", "icloud",
+                                     "me", "mac", "aol", "proton", "protonmail", "pm", "fastmail", "gmx", "zoho", "hey",
+                                     "mail", "example"]
+        let core = org.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !looksLikeOrg($0) }.joined()
+        let name = core.isEmpty ? org.lowercased().filter { $0.isLetter || $0.isNumber } : core
+        guard label.count >= 3, name.count >= 3, !personal.contains(label) else { return false }
+        // Most of the letters, not a fragment: "Pat" never matches patterson.example.
+        let (short, long) = label.count <= name.count ? (label, name) : (name, label)
+        return long.contains(short) && Double(short.count) / Double(long.count) >= 0.6
     }
 }
 

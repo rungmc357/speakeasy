@@ -625,14 +625,17 @@ EMAIL_DRAFT_SHAPE = (
     "\"subject\": \"...\", \"body\": \"<plain text>\", \"reply_to_message_id\": \"<optional>\", "
     "\"account\": \"<optional mail account>\", \"thread_subject\": \"<optional: the thread it replies to>\", "
     "\"thread_count\": <optional: messages in that thread>, \"thread_last\": {\"from\": \"Name <address>\", "
-    "\"when\": \"...\", \"text\": \"<the message it replies to, plain text>\"}, \"unresolved\": [\"<anyone "
-    "named you couldn't find an address for>\"], \"notes\": [\"<one short line per thing you changed or left "
-    "out from what was asked, and why>\"]}"
+    "\"when\": \"...\", \"text\": \"<the message it replies to, plain text>\"}, \"unresolved\": [\"<a PERSON "
+    "named you couldn't find an address for; never a company>\"], \"orgs\": {\"<Full Name>\": \"<the firm named "
+    "beside them, only when their address is at that firm>\"}, \"notes\": [\"<one short line per thing you changed "
+    "or left out from what was asked, and why>\"]}"
 )
 EMAIL_DRAFT_FIDELITY = (
     "Write every recipient as \"Full Name <address>\". Every person or company {user_name} named must be "
-    "accounted for: in to/cc/bcc, or (when a name turns out to be someone's company, or a group) in notes saying "
-    "who it maps to, or in unresolved when you couldn't find an address; never drop one silently. Keep every detail "
+    "accounted for: a person in to/cc/bcc, or in unresolved when you couldn't find their address. A company or "
+    "firm named next to a person is usually that person's employer, not a recipient: put it in orgs beside them "
+    "(only when their address domain is that firm's) or in notes saying who it maps to, never in unresolved. "
+    "Never drop one silently. Keep every detail "
     "{user_name} asked to include, in their words; if you doubt one, keep it and say why in notes rather than "
     "leaving it out. "
 )

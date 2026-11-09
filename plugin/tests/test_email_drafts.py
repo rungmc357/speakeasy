@@ -218,13 +218,13 @@ RICH = {**DRAFT, "to": ["Pat Doe <pat@example.org>"],
         "subject": "RE: Spring schedule", "reply_to_message_id": "m-123",
         "thread_subject": "Spring schedule", "thread_count": 4,
         "thread_last": {"from": "Pat Doe <pat@example.org>", "when": "Mon 9:12", "text": "Does Friday work?"},
-        "unresolved": ["Lark & Finch"], "notes": ["Left out 'next week': the calendar shows this week"]}
+        "unresolved": ["Jo Marsh", "Lark & Finch"], "notes": ["Left out 'next week': the calendar shows this week"]}
 
 
 def test_card_context_parsed_but_never_hashed_or_sent():
     _, drafts = extract_email_drafts(answer_with(RICH))
     d = drafts[0]
-    assert d["context"]["thread_count"] == 4 and d["context"]["unresolved"] == ["Lark & Finch"]
+    assert d["context"]["thread_count"] == 4 and d["context"]["unresolved"] == ["Jo Marsh", "Lark & Finch"]
     assert draft_sha256(d) == draft_sha256({k: v for k, v in d.items() if k != "context"})
     assert "context" not in canonical_json(d) and "Lark" not in canonical_json(d)
 
@@ -246,13 +246,52 @@ def test_email_view_shows_every_recipient_with_name_and_address():
                                      {"name": "", "address": "kit@example.net"}]
     assert "bcc" not in v["recipients"]
     assert v["thread"] == "Spring schedule" and v["thread_count"] == 4 and v["thread_last"]["text"]
-    assert v["unresolved"] == ["Lark & Finch"] and v["notes"] and v["draft_id"] and v["sha256"]
+    assert v["unresolved"] == ["Jo Marsh"] and v["notes"] and v["draft_id"] and v["sha256"]
+
+
+def _card(draft: dict) -> dict:
+    from speakeasy.emails import email_view, with_context
+    return email_view({**with_context(normalize_draft(draft), draft), "draft_id": "ed_" + "b" * 24,
+                       "sha256": "e" * 64, "status": "pending"})
+
+
+def test_an_organisation_named_in_the_ask_is_never_a_missing_recipient():
+    # "an email to Ben and Wren Mallory": Wren Mallory is Ben's firm, not a recipient.
+    v = _card({**DRAFT, "to": ["Ben Tarlow <ben.tarlow@wrenmallory.example>"], "unresolved": ["Wren Mallory"]})
+    assert "unresolved" not in v
+    assert v["recipients"]["to"] == [{"name": "Ben Tarlow", "address": "ben.tarlow@wrenmallory.example",
+                                      "org": "Wren Mallory"}]
+    # Reads as a firm even when no address matches: dropped from the warning, shown beside nobody.
+    v = _card({**DRAFT, "unresolved": ["Lark & Finch", "Ostrow Holdings LLP"]})
+    assert "unresolved" not in v and "org" not in v["recipients"]["to"][0]
+
+
+def test_a_named_person_without_an_address_still_warns():
+    v = _card({**DRAFT, "unresolved": ["Jo Marsh", "Lark & Finch"]})
+    assert v["unresolved"] == ["Jo Marsh"]
+
+
+def test_org_beside_a_name_only_when_the_domain_supports_it_never_invented():
+    base = {**DRAFT, "orgs": {"Pat Doe": "Lark & Finch"}}
+    v = _card({**base, "to": ["Pat Doe <pat.doe@larkfinch.example>"]})
+    assert v["recipients"]["to"][0]["org"] == "Lark & Finch"
+    for address in ("pat.doe@harborlane.example", "patdoe@gmail.com", "pat@example.org"):
+        v = _card({**base, "to": [f"Pat Doe <{address}>"]})
+        assert "org" not in v["recipients"]["to"][0], address
+        assert "unresolved" not in v
+    from speakeasy.emails import domain_supports
+    assert domain_supports("Lark & Finch LLP", "desk@mail.larkfinch.co.uk")
+    assert not domain_supports("Lark & Finch", "lark@icloud.com")
+    # A person's first name is never hidden by a domain that merely starts with it.
+    v = _card({**DRAFT, "to": ["Robin Vale <robin@patterson.example>"], "unresolved": ["Pat"]})
+    assert v["unresolved"] == ["Pat"]
 
 
 def test_edit_validates_and_clears_a_resolved_name():
     from speakeasy.emails import apply_edit, with_context
     d = with_context(normalize_draft(RICH), RICH)
-    edited = apply_edit(d, {"cc": ["Robin Vale <robin.vale@example.net>", "Lark & Finch <desk@larkfinch.example>"],
+    edited = apply_edit(d, {"cc": ["Robin Vale <robin.vale@example.net>", "Lark & Finch <desk@larkfinch.example>",
+                                   "Jo Marsh <jo@marsh.example>"],
                             "body": "Hi Pat,\n\nFriday works."})
     assert edited["context"]["edited"] is True and "unresolved" not in edited["context"]
     assert edited["body"] == "Hi Pat,\n\nFriday works." and edited["subject"] == RICH["subject"]
@@ -264,7 +303,8 @@ def test_edit_validates_and_clears_a_resolved_name():
 
 def test_prompts_carry_every_named_recipient_and_detail():
     prompt = P.build_task_prompt(P.Names("Hermes", "Sam"), 1, "User: email Pat and Lark & Finch")
-    assert "unresolved" in prompt and "never drop one silently" in prompt and "thread_count" in prompt
+    assert "unresolved" in prompt and "Never drop one silently" in prompt and "thread_count" in prompt
+    assert "never a company" in prompt and "\"orgs\"" in prompt and "never in unresolved" in prompt
     assert "never describe the draft instead of including it" in prompt
     rules = P.build_live_instructions(P.Names("Hermes", "Sam"))
     assert "every person, company and detail" in rules and "shows as a card by itself" in rules
