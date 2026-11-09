@@ -68,6 +68,8 @@ enum SidebarLook {
     static let selectedFill = Color.adaptive(dark: Color.white.opacity(0.085), light: Color.white.opacity(0.75))
     static let selectedEdge = Color.adaptive(dark: Color.white.opacity(0.10), light: Color(hex: 0x1c1a17, alpha: 0.08))
     static let well = Color.adaptive(dark: Color.white.opacity(0.065), light: Color(hex: 0x1c1a17, alpha: 0.045))
+    /// The search capsule: Home's whiter composer glass in light, the well in dark.
+    static let searchFill = Color.adaptive(dark: Color.white.opacity(0.075), light: Color.white.opacity(0.78))
     static let hairline = Color.adaptive(dark: Color.white.opacity(0.08), light: Color(hex: 0x1c1a17, alpha: 0.08))
     static let glyph = Color.primary.opacity(0.62)
 }
@@ -172,6 +174,13 @@ struct HistoryRootView: View {
 
 // MARK: - Sidebar
 
+/// The filter menu's names for automated sessions: Hermes' own terms (SPK-263).
+enum SidebarFilter {
+    static func label(kind: String, fallback: String) -> String {
+        ["kanban": "Kanban", "scheduled": "Scheduled jobs", "helpers": "Subagents"][kind] ?? fallback
+    }
+}
+
 struct HistorySidebar: View {
     @ObservedObject var store: HistoryStore
     @FocusState private var searchFocused: Bool
@@ -249,52 +258,24 @@ struct HistorySidebar: View {
             }
         }
         .padding(.horizontal, 10).frame(height: 30)
-        .background(Capsule().fill(SidebarLook.well))
-        // A whisper of an edge at rest (the well already sets it apart); a clearer one while typing.
+        .background(Capsule().fill(SidebarLook.searchFill))
+        // No edge at rest (the whiter fill sets it apart, as on the phone); a quiet one while typing.
         .overlay(Capsule()
-            .strokeBorder(searchFocused ? Color.primary.opacity(0.2) : SidebarLook.hairline.opacity(0.55), lineWidth: searchFocused ? 0.75 : 0.5))
+            .strokeBorder(searchFocused ? Color.primary.opacity(0.18) : Color.clear, lineWidth: 0.75))
     }
 
     private var filterRow: some View {
         HStack(spacing: 8) {
             // Only sources the person has sessions from; no menu at all when everything is from one place.
-            if store.list.showsSourcePicker { sourceMenu }
+            // SPK-263: one menu holds sources, automated sessions and Archived (no second filter icon).
+            if store.list.showsSourcePicker || store.list.offersAutomatedMenu { sourceMenu }
             Spacer()
             if !store.list.activeQuery.isEmpty, !store.list.loading {
                 let q = store.list.activeQuery
                 Text(store.list.sessions.isEmpty ? "No matches" : "\(store.list.sessions.count)\(store.list.reachedEnd ? "" : "+") for “\(q)”")
                     .font(.system(size: 10.5)).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
             }
-            if store.list.offersAutomatedMenu { automatedMenu }
         }
-    }
-
-    /// One small filter icon at the end of the row: a menu of what automated work the list shows
-    /// (board workers, scheduled jobs, background helpers), remembered on this Mac. Filled and
-    /// brass while something differs from the standard choice.
-    private var automatedMenu: some View {
-        let shown = store.list.shown
-        return Menu {
-            Section(HistoryAutomation.title) {
-                ForEach(store.list.automatedMenu) { kind in
-                    Toggle(isOn: Binding(get: { store.list.shown[kind.id] }, set: { store.setShown(kind.id, $0) })) {
-                        Label(kind.label, systemImage: HistoryAutomation.symbol(kind: kind.id))
-                    }
-                    .accessibilityIdentifier("history-automated-\(kind.id)")
-                }
-            }
-        } label: {
-            Image(systemName: HistoryAutomation.symbol(shown))
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(shown.isStandard ? Color.secondary : Color.primary)
-                .background(Circle().fill(shown.isStandard ? Color.clear : Color.primary.opacity(0.1)))
-                .frame(width: 22, height: 22)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help(HistoryAutomation.help)
-        .accessibilityLabel(HistoryAutomation.accessibilityLabel(shown))
-        .accessibilityIdentifier("history-automated-menu")
     }
 
     private var sourceMenu: some View {
@@ -308,6 +289,16 @@ struct HistorySidebar: View {
                         Label(s.label, systemImage: store.list.source == s.id && !store.list.archived ? "checkmark" : "")
                     }
                 }
+                if !store.list.automatedMenu.isEmpty {
+                    Section(HistoryAutomation.title) {
+                        ForEach(store.list.automatedMenu) { kind in
+                            Toggle(isOn: Binding(get: { store.list.shown[kind.id] }, set: { store.setShown(kind.id, $0) })) {
+                                Label(SidebarFilter.label(kind: kind.id, fallback: kind.label), systemImage: HistoryAutomation.symbol(kind: kind.id))
+                            }
+                            .accessibilityIdentifier("history-automated-\(kind.id)")
+                        }
+                    }
+                }
                 Divider()
                 Button { store.setArchived(!store.list.archived) } label: {
                     Label("Archived", systemImage: store.list.archived ? "checkmark" : "archivebox")
@@ -319,7 +310,7 @@ struct HistorySidebar: View {
                     Text(sourceName).font(.system(size: 11.5, weight: .medium))
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).opacity(0.7)
                 }
-                .foregroundStyle(store.list.source == nil ? Color.secondary : Color.primary)
+                .foregroundStyle(store.list.source == nil && store.list.shown.isStandard ? Color.secondary : Color.primary)
                 .padding(.horizontal, 10).frame(height: 24)
                 .background(Capsule().fill(store.list.source == nil ? Color.primary.opacity(0.05) : Color.primary.opacity(0.1)))
             }
@@ -423,7 +414,9 @@ struct HistoryRow: View {
                 }
                 .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    // The phone's order (SPK-263): the title, then one quiet line of state · where ·
+                    // when, then the last words.
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(session.title).font(.system(size: 12.5, weight: session.unread ? .semibold : .medium)).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                             .foregroundStyle(Color.primary.opacity(selected ? 1 : 0.92))
@@ -433,26 +426,24 @@ struct HistoryRow: View {
                             Image(systemName: "archivebox").font(.system(size: 9)).foregroundStyle(.tertiary)
                                 .accessibilityLabel("Archived")
                         }
-                        Text(HistoryLook.short(session.lastActivity, now: now)).font(.system(size: 10.5).monospacedDigit())
+                    }
+                    HStack(spacing: 4) {
+                        if session.state == .needsYou { NeedsYouMark(font: .system(size: 10, weight: .semibold)); dot }
+                        else if session.state == .running { tag("Working", .secondary); dot }
+                        if let agent = session.agent {
+                            Text(agent.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                            dot
+                        }
+                        Text(session.sourceLabel).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary).lineLimit(1)
+                        dot
+                        Text(HistoryLook.short(session.lastActivity, now: now)).font(.system(size: 10, weight: .medium).monospacedDigit())
                             .foregroundStyle(.tertiary).fixedSize()
                     }
                     if let line = session.match ?? (session.preview.isEmpty ? nil : session.preview) {
                         Text(highlighted(HistoryLook.oneLine(line))).font(.system(size: 11.5)).foregroundStyle(.secondary)
                             .lineLimit(session.match != nil ? 3 : 2)
                             .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if session.state != .idle || !session.isSpeakeasy || session.agent != nil {
-                        HStack(spacing: 6) {
-                            if session.state == .needsYou { NeedsYouMark(font: .system(size: 10, weight: .semibold)) }
-                            else if session.state == .running { tag("Working", .secondary) }
-                            if let agent = session.agent {
-                                Text(agent.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                            if !session.isSpeakeasy {
-                                Text(session.sourceLabel).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary).lineLimit(1)
-                            }
-                        }
-                        .padding(.top, 1)
+                            .padding(.top, 1)
                     }
                 }
             }
@@ -483,6 +474,10 @@ struct HistoryRow: View {
 
     private func tag(_ text: String, _ color: Color) -> some View {
         Text(text).font(.system(size: 10, weight: .semibold)).foregroundStyle(color)
+    }
+
+    private var dot: some View {
+        Text("·").font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary).accessibilityHidden(true)
     }
 
     /// The search words in brass.
