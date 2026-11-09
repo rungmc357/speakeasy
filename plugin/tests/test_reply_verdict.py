@@ -85,43 +85,48 @@ def test_a_verdict_headline_asks_for_no_rewrite(server, service, hermes):
 
 # -- R2: "On it" ------------------------------------------------------------------------------------
 
-def test_an_ack_that_reads_the_ask_back_becomes_on_it():
+def test_an_ack_that_reads_the_ask_back_becomes_a_natural_line():
     ask = "Find a waterproof rain jacket under $100"
-    assert HC.acknowledgement("On it — finding a rain jacket under $100 in waterproof fabric.", ask) == "On it."
-    assert HC.acknowledgement("Looking for a waterproof rain jacket under $100.", ask) == "On it."
-    assert HC.acknowledgement("On it.", ask) == "On it."
-    assert HC.acknowledgement("Looking now.", ask) == "Looking now."
+    ack = HC.pick_ack(ask)
+    assert ack in HC.ACKS and not HC.clipped(ack)
+    assert HC.acknowledgement("On it — finding a rain jacket under $100 in waterproof fabric.", ask) == ack
+    assert HC.acknowledgement("Looking for a waterproof rain jacket under $100.", ask) == ack
+    assert HC.acknowledgement("On it.", ask) == ack                              # never a bare "On it."
+    assert HC.acknowledgement("Looking now.", ask) == ack
+    assert HC.acknowledgement("Got it.", ask, start=False) == "Got it."           # a follow-up's line stays
     assert HC.acknowledgement("Checking tomorrow's forecast.", "Find tomorrow's forecast for the user's town") \
         == "Checking tomorrow's forecast."                                          # short: a few words of its own
     egg = HC.acknowledgement("Looking for a hardware store open Sunday near downtown. A soft-boiled egg takes about "
                              "6 minutes.", "Find a hardware store open Sunday near downtown")
-    assert egg == "On it. A soft-boiled egg takes about 6 minutes."                 # the other answer stays
+    assert egg == HC.pick_ack("Find a hardware store open Sunday near downtown") + " A soft-boiled egg takes about 6 minutes."  # the other answer stays
 
 
 def test_parse_trims_a_parroting_start_reply():
     got = HC.parse({"tool": "start_job", "text": "", "args": {
         "request": "Book a table for four at an Italian place downtown Friday at 7",
         "reply": "Booking a table for four at an Italian place downtown Friday at 7."}}, {})
-    assert got["action"] == "start" and got["reply"] == "On it."
+    assert got["action"] == "start" and got["reply"] in HC.ACKS
     chat = HC.parse({"tool": "start_job", "text": "", "args": {"request": "Find a dentist open Saturday",
-                                                               "reply": "Looking now."}}, {})
-    assert chat["reply"] == "Looking now."
+                                                               "reply": "Sure, let me see who has weekend hours."}}, {})
+    assert chat["reply"] == "Sure, let me see who has weekend hours."
 
 
 def test_the_start_line_never_explains_the_apps_mechanics():
     # Seen live on a video sent from Home: the coordinator read its own instruction back.
     said = "I can't see the picture or file you attached. Start a job so one can look at it"
-    assert HC.acknowledgement(said, "") == HC.ACK
-    assert HC.acknowledgement("Looking now.", "") == "Looking now."
-    assert HC.acknowledgement("On it. I can't open the clip myself, so a job will look at it.", "") == "On it."
+    assert HC.acknowledgement(said, "") == HC.pick_ack("")
+    assert HC.acknowledgement("Let me take a look.", "") == "Let me take a look."
+    assert HC.acknowledgement("Sure, I'll look. I can't open the clip myself, so a job will look at it.", "") \
+        == "Sure, I'll look."
     # An answer that happens to mention files is kept.
-    assert HC.acknowledgement("On it. The sharing link is in the files tab.", "") == "On it. The sharing link is in the files tab."
+    assert HC.acknowledgement("Let me check. The sharing link is in the files tab.", "") \
+        == "Let me check. The sharing link is in the files tab."
 
 
 def test_a_start_with_no_request_still_gets_a_clean_line():
     parsed = HC.parse({"tool": "start_job", "args": {"reply": "I can't see the video you attached. Starting a job to look."},
                        "text": ""}, {})
-    assert parsed and parsed["action"] == "start" and parsed["reply"] == HC.ACK
+    assert parsed and parsed["action"] == "start" and parsed["reply"] in HC.ACKS
 
 
 def test_the_suggested_acknowledgements_count_as_promising_work():
@@ -130,3 +135,46 @@ def test_the_suggested_acknowledgements_count_as_promising_work():
         assert HC.claims_work(said), said
     for said in ("Looking at the forecast, you won't need one.", "Nope, only a 2% chance of rain."):
         assert not HC.claims_work(said), said
+
+
+# -- Geo (build 71): Home is chatty, never "Checking." / "On it." -----------------------------------
+
+def test_a_warm_line_that_names_the_topic_is_kept():
+    # Naming the topic is warm; only reading back nearly every detail of the ask is a parrot.
+    ask = "Find dinner spots near me for 4 people tonight"
+    said = "Ooh, good one. Pulling up dinner spots near you for 4."
+    assert HC.acknowledgement(said, ask) == said
+    assert HC.acknowledgement("Let me take a look at where the release is at.", "Where is the release at?") \
+        == "Let me take a look at where the release is at."
+
+
+def test_no_start_reply_is_a_bare_stock_word():
+    for said in ("On it.", "Checking.", "Looking now.", "On it!", "Got it.", "Sure.", "Starting task."):
+        assert HC.clipped(said), said
+        got = HC.parse({"tool": "start_job", "text": "", "args": {"request": "Find a dentist open Saturday",
+                                                                  "reply": said}}, {})
+        assert got["reply"] in HC.ACKS and not HC.clipped(got["reply"]), said
+    for said in HC.ACKS:
+        assert not HC.clipped(said)
+
+
+def test_the_natural_lines_vary_and_never_repeat_the_last_one():
+    picks = {HC.pick_ack(ask) for ask in ("Find a gift", "Check the build", "Book the dentist", "Why did CI fail",
+                                          "Plan Saturday", "Compare two laptops", "Draft the invite")}
+    assert len(picks) >= 3
+    for line in HC.ACKS:
+        assert HC.pick_ack("Find a gift", avoid=line) != line
+
+
+def test_the_new_natural_lines_still_count_as_promising_work():
+    # A promise without the tool call must still trigger the start-the-job retry.
+    for said in HC.ACKS + ("Let me take a look at that.", "Give me a sec.", "I'll have a look."):
+        assert HC.claims_work(said), said
+    for said in ("Ha, Mondays. How was the weekend?", "A soft-boiled egg takes about 6 minutes."):
+        assert not HC.claims_work(said), said
+
+
+def test_the_prompt_asks_for_a_chatty_coordinator():
+    p = HC._PROMPT
+    assert "texting a friend" in p and "never a bare \"On it.\"" in p and "lead with the useful thing" in p
+    assert "\"On it.\", \"Looking now.\"" not in p          # no longer suggests the clipped lines

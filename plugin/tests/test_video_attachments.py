@@ -62,7 +62,7 @@ def test_corrupt_bmff_is_not_accepted_as_playable(server, service):
 
 
 def test_large_video_is_rejected_before_processing(server):
-    status, body = stage(server, b"\x00\x00\x00\x18ftypisom" + b"0" * A.MAX_FILE_BYTES, "file", "video/mp4", "big.mp4")
+    status, body = stage(server, b"\x00\x00\x00\x18ftypisom" + b"0" * A.MAX_VIDEO_BYTES, "file", "video/mp4", "big.mp4")
     assert status == 413 and body["reason"] == "too_large"
 
 
@@ -183,3 +183,15 @@ def test_clip_whose_picture_ends_early_keeps_the_frames_it_has(tmp_path, video_i
     assert all(Path(f["path"]).stat().st_size > 0 for f in prepared["frames"])
     times = [f["seconds"] for f in prepared["frames"]]
     assert times == sorted(times) and times[0] == 0
+
+
+def test_a_compressed_clip_up_to_25_mb_fits_but_other_files_stay_at_10_mb():
+    # Geo (build 71): the phone compresses clips first; the plugin takes up to 25 MB of video.
+    assert A.max_upload_bytes("file", "video/mp4") == A.max_upload_bytes("file", "video/quicktime") == 25_000_000
+    assert A.max_upload_bytes("file", "application/pdf") == A.MAX_FILE_BYTES == 10_000_000
+    assert A.max_upload_bytes("picture", "image/jpeg") == A.MAX_IMAGE_BYTES
+
+
+def test_a_12_mb_video_is_not_refused_for_size(server):
+    status, body = stage(server, b"\x00\x00\x00\x18ftypisom" + b"0" * 12_000_000, "file", "video/mp4", "clip.mp4")
+    assert body.get("reason") != "too_large"

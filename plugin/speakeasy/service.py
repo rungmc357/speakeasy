@@ -3925,7 +3925,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "files need X-Speakeasy-Filename")
         if length <= 0:
             raise ServiceError(400, "empty upload")
-        if length > (A.MAX_FILE_BYTES if kind == "file" else A.MAX_IMAGE_BYTES):
+        if length > A.max_upload_bytes(kind, mime):
             raise ServiceError(413, "too large to share", reason="too_large")
         interaction = self.interaction(interaction_id)
         try:
@@ -4228,7 +4228,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "files need X-Speakeasy-Filename")
         if length <= 0:
             raise ServiceError(400, "empty upload")
-        if length > (A.MAX_FILE_BYTES if kind == "file" else A.MAX_IMAGE_BYTES):
+        if length > A.max_upload_bytes(kind, mime):
             raise ServiceError(413, "too large to send", reason="too_large")
         try:
             self.staged.check_room(device_id, kind, length)
@@ -4904,7 +4904,7 @@ class VoiceService(SecureInputMixin):
         support = getattr(self.agent, "image_support", None) or {}
         return {"images": bool(support.get("images")), "vision": support.get("vision") or "unknown",
                 "max_attachments": A.MAX_ATTACHMENTS, "max_image_bytes": A.MAX_IMAGE_BYTES,
-                "max_request_image_bytes": A.MAX_REQUEST_IMAGE_BYTES, "max_file_bytes": A.MAX_FILE_BYTES,
+                "max_request_image_bytes": A.MAX_REQUEST_IMAGE_BYTES, "max_file_bytes": A.MAX_FILE_BYTES, "max_video_bytes": A.MAX_VIDEO_BYTES,
                 "file_types": sorted(A.STAGED_FILE_TYPES)}
 
     # -- home control ---------------------------------------------------------------------------------
