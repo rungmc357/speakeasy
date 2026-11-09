@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
+from . import calls as CALLS
 from . import agents as AG
 from . import attachments as A
 from . import runstate as RS
@@ -43,7 +44,7 @@ from .computer_name import computer_name
 from .calls import (ACTIVE_RUN_STATES, SHARE_NOTE_KEY, APPROVED_MILESTONE, INPUT_TEXT_TYPE, MAX_BOARD, MAX_INPUT_TEXT, MAX_TASKS, TYPED_NOT_CONNECTED,
                     TYPED_SENT, BackendRun, CallState, ServiceError,
                     Interaction, Notices, Runtime, SidebandWorker, call_work_running, end_shared, interaction_tasks, publish_state,
-                    typed_text)
+                    is_greeting, typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
 from .devices import CLIENT_HEADER, DeviceStore, parse_client
 from .emails import canonical_json, extract_email_drafts
@@ -85,6 +86,17 @@ MAX_SDP = 96 * 1024
 CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True,
                 "task_messages": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
+# A reload or restart carries on with open work (SPK-270/296): where each followed run's event stream
+# got to is saved here by the old code and read by the new one.
+RESUME_SEQ_META = "resume_run_seq"
+# Stored statuses of a run Hermes took that the new code follows again when Hermes still runs it.
+RESUMABLE_RUN_STATES = frozenset({"running", "working", "cancel_requested"})
+# Hermes' own words for a run still going (GET /v1/runs/{id}).
+HERMES_LIVE_RUN = frozenset({"queued", "running", "working", "waiting_for_approval", "stopping"})
+# Moments whose state lives only in memory, which a reload would lose: a run being handed to Hermes,
+# a question waiting on the user (its request id), an answer on its way. Only these (and a live call,
+# and chat-thread turns) hold an automatic reload back.
+HANDOFF_STATES = frozenset({"admitting", "waiting_for_approval", "resolving_approval"})
 IDLE_WORK_STRETCH = 4  # a quiet call with a task still running waits this many times idle_pause_minutes
 LOOK_TEXT = "Take a look at what I attached."  # a typed message or job that is only attachments
 IDLE_CHECK_S = 15
@@ -96,6 +108,9 @@ CAPABILITIES["job_subagents"] = True  # helpers a task started (delegate_task) o
 CAPABILITIES["job_activity"] = True  # live activity / findings / touched / hero on tasks (activity.py)
 CAPABILITIES["task_stop"] = True  # POST /voice/work/{run_id}/stop: stop one task by id, with or without a call
 CAPABILITIES["start_jobs"] = True  # POST /voice/work: a new job from typed text, no call needed (the app's Update button)
+# POST /voice/work with "chat_replies": true answers a greeting / small talk itself (delivered_as
+# "chat" + reply): no job, no run.
+CAPABILITIES["chat_replies"] = True
 CAPABILITIES["endpoints"] = True  # GET /voice/endpoints (+ address_drop in the pair response): every address of this Hermes
 # POST /voice/interactions/{id}/input-text: a turn typed to the call itself (same as the top-level
 # "input_text"; listed here too so both typing features sit together). task_messages types to one job.
@@ -106,6 +121,7 @@ CAPABILITIES["history"] = True
 # GET /voice/files (+ /{id}, /{id}/thumb): every file Hermes handed over in a reply, across all chats,
 # by opaque id; only what Hermes itself would deliver as an attachment (files.py).
 CAPABILITIES["files"] = True
+FILES_WARM_AFTER_S = 20.0  # after start, build the Files index in the background (first open is instant)
 # POST /voice/attachments (+ DELETE /voice/attachments/{id}): pictures and files staged on a device,
 # then sent with a typed message or new job by id (``attachments`` on /voice/work[/{id}/message]).
 CAPABILITIES["attachments"] = True
@@ -490,7 +506,22 @@ class VoiceService(SecureInputMixin):
             CU.attach(self.store.record_context, self.store.context_record)
             threading.Thread(target=self._idle_loop, daemon=True, name="speakeasy-idle").start()
             self._warm_catalog()
+            self._warm_files()
             self.brief.start_scheduler(ready=self.agent.health)
+
+    def _warm_files(self) -> None:
+        """Build the Files index shortly after start, so the first open of Files answers at once
+        instead of waiting on a scan of the whole history (seen live: the app gave up first)."""
+        def warm() -> None:
+            if not self._stop.is_set():
+                try:
+                    self.files._first_scan(wait=0)
+                except Exception as exc:
+                    logger.info("speakeasy: files warm-up skipped (%s)", type(exc).__name__)
+        timer = threading.Timer(FILES_WARM_AFTER_S, warm)
+        timer.daemon = True
+        timer.name = "speakeasy-files-warm"
+        timer.start()
 
     # -- secrets (read per use, never stored or returned) ------------------------------------
     @property
@@ -610,7 +641,13 @@ class VoiceService(SecureInputMixin):
         return self.agent.run_to_completion(prompt, idem, "speakeasy_brief")
 
     def busy(self) -> bool:
-        """A call is live or a task is still running: an automatic reload would cut it off."""
+        """A call is live: an automatic reload would cut it off (SPK-270).
+
+        Running jobs never hold an update back any more: a reload hands each run it follows to the
+        new code, which picks its Hermes event stream up where it left off (``resume_open_work``),
+        and a job held behind another one stays held. Only what the next code couldn't pick up
+        counts (``_unresumable``): the second or two while a job is handed to Hermes, an approval
+        answer on its way, or a chat-thread turn."""
         with self.lock:
             live = list(self.interactions.values())
         for interaction in live:
@@ -619,19 +656,127 @@ class VoiceService(SecureInputMixin):
             # update forever. Resuming it after a reload starts a fresh call on the app's side.
             if not interaction.call_closed or (interaction.paused and not interaction.pause_bookkept):
                 return True
-            if any(r.status in ACTIVE_RUN_STATES for r in interaction.runs.values()):
-                return True
-        # Jobs with no call (typed follow-ups, POST /voice/work, the app's plugin Update) run on the
-        # voiceless worker: a reload while one runs would drop its tracking, so they count too.
+            with interaction.lock:
+                if any(self._unresumable(r) for r in interaction.runs.values()):
+                    return True
         text = self._text_worker
         if text is not None:
             with text.interaction.lock:
-                if any(r.status in ACTIVE_RUN_STATES for r in text.interaction.runs.values()):
+                if any(self._unresumable(r) for r in text.interaction.runs.values()):
                     return True
         return False
 
+    @staticmethod
+    def _unresumable(run: Any) -> bool:
+        """A run the next code could not pick up: being handed to Hermes or an answer on its way
+        (memory only), or a chat-thread turn (followed by a thread wait, not a run stream)."""
+        if run.status in HANDOFF_STATES:
+            return True
+        return (run.status in ACTIVE_RUN_STATES and run.status != "waiting_on_task"
+                and (not run.run_id or str(run.run_id).startswith(CALLS.LOCAL_RUN_PREFIX)))
+
+    def _workers(self) -> list[Any]:
+        with self.lock:
+            live = list(self.interactions.values())
+        workers = [i.worker for i in live if i.worker is not None]
+        if self._text_worker is not None:
+            workers.append(self._text_worker)
+        return workers
+
+    def hand_over_runs(self) -> dict[str, int]:
+        """Before this code is swapped out (a reload): stop following every run here, and save where
+        each run's event stream got to, so the new code picks it up after that event and nothing is
+        handled twice (SPK-270). Returns {task key: last event seq}."""
+        seqs: dict[str, int] = {}
+        for worker in self._workers():
+            worker.detached = True
+            with worker.interaction.lock:
+                for run in worker.interaction.runs.values():
+                    if run.run_id and run.status in ACTIVE_RUN_STATES and run.last_seq >= 0:
+                        seqs[run.idem_key] = max(seqs.get(run.idem_key, -1), run.last_seq)
+        try:
+            self.store.set_meta(RESUME_SEQ_META, json.dumps(seqs))
+        except Exception:
+            logger.debug("speakeasy: run handover not saved", exc_info=True)
+        return seqs
+
+    def resume_open_work(self) -> dict[str, int]:
+        """At start: carry on with the work the previous code (a reload) or the previous Hermes
+        process left open, instead of settling it as lost.
+
+        - A task whose Hermes run still runs is followed again from where its stream got to (SPK-270).
+        - A task held behind another task on the same project stays held, and starts on its own when
+          that one ends, or now if it already has (SPK-296).
+
+        Runs Hermes no longer knows (a Hermes restart) are left to the orphan sweep, as before.
+        Returns how many of each were picked up."""
+        try:
+            seqs = json.loads(self.store.get_meta(RESUME_SEQ_META) or "{}")
+        except ValueError:
+            seqs = {}
+        seqs = seqs if isinstance(seqs, dict) else {}
+        self.store.set_meta(RESUME_SEQ_META, "{}")
+        rows = [r for r in self.store.open_runs() if not r.get("thread")]
+        followed = held = 0
+        worker = None
+        for row in rows:
+            if row["status"] not in RESUMABLE_RUN_STATES or not row.get("run_id"):
+                continue
+            try:
+                reply = self.hermes.get_run(row["run_id"])
+            except Exception:
+                continue  # Hermes forgot it (restarted) or can't be reached: the sweep settles it
+            if not isinstance(reply, dict) or reply.get("status") not in HERMES_LIVE_RUN:
+                continue
+            worker = worker or self.text_worker()
+            backend = self._adopt(worker, row)
+            if backend is None:
+                continue
+            seq = seqs.get(row["key"])
+            known = isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0
+            CALLS.on_loop_soon(worker.follow_run(backend, seq if known else -1,
+                                                 None if known else self._started_at), worker.loop)
+            followed += 1
+        for row in rows:
+            if row["status"] != "waiting_on_task" or row.get("run_id"):
+                continue
+            worker = worker or self.text_worker()
+            backend = self._adopt(worker, row)
+            if backend is None:
+                continue
+            info = self.store.run_row(row["key"]) or {}
+            request = self.store.request_text(row["key"]) or ""
+            session = info.get("session_id")
+            if session == CALLS.task_session_id(row["key"]):
+                session = None  # its own new session, not one it continues
+            CALLS.on_loop_soon(worker.start_task(backend.delegation_id, int(info.get("revision") or 0),
+                                                 f"User: {request}", request, session_id=session,
+                                                 resume=True, idem=row["key"]), worker.loop)
+            held += 1
+        if followed or held:
+            logger.info("speakeasy: picked up %d running and %d held task(s) after a restart", followed, held)
+        return {"followed": followed, "held": held}
+
+    def _adopt(self, worker: Any, row: dict[str, Any]) -> Any:
+        """Make a stored open task known to *worker* (so it counts as followed), keyed by its task id,
+        or by its row key when another task already has that id."""
+        info = self.store.run_row(row["key"]) or {}
+        task_id = info.get("delegation_id") or row["key"]
+        with worker.interaction.lock:
+            existing = worker.interaction.runs.get(task_id)
+            if existing is not None and existing.idem_key != row["key"]:
+                task_id = row["key"]
+            backend = CALLS.BackendRun(task_id, int(info.get("revision") or 0), row["key"],
+                                       run_id=row.get("run_id"), status=row["status"])
+            worker.interaction.runs[task_id] = backend
+        return backend
+
     def close(self) -> None:
         self._stop.set()
+        try:
+            self.hand_over_runs()  # the next code (a reload) follows them on from here
+        except Exception:
+            logger.debug("speakeasy: run handover failed", exc_info=True)
         self._close_secure()
         CU.detach(self.store.record_context)
         self.brief.stop()
@@ -1169,7 +1314,11 @@ class VoiceService(SecureInputMixin):
 
     def _idle_loop(self) -> None:
         ticks = 0
-        self.settle_stuck_tasks(startup=True)  # nothing is followed yet: every open row is from before
+        try:
+            self.resume_open_work()  # running and held tasks from before a reload carry on (SPK-270/296)
+        except Exception as exc:
+            logger.warning("speakeasy: picking up open work failed: %s", type(exc).__name__)
+        self.settle_stuck_tasks(startup=True)  # nothing else is followed yet: every other open row is from before
         self._drain_quietly()  # held messages from before a reload
         self._check_image_support_soon()
         self.prune_shared()
@@ -1590,6 +1739,34 @@ class VoiceService(SecureInputMixin):
             if found is not None:
                 return self._cancel(interaction, found, interaction.interaction_id)
         raise ServiceError(409, "That task isn't running here, so there's nothing to stop.")
+
+    def start_now(self, run_id: str) -> dict[str, Any]:
+        """``POST /voice/work/{run_id}/start-now``: a job held behind another job on the same project
+        (calls.wait_for_fence) starts right away, beside it ("Start now anyway" on its waiting card;
+        the same as saying "start it anyway" on a call). 404 unknown; 409 when it isn't waiting."""
+        if not ID_RE.fullmatch(run_id or ""):
+            raise ServiceError(404, "I couldn't find that task.")
+        key = self.store.key_for_run(run_id) or self.store.key_for_task(run_id)
+        if key is None:
+            raise ServiceError(404, "I couldn't find that task.")
+        with self.lock:
+            holders = list(self.interactions.values())
+        text = self._text_worker
+        if text is not None and getattr(text, "interaction", None) is not None:
+            holders.append(text.interaction)
+        for interaction in holders:
+            with interaction.lock:
+                found = next((r for r in interaction.runs.values()
+                              if r.idem_key == key and r.status == "waiting_on_task" and not r.released), None)
+                if found is not None:
+                    found.released = True   # wait_for_fence sees it on its next poll and starts the run
+            if found is not None:
+                self.store.progress(key, "milestone", "Starting now")
+                publish_state(self.store, interaction, self.settings.get()["assistant_name"])
+                self._now_changed()
+                logger.info("speakeasy: a held task was started now anyway")
+                return {"ok": True, "run_id": run_id, "started": True}
+        raise ServiceError(409, "That job isn't waiting, so there's nothing to start.")
 
     def _cancel(self, interaction: Interaction, backend: Any, interaction_id: str | None) -> dict[str, Any]:
         with interaction.lock:
@@ -2324,13 +2501,19 @@ class VoiceService(SecureInputMixin):
             threading.Thread(target=resolved, args=(delivered_as,), daemon=True).start()
         return run
 
-    def start_job(self, body: dict[str, Any], device_id: str | None = None) -> dict[str, Any]:
+    def start_job(self, body: dict[str, Any], device_id: str | None = None,
+                  never_wait: bool = False) -> dict[str, Any]:
         """``POST /voice/work``: a new job from text typed in the app, with no call (the plugin-update
         notice's Update button). It runs like a job started on a call, on the voiceless worker, never
-        through routing, and shows on the board. Idempotent on client_id."""
+        through routing, and shows on the board. Idempotent on client_id. *never_wait* (Home, in
+        process only): not an edit, so it never waits behind another job on the same project."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "source", "client_id", "attachments", "model", "reasoning", "agent", "project_id"}:
+                "text", "source", "client_id", "attachments", "model", "reasoning", "agent", "project_id",
+                "chat_replies"}:
             raise ServiceError(400, "Send the job as text.")
+        chats = body.get("chat_replies", False)
+        if not isinstance(chats, bool):
+            raise ServiceError(400, "chat_replies must be true or false.")
         project_id = body.get("project_id")
         if project_id is not None:
             # SPK-254: a job started inside a project (or "for <project>, ..." at Home) is filed there,
@@ -2342,7 +2525,7 @@ class VoiceService(SecureInputMixin):
             except P_.ProjectError as exc:
                 raise ServiceError(exc.status, exc.message) from None
         agent = self._body_agent(body)
-        choice = self._body_choice({k: v for k, v in body.items() if k not in {"agent", "project_id"}})
+        choice = self._body_choice({k: v for k, v in body.items() if k not in {"agent", "project_id", "chat_replies"}})
         if agent:
             choice = {"agent": agent}  # another agent runs on its own model and level
         text, source, client_id = body.get("text"), body.get("source") or "typed", body.get("client_id")
@@ -2358,10 +2541,19 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "source must be typed or voice_message.")
         if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
             raise ServiceError(400, "client_id must be an id.")
+        if chats and not ids and is_greeting(text):
+            # "hi" from Home / New chat is plain chat, like a hello on a call (calls.py): no job, no run,
+            # nothing on the board or Home. Only for apps that show the reply (`chat_replies` in the
+            # body); the Mac, older phones and the Share extension still get the job they expect.
+            logger.info("speakeasy: a typed greeting, no job started")
+            return self._once(client_id, lambda: {"ok": True, "delivered_as": "chat", "reply": P.GREETING_TYPED,
+                                                  "run_id": None, "task_id": None, "task": None, "session_id": None},
+                              route="work", text=text)
+
         def start(staged: list[A.Attachment]) -> dict[str, Any]:
             if project_id:
                 self.projects.expect(text, project_id)
-            got = self._start_job(text, staged, choice=choice, new_chat=True)
+            got = self._start_job(text, staged, choice=choice, new_chat=True, never_wait=never_wait)
             if project_id:
                 key = self.store.key_for_task(got.get("task_id") or "") if got.get("task_id") else None
                 key = key or (self.store.key_for_run(got["run_id"]) if got.get("run_id") else None)
@@ -2406,7 +2598,7 @@ class VoiceService(SecureInputMixin):
 
     def _start_job(self, text: str, staged: list[A.Attachment] | None = None, session_id: str | None = None,
                    context: str | None = None, link_to: str | None = None, choice: dict[str, Any] | None = None,
-                   new_chat: bool = False) -> dict[str, Any]:
+                   new_chat: bool = False, never_wait: bool = False) -> dict[str, Any]:
         """*link_to*: the chat session this job continues from a history page (store.history_links).
         *staged*: attachments claimed for this job (carried with its handoff). *choice*: the model /
         reasoning picked for it (models.parse_choice); a new chat (*new_chat*) keeps it as its own."""
@@ -2418,7 +2610,7 @@ class VoiceService(SecureInputMixin):
         worker = self.text_worker()
         future = asyncio.run_coroutine_threadsafe(
             M.start_job(worker, text, session_id=session_id, context=context, staged=staged or None,
-                        choice=choice), worker.loop)
+                        choice=choice, never_wait=never_wait), worker.loop)
         try:
             got = future.result(M.START_WAIT_S + 10)
         except Exception as exc:
@@ -2447,8 +2639,12 @@ class VoiceService(SecureInputMixin):
         # Its Hermes session id, known the moment it started (the history page it continues on): a New
         # chat page becomes that session at once, so its next message continues it instead of starting another.
         session = self.store.session_for(key) if key else None
-        return {"ok": True, "run_id": run_id, "task_id": got["task_id"], "task": task, "session_id": session,
-                "delivered_as": "new_run"}
+        out = {"ok": True, "run_id": run_id, "task_id": got["task_id"], "task": task, "session_id": session,
+               "delivered_as": "new_run"}
+        if task is not None and task.get("status") == "waiting_on_task" and (task.get("waiting") or {}).get("name"):
+            # Held behind another job on the same project (calls.wait_for_fence): Home says so.
+            out["held"] = {"after": task["waiting"]["name"]}
+        return out
 
     def _claim_message(self, client_id: str) -> tuple[bool, threading.Event]:
         now = time.monotonic()
@@ -2670,8 +2866,17 @@ class VoiceService(SecureInputMixin):
         return MD.resolve(layers, entries), entries
 
     def _default_layer(self) -> dict[str, Any]:
-        jobs = self.settings.get().get("jobs") or {}
-        return {"model": jobs.get("model") or None, "reasoning": jobs.get("reasoning") or None}
+        """Speakeasy's saved job default (settings ``jobs.model`` / ``jobs.reasoning``). Home's chip
+        reads this same function (``HomeChat.work_route``). A missing ``jobs`` section or key, or an
+        empty value, is "no default": the run falls through to Hermes' own model."""
+        try:
+            jobs = self.settings.get().get("jobs")
+        except Exception:
+            jobs = None
+        jobs = jobs if isinstance(jobs, dict) else {}
+        model, reasoning = jobs.get("model"), jobs.get("reasoning")
+        return {"model": model if isinstance(model, str) and model else None,
+                "reasoning": reasoning if isinstance(reasoning, str) and reasoning else None}
 
     def _model_context(self, sid: str | None, idem: str | None = None) -> tuple[str | None, list[str]]:
         """Linked task pages are the same conversation; unrelated sessions stay independent."""
@@ -4102,7 +4307,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "files need X-Speakeasy-Filename")
         if length <= 0:
             raise ServiceError(400, "empty upload")
-        if length > (A.MAX_FILE_BYTES if kind == "file" else A.MAX_IMAGE_BYTES):
+        if length > A.max_upload_bytes(kind, mime):
             raise ServiceError(413, "too large to share", reason="too_large")
         interaction = self.interaction(interaction_id)
         try:
@@ -4205,7 +4410,8 @@ class VoiceService(SecureInputMixin):
         fields: dict[str, Any] = {"source": "voice_message"}
         if client_id:
             fields["client_id"] = client_id
-        for header, name in (("X-Speakeasy-Mode", "mode"), ("X-Speakeasy-Answers", "answers")):
+        for header, name in (("X-Speakeasy-Mode", "mode"), ("X-Speakeasy-Answers", "answers"),
+                             ("X-Speakeasy-Reply-To", "reply_to")):
             value = (headers.get(header) or "").strip()
             if value:
                 fields[name] = value
@@ -4252,6 +4458,10 @@ class VoiceService(SecureInputMixin):
         fields.pop("answers", None)
         fields.pop("mode", None)   # nothing is running in a chat that doesn't exist yet
         note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
+        # An untranscribed Home reply still carries its quoted context to the audio job.
+        reply_to = fields.pop("reply_to", None)
+        if reply_to is not None:
+            note = self.home_chat._with_quote(note, self.home_chat._quote(reply_to))
         sent_at = time.time()
         got = self.start_job({**fields, "text": note}, device_id)
         session = got.get("session_id")
@@ -4273,7 +4483,7 @@ class VoiceService(SecureInputMixin):
         note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
         if not transcript:  # nothing to read: the recording goes to a job, as Home's mic always did
             return self._voice_message_new(fields, upload, data, device_id)
-        body = {k: v for k, v in fields.items() if k in {"client_id", "attachments", "model", "reasoning", "agent"}}
+        body = {k: v for k, v in fields.items() if k in {"client_id", "attachments", "model", "reasoning", "agent", "reply_to"}}
         got = self.home_chat.message({**body, "text": transcript}, device_id,
                                      voice={"duration": upload["duration"]}, job_text=note)
         session = got.get("session_id")
@@ -4405,7 +4615,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(400, "files need X-Speakeasy-Filename")
         if length <= 0:
             raise ServiceError(400, "empty upload")
-        if length > (A.MAX_FILE_BYTES if kind == "file" else A.MAX_IMAGE_BYTES):
+        if length > A.max_upload_bytes(kind, mime):
             raise ServiceError(413, "too large to send", reason="too_large")
         try:
             self.staged.check_room(device_id, kind, length)
@@ -5081,7 +5291,7 @@ class VoiceService(SecureInputMixin):
         support = getattr(self.agent, "image_support", None) or {}
         return {"images": bool(support.get("images")), "vision": support.get("vision") or "unknown",
                 "max_attachments": A.MAX_ATTACHMENTS, "max_image_bytes": A.MAX_IMAGE_BYTES,
-                "max_request_image_bytes": A.MAX_REQUEST_IMAGE_BYTES, "max_file_bytes": A.MAX_FILE_BYTES,
+                "max_request_image_bytes": A.MAX_REQUEST_IMAGE_BYTES, "max_file_bytes": A.MAX_FILE_BYTES, "max_video_bytes": A.MAX_VIDEO_BYTES,
                 "file_types": sorted(A.STAGED_FILE_TYPES)}
 
     # -- home control ---------------------------------------------------------------------------------

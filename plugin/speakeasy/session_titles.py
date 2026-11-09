@@ -56,12 +56,13 @@ def candidates(title: str, now: float | None = None) -> list[str]:
 
 
 def push(hermes: Any, session_id: str, title_now: Callable[[], str | None], *,
-         wait_s: float = ROW_WAIT_S, retry_s: float = RETRY_S) -> str | None:
+         wait_s: float = ROW_WAIT_S, retry_s: float = RETRY_S, only_if: str | None = None) -> str | None:
     """Set the session's title to the task's current name; returns the title set, or None.
 
     *title_now* is read under the session's lock, so concurrent pushes (the stand-in after the run
     starts, the titler's name a moment later) settle on the newest name. Blocking: call it off the
-    event loop. Never raises: a session left with Hermes' own name is only cosmetic."""
+    event loop. Never raises: a session left with Hermes' own name is only cosmetic. *only_if*: rename
+    only while the session's title is exactly this (a "New chat" getting its first real topic)."""
     setter = getattr(hermes, "set_session_title", None)
     getter = getattr(hermes, "session_title", None)
     if setter is None or getter is None:
@@ -84,7 +85,10 @@ def push(hermes: Any, session_id: str, title_now: Callable[[], str | None], *,
                 return None
             time.sleep(retry_s)
         ours = _ours.get(session_id)
-        if ours is not None and current not in (None, "", ours):
+        if only_if is not None:
+            if not current or not (current == only_if or current.startswith(only_if + " (")):
+                return None  # renamed already (by its first topic, or by someone else)
+        elif ours is not None and current not in (None, "", ours):
             return None  # renamed by someone else since: theirs stays
         names = candidates(title)
         if current and current in names:

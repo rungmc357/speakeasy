@@ -706,3 +706,19 @@ def test_a_canceled_job_keeps_its_card_in_the_thread_saying_so(server, service, 
     assert item["kind"] == "seen_answer" and item["line"] == "Canceled." and item["unread"] is False
     cards = [e for e in stream(server) if e["kind"] == "card"]
     assert len(cards) == 1   # the card stays, closed; the reply above it still points at something
+
+
+def test_two_starts_in_a_row_never_post_the_same_canned_line(server, service, hermes):
+    # Geo (build 71): Home read "On it." / "On it." / "Checking." — never a bare stock line, never
+    # the same line twice in a row.
+    coordinator(service, {"reply": "On it.", "action": "start", "request": "Find a birthday gift for a cyclist"})
+    post(server, {"text": "find a birthday gift for a cyclist", "client_id": "c_g1"})
+    wait_for(lambda: hermes.calls)
+    first = [e["text"] for e in stream(server) if e["kind"] == "message" and e.get("role") == "assistant"][-1]
+    assert first in HC.ACKS
+    # The model answers the next ask with the very same natural line: the second one differs.
+    coordinator(service, {"reply": first, "action": "start", "request": "Find a cheap bike light"})
+    post(server, {"text": "and a cheap bike light", "client_id": "c_g2"})
+    said = wait_for(lambda: [e["text"] for e in stream(server) if e["kind"] == "message"
+                             and e.get("role") == "assistant"][1:] or None)
+    assert said[-1] != first and said[-1] in HC.ACKS

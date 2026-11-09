@@ -196,6 +196,10 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     public var sayOK: Bool = true
     /// Asking on a call with a risky choice: "Can't be undone · Needs a tap".
     public var lockLine: String?
+    /// Waiting behind another job on the same project: the job it starts after ("Checkout fix").
+    public var waitingOn: String?
+    /// A waiting job can start now, beside the other one (`POST /voice/work/{run_id}/start-now`).
+    public var canStartNow = false
     public enum OnCall: String, Sendable { case asking, heard }
 
     public init(id: String, kind: Kind, sessionID: String? = nil, runID: String? = nil, title: String, line: String,
@@ -243,6 +247,8 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         project = ProjectRef(json: o["project"])
         projectSuggestion = project == nil ? ProjectRef(json: o["project_suggestion"]) : nil
         canceled = o["canceled"] as? Bool ?? false
+        waitingOn = kind == .waiting ? nonEmpty(o["waiting_on"]) : nil
+        canStartNow = kind == .waiting && (o["can_start_now"] as? Bool ?? false) && runID != nil
         if let r = o["replaced"] as? [String: Any] {
             replacedAt = (r["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } ?? updatedAt ?? finishedAt
             replacedBy = nonEmpty(r["by"])
@@ -460,6 +466,38 @@ public struct SentFile: Equatable, Sendable, Identifiable {
     }
 }
 
+/// A server-resolved snapshot of the Home message being answered. A job card quotes as a mini card:
+/// its title, one status line and the run it stands for (`id` is then "r:<run id>").
+public struct HomeReplyQuote: Equatable, Sendable {
+    public var id: String
+    public var role: NowStream.Entry.Role
+    public var text: String
+    /// A job card (not a message): drawn as a mini card (glyph + title + status line).
+    public var isCard: Bool
+    public var line: String?
+    public var runID: String?
+    public init(id: String, role: NowStream.Entry.Role, text: String) {
+        self.id = id; self.role = role; self.text = text; isCard = false; line = nil; runID = nil
+    }
+    /// A job card on Home.
+    public init(cardRunID run: String, title: String, line: String?) {
+        id = "r:" + run; role = .assistant; text = title; isCard = true
+        self.line = line.flatMap { $0.isEmpty ? nil : $0 }; runID = run
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["id"]), let text = nonEmpty(o["text"]),
+              let raw = o["role"] as? String else { return nil }
+        if raw == "card" {
+            guard let run = nonEmpty(o["run_id"]) else { return nil }
+            self.init(cardRunID: run, title: text, line: nonEmpty(o["line"]))
+            self.id = id
+        } else {
+            guard let role = NowStream.Entry.Role(rawValue: raw) else { return nil }
+            self.init(id: id, role: role, text: text)
+        }
+    }
+}
+
 /// Home as a single thread: the user's asks and their cards in time order. A card keeps one id, so it
 /// updates in place; older seen stretches arrive folded ("This morning · 6 done").
 public struct NowStream: Equatable, Sendable {
@@ -492,6 +530,7 @@ public struct NowStream: Equatable, Sendable {
         public var clientID: String?
         /// message (yours): the pictures, clips and files sent with it (its `text` may be empty then).
         public var files: [SentFile]
+        public var quote: HomeReplyQuote? = nil
         public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
                     line: String? = nil, itemIDs: [String] = [], role: Role? = nil, attribution: ReplyAttribution? = nil,
                     voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil,
@@ -514,6 +553,7 @@ public struct NowStream: Equatable, Sendable {
                       role: role, attribution: role == .assistant ? ReplyAttribution(json: o["model"]) : nil,
                       voiceDuration: ((o["voice"] as? [String: Any])?["duration"] as? NSNumber)?.doubleValue,
                       runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]), files: files)
+            quote = HomeReplyQuote(json: o["quote"])
             replacedAt = (o["replaced_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
         }
     }

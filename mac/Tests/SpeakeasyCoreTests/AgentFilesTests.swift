@@ -94,6 +94,89 @@ final class AgentFilesTests: XCTestCase {
         XCTAssertFalse(model.serverScanning)
     }
 
+    // -- first load (SPK-264) ------------------------------------------------------------------
+
+    /// Answers from a script: each call takes the next result (a thrown error or a list).
+    final class Scripted: AgentFilesBackend {
+        var script: [Result<AgentFileList, Error>]
+        var calls = 0
+        init(_ script: [Result<AgentFileList, Error>]) { self.script = script }
+        func list(kind: String?, cursor: String?) async throws -> AgentFileList {
+            calls += 1
+            let next = script.isEmpty ? .success(AgentFileList(files: [])) : script.removeFirst()
+            return try next.get()
+        }
+        func thumbnail(_ file: AgentFile) async throws -> Data { Data() }
+        func download(_ file: AgentFile) async throws -> URL { URL(fileURLWithPath: "/dev/null") }
+    }
+
+    static let one = AgentFileList(files: [AgentFile(id: "a", name: "porch.png", kind: .image, bytes: 1, at: Date(), sessionID: "s")])
+
+    @MainActor
+    func testACancelledFirstLoadIsNotAConnectionError() async {
+        // The page was rebuilt while it opened: its request was cancelled, the server was fine.
+        let backend = Scripted([.failure(URLError(.cancelled)), .success(Self.one)])
+        let model = AgentFilesModel(backend: backend)
+        await model.reload()
+        XCTAssertNil(model.error)
+        XCTAssertFalse(model.loaded, "the next open loads again")
+        model.loadIfNeeded()
+        await model.waitForLoad()
+        XCTAssertEqual(model.files.map(\.name), ["porch.png"])
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor
+    func testLoadIfNeededSurvivesTheOpeningPageGoingAway() async {
+        let backend = Scripted([.success(Self.one)])
+        let model = AgentFilesModel(backend: backend)
+        let page = Task { @MainActor in model.loadIfNeeded() }
+        page.cancel()          // the page's own .task is cancelled; the model's load is not
+        await page.value
+        model.loadIfNeeded()   // a second open while the first load runs doesn't start another
+        await model.waitForLoad()
+        XCTAssertEqual(backend.calls, 1)
+        XCTAssertEqual(model.files.map(\.name), ["porch.png"])
+    }
+
+    @MainActor
+    func testASlowOrDroppedAnswerIsRetriedOnceQuietly() async {
+        let backend = Scripted([.failure(URLError(.timedOut)), .success(Self.one)])
+        let model = AgentFilesModel(backend: backend)
+        model.retryDelay = 0.01
+        await model.reload()
+        XCTAssertEqual(backend.calls, 2)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.files.count, 1)
+    }
+
+    @MainActor
+    func testErrorsSayWhatHappened() async {
+        let slow = Scripted([.failure(URLError(.timedOut)), .failure(URLError(.timedOut))])
+        let model = AgentFilesModel(backend: slow)
+        model.retryDelay = 0.01
+        await model.reload()
+        XCTAssertEqual(slow.calls, 2)
+        XCTAssertEqual(model.error?.contains("taking too long"), true)
+        XCTAssertEqual(model.error?.contains("Couldn't reach"), false)
+
+        let broken = Scripted([.failure(ScheduleProblem(status: 500, message: "database is locked")),
+                               .failure(ScheduleProblem(status: 500, message: "database is locked"))])
+        let second = AgentFilesModel(backend: broken)
+        second.retryDelay = 0.01
+        await second.reload()
+        XCTAssertEqual(second.error, "Your Hermes answered with an error while listing your files (database is locked). Try again in a moment.")
+
+        // A refusal isn't retried and keeps the server's own words.
+        let refused = Scripted([.failure(ScheduleProblem(status: 401, message: "Pair this device again."))])
+        let third = AgentFilesModel(backend: refused)
+        await third.reload()
+        XCTAssertEqual(refused.calls, 1)
+        XCTAssertEqual(third.error, "Pair this device again.")
+
+        XCTAssertTrue(AgentFilesModel.message(URLError(.cannotConnectToHost)).hasPrefix("Couldn't reach your Hermes"))
+    }
+
     @MainActor
     func testAGoneFileSaysSoAndLeavesTheList() async {
         final class Gone: AgentFilesBackend {

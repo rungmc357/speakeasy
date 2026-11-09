@@ -25,6 +25,11 @@ struct CardPicture: View {
     var label: String = "Picture"
     /// Fill a fixed frame (tiles) rather than fit the picture's own shape.
     var fill = false
+    /// With `fill` and a `height`: take the full width offered (a before/after side) instead of a
+    /// width from the picture's own shape.
+    var stretch = false
+    /// Hold the tile's place with a soft fill while the picture loads (instead of taking no space).
+    var placeholder = false
     @Environment(\.questionActions) private var actions
     @Environment(\.cardStyle) private var style
     @State private var image: PlatformPicture?
@@ -46,6 +51,10 @@ struct CardPicture: View {
                 #else
                 .sheet(isPresented: $open) { CardPictureViewer(image: image, label: label).frame(minWidth: 520, minHeight: 520) }
                 #endif
+            } else if placeholder {
+                RoundedRectangle(cornerRadius: corner, style: .continuous).fill(Color.primary.opacity(0.06))
+                    .frame(width: stretch ? nil : width, height: height)
+                    .frame(maxWidth: stretch ? .infinity : nil)
             } else {
                 Color.clear.frame(width: 0, height: 0)
             }
@@ -55,7 +64,15 @@ struct CardPicture: View {
 
     @ViewBuilder private func picture(_ image: PlatformPicture) -> some View {
         let shape = RoundedRectangle(cornerRadius: corner, style: .continuous)
-        if fill {
+        if fill && stretch {
+            // A clear frame sized by the layout, the picture filling it: the picture's own size
+            // never widens the card.
+            Color.clear.frame(maxWidth: .infinity).frame(height: height)
+                .overlay(image.view.resizable().scaledToFill())
+                .clipShape(shape)
+                .contentShape(shape)
+                .overlay(shape.strokeBorder(style.hairline, lineWidth: 0.7))
+        } else if fill {
             image.view.resizable().scaledToFill()
                 .frame(width: width ?? tileWidth(image), height: height)
                 .clipped().clipShape(shape)
@@ -102,22 +119,115 @@ struct PlatformPicture {
     var size: CGSize { native.size }
 }
 
+/// One picture full screen: pinch or double-tap to zoom (up to 5×), drag to look around while
+/// zoomed, and on iPhone/iPad drag it down (or flick it) to close, the backdrop fading as it goes
+/// so the card shows through. Close (✕, or Escape on the Mac) always works.
 struct CardPictureViewer: View {
     let image: PlatformPicture
     let label: String
     @Environment(\.dismiss) private var dismiss
+    /// Settled zoom, and the live pinch on top of it.
+    @State private var scale: CGFloat = 1
+    @State private var pinch: CGFloat = 1
+    /// Settled pan while zoomed, and the live drag on top of it.
+    @State private var offset: CGSize = .zero
+    @State private var drag: CGSize = .zero
+    @State private var closing = false
+
+    static let maxZoom: CGFloat = 5
+    /// How far down (points) a drag must go to close on release; a fast flick closes sooner.
+    static let closeDistance: CGFloat = 120
+
+    private var zoom: CGFloat { min(max(scale * pinch, 1), Self.maxZoom) }
+    private var zoomed: Bool { zoom > 1.01 }
+    /// 0…1 toward closing while dragging an unzoomed picture: fades the backdrop and the ✕.
+    private var pull: CGFloat { zoomed ? 0 : min(hypot(drag.width, drag.height) / 320, 1) }
+
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
-            image.view.resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityLabel(label)
-            Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
-                    .frame(width: 36, height: 36).background(Circle().fill(Color.white.opacity(0.18)))
-                    .frame(width: 44, height: 44)
+        GeometryReader { geo in
+            ZStack(alignment: .topTrailing) {
+                Color.black.opacity(1 - pull * 0.8).ignoresSafeArea()
+                image.view.resizable().scaledToFit()
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .scaleEffect(zoom * (1 - pull * 0.2))
+                    .offset(x: offset.width + drag.width, y: offset.height + drag.height)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { toggleZoom() }
+                    .gesture(SimultaneousGesture(magnify, pan(in: geo.size)))
+                    .accessibilityElement()
+                    .accessibilityLabel(label)
+                    .accessibilityAddTraits(.isImage)
+                    .accessibilityIdentifier("picture-viewer-image")
+                    .accessibilityAction(named: "Zoom") { toggleZoom() }
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                        .frame(width: 36, height: 36).background(Circle().fill(Color.white.opacity(0.18)))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain).padding(12).accessibilityLabel("Close")
+                .keyboardShortcut(.cancelAction)
+                .opacity(1 - pull)
             }
-            .buttonStyle(.plain).padding(12).accessibilityLabel("Close")
         }
+        #if os(iOS)
+        // The cover itself is see-through so the faded backdrop shows the thread under it.
+        .presentationBackground(.clear)
+        #endif
+    }
+
+    private func toggleZoom() {
+        withAnimation(.spring(duration: 0.3)) {
+            if zoomed { scale = 1; offset = .zero } else { scale = 2.5 }
+        }
+    }
+
+    private var magnify: some Gesture {
+        MagnifyGesture()
+            .onChanged { pinch = $0.magnification }
+            .onEnded { value in
+                scale = min(max(scale * value.magnification, 1), Self.maxZoom)
+                pinch = 1
+                if scale <= 1.01 { withAnimation(.spring(duration: 0.3)) { scale = 1; offset = .zero } }
+            }
+    }
+
+    private func pan(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                guard !closing else { return }
+                #if os(macOS)
+                guard zoomed else { return }
+                #endif
+                drag = value.translation
+            }
+            .onEnded { value in
+                guard !closing else { return }
+                if zoomed {
+                    offset = Self.clamp(CGSize(width: offset.width + value.translation.width,
+                                               height: offset.height + value.translation.height), zoom: zoom, size: size)
+                    drag = .zero
+                    return
+                }
+                #if os(iOS)
+                if Self.closes(translation: value.translation, predicted: value.predictedEndTranslation) {
+                    closing = true   // keep the picture where the finger left it while the cover goes
+                    dismiss()
+                    return
+                }
+                #endif
+                withAnimation(.spring(duration: 0.3)) { drag = .zero }
+            }
+    }
+
+    /// A drag closes the viewer when it went far enough down (or up), or was flicked that way.
+    static func closes(translation: CGSize, predicted: CGSize) -> Bool {
+        abs(translation.height) > closeDistance || abs(predicted.height) > closeDistance * 2.5
+    }
+
+    /// Keeps a zoomed picture's pan inside what the zoom adds, so it can't be dragged off screen.
+    static func clamp(_ offset: CGSize, zoom: CGFloat, size: CGSize) -> CGSize {
+        let maxX = max(0, size.width * (zoom - 1) / 2), maxY = max(0, size.height * (zoom - 1) / 2)
+        return CGSize(width: min(max(offset.width, -maxX), maxX), height: min(max(offset.height, -maxY), maxY))
     }
 }
 

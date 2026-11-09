@@ -62,7 +62,7 @@ struct FilesPane: View {
             .frame(maxWidth: .infinity)
         }
         .quickLookPreview($preview)
-        .task { if !files.loaded { await files.reload() } }
+        .task { files.loadIfNeeded() }
         .accessibilityIdentifier("files-pane")
     }
 

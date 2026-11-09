@@ -450,17 +450,22 @@ JOB_PREFIX = "job_"
 
 async def start_job(worker: "SidebandWorker", text: str, session_id: str | None = None,
                     context: str | None = None, staged: list[Any] | None = None,
-                    choice: dict[str, Any] | None = None) -> dict[str, Any]:
+                    choice: dict[str, Any] | None = None, never_wait: bool = False) -> dict[str, Any]:
     """A new job from text typed in the app, no call needed (``POST /voice/work``): the same
     ``start_task`` a spoken request reaches, on this worker. Runs on the worker's loop and returns
     ``{task_id}`` once Hermes has the run (or it ended), at most START_WAIT_S later; the job keeps
     running after that like any other. *session_id*: run it in that existing Hermes session (a history
     page's message to an API-server session Speakeasy didn't start), by id, never via routing.
     *context*: the transcript the task sees instead of just the request (a linked continuation).
-    *choice*: {model?, reasoning?} picked for this job (models.parse_choice)."""
+    *choice*: {model?, reasoning?} picked for this job (models.parse_choice). *never_wait*: not an
+    edit (a typed question), so it never waits behind another job (calls.fence_blocker)."""
     from .calls import TERMINAL
     task_id = JOB_PREFIX + secrets.token_hex(8)
     worker.touch()
+    if never_wait:
+        if not isinstance(getattr(worker, "never_wait", None), set):
+            worker.never_wait = set()
+        worker.never_wait.add(task_id)
     if choice and (choice.get("model") or choice.get("reasoning")):
         # The model / reasoning picked for this job (models.py): its runs, follow-ups included, use it.
         worker.store.set_model_choice("task:" + task_id, choice.get("model"), choice.get("reasoning"))
@@ -476,7 +481,10 @@ async def start_job(worker: "SidebandWorker", text: str, session_id: str | None 
     while time.monotonic() < deadline and not job.done():
         with worker.interaction.lock:
             run = worker.interaction.runs.get(task_id)
-            begun = run is not None and (run.run_id or run.status in RS.FINAL)
+            # Held behind another job (calls.wait_for_fence): it has no run id until it starts, but
+            # it is taken; return now so Home shows its waiting card instead of hanging.
+            begun = run is not None and (run.run_id or run.status in RS.FINAL
+                                         or run.status == RS.RunState.WAITING_ON_TASK)
         if begun:
             break
         await asyncio.sleep(0.05)

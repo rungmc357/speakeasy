@@ -130,7 +130,7 @@ def test_hermes_voice_reload_loads_it_now_even_mid_call(plugin):
     assert not (r.state_dir / "reload-request").exists()
 
 
-def test_busy_is_true_only_for_a_live_call_or_an_active_task(service):
+def test_busy_is_true_only_for_a_live_call_or_work_a_reload_cannot_pick_up(service):
     from speakeasy.calls import BackendRun, Interaction
     assert service.busy() is False
     call = Interaction("int_a", "sess_a")
@@ -139,7 +139,9 @@ def test_busy_is_true_only_for_a_live_call_or_an_active_task(service):
     call.call_closed = True
     assert service.busy() is False
     call.runs["d1"] = BackendRun("d1", 1, "idem_1", status="running")
-    assert service.busy() is True                      # its task still running
+    assert service.busy() is True                      # no Hermes run id to follow on from
+    call.runs["d1"].run_id = "run_0001"
+    assert service.busy() is False                     # a followable run carries on through a reload
     call.runs["d1"].status = "completed"
     assert service.busy() is False
 
@@ -181,6 +183,31 @@ def test_hermes_style_reinstall_drops_and_reimports_the_whole_package(plugin):
     assert r.tick() == "reloaded"                          # ...until the new version loads whole
     assert _health(port)["version"] == "2.0.0"
     assert sys.modules[f"{name}.calls"] is not running_calls
+
+
+def test_repeated_discovery_passes_log_the_re_import_once_and_name_the_modules(plugin, caplog):
+    """SPK-270: Hermes' plugin discovery re-imports the package every few minutes with unchanged
+    files; the watcher put the running code back each time and logged it every 2 s (~1,800 lines an
+    hour), rotating agent.log away. It still restores every time, but logs once per cause, naming
+    which modules differed and whether they were missing or replaced."""
+    import logging
+    r, pkg, port, name, _ = plugin
+    running_calls = sys.modules[f"{name}.calls"]
+    caplog.set_level(logging.INFO, logger=f"{name}.reloader")
+    for _ in range(5):
+        for mod in [m for m in list(sys.modules) if m == name or m.startswith(name + ".")]:
+            if not mod.endswith((".reloader", ".adapter")):
+                del sys.modules[mod]                       # Hermes' discovery pass: evict...
+        importlib.invalidate_caches()
+        importlib.import_module(name)
+        importlib.import_module(f"{name}.calls")           # ...and import part of it again
+        assert r.tick() == "restored"
+        assert sys.modules[f"{name}.calls"] is running_calls
+    lines = [rec.getMessage() for rec in caplog.records if "re-imported underneath" in rec.getMessage()]
+    assert len(lines) == 1, lines
+    assert "replaced: " in lines[0] and "calls" in lines[0] and "missing: " in lines[0]
+    assert r.restores == 5
+    assert _health(port)["version"] == "1.0.0"             # the running server never changed
 
 
 def _fail_builds(r, count: int) -> list:

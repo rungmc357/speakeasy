@@ -554,13 +554,30 @@ public final class ServerClient: @unchecked Sendable {
         return (reply["run_id"] as? String, session)
     }
 
+    /// A New chat's first message and what the server made of it: a job, or (`serverChats`: servers
+    /// with `chat_replies`) a plain reply to small talk with no run. See `NewChatSend`.
+    public func startNewChat(text: String, attachments: [String] = [], clientID: String = UUID().uuidString,
+                             choice: ModelChoice? = nil, agent: String? = nil,
+                             serverChats: Bool = false) async throws -> NewChatSend.Outcome {
+        guard let body = NewChatSend.body(text: text, attachments: attachments, clientID: clientID, choice: choice,
+                                          agent: agent, serverChats: serverChats) else {
+            throw HTTPError(status: 400, message: "The job is empty.")
+        }
+        let reply = try await post("/voice/work", body)
+        guard let outcome = NewChatSend.outcome(reply) else {
+            throw HTTPError(status: 502, message: reply["error"] as? String ?? "Your Hermes didn't start that.")
+        }
+        return outcome
+    }
+
     // MARK: History (servers with `history`; docs/API.md "History")
 
     /// Home's chat (servers with `home_chat`): the coordinator replies, and starts or follows up a job
     /// only for real work. Idempotent on *clientID*.
     public func homeMessage(text: String, attachments: [String] = [], clientID: String = UUID().uuidString,
-                            choice: ModelChoice? = nil) async throws -> HomeChatReply {
+                            choice: ModelChoice? = nil, replyTo: String? = nil) async throws -> HomeChatReply {
         var body: [String: Any] = ["text": text.trimmingCharacters(in: .whitespacesAndNewlines), "client_id": clientID]
+        if let replyTo { body["reply_to"] = replyTo }
         if !attachments.isEmpty { body["attachments"] = attachments }
         if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
         let reply = try await post("/voice/home/message", body)
@@ -650,6 +667,11 @@ public final class ServerClient: @unchecked Sendable {
     }
 
     /// Stop one task by id, with or without a call (plugins with `task_stop`): a panel row's Stop.
+    /// "Start now anyway": a job waiting behind another job on the same project starts now, beside it.
+    public func startNow(runID: String) async throws {
+        _ = try await post("/voice/work/\(escape(runID))/start-now", [String: Any]())
+    }
+
     public func stopTask(runID: String) async throws {
         _ = try await post("/voice/work/\(escape(runID))/stop", [String: Any]())
     }

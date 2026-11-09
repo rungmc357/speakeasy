@@ -46,6 +46,7 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/interactions/{id}/approval` | device | Answer a Hermes tool approval |
 | POST | `/voice/interactions/{id}/cancel-backend` | device | Stop a task's Hermes run |
 | POST | `/voice/work/{run_id}/stop` | device | Stop one task by id, with or without a call (`capabilities.task_stop`) |
+| POST | `/voice/work/{run_id}/start-now` | device | Start a job that waits behind another job now, beside it (Now items with `can_start_now`) |
 | POST | `/voice/interactions/{id}/skip-tour` | device | End the first-call tour |
 | POST | `/voice/interactions/{id}/early-request` | device | Words heard while the call connected: the first request (or, in a call from listening mode, "answer from the room") |
 | POST | `/voice/interactions/{id}/answer` | device | Answer a task's question card (or a spoken-choice card) |
@@ -475,6 +476,15 @@ Stops one task by its run id whether or not a call is open (a panel row's Stop):
 call or the voiceless worker holding it and stops it the way `cancel-backend` does. Body `{}`.
 `202` with the same reply as `cancel-backend`; `409` when that task isn't running; `404` for a bad id.
 Servers with `capabilities.task_stop`.
+
+## POST /voice/work/{run_id}/start-now
+
+"Start now anyway" on a waiting card: a job held behind another job editing the same project starts
+right away, beside it. Body `{}`. `200 {"ok": true, "run_id", "started": true}`; `409` when it isn't
+waiting; `404` for an unknown id. Only jobs that would edit files wait at all: questions, lookups,
+proposals, plans and research never do. A waiting Now item has `kind: "waiting"`, `line:
+"Waiting · after <other job>"`, `waiting_on` and `can_start_now: true` (its `run_id` is a local id
+until it starts; Home's thread follows it to the real run).
 
 ## POST /voice/interactions/{id}/cancel-backend
 
@@ -993,6 +1003,15 @@ Hermes session, on the board, openable by `run_id`), never through routing. Idem
 `client_id` as above. `202 {"ok": true, "run_id": "run_0002", "task_id": "job_…", "task": {...}}`;
 `400` for an empty, too long or malformed body, `502` when Hermes didn't take it.
 
+Capability `chat_replies`. An app that can show a plain reply adds `"chat_replies": true` to the body.
+Older servers refuse the unknown key, so send it only when the capability is there. Then a greeting or
+small talk on its own with no attachments ("hi", "hey, how's it going?", the same rule as a hello on a
+call) starts **no** job. The reply is `202 {"ok": true, "delivered_as": "chat", "reply": "Hi! …",
+"run_id": null, "task_id": null, "task": null, "session_id": null}`. Nothing is added to the board,
+Home or a Hermes session; the app shows `reply` in the chat. A job's reply says
+`"delivered_as": "new_run"`. Apps must show a job (Starting…, a task card) only for that. Without the
+flag, or on servers without `chat_replies`, every send here is a job, as before.
+
 While such a job runs, the server counts as busy: a newly installed plugin version loads only after
 it (and any call) has finished, exactly like a job started on a call.
 
@@ -1058,7 +1077,7 @@ zone (the 4:00 AM rollover and "From yesterday" use it; without it, the Hermes c
  "notice": {"kind": "rollover", "moved": 3, "text": "Moved three seen answers to Earlier."} | null}
 Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "session_id", "run_id"?,
         "title", "line", "source", "source_label"?, "started_at", "updated_at", "finished_at"?, "unread",
-        "idle_seconds"?, "thumbs"?: [{"url"}], "waiting_on"?, "dismissed_question"?,
+        "idle_seconds"?, "thumbs"?: [{"url"}], "waiting_on"?, "can_start_now"?, "dismissed_question"?,
         "provenance"?: {"kind": "yesterday" | "earlier_call" | "later", "at"},
         "fix"?: {"kind": "credits" | "sign_in" | "retry" | "setup" | "open"},
         "question"?: {"shape": "words" | "things" | "approval", "prompt", "context"?, "why"?, "affects"?,

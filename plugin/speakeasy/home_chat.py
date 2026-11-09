@@ -27,8 +27,10 @@ keeps it fast. Its model (``route``), first that applies:
    so a user without a fast model chats on the model they chose; then the Speakeasy routing model.
 
 Home's model chip picks the WORK model (``work`` in ``GET /voice/home/model``, ``{"work_model": id}``
-on POST): the model the jobs started from Home run on. Unset, jobs run on the user's Hermes default
-model. The coordinator's own model above is a secondary choice in the same menu (``{"model": id}``).
+on POST): the model the jobs started from Home run on. Unset, jobs run on Speakeasy's saved job
+default (settings ``jobs.model``) when there is one, else the user's Hermes default model. The chip
+and the send path read one resolver (``HomeChat.work_route``), so the chip never names a model the
+job didn't run on. The coordinator's own model above is a secondary choice in the same menu (``{"model": id}``).
 Changing one never changes the other, and neither writes Hermes' default or auxiliary models.
 
 Nothing here writes the user's Hermes config. Live calls keep their own routing; this is only Home's
@@ -104,9 +106,10 @@ def small_talk(text: str) -> bool:
 # A chat reply that says work is under way ("Looking for a rain jacket under $100.", "Let me check")
 # promises a job; without a tool call it would start nothing.
 _CLAIMS_WORK = re.compile(
-    r"(?i)(?:^|[.!?]\s+|\band\s+)(?:"
+    r"(?i)(?:^|[.!?,]\s+|\band\s+)(?:"
     r"(?:i'?m\s+|i am\s+|now\s+)?(?:looking (?:for|up|into)|checking|searching|finding|pulling up|fetching|digging into)"
-    r"|(?:i'?ll|i will|let me)\s+(?:look|check|search|find|pull up|fetch|dig)"
+    r"|(?:i'?ll|i will|let me)\s+(?:look|check|search|find|pull up|fetch|dig|take a look|have a look|go look|see what)"
+    r"|(?:taking|having) a (?:quick )?look\b|give me a (?:sec|second|minute|moment)\b"
     # The acknowledgements the start line itself suggests ("Looking now.", "Checking now.") promise a
     # job too: seen live, "Looking now." with no tool call left an ask with no job.
     r"|(?:looking|checking|searching|digging in)\s+(?:now|on (?:it|that))\b|looking at (?:it|that|this) now\b"
@@ -117,10 +120,51 @@ def claims_work(reply: str | None) -> bool:
     return bool(_CLAIMS_WORK.search(reply or ""))
 
 
-# R2: the line said when a job starts is an acknowledgement ("On it.", "Looking now."), never the ask
-# read back ("On it — finding a rain jacket under $100 in waterproof..."). A sentence that repeats the
-# job's request is replaced; any other sentence (an answer to another part of the message) stays.
-ACK = "On it."
+# R2: the line said when a job starts is a warm, natural acknowledgement ("Let me take a look at where the
+# release is at."), never the whole ask read back ("On it — finding a rain jacket under $100 in
+# waterproof..."). A sentence that repeats the job's request is replaced with one of these lines
+# (varied by ask, never the same twice in a row); any other sentence (an answer to another part) stays.
+# Geo: Home should feel chatty, not a stream of "Checking." / "On it.".
+ACKS = ("Let me take a look.", "Sure, I'll look into that.", "Give me a minute on this one.",
+        "Let me dig into that.", "Okay, taking a look now.", "On it, back shortly with what I find.")
+ACK = ACKS[0]
+# Replies that are only a clipped stock acknowledgement: Home never posts one of these alone.
+_CLIPPED = re.compile(r"(?i)^\W*(?:on it|checking(?: now| on it)?|looking(?: now| into it)?|got it|ok(?:ay)?"
+                      r"|will do|sure|starting(?: task| now)?)\W*$")
+
+
+def held_line(after: Any) -> str:
+    """What Home's coordinator adds when the job it started waits behind another one."""
+    from .home_words import short_title
+    name = " ".join(str(after or "").split()).strip(" .\u201c\u201d\"")
+    name = (short_title(name) or name) if name else ""
+    if not name:
+        return "I'll start that as soon as the other job wraps up."
+    words = name.split()
+    if re.match(r"(?i)(?:fix|find|make|build|add|update|write|draft|check|research|look|compare|plan|book|order|"
+                r"search|get|send|refactor|clean|move|rename|remove|delete|create|set|run|ship|review|read|"
+                r"summari[sz]e|edit|change|test|try|install|buy|call|email|reply)\b", words[0]):
+        return f"I'll start that as soon as \u201c{name}\u201d wraps up."   # a job named by what it does
+    if len(words[0]) > 1 and words[0][1:].islower():   # "Paint search" -> "the paint search"; keeps "iOS", "NASA"
+        name = name[0].lower() + name[1:]
+    return f"I'll start that as soon as the {name} wraps up."
+
+
+def pick_ack(asked: str = "", avoid: str | None = None) -> str:
+    """A natural acknowledgement chosen by the ask (stable for one ask), never *avoid* (the last line)."""
+    i = sum(map(ord, asked or "")) % len(ACKS)
+    for k in range(len(ACKS)):
+        line = ACKS[(i + k) % len(ACKS)]
+        if line != avoid:
+            return line
+    return ACKS[0]
+
+
+def clipped(reply: str | None) -> bool:
+    """True for a reply that is only a stock word or two ("On it.", "Checking.")."""
+    return bool(_CLIPPED.match(reply or ""))
+
+
 _ACK_STOP = {"the", "and", "for", "with", "from", "that", "this", "your", "you", "find", "finding", "look", "looking",
              "check", "checking", "search", "searching", "get", "getting", "some", "any", "now", "under", "about",
              "into", "out", "let", "me", "will", "i'm", "it's", "on", "it", "what", "which", "good", "best"}
@@ -132,10 +176,14 @@ def _ack_words(text: str) -> set[str]:
 
 
 def parrots(sentence: str, asked: str) -> bool:
-    """True when *sentence* reads the ask back: five words or more sharing three of the ask's words."""
+    """True when *sentence* reads the ask back: five words or more sharing three of the ask's words and
+    three quarters of them. Naming the topic ("pulling up dinner spots near you") is warm, not a
+    read-back; repeating every detail of the ask is."""
     if len(sentence.split()) < 5:
         return False
-    return len(_ack_words(sentence) & _ack_words(asked)) >= 3
+    ask = _ack_words(asked)
+    shared = len(_ack_words(sentence) & ask)
+    return shared >= 3 and shared * 4 >= len(ask) * 3
 
 
 # The app's own mechanics are never said to the user: the coordinator is told it can't see an
@@ -146,16 +194,19 @@ _MECHANICS = re.compile(r"(?i)\b(?:can'?t|cannot|can not|unable to|don'?t)\s+(?:
                         r"|\bstart(?:ing)? (?:a|the) job\b|\b(?:start_job|follow_up|a job (?:can|will) look)\b")
 
 
-def acknowledgement(reply: str, asked: str) -> str:
-    """The start-of-job reply without the ask read back: parroting sentences go, "On it." leads."""
+def acknowledgement(reply: str, asked: str, start: bool = True) -> str:
+    """The start-of-job reply without the ask read back: parroting sentences go and a natural
+    acknowledgement leads; a bare stock line ("On it.", "Checking.") becomes a natural one too."""
     sentences = [s for s in re.split(r"(?<=[.!?])\s+", (reply or "").strip()) if s]
     if not sentences:
         return reply
     kept = [s for s in sentences if not parrots(s, asked) and not _MECHANICS.search(s)]
-    if len(kept) == len(sentences):
+    if start and kept and kept[0] == sentences[0] and clipped(kept[0]):
+        kept[0] = pick_ack(asked)
+    elif len(kept) == len(sentences):
         return reply
-    if not kept or kept[0] != sentences[0]:
-        kept.insert(0, ACK)
+    elif not kept or kept[0] != sentences[0]:
+        kept.insert(0, pick_ack(asked))
     return " ".join(kept)
 
 
@@ -198,8 +249,14 @@ Speakeasy app. Home is one ongoing conversation. Behind you, jobs (full agent se
 user's computer, files, accounts and the web) do real work.
 
 Answer in plain text yourself for greetings, thanks, small talk, and anything you can answer from \
-general knowledge, this conversation, or the jobs listed below (their status and results). Keep it \
-conversational: usually one to three sentences, no headings, no lists unless asked.
+general knowledge, this conversation, or the jobs listed below (their status and results). Talk like a \
+sharp, friendly person texting a friend, not a ticket system: warm, natural, a little personality, usually \
+one to three sentences, no headings, no lists unless asked. Small talk gets real conversation: answer like \
+a person, have a light opinion, and you may ask something back. No emoji, no fake enthusiasm ("Great \
+question!", "Absolutely!"), no filler.
+When you answer about a job's status or result, lead with the useful thing, then add one human sentence \
+(what's next, what it means): "The release is on your phone. The design cleanup is next and should land \
+tonight."
 
 Use a tool instead when the message needs doing or live or personal information: searching, booking, \
 buying, files, code, email, calendar, messages, the user's machines or accounts, weather, prices, news, \
@@ -207,9 +264,13 @@ or anything about the user you don't already know. Anything the user wants shown
 pull request, a chart, a draft, a document, a picture, a list to keep) is a job too: jobs draw cards, \
 your reply can't.
 - start_job for new work. "request" is the task in self-contained words (resolve "it", "that", "the one \
-you mentioned" from the conversation); "reply" is a short acknowledgement ("On it.", "Looking now.", \
-"Checking.") with at most a few words of its own; never read the ask back ("On it, finding a rain jacket \
-under $100" is wrong: the user just said that). Never "Starting task".
+you mentioned" from the conversation); "reply" is one short, natural sentence that shows you heard \
+what they asked, the way a person would say it: "Let me take a look at where the release is at.", "Ooh, \
+good one. Pulling up dinner spots near you.", "Hm, I'll dig into why that test keeps failing." Vary \
+it; never a bare "On it." or "Checking.", never the same line as your last reply, and don't open every \
+reply the same way ("Sure, ..." every time reads canned). Name the topic in \
+a few words but never read the whole ask back with all its details ("Finding a waterproof rain jacket \
+under $100 in your size" is wrong: the user just said that). Never "Starting task".
 - message_job when the message changes, corrects, answers or adds to an existing job, or asks it to do \
 more with its result ("make it shorter", "actually Friday", "also check the price"). "job" is its id.
 - cancel_job to stop a running job. "job" is its id.
@@ -217,7 +278,7 @@ more with its result ("make it shorter", "actually Friday", "also check the pric
 dentist and find a birthday gift" is two jobs). Never merge unrelated asks into one job, and never \
 drop one: each ask is either answered in your reply or gets its own job. When you start a job and \
 the same message also asks something you can answer yourself, answer it in that job's reply too \
-("On it. A soft-boiled egg takes about 6 minutes.").
+("Let me find you one. And a soft-boiled egg takes about 6 minutes.").
 
 Rules:
 - Plain prose only: no code blocks, tables, box drawing or mock-ups of cards in your reply.
@@ -255,9 +316,11 @@ def us_units_first(text: str) -> str:
         return f"{qual}{m.group('u').strip()} ({m.group('m').strip()})"
     return _METRIC_FIRST.sub(swap, text or "")
 
-_REPLY = {"type": "string", "description": "A short acknowledgement (On it.), never the ask read back."}
-_START_REPLY = {"type": "string", "description": "A short acknowledgement (On it., Looking now.) that never reads "
-                "the ask back, plus the answer to any other part of the message you can answer yourself."}
+_REPLY = {"type": "string", "description": "One short, natural sentence that shows you heard them (\"Got it, "
+          "I'll make it shorter.\"), never a bare \"On it.\" and never the ask read back in full."}
+_START_REPLY = {"type": "string", "description": "One short, warm, natural sentence that names the topic (\"Let me "
+                "take a look at where the release is at.\"), never a bare \"On it.\" and never the whole ask read "
+                "back, plus the answer to any other part of the message you can answer yourself."}
 _JOB = {"type": "string", "description": "The job's id from the list (j1, j2, ...)."}
 TOOLS = [
     {"type": "function", "function": {
@@ -413,7 +476,7 @@ def parse(raw: Any, aliases: dict[str, str], titles: dict[str, str] | None = Non
         first = extra.pop(0)
         action, request, reply = "start", first["request"], (reply or first["reply"])
     if action in {"start", "follow_up"} and not extra:
-        reply = acknowledgement(reply, request or "")   # R2: never the ask read back, nor the app's mechanics
+        reply = acknowledgement(reply, request or "", start=action == "start")   # R2: never the ask read back, nor the app's mechanics
     if extra:
         # One reply line for the whole message: the extra jobs' own lines join the first. A job with
         # no line of its own (more_jobs, or a second call with an empty reply) is still named, so
@@ -454,6 +517,8 @@ class HomeChat:
             columns = {r[1] for r in self.store._db.execute("PRAGMA table_info(home_messages)")}
             if "files" not in columns:   # a thread kept from before messages carried their files
                 self.store._db.execute("ALTER TABLE home_messages ADD COLUMN files TEXT")
+            if "quote" not in columns:
+                self.store._db.execute("ALTER TABLE home_messages ADD COLUMN quote TEXT")
             self.store._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS home_messages_client "
                                    "ON home_messages(client_id) WHERE client_id IS NOT NULL")
             # Further jobs one message started ("two asks, two jobs"); the first is home_messages.run_id.
@@ -464,12 +529,12 @@ class HomeChat:
     def _rows(self, where: str = "", args: tuple = (), limit: int = SHOWN_MAX) -> list[dict[str, Any]]:
         with self.store._lock:
             rows = self.store._db.execute(
-                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to, files FROM home_messages "
+                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to, files, quote FROM home_messages "
                 f"{where} ORDER BY at DESC, rowid DESC LIMIT ?", (*args, limit)).fetchall()
-        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to", "files")
+        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to", "files", "quote")
         out: list[dict[str, Any]] = [dict(zip(names, r)) for r in rows]
         for r in out:
-            for k in ("model", "voice", "files"):
+            for k in ("model", "voice", "files", "quote"):
                 try:
                     r[k] = json.loads(r[k]) if r[k] else None
                 except ValueError:
@@ -477,15 +542,69 @@ class HomeChat:
         return list(reversed(out))
 
     def _add(self, role: str, text: str, at: float, client_id: str | None = None, model: dict | None = None,
-             voice: dict | None = None, reply_to: str | None = None, files: list[dict] | None = None) -> str:
+             voice: dict | None = None, reply_to: str | None = None, files: list[dict] | None = None,
+             quote: dict | None = None) -> str:
         mid = ("hu_" if role == "user" else "ha_") + secrets.token_hex(8)
         with self.store._lock, self.store._db:
             self.store._db.execute(
-                "INSERT INTO home_messages (id, client_id, role, text, at, model, voice, reply_to, files) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO home_messages (id, client_id, role, text, at, model, voice, reply_to, files, quote) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (mid, client_id, role, text, at, json.dumps(model) if model else None,
-                 json.dumps(voice) if voice else None, reply_to, json.dumps(files) if files else None))
+                 json.dumps(voice) if voice else None, reply_to, json.dumps(files) if files else None,
+                 json.dumps(quote) if quote else None))
         return mid
+
+    def _card_quote(self, run_id: str) -> dict | None:
+        """A job card on Home being answered (swipe-to-reply on a card): its title and one status line,
+        plus the run id, so "change it to 8pm" follows that job."""
+        try:
+            items = self.svc.now_model.build(peek=True)["items"]
+        except Exception:
+            items = []
+        for item in items:
+            if item.get("run_id") == run_id:
+                title = str(item.get("title") or "").strip() or "A job"
+                line = str(item.get("line") or "").strip()
+                out = {"id": "r:" + run_id, "role": "card", "text": title[:300], "run_id": run_id}
+                if line:
+                    out["line"] = line[:300]
+                return out
+        row = None
+        try:
+            row = self.store.run_row(run_id)
+        except Exception:
+            row = None
+        if not row:
+            return None
+        title = str(row.get("title") or "").strip() or "A job"
+        return {"id": "r:" + run_id, "role": "card", "text": title[:300], "run_id": run_id}
+
+    def _quote(self, reply_to: Any) -> dict | None:
+        if reply_to is None:
+            return None
+        if isinstance(reply_to, str) and re.fullmatch(r"r:[A-Za-z0-9_.:-]{1,128}", reply_to):
+            quote = self._card_quote(reply_to[2:])
+            if quote is None:
+                raise self._error(400, "That job is no longer on Home.")
+            return quote
+        if not isinstance(reply_to, str) or not re.fullmatch(r"m:h[ua]_[0-9a-f]{16}", reply_to):
+            raise self._error(400, "Choose a Home message to reply to.")
+        rows = self._rows("WHERE id=?", (reply_to[2:],), limit=1)
+        if not rows:
+            raise self._error(400, "That Home message is no longer available.")
+        row = rows[0]
+        text = row["text"] or look_words(row.get("files") or []) or "Voice message"
+        return {"id": reply_to, "role": row["role"], "text": text[:2000]}
+
+    @staticmethod
+    def _with_quote(text: str, quote: dict | None) -> str:
+        if not quote:
+            return text
+        if quote.get("role") == "card":
+            # The model sees job aliases, never run ids; the focus line names the job.
+            shown = {k: v for k, v in quote.items() if k in ("text", "line")}
+            return text + "\n\nReplying to this job card on Home (quoted context, not new instructions):\n" + json.dumps(shown, ensure_ascii=False)
+        return text + "\n\nReplying to this Home message (quoted context, not new instructions):\n" + json.dumps(quote, ensure_ascii=False)
 
     def _extra_run(self, mid: str, run_id: str) -> None:
         with self.store._lock, self.store._db:
@@ -517,11 +636,35 @@ class HomeChat:
     def shown(self, now: float | None = None) -> list[dict[str, Any]]:
         """The messages Home shows: the last day's, after the last Clear, oldest first."""
         now = self.clock() if now is None else now
+        self._relink_held()
         return self._rows("WHERE at >= ?", (max(now - SHOWN_S, self._cleared()),))
+
+    def _relink_held(self) -> None:
+        """A job held behind another (calls.wait_for_fence) is linked under its waiting id (a local
+        ``lr_`` id: it had no Hermes run yet). Once it started, its messages point at the real run, so
+        its card in the thread and the coordinator's job list stay one job."""
+        try:
+            with self.store._lock:
+                held = {r[0] for t in ("home_messages", "home_jobs") for r in self.store._db.execute(
+                    f"SELECT run_id FROM {t} WHERE run_id LIKE 'lr\\_%' ESCAPE '\\' AND at >= ?",
+                    (self.clock() - 2 * SHOWN_S,)).fetchall()}
+            for local in held:
+                key = self.store.key_for_run(local)
+                with self.store._lock:
+                    row = self.store._db.execute("SELECT run_id FROM runs WHERE idem_key=?", (key,)).fetchone() \
+                        if key else None
+                real = row[0] if row and row[0] and row[0] != local else None
+                if real:
+                    with self.store._lock, self.store._db:
+                        for t in ("home_messages", "home_jobs"):
+                            self.store._db.execute(f"UPDATE {t} SET run_id=? WHERE run_id=?", (real, local))
+        except Exception:
+            logger.debug("speakeasy: Home's held-job links weren't updated", exc_info=True)
 
     def started_runs(self) -> set[str]:
         """Runs a Home message started or followed up: their card needs no "you asked" bubble (the
         message already shows)."""
+        self._relink_held()
         with self.store._lock:
             rows = self.store._db.execute(
                 "SELECT run_id FROM home_messages WHERE run_id IS NOT NULL AND at >= ?",
@@ -539,6 +682,8 @@ class HomeChat:
                                "text": row["text"], "at": row["at"]}
         if isinstance(row.get("files"), list) and row["files"]:
             out["files"] = row["files"]
+        if row.get("quote"):
+            out["quote"] = row["quote"]
         if row.get("model"):
             out["model"] = row["model"]
         if row.get("voice"):
@@ -555,7 +700,7 @@ class HomeChat:
         """``POST /voice/home/message {text, client_id?, attachments?, model?, reasoning?, agent?}``.
         Idempotent on client_id: a retry gets the first reply and never starts a second job."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "client_id", "attachments", "model", "reasoning", "agent", "source", "focus"}:
+                "text", "client_id", "attachments", "model", "reasoning", "agent", "source", "focus", "reply_to"}:
             raise self._error(400, "Send the message as text.")
         text, client_id = body.get("text"), body.get("client_id")
         ids = body.get("attachments") or []
@@ -610,6 +755,8 @@ class HomeChat:
                                "reply": self.entry(reply) if reply else None,
                                "action": source.get("action") or "none", "run_id": source.get("run_id")}
         if started:
+            if started.get("held"):
+                out["held"] = True   # it waits behind another job: its card says "Waiting · after ..."
             out["session_id"] = started.get("session_id")
             out["task_id"] = started.get("task_id")
             if started.get("attachments"):
@@ -626,14 +773,18 @@ class HomeChat:
         # staged items are before the job claims them. Words stay "" when there were none.
         staged = getattr(self.svc, "staged", None)
         files = staged.describe(device_id, ids) if ids and staged is not None else []
-        user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files)
+        quote = self._quote(body.get("reply_to"))
+        user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files, quote=quote)
         self.svc._now_changed()   # every device shows the message while the coordinator thinks
         focus = body.get("focus") if isinstance(body.get("focus"), str) else None
-        decided, model = self._decide(text, history, (jobs, aliases), len(ids), focus=focus)
+        if focus is None and quote and quote.get("run_id"):
+            focus = quote["run_id"]   # replying to a job card: "this"/"it" is that job
+        context_text = self._with_quote(text, quote)
+        decided, model = self._decide(context_text, history, (jobs, aliases), len(ids), focus=focus)
         if decided is not None and decided["action"] == "none" and claims_work(decided["reply"]):
             # "Looking for a rain jacket." with no tool call starts nothing (seen live on a fast model):
             # ask once more, showing it what it wrote, so the work it promised really starts.
-            retried, again = self._decide(text, history, (jobs, aliases), len(ids), focus=focus,
+            retried, again = self._decide(context_text, history, (jobs, aliases), len(ids), focus=focus,
                                           unkept=decided["reply"])
             if retried is not None and retried["action"] != "none":
                 decided, model = {**retried, "reply": retried["reply"] or decided["reply"]}, again or model
@@ -653,6 +804,12 @@ class HomeChat:
             model = None
         if ids and decided["action"] in {"none", "cancel"}:
             decided = {**decided, "action": "start", "run_id": None}  # pictures always reach a job
+        if decided["action"] == "start" and decided["reply"]:
+            # Never the same canned line twice in a row, and never a bare "On it." (Geo: chattier Home).
+            last = next((m.get("text") for m in reversed(history) if m.get("role") == "assistant"), None)
+            said = decided["reply"]
+            if clipped(said) or (said == last and said in ACKS):
+                decided = {**decided, "reply": pick_ack(decided.get("request") or text, avoid=last)}
         reply_row = None
         if decided["reply"]:
             reply_id = self._add("assistant", decided["reply"], self.clock(), model=model, reply_to=user_id)
@@ -685,7 +842,7 @@ class HomeChat:
                 # part the reply had already handled (or asked about) and drop the ask it was for.
                 # Without a written ask, the job hears the memo itself.
                 words = decided.get("request") or job_text or text or look_words(files)
-                job_body = {"text": words, "source": "voice_message" if voice else "typed"}
+                job_body = {"text": self._with_quote(words, quote), "source": "voice_message" if voice else "typed"}
                 self._job_choice(job_body, body)
                 if filed_to or chip:
                     job_body["project_id"] = filed_to or chip
@@ -693,7 +850,7 @@ class HomeChat:
                     job_body["attachments"] = ids
                 if client_id:
                     job_body["client_id"] = ("hj" + client_id)[:128]
-                started = self.svc.start_job(job_body, device_id)
+                started = self._start(job_body, device_id, text or job_text or "")
                 run_id = started.get("run_id")
                 self._chip_filed(chip, run_id)
             elif action == "follow_up":
@@ -706,7 +863,7 @@ class HomeChat:
                             projects.auto_file(key)
                         except Exception:  # noqa: BLE001 - filing is a bonus
                             logger.debug("speakeasy: couldn't file the follow-up", exc_info=True)
-                msg = {"text": job_text or decided.get("request") or text,
+                msg = {"text": self._with_quote(job_text or decided.get("request") or text, quote),
                        "source": "voice_message" if voice else "typed"}
                 if ids:
                     msg["attachments"] = ids
@@ -731,16 +888,20 @@ class HomeChat:
             self.svc._now_changed()
             raise
         self._link(user_id, run_id, action)
+        if action == "start" and isinstance(started, dict) and started.get("held"):
+            # Held behind another job on the same project: the reply says when it starts, warmly
+            # (no extra model call), and its card in the thread says "Waiting · after ...".
+            reply_row = self._say_held(reply_row, decided["reply"], started["held"].get("after"), user_id)
         for n, words in enumerate(decided.get("extra") or []):
             # "Those are two different tasks": each further ask in the message is its own job.
-            job_body = {"text": words, "source": "voice_message" if voice else "typed"}
+            job_body = {"text": self._with_quote(words, quote), "source": "voice_message" if voice else "typed"}
             self._job_choice(job_body, body)
             if filed_to or chip:
                 job_body["project_id"] = filed_to or chip
             if client_id:
                 job_body["client_id"] = (f"hx{n}" + client_id)[:128]
             try:
-                more = self.svc.start_job(job_body, device_id)
+                more = self._start(job_body, device_id, words)
                 self._chip_filed(chip, more.get("run_id"))
             except Exception as exc:
                 logger.info("speakeasy: Home's second job didn't start (%s)", type(exc).__name__)
@@ -757,9 +918,40 @@ class HomeChat:
         logger.info("speakeasy: Home message handled (%s)", action)
         return self._reply(user, reply, started=started)
 
+    def _start(self, job_body: dict[str, Any], device_id: str | None, asked: str) -> dict[str, Any]:
+        """Start one Home job. Who waits behind another job (the rule, see calls.fence_blocker): only
+        work that would edit files in a project another running job is editing. When what the user
+        typed isn't an edit (a question, a lookup, a proposal, plans or research: fence.is_edit_request
+        on their own words), the job never waits, whatever words the coordinator wrote for it."""
+        from . import fence
+        never_wait = not fence.is_edit_request(asked)
+        import inspect
+        try:
+            takes = "never_wait" in inspect.signature(self.svc.start_job).parameters
+        except (TypeError, ValueError):
+            takes = False
+        if takes:
+            return self.svc.start_job(job_body, device_id, never_wait=never_wait)
+        return self.svc.start_job(job_body, device_id)   # a stand-in service without the keyword
+
+    def _say_held(self, reply_row: str | None, said: str, after: Any, user_id: str) -> str:
+        """The coordinator's reply when the job it started is held: "I'll start that as soon as the
+        paint search wraps up." (alone for a bare acknowledgement, else after what it said)."""
+        line = held_line(after)
+        said = (said or "").strip()
+        text = line if not said or said in ACKS or len(said.split()) <= 3 else f"{said} {line}"
+        if reply_row:
+            with self.store._lock, self.store._db:
+                self.store._db.execute("UPDATE home_messages SET text=? WHERE id=?", (text, reply_row))
+            return reply_row
+        return self._add("assistant", text, self.clock(), reply_to=user_id)
+
     def _job_choice(self, job_body: dict[str, Any], body: dict[str, Any]) -> None:
-        """A job started from Home runs on the work model: what the message itself names, else the
-        Home chip's pick, else nothing (the user's Hermes default). Never the coordinator's model."""
+        """A job started from Home runs on the work model (``work_route``, the same answer the chip
+        shows): what the message itself names, else the Home chip's pick, else Speakeasy's saved job
+        default, else the user's Hermes default. Never the coordinator's model. The saved default and
+        the Hermes default are applied by the job's own start (``VoiceService.choose_model``'s default
+        layer, which ``work_route`` reads too), so only the chip's pick is sent here."""
         for k in ("model", "reasoning", "agent"):
             if body.get(k) is not None:
                 job_body[k] = body[k]
@@ -784,20 +976,66 @@ class HomeChat:
             return f"{main['provider']}/{main['default']}"
         return None
 
+    def _saved_default(self) -> dict[str, Any]:
+        """Speakeasy's saved job default (settings ``jobs.model`` / ``jobs.reasoning``), read through
+        the exact function a job's start uses (``VoiceService._default_layer``). A missing ``jobs``
+        section, a missing key or an empty string is "no saved default" (never an error)."""
+        layer = None
+        getter = getattr(self.svc, "_default_layer", None)
+        try:
+            layer = getter() if callable(getter) else None
+        except Exception:
+            logger.debug("speakeasy: the saved job default couldn't be read", exc_info=True)
+        layer = layer if isinstance(layer, dict) else {}
+        model, reasoning = layer.get("model"), layer.get("reasoning")
+        return {"model": model if isinstance(model, str) and model else None,
+                "reasoning": reasoning if isinstance(reasoning, str) and reasoning else None}
+
     def work_route(self) -> dict[str, Any]:
-        """The model Home's jobs run on: ``{"model": id | None, "source": "chosen" | "default"}``.
-        ``default`` = the user's Hermes default model (nothing extra is sent; Hermes decides)."""
+        """The ONE answer to "which model do Home's jobs run on": the chip, the picker's Default tag
+        and the send path all read it. First that applies:
+
+        1. ``chosen``: the user's pick on Home's chip (``WORK_META``), while it is still connected;
+        2. ``jobs``: Speakeasy's saved job default (settings ``jobs.model``), what a job's start
+           applies when nothing is picked (``VoiceService._default_layer``);
+        3. ``default``: the user's Hermes default model (nothing extra is sent; Hermes decides).
+
+        Returns ``{"model": id | None, "reasoning": level | None, "source": ...}``; ``reasoning`` is
+        the saved job default's level (a job's start applies it whichever model runs)."""
         entries = self._entries()
+        saved = self._saved_default()
         chosen = self.store.get_meta(WORK_META) or ""
         if chosen and (entries is None or chosen in entries):
-            return {"model": chosen, "source": "chosen"}
-        return {"model": self._hermes_default(), "source": "default"}
+            return {"model": chosen, "reasoning": saved["reasoning"], "source": "chosen"}
+        if saved["model"] and self._saved_runs(saved, entries):
+            return {"model": saved["model"], "reasoning": saved["reasoning"], "source": "jobs"}
+        return {"model": self._hermes_default(), "reasoning": None, "source": "default"}
+
+    @staticmethod
+    def _saved_runs(saved: dict[str, Any], entries: dict[str, dict[str, Any]] | None) -> bool:
+        """Whether a job's start would really use the saved default: ``VoiceService.choose_model``
+        refuses a saved model Hermes no longer lists (or a level it doesn't take) and the run then goes
+        to Hermes' default, so the chip must say that too. Unknown catalog: taken as it is."""
+        if entries is None:
+            return True
+        entry = entries.get(saved["model"])
+        if entry is None:
+            return False
+        level = saved.get("reasoning")
+        return not level or level in (entry.get("reasoning_levels") or ())
+
+    def default_work_model(self) -> str | None:
+        """What a Home job runs on when nothing is picked on the chip (the picker's "Default")."""
+        saved = self._saved_default()
+        if saved["model"] and self._saved_runs(saved, self._entries()):
+            return saved["model"]
+        return self._hermes_default()
 
     def _work_status(self, entries: dict[str, dict[str, Any]], row: Callable[[str], dict[str, Any]]) -> dict[str, Any]:
         """The chip's half of ``GET /voice/home/model``: the work model and a few choices (the
         Hermes default first, then each connected provider's featured models, one row per model)."""
         picked = self.work_route()
-        default = self._hermes_default()
+        default = self.default_work_model()
         ids: list[str] = []
         for mid in (default, picked["model"] if picked["source"] == "chosen" else None):
             if mid and mid not in ids:
@@ -852,6 +1090,7 @@ class HomeChat:
         # Newest first under More… too, so an old version sits below the current ones.
         more.sort(key=lambda m: (family(m), tuple(-n for n in version(m))))
         return {"model": row(picked["model"]) if picked["model"] else None, "source": picked["source"],
+                "reasoning": picked.get("reasoning"),
                 "default": row(default) if default else None, "options": [row(m) for m in ids],
                 "more": [row(m) for m in more]}
 
@@ -928,6 +1167,7 @@ class HomeChat:
                 # no job (seen live): mark which call went with it.
                 alias = by_run.get(row["run_id"])
                 content += f"\n({_HISTORY_TOOL[row['action']]}{' ' + alias if alias else ''})"
+            content = self._with_quote(content, row.get("quote"))
             messages.append({"role": "user" if row["role"] == "user" else "assistant", "content": content})
         messages.append({"role": "user", "content": text or "(pictures, no words)"})
         if unkept:

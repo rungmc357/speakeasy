@@ -183,6 +183,7 @@ public struct VoiceNoteRequest: Equatable, Sendable {
     public var answers: String?
     /// Staged attachment ids that go with the recording.
     public var attachments: [String]
+    public var replyTo: String? = nil
 
     public init(target: Target, audio: Data, mimeType: String = "audio/mp4", clientID: String = UUID().uuidString,
                 duration: TimeInterval, mode: MessageMode? = nil, answers: String? = nil, attachments: [String] = []) {
@@ -204,6 +205,7 @@ public struct VoiceNoteRequest: Equatable, Sendable {
                    "X-Speakeasy-Duration": String(format: "%.1f", max(0, min(duration, 600)))]
         if let mode, target != .newJob { out["X-Speakeasy-Mode"] = mode.rawValue }
         if let answers, !answers.isEmpty, case .session = target { out["X-Speakeasy-Answers"] = answers }
+        if let replyTo, case .home = target { out["X-Speakeasy-Reply-To"] = replyTo }
         if !attachments.isEmpty { out["X-Speakeasy-Attachments"] = attachments.joined(separator: ",") }
         return out
     }

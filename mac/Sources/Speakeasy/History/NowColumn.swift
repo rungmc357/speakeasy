@@ -130,10 +130,11 @@ final class MacNowModel: ObservableObject {
         respond(item, line: choice == "deny" ? "You didn't allow this." : "Allowed. Continuing…") { try await $0.nowApproval(item.id, choice: choice) }
     }
 
-    func clearSeen() {
-        for i in visible where i.kind == .seenAnswer || i.kind == .newAnswer { hidden.insert(i.id) }
+    /// A card's Dismiss (its menu): off Home to Earlier. There is no Clear-all (b72).
+    func dismiss(_ item: NowItem) {
+        hidden.insert(item.id)
         guard demo == nil, let api = api() else { return }
-        Task { _ = try? await api.nowClearSeen(); await refresh() }
+        Task { try? await api.nowDismiss(item.id); await refresh() }
     }
 }
 
@@ -176,10 +177,6 @@ struct MacNowColumn: View {
                                 if let sid = item.sessionID { store.open(sid) }
                             }
                         }
-                    }
-                    if now.visible.contains(where: { $0.kind == .seenAnswer || $0.kind == .newAnswer }) {
-                        Button("Clear") { now.clearSeen() }
-                            .buttonStyle(.link).font(.callout).padding(.top, 2)
                     }
                     if now.home?.stream == nil, let n = now.home?.backgroundRunning, n > 0 {
                         Label("\(n) running on \(n == 1 ? "its" : "their") own", systemImage: "gearshape.2")
@@ -265,6 +262,8 @@ struct MacNowCard: View {
         .opacity(item.kind == .seenAnswer && !selected ? 0.8 : 1)
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
+        // No Clear on Home (b72): a card leaves from its own menu, to Earlier.
+        .contextMenu { Button("Dismiss") { now.dismiss(item) } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("mac-now-\(item.id)")
     }

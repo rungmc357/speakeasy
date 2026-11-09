@@ -207,3 +207,14 @@ def test_a_failing_settings_or_brief_write_answers_with_a_json_500(server, servi
     assert status == 500 and body == {"error": "Your Hermes hit a problem with that. Try again."}
     status, body = http(server.base_url, "PUT", "/voice/brief", {"text": "x"}, server.token)
     assert status == 500 and "disk full" not in json.dumps(body)
+
+
+def test_a_burst_of_connections_is_queued_not_reset(server):
+    """The apps open many connections at once (foreground refresh, Files thumbnails, carousels).
+    socketserver's default backlog of 5 reset them past ~10, which Tailscale serve showed as 502."""
+    import concurrent.futures
+
+    assert server.httpd.request_queue_size >= 64
+    with concurrent.futures.ThreadPoolExecutor(40) as pool:
+        results = list(pool.map(lambda _: http(server.base_url, "GET", "/health")[0], range(40)))
+    assert results == [200] * 40
