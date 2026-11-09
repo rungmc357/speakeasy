@@ -36,6 +36,7 @@ composer.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -498,6 +499,13 @@ class HomeChat:
             columns = {r[1] for r in self.store._db.execute("PRAGMA table_info(home_messages)")}
             if "files" not in columns:   # a thread kept from before messages carried their files
                 self.store._db.execute("ALTER TABLE home_messages ADD COLUMN files TEXT")
+            # SPK-266: a turn said on a call (call_id), one row per spoken turn (call_key, rewritten
+            # in place while the turn grows); typed=1 for words typed into the call by an older app.
+            for column in ("call_id TEXT", "call_key TEXT", "typed INTEGER"):
+                if column.split()[0] not in columns:
+                    self.store._db.execute(f"ALTER TABLE home_messages ADD COLUMN {column}")
+            self.store._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS home_messages_call_key "
+                                   "ON home_messages(call_key) WHERE call_key IS NOT NULL")
             self.store._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS home_messages_client "
                                    "ON home_messages(client_id) WHERE client_id IS NOT NULL")
             # Further jobs one message started ("two asks, two jobs"); the first is home_messages.run_id.
@@ -508,9 +516,10 @@ class HomeChat:
     def _rows(self, where: str = "", args: tuple = (), limit: int = SHOWN_MAX) -> list[dict[str, Any]]:
         with self.store._lock:
             rows = self.store._db.execute(
-                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to, files FROM home_messages "
-                f"{where} ORDER BY at DESC, rowid DESC LIMIT ?", (*args, limit)).fetchall()
-        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to", "files")
+                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to, files, call_id, typed "
+                f"FROM home_messages {where} ORDER BY at DESC, rowid DESC LIMIT ?", (*args, limit)).fetchall()
+        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to", "files",
+                 "call_id", "typed")
         out: list[dict[str, Any]] = [dict(zip(names, r)) for r in rows]
         for r in out:
             for k in ("model", "voice", "files"):
@@ -591,7 +600,48 @@ class HomeChat:
             out["run_id"] = row["run_id"]
         if row.get("client_id") and row["role"] == "user":
             out["client_id"] = row["client_id"]   # the app swaps its own "sending" bubble for this one
+        if row.get("call_id"):
+            # SPK-266: said on a call (the app draws a small waveform beside it); typed: words an
+            # older app typed into the call, shown as plain text.
+            out["call"] = {"id": row["call_id"], "typed": bool(row.get("typed"))}
         return out
+
+    # -- one thread for Home and the call (SPK-266) ----------------------------------------------
+    def voice_turn(self, role: str, text: str, call_id: str, *, key: str, typed: bool = False,
+                   at: float | None = None) -> str | None:
+        """A spoken turn of a call, as a message in Home's thread: what the user said, or what the
+        voice said back. One row per turn (*key*); a turn that grew after a pause is rewritten in
+        place. Never touches the coordinator; it reads these as the call's part of the thread."""
+        text = " ".join(str(text or "").split())
+        if role not in {"user", "assistant"} or not text or not call_id or not key:
+            return None
+        text = text[:MAX_TEXT]
+        with self.store._lock, self.store._db:
+            row = self.store._db.execute("SELECT id, text FROM home_messages WHERE call_key=?", (key,)).fetchone()
+            if row is not None:
+                if row[1] == text:
+                    return row[0]
+                self.store._db.execute("UPDATE home_messages SET text=? WHERE id=?", (text, row[0]))
+                mid = row[0]
+            else:
+                mid = ("hu_" if role == "user" else "ha_") + secrets.token_hex(8)
+                self.store._db.execute(
+                    "INSERT INTO home_messages (id, role, text, at, call_id, call_key, typed) VALUES (?,?,?,?,?,?,?)",
+                    (mid, role, text, self.clock() if at is None else at, call_id, key, 1 if typed else 0))
+        try:
+            self.svc._now_changed()
+        except Exception:  # noqa: BLE001 - the thread refreshes on the next poll anyway
+            pass
+        return mid
+
+    def mirrored_calls(self) -> set[str]:
+        """Calls whose spoken turns are in the thread: their jobs need no separate "you asked"
+        bubble (what was said already shows)."""
+        with self.store._lock:
+            rows = self.store._db.execute(
+                "SELECT DISTINCT call_id FROM home_messages WHERE call_id IS NOT NULL AND at >= ?",
+                (self.clock() - 2 * SHOWN_S,)).fetchall()
+        return {r[0] for r in rows if r[0]}
 
     # -- the coordinator turn --------------------------------------------------------------------
     def message(self, body: dict[str, Any], device_id: str | None = None, *, voice: dict | None = None,
@@ -801,11 +851,57 @@ class HomeChat:
                 self._extra_run(user_id, more["run_id"])
         if reply_row:
             self._link(reply_row, run_id, action)
+        self._tell_call(user_id, text or look_words(files), decided.get("reply") or "", action, started, run_id)
         self.svc._now_changed()
         user = self._rows("WHERE id=?", (user_id,), limit=1)[0]
         reply = self._rows("WHERE id=?", (reply_row,), limit=1)[0] if reply_row else None
         logger.info("speakeasy: Home message handled (%s)", action)
         return self._reply(user, reply, started=started)
+
+    def _tell_call(self, user_id: str, typed: str, reply: str, action: str, started: dict[str, Any] | None,
+                   run_id: Any) -> None:
+        """SPK-266: a message typed to Home while a call is live. The coordinator handled it; the voice
+        gets a quiet note (what was typed, what Home said, the job it started or followed up) so it
+        knows without talking over it, and a job it started joins the call's own list, so "how's
+        that going?" and spoken follow-ups reach it. Never fails the message."""
+        try:
+            call = self.svc.now_model.live_call()
+        except Exception:  # noqa: BLE001
+            call = None
+        worker = getattr(call, "worker", None) if call is not None else None
+        loop = getattr(worker, "loop", None)
+        if worker is None or loop is None or loop.is_closed():
+            return
+        try:
+            if not worker.call_connected():
+                return
+        except Exception:  # noqa: BLE001
+            return
+        title = ""
+        if isinstance(run_id, str) and run_id:
+            try:
+                title = str((self.store.work(run_id=run_id) or {}).get("title") or "")
+            except Exception:  # noqa: BLE001
+                title = ""
+        task_id = (started or {}).get("task_id") if action == "start" else None
+        if task_id:
+            try:
+                self.svc.share_with_call(task_id, call)
+            except Exception:  # noqa: BLE001 - the note still tells the voice
+                logger.debug("speakeasy: a typed job didn't join the call's list", exc_info=True)
+        from .prompt import builder as P
+        try:
+            names = P.Names.from_settings(self.svc.settings.get())
+        except Exception:  # noqa: BLE001
+            names = P.Names()
+        note = P.home_typed_note(names, typed, reply,
+                                 started=(title or "new job") if action == "start" else "",
+                                 followed=(title or "the job") if action == "follow_up" else "")
+        try:
+            asyncio.run_coroutine_threadsafe(worker.quiet(f"home:{user_id}", None, note), loop)
+            logger.info("speakeasy: the call heard what was typed to Home (%s)", action)
+        except RuntimeError:
+            pass
 
     def _job_choice(self, job_body: dict[str, Any], body: dict[str, Any]) -> None:
         """A job started from Home runs on the work model: what the message itself names, else the
@@ -972,6 +1068,8 @@ class HomeChat:
         by_run = {run: alias for alias, run in aliases.items()}
         for row in history:
             content = row["text"] or (sent_words(row.get("files")) if row["role"] == "user" else "") or "(no words)"
+            if row.get("call_id") and not row.get("typed"):
+                content = "(said on the call) " + content   # SPK-266: the call's turns are in this thread too
             if row["role"] != "user" and row.get("action") in _HISTORY_TOOL and row.get("run_id"):
                 # An earlier "Looking up X." came with a tool call. Shown as bare prose, the model
                 # learns that saying it is how work starts and answers the next ask with a line and

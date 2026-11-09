@@ -187,6 +187,11 @@ CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking
 # SPK-208: POST /voice/home/message (+ /voice/home/voice-message): Home is a chat with a coordinator;
 # ``stream`` entries of kind ``message`` (user / assistant) interleave with the job cards.
 CAPABILITIES["home_chat"] = True
+# SPK-266: one thread for Home and the call. A call's spoken turns (both sides) are ``message``
+# entries with ``call: {id, typed}``; POST /voice/home/message during a call goes to the coordinator
+# (not the voice) and the voice gets a quiet note of it. Apps type to Home's coordinator on a call
+# only when this is set; older plugins still take typed call turns at /input-text.
+CAPABILITIES["call_thread"] = True
 # SPK-254: GET/POST /voice/projects, GET /voice/projects/{id}, PUT /voice/projects/{id}/notes,
 # POST /voice/projects/file, POST /voice/projects/offer/dismiss, PUT /voice/projects/selected (the
 # Home chip; GET /voice/projects carries ``selected``), ``project_id`` on POST /voice/work,
@@ -435,6 +440,7 @@ class VoiceService(SecureInputMixin):
         self.now_model = NowModel(self)
         from .home_chat import HomeChat
         self.home_chat = HomeChat(self)
+        self.rt.voice_turn = self.home_chat.voice_turn  # SPK-266: a call's spoken turns join Home's thread
         # SPK-254: Hermes' projects plus Speakeasy's chat/job links (projects.py).
         self.projects = P_.Projects(self.store, self.home, lambda: self.rt.state_db)
         self.store.project_brief = self.projects.for_start  # a filed job's standing notes, in its brief
@@ -2511,6 +2517,21 @@ class VoiceService(SecureInputMixin):
             if self._text_worker is None:
                 self._text_worker = M.make_text_worker(self.rt)
             return self._text_worker
+
+    def share_with_call(self, task_id: str, call: Interaction) -> bool:
+        """SPK-266: a job Home's coordinator started while a call is live (it runs on the voiceless
+        worker) joins that call's own list too, the way a later call takes on earlier calls' tasks:
+        the voice sees it as open work, answers "how's that going?" from it, and a spoken follow-up
+        reaches the same job."""
+        worker = self.text_worker()
+        with worker.interaction.lock:
+            run = worker.interaction.runs.get(task_id)
+        if run is None or call is worker.interaction:
+            return False
+        with call.lock:
+            call.runs.setdefault(task_id, run)
+            call.carried_keys.add(run.idem_key)
+        return True
 
     def _task_message(self, run_id: str, text: str, interaction_id: str | None,
                       choice_task_id: str | None, staged: list[A.Attachment] | None = None,

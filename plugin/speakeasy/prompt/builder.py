@@ -1938,6 +1938,21 @@ def choice_picked_note(text: str, question: str) -> str:
             "exactly what they said: carry on with that choice now (hand it off if it is work), and don't ask again.")[:2000]
 
 
+def home_typed_note(names: Names, typed: str, reply: str = "", started: str = "", followed: str = "") -> str:
+    """SPK-266: during a call the user typed to Home's coordinator, which answered in the app. The
+    voice knows, so it doesn't talk over it or redo it: background only, never read out."""
+    parts = [render("{user_name_cap} typed in the app (not to you): \u201c", names) + typed.strip()[:600] + "\u201d."]
+    if reply.strip():
+        parts.append("Home replied on screen: \u201c" + reply.strip()[:400] + "\u201d.")
+    if started.strip():
+        parts.append("That started a job: " + started.strip()[:160] + ".")
+    if followed.strip():
+        parts.append("That went to the job: " + followed.strip()[:160] + ".")
+    parts.append("It's handled on screen. Don't answer it, read it out or start it again. Mention it only if "
+                 "asked, or in a few words at a natural pause; never interrupt for it.")
+    return " ".join(parts)
+
+
 def answered_note(text: str) -> str:
     """Told to the voice (not spoken) when the user answered a task's question by tapping."""
     return (f"The user tapped an answer on a task's question card: \"{text}\". It is already on its way to "

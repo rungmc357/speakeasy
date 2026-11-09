@@ -541,6 +541,9 @@ class Runtime:
     session_db: Callable[[str | None], Path] | None = None
     # Live speech answers a saved confirmation through the same single-use claim as an app tap.
     confirm_card: Callable[..., dict[str, Any]] | None = None
+    # SPK-266: one thread for Home and the call. Each finished spoken turn (role, text, call id,
+    # key=, typed=) lands in Home's thread (home_chat.HomeChat.voice_turn); None = not mirrored.
+    voice_turn: Callable[..., Any] | None = None
 
     @property
     def names(self) -> P.Names:
@@ -1519,6 +1522,7 @@ class SidebandWorker:
         # session.closed) used to leave it up as "needs you" for good, and a tap on it after a resume
         # became a follow-up Hermes job of a task that never ran. It goes with the call.
         self.close_choices()
+        self.mirror_turns(final=True)   # the last thing said lands in Home's thread too
         with self.interaction.lock:
             if self.interaction.call_closed:
                 return
@@ -1543,6 +1547,67 @@ class SidebandWorker:
         except Exception as exc:
             logger.warning("speakeasy: call-close bookkeeping failed: %s", type(exc).__name__)
         end_shared(self.rt, self.interaction, "paused" if paused else "ended")
+
+    # -- one thread for Home and the call (SPK-266) -----------------------------------------------
+    # Every spoken turn becomes a message in Home's thread: what the user said and what the voice
+    # said back. A turn is written when the other side starts talking or after MIRROR_QUIET_S of
+    # quiet, and rewritten in place if it grows after a pause (one bubble per turn, never two).
+    MIRROR_QUIET_S = 1.2
+
+    def mirror_soon(self, switched: bool) -> None:
+        """After a transcript piece: the turn before a change of speaker is written now; the current
+        one once the call has been quiet for MIRROR_QUIET_S."""
+        if getattr(self.rt, "voice_turn", None) is None:
+            return
+        if switched:
+            self.mirror_turns(final=False)
+        timer = getattr(self, "_mirror_timer", None)
+        if timer is not None:
+            timer.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._mirror_timer = loop.call_later(self.MIRROR_QUIET_S, self.mirror_turns, True)
+
+    def mirror_turns(self, final: bool = True) -> int:
+        """Write this call's spoken turns to Home's thread (``rt.voice_turn``): every finished turn,
+        and with *final* the one still open too. Returns how many were written or rewritten."""
+        hook = getattr(self.rt, "voice_turn", None)
+        if hook is None:
+            return 0
+        try:
+            turns = transcript_mod.spoken_turns(self.fragments)
+        except Exception:  # noqa: BLE001 - the thread is a view; the call goes on
+            return 0
+        if not final and turns:
+            turns = turns[:-1]
+        written = self.__dict__.setdefault("_mirrored", {})
+        typed = {_words(e["text"]) for e in getattr(self, "recent_typed", ())}
+        tapped = {words for (_task, words) in getattr(self, "recent_answers", {})}
+        call_id = self.interaction.interaction_id
+        count = 0
+        for turn in turns:
+            key = f"{call_id}:{turn['role']}:{float(turn['at']):.6f}"
+            text = turn["text"]
+            if written.get(key) == text:
+                continue
+            words = _words(text)
+            if turn["role"] == "user" and words in tapped:
+                written[key] = text   # a tapped answer: its card already shows it
+                continue
+            if turn["role"] == "assistant" and self.typed_said_back(text):
+                written[key] = text   # the voice only reading typed words back: never its reply
+                continue
+            try:
+                hook(turn["role"], text, call_id, key=key, typed=turn["role"] == "user" and words in typed,
+                     at=time.time() - max(0.0, time.monotonic() - float(turn["at"])))
+            except Exception:  # noqa: BLE001
+                logger.debug("speakeasy: a spoken turn didn't reach Home's thread", exc_info=True)
+                continue
+            written[key] = text
+            count += 1
+        return count
 
     def call_tasks(self) -> list[dict[str, Any]]:
         """This call's tasks for the call log: what was asked, how it ended, the spoken answer."""
@@ -1650,8 +1715,10 @@ class SidebandWorker:
                 return
             self.touch()
             speaker = "user" if kind.startswith("session.input") else "assistant"
+            switched = bool(self.fragments) and self.fragments[-1]["speaker"] != speaker
             self.fragments.append({"speaker": speaker, "text": delta, "at": time.monotonic(),
                                    "start_ms": int(event.get("start_ms", 0)), "end_ms": int(event.get("end_ms", 0))})
+            self.mirror_soon(switched)
             if self.rt.duck is not None and speaker == "assistant" and self.interaction.local:
                 # The assistant talking on this Mac: duck its volume until the voice goes quiet.
                 self.rt.duck.note(speaker, self.interaction.interaction_id)

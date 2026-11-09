@@ -765,6 +765,10 @@ class NowModel:
                 messages = [chat.entry(r) for r in chat.shown(now)]
                 from_chat = chat.started_runs()
                 from_chat |= self._chat_descendants(items, from_chat)
+                # SPK-266: a call whose spoken turns are in the thread already shows what was said:
+                # its jobs' cards need no "you asked" bubble on top.
+                spoken = chat.mirrored_calls()
+                from_chat |= {str(i["run_id"]) for i in items if i.get("run_id") and i.get("_call") in spoken}
             except Exception:
                 logging.getLogger(__name__).debug("speakeasy: Home's chat messages failed", exc_info=True)
         return build_stream(items, asks, marked, now, zone_, messages=messages, from_chat=from_chat)
