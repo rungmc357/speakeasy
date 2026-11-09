@@ -2,6 +2,11 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.48 — Home is chattier
+
+- **Home talks like a person.** Instead of a clipped "On it." or "Checking.", Home answers with a natural line about what you asked ("Let me take a look at where the release is at."), never the same line twice in a row. Small talk gets a real reply, and answers about your jobs lead with the result, then a sentence on what it means. *(plugin)*
+- **Longer video clips.** Home now takes clips up to 25 MB once the app has compressed them (up to 2 minutes); PDFs and text files stay at 10 MB. *(plugin; the next iPhone build compresses clips before sending)*
+
 ## Plugin 0.3.47 · iPhone build 71 — Home is a chat
 
 - **Home talks back.** What you type on Home now goes to your assistant first, and it answers right there in the thread. Saying hi, a quick question, or "thanks" gets a reply, not a task card. *(plugin; needs iPhone build 71 or the next Mac app to show the replies)*
