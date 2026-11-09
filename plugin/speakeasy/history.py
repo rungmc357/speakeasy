@@ -565,15 +565,22 @@ def _flag(cols: set[str], name: str) -> str:
     return f"coalesce(s.{name},0)=0" if name in cols else "1=1"
 
 
+# What moves a conversation in the list (SPK-319): the person's own messages and finished replies.
+# A running task's tool calls, tool results and progress lines are not: they update its row's
+# preview and state where it sits, or every step of 4-5 running tasks reshuffled the list.
+_ORDER_ROW = ("(m.role = 'user' OR (m.role = 'assistant' "
+              "AND (m.tool_calls IS NULL OR m.tool_calls IN ('', '[]', 'null'))))")
+
+
 def _last_expr(cols: set[str]) -> str:
-    """A session's last activity: the newest of its newest message (any role), Hermes' own
-    ``last_activity_at`` and its start. ``last_activity_at`` alone lags: Hermes writes it from a
-    rate-limited heartbeat, so a short turn soon after the previous one never moves it, and a chat
-    that just got a message and a reply kept the earlier turn's time (and sorted under newer rows).
-    ``max(timestamp)`` per session is an index-only lookup (``messages(session_id, timestamp)``)."""
-    last_msg = "coalesce((SELECT max(m.timestamp) FROM messages m WHERE m.session_id = s.id), 0)"
-    if "last_activity_at" in cols:
-        return f"max(coalesce(s.last_activity_at, 0), {last_msg}, coalesce(s.started_at, 0))"
+    """A session's place in the list, and the time its row shows: the newest of its newest
+    message from the person or finished reply (``_ORDER_ROW``) and its start (a task starting).
+    Hermes' ``last_activity_at`` is left out: it is a heartbeat a running turn keeps moving, and on
+    its own it lags (a short turn soon after the previous one never moved it, SPK-69). The lookup
+    walks ``messages(session_id, timestamp)`` newest first and stops at the first matching row."""
+    del cols
+    last_msg = (f"coalesce((SELECT m.timestamp FROM messages m WHERE m.session_id = s.id AND {_ORDER_ROW} "
+                "ORDER BY m.timestamp DESC LIMIT 1), 0)")
     return f"max({last_msg}, coalesce(s.started_at, 0))"
 
 
