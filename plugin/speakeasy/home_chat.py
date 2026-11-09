@@ -582,7 +582,8 @@ class HomeChat:
     def _quote(self, reply_to: Any) -> dict | None:
         if reply_to is None:
             return None
-        if isinstance(reply_to, str) and re.fullmatch(r"r:[A-Za-z0-9_.:-]{1,128}", reply_to):
+        if isinstance(reply_to, str) and re.fullmatch(r"[rd]:[A-Za-z0-9_.:-]{1,128}", reply_to):
+            # r: a job card; d: the line its answer posted at the bottom (SPK-314), the same job.
             quote = self._card_quote(reply_to[2:])
             if quote is None:
                 raise self._error(400, "That job is no longer on Home.")

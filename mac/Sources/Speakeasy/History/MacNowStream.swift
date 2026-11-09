@@ -15,6 +15,10 @@ struct MacNowThread: View {
             switch entry.kind {
             case .ask:
                 if let text = entry.text, let id = entry.itemID, byID[id] != nil { ask(text) }
+            case .message where entry.role == .assistant && entry.itemID != nil:
+                // SPK-314: a job that finished after you wrote something newer says its answer down
+                // here too; its card keeps its place above. Gone with its card.
+                if let id = entry.itemID, let item = byID[id], let text = entry.text { answerLine(text, item) }
             case .message:
                 if entry.role == .user, !entry.files.isEmpty { sentFiles(entry.files) }
                 if let text = entry.text {
@@ -74,6 +78,26 @@ struct MacNowThread: View {
             .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             Spacer(minLength: 32)
         }.accessibilityIdentifier("mac-now-reply")
+    }
+    /// A finished job's answer at the bottom of the thread: the job's name over its answer, like a
+    /// reply; clicking opens the job.
+    private func answerLine(_ text: String, _ item: NowItem) -> some View {
+        HStack {
+            Button {
+                if let sid = item.sessionID { store.open(sid) }
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(item.title, systemImage: item.kind == .stopped ? "exclamationmark.circle" : "checkmark.circle")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(AgentMarkdown.attributed(text)).font(.callout).multilineTextAlignment(.leading)
+                }
+                .padding(12)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("Open \(item.title)")
+            Spacer(minLength: 32)
+        }.accessibilityIdentifier("mac-now-answer-line")
     }
     private func card(_ item: NowItem) -> some View {
         MacNowCard(item: item, now: now, focused: now.home?.call?.focus == item.id) {
