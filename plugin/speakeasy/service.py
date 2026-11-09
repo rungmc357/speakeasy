@@ -4028,7 +4028,8 @@ class VoiceService(SecureInputMixin):
         fields: dict[str, Any] = {"source": "voice_message"}
         if client_id:
             fields["client_id"] = client_id
-        for header, name in (("X-Speakeasy-Mode", "mode"), ("X-Speakeasy-Answers", "answers")):
+        for header, name in (("X-Speakeasy-Mode", "mode"), ("X-Speakeasy-Answers", "answers"),
+                             ("X-Speakeasy-Reply-To", "reply_to")):
             value = (headers.get(header) or "").strip()
             if value:
                 fields[name] = value
@@ -4075,6 +4076,10 @@ class VoiceService(SecureInputMixin):
         fields.pop("answers", None)
         fields.pop("mode", None)   # nothing is running in a chat that doesn't exist yet
         note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
+        # An untranscribed Home reply still carries its quoted context to the audio job.
+        reply_to = fields.pop("reply_to", None)
+        if reply_to is not None:
+            note = self.home_chat._with_quote(note, self.home_chat._quote(reply_to))
         sent_at = time.time()
         got = self.start_job({**fields, "text": note}, device_id)
         session = got.get("session_id")
@@ -4096,7 +4101,7 @@ class VoiceService(SecureInputMixin):
         note, transcript = self._voice_note(fields.get("client_id"), upload["suffix"], data)
         if not transcript:  # nothing to read: the recording goes to a job, as Home's mic always did
             return self._voice_message_new(fields, upload, data, device_id)
-        body = {k: v for k, v in fields.items() if k in {"client_id", "attachments", "model", "reasoning", "agent"}}
+        body = {k: v for k, v in fields.items() if k in {"client_id", "attachments", "model", "reasoning", "agent", "reply_to"}}
         got = self.home_chat.message({**body, "text": transcript}, device_id,
                                      voice={"duration": upload["duration"]}, job_text=note)
         session = got.get("session_id")

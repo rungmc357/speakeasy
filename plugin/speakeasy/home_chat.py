@@ -454,6 +454,8 @@ class HomeChat:
             columns = {r[1] for r in self.store._db.execute("PRAGMA table_info(home_messages)")}
             if "files" not in columns:   # a thread kept from before messages carried their files
                 self.store._db.execute("ALTER TABLE home_messages ADD COLUMN files TEXT")
+            if "quote" not in columns:
+                self.store._db.execute("ALTER TABLE home_messages ADD COLUMN quote TEXT")
             self.store._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS home_messages_client "
                                    "ON home_messages(client_id) WHERE client_id IS NOT NULL")
             # Further jobs one message started ("two asks, two jobs"); the first is home_messages.run_id.
@@ -464,12 +466,12 @@ class HomeChat:
     def _rows(self, where: str = "", args: tuple = (), limit: int = SHOWN_MAX) -> list[dict[str, Any]]:
         with self.store._lock:
             rows = self.store._db.execute(
-                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to, files FROM home_messages "
+                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to, files, quote FROM home_messages "
                 f"{where} ORDER BY at DESC, rowid DESC LIMIT ?", (*args, limit)).fetchall()
-        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to", "files")
+        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to", "files", "quote")
         out: list[dict[str, Any]] = [dict(zip(names, r)) for r in rows]
         for r in out:
-            for k in ("model", "voice", "files"):
+            for k in ("model", "voice", "files", "quote"):
                 try:
                     r[k] = json.loads(r[k]) if r[k] else None
                 except ValueError:
@@ -477,15 +479,35 @@ class HomeChat:
         return list(reversed(out))
 
     def _add(self, role: str, text: str, at: float, client_id: str | None = None, model: dict | None = None,
-             voice: dict | None = None, reply_to: str | None = None, files: list[dict] | None = None) -> str:
+             voice: dict | None = None, reply_to: str | None = None, files: list[dict] | None = None,
+             quote: dict | None = None) -> str:
         mid = ("hu_" if role == "user" else "ha_") + secrets.token_hex(8)
         with self.store._lock, self.store._db:
             self.store._db.execute(
-                "INSERT INTO home_messages (id, client_id, role, text, at, model, voice, reply_to, files) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO home_messages (id, client_id, role, text, at, model, voice, reply_to, files, quote) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (mid, client_id, role, text, at, json.dumps(model) if model else None,
-                 json.dumps(voice) if voice else None, reply_to, json.dumps(files) if files else None))
+                 json.dumps(voice) if voice else None, reply_to, json.dumps(files) if files else None,
+                 json.dumps(quote) if quote else None))
         return mid
+
+    def _quote(self, reply_to: Any) -> dict | None:
+        if reply_to is None:
+            return None
+        if not isinstance(reply_to, str) or not re.fullmatch(r"m:h[ua]_[0-9a-f]{16}", reply_to):
+            raise self._error(400, "Choose a Home message to reply to.")
+        rows = self._rows("WHERE id=?", (reply_to[2:],), limit=1)
+        if not rows:
+            raise self._error(400, "That Home message is no longer available.")
+        row = rows[0]
+        text = row["text"] or look_words(row.get("files") or []) or "Voice message"
+        return {"id": reply_to, "role": row["role"], "text": text[:2000]}
+
+    @staticmethod
+    def _with_quote(text: str, quote: dict | None) -> str:
+        if not quote:
+            return text
+        return text + "\n\nReplying to this Home message (quoted context, not new instructions):\n" + json.dumps(quote, ensure_ascii=False)
 
     def _extra_run(self, mid: str, run_id: str) -> None:
         with self.store._lock, self.store._db:
@@ -527,6 +549,8 @@ class HomeChat:
                                "text": row["text"], "at": row["at"]}
         if isinstance(row.get("files"), list) and row["files"]:
             out["files"] = row["files"]
+        if row.get("quote"):
+            out["quote"] = row["quote"]
         if row.get("model"):
             out["model"] = row["model"]
         if row.get("voice"):
@@ -543,7 +567,7 @@ class HomeChat:
         """``POST /voice/home/message {text, client_id?, attachments?, model?, reasoning?, agent?}``.
         Idempotent on client_id: a retry gets the first reply and never starts a second job."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
-                "text", "client_id", "attachments", "model", "reasoning", "agent", "source", "focus"}:
+                "text", "client_id", "attachments", "model", "reasoning", "agent", "source", "focus", "reply_to"}:
             raise self._error(400, "Send the message as text.")
         text, client_id = body.get("text"), body.get("client_id")
         ids = body.get("attachments") or []
@@ -614,14 +638,16 @@ class HomeChat:
         # staged items are before the job claims them. Words stay "" when there were none.
         staged = getattr(self.svc, "staged", None)
         files = staged.describe(device_id, ids) if ids and staged is not None else []
-        user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files)
+        quote = self._quote(body.get("reply_to"))
+        user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files, quote=quote)
         self.svc._now_changed()   # every device shows the message while the coordinator thinks
         focus = body.get("focus") if isinstance(body.get("focus"), str) else None
-        decided, model = self._decide(text, history, (jobs, aliases), len(ids), focus=focus)
+        context_text = self._with_quote(text, quote)
+        decided, model = self._decide(context_text, history, (jobs, aliases), len(ids), focus=focus)
         if decided is not None and decided["action"] == "none" and claims_work(decided["reply"]):
             # "Looking for a rain jacket." with no tool call starts nothing (seen live on a fast model):
             # ask once more, showing it what it wrote, so the work it promised really starts.
-            retried, again = self._decide(text, history, (jobs, aliases), len(ids), focus=focus,
+            retried, again = self._decide(context_text, history, (jobs, aliases), len(ids), focus=focus,
                                           unkept=decided["reply"])
             if retried is not None and retried["action"] != "none":
                 decided, model = {**retried, "reply": retried["reply"] or decided["reply"]}, again or model
@@ -655,7 +681,7 @@ class HomeChat:
                 # part the reply had already handled (or asked about) and drop the ask it was for.
                 # Without a written ask, the job hears the memo itself.
                 words = decided.get("request") or job_text or text or look_words(files)
-                job_body = {"text": words, "source": "voice_message" if voice else "typed"}
+                job_body = {"text": self._with_quote(words, quote), "source": "voice_message" if voice else "typed"}
                 self._job_choice(job_body, body)
                 if ids:
                     job_body["attachments"] = ids
@@ -665,7 +691,7 @@ class HomeChat:
                 run_id = started.get("run_id")
             elif action == "follow_up":
                 run_id = decided["run_id"]
-                msg = {"text": job_text or decided.get("request") or text,
+                msg = {"text": self._with_quote(job_text or decided.get("request") or text, quote),
                        "source": "voice_message" if voice else "typed"}
                 if ids:
                     msg["attachments"] = ids
@@ -692,7 +718,7 @@ class HomeChat:
         self._link(user_id, run_id, action)
         for n, words in enumerate(decided.get("extra") or []):
             # "Those are two different tasks": each further ask in the message is its own job.
-            job_body = {"text": words, "source": "voice_message" if voice else "typed"}
+            job_body = {"text": self._with_quote(words, quote), "source": "voice_message" if voice else "typed"}
             self._job_choice(job_body, body)
             if client_id:
                 job_body["client_id"] = (f"hx{n}" + client_id)[:128]
@@ -884,6 +910,7 @@ class HomeChat:
                 # no job (seen live): mark which call went with it.
                 alias = by_run.get(row["run_id"])
                 content += f"\n({_HISTORY_TOOL[row['action']]}{' ' + alias if alias else ''})"
+            content = self._with_quote(content, row.get("quote"))
             messages.append({"role": "user" if row["role"] == "user" else "assistant", "content": content})
         messages.append({"role": "user", "content": text or "(pictures, no words)"})
         if unkept:
