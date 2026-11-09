@@ -6,6 +6,7 @@ import SwiftUI
 /// offscreen (no window shown) so the setup copy can be reviewed as an image.
 /// `SPEAKEASY_APPEARANCE=light|dark` picks the look (dark by default). `SPEAKEASY_ONBOARDING_DEMO=1`
 /// fills the ready screen with invented sample data and contacts no server.
+/// `SPEAKEASY_ONBOARDING_EXPANDED=1` renders the ready screen with its fold open.
 enum OnboardingSnapshot {
     @MainActor
     static func render(to path: String, step: String? = nil) {
@@ -30,6 +31,7 @@ enum OnboardingSnapshot {
             }
             flow.step = s
             if s == .ready { flow.loadDefaults() }
+            flow.showMore = env["SPEAKEASY_ONBOARDING_EXPANDED"] == "1"
         }
         let size = OnboardingView.size
         let view = OnboardingView(flow: flow).environmentObject(app)

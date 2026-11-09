@@ -7,10 +7,10 @@ import SwiftUI
 
 /// The first run, kept to what a first call needs (`OnboardingPlan` in SpeakeasyCore):
 /// connect (only until paired) → voice sign-in (only while the voice isn't ready) → one
-/// "You're ready" screen with the microphone, names, where finished work goes, home control
-/// (only when Hermes has Home Assistant), the Dock choice and the call shortcut, each with a
-/// default already picked, plus Start a call. Task routing and the voice brief keep their
-/// defaults and live in Settings.
+/// "You're ready" screen with the microphone, names, the Dock choice and the call shortcut, plus
+/// where finished work goes and home control (only when Hermes has Home Assistant) behind one
+/// fold whose closed row shows what they're set to. Each has a default already picked, plus
+/// Start a call. Task routing and the voice brief keep their defaults and live in Settings.
 @MainActor
 final class OnboardingFlow: ObservableObject {
     typealias Step = OnboardingStep
@@ -31,6 +31,9 @@ final class OnboardingFlow: ObservableObject {
     /// Turn on home control at the end (offered only when Hermes has Home Assistant). The first
     /// setup starts it on, as the old Home screen's default button did; a re-run keeps what's set.
     @Published var homeOn = true
+    /// The ready screen's fold (delivery and home control) is open. Kept here so it stays open
+    /// across Back and Continue, and so a save error can open it.
+    @Published var showMore = false
     @Published var saving = false
     @Published var saveError: String?
     /// Applied when setup finishes, so the setup window can't slip behind other apps mid-setup
@@ -149,7 +152,7 @@ final class OnboardingFlow: ObservableObject {
                 if !ok { saveError = "Couldn't save home control: \(app.homeError ?? "try again")" }
             }
             saving = false
-            guard ok else { return }
+            guard ok else { showMore = true; return }  // the error may be about a folded choice
             finish()  // marks the tour pending before the call reads it
             if thenCall { app.startCall() }
         }
@@ -420,33 +423,37 @@ struct PrivacyStepLayout: View {
 
 
 private struct ReadyStep: View {
-    @State private var customize = false
     @ObservedObject var flow: OnboardingFlow
     @EnvironmentObject var app: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            StepHeader(title: "You\u{2019}re ready to talk", subtitle: subtitle)
+            StepHeader(title: ReadyCopy.title, subtitle: subtitle)
             Form {
-                LabeledContent("Microphone") { MicrophoneRow() }
-                TextField("Your name", text: $flow.userName, prompt: Text("Optional"))
-                TextField("Assistant\u{2019}s name", text: $flow.assistantName, prompt: Text(VoiceState.defaultAssistantName))
-                DisclosureGroup("Optional settings", isExpanded: $customize) {
+                LabeledContent(ReadyCopy.microphone) { MicrophoneRow() }
+                TextField(ReadyCopy.userName, text: $flow.userName, prompt: Text(ReadyCopy.userNamePrompt))
+                TextField(ReadyCopy.assistantName, text: $flow.assistantName, prompt: Text(VoiceState.defaultAssistantName))
+                DisclosureGroup(isExpanded: $flow.showMore) {
                     DeliveryPicker(target: $flow.target, destinations: app.destinations)
-                    if let home = app.home, home.available {
+                    if let home = offeredHome {
                         Toggle(isOn: $flow.homeOn) {
-                            Text("Control your home by voice")
-                            Text(homeDetail(home))
+                            Text(ReadyCopy.homeToggle)
+                            Text(ReadyCopy.homeDetail(devices: home.includedIDs.count))
                         }
                     }
+                } label: {
+                    LabeledContent(ReadyCopy.moreTitle(homeOffered: offeredHome != nil)) {
+                        Text(ReadyCopy.moreSummary(
+                            destination: ReadyCopy.destinationLabel(target: flow.target, destinations: app.destinations),
+                            homeOn: offeredHome.map { _ in flow.homeOn }))
+                    }
                 }
-                Toggle("Show in the Dock", isOn: $flow.showInDock)
-                LabeledContent("Call shortcut") {
+                Toggle(ReadyCopy.showInDock, isOn: $flow.showInDock)
+                LabeledContent(ReadyCopy.callShortcut) {
                     ShortcutRecorder(shortcut: app.callShortcut) { app.setCallShortcut($0) }
                 }
             }
             .formStyle(.grouped)
-            .scrollDisabled(false)
             .scrollContentBackground(.hidden)
             .padding(.horizontal, -20)
             if let problem = app.callShortcutProblem { Text(problem).font(.callout).foregroundStyle(.orange) }
@@ -454,7 +461,7 @@ private struct ReadyStep: View {
                 Text(error).font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-            Text("You can change any of this later in Settings. Your first call starts with a one-minute tour; say \u{201C}skip\u{201D} to jump straight in.")
+            Text(ReadyCopy.footnote)
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 if flow.canGoBack { Button("Back", action: flow.back) }
@@ -474,13 +481,12 @@ private struct ReadyStep: View {
 
     private var subtitle: String {
         let link = app.status.map { $0.reachability + ". " } ?? ""
-        return link + "Here\u{2019}s how your calls are set up. Press the shortcut any time to talk."
+        return link + ReadyCopy.subtitleTail
     }
 
-    private func homeDetail(_ home: HomeControlInfo) -> String {
-        let n = home.includedIDs.count
-        let devices = n == 0 ? "No devices picked yet" : "\(n) device\(n == 1 ? "" : "s")"
-        return "\(devices) \u{00B7} choose which in Settings \u{203A} Home"
+    /// Home control, when Hermes has Home Assistant.
+    private var offeredHome: HomeControlInfo? {
+        app.home.flatMap { $0.available ? $0 : nil }
     }
 }
 
