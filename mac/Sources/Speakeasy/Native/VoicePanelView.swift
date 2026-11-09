@@ -518,30 +518,6 @@ struct PillButton: View {
 
 // MARK: - Root
 
-/// The panel's own height: its ideal height (what `fixedSize` gave), or, when the window is capped at
-/// the screen and can't give that, exactly the window's height with the scroll areas giving up the
-/// difference. A fixed-size card taller than its window was centred in it, clipping the header off
-/// the top and the last rows off the bottom.
-private struct CappedHeight: ViewModifier {
-    func body(content: Content) -> some View { Layout { content } }
-
-    struct Layout: SwiftUI.Layout {
-        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-            guard let child = subviews.first else { return .zero }
-            let ideal = child.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
-            guard let height = proposal.height, height < ideal.height else { return ideal }
-            return CGSize(width: ideal.width, height: height)
-        }
-
-        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-            guard let child = subviews.first else { return }
-            let ideal = child.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
-            child.place(at: bounds.origin, anchor: .topLeading,
-                        proposal: ProposedViewSize(width: bounds.width, height: bounds.height < ideal.height ? bounds.height : nil))
-        }
-    }
-}
-
 struct VoicePanelView: View {
     @ObservedObject var model: VoicePanelModel
     @Environment(\.colorScheme) private var scheme
@@ -714,7 +690,7 @@ struct VoicePanelView: View {
         }
         .frame(width: model.panelWidth, alignment: .top)
         .onHover { model.hovering = $0 }
-        .modifier(CappedHeight())
+        .fixedSize(horizontal: false, vertical: true)
         .contentShape(Rectangle())
         .background(
             ZStack {
