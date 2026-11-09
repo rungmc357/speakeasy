@@ -1845,6 +1845,12 @@ A stale hash is `409`. An `edit` (or `discard`) based on an earlier hash is acce
 draft since was the user's own edit; after a task revision it is `409`. Sending an edited draft
 tells the task it was edited, so a copy it saved in the mail account is updated, never sent stale.
 
+In Home's one stream (`GET /voice/now` → `stream.entries`), a finished job with a draft also posts
+a `result` entry (`{"id": "x:<run_id>", "kind": "result", "at", "item_id", "run_id", "card_id"}`)
+at the time the job finished, so the email arrives at the bottom of the chat; the job's `card`
+entry stays where it was asked and carries `result_id` (apps scroll there on a tap). The posted
+entry keeps its id and place on later reads and edits. Older apps ignore the unknown kind.
+
 | status | meaning |
 |---|---|
 | `pending` | waiting for the user |

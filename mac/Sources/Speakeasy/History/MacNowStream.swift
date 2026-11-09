@@ -6,6 +6,8 @@ struct MacNowThread: View {
     let stream: NowStream
     @ObservedObject var now: MacNowModel
     @ObservedObject var store: HistoryStore
+    /// Scroll the thread to an entry (a job's card -> the result it posted further down).
+    var onJump: (String) -> Void = { _ in }
     @State private var expanded: Set<String> = []
 
     var body: some View {
@@ -13,6 +15,11 @@ struct MacNowThread: View {
         let byID = Dictionary(scoped.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         ForEach(stream.entries) { entry in
             switch entry.kind {
+            case .result:
+                // b73: what the job made (an email draft), posted at the bottom when it finished.
+                if let id = entry.itemID, let item = byID[id], let run = entry.runID {
+                    MacPostedResult(item: item, runID: run, now: now).id(entry.id)
+                }
             case .ask:
                 if let text = entry.text, let id = entry.itemID, byID[id] != nil { ask(text) }
             case .message:
@@ -21,7 +28,14 @@ struct MacNowThread: View {
                     if entry.role == .user { ask(text) } else { reply(text, entry.attribution) }
                 }
             case .card:
-                if let id = entry.itemID, let item = byID[id] { card(item) }
+                if let id = entry.itemID, let item = byID[id] {
+                    if let result = entry.resultID {
+                        // Done: its email is further down; a tap goes there.
+                        card(item) { onJump(result) }
+                    } else {
+                        card(item)
+                    }
+                }
             case .group:
                 let items = entry.itemIDs.compactMap { byID[$0] }
                 if !items.isEmpty {
@@ -75,9 +89,9 @@ struct MacNowThread: View {
             Spacer(minLength: 32)
         }.accessibilityIdentifier("mac-now-reply")
     }
-    private func card(_ item: NowItem) -> some View {
+    private func card(_ item: NowItem, open: (() -> Void)? = nil) -> some View {
         MacNowCard(item: item, now: now, focused: now.home?.call?.focus == item.id) {
-            if let sid = item.sessionID { store.open(sid) }
+            if let open { open() } else if let sid = item.sessionID { store.open(sid) }
         }
         // The model that did the work is a detail, not a line under every card (N13): on hover,
         // and on the job's own page.
@@ -205,5 +219,50 @@ private struct MacHomeWorkAnswer: View {
         guard now.demo == nil, let run = item.runID, let api = now.api() else { return }
         failed = false
         do { info = try await api.work(runID: run); failed = info == nil } catch { failed = true }
+    }
+}
+
+/// A finished job's result posted at the bottom of Home's thread (b73): the email it drafted, with
+/// its own Send · Edit · Copy. The job's card further up says done and links here.
+private struct MacPostedResult: View {
+    let item: NowItem
+    let runID: String
+    @ObservedObject var now: MacNowModel
+    @Environment(\.cardStyle) private var style
+    @State private var card: ViewCard?
+    @State private var bump = 0
+
+    var body: some View {
+        Group {
+            if let card {
+                VStack(alignment: .leading, spacing: 6) {
+                    // The job's done line is the card's caption (never a second card saying the same).
+                    if !item.line.isEmpty {
+                        Text(AgentMarkdown.attributed(item.line)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    ViewCardView(card)
+                        .environment(\.cardSend, { action in send(action, card: card) })
+                        .cardSurface(style)
+                }
+                .frame(maxWidth: 520, alignment: .leading)
+                .accessibilityIdentifier("mac-now-result")
+            }
+        }
+        .task(id: "\(item.updatedAt?.timeIntervalSince1970 ?? 0)|\(bump)") { await load() }
+    }
+
+    private func load() async {
+        guard now.demo == nil, let api = now.api() else { return }
+        if let info = try? await api.work(runID: runID), let pick = ResultCardPick.pick(info.views) { card = pick }
+    }
+
+    private func send(_ action: CardAction, card: ViewCard) {
+        guard let api = now.api() else { return }
+        let value: Any? = { if case .null = action.value { return nil }; return action.value.foundation }()
+        Task {
+            _ = try? await api.cardAction(interactionID: nil, runID: runID, view: card.number - 1, action: action.id, value: value)
+            try? await Task.sleep(for: .milliseconds(400))
+            bump += 1   // the server settled the new draft: draw it
+        }
     }
 }

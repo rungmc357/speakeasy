@@ -64,12 +64,17 @@ def _elsewhere(item: dict[str, Any]) -> bool:
 
 def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: set[str], now: float,
                  tz: dt.tzinfo, messages: list[dict[str, Any]] | None = None,
-                 from_chat: set[str] | None = None) -> dict[str, Any]:
+                 from_chat: set[str] | None = None,
+                 results: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """*items* are Home's final cards, *asks* maps item id -> what the user asked, *answered* the item
     ids whose question the user already answered. *messages*: Home's chat (home_chat.py), each
     already a ``message`` entry; *from_chat*: run ids a chat message started or followed up, whose
-    card needs no "you asked" bubble (the message itself shows)."""
+    card needs no "you asked" bubble (the message itself shows). *results*: run id -> ``{id, at}``
+    for jobs whose result (an email draft) was posted as its own message: it lands as a ``result``
+    entry where it was posted (the bottom of the thread when the job finished), and the job's card,
+    which stays where it was asked, carries ``result_id`` so a tap scrolls down to it."""
     from_chat = from_chat or set()
+    results = results or {}
     # Conversations Speakeasy didn't start (a Discord chat, a CLI session) stay in the Work strip and
     # Recent: Home's thread is the user's own conversation, and other chats enter it only when they
     # need the user. ``items`` keeps them for the work counts and older apps.
@@ -78,7 +83,8 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
     labels: dict[str, str] = {}
     for item in items:
         if (item.get("kind") == SEEN and not item.get("call_id") and now - _at(item) >= COLLAPSE_AFTER_S
-                and str(item.get("run_id") or "") not in from_chat):   # a chat's job stays beside its messages
+                and str(item.get("run_id") or "") not in from_chat   # a chat's job stays beside its messages
+                and str(item.get("run_id") or "") not in results):   # its posted result links back to it
             label, key = stretch(_at(item), now, tz)
             folds.setdefault(key, []).append(item)
             labels[key] = label
@@ -110,6 +116,11 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
             if widget == "replaced":
                 entry["replaced_at"] = item["replaced"].get("at")
                 entry["replaced_by"] = item["replaced"].get("by")
+        posted = results.get(str(item.get("run_id") or ""))
+        if posted:
+            entry["result_id"] = posted["id"]
+            entries.append({"id": posted["id"], "kind": "result", "at": posted["at"], "item_id": item["id"],
+                            "run_id": item["run_id"], "card_id": entry["id"]})
         entries.append(entry)
     entries.extend(messages or [])
     # An ask (or the chat message and reply that started a job) sorts just before its card even

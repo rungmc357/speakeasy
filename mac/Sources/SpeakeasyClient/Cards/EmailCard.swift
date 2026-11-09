@@ -1,5 +1,10 @@
 import SwiftUI
 import SpeakeasyCore
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 // The email card (b73): a drafted email shows as itself, right where the job finished, with every
 // recipient by name and address, the thread it answers and anyone the job couldn't find. Tap it for
@@ -65,6 +70,7 @@ struct EmailCard: View {
     @Environment(\.cardStyle) private var look
     @State private var details = false
     @State private var addFor: String?
+    @State private var copied = false
 
     private var fields: EmailCardInfo.Fields { memory.edits[info.draftID] ?? info.fields }
     private var editedHere: Bool { memory.edits[info.draftID] != nil }
@@ -178,6 +184,8 @@ struct EmailCard: View {
                         .accessibilityIdentifier("email-card-send")
                     EmailCardButton(title: "Edit", primary: false) { details = true }
                         .accessibilityIdentifier("email-card-edit")
+                    EmailCardButton(title: copied ? "Copied" : "Copy", primary: false) { copy() }
+                        .accessibilityIdentifier("email-card-copy")
                 }
             }
         }
@@ -207,6 +215,23 @@ struct EmailCard: View {
         case .failed: return look.bad
         default: return look.secondary
         }
+    }
+
+    /// The email as text (headers, then the body), for pasting into a mail app.
+    private func copy() {
+        let f = fields
+        var lines = ["To: " + f.to.map(\.wire).joined(separator: ", ")]
+        if !f.cc.isEmpty { lines.append("Cc: " + f.cc.map(\.wire).joined(separator: ", ")) }
+        if !f.bcc.isEmpty { lines.append("Bcc: " + f.bcc.map(\.wire).joined(separator: ", ")) }
+        if !f.subject.isEmpty { lines.append("Subject: " + f.subject) }
+        let text = lines.joined(separator: "\n") + "\n\n" + f.body
+        #if os(macOS)
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+        #else
+        UIPasteboard.general.string = text
+        #endif
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copied = false }
     }
 
     /// One of the card's buttons. Send and Discard wait 5 s with Undo; Save goes at once.

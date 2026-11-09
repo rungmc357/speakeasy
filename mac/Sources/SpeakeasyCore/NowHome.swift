@@ -503,7 +503,9 @@ public struct HomeReplyQuote: Equatable, Sendable {
 public struct NowStream: Equatable, Sendable {
     public struct Entry: Equatable, Sendable, Identifiable {
         /// `message`: Home's chat (plugins with `home_chat`): your words or the coordinator's reply.
-        public enum Kind: String, Sendable { case ask, card, group, message }
+        /// `result` (b73): a finished job's result posted as its own message at the bottom of the
+        /// thread (an email it drafted); its job's card stays where it was asked, carrying `resultID`.
+        public enum Kind: String, Sendable { case ask, card, group, message, result }
         public enum Role: String, Sendable { case user, assistant }
         /// A question, confirm or checkout is a widget in the thread: open -> confirmed -> done;
         /// replaced: nobody answered it and a newer question took over (it stays, closed, saying when).
@@ -531,6 +533,10 @@ public struct NowStream: Equatable, Sendable {
         /// message (yours): the pictures, clips and files sent with it (its `text` may be empty then).
         public var files: [SentFile]
         public var quote: HomeReplyQuote? = nil
+        /// card: the id of the result this job posted further down (tap the card to scroll to it).
+        /// result: the id of the job's card up where it was asked.
+        public var resultID: String? = nil
+        public var cardID: String? = nil
         public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
                     line: String? = nil, itemIDs: [String] = [], role: Role? = nil, attribution: ReplyAttribution? = nil,
                     voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil,
@@ -554,6 +560,9 @@ public struct NowStream: Equatable, Sendable {
                       voiceDuration: ((o["voice"] as? [String: Any])?["duration"] as? NSNumber)?.doubleValue,
                       runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]), files: files)
             quote = HomeReplyQuote(json: o["quote"])
+            resultID = nonEmpty(o["result_id"])
+            cardID = nonEmpty(o["card_id"])
+            if kind == .result && (itemID == nil || runID == nil) { return nil }
             replacedAt = (o["replaced_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
         }
     }

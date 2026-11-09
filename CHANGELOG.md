@@ -4,7 +4,7 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 
 ## Unreleased — email drafts you can see and change
 
-- **The draft shows up by itself.** Ask for an email and the finished job answers with the email itself, right in Home, without a second "show me". *(plugin + iPhone build 73)*
+- **The draft shows up by itself.** Ask for an email and, when the job finishes, the email itself arrives as a new message at the bottom of Home's chat, without a second "show me". The job's card where you asked says done; tap it to jump down to the email. *(plugin + iPhone build 73 + Mac)*
 - **Every recipient, with their address.** The card shows To, Cc and Bcc with names and full addresses, and "Reply in thread: … · 4 messages" when it answers a thread. If the job couldn't find someone you named, the card says so, with Add. *(plugin + iPhone build 73)*
 - **Tap for the whole email.** All headers, the full body, the message it replies to, attachments. Change recipients, subject or body right there, then Send, Save draft or Discard. Send waits 5 seconds with Undo. *(plugin + iPhone build 73)*
 - **Nothing you said gets dropped.** Every person, company and detail you name goes into the draft, or the card says why not. *(plugin)*
