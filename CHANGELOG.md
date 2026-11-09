@@ -2,12 +2,25 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Plugin 0.3.49 — Home's model chip and waiting jobs
+## Plugin 0.3.49 — Home's model chip, waiting jobs and replies
 
 - **The model chip is what runs.** The chip above Home's composer now always names the model your jobs actually run on: your pick on the chip, else the job model saved in Speakeasy's settings, else your Hermes default. Before, it could show your Hermes default while jobs ran on the saved one. *(plugin)*
 - **A job waiting its turn shows up.** When a new job would edit the same project as one already running (say, two changes to the same app), it waits, and now you can see it: its card says "Waiting · after Checkout fix" right away, and Home tells you ("I'll start that as soon as the paint search wraps up."). *(plugin; the waiting card shows on iPhone with the next build)*
 - **Start now anyway.** Tap a waiting card to start it right away, beside the other job. *(plugin + next iPhone build)*
 - **Questions never wait.** Questions, lookups, proposals, plans and research start at once, even while another job is busy on the same project. *(plugin)*
+- **Reply to a message or a card.** Swipe left on anything in Home to reply to it. Replying to a job's card ("make it 8 pm instead") goes to that job. *(plugin + iPhone build 72)*
+- **Files opens on the first try.** The Files page no longer says it can't reach your Hermes on its first load; the first look through your files is much faster. *(plugin + iPhone build 72)*
+
+## iPhone build 72 — Home, tidied
+
+- **One row on top.** The side panel button, the running-work pill (centred) and settings share one line. There's no Clear button: Home is a chat, so old messages scroll away; dismiss a stuck card from its long-press menu.
+- **Pull down the pill.** A tap or short pull shows your jobs as slim rows; pull further for all your work (Needs you, Running, Scheduled, Done). Push up to close.
+- **Call turns into Send.** Start typing and the call button becomes Send in the same spot (the mic steps aside too); clear the words and both come back. On iPad and the opened iPhone Duo, Call sits in the right-hand rail with the side panel and settings.
+- **Chat bubbles and replies.** Home's messages are bubbles; swipe left on one to reply, or on a card to reply to that job.
+- **Sending feels instant.** Your photo or clip leaves the composer as you tap Send and shows in the thread while it uploads; if it can't send, the message says so with Retry.
+- **No more flash of the old screen** when the app opens.
+- **Waiting jobs.** A job queued behind another shows "Waiting · after …" with Start now anyway.
+- **Pictures** on before/after cards open full screen; pinch to zoom, drag down to close.
 
 ## Plugin 0.3.48 — Home is chattier
 
