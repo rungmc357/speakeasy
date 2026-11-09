@@ -66,10 +66,11 @@ struct DayCard: View {
                                 .accessibilityIdentifier("card-action-move")
                         }
                     }
-                    .cardWell(style, padding: style.capsHeaders ? 8 : 12)
+                    .cardWell(style, padding: style.capsHeaders ? 8 : CleanGrid.s)
                     // The well reaches into the card's padding so its times and titles stay in the
-                    // same columns as the rows outside it (they sat 12 pt to the right).
-                    .padding(.horizontal, style.capsHeaders ? 0 : -12)
+                    // same columns as the rows outside it (they sat 12 pt to the right); by 8, so it
+                    // still keeps 8 pt off the card's edge (at 12 it nearly touched it).
+                    .padding(.horizontal, style.capsHeaders ? 0 : -CleanGrid.s)
                     .accessibilityElement(children: .contain)
                 } else {
                     row(events[group[0]], next: group[0] == nextIndex(events))
