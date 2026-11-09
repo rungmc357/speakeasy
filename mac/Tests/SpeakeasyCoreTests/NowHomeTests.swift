@@ -189,6 +189,23 @@ final class NowHomeTests: XCTestCase {
         XCTAssertEqual(SentFile(id: "v", kind: .video, duration: 61).spoken, "Video, 1 minute 1 second")
     }
 
+    // SPK-314: a job that finished after a newer message says its answer at the bottom, tied to its card.
+    func testAJobsAnswerLineDecodesAsAReplyTiedToItsCard() throws {
+        let stream = try XCTUnwrap(NowStream(json: ["entries": [
+            ["id": "c:r1", "kind": "card", "at": 100, "item_id": "s:cafe", "state": "new_answer"],
+            ["id": "m:hu_2", "kind": "message", "role": "user", "text": "how far is the moon?", "at": 120],
+            ["id": "d:r1", "kind": "message", "role": "assistant", "text": "Riverside Roasters opens at 7.", "at": 150,
+             "run_id": "r1", "item_id": "s:cafe", "answer": true],
+        ], "needs_you": []]))
+        let line = try XCTUnwrap(stream.entries.last)
+        XCTAssertEqual(line.kind, .message)
+        XCTAssertEqual(line.role, .assistant)
+        XCTAssertEqual(line.itemID, "s:cafe")
+        XCTAssertEqual(line.runID, "r1")
+        XCTAssertEqual(line.text, "Riverside Roasters opens at 7.")
+        XCTAssertNil(stream.entries[1].itemID, "a chat message is not tied to a card")
+    }
+
     func testAnOlderPluginHasNoStreamAndAGroupDecodes() {
         XCTAssertNil(NowHome(json: ["rev": 1]).stream)
         let group = NowStream(json: ["entries": [["id": "g:morning", "kind": "group", "at": 100, "line": "This morning \u{00B7} 6 done",
