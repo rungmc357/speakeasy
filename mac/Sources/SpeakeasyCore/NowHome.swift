@@ -453,6 +453,22 @@ public struct SentFile: Equatable, Sendable, Identifiable {
     }
 }
 
+/// A server-resolved snapshot of the Home message being answered.
+public struct HomeReplyQuote: Equatable, Sendable {
+    public var id: String
+    public var role: NowStream.Entry.Role
+    public var text: String
+    public init(id: String, role: NowStream.Entry.Role, text: String) {
+        self.id = id; self.role = role; self.text = text
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
+              let role = (o["role"] as? String).flatMap(NowStream.Entry.Role.init(rawValue:)),
+              let text = nonEmpty(o["text"]) else { return nil }
+        self.init(id: id, role: role, text: text)
+    }
+}
+
 /// Home as a single thread: the user's asks and their cards in time order. A card keeps one id, so it
 /// updates in place; older seen stretches arrive folded ("This morning · 6 done").
 public struct NowStream: Equatable, Sendable {
@@ -485,6 +501,7 @@ public struct NowStream: Equatable, Sendable {
         public var clientID: String?
         /// message (yours): the pictures, clips and files sent with it (its `text` may be empty then).
         public var files: [SentFile]
+        public var quote: HomeReplyQuote? = nil
         public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
                     line: String? = nil, itemIDs: [String] = [], role: Role? = nil, attribution: ReplyAttribution? = nil,
                     voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil,
@@ -507,6 +524,7 @@ public struct NowStream: Equatable, Sendable {
                       role: role, attribution: role == .assistant ? ReplyAttribution(json: o["model"]) : nil,
                       voiceDuration: ((o["voice"] as? [String: Any])?["duration"] as? NSNumber)?.doubleValue,
                       runID: nonEmpty(o["run_id"]), clientID: nonEmpty(o["client_id"]), files: files)
+            quote = HomeReplyQuote(json: o["quote"])
             replacedAt = (o["replaced_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
         }
     }

@@ -557,8 +557,9 @@ public final class ServerClient: @unchecked Sendable {
     /// Home's chat (servers with `home_chat`): the coordinator replies, and starts or follows up a job
     /// only for real work. Idempotent on *clientID*.
     public func homeMessage(text: String, attachments: [String] = [], clientID: String = UUID().uuidString,
-                            choice: ModelChoice? = nil) async throws -> HomeChatReply {
+                            choice: ModelChoice? = nil, replyTo: String? = nil) async throws -> HomeChatReply {
         var body: [String: Any] = ["text": text.trimmingCharacters(in: .whitespacesAndNewlines), "client_id": clientID]
+        if let replyTo { body["reply_to"] = replyTo }
         if !attachments.isEmpty { body["attachments"] = attachments }
         if let choice, !choice.isEmpty { body.merge(choice.body()) { _, new in new } }
         let reply = try await post("/voice/home/message", body)
