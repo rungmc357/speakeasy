@@ -250,8 +250,9 @@ struct HistorySidebar: View {
         }
         .padding(.horizontal, 10).frame(height: 30)
         .background(Capsule().fill(SidebarLook.well))
+        // A whisper of an edge at rest (the well already sets it apart); a clearer one while typing.
         .overlay(Capsule()
-            .strokeBorder(searchFocused ? Color.primary.opacity(0.28) : SidebarLook.hairline, lineWidth: searchFocused ? 1 : 0.75))
+            .strokeBorder(searchFocused ? Color.primary.opacity(0.2) : SidebarLook.hairline.opacity(0.55), lineWidth: searchFocused ? 0.75 : 0.5))
     }
 
     private var filterRow: some View {
