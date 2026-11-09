@@ -85,7 +85,7 @@ final class SessionHistoryTests: XCTestCase {
     }
 
     func testPagePathEncodesQueryCursorAndFilter() {
-        XCTAssertEqual(HistoryPage.path(), "/voice/history")
+        XCTAssertEqual(HistoryPage.path(), "/voice/history?hide=kanban,scheduled", "SPK-263: workers hidden by default")
         let path = HistoryPage.path(query: "  tomato beds ", source: "discord", cursor: "1793.5|a+b")
         XCTAssertTrue(path.hasPrefix("/voice/history?"))
         XCTAssertTrue(path.contains("q=tomato%20beds"))
