@@ -117,6 +117,8 @@ def test_no_message_is_lost_when_the_coordinator_fails(server, service, monkeypa
     # The typed words stay as a bubble, and the thread says it didn't go through.
     assert ("user", "check the gutter quote") in [(m["role"], m["text"]) for m in got]
     assert got[-1]["role"] == "assistant" and "didn't go through" in got[-1]["text"]
+    mine = next(m for m in got if m["role"] == "user")
+    assert mine["failed"] is True and mine["client_id"] == "c_mid_fail"   # the app offers Retry on it
 
 
 def test_a_calls_job_needs_no_extra_ask_bubble_when_its_turns_show(server, service, hermes):

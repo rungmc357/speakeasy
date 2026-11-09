@@ -600,6 +600,8 @@ class HomeChat:
             out["run_id"] = row["run_id"]
         if row.get("client_id") and row["role"] == "user":
             out["client_id"] = row["client_id"]   # the app swaps its own "sending" bubble for this one
+        if row["role"] == "user" and row.get("action") == "failed":
+            out["failed"] = True   # SPK-266: the job it asked for didn't go: the app offers Retry on it
         if row.get("call_id"):
             # SPK-266: said on a call (the app draws a small waveform beside it); typed: words an
             # older app typed into the call, shown as plain text.
