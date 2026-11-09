@@ -447,7 +447,7 @@ public final class DemoProjectsBackend: ProjectsBackend {
                                     activeAt: now.addingTimeInterval(-5400))
         let trip = HermesProject(id: "p_trip", name: "Lakeside trip", icon: "airplane", color: .orange, chats: 1,
                                  activeAt: now.addingTimeInterval(-2 * 86400))
-        let office = HermesProject(id: "p_office", name: "Home office", icon: "desktopcomputer", color: .purple)
+        let office = HermesProject(id: "p_office", name: "Study nook", icon: "desktopcomputer", color: .purple)
         list = empty ? ProjectList() : ProjectList(projects: [shed, lantern, trip, office])
         let chats = [
             HistorySession(id: "demo_shed_1", title: "Cedar board prices", source: "speakeasy", sourceLabel: "Speakeasy",
