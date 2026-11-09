@@ -1581,6 +1581,34 @@ class VoiceService(SecureInputMixin):
                 return self._cancel(interaction, found, interaction.interaction_id)
         raise ServiceError(409, "That task isn't running here, so there's nothing to stop.")
 
+    def start_now(self, run_id: str) -> dict[str, Any]:
+        """``POST /voice/work/{run_id}/start-now``: a job held behind another job on the same project
+        (calls.wait_for_fence) starts right away, beside it ("Start now anyway" on its waiting card;
+        the same as saying "start it anyway" on a call). 404 unknown; 409 when it isn't waiting."""
+        if not ID_RE.fullmatch(run_id or ""):
+            raise ServiceError(404, "I couldn't find that task.")
+        key = self.store.key_for_run(run_id) or self.store.key_for_task(run_id)
+        if key is None:
+            raise ServiceError(404, "I couldn't find that task.")
+        with self.lock:
+            holders = list(self.interactions.values())
+        text = self._text_worker
+        if text is not None and getattr(text, "interaction", None) is not None:
+            holders.append(text.interaction)
+        for interaction in holders:
+            with interaction.lock:
+                found = next((r for r in interaction.runs.values()
+                              if r.idem_key == key and r.status == "waiting_on_task" and not r.released), None)
+                if found is not None:
+                    found.released = True   # wait_for_fence sees it on its next poll and starts the run
+            if found is not None:
+                self.store.progress(key, "milestone", "Starting now")
+                publish_state(self.store, interaction, self.settings.get()["assistant_name"])
+                self._now_changed()
+                logger.info("speakeasy: a held task was started now anyway")
+                return {"ok": True, "run_id": run_id, "started": True}
+        raise ServiceError(409, "That job isn't waiting, so there's nothing to start.")
+
     def _cancel(self, interaction: Interaction, backend: Any, interaction_id: str | None) -> dict[str, Any]:
         with interaction.lock:
             if backend.status in TERMINAL or backend.status in {"ambiguous", "cancel_requested"}:
@@ -2314,10 +2342,12 @@ class VoiceService(SecureInputMixin):
             threading.Thread(target=resolved, args=(delivered_as,), daemon=True).start()
         return run
 
-    def start_job(self, body: dict[str, Any], device_id: str | None = None) -> dict[str, Any]:
+    def start_job(self, body: dict[str, Any], device_id: str | None = None,
+                  never_wait: bool = False) -> dict[str, Any]:
         """``POST /voice/work``: a new job from text typed in the app, with no call (the plugin-update
         notice's Update button). It runs like a job started on a call, on the voiceless worker, never
-        through routing, and shows on the board. Idempotent on client_id."""
+        through routing, and shows on the board. Idempotent on client_id. *never_wait* (Home, in
+        process only): not an edit, so it never waits behind another job on the same project."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
                 "text", "source", "client_id", "attachments", "model", "reasoning", "agent"}:
             raise ServiceError(400, "Send the job as text.")
@@ -2339,7 +2369,8 @@ class VoiceService(SecureInputMixin):
         if client_id is not None and (not isinstance(client_id, str) or not ID_RE.fullmatch(client_id)):
             raise ServiceError(400, "client_id must be an id.")
         return self._once(client_id, lambda: self._with_staged(
-            device_id, ids, lambda staged: self._start_job(text, staged, choice=choice, new_chat=True)),
+            device_id, ids, lambda staged: self._start_job(text, staged, choice=choice, new_chat=True,
+                                                     never_wait=never_wait)),
                           route="work", text=text)
 
     @staticmethod
@@ -2375,7 +2406,7 @@ class VoiceService(SecureInputMixin):
 
     def _start_job(self, text: str, staged: list[A.Attachment] | None = None, session_id: str | None = None,
                    context: str | None = None, link_to: str | None = None, choice: dict[str, Any] | None = None,
-                   new_chat: bool = False) -> dict[str, Any]:
+                   new_chat: bool = False, never_wait: bool = False) -> dict[str, Any]:
         """*link_to*: the chat session this job continues from a history page (store.history_links).
         *staged*: attachments claimed for this job (carried with its handoff). *choice*: the model /
         reasoning picked for it (models.parse_choice); a new chat (*new_chat*) keeps it as its own."""
@@ -2387,7 +2418,7 @@ class VoiceService(SecureInputMixin):
         worker = self.text_worker()
         future = asyncio.run_coroutine_threadsafe(
             M.start_job(worker, text, session_id=session_id, context=context, staged=staged or None,
-                        choice=choice), worker.loop)
+                        choice=choice, never_wait=never_wait), worker.loop)
         try:
             got = future.result(M.START_WAIT_S + 10)
         except Exception as exc:
@@ -2416,8 +2447,12 @@ class VoiceService(SecureInputMixin):
         # Its Hermes session id, known the moment it started (the history page it continues on): a New
         # chat page becomes that session at once, so its next message continues it instead of starting another.
         session = self.store.session_for(key) if key else None
-        return {"ok": True, "run_id": run_id, "task_id": got["task_id"], "task": task, "session_id": session,
-                "delivered_as": "new_run"}
+        out = {"ok": True, "run_id": run_id, "task_id": got["task_id"], "task": task, "session_id": session,
+               "delivered_as": "new_run"}
+        if task is not None and task.get("status") == "waiting_on_task" and (task.get("waiting") or {}).get("name"):
+            # Held behind another job on the same project (calls.wait_for_fence): Home says so.
+            out["held"] = {"after": task["waiting"]["name"]}
+        return out
 
     def _claim_message(self, client_id: str) -> tuple[bool, threading.Event]:
         now = time.monotonic()
@@ -2639,8 +2674,17 @@ class VoiceService(SecureInputMixin):
         return MD.resolve(layers, entries), entries
 
     def _default_layer(self) -> dict[str, Any]:
-        jobs = self.settings.get().get("jobs") or {}
-        return {"model": jobs.get("model") or None, "reasoning": jobs.get("reasoning") or None}
+        """Speakeasy's saved job default (settings ``jobs.model`` / ``jobs.reasoning``). Home's chip
+        reads this same function (``HomeChat.work_route``). A missing ``jobs`` section or key, or an
+        empty value, is "no default": the run falls through to Hermes' own model."""
+        try:
+            jobs = self.settings.get().get("jobs")
+        except Exception:
+            jobs = None
+        jobs = jobs if isinstance(jobs, dict) else {}
+        model, reasoning = jobs.get("model"), jobs.get("reasoning")
+        return {"model": model if isinstance(model, str) and model else None,
+                "reasoning": reasoning if isinstance(reasoning, str) and reasoning else None}
 
     def _model_context(self, sid: str | None, idem: str | None = None) -> tuple[str | None, list[str]]:
         """Linked task pages are the same conversation; unrelated sessions stay independent."""

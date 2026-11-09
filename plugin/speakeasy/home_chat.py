@@ -27,8 +27,10 @@ keeps it fast. Its model (``route``), first that applies:
    so a user without a fast model chats on the model they chose; then the Speakeasy routing model.
 
 Home's model chip picks the WORK model (``work`` in ``GET /voice/home/model``, ``{"work_model": id}``
-on POST): the model the jobs started from Home run on. Unset, jobs run on the user's Hermes default
-model. The coordinator's own model above is a secondary choice in the same menu (``{"model": id}``).
+on POST): the model the jobs started from Home run on. Unset, jobs run on Speakeasy's saved job
+default (settings ``jobs.model``) when there is one, else the user's Hermes default model. The chip
+and the send path read one resolver (``HomeChat.work_route``), so the chip never names a model the
+job didn't run on. The coordinator's own model above is a secondary choice in the same menu (``{"model": id}``).
 Changing one never changes the other, and neither writes Hermes' default or auxiliary models.
 
 Nothing here writes the user's Hermes config. Live calls keep their own routing; this is only Home's
@@ -129,6 +131,23 @@ ACK = ACKS[0]
 # Replies that are only a clipped stock acknowledgement: Home never posts one of these alone.
 _CLIPPED = re.compile(r"(?i)^\W*(?:on it|checking(?: now| on it)?|looking(?: now| into it)?|got it|ok(?:ay)?"
                       r"|will do|sure|starting(?: task| now)?)\W*$")
+
+
+def held_line(after: Any) -> str:
+    """What Home's coordinator adds when the job it started waits behind another one."""
+    from .home_words import short_title
+    name = " ".join(str(after or "").split()).strip(" .\u201c\u201d\"")
+    name = (short_title(name) or name) if name else ""
+    if not name:
+        return "I'll start that as soon as the other job wraps up."
+    words = name.split()
+    if re.match(r"(?i)(?:fix|find|make|build|add|update|write|draft|check|research|look|compare|plan|book|order|"
+                r"search|get|send|refactor|clean|move|rename|remove|delete|create|set|run|ship|review|read|"
+                r"summari[sz]e|edit|change|test|try|install|buy|call|email|reply)\b", words[0]):
+        return f"I'll start that as soon as \u201c{name}\u201d wraps up."   # a job named by what it does
+    if len(words[0]) > 1 and words[0][1:].islower():   # "Paint search" -> "the paint search"; keeps "iOS", "NASA"
+        name = name[0].lower() + name[1:]
+    return f"I'll start that as soon as the {name} wraps up."
 
 
 def pick_ack(asked: str = "", avoid: str | None = None) -> str:
@@ -605,11 +624,35 @@ class HomeChat:
     def shown(self, now: float | None = None) -> list[dict[str, Any]]:
         """The messages Home shows: the last day's, after the last Clear, oldest first."""
         now = self.clock() if now is None else now
+        self._relink_held()
         return self._rows("WHERE at >= ?", (max(now - SHOWN_S, self._cleared()),))
+
+    def _relink_held(self) -> None:
+        """A job held behind another (calls.wait_for_fence) is linked under its waiting id (a local
+        ``lr_`` id: it had no Hermes run yet). Once it started, its messages point at the real run, so
+        its card in the thread and the coordinator's job list stay one job."""
+        try:
+            with self.store._lock:
+                held = {r[0] for t in ("home_messages", "home_jobs") for r in self.store._db.execute(
+                    f"SELECT run_id FROM {t} WHERE run_id LIKE 'lr\\_%' ESCAPE '\\' AND at >= ?",
+                    (self.clock() - 2 * SHOWN_S,)).fetchall()}
+            for local in held:
+                key = self.store.key_for_run(local)
+                with self.store._lock:
+                    row = self.store._db.execute("SELECT run_id FROM runs WHERE idem_key=?", (key,)).fetchone() \
+                        if key else None
+                real = row[0] if row and row[0] and row[0] != local else None
+                if real:
+                    with self.store._lock, self.store._db:
+                        for t in ("home_messages", "home_jobs"):
+                            self.store._db.execute(f"UPDATE {t} SET run_id=? WHERE run_id=?", (real, local))
+        except Exception:
+            logger.debug("speakeasy: Home's held-job links weren't updated", exc_info=True)
 
     def started_runs(self) -> set[str]:
         """Runs a Home message started or followed up: their card needs no "you asked" bubble (the
         message already shows)."""
+        self._relink_held()
         with self.store._lock:
             rows = self.store._db.execute(
                 "SELECT run_id FROM home_messages WHERE run_id IS NOT NULL AND at >= ?",
@@ -700,6 +743,8 @@ class HomeChat:
                                "reply": self.entry(reply) if reply else None,
                                "action": source.get("action") or "none", "run_id": source.get("run_id")}
         if started:
+            if started.get("held"):
+                out["held"] = True   # it waits behind another job: its card says "Waiting · after ..."
             out["session_id"] = started.get("session_id")
             out["task_id"] = started.get("task_id")
             if started.get("attachments"):
@@ -773,7 +818,7 @@ class HomeChat:
                     job_body["attachments"] = ids
                 if client_id:
                     job_body["client_id"] = ("hj" + client_id)[:128]
-                started = self.svc.start_job(job_body, device_id)
+                started = self._start(job_body, device_id, text or job_text or "")
                 run_id = started.get("run_id")
             elif action == "follow_up":
                 run_id = decided["run_id"]
@@ -802,6 +847,10 @@ class HomeChat:
             self.svc._now_changed()
             raise
         self._link(user_id, run_id, action)
+        if action == "start" and isinstance(started, dict) and started.get("held"):
+            # Held behind another job on the same project: the reply says when it starts, warmly
+            # (no extra model call), and its card in the thread says "Waiting · after ...".
+            reply_row = self._say_held(reply_row, decided["reply"], started["held"].get("after"), user_id)
         for n, words in enumerate(decided.get("extra") or []):
             # "Those are two different tasks": each further ask in the message is its own job.
             job_body = {"text": self._with_quote(words, quote), "source": "voice_message" if voice else "typed"}
@@ -809,7 +858,7 @@ class HomeChat:
             if client_id:
                 job_body["client_id"] = (f"hx{n}" + client_id)[:128]
             try:
-                more = self.svc.start_job(job_body, device_id)
+                more = self._start(job_body, device_id, words)
             except Exception as exc:
                 logger.info("speakeasy: Home's second job didn't start (%s)", type(exc).__name__)
                 self._add("assistant", "One of those didn't go through. Ask me again for it.", self.clock(),
@@ -825,9 +874,40 @@ class HomeChat:
         logger.info("speakeasy: Home message handled (%s)", action)
         return self._reply(user, reply, started=started)
 
+    def _start(self, job_body: dict[str, Any], device_id: str | None, asked: str) -> dict[str, Any]:
+        """Start one Home job. Who waits behind another job (the rule, see calls.fence_blocker): only
+        work that would edit files in a project another running job is editing. When what the user
+        typed isn't an edit (a question, a lookup, a proposal, plans or research: fence.is_edit_request
+        on their own words), the job never waits, whatever words the coordinator wrote for it."""
+        from . import fence
+        never_wait = not fence.is_edit_request(asked)
+        import inspect
+        try:
+            takes = "never_wait" in inspect.signature(self.svc.start_job).parameters
+        except (TypeError, ValueError):
+            takes = False
+        if takes:
+            return self.svc.start_job(job_body, device_id, never_wait=never_wait)
+        return self.svc.start_job(job_body, device_id)   # a stand-in service without the keyword
+
+    def _say_held(self, reply_row: str | None, said: str, after: Any, user_id: str) -> str:
+        """The coordinator's reply when the job it started is held: "I'll start that as soon as the
+        paint search wraps up." (alone for a bare acknowledgement, else after what it said)."""
+        line = held_line(after)
+        said = (said or "").strip()
+        text = line if not said or said in ACKS or len(said.split()) <= 3 else f"{said} {line}"
+        if reply_row:
+            with self.store._lock, self.store._db:
+                self.store._db.execute("UPDATE home_messages SET text=? WHERE id=?", (text, reply_row))
+            return reply_row
+        return self._add("assistant", text, self.clock(), reply_to=user_id)
+
     def _job_choice(self, job_body: dict[str, Any], body: dict[str, Any]) -> None:
-        """A job started from Home runs on the work model: what the message itself names, else the
-        Home chip's pick, else nothing (the user's Hermes default). Never the coordinator's model."""
+        """A job started from Home runs on the work model (``work_route``, the same answer the chip
+        shows): what the message itself names, else the Home chip's pick, else Speakeasy's saved job
+        default, else the user's Hermes default. Never the coordinator's model. The saved default and
+        the Hermes default are applied by the job's own start (``VoiceService.choose_model``'s default
+        layer, which ``work_route`` reads too), so only the chip's pick is sent here."""
         for k in ("model", "reasoning", "agent"):
             if body.get(k) is not None:
                 job_body[k] = body[k]
@@ -852,20 +932,66 @@ class HomeChat:
             return f"{main['provider']}/{main['default']}"
         return None
 
+    def _saved_default(self) -> dict[str, Any]:
+        """Speakeasy's saved job default (settings ``jobs.model`` / ``jobs.reasoning``), read through
+        the exact function a job's start uses (``VoiceService._default_layer``). A missing ``jobs``
+        section, a missing key or an empty string is "no saved default" (never an error)."""
+        layer = None
+        getter = getattr(self.svc, "_default_layer", None)
+        try:
+            layer = getter() if callable(getter) else None
+        except Exception:
+            logger.debug("speakeasy: the saved job default couldn't be read", exc_info=True)
+        layer = layer if isinstance(layer, dict) else {}
+        model, reasoning = layer.get("model"), layer.get("reasoning")
+        return {"model": model if isinstance(model, str) and model else None,
+                "reasoning": reasoning if isinstance(reasoning, str) and reasoning else None}
+
     def work_route(self) -> dict[str, Any]:
-        """The model Home's jobs run on: ``{"model": id | None, "source": "chosen" | "default"}``.
-        ``default`` = the user's Hermes default model (nothing extra is sent; Hermes decides)."""
+        """The ONE answer to "which model do Home's jobs run on": the chip, the picker's Default tag
+        and the send path all read it. First that applies:
+
+        1. ``chosen``: the user's pick on Home's chip (``WORK_META``), while it is still connected;
+        2. ``jobs``: Speakeasy's saved job default (settings ``jobs.model``), what a job's start
+           applies when nothing is picked (``VoiceService._default_layer``);
+        3. ``default``: the user's Hermes default model (nothing extra is sent; Hermes decides).
+
+        Returns ``{"model": id | None, "reasoning": level | None, "source": ...}``; ``reasoning`` is
+        the saved job default's level (a job's start applies it whichever model runs)."""
         entries = self._entries()
+        saved = self._saved_default()
         chosen = self.store.get_meta(WORK_META) or ""
         if chosen and (entries is None or chosen in entries):
-            return {"model": chosen, "source": "chosen"}
-        return {"model": self._hermes_default(), "source": "default"}
+            return {"model": chosen, "reasoning": saved["reasoning"], "source": "chosen"}
+        if saved["model"] and self._saved_runs(saved, entries):
+            return {"model": saved["model"], "reasoning": saved["reasoning"], "source": "jobs"}
+        return {"model": self._hermes_default(), "reasoning": None, "source": "default"}
+
+    @staticmethod
+    def _saved_runs(saved: dict[str, Any], entries: dict[str, dict[str, Any]] | None) -> bool:
+        """Whether a job's start would really use the saved default: ``VoiceService.choose_model``
+        refuses a saved model Hermes no longer lists (or a level it doesn't take) and the run then goes
+        to Hermes' default, so the chip must say that too. Unknown catalog: taken as it is."""
+        if entries is None:
+            return True
+        entry = entries.get(saved["model"])
+        if entry is None:
+            return False
+        level = saved.get("reasoning")
+        return not level or level in (entry.get("reasoning_levels") or ())
+
+    def default_work_model(self) -> str | None:
+        """What a Home job runs on when nothing is picked on the chip (the picker's "Default")."""
+        saved = self._saved_default()
+        if saved["model"] and self._saved_runs(saved, self._entries()):
+            return saved["model"]
+        return self._hermes_default()
 
     def _work_status(self, entries: dict[str, dict[str, Any]], row: Callable[[str], dict[str, Any]]) -> dict[str, Any]:
         """The chip's half of ``GET /voice/home/model``: the work model and a few choices (the
         Hermes default first, then each connected provider's featured models, one row per model)."""
         picked = self.work_route()
-        default = self._hermes_default()
+        default = self.default_work_model()
         ids: list[str] = []
         for mid in (default, picked["model"] if picked["source"] == "chosen" else None):
             if mid and mid not in ids:
@@ -920,6 +1046,7 @@ class HomeChat:
         # Newest first under More… too, so an old version sits below the current ones.
         more.sort(key=lambda m: (family(m), tuple(-n for n in version(m))))
         return {"model": row(picked["model"]) if picked["model"] else None, "source": picked["source"],
+                "reasoning": picked.get("reasoning"),
                 "default": row(default) if default else None, "options": [row(m) for m in ids],
                 "more": [row(m) for m in more]}
 

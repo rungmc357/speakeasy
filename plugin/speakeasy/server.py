@@ -869,6 +869,10 @@ class Handler(BaseHTTPRequestHandler):
             if stop:
                 self._reply(202, self.service.stop_task(stop.group(1)))
                 return
+            start_now = re.fullmatch(rf"/voice/work/{_ID}/start-now", path)
+            if start_now:
+                self._reply(200, self.service.start_now(start_now.group(1)))
+                return
             card = re.fullmatch(rf"/voice/work/{_ID}/card-action", path)
             if card:
                 self._reply(200, self.service.card_action(card.group(1), self._body()))

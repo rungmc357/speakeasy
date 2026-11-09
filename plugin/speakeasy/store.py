@@ -2700,6 +2700,8 @@ class StateStore:
             if isinstance(held, dict) and held.get("name"):
                 # Held back so it doesn't edit the same project at once: starts when that task ends.
                 work["waiting"] = {"name": str(held["name"])[:120], "project": str(held.get("project") or "")[:80]}
+                if isinstance(held.get("key"), str) and held["key"]:
+                    work["waiting_key"] = held["key"]   # the job it waits for (Home names it by its title)
                 work["short_status"] = "Waiting for another task"
                 work["detail"] = f"Starts when \"{work['waiting']['name']}\" finishes (same project)."
                 work["status_source"] = "system"

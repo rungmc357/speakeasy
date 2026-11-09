@@ -3134,7 +3134,14 @@ class SidebandWorker:
     def fence_blocker(self, task_id: str, request: str,
                       exclude: set[str | None] | None = None) -> tuple[BackendRun, str] | None:
         """A running task already editing the project this new request would edit, and that
-        project's name; None when unsure (fence.py says when it is sure)."""
+        project's name; None when unsure (fence.py says when it is sure).
+
+        Who waits (the one rule): only a request that would EDIT files in a project a running task is
+        already editing (fence.is_edit_request + a named project, see fence.py). Questions, lookups,
+        proposals, plans and research never wait, and neither does a job whose sender said it isn't an
+        edit (``never_wait``: Home's typed questions, whatever words the coordinator gave the job)."""
+        if task_id in getattr(self, "never_wait", ()):
+            return None
         if not fence_mod.is_edit_request(request):
             return None
         wanted = fence_mod.keys_in_text(request)
@@ -3157,11 +3164,16 @@ class SidebandWorker:
     async def wait_for_fence(self, backend: BackendRun, blocker: BackendRun, project: str, delegation_id: str) -> None:
         """Hold a new task until the task editing the same project ends (or the user says go)."""
         idem = backend.idem_key
-        name = self.store.title(blocker.idem_key) or notice_text(self.store.request_text(blocker.idem_key), 80) or "the other task"
+        asked = self.store.request_text(blocker.idem_key)
+        # A request naming a path isn't chat-safe as is: its short name ("Fix the checkout bug") is.
+        from .home_words import short_title as home_short
+        name = (self.store.title(blocker.idem_key) or notice_text(asked, 80)
+                or notice_text(home_short(asked or "") or "", 80) or "the other task")
         with self.interaction.lock:
             backend.blocked_by = blocker.delegation_id
         self.move(backend, "waiting_on_task")
-        self.store.set_waiting(idem, {"name": name, "project": project})
+        # ``key``: the job it waits for, so Home names it by its current title ("Waiting · after ...").
+        self.store.set_waiting(idem, {"name": name, "project": project, "key": blocker.idem_key})
         self.store.progress(idem, "milestone", notice_text(f"Waiting for \"{name}\" ({project})", 200) or "Waiting")
         self.publish()
         logger.info("speakeasy: new task held behind a running task on the same project")

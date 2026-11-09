@@ -444,10 +444,23 @@ class NowModel:
             if isinstance(work.get("quiet_s"), (int, float)) and work["quiet_s"] >= 120:
                 item["idle_seconds"] = int(work["quiet_s"])
         elif status == RS.RunState.WAITING_ON_TASK:
+            # Held behind another job (the same project, calls.wait_for_fence; or queued in its chat
+            # behind another turn): shown at once, in the tracker and as its card in Home's thread.
             behind = (work.get("waiting") or {}).get("name") or ""
-            item.update(kind=WAITING, line=_clip(work.get("detail") or (
-                f"Starts when \u201c{behind}\u201d finishes." if behind else "Waiting for another task."), LINE_CHARS))
-            item["waiting_on"] = _clip(behind, 60) if behind else "another task"
+            if work.get("waiting_key"):
+                try:   # the other job's title now (it may have been named since this one was held)
+                    behind = self.store.title(work["waiting_key"]) or behind
+                except Exception:
+                    pass
+            named = (short_title(behind) or behind) if behind else ""
+            item.update(kind=WAITING, line=_clip(f"Waiting \u00b7 after {named}" if named else
+                                                 "Waiting \u00b7 after another job", LINE_CHARS))
+            item["waiting_on"] = _clip(named, 60) if named else "another task"
+            if not work.get("queued_behind"):
+                item["can_start_now"] = True   # POST /voice/work/{run_id}/start-now runs it beside the other
+            if not run_id:
+                # No Hermes run yet: the id it can be opened (and started) by, kept as an alias.
+                item["run_id"] = run_id = self.store.openable_run_id(row["key"])
         elif status in {RS.RunState.FAILED, RS.RunState.INTERRUPTED}:
             # Clear is an answers-only cutoff: unread stopped work is not an answer, so only the
             # rollover (not Clear) moves it to Earlier.

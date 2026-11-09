@@ -44,9 +44,17 @@ EDIT_TOOLS = {"write_file", "patch", "edit_file", "str_replace_editor", "apply_p
 MAX_DEPTH = 8
 
 
+# Proposals, plans and research change nothing yet ("propose a fix", "plan the refactor", "research
+# how to migrate"): they never fence either, even though they name an edit.
+_NOT_YET = re.compile(
+    r"(?i)^\W*(?:(?:hey|ok|okay|so|and|please|um+|uh+)\W+)*(?:(?:can|could|would)\s+you\s+)?(?:propose|suggest|"
+    r"recommend|research|investigate|plan|outline|brainstorm|compare|draft\s+a\s+plan|think\s+(?:about|through)|"
+    r"come\s+up\s+with|give\s+me\s+(?:a\s+)?(?:plan|proposal|options|ideas))\b")
+
+
 def is_edit_request(text: str) -> bool:
     said = " ".join((text or "").split())
-    if not said or _READ_ONLY.search(said) or said.rstrip().endswith("?"):
+    if not said or _READ_ONLY.search(said) or _NOT_YET.search(said) or said.rstrip().endswith("?"):
         return False
     return bool(_EDIT.search(said))
 
