@@ -197,7 +197,9 @@ struct ActionRow: View {
     var body: some View {
         // A known status word sets its colour (Backlog grey, Waiting on Geo red); otherwise the agent's tone.
         let tone = StateWords.tone(item["state"].string, given: item["tone"].string)
-        HStack(alignment: .center, spacing: 12) {
+        // Top-aligned: the glyph tile and the corner time sit on the name's first line, not floating
+        // mid-row beside a three-line name and note.
+        HStack(alignment: .top, spacing: 12) {
             // A row with a status wears the tracker's glyph for it (done a check, moving a half
             // circle, waiting dashed), so "In progress" and "Needs Theo" never share one mark.
             let glyph = item["state"].string != nil ? StateWords.symbol(item["state"].string, tone: tone) : ArtifactLinks.symbol(entity)
@@ -256,6 +258,8 @@ struct ActionRow: View {
                 if let when, when.count <= 9 { Text(when).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1) }
             }
             .fixedSize()
+            // On the name's first line (the 32 pt tile's centre is about where a 15 pt line sits).
+            .padding(.top, 1)
             if let url = item["url"].url {
                 PillButton(title: "Open", icon: "arrow.up.right", primary: false, iconOnly: true) { openURL(url) }.fixedSize()
             }
@@ -410,7 +414,7 @@ struct PreviewCard: View {
                     Image(systemName: (doc ? DocPreview.appSymbol(card["app"].string) : nil) ?? ArtifactLinks.symbol(entity, item: item))
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.secondary).frame(width: CleanGrid.glyphTile, height: CleanGrid.glyphTile)
-                        .background(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).fill(Color.primary.opacity(0.06)))
+                        .background(GlyphTileBackground())
                         .accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: 4) {

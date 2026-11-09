@@ -130,7 +130,8 @@ struct DayCard: View {
                 if next, let join = e["join_url"].url { Link("Join", destination: join).font(.system(size: 11.5, weight: .semibold)) }
             }
         } else {
-            HStack(alignment: .center, spacing: 12) {
+            // The time sits on the title's first baseline, not centred against a two-line title.
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(e["all_day"].bool == true ? "All day" : EventTimes.one(e["start"].string).map(Self.bare) ?? "")
                     .font(.footnote.weight(.semibold)).monospacedDigit().foregroundStyle(style.secondary)
                     .frame(width: 48, alignment: .leading)

@@ -252,6 +252,17 @@ public enum CleanGrid {
 
 // MARK: - Shared parts (the Clean card language; classic draws them in its own sizes)
 
+/// The rounded tile behind a card's title glyph: the well plus a hairline, so a pale light-mode
+/// tile still reads as a tile (the well alone nearly vanished on a near-white card).
+public struct GlyphTileBackground: View {
+    @Environment(\.cardStyle) private var style
+    public init() {}
+    public var body: some View {
+        RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).fill(style.well)
+            .overlay(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).strokeBorder(style.hairline, lineWidth: 0.75))
+    }
+}
+
 /// Every card's first line on clean: a small glyph tile, a title, a quiet trailing note.
 public struct CardTitleRow: View {
     var icon: String
@@ -267,7 +278,7 @@ public struct CardTitleRow: View {
         HStack(spacing: CleanGrid.glyphGap) {
             Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(tint ?? style.secondary)
                 .frame(width: CleanGrid.glyphTile, height: CleanGrid.glyphTile)
-                .background(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).fill(style.well))
+                .background(GlyphTileBackground())
             Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(style.ink)
                 .lineLimit(lines).fixedSize(horizontal: false, vertical: lines > 1)
             Spacer(minLength: 8)

@@ -34,7 +34,7 @@ struct ConfirmCard: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(state == "done" ? style.good : state == "pending" ? style.needsYou : style.secondary)
                         .frame(width: CleanGrid.glyphTile, height: CleanGrid.glyphTile)
-                        .background(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).fill(style.well))
+                        .background(GlyphTileBackground())
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(stateTitle).font(.caption.weight(.semibold))
