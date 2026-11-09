@@ -187,6 +187,47 @@ def test_status_advertises_files():
     assert CAPABILITIES["files"] is True
 
 
+def test_a_missing_or_unlisted_file_skips_hermes_slow_check(service, made, monkeypatch):
+    """Hermes' delivery check resolves every denied prefix per call (~6 ms each): a scan of a big
+    history must not pay that for files that are gone or of a type Files never lists (SPK-264)."""
+    base = pytest.importorskip("gateway.platforms.base")
+    if sys.modules.get("gateway.platforms.base") is None:
+        pytest.skip("older Hermes mode")
+    seen = []
+    real = base.validate_media_delivery_path
+    monkeypatch.setattr(base, "validate_media_delivery_path", lambda p, *a, **k: seen.append(p) or real(p, *a, **k))
+    gone = service.home / "cache" / "images" / "gone.png"
+    assert F.deliverable(str(gone), service.home) is None
+    assert F.deliverable(str(service.home / "cache" / "images"), service.home) is None   # a folder
+    assert seen == []
+    assert F.deliverable(str(made["chart"]), service.home) is not None
+    assert len(seen) == 1
+
+
+def test_one_file_named_in_many_replies_is_checked_once(service, made, monkeypatch):
+    calls = []
+    real = F.deliverable
+    monkeypatch.setattr(F, "deliverable", lambda raw, home: calls.append(raw) or real(raw, home))
+    for i in range(5):
+        add_msg(service.rt.state_db, "d1", "assistant", f"Again.\nMEDIA:{made['chart']}", NOW - 400 + i)
+    service.files.refresh(force=True)
+    assert calls.count(str(made["chart"])) == 1
+
+
+def test_the_index_warms_up_after_start_so_the_first_open_is_instant(service, made, monkeypatch):
+    import speakeasy.service as S
+    monkeypatch.setattr(S, "FILES_WARM_AFTER_S", 0.01)
+    assert not service.files.ready.is_set()
+    service._warm_files()
+    assert service.files.ready.wait(5)
+    first = service.files_list({})
+    assert first["loading"] is False and len(first["files"]) == 2
+
+
+def test_a_cold_first_list_answers_well_before_the_app_gives_up():
+    assert F.FIRST_WAIT_S <= 3   # the app waits 30 s; the reply says loading and the app asks again
+
+
 def test_outside_the_media_caches_only_with_hermes_rules(service, monkeypatch, tmp_path):
     """Without Hermes' delivery check only Hermes' own media caches count."""
     monkeypatch.setitem(sys.modules, "gateway.platforms.base", None)
