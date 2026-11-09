@@ -86,21 +86,19 @@ struct EmailCard: View {
                 }
                 if let line = info.threadLine {
                     Label(line, systemImage: "arrowshape.turn.up.left")
-                        .font(.system(size: 12.5)).foregroundStyle(look.secondary).lineLimit(1)
+                        .font(.system(size: 12.5)).foregroundStyle(look.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("email-card-thread")
                 }
             }
-            Button { details = true } label: {
-                Text(fields.body).font(.system(size: 14.5)).foregroundStyle(look.ink)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(fit == .compact ? 3 : 6).fixedSize(horizontal: false, vertical: true)
-                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: look.wellRadius, style: .continuous).fill(look.well))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Shows the whole email")
-            .accessibilityIdentifier("email-card-body")
+            // The whole body, every line (Geo 11-09): seeing the email never takes a tap; a long one
+            // simply makes the card taller and the chat scrolls. Edit opens the sheet to change it.
+            Text(fields.body).font(.system(size: 14.5)).foregroundStyle(look.ink)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: look.wellRadius, style: .continuous).fill(look.well))
+                .accessibilityIdentifier("email-card-body")
             ForEach(info.stillUnresolved(in: fields), id: \.self) { name in
                 HStack(spacing: 6) {
                     Image(systemName: "person.crop.circle.badge.questionmark").foregroundStyle(look.warn)
@@ -114,9 +112,9 @@ struct EmailCard: View {
                 }
                 .font(.system(size: 13))
             }
-            if let note = info.notes.first {
-                Text(info.notes.count > 1 ? "\(note) (+\(info.notes.count - 1) in details)" : note)
-                    .font(.system(size: 12.5)).foregroundStyle(look.secondary).lineLimit(2)
+            ForEach(Array(info.notes.enumerated()), id: \.offset) { _, note in
+                Text(note).font(.system(size: 12.5)).foregroundStyle(look.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("email-card-note")
             }
             footer
@@ -154,9 +152,10 @@ struct EmailCard: View {
     private var recipients: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let from = info.from { EmailRecipientsRow(label: "From", people: [EmailCardInfo.Person(typed: from) ?? .init(name: "", address: from)], limit: 1) }
-            EmailRecipientsRow(label: "To", people: fields.to, limit: fit == .compact ? 1 : 3)
-            if !fields.cc.isEmpty { EmailRecipientsRow(label: "Cc", people: fields.cc, limit: fit == .compact ? 1 : 3) }
-            if !fields.bcc.isEmpty { EmailRecipientsRow(label: "Bcc", people: fields.bcc, limit: fit == .compact ? 1 : 2) }
+            // Every recipient with name and address; no "+N more" behind a tap.
+            EmailRecipientsRow(label: "To", people: fields.to, limit: .max)
+            if !fields.cc.isEmpty { EmailRecipientsRow(label: "Cc", people: fields.cc, limit: .max) }
+            if !fields.bcc.isEmpty { EmailRecipientsRow(label: "Bcc", people: fields.bcc, limit: .max) }
         }
     }
 
