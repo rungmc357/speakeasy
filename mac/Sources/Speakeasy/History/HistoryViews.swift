@@ -259,9 +259,10 @@ struct HistorySidebar: View {
         }
         .padding(.horizontal, 10).frame(height: 30)
         .background(Capsule().fill(SidebarLook.searchFill))
-        // No edge at rest (the whiter fill sets it apart, as on the phone); a quiet one while typing.
+        // No edge at rest (the whiter fill sets it apart, as on the phone); a hairline while typing
+        // (macOS focuses the first field on launch, so this is what most people see first).
         .overlay(Capsule()
-            .strokeBorder(searchFocused ? Color.primary.opacity(0.18) : Color.clear, lineWidth: 0.75))
+            .strokeBorder(searchFocused ? Color.primary.opacity(0.12) : Color.clear, lineWidth: 0.5))
     }
 
     private var filterRow: some View {
