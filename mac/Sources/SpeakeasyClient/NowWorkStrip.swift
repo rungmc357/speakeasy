@@ -321,7 +321,8 @@ public struct NowWorkStripPanel: View {
                 .padding(.top, 2)
         }
         .scrollIndicators(.hidden)
-        .scrollBounceBehavior(.basedOnSize)
+        // Always bounces: on Home, pulling the strip past its top opens all work.
+        .scrollBounceBehavior(.always, axes: .vertical)
         .frame(height: Self.height(rows: live.count, maxRows: maxRows))
         .accessibilityIdentifier("home-work-strip")
     }
