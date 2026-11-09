@@ -39,9 +39,7 @@ struct BoardSidebarRow: View {
         let on = store.showingBoard
         Button { store.openBoard() } label: {
             HStack(spacing: 10) {
-                Circle().fill(on ? Live.brass.opacity(0.22) : Color.primary.opacity(0.06)).frame(width: 26, height: 26)
-                    .overlay(Image(systemName: "rectangle.split.3x1.fill").font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(on ? Live.brass : Color.primary.opacity(0.6)))
+                SidebarGlyph(symbol: "rectangle.split.3x1", tint: on ? .primary : nil)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Board").font(.system(size: 12.5, weight: .semibold))
                     Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
@@ -56,10 +54,7 @@ struct BoardSidebarRow: View {
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(on ? HistoryLook.selected : hover ? HistoryLook.hover : .clear))
-            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(on ? Live.brass.opacity(0.32) : .clear, lineWidth: 0.75))
+            .sidebarRowBackground(selected: on, hover: hover)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

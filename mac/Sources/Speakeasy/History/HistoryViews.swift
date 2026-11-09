@@ -57,6 +57,55 @@ enum HistoryLook {
     }
 }
 
+/// SPK-263: the sidebar in Home's Clean language at Mac sizes: rounded glyph tiles with a hairline
+/// (Home's card tiles, not circles), plain sentence-case section titles, the selected row as a quiet
+/// neutral surface with a hairline (no brass, no system blue), and the same 8 pt rhythm. Brass stays
+/// for what needs the person.
+enum SidebarLook {
+    static let tileRadius: CGFloat = 7
+    static let tile: CGFloat = 26
+    static let rowRadius: CGFloat = 10
+    static let selectedFill = Color.adaptive(dark: Color.white.opacity(0.085), light: Color.white.opacity(0.75))
+    static let selectedEdge = Color.adaptive(dark: Color.white.opacity(0.10), light: Color(hex: 0x1c1a17, alpha: 0.08))
+    static let well = Color.adaptive(dark: Color.white.opacity(0.065), light: Color(hex: 0x1c1a17, alpha: 0.045))
+    static let hairline = Color.adaptive(dark: Color.white.opacity(0.08), light: Color(hex: 0x1c1a17, alpha: 0.08))
+    static let glyph = Color.primary.opacity(0.62)
+}
+
+/// A sidebar row's symbol on Home's rounded tile (the well plus a hairline).
+struct SidebarGlyph: View {
+    var symbol: String
+    var tint: Color? = nil
+    var size: CGFloat = SidebarLook.tile
+    var body: some View {
+        RoundedRectangle(cornerRadius: SidebarLook.tileRadius, style: .continuous).fill(SidebarLook.well)
+            .overlay(RoundedRectangle(cornerRadius: SidebarLook.tileRadius, style: .continuous).strokeBorder(SidebarLook.hairline, lineWidth: 0.75))
+            .frame(width: size, height: size)
+            .overlay(Image(systemName: symbol).font(.system(size: size * 0.42, weight: .semibold)).foregroundStyle(tint ?? SidebarLook.glyph))
+            .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// The selected / hovered sidebar row: a quiet raised surface and hairline, no accent.
+    func sidebarRowBackground(selected: Bool, hover: Bool = false) -> some View {
+        background(RoundedRectangle(cornerRadius: SidebarLook.rowRadius, style: .continuous)
+            .fill(selected ? SidebarLook.selectedFill : hover ? HistoryLook.hover : .clear)
+            .shadow(color: selected ? Color.black.opacity(0.06) : .clear, radius: 3, y: 1))
+        .overlay(RoundedRectangle(cornerRadius: SidebarLook.rowRadius, style: .continuous)
+            .strokeBorder(selected ? SidebarLook.selectedEdge : .clear, lineWidth: 0.75))
+    }
+}
+
+/// A plain sentence-case section title (\u{201C}Projects\u{201D}, \u{201C}Today\u{201D}).
+struct SidebarSectionTitle: View {
+    var title: String
+    var body: some View {
+        Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
 struct HistoryRootView: View {
     @ObservedObject var store: HistoryStore
     var voice: VoicePanelModel? = nil
@@ -129,9 +178,12 @@ struct HistorySidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header.padding(.top, 34).padding(.horizontal, 14)
+            header.padding(.top, 34).padding(.horizontal, 16)
             search.padding(.horizontal, 12).padding(.top, 12)
-            filterRow.padding(.horizontal, 14).padding(.top, 9).padding(.bottom, 6)
+            filterRow.padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 8)
+            if store.supported {
+                MacProjectsSidebarSection(store: store, projects: store.projects, part: .home).padding(.horizontal, 6).padding(.bottom, 6)
+            }
             if store.supported && store.schedulesSupported {
                 ScheduledSidebarRow(store: store, schedules: store.schedules).padding(.horizontal, 6).padding(.bottom, 6)
             }
@@ -144,7 +196,7 @@ struct HistorySidebar: View {
             if store.supported {
                 MacProjectsSidebarSection(store: store, projects: store.projects).padding(.horizontal, 6).padding(.bottom, 6)
             }
-            Rectangle().fill(Live.hairline).frame(height: 1)
+            Rectangle().fill(SidebarLook.hairline).frame(height: 1).padding(.horizontal, 16)
             if !store.supported { updateNote } else { listBody }
         }
         .overlay(alignment: .bottom) { undoToast }
@@ -157,7 +209,7 @@ struct HistorySidebar: View {
             HStack(spacing: 10) {
                 Text("Archived “\(undo.title)”").font(.system(size: 11.5)).lineLimit(1).truncationMode(.middle)
                 Button("Undo") { store.undoLastArchive() }.buttonStyle(.plain)
-                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Live.brassText)
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.primary)
                     .accessibilityIdentifier("history-undo-archive")
             }
             .padding(.horizontal, 12).frame(height: 30)
@@ -198,9 +250,9 @@ struct HistorySidebar: View {
             }
         }
         .padding(.horizontal, 10).frame(height: 30)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(HistoryLook.field))
+        .background(RoundedRectangle(cornerRadius: SidebarLook.rowRadius, style: .continuous).fill(SidebarLook.well))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .strokeBorder(searchFocused ? Live.brass.opacity(0.55) : Live.hairline, lineWidth: searchFocused ? 1 : 0.5))
+            .strokeBorder(searchFocused ? Color.primary.opacity(0.28) : SidebarLook.hairline, lineWidth: searchFocused ? 1 : 0.75))
     }
 
     private var filterRow: some View {
@@ -234,7 +286,8 @@ struct HistorySidebar: View {
         } label: {
             Image(systemName: HistoryAutomation.symbol(shown))
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(shown.isStandard ? Color.secondary : Live.brassText)
+                .foregroundStyle(shown.isStandard ? Color.secondary : Color.primary)
+                .background(Circle().fill(shown.isStandard ? Color.clear : Color.primary.opacity(0.1)))
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
         }
@@ -266,9 +319,9 @@ struct HistorySidebar: View {
                     Text(sourceName).font(.system(size: 11.5, weight: .medium))
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).opacity(0.7)
                 }
-                .foregroundStyle(store.list.source == nil ? Color.secondary : Live.brassText)
-                .padding(.horizontal, 9).frame(height: 22)
-                .background(Capsule().fill(store.list.source == nil ? Color.primary.opacity(0.05) : Live.brass.opacity(0.16)))
+                .foregroundStyle(store.list.source == nil ? Color.secondary : Color.primary)
+                .padding(.horizontal, 10).frame(height: 24)
+                .background(Capsule().fill(store.list.source == nil ? Color.primary.opacity(0.05) : Color.primary.opacity(0.1)))
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .help("Show sessions from one place")
@@ -310,10 +363,9 @@ struct HistorySidebar: View {
     }
 
     private func sectionHeader(_ title: String) -> some View {
-        Text(title.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.9)
-            .foregroundStyle(.tertiary)
+        SidebarSectionTitle(title: title)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 5)
+            .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 4)
             .background(HistoryLook.sidebar.opacity(0.97))
     }
 
@@ -324,7 +376,7 @@ struct HistorySidebar: View {
         } else if let error = store.list.error {
             VStack(spacing: 6) {
                 Text(error).font(.system(size: 11)).foregroundStyle(Live.red).multilineTextAlignment(.center)
-                Button("Try again") { store.retryList() }.buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Live.brassText)
+                Button("Try again") { store.retryList() }.buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(.primary)
             }
             .frame(maxWidth: .infinity).padding(.horizontal, 16)
         } else if store.list.sessions.isEmpty {
@@ -366,16 +418,13 @@ struct HistoryRow: View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 10) {
                 ZStack(alignment: .bottomTrailing) {
-                    Circle().fill(selected ? Live.brass.opacity(0.22) : Color.primary.opacity(0.06)).frame(width: 26, height: 26)
-                        .overlay(Image(systemName: HistoryList.symbol(for: session.source))
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(selected ? Live.brass : Color.primary.opacity(0.6)))
+                    SidebarGlyph(symbol: HistoryList.symbol(for: session.source), tint: selected ? .primary : nil)
                     statusDot.offset(x: 2, y: 2)
                 }
                 .padding(.top, 1)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(session.title).font(.system(size: 12.5, weight: .semibold)).lineLimit(2)
+                        Text(session.title).font(.system(size: 12.5, weight: session.unread ? .semibold : .medium)).lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                             .foregroundStyle(Color.primary.opacity(selected ? 1 : 0.92))
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -395,9 +444,9 @@ struct HistoryRow: View {
                     if session.state != .idle || !session.isSpeakeasy || session.agent != nil {
                         HStack(spacing: 6) {
                             if session.state == .needsYou { NeedsYouMark(font: .system(size: 10, weight: .semibold)) }
-                            else if session.state == .running { tag("Working", Live.brassText) }
+                            else if session.state == .running { tag("Working", .secondary) }
                             if let agent = session.agent {
-                                Text(agent.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(Live.brassText).lineLimit(1)
+                                Text(agent.name).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
                             }
                             if !session.isSpeakeasy {
                                 Text(session.sourceLabel).font(.system(size: 10, weight: .medium)).foregroundStyle(.tertiary).lineLimit(1)
@@ -408,10 +457,7 @@ struct HistoryRow: View {
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(selected ? HistoryLook.selected : hover ? HistoryLook.hover : .clear))
-            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(selected ? Live.brass.opacity(0.32) : .clear, lineWidth: 0.75))
+            .sidebarRowBackground(selected: selected, hover: hover)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -425,11 +471,11 @@ struct HistoryRow: View {
 
     @ViewBuilder private var statusDot: some View {
         switch session.state {
-        case .running: LiveDot(color: Live.brass, size: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
+        case .running: LiveDot(color: Color.primary.opacity(0.6), size: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
         case .needsYou: Circle().fill(Live.amber).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
         case .idle:
             if session.unread {
-                Circle().fill(Color.accentColor).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
+                Circle().fill(Color.primary.opacity(0.85)).frame(width: 7, height: 7).overlay(Circle().stroke(HistoryLook.sidebar, lineWidth: 1.5))
                     .accessibilityLabel("Unread")
             }
         }

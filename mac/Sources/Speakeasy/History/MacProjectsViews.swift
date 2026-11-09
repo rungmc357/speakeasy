@@ -26,17 +26,20 @@ enum MacProjectTint {
 struct MacProjectsSidebarSection: View {
     @ObservedObject var store: HistoryStore
     @ObservedObject var projects: ProjectsModel
+    /// SPK-263: the sidebar draws Home on top (as on the phone) and the projects after Files.
+    enum Part { case home, projects }
+    var part: Part = .projects
     @State private var naming = false
     @State private var name = ""
 
     var body: some View {
-        if projects.supported && projects.loaded {
+        if projects.supported && projects.loaded && part == .home {
+            row(id: nil, symbol: HomeSpace.homeSymbol, color: nil, name: HomeSpace.homeName, line: homeLine)
+        } else if projects.supported && projects.loaded {
             VStack(alignment: .leading, spacing: 1) {
-                row(id: nil, symbol: HomeSpace.homeSymbol, color: nil, name: HomeSpace.homeName, line: "Not in a project")
                 if !projects.list.projects.isEmpty {
-                    Text("PROJECTS").font(.system(size: 10, weight: .bold)).tracking(0.6).foregroundStyle(.tertiary)
-                        .padding(.leading, 10).padding(.top, 8).padding(.bottom, 2)
-                        .accessibilityAddTraits(.isHeader)
+                    SidebarSectionTitle(title: "Projects")
+                        .padding(.leading, 10).padding(.top, 10).padding(.bottom, 2)
                 }
                 ForEach(projects.list.projects) { p in
                     row(id: p.id, symbol: p.symbol, color: p.color, name: p.name, line: p.activityLine(), running: p.running > 0)
@@ -45,6 +48,8 @@ struct MacProjectsSidebarSection: View {
                 Button { name = ""; naming = true } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "plus").font(.system(size: 11, weight: .semibold)).frame(width: 26, height: 26)
+                            .overlay(RoundedRectangle(cornerRadius: SidebarLook.tileRadius, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.28), style: StrokeStyle(lineWidth: 0.9, dash: [3, 2.5])))
                         Text("New project").font(.system(size: 12))
                         Spacer(minLength: 0)
                     }
@@ -64,20 +69,23 @@ struct MacProjectsSidebarSection: View {
         }
     }
 
+    /// "Working in Garden shed" while Home files into a project, otherwise "Not in a project".
+    private var homeLine: String {
+        if let id = projects.list.selected, let p = projects.list.projects.first(where: { $0.id == id }) { return "Working in \(p.name)" }
+        return "Not in a project"
+    }
+
     private func row(id: String?, symbol: String, color: ProjectColor?, name: String, line: String, running: Bool = false) -> some View {
         let on = projects.list.selected == id
         return HStack(spacing: 0) {
             Button { Task { await projects.select(id) } } label: {
                 HStack(spacing: 10) {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(id == nil ? Color.primary.opacity(0.06) : MacProjectTint.color(color).opacity(0.18))
-                        .frame(width: 26, height: 26)
-                        .overlay(Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(id == nil ? Color.primary.opacity(0.6) : MacProjectTint.color(color)))
+                    SidebarGlyph(symbol: id == nil && on ? "house.fill" : symbol,
+                                 tint: id == nil ? (on ? .primary : nil) : MacProjectTint.color(color))
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(name).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
+                        Text(name).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
                         HStack(spacing: 4) {
-                            if running { Circle().fill(Live.brass).frame(width: 5, height: 5).accessibilityHidden(true) }
+                            if running { LiveDot(color: Color.primary.opacity(0.6), size: 5).accessibilityHidden(true) }
                             Text(line).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
@@ -101,8 +109,7 @@ struct MacProjectsSidebarSection: View {
             }
         }
         .padding(.trailing, 4)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(on ? HistoryLook.selected : .clear))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(on ? Live.brass.opacity(0.32) : .clear, lineWidth: 0.75))
+        .sidebarRowBackground(selected: on)
     }
 
     @ViewBuilder private func inline(_ p: HermesProject) -> some View {
@@ -120,6 +127,9 @@ struct MacProjectsSidebarSection: View {
             }
         }
         .padding(.leading, 46).padding(.trailing, 10).padding(.bottom, 4)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(SidebarLook.hairline).frame(width: 1).padding(.leading, 23).padding(.vertical, 4)
+        }
     }
 }
 
