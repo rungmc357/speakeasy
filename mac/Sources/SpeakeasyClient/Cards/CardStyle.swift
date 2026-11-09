@@ -206,7 +206,62 @@ public struct CardPillButton: View {
     }
 }
 
+// MARK: - Layout grid (Clean)
+
+/// The Clean layout grid: one spacing scale, one set of corners and glyph sizes for every Home
+/// surface (thread, cards, composer, Work, the model sheet, the call card), so an edge fixed in one
+/// place lines up everywhere. An 8-pt grid with 4-pt half steps; never an ad-hoc 38 or 18.
+public enum CleanGrid {
+    /// Spacing scale.
+    public static let xxs: CGFloat = 2
+    public static let xs: CGFloat = 4
+    public static let s: CGFloat = 8
+    public static let m: CGFloat = 12
+    public static let l: CGFloat = 16
+    public static let xl: CGFloat = 24
+    public static let xxl: CGFloat = 32
+
+    /// The page's side margin: thread, tracker pill, composer, Work and sheets all start here.
+    public static let margin: CGFloat = 16
+    /// A card's inner padding, all four sides (matches `CardStyle.clean.padding`).
+    public static let cardPadding: CGFloat = 16
+
+    /// Corners: cards and sheet cards; inner wells, option rows and tiles; glyph tiles; tags.
+    public static let cardRadius: CGFloat = 22
+    public static let innerRadius: CGFloat = 14
+    public static let tileRadius: CGFloat = 9
+    /// Bubbles (yours, a sent clip's caption) use the same continuous corner as inner wells plus
+    /// the text's line: tall enough to read as a pill on one line, a soft card on several.
+    public static let bubbleRadius: CGFloat = 20
+
+    /// Glyph tiles beside a card's title and the circles in list rows.
+    public static let glyphTile: CGFloat = 28
+    public static let rowGlyph: CGFloat = 32
+    public static let heroGlyph: CGFloat = 44
+    /// The gap between a glyph tile and its text.
+    public static let glyphGap: CGFloat = 12
+    /// Where a card's text starts after its glyph tile: everything under the title (options,
+    /// tiles, Reply · Later, a fix button) starts here too, so it lines up with the title.
+    public static let textInset: CGFloat = glyphTile + glyphGap
+    /// A list row's text after its glyph circle (row padding + circle + gap): separators start here.
+    public static let rowTextInset: CGFloat = cardPadding + rowGlyph + glyphGap
+
+    /// Minimum height of a pill button and of a quiet text action row.
+    public static let controlHeight: CGFloat = 36
+}
+
 // MARK: - Shared parts (the Clean card language; classic draws them in its own sizes)
+
+/// The rounded tile behind a card's title glyph: the well plus a hairline, so a pale light-mode
+/// tile still reads as a tile (the well alone nearly vanished on a near-white card).
+public struct GlyphTileBackground: View {
+    @Environment(\.cardStyle) private var style
+    public init() {}
+    public var body: some View {
+        RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).fill(style.well)
+            .overlay(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).strokeBorder(style.hairline, lineWidth: 0.75))
+    }
+}
 
 /// Every card's first line on clean: a small glyph tile, a title, a quiet trailing note.
 public struct CardTitleRow: View {
@@ -220,10 +275,10 @@ public struct CardTitleRow: View {
         self.icon = icon; self.title = title; self.note = note; self.tint = tint; self.lines = lines
     }
     public var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: CleanGrid.glyphGap) {
             Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(tint ?? style.secondary)
-                .frame(width: 28, height: 28)
-                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(style.well))
+                .frame(width: CleanGrid.glyphTile, height: CleanGrid.glyphTile)
+                .background(GlyphTileBackground())
             Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(style.ink)
                 .lineLimit(lines).fixedSize(horizontal: false, vertical: lines > 1)
             Spacer(minLength: 8)

@@ -109,8 +109,8 @@ public struct NowWorkStrip: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: expanded ? 24 : 18))
-            .overlay(RoundedRectangle(cornerRadius: expanded ? 24 : 18).strokeBorder(Color.primary.opacity(0.08)))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: expanded ? CleanGrid.cardRadius : 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: expanded ? CleanGrid.cardRadius : 18, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
             .onChange(of: collapseToken) { _, _ in
                 if expanded { withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.9)) { expanded = false } }
             }
@@ -187,12 +187,12 @@ public struct NowWorkStripPanel: View {
     }
 
     private func stripPage(title: String, line: String, source: String, image: String?) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: CleanGrid.glyphGap) {
             if let image, let url = URL(string: image) {
                 AsyncImage(url: url) { state in
                     if let image = state.image { image.resizable().scaledToFill() }
                     else { Image(systemName: "rectangle.stack").foregroundStyle(.secondary) }
-                }.frame(width: 48, height: 56).clipShape(RoundedRectangle(cornerRadius: 10))
+                }.frame(width: 48, height: 56).clipShape(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous))
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(source).font(.caption).foregroundStyle(.secondary)
@@ -205,7 +205,7 @@ public struct NowWorkStripPanel: View {
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 14).frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+        .padding(.horizontal, CleanGrid.cardPadding).frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
         .contentShape(Rectangle())
     }
 }

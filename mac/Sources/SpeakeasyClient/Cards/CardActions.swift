@@ -45,32 +45,17 @@ public struct CardActionBar: View {
                                          "definition", "comparison", "nutrition", "message_draft", "draft"]
 
     public var body: some View {
-        let server = Self.serverActions(card, model: model)
-        HStack(spacing: style.capsHeaders ? 6 : 8) {
-            ForEach(server) { action in
-                let busy = model.cardActionBusy.contains("\(taskID)|\(card.viewIndex)|\(action.id)")
-                CardButton(title: action.label, style: action.style, busy: busy) {
-                    if action.confirm { confirming = action } else { model.runCardAction(taskID: taskID, card: card, action: action) }
-                }
-                .disabled(busy)
-            }
-            ForEach(CardLinks.links(card)) { link in
-                CardButton(title: link.label, icon: link.symbol, style: .secondary) { openURL(link.url) }
-            }
-            if Self.mapsKinds.contains(card.kind), let url = MapsLink.url(card) {
-                CardButton(title: card.kind == "place" ? "Open in Maps" : "Directions", icon: "map", style: .secondary) {
-                    openURL(url)
+        Group {
+            if style.capsHeaders {
+                HStack(spacing: 6) { buttons(natural: false); Spacer(minLength: 0) }
+            } else {
+                // Side by side while every label fits whole with its padding; otherwise one under
+                // another at full width (two labels squeezed edge to edge read as cramped).
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { buttons(natural: true) }
+                    VStack(spacing: 8) { buttons(natural: true) }
                 }
             }
-            if Self.copies(card) {
-                CardButton(title: copied ? "Copied" : "Copy", icon: copied ? "checkmark" : "doc.on.doc", style: .secondary) {
-                    Self.copy(CardText.plain(card))
-                    copied = true
-                    model.showToast("Copied")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-                }
-            }
-            if style.capsHeaders { Spacer(minLength: 0) }
         }
         .confirmationDialog(confirming.map { Self.confirmTitle($0, card) } ?? "", isPresented: Binding(get: { confirming != nil }, set: { if !$0 { confirming = nil } }), titleVisibility: .visible) {
             if let action = confirming {
@@ -80,6 +65,33 @@ public struct CardActionBar: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    @ViewBuilder private func buttons(natural: Bool) -> some View {
+        let server = Self.serverActions(card, model: model)
+            ForEach(server) { action in
+                let busy = model.cardActionBusy.contains("\(taskID)|\(card.viewIndex)|\(action.id)")
+                CardButton(title: action.label, style: action.style, busy: busy, natural: natural) {
+                    if action.confirm { confirming = action } else { model.runCardAction(taskID: taskID, card: card, action: action) }
+                }
+                .disabled(busy)
+            }
+            ForEach(CardLinks.links(card)) { link in
+                CardButton(title: link.label, icon: link.symbol, style: .secondary, natural: natural) { openURL(link.url) }
+            }
+            if Self.mapsKinds.contains(card.kind), let url = MapsLink.url(card) {
+                CardButton(title: card.kind == "place" ? "Open in Maps" : "Directions", icon: "map", style: .secondary, natural: natural) {
+                    openURL(url)
+                }
+            }
+            if Self.copies(card) {
+                CardButton(title: copied ? "Copied" : "Copy", icon: copied ? "checkmark" : "doc.on.doc", style: .secondary, natural: natural) {
+                    Self.copy(CardText.plain(card))
+                    copied = true
+                    model.showToast("Copied")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                }
+            }
     }
 
     /// The question a confirming button asks: what will happen, in plain words.
@@ -109,6 +121,8 @@ struct CardButton: View {
     var icon: String? = nil
     var style: CardAction.Style
     var busy = false
+    /// The label keeps its whole width (the bar stacks the buttons instead of squeezing a label).
+    var natural = false
     var action: () -> Void
     @State private var hover = false
     @Environment(\.cardStyle) private var look
@@ -119,8 +133,9 @@ struct CardButton: View {
                 if busy { ProgressView().controlSize(.mini) }
                 else if let icon { Image(systemName: icon).font(.system(size: look.capsHeaders ? 10.5 : 13, weight: .semibold)) }
                 Text(title).font(.system(size: look.capsHeaders ? 11.5 : 15, weight: .semibold)).lineLimit(1)
+                    .fixedSize(horizontal: natural, vertical: false)
             }
-            .padding(.horizontal, look.capsHeaders ? 10 : 14).frame(height: look.capsHeaders ? 26 : 40)
+            .padding(.horizontal, look.capsHeaders ? 10 : 16).frame(height: look.capsHeaders ? 26 : 40)
             .frame(maxWidth: look.capsHeaders ? nil : .infinity)
             .foregroundStyle(fg)
             .background(Capsule().fill(bg.opacity(hover ? 1 : 0.85)))
