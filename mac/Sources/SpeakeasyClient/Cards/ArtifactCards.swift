@@ -549,8 +549,13 @@ struct ArtifactDraftCard: View {
          "x": "Post on X", "linkedin": "LinkedIn", "whatsapp": "WhatsApp"][channel ?? ""] ?? "Message"
     }
     var body: some View {
+        // An email the server drew from a stored draft: the full email card (recipients, thread,
+        // its own Send / Edit). Anything else (a text, a post, an older server): the plain draft.
+        if let info = EmailCardInfo(card) { EmailCard(card: card, info: info) } else { plain }
+    }
+    private var plain: some View {
         let channel = card["channel"].string
-        VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: Self.icon(channel)).font(.system(size: 13, weight: .semibold)).foregroundStyle(gold)
                 Text("\(Self.channelName(channel)) to \(card["to"].string ?? "")").font(.system(size: 14, weight: .semibold)).lineLimit(1)

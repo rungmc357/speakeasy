@@ -1582,7 +1582,7 @@ public enum JobCards {
                                    summary: r.countLabel, content: .review(r)))
         }
         var seen = Set<String>()
-        for d in job.tasks.reversed().flatMap(\.info.emailDrafts) where seen.insert(d.draftID).inserted {
+        for d in job.tasks.reversed().flatMap(\.info.draftsWithoutCard) where seen.insert(d.draftID).inserted {
             let to = d.to.first.map { "To \($0)" } ?? ""
             out.append(JobCardItem(key: "draft:\(d.draftID)", icon: "envelope", title: d.subject.isEmpty ? "Email draft" : d.subject,
                                    summary: to, content: .draft(d)))

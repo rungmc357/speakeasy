@@ -209,3 +209,162 @@ def test_a_cleared_task_with_a_waiting_draft_stays_cleared(service):
     assert [t for t in store.latest_tasks() if t["task_id"] == "item_old"]
     assert service.dismiss_tasks({"run_ids": ["run_old", "run_new"]})["dismissed"] == ["run_old", "run_new"]
     assert store.latest_tasks() == []
+
+
+# -- build 73: the email card (recipients, thread, unresolved names, edits, its own buttons) -----------
+
+RICH = {**DRAFT, "to": ["Pat Doe <pat@example.org>"],
+        "cc": ["Robin Vale <robin.vale@example.net>", "kit@example.net"],
+        "subject": "RE: Spring schedule", "reply_to_message_id": "m-123",
+        "thread_subject": "Spring schedule", "thread_count": 4,
+        "thread_last": {"from": "Pat Doe <pat@example.org>", "when": "Mon 9:12", "text": "Does Friday work?"},
+        "unresolved": ["Lark & Finch"], "notes": ["Left out 'next week': the calendar shows this week"]}
+
+
+def test_card_context_parsed_but_never_hashed_or_sent():
+    _, drafts = extract_email_drafts(answer_with(RICH))
+    d = drafts[0]
+    assert d["context"]["thread_count"] == 4 and d["context"]["unresolved"] == ["Lark & Finch"]
+    assert draft_sha256(d) == draft_sha256({k: v for k, v in d.items() if k != "context"})
+    assert "context" not in canonical_json(d) and "Lark" not in canonical_json(d)
+
+
+def test_malformed_context_is_dropped_not_fatal():
+    _, drafts = extract_email_drafts(answer_with({**DRAFT, "thread_count": "four", "unresolved": [3, ""],
+                                                  "thread_last": "nope", "notes": "One note"}))
+    assert drafts and drafts[0]["context"] == {"notes": ["One note"]}
+
+
+def test_email_view_shows_every_recipient_with_name_and_address():
+    from speakeasy.emails import email_view, with_context
+    d = {**with_context(normalize_draft(RICH), RICH), "draft_id": "ed_" + "a" * 24, "sha256": "f" * 64,
+         "status": "pending"}
+    v = email_view(d)
+    assert v["kind"] == "draft" and v["channel"] == "email" and v["to"] == "Pat Doe"
+    assert v["recipients"]["to"] == [{"name": "Pat Doe", "address": "pat@example.org"}]
+    assert v["recipients"]["cc"] == [{"name": "Robin Vale", "address": "robin.vale@example.net"},
+                                     {"name": "", "address": "kit@example.net"}]
+    assert "bcc" not in v["recipients"]
+    assert v["thread"] == "Spring schedule" and v["thread_count"] == 4 and v["thread_last"]["text"]
+    assert v["unresolved"] == ["Lark & Finch"] and v["notes"] and v["draft_id"] and v["sha256"]
+
+
+def test_edit_validates_and_clears_a_resolved_name():
+    from speakeasy.emails import apply_edit, with_context
+    d = with_context(normalize_draft(RICH), RICH)
+    edited = apply_edit(d, {"cc": ["Robin Vale <robin.vale@example.net>", "Lark & Finch <desk@larkfinch.example>"],
+                            "body": "Hi Pat,\n\nFriday works."})
+    assert edited["context"]["edited"] is True and "unresolved" not in edited["context"]
+    assert edited["body"] == "Hi Pat,\n\nFriday works." and edited["subject"] == RICH["subject"]
+    with pytest.raises(DraftInvalid):
+        apply_edit(d, {"to": []})
+    with pytest.raises(DraftInvalid):
+        apply_edit(d, {"from": "else@example.com"})
+
+
+def test_prompts_carry_every_named_recipient_and_detail():
+    prompt = P.build_task_prompt(P.Names("Hermes", "Sam"), 1, "User: email Pat and Lark & Finch")
+    assert "unresolved" in prompt and "never drop one silently" in prompt and "thread_count" in prompt
+    assert "never describe the draft instead of including it" in prompt
+    rules = P.build_live_instructions(P.Names("Hermes", "Sam"))
+    assert "every person, company and detail" in rules and "shows as a card by itself" in rules
+
+
+def _call_with_rich_draft(server, service, hermes):
+    hermes.responder = lambda prompt, sid: answer_with(RICH)
+    status, _ = http(server.base_url, "POST", "/voice/sessions", {"sdp": SDP}, server.token,
+                     {"Idempotency-Key": "req_email_rich"})
+    assert status == 201
+    service.workers[-1].delegate("call_email_rich", "Email Pat and Lark & Finch about Friday")
+    tasks = wait_for(lambda: (lambda t: t if t and t[0].get("email_drafts") else None)(
+        http(server.base_url, "GET", "/voice/work/latest", token=server.token)[1]["tasks"]))
+    return tasks[0]
+
+
+def test_finished_draft_job_answers_with_the_email_card(server, service, hermes):
+    task = _call_with_rich_draft(server, service, hermes)
+    status, body = http(server.base_url, "GET", f"/voice/work/{task['run_id']}", token=server.token)
+    views = body["work"]["result"]["views"]
+    assert views[-1]["kind"] == "draft" and views[-1]["draft_id"] == task["email_drafts"][0]["draft_id"]
+    assert views[-1]["recipients"]["cc"][0]["address"] == "robin.vale@example.net"
+    assert sum(1 for v in views if v.get("kind") == "draft") == 1
+
+
+def test_email_card_never_moves_another_cards_index():
+    from speakeasy.emails import with_email_views
+    drafts = [{**normalize_draft(DRAFT), "draft_id": "ed_" + "b" * 24, "sha256": "e" * 64, "status": "pending"}]
+    confirm, hand = {"kind": "confirm", "title": "x"}, {"kind": "draft", "channel": "email", "to": "Pat"}
+    assert [v["kind"] for v in with_email_views([confirm], drafts)] == ["confirm", "draft"]
+    out = with_email_views([confirm, hand, {"kind": "fact"}], drafts)
+    assert [v["kind"] for v in out] == ["confirm", "draft", "fact"] and out[1]["draft_id"]
+    assert with_email_views([confirm], []) == [confirm]
+
+
+def test_email_card_buttons_edit_then_send_bound_to_the_hash(server, service, hermes):
+    task = _call_with_rich_draft(server, service, hermes)
+    run, draft = task["run_id"], task["email_drafts"][0]
+    url = f"/voice/work/{run}/card-action"
+    # a stale hash is refused and nothing reaches Hermes
+    before = len(hermes.calls)
+    status, _ = http(server.base_url, "POST", url, {"view": 0, "action": "send", "value": "0" * 64}, server.token)
+    assert status == 409 and len(hermes.calls) == before
+    # edit: a new pending draft with a new hash, nothing sent
+    status, out = http(server.base_url, "POST", url, {"view": 0, "action": "edit", "value": {
+        "sha256": draft["sha256"], "to": ["Pat Doe <pat@example.org>", "Lee Moss <lee@example.org>"]}}, server.token)
+    assert status == 200 and out["draft"]["status"] == "pending" and out["draft"]["sha256"] != draft["sha256"]
+    assert len(hermes.calls) == before
+    assert service.store.draft(draft["draft_id"])["status"] == "superseded"
+    view = http(server.base_url, "GET", f"/voice/work/{run}", token=server.token)[1]["work"]["result"]["views"][0]
+    assert [r["name"] for r in view["recipients"]["to"]] == ["Pat Doe", "Lee Moss"] and view["edited"] is True
+    # send the edited one: the task is told it was edited, with the new recipients
+    hermes.responder = lambda prompt, sid: "Sent.\nDONE: Email sent\nSPOKEN: Sent."
+    status, out = http(server.base_url, "POST", url, {"view": 0, "action": "send", "value": view["sha256"]},
+                       server.token)
+    assert status == 200 and out["draft"]["status"] in {"approved", "sent"}
+    sent = hermes.calls[-1]["input"]
+    assert "lee@example.org" in sent and "edited this email on the card" in sent and "Lark" not in sent
+
+
+def test_email_card_save_and_discard(server, service, hermes):
+    task = _call_with_rich_draft(server, service, hermes)
+    run, draft = task["run_id"], task["email_drafts"][0]
+    url = f"/voice/work/{run}/card-action"
+    hermes.responder = lambda prompt, sid: "Saved.\nDONE: Saved\nSPOKEN: It's in your Drafts."
+    status, out = http(server.base_url, "POST", url, {"view": 0, "action": "save", "value": draft["sha256"]},
+                       server.token)
+    assert status == 200 and out["draft"]["status"] == "pending"
+    assert "Do NOT send it" in hermes.calls[-1]["input"] and "Drafts" in hermes.calls[-1]["input"]
+    hermes.responder = lambda prompt, sid: "Discarded.\nSPOKEN: Discarded."
+    status, out = http(server.base_url, "POST", url, {"view": 0, "action": "discard", "value": draft["sha256"]},
+                       server.token)
+    assert status == 200 and out["draft"]["status"] == "denied"
+    status, _ = http(server.base_url, "POST", url, {"view": 0, "action": "frobnicate"}, server.token)
+    assert status == 400
+
+
+def test_card_edit_based_on_an_earlier_hash_after_the_users_own_edit(server, service, hermes):
+    task = _call_with_rich_draft(server, service, hermes)
+    run, draft = task["run_id"], task["email_drafts"][0]
+    url = f"/voice/work/{run}/card-action"
+    fields = {"to": ["Pat Doe <pat@example.org>"], "cc": [], "bcc": [], "subject": "RE: Spring schedule",
+              "body": "Hi Pat,\n\nFriday works."}
+    status, _ = http(server.base_url, "POST", url, {"view": 0, "action": "edit",
+                                                     "value": {"sha256": draft["sha256"], **fields}}, server.token)
+    assert status == 200
+    # the card still holds the first hash: Send with its full fields goes through (only the user edited)
+    hermes.responder = lambda prompt, sid: "Sent.\nDONE: Email sent\nSPOKEN: Sent."
+    status, out = http(server.base_url, "POST", url, {"view": 0, "action": "edit", "value": {
+        "sha256": draft["sha256"], "after": "send", **fields}}, server.token)
+    assert status == 200 and out["draft"]["status"] in {"approved", "sent"}
+    assert "Friday works." in hermes.calls[-1]["input"] and "robin" not in hermes.calls[-1]["input"]
+
+
+def test_card_edit_is_refused_after_the_task_revised_the_draft(server, service, hermes):
+    task = _call_with_rich_draft(server, service, hermes)
+    run, draft = task["run_id"], task["email_drafts"][0]
+    key = service.store.draft(draft["draft_id"])["_key"]
+    service.store.add_draft(key, None, normalize_draft({**DRAFT, "body": "A revision by the task"}))
+    before = len(hermes.calls)
+    status, _ = http(server.base_url, "POST", f"/voice/work/{run}/card-action", {"view": 0, "action": "edit", "value": {
+        "sha256": draft["sha256"], "after": "send", "body": "Mine"}}, server.token)
+    assert status == 409 and len(hermes.calls) == before

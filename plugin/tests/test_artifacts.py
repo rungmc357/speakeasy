@@ -226,7 +226,7 @@ def test_send_on_a_draft_reaches_the_task_as_a_follow_up_and_nothing_else():
     sent = []
     draft = _result("A reply to Sam Rivera.", [{"kind": "draft", "channel": "email", "to": "Sam Rivera",
                                                 "body": "Thursday works."}])["views"][0]
-    fake = SimpleNamespace(store=SimpleNamespace(run_result=lambda run: ("key_1", {"views": [draft]})),
+    fake = SimpleNamespace(store=SimpleNamespace(run_result=lambda run: ("key_1", {"views": [draft]}), drafts_for=lambda key: []),
                            task_message=lambda run, body: sent.append((run, body)))
     out = VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "send"})
     assert out == {"ok": True, "message": "Sent to the task."}
@@ -268,7 +268,7 @@ def test_an_offered_step_replaces_the_generic_fix_and_sends_its_own_words():
     assert [a["label"] for a in view["actions"]] == ["Rerun failed"]
     assert view["actions"][0]["style"] == "primary" and not view["actions"][0]["confirm"]
     sent = []
-    fake = SimpleNamespace(store=SimpleNamespace(run_result=lambda run: ("key_1", {"views": [view]})),
+    fake = SimpleNamespace(store=SimpleNamespace(run_result=lambda run: ("key_1", {"views": [view]}), drafts_for=lambda key: []),
                            task_message=lambda run, body: sent.append((run, body)))
     assert VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "do_0"})["ok"] is True
     assert sent == [("run_abc123", {"text": "Rerun failed (PR #418).", "source": "typed"})]
