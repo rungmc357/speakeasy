@@ -91,16 +91,17 @@ struct BeforeAfterCard: View {
 
     @ViewBuilder private func side(_ v: JSONValue, fallback: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            if v["image"].url != nil || v["image"].double != nil {
+            if v["image"].url != nil || (v["image"].double != nil && actions.image != nil) {
+                let label = v["label"].string ?? fallback
+                // Tapping either side opens it full screen (CardPicture's viewer: zoom, drag to close).
                 ZStack(alignment: .bottomLeading) {
-                    if let url = v["image"].url {
-                        CardImage(url: url, size: 96, corner: 8, fill: true)
-                    } else if let n = v["image"].double, let load = actions.image {
-                        NumberedImage(number: Int(n), load: load).frame(height: 96)
-                    }
-                    Text(v["label"].string ?? fallback).font(.system(size: 11.5, weight: .bold))
+                    CardPicture(value: v["image"], height: 96, corner: 8, label: "\(label) picture",
+                                fill: true, stretch: true, placeholder: true)
+                    Text(label).font(.system(size: 11.5, weight: .bold))
                         .padding(.horizontal, 5).padding(.vertical, 2)
                         .background(Capsule().fill(Color.black.opacity(0.6))).foregroundStyle(.white).padding(4)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -115,29 +116,6 @@ struct BeforeAfterCard: View {
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.05)))
-    }
-}
-
-/// A task picture by its card number, through the host's authenticated loader.
-struct NumberedImage: View {
-    let number: Int
-    let load: (Int) async -> Data?
-    @State private var image: Image?
-    var body: some View {
-        ZStack {
-            Rectangle().fill(Color.primary.opacity(0.06))
-            if let image { image.resizable().scaledToFill() }
-        }
-        .frame(maxWidth: .infinity)
-        .clipped()
-        .task(id: number) {
-            guard image == nil, let data = await load(number) else { return }
-            #if os(macOS)
-            if let ns = NSImage(data: data) { image = Image(nsImage: ns) }
-            #else
-            if let ui = UIImage(data: data) { image = Image(uiImage: ui) }
-            #endif
-        }
     }
 }
 
