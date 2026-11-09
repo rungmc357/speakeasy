@@ -296,11 +296,13 @@ class HermesAPI:
             self.remember_agent("session", session_id or "", agent)
         return run_id
 
-    def events(self, run_id: str, callback: Callable[[dict[str, Any]], None]) -> bool:
-        """Stream one run's events; True when a terminal event arrived."""
+    def events(self, run_id: str, callback: Callable[[dict[str, Any]], None], last_seq: int | None = None) -> bool:
+        """Stream one run's events; True when a terminal event arrived. *last_seq*: pick the stream
+        up after that event (Hermes replays what it kept after it), e.g. after a plugin reload."""
         if not ID_RE.fullmatch(run_id):
             raise HermesError(400, "invalid run ID")
-        req = self._request(f"/v1/runs/{run_id}/events", base=self._run_base(run_id))
+        headers = {"Last-Event-ID": str(int(last_seq))} if last_seq is not None and last_seq >= 0 else None
+        req = self._request(f"/v1/runs/{run_id}/events", headers=headers, base=self._run_base(run_id))
         try:
             with self.opener(req, timeout=RUN_EVENTS_TIMEOUT_S) as response:
                 total, terminal = 0, False

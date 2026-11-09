@@ -44,6 +44,7 @@ from . import corrections as corrections_mod
 from . import vocabulary as vocabulary_mod
 from . import transcript as transcript_mod
 from . import session_titles
+from . import home_chat as home_chat_mod
 from . import quick as quick_mod
 from . import views as views_mod
 from . import activity as activity_mod
@@ -126,6 +127,19 @@ def on_loop(coro: Any, loop: asyncio.AbstractEventLoop) -> Any:
             if _EXITING.is_set() or loop.is_closed() or not loop.is_running():
                 future.cancel()
                 raise RuntimeError("the call's event loop stopped") from None
+
+
+def on_loop_soon(coro: Any, loop: asyncio.AbstractEventLoop | None) -> Any:
+    """Start ``coro`` on *loop* from another thread without waiting for it (work picked up after a
+    reload). Returns its future, or None when the loop isn't running (the coroutine is dropped)."""
+    if loop is None or loop.is_closed() or not loop.is_running():
+        coro.close()
+        return None
+    try:
+        return asyncio.run_coroutine_threadsafe(coro, loop)
+    except RuntimeError:
+        coro.close()
+        return None
 
 
 def _same_words(fragment: str, request: str) -> bool:
@@ -222,6 +236,8 @@ def whole_request(context: str, started: "set[str] | None" = None) -> str:
     return " ".join(reversed(picked)).strip()
 
 TASK_SESSION_PREFIX = "speakeasy_task_"
+# A new chat that opened with small talk has no topic yet (SPK-290): its name until a real ask.
+NEW_CHAT_TITLE = "New chat"
 
 
 def task_session_id(idem: str) -> str:
@@ -702,6 +718,9 @@ class BackendRun:
     # The task's own interim texts already handled (normalized), so one read from its stream and
     # again from its transcript (threads.SessionCommentary) counts once.
     interim_seen: set[str] = dataclasses.field(default_factory=set)
+    # The newest Hermes event sequence number seen on this run's stream: a reloaded plugin picks the
+    # stream up after it (Last-Event-ID) instead of losing track of the run (SPK-270).
+    last_seq: int = -1
 
     @property
     def say_id(self) -> str:
@@ -1268,6 +1287,14 @@ class SidebandWorker:
         before it on the call. A confidently wrong name is worse than a vague one."""
         if parent_key:
             self.store.set_parent(idem, parent_key)
+        if not parent_key and request and (home_chat_mod.small_talk(request) or is_greeting(request)) \
+                and self.store.session_for(idem) == task_session_id(idem):
+            # SPK-290: small talk that opens a new chat ("yo", "thanks") has no topic yet. It's "New
+            # chat" (in the app and on its Hermes session) until a real ask names one; never the
+            # titler's guess ("Greet user") or Hermes' own name from the brief ("Handle … task #24").
+            self.store.set_title(idem, NEW_CHAT_TITLE)
+            self.title_session(idem)
+            return
         provisional = self._no_names(short_title(request))
         parent = self.store.parent_name(parent_key)
         fragment = text_mod.is_fragment(request)
@@ -1316,15 +1343,22 @@ class SidebandWorker:
         from the prompt's preamble). Only the session minted for this task: never a chat it continues.
         In the background; a session that keeps Hermes' own name costs nothing but looks."""
         session_id = task_session_id(idem)
+        only_if = None
         if self.store.session_for(idem) != session_id:
-            return
+            # A later task in a chat that opened with small talk (SPK-290): the chat is still "New
+            # chat", and this is its first real topic. Only Speakeasy's own sessions, and only while
+            # the name is still "New chat"; a chat the task continues (Discord, a user's session) never.
+            session_id = self.store.session_for(idem) or ""
+            if not session_id.startswith(TASK_SESSION_PREFIX) or self.store.title(idem) in (None, "", NEW_CHAT_TITLE):
+                return
+            only_if = NEW_CHAT_TITLE
 
         def name() -> str | None:
             return self._no_names(self.store.title(idem))
 
         # Not a dispatch task: the end of a call never waits on a session's name.
         task = asyncio.get_running_loop().create_task(
-            asyncio.to_thread(session_titles.push, self.hermes, session_id, name))
+            asyncio.to_thread(session_titles.push, self.hermes, session_id, name, only_if=only_if))
         session_titles.PENDING.add(task)
         task.add_done_callback(session_titles.PENDING.discard)
 
@@ -3166,8 +3200,26 @@ class SidebandWorker:
                 return other, project
         return None
 
-    async def wait_for_fence(self, backend: BackendRun, blocker: BackendRun, project: str, delegation_id: str) -> None:
-        """Hold a new task until the task editing the same project ends (or the user says go)."""
+    def _held_behind(self, idem: str, task_id: str) -> tuple[BackendRun, str] | None:
+        """For a task held before a reload: the still-running task it was held behind, found by the
+        name and project saved when it was held (what the running task touched lived in memory)."""
+        held = self.store.waiting_of(idem)
+        if not held or not held.get("name"):
+            return None
+        with self.interaction.lock:
+            running = [r for t, r in self.interaction.runs.items()
+                       if t != task_id and r.idem_key != idem and r.status in ACTIVE_RUN_STATES - {"waiting_on_task"}]
+        for other in running:
+            name = self.store.title(other.idem_key) or notice_text(self.store.request_text(other.idem_key), 80)
+            if name == held["name"]:
+                return other, str(held.get("project") or "")
+        return None
+
+    async def wait_for_fence(self, backend: BackendRun, blocker: BackendRun, project: str, delegation_id: str,
+                             resumed: bool = False) -> None:
+        """Hold a new task until the task editing the same project ends (or the user says go).
+        *resumed*: a task already held before a plugin reload or restart (SPK-296): it stays held
+        without being announced again."""
         idem = backend.idem_key
         asked = self.store.request_text(blocker.idem_key)
         # A request naming a path isn't chat-safe as is: its short name ("Fix the checkout bug") is.
@@ -3176,13 +3228,20 @@ class SidebandWorker:
                 or notice_text(home_short(asked or "") or "", 80) or "the other task")
         with self.interaction.lock:
             backend.blocked_by = blocker.delegation_id
-        self.move(backend, "waiting_on_task")
+            if resumed:
+                backend.status = "waiting_on_task"
+        if not resumed:
+            self.move(backend, "waiting_on_task")
         # ``key``: the job it waits for, so Home names it by its current title ("Waiting · after ...").
         self.store.set_waiting(idem, {"name": name, "project": project, "key": blocker.idem_key})
-        self.store.progress(idem, "milestone", notice_text(f"Waiting for \"{name}\" ({project})", 200) or "Waiting")
+        if not resumed:
+            self.store.progress(idem, "milestone", notice_text(f"Waiting for \"{name}\" ({project})", 200) or "Waiting")
         self.publish()
-        logger.info("speakeasy: new task held behind a running task on the same project")
-        await self.append("session.commentary.append", delegation_id, P.fence_spoken(name, project))
+        if resumed:
+            logger.info("speakeasy: a held task is still held behind a running task after a reload")
+        else:
+            logger.info("speakeasy: new task held behind a running task on the same project")
+            await self.append("session.commentary.append", delegation_id, P.fence_spoken(name, project))
         waited = 0.0
         while True:
             with self.interaction.lock:
@@ -5072,15 +5131,21 @@ class SidebandWorker:
                          session_id: str | None = None, replaces: str | None = None,
                          deliver_to: str | None = None, ack: str | None = None,
                          ack_place: str | None = None, named: bool = False, parent: str | None = None,
-                         continues: str = "", words: str | None = None, note: str = "") -> None:
+                         continues: str = "", words: str | None = None, note: str = "",
+                         resume: bool = False, idem: str | None = None) -> None:
         """*parent*: the task this one answers or follows up (its idem key), which names it.
+
+        *resume* (with its stored *idem*): a task that was held behind another task on the same
+        project when the plugin reloaded or Hermes restarted (SPK-296). Its row already exists: it
+        is held again behind that task if it still runs, else it starts now.
 
         *continues* names the earlier task once, flat ("Answering your question …"); *words* is what
         the user actually said when *request* carries more (a correction's steer); *note* is guidance
         beside the words. A later turn in a session whose first turn's rules are still in its
         context gets only these (``P.build_follow_up_prompt``), never the full brief again."""
-        idem = self._idem(task_id, revision)
-        backend = BackendRun(task_id, revision, idem, voice_id=voice_id, deliver_to=deliver_to)
+        idem = idem or self._idem(task_id, revision)
+        backend = BackendRun(task_id, revision, idem, voice_id=voice_id, deliver_to=deliver_to,
+                             status="waiting_on_task" if resume else "admitting")
         delegation_id = backend.say_id
         replaced_key = self._register(task_id, backend, replaces)
         if replaced_key:
@@ -5103,23 +5168,33 @@ class SidebandWorker:
             extras.append(update_note.strip(" ()"))
         # Read now, before any await: the call may end (and drop its room text) while what was shared is collected.
         room = self.room_handoff_text(voice_id or task_id)
-        state, known_run = self.store.reserve_run(idem, self.interaction.interaction_id, task_id, revision)
-        if state != "created":
-            if known_run:
-                with self.interaction.lock:
-                    backend.run_id, backend.status = known_run, state
-            self.publish()
-            return
-        self.store.set_session(idem, session_id)
-        self.record_timing(task_id, idem)
-        if request:
-            self.store.progress(idem, "request", request)
-            self.name_task(idem, request, parent)
+        if not resume:
+            state, known_run = self.store.reserve_run(idem, self.interaction.interaction_id, task_id, revision)
+            if state != "created":
+                if known_run:
+                    with self.interaction.lock:
+                        backend.run_id, backend.status = known_run, state
+                self.publish()
+                return
+            self.store.set_session(idem, session_id)
+            self.record_timing(task_id, idem)
+            if request:
+                self.store.progress(idem, "request", request)
+                self.name_task(idem, request, parent)
         # Same-project fence: a new edit to a project a running task is already editing waits for it.
         fenced = self.fence_blocker(task_id, request, exclude={replaces}) if request else None
+        if fenced is None and resume:
+            fenced = self._held_behind(idem, task_id)
+        if fenced is None and resume:
+            # Held before a reload, and what it waited on is gone (finished, or no longer known): start now.
+            self.store.set_waiting(idem, None)
+            self.move(backend, "admitting")
+            self.store.progress(idem, "milestone", "Started")
+            self.publish()
+            logger.info("speakeasy: a task held before a reload starts now (what it waited on is done)")
         if fenced is not None:
             self.handoff_at.pop(delegation_id, None)
-            await self.wait_for_fence(backend, fenced[0], fenced[1], delegation_id)
+            await self.wait_for_fence(backend, fenced[0], fenced[1], delegation_id, resumed=resume)
             with self.interaction.lock:
                 added, backend.held_words = list(backend.held_words), []
             if added:
@@ -5249,6 +5324,9 @@ class SidebandWorker:
             loop = asyncio.get_running_loop()
 
             def on_run_event(event: dict[str, Any]) -> None:
+                if self.detached:
+                    return  # a reload handed this run to the new code (follow_run), which settles it
+                self._saw_seq(backend, event)
                 if commentary is not None and event.get("event") in {"tool.started", "tool.start"}:
                     # The lines the agent wrote beside this tool call (STATUS/DETAIL) are in its
                     # transcript already; the run stream may never carry them (SessionCommentary).
@@ -5261,9 +5339,55 @@ class SidebandWorker:
             if again:
                 await asyncio.sleep(REFUSAL_RETRY_DELAY_S)
                 continue
-            if not terminal_seen:
+            if not terminal_seen and not self.detached:
                 await self.reconcile_stream_end(backend)
             return
+
+    # A reload hands every run this worker follows to the new code (service.close sets it): the old
+    # follower then ignores its stream, so no event is handled twice.
+    detached = False
+
+    def _saw_seq(self, backend: BackendRun, event: dict[str, Any]) -> None:
+        seq = event.get("seq")
+        if isinstance(seq, int) and not isinstance(seq, bool) and seq > backend.last_seq:
+            backend.last_seq = seq
+
+    async def follow_run(self, backend: BackendRun, last_seq: int = -1, since: float | None = None) -> None:
+        """Pick up a run that was already going on Hermes when the plugin reloaded (SPK-270): follow
+        its event stream from just after *last_seq* (the old code's newest event, so nothing is
+        handled twice) to its end, exactly as the run's own start would have. With no *last_seq*
+        (the old code didn't save one), events stamped before *since* are skipped, except the run's
+        final one."""
+        loop = asyncio.get_running_loop()
+        with self.interaction.lock:
+            backend.last_seq = max(backend.last_seq, last_seq)
+
+        def on_run_event(event: dict[str, Any]) -> None:
+            if self.detached:
+                return
+            seq = event.get("seq")
+            if isinstance(seq, int) and not isinstance(seq, bool) and seq <= backend.last_seq:
+                return  # replayed from before the reload: the old code handled it
+            stamp = event.get("timestamp")
+            if (since is not None and isinstance(stamp, (int, float)) and stamp < since
+                    and not str(event.get("event") or "").startswith("run.")):
+                return
+            self._saw_seq(backend, event)
+            on_loop(self.handle_hermes_event(backend, event), loop)
+
+        try:
+            args = (backend.run_id, on_run_event) + ((last_seq,) if last_seq >= 0 else ())
+            terminal_seen = await in_own_thread(self.hermes.events, *args)
+        except Exception as exc:
+            if self.detached:
+                return
+            try:
+                await self.reconcile_stream_end(backend, exc)
+            except Exception:
+                logger.warning("speakeasy: a run picked up after a reload could not be settled", exc_info=True)
+            return
+        if not terminal_seen and not self.detached:
+            await self.reconcile_stream_end(backend)
 
     def _retry_refusal(self, backend: BackendRun, event: dict[str, Any]) -> bool:
         """The run's ``run.failed`` was the provider's safety filter refusing the turn: whether to try

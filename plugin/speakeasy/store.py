@@ -118,6 +118,22 @@ def _is_stand_in(title: str | None, request: str | None, continued: str | None =
 PLACEHOLDER_TITLES = {"Voice task", "Quick answer", "A quick choice"}
 
 
+def plain_chat(activity: dict[str, Any] | None, work: dict[str, Any]) -> bool:
+    """A finished run that was only a reply (SPK-290): no tool call or helper in its activity, no
+    picture, card or file on its result, nothing shared with it. Thinking and its own status lines
+    don't count as work."""
+    state = activity if isinstance(activity, dict) else {}
+    for item in state.get("items") or []:
+        if isinstance(item, dict) and (item.get("tool") or item.get("kind") not in ("think", "message")):
+            return False
+    if state.get("subagents") or state.get("touched") or work.get("shared") or work.get("review"):
+        return False
+    result = work.get("result")
+    if not isinstance(result, dict):
+        return True
+    return not (result.get("cards") or result.get("views") or result.get("images") or result.get("files"))
+
+
 CHOICE_PREFIX = "choice_"   # a spoken pick shown as a card (calls.offer_choice): no Hermes run
 TWIN_WINDOW_S = 180         # the same ask started twice this close together is one task
 
@@ -2126,6 +2142,16 @@ class StateStore:
             self._db.execute("UPDATE runs SET waiting=?, updated=? WHERE idem_key=?",
                              (json.dumps(waiting) if waiting else None, time.time(), key))
 
+    def waiting_of(self, key: str) -> dict[str, Any] | None:
+        """What a held task waits on, as saved by set_waiting ({name, project}), or None."""
+        with self._lock:
+            row = self._db.execute("SELECT waiting FROM runs WHERE idem_key=?", (key,)).fetchone()
+        try:
+            held = json.loads(row[0]) if row and row[0] else None
+        except ValueError:
+            return None
+        return held if isinstance(held, dict) else None
+
     def progress(self, key: str, kind: str, text: str) -> None:
         """Persist only bounded, user-facing milestones; never tool arguments or reasoning."""
         if kind not in {"request", "milestone", "tool", "result"} or not text.strip():
@@ -2738,6 +2764,11 @@ class StateStore:
             # What the user shared with it (a thumbnail or file chip each); images are fetched by
             # position from /voice/shared-image/<run_id>/<n>. Paths never leave the server.
             work["shared"] = [{k: i[k] for k in ("kind", "app", "name") if i.get(k)} for i in items]
+        if status == "completed" and plain_chat(activity_state, work):
+            # SPK-290: a plain chat reply (no tool call, helper, card or file): the apps show it as a
+            # message, without the task header ("Started · Took 4 s") or a "Looked into it" card.
+            # Older apps ignore the field.
+            work["chat"] = True
         if continued:
             try:
                 work["continued_in"] = json.loads(continued).get("label")

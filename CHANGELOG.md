@@ -21,6 +21,14 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **No more flash of the old screen** when the app opens.
 - **Waiting jobs.** A job queued behind another shows "Waiting · after …" with Start now anyway.
 - **Pictures** on before/after cards open full screen; pinch to zoom, drag down to close.
+## Plugin 0.3.49 — Updates never cost you a job
+
+- **Queued jobs survive an update or restart.** A job waiting behind another job on the same project used to turn into a stopped card when the plugin updated or Hermes restarted. It now stays queued and starts on its own when the other job finishes, or right away if that one is already done. *(plugin)*
+- **Updates load while jobs run.** A plugin update no longer waits for every running job to finish; it loads as soon as no call is on, and running jobs carry on through it with their progress and answer intact. *(plugin)*
+- **Sending a job that has to wait no longer hangs** for 20 seconds before its card shows. *(plugin)*
+- **Small talk in a new chat looks like chat.** "Hey" in a new conversation is named "New chat" until you ask for something real (no more "Handle … task #24"), and the reply is marked as plain chat so the apps can drop the task header around it. *(plugin; the apps follow in the next build)*
+- **Bursts of connections are queued, not dropped.** When the app loads many things at once (a Files page of thumbnails, a carousel), the server no longer turns some of them away with "Couldn't reach your Hermes". *(plugin)*
+- **Quieter Hermes log.** A repeating background re-import is logged once instead of every 2 seconds, so the log keeps a full day of history. *(plugin)*
 
 ## Plugin 0.3.48 — Home is chattier
 

@@ -1051,6 +1051,13 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(500, {"error": INTERNAL_ERROR})
 
 
+class _HTTPServer(ThreadingHTTPServer):
+    # socketserver's default listen backlog is 5. The apps open a burst of connections at once
+    # (foreground refresh, Files thumbnails, card carousels); past ~10 the kernel reset them, which
+    # Tailscale serve turned into 502s and the apps showed as "Couldn't reach your Hermes".
+    request_queue_size = 128
+
+
 class SpeakeasyServer:
     """Owns the ThreadingHTTPServer and the VoiceService. Bound to loopback only."""
 
@@ -1058,7 +1065,7 @@ class SpeakeasyServer:
         if host not in LOOPBACK:
             raise ValueError("Speakeasy binds loopback only; put a TLS proxy (e.g. Tailscale serve) in front")
         self.service = service
-        self.httpd = ThreadingHTTPServer((host, port), Handler)
+        self.httpd = _HTTPServer((host, port), Handler)
         self.httpd.daemon_threads = True
         self.httpd.service = service  # type: ignore[attr-defined]
         self.httpd.pair_limiter = PairLimiter()  # type: ignore[attr-defined]
