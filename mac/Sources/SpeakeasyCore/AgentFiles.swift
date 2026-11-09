@@ -26,11 +26,17 @@ public struct AgentFile: Identifiable, Equatable, Hashable, Sendable {
     public var sessionID: String
     public var chat: String
     public var source: String
+    /// The reply it came in, as the session page names its entries ("m123"); nil for a helper's file
+    /// (it opens the chat that started the helper, with nothing to point at).
+    public var messageID: String?
+    /// Set when the file came from a job Home's chat started: Open chat goes to that job on Home.
+    public var homeRun: String?
 
     public init(id: String, name: String, kind: Kind, mime: String = "", bytes: Int, at: Date, sessionID: String,
-                chat: String = "", source: String = "") {
+                chat: String = "", source: String = "", messageID: String? = nil, homeRun: String? = nil) {
         self.id = id; self.name = name; self.kind = kind; self.mime = mime; self.bytes = bytes; self.at = at
         self.sessionID = sessionID; self.chat = chat; self.source = source
+        self.messageID = messageID; self.homeRun = homeRun
     }
 
     public init?(json: Any?) {
@@ -45,6 +51,18 @@ public struct AgentFile: Identifiable, Equatable, Hashable, Sendable {
         sessionID = o["session_id"] as? String ?? ""
         chat = o["chat"] as? String ?? ""
         source = o["source"] as? String ?? ""
+        messageID = (o["message_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        homeRun = (o["home_run"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Whether Open chat has somewhere to go.
+    public var hasChat: Bool { !sessionID.isEmpty || homeRun != nil }
+
+    /// The row on a session page that shows this file's reply: the entry named by `messageID`, or the
+    /// first part of it when the page split one reply into several rows ("m12-u3").
+    public func anchorRow(in rowIDs: [String]) -> String? {
+        guard let messageID else { return nil }
+        return rowIDs.first { $0 == messageID } ?? rowIDs.first { $0.hasPrefix(messageID + "-") }
     }
 
     /// The file name, safe as the last component of a local path.

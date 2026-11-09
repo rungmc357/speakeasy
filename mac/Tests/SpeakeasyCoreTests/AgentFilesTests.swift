@@ -177,6 +177,23 @@ final class AgentFilesTests: XCTestCase {
         XCTAssertTrue(AgentFilesModel.message(URLError(.cannotConnectToHost)).hasPrefix("Couldn't reach your Hermes"))
     }
 
+    func testOpenChatKnowsTheReplyAndTheHomeJob() {
+        let row: [String: Any] = ["id": "abc", "name": "porch.png", "kind": "image", "session_id": "s1",
+                                  "message_id": "m12", "home_run": "run_9"]
+        let file = AgentFile(json: row)!
+        XCTAssertEqual(file.messageID, "m12")
+        XCTAssertEqual(file.homeRun, "run_9")
+        XCTAssertTrue(file.hasChat)
+        XCTAssertEqual(file.anchorRow(in: ["m3", "m12", "m14"]), "m12")
+        XCTAssertEqual(file.anchorRow(in: ["m3", "m12-u1", "m12-u2"]), "m12-u1")   // one reply split into rows
+        XCTAssertNil(file.anchorRow(in: ["m3", "m120"]))                            // never a lookalike id
+        let helper = AgentFile(json: ["id": "d", "name": "plan.pdf", "session_id": "s2", "message_id": ""])!
+        XCTAssertNil(helper.messageID)
+        XCTAssertNil(helper.homeRun)
+        XCTAssertNil(helper.anchorRow(in: ["m1"]))
+        XCTAssertFalse(AgentFile(json: ["id": "e", "name": "x.txt"])!.hasChat)
+    }
+
     @MainActor
     func testAGoneFileSaysSoAndLeavesTheList() async {
         final class Gone: AgentFilesBackend {
