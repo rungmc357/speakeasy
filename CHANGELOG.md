@@ -21,7 +21,7 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **No more flash of the old screen** when the app opens.
 - **Waiting jobs.** A job queued behind another shows "Waiting · after …" with Start now anyway.
 - **Pictures** on before/after cards open full screen; pinch to zoom, drag down to close.
-## Plugin 0.3.49 — Updates never cost you a job
+### Also in 0.3.49: updates never cost you a job
 
 - **Queued jobs survive an update or restart.** A job waiting behind another job on the same project used to turn into a stopped card when the plugin updated or Hermes restarted. It now stays queued and starts on its own when the other job finishes, or right away if that one is already done. *(plugin)*
 - **Updates load while jobs run.** A plugin update no longer waits for every running job to finish; it loads as soon as no call is on, and running jobs carry on through it with their progress and answer intact. *(plugin)*
