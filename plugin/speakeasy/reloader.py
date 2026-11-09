@@ -11,8 +11,9 @@ as a whole:
   running ones back (they only get replaced by a reload below);
 * notice new files on disk (a stable fingerprint over two checks, so a half-copied install is
   never loaded);
-* when no call is live and no task is running, or when ``hermes voice reload`` asks, stop the
-  server, drop every non-shell module, import the new code fresh and start again on the same port;
+* when no call is live (running and held jobs carry on through it), or when ``hermes voice reload``
+  asks, stop the server, drop every non-shell module, import the new code fresh and start again on
+  the same port;
 * if the new code fails to import or start, put the old modules back and restart the old server.
 
 The contract with the swapped code is small and must stay stable: ``router.bind_home(home)``,
@@ -41,6 +42,7 @@ RETRY_MIN_S = 5.0     # with no server running, try to start one again this soon
 RETRY_MAX_S = 60.0    # ...backing off to this
 REQUEST_FILE = "reload-request"
 RESULT_FILE = "reload-result.json"
+RESTORE_LOG_EVERY_S = 3600.0  # a repeating re-import is logged at most this often (with a count)
 
 
 def fingerprint(plugin_dir: Path) -> str:
@@ -81,6 +83,9 @@ class LiveReloader:
         self.retry_s = RETRY_MIN_S  # with no server: wait before the next attempt (doubles to RETRY_MAX_S)
         self.retry_at = 0.0         # monotonic time of the next attempt to start a server again
         self.attempts = 0           # failed attempts since the server went down
+        self.restores = 0           # times the running code was put back (see _note_restore)
+        self._restore_cause: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+        self._restore_logged = 0.0
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -154,6 +159,24 @@ class LiveReloader:
             except Exception as exc:  # never let the watcher die
                 logger.warning("speakeasy: live reload check failed: %s", exc)
 
+    def _note_restore(self, differs: list[str], owned: dict[str, ModuleType]) -> None:
+        """Log a re-import underneath the running server once per cause, then at most every
+        RESTORE_LOG_EVERY_S with a count (SPK-270: a repeating cause logged every 2 s, about 1,800 lines
+        an hour, and agent.log rotated away the evidence for bug reports). Names which modules
+        differed and whether they were missing or replaced, so the cause can be found."""
+        missing = sorted(n for n in differs if n not in owned)
+        replaced = sorted(n for n in differs if n in owned)
+        cause = (tuple(missing), tuple(replaced))
+        self.restores += 1
+        now = time.monotonic()
+        if cause == self._restore_cause and now - self._restore_logged < RESTORE_LOG_EVERY_S:
+            return
+        short = lambda names: ", ".join(n[len(self.package) + 1:] for n in names[:6]) + (" …" if len(names) > 6 else "")
+        logger.info("speakeasy: plugin files were re-imported underneath the running server; kept the running "
+                    "code until the update loads (%d time(s) so far; missing: %s; replaced: %s)",
+                    self.restores, short(missing) or "none", short(replaced) or "none")
+        self._restore_cause, self._restore_logged = cause, now
+
     # -- one check -----------------------------------------------------------------------------
     def tick(self) -> str | None:
         """Keep running code consistent, notice new files, reload when idle or asked.
@@ -163,11 +186,11 @@ class LiveReloader:
                 return self._recover()
             outcome = None
             owned = self._owned()
-            if any(owned.get(name) is not mod for name, mod in self.modules.items()):
+            differs = [name for name, mod in self.modules.items() if owned.get(name) is not mod]
+            if differs:
                 self._restore(self.modules)
                 outcome = "restored"
-                logger.info("speakeasy: plugin files were re-imported underneath the running server; "
-                            "kept the running code until the update loads")
+                self._note_restore(differs, owned)
             else:
                 # Only new names: the running code lazily imported a module it hadn't used yet (the
                 # first pairing imports address_drop). Adopt it. Restoring here evicted the module

@@ -61,14 +61,16 @@ def test_status_advertises_start_jobs(server):
     assert caps["start_jobs"] is True and caps["task_messages"] is True
 
 
-def test_a_job_with_no_call_holds_back_the_reload_until_it_finishes(server, service, hermes):
-    """The update job itself installs the new files; they must load only after it (and any call) ends."""
+def test_a_job_with_no_call_never_holds_back_the_reload(server, service, hermes):
+    """SPK-270: a reload no longer waits for running jobs. The new code follows each running run on
+    from where the old code left off (test_reload_keeps_work.py), so the update job itself (which
+    installs the new files) carries on through the reload it triggers."""
     hermes.hold = True
     status, body = start(server, {"text": REQUEST})
     assert status == 202, body
-    assert service.busy() is True
-    finish_all(hermes)
+    wait_for(lambda: hermes.calls)
     wait_for(lambda: service.busy() is False)
+    finish_all(hermes)
 
 
 # -- by voice, mid-call ---------------------------------------------------------------------------------

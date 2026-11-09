@@ -476,7 +476,9 @@ async def start_job(worker: "SidebandWorker", text: str, session_id: str | None 
     while time.monotonic() < deadline and not job.done():
         with worker.interaction.lock:
             run = worker.interaction.runs.get(task_id)
-            begun = run is not None and (run.run_id or run.status in RS.FINAL)
+            # Held behind a job on the same project counts as taken: it has its card ("Waiting for …")
+            # and starts on its own; the app's send must not hang for START_WAIT_S on it.
+            begun = run is not None and (run.run_id or run.status in RS.FINAL or run.status == "waiting_on_task")
         if begun:
             break
         await asyncio.sleep(0.05)

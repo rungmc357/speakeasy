@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
+from . import calls as CALLS
 from . import agents as AG
 from . import attachments as A
 from . import runstate as RS
@@ -84,6 +85,17 @@ MAX_SDP = 96 * 1024
 CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True,
                 "task_messages": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
+# A reload or restart carries on with open work (SPK-270/296): where each followed run's event stream
+# got to is saved here by the old code and read by the new one.
+RESUME_SEQ_META = "resume_run_seq"
+# Stored statuses of a run Hermes took that the new code follows again when Hermes still runs it.
+RESUMABLE_RUN_STATES = frozenset({"running", "working", "cancel_requested"})
+# Hermes' own words for a run still going (GET /v1/runs/{id}).
+HERMES_LIVE_RUN = frozenset({"queued", "running", "working", "waiting_for_approval", "stopping"})
+# Moments whose state lives only in memory, which a reload would lose: a run being handed to Hermes,
+# a question waiting on the user (its request id), an answer on its way. Only these (and a live call,
+# and chat-thread turns) hold an automatic reload back.
+HANDOFF_STATES = frozenset({"admitting", "waiting_for_approval", "resolving_approval"})
 IDLE_WORK_STRETCH = 4  # a quiet call with a task still running waits this many times idle_pause_minutes
 LOOK_TEXT = "Take a look at what I attached."  # a typed message or job that is only attachments
 IDLE_CHECK_S = 15
@@ -600,7 +612,13 @@ class VoiceService(SecureInputMixin):
         return self.agent.run_to_completion(prompt, idem, "speakeasy_brief")
 
     def busy(self) -> bool:
-        """A call is live or a task is still running: an automatic reload would cut it off."""
+        """A call is live: an automatic reload would cut it off (SPK-270).
+
+        Running jobs never hold an update back any more: a reload hands each run it follows to the
+        new code, which picks its Hermes event stream up where it left off (``resume_open_work``),
+        and a job held behind another one stays held. Only what the next code couldn't pick up
+        counts (``_unresumable``): the second or two while a job is handed to Hermes, an approval
+        answer on its way, or a chat-thread turn."""
         with self.lock:
             live = list(self.interactions.values())
         for interaction in live:
@@ -609,19 +627,127 @@ class VoiceService(SecureInputMixin):
             # update forever. Resuming it after a reload starts a fresh call on the app's side.
             if not interaction.call_closed or (interaction.paused and not interaction.pause_bookkept):
                 return True
-            if any(r.status in ACTIVE_RUN_STATES for r in interaction.runs.values()):
-                return True
-        # Jobs with no call (typed follow-ups, POST /voice/work, the app's plugin Update) run on the
-        # voiceless worker: a reload while one runs would drop its tracking, so they count too.
+            with interaction.lock:
+                if any(self._unresumable(r) for r in interaction.runs.values()):
+                    return True
         text = self._text_worker
         if text is not None:
             with text.interaction.lock:
-                if any(r.status in ACTIVE_RUN_STATES for r in text.interaction.runs.values()):
+                if any(self._unresumable(r) for r in text.interaction.runs.values()):
                     return True
         return False
 
+    @staticmethod
+    def _unresumable(run: Any) -> bool:
+        """A run the next code could not pick up: being handed to Hermes or an answer on its way
+        (memory only), or a chat-thread turn (followed by a thread wait, not a run stream)."""
+        if run.status in HANDOFF_STATES:
+            return True
+        return (run.status in ACTIVE_RUN_STATES and run.status != "waiting_on_task"
+                and (not run.run_id or str(run.run_id).startswith(CALLS.LOCAL_RUN_PREFIX)))
+
+    def _workers(self) -> list[Any]:
+        with self.lock:
+            live = list(self.interactions.values())
+        workers = [i.worker for i in live if i.worker is not None]
+        if self._text_worker is not None:
+            workers.append(self._text_worker)
+        return workers
+
+    def hand_over_runs(self) -> dict[str, int]:
+        """Before this code is swapped out (a reload): stop following every run here, and save where
+        each run's event stream got to, so the new code picks it up after that event and nothing is
+        handled twice (SPK-270). Returns {task key: last event seq}."""
+        seqs: dict[str, int] = {}
+        for worker in self._workers():
+            worker.detached = True
+            with worker.interaction.lock:
+                for run in worker.interaction.runs.values():
+                    if run.run_id and run.status in ACTIVE_RUN_STATES and run.last_seq >= 0:
+                        seqs[run.idem_key] = max(seqs.get(run.idem_key, -1), run.last_seq)
+        try:
+            self.store.set_meta(RESUME_SEQ_META, json.dumps(seqs))
+        except Exception:
+            logger.debug("speakeasy: run handover not saved", exc_info=True)
+        return seqs
+
+    def resume_open_work(self) -> dict[str, int]:
+        """At start: carry on with the work the previous code (a reload) or the previous Hermes
+        process left open, instead of settling it as lost.
+
+        - A task whose Hermes run still runs is followed again from where its stream got to (SPK-270).
+        - A task held behind another task on the same project stays held, and starts on its own when
+          that one ends, or now if it already has (SPK-296).
+
+        Runs Hermes no longer knows (a Hermes restart) are left to the orphan sweep, as before.
+        Returns how many of each were picked up."""
+        try:
+            seqs = json.loads(self.store.get_meta(RESUME_SEQ_META) or "{}")
+        except ValueError:
+            seqs = {}
+        seqs = seqs if isinstance(seqs, dict) else {}
+        self.store.set_meta(RESUME_SEQ_META, "{}")
+        rows = [r for r in self.store.open_runs() if not r.get("thread")]
+        followed = held = 0
+        worker = None
+        for row in rows:
+            if row["status"] not in RESUMABLE_RUN_STATES or not row.get("run_id"):
+                continue
+            try:
+                reply = self.hermes.get_run(row["run_id"])
+            except Exception:
+                continue  # Hermes forgot it (restarted) or can't be reached: the sweep settles it
+            if not isinstance(reply, dict) or reply.get("status") not in HERMES_LIVE_RUN:
+                continue
+            worker = worker or self.text_worker()
+            backend = self._adopt(worker, row)
+            if backend is None:
+                continue
+            seq = seqs.get(row["key"])
+            known = isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0
+            CALLS.on_loop_soon(worker.follow_run(backend, seq if known else -1,
+                                                 None if known else self._started_at), worker.loop)
+            followed += 1
+        for row in rows:
+            if row["status"] != "waiting_on_task" or row.get("run_id"):
+                continue
+            worker = worker or self.text_worker()
+            backend = self._adopt(worker, row)
+            if backend is None:
+                continue
+            info = self.store.run_row(row["key"]) or {}
+            request = self.store.request_text(row["key"]) or ""
+            session = info.get("session_id")
+            if session == CALLS.task_session_id(row["key"]):
+                session = None  # its own new session, not one it continues
+            CALLS.on_loop_soon(worker.start_task(backend.delegation_id, int(info.get("revision") or 0),
+                                                 f"User: {request}", request, session_id=session,
+                                                 resume=True, idem=row["key"]), worker.loop)
+            held += 1
+        if followed or held:
+            logger.info("speakeasy: picked up %d running and %d held task(s) after a restart", followed, held)
+        return {"followed": followed, "held": held}
+
+    def _adopt(self, worker: Any, row: dict[str, Any]) -> Any:
+        """Make a stored open task known to *worker* (so it counts as followed), keyed by its task id,
+        or by its row key when another task already has that id."""
+        info = self.store.run_row(row["key"]) or {}
+        task_id = info.get("delegation_id") or row["key"]
+        with worker.interaction.lock:
+            existing = worker.interaction.runs.get(task_id)
+            if existing is not None and existing.idem_key != row["key"]:
+                task_id = row["key"]
+            backend = CALLS.BackendRun(task_id, int(info.get("revision") or 0), row["key"],
+                                       run_id=row.get("run_id"), status=row["status"])
+            worker.interaction.runs[task_id] = backend
+        return backend
+
     def close(self) -> None:
         self._stop.set()
+        try:
+            self.hand_over_runs()  # the next code (a reload) follows them on from here
+        except Exception:
+            logger.debug("speakeasy: run handover failed", exc_info=True)
         self._close_secure()
         CU.detach(self.store.record_context)
         self.brief.stop()
@@ -1159,7 +1285,11 @@ class VoiceService(SecureInputMixin):
 
     def _idle_loop(self) -> None:
         ticks = 0
-        self.settle_stuck_tasks(startup=True)  # nothing is followed yet: every open row is from before
+        try:
+            self.resume_open_work()  # running and held tasks from before a reload carry on (SPK-270/296)
+        except Exception as exc:
+            logger.warning("speakeasy: picking up open work failed: %s", type(exc).__name__)
+        self.settle_stuck_tasks(startup=True)  # nothing else is followed yet: every other open row is from before
         self._drain_quietly()  # held messages from before a reload
         self._check_image_support_soon()
         self.prune_shared()
