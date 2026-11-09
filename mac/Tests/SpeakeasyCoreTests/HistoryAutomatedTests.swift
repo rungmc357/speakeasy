@@ -18,15 +18,16 @@ final class HistoryAutomatedTests: XCTestCase {
     func testEachMenuToggleGoesInTheQueryAndStartsOver() throws {
         var list = HistoryList()
         let q1 = list.reset()
-        XCTAssertEqual(q1.path, "/voice/history?limit=40", "standard choice: nothing extra asked")
+        XCTAssertEqual(q1.path, "/voice/history?hide=kanban,scheduled&limit=40",
+                       "standard choice (SPK-263): Kanban and scheduled sessions stay out of the list")
         list.apply(HistoryPage(sessions: [row("a"), row("k", source: "kanban", automated: true)],
                                automated: kinds(kanban: 1, scheduled: 2, helpers: 3)), for: q1)
         XCTAssertTrue(list.offersAutomatedMenu)
         XCTAssertEqual(list.automatedMenu.map(\.id), ["kanban", "scheduled", "helpers"])
-        let q2 = try XCTUnwrap(list.setShown("kanban", false))
+        let q2 = try XCTUnwrap(list.setShown("scheduled", true))
         XCTAssertEqual(q2.path, "/voice/history?hide=kanban&limit=40")
         XCTAssertTrue(list.sessions.isEmpty, "starts over")
-        XCTAssertNil(list.setShown("kanban", false), "no change, no request")
+        XCTAssertNil(list.setShown("scheduled", true), "no change, no request")
         let q3 = try XCTUnwrap(list.setShown("helpers", true))
         XCTAssertEqual(q3.path, "/voice/history?hide=kanban&helpers=1&limit=40")
         let q4 = try XCTUnwrap(list.setShown("scheduled", false))
@@ -39,13 +40,15 @@ final class HistoryAutomatedTests: XCTestCase {
     }
 
     func testTurningOffTheFilteredKindDropsThatSourceFilter() throws {
-        var list = HistoryList()
+        var list = HistoryList(shown: HistoryShown(kanban: true))
         _ = list.setSource("kanban")
         let q = try XCTUnwrap(list.setShown("kanban", false))
         XCTAssertNil(q.source)
         XCTAssertTrue(HistoryShown(kanban: false).hides(filter: "kanban"))
         XCTAssertFalse(HistoryShown(kanban: false).hides(filter: "discord"))
         XCTAssertTrue(HistoryShown.standard.hides(filter: "helpers"), "helpers are off by default")
+        XCTAssertTrue(HistoryShown.standard.hides(filter: "kanban"), "Kanban workers are off by default (SPK-263)")
+        XCTAssertTrue(HistoryShown.standard.hides(filter: "scheduled"), "scheduled jobs are off by default (SPK-263)")
     }
 
     func testTheIconShowsOnlyWhenTheMenuHasSomething() {
@@ -57,17 +60,21 @@ final class HistoryAutomatedTests: XCTestCase {
         XCTAssertFalse(HistoryAutomation.offers(kinds(kanban: 0), shown: .standard), "nothing automated: no icon")
         XCTAssertEqual(HistoryAutomation.menu(kinds(kanban: 0, helpers: 4), shown: .standard).map(\.id), ["helpers"],
                        "only kinds with sessions")
-        XCTAssertEqual(HistoryAutomation.menu(kinds(kanban: 0), shown: HistoryShown(kanban: false)).map(\.id), ["kanban"],
+        XCTAssertEqual(HistoryAutomation.menu(kinds(kanban: 0), shown: HistoryShown(kanban: true)).map(\.id), ["kanban"],
                        "a changed one stays so it can be turned back")
-        XCTAssertNotEqual(HistoryAutomation.symbol(.standard), HistoryAutomation.symbol(HistoryShown(kanban: false)),
+        XCTAssertNotEqual(HistoryAutomation.symbol(.standard), HistoryAutomation.symbol(HistoryShown(kanban: true)),
                           "the icon fills while something is filtered")
     }
 
-    func testTheChoicesAreRememberedAndTheOldSwitchCarriesOver() throws {
+    func testTheChoicesAreRememberedAndOldChoicesDontBringWorkersBack() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "spk72-\(UUID().uuidString)"))
         XCTAssertEqual(HistoryAutomation.shown(in: defaults), .standard)
         defaults.set(true, forKey: HistoryAutomation.legacyKey)   // SPK-70's "Hide automated" was on
         XCTAssertEqual(HistoryAutomation.shown(in: defaults), HistoryShown(kanban: false, scheduled: false, helpers: false))
+        // SPK-263: the old menu wrote every kind on any toggle, so "shown" was saved for everyone who
+        // touched it; those choices predate hidden-by-default and must not flood Today again.
+        defaults.set(true, forKey: "history.show.kanban"); defaults.set(true, forKey: "history.show.scheduled")
+        XCTAssertEqual(HistoryAutomation.shown(in: defaults), .standard)
         HistoryAutomation.set(HistoryShown(kanban: true, scheduled: false, helpers: true), in: defaults)
         XCTAssertNil(defaults.object(forKey: HistoryAutomation.legacyKey), "carried over once")
         XCTAssertEqual(HistoryAutomation.shown(in: defaults), HistoryShown(kanban: true, scheduled: false, helpers: true))
@@ -83,7 +90,7 @@ final class HistoryAutomatedTests: XCTestCase {
         XCTAssertEqual(facet.kinds[1].label, "Background helpers", "a missing label filled in")
         XCTAssertEqual(HistorySources.filterID(for: "subagent"), "helpers")
         let rows = [row("a"), row("k", source: "kanban", automated: true), row("h", source: "subagent", automated: true)]
-        XCTAssertEqual(rows.filter { HistoryShown.standard.lists($0) }.map(\.id), ["a", "k"])
+        XCTAssertEqual(rows.filter { HistoryShown.standard.lists($0) }.map(\.id), ["a"], "SPK-263: workers hidden by default")
         XCTAssertEqual(HistoryShown.standard.facet(for: rows), kinds(kanban: 1, scheduled: 0, helpers: 1))
     }
 

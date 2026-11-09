@@ -785,7 +785,7 @@ enum HistoryShots {
             }
             let shownBefore = HistoryAutomation.shown
             await shot("16-board-worker") {
-                store.setShown(HistoryShown.standard)
+                store.setShown(HistoryShown(kanban: true, scheduled: true))
                 c.window?.setContentSize(NSSize(width: 1040, height: 720))
                 store.open("s_board")
             }

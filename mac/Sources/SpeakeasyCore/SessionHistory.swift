@@ -163,14 +163,15 @@ public struct HistoryAutomated: Equatable, Sendable {
     }
 }
 
-/// What the conversation list shows of automated work: board workers and scheduled jobs (shown
-/// unless turned off) and background helpers (off unless turned on). The filter menu's toggles.
+/// What the conversation list shows of automated work: Kanban workers, scheduled jobs and
+/// background helpers, each off unless turned on (SPK-263, Geo: worker sessions flooded Today and
+/// belong under Board / Scheduled). The filter menu's toggles.
 public struct HistoryShown: Equatable, Sendable, Hashable {
     public static let kinds = ["kanban", "scheduled", "helpers"]
-    public var kanban = true
-    public var scheduled = true
+    public var kanban = false
+    public var scheduled = false
     public var helpers = false
-    public init(kanban: Bool = true, scheduled: Bool = true, helpers: Bool = false) {
+    public init(kanban: Bool = false, scheduled: Bool = false, helpers: Bool = false) {
         self.kanban = kanban; self.scheduled = scheduled; self.helpers = helpers
     }
     public static let standard = HistoryShown()
@@ -214,7 +215,9 @@ public struct HistoryShown: Equatable, Sendable, Hashable {
 public enum HistoryAutomation {
     /// SPK-70's single switch ("hide automated"): carried over once to the menu's two kinds.
     public static let legacyKey = "history.hideAutomated"
-    static func key(_ kind: String) -> String { "history.show.\(kind)" }
+    /// v2 (SPK-263): the standard changed to hidden, so choices saved under the old standard (the
+    /// menu wrote every kind on any toggle) don't bring the worker sessions back.
+    static func key(_ kind: String) -> String { "history.show.v2.\(kind)" }
 
     public static var shown: HistoryShown {
         get { shown(in: .standard) }
@@ -222,10 +225,8 @@ public enum HistoryAutomation {
     }
     public static func shown(in defaults: UserDefaults) -> HistoryShown {
         var out = HistoryShown.standard
-        let legacy = defaults.bool(forKey: legacyKey)
         for kind in HistoryShown.kinds {
             if let on = defaults.object(forKey: key(kind)) as? Bool { out[kind] = on }
-            else if legacy, kind != "helpers" { out[kind] = false }
         }
         return out
     }

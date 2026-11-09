@@ -141,6 +141,15 @@ public struct ProjectList: Equatable, Sendable {
     /// The side panel shows its Projects section when there is a project or an offer to make one:
     /// with neither, the panel is exactly what it was before projects existed.
     public var showsSection: Bool { !projects.isEmpty || offer != nil }
+
+    /// The side panel's one Projects row, its quiet second line (SPK-263): "2 running" while work
+    /// runs in any project, else how many there are, else the offer ("1 suggestion").
+    public var panelLine: String {
+        let running = projects.reduce(0) { $0 + $1.running }
+        if running > 0 { return "\(running) running" }
+        if !projects.isEmpty { return "\(projects.count) project\(projects.count == 1 ? "" : "s")" }
+        return offer != nil ? "1 suggestion" : "None yet"
+    }
 }
 
 /// A job on a project page.

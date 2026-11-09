@@ -220,4 +220,13 @@ final class ProjectsTests: XCTestCase {
         model.toggleExpanded("p_shed")
         XCTAssertFalse(model.expanded.contains("p_shed"))
     }
+
+    /// SPK-263: the side panel shows Projects as one row with a quiet second line.
+    func testThePanelRowLine() {
+        XCTAssertEqual(ProjectList(projects: [HermesProject(id: "a", name: "Shed", running: 1),
+                                              HermesProject(id: "b", name: "Trip", running: 2)]).panelLine, "3 running")
+        XCTAssertEqual(ProjectList(projects: [HermesProject(id: "a", name: "Shed")]).panelLine, "1 project")
+        XCTAssertEqual(ProjectList(projects: [HermesProject(id: "a", name: "Shed"), HermesProject(id: "b", name: "Trip")]).panelLine, "2 projects")
+        XCTAssertEqual(ProjectList(offer: ProjectOffer(subject: "Compost", chats: 3)).panelLine, "1 suggestion")
+    }
 }
