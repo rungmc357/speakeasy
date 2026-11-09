@@ -48,3 +48,7 @@ Original review findings are based on the old main. The app-encoder concern rema
 ## Planning review
 
 The first tool-enabled planning attempt timed out without a source change. The bounded Opus artifact replacement supplied useful source facts but guessed a nonexistent app test target and left wiring unresolved. Parent inspection resolved both through the actual package manifest and `SpeakeasyApp.swift` assignments. This plan replaces those proposals. No tests or implementation are claimed by this planning artifact.
+
+## Revised after review
+
+Plugin 0.3.47 is released and stages MP4 and MOV without listing `video_attachments`, so a missing flag can't mean "old plugin". The gate now reads the flag as three states and uses `version`: flag `true`, or missing with 0.3.47 or later, takes videos; missing before 0.3.47 gets "Update Speakeasy on your Hermes to send videos."; `false` or an app that can't send videos gets "Videos can't be sent here."; nil status gets the connection line. The app's own limit is checked first.

@@ -67,7 +67,7 @@ final class MacHomeComposerModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        let gate = VideoAttachmentGate(capabilities())
+        let gate = VideoAttachmentGate(status())
         panel.allowedContentTypes = gate.offered([.image, .pdf, .plainText, .json])
         panel.message = gate.offersVideos
             ? "Add a clip, picture or document. Videos: up to 10 MB and 2 minutes."
@@ -80,15 +80,11 @@ final class MacHomeComposerModel: ObservableObject {
 
     func addFiles(_ urls: [URL]) {
         guard !sending, !recording else { return }
-        let capabilities = self.capabilities()
+        let gate = VideoAttachmentGate(status())
         for url in urls {
-            // Before the count guard so a refused video takes no slot. Nil capabilities means status
-            // hasn't loaded, which says nothing about the plugin's version.
-            if VideoAttachmentGate.isVideo(url, contentType: try? url.resourceValues(forKeys: [.contentTypeKey]).contentType) {
-                guard let capabilities else {
-                    notice = HistoryStore.message(URLError(.notConnectedToInternet)); continue
-                }
-                if let refusal = VideoAttachmentGate(capabilities).refusal(for: .movie) { notice = refusal; continue }
+            // Before the count guard so a refused video takes no slot.
+            if let refusal = gate.refusal(for: url, contentType: try? url.resourceValues(forKeys: [.contentTypeKey]).contentType) {
+                notice = refusal; continue
             }
             guard picks.count < AttachmentPolicy.maxAttachments else {
                 notice = "You can attach up to three items."; break
@@ -146,8 +142,8 @@ final class MacHomeComposerModel: ObservableObject {
     }
 
     var api: () -> ServerClient? = { nil }
-    /// The paired Hermes's current `capabilities`, read on each admission; nil until status loads.
-    var capabilities: () -> ServerCapabilities? = { nil }
+    /// The paired Hermes's current status, read on each admission; nil until it loads.
+    var status: () -> ServerStatus? = { nil }
     var recorder: VoiceMessageRecording = VoiceMessageRecorder()
     let now: MacNowModel
     /// Screenshots: nothing leaves the Mac; sending only adds the working card.

@@ -409,7 +409,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard on else { now.stop(); return }
         now.api = { [weak self] in self?.native.api }
         MacHomeComposerModel.shared.api = { [weak self] in self?.native.api }
-        MacHomeComposerModel.shared.capabilities = { [weak self] in self?.app.status?.capabilities }
+        MacHomeComposerModel.shared.status = { [weak self] in self?.app.status }
         now.onQuestions = { [weak self] n in
             guard let self, n != self.questionsWaiting else { return }
             self.questionsWaiting = n

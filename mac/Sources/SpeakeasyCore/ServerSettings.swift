@@ -964,7 +964,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     /// coordinator that replies in the thread and starts jobs only for real work.
     public var homeChat: Bool = false
     /// Staged attachments may be videos (MP4, QuickTime): the composers offer them (VideoAttachments.swift).
-    public var videoAttachments: Bool = false
+    /// Nil when the plugin doesn't list it: 0.3.47 stages videos without the flag, older plugins don't.
+    public var videoAttachments: Bool? = nil
 
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
@@ -1015,6 +1016,6 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         now = (try? c.decodeIfPresent(Bool.self, forKey: .now)) ?? false
         approvalRules = (try? c.decodeIfPresent(Bool.self, forKey: .approvalRules)) ?? false
         openaiKey = (try? c.decodeIfPresent(Bool.self, forKey: .openaiKey)) ?? false
-        videoAttachments = (try? c.decodeIfPresent(Bool.self, forKey: .videoAttachments)) ?? false
+        videoAttachments = try? c.decodeIfPresent(Bool.self, forKey: .videoAttachments)
     }
 }

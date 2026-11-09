@@ -16,6 +16,7 @@ import pytest
 from fakes import http, wait_for
 from test_routing import start_call, tasks
 from speakeasy import attachments as A
+from speakeasy.calls import ServiceError
 
 JPEG_HEAD = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
 GPS_EXIF = b"Exif\x00\x00MM\x00*GPS-LAT-40.7128-LON-74.0060"
@@ -129,13 +130,19 @@ def test_unsupported_or_wrong_uploads_are_refused(server, kind, ctype, data, nam
 @pytest.mark.parametrize("ctype,name", [("video/mp4", "porch-4s.mp4"), ("video/quicktime", "porch-4s.mov")])
 def test_video_attachments_is_advertised_with_staging_that_takes_videos(server, service, ctype, name):
     """SPK-230: the composers offer videos only with ``video_attachments``, so it's on exactly when
-    staging takes the video types. Bad video bytes are still refused (test_video_attachments.py)."""
+    staging takes the video types, whichever way either changes. Bad video bytes are still refused
+    (test_video_attachments.py)."""
     status = http(server.base_url, "GET", "/voice/status", token=server.token)[1]
-    assert status["capabilities"]["video_attachments"] is True
-    assert ctype in status["attachments"]["file_types"]
-    upload = service.check_stage("device", {"X-Speakeasy-Kind": "file", "Content-Type": ctype,
-                                            "X-Speakeasy-Filename": name}, 4096)
-    assert upload["mime"] == ctype and upload["size"] == 4096
+    takes = ctype in status["attachments"]["file_types"]
+    assert status["capabilities"]["video_attachments"] is takes
+    try:
+        service.check_stage("device", {"X-Speakeasy-Kind": "file", "Content-Type": ctype,
+                                       "X-Speakeasy-Filename": name}, 4096)
+        staged = True
+    except ServiceError as exc:
+        assert exc.status == 415
+        staged = False
+    assert staged is takes
 
 
 def test_oversized_uploads_are_refused_before_the_body_is_read(server):

@@ -1034,11 +1034,14 @@ bad headers or empty, `401`, `409 {"reason": "too_many"}`, `413 {"reason": "too_
 and size only, never bytes or names. `DELETE /voice/attachments/{id}` → `200 {"id", "removed": true}`,
 `404` once sent, removed or expired.
 
-Videos: capability `video_attachments` (SPK-230), `true` now that staging takes MP4 and QuickTime;
-plugins before it don't list it. Apps offer videos in a composer's picker and drop only
-when it's `true`; otherwise a video gets "Sending videos needs a newer Speakeasy on your Hermes.
-Update it from Settings." and no upload. A video dropped on a call still goes through the call's own
-upload as a plain file.
+Videos: capability `video_attachments` (SPK-230), `true` when staging takes MP4 and QuickTime.
+Plugin 0.3.47 stages them but doesn't list it, so apps read a missing flag with `version` 0.3.47 or
+later as `true`. A composer's picker and drop offer videos only then; otherwise a video gets one line
+and no chip or upload: "Update Speakeasy on your Hermes to send videos." for a plugin before 0.3.47,
+"Videos can't be sent here." when the flag is `false` or the app can't send videos, and the usual
+"Couldn't reach your Hermes…" before status loads. Other video formats (AVI, WebM) get "Only MP4 and
+MOV videos can be sent." A video dropped on a call still goes through the call's own upload as a
+plain file.
 
 ### Where a spoken follow-up went
 
