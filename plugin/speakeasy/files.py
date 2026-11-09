@@ -38,7 +38,8 @@ MAX_PAGE = 200
 SCAN_NEWEST = 4000           # first scan: the newest messages with a MEDIA tag
 SCAN_STEP = 2000             # later scans: new messages since the last one, at most this many per pass
 RESCAN_S = 5.0               # list calls closer together than this reuse the index
-FIRST_WAIT_S = 6.0           # how long a list call waits for the first (background) scan
+FIRST_WAIT_S = 2.5           # how long a list call waits for the first (background) scan; then
+                             # it answers ``loading: true`` and the app asks again (never near its timeout)
 MAX_DOWNLOAD_BYTES = 200_000_000
 THUMB_PX = 360
 THUMB_MAX_SOURCE = 40_000_000
@@ -112,9 +113,23 @@ def _fallback_check(raw: str, hermes_home: Path) -> str | None:
     return None
 
 
+def _worth_checking(raw: str) -> bool:
+    """Cheap first look before Hermes' delivery check, which resolves every denied prefix per call
+    (about 6 ms each; a first scan of a big history made ~1,300 of them and took 12 s, longer than
+    the app waited): a type we list that is still a regular file on disk."""
+    if kind_of(raw) is None:
+        return False
+    try:
+        return stat.S_ISREG(os.stat(os.path.expanduser(raw)).st_mode)
+    except (OSError, ValueError):
+        return False
+
+
 def deliverable(raw: str, hermes_home: Path) -> Path | None:
     """The resolved file if Hermes would hand it out as an attachment (and it's a type we list)."""
     if not isinstance(raw, str) or not raw or len(raw) > 1024 or "\x00" in raw:
+        return None
+    if not _worth_checking(raw):
         return None
     try:
         from gateway.platforms.base import validate_media_delivery_path
@@ -262,10 +277,13 @@ class FileIndex:
                     next_id = int(rows[-1]["id"]) if len(rows) >= SCAN_STEP else max(self.last_id, top)
                 found: list[tuple[str, dict[str, Any]]] = []
                 fresh = set()
+                checked: dict[str, Path | None] = {}   # one file named in many replies: check it once
                 for row in rows:
                     at = float(row["timestamp"]) if isinstance(row["timestamp"], (int, float)) else None
                     for raw in hermes_extract(row["content"] or ""):
-                        path = deliverable(raw, self.home)
+                        if raw not in checked:
+                            checked[raw] = deliverable(raw, self.home)
+                        path = checked[raw]
                         if path is None:
                             continue
                         found.append((self.file_id(path), {"path": path, "session_id": row["session_id"],

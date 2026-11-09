@@ -105,6 +105,7 @@ CAPABILITIES["history"] = True
 # GET /voice/files (+ /{id}, /{id}/thumb): every file Hermes handed over in a reply, across all chats,
 # by opaque id; only what Hermes itself would deliver as an attachment (files.py).
 CAPABILITIES["files"] = True
+FILES_WARM_AFTER_S = 20.0  # after start, build the Files index in the background (first open is instant)
 # POST /voice/attachments (+ DELETE /voice/attachments/{id}): pictures and files staged on a device,
 # then sent with a typed message or new job by id (``attachments`` on /voice/work[/{id}/message]).
 CAPABILITIES["attachments"] = True
@@ -480,7 +481,22 @@ class VoiceService(SecureInputMixin):
             CU.attach(self.store.record_context, self.store.context_record)
             threading.Thread(target=self._idle_loop, daemon=True, name="speakeasy-idle").start()
             self._warm_catalog()
+            self._warm_files()
             self.brief.start_scheduler(ready=self.agent.health)
+
+    def _warm_files(self) -> None:
+        """Build the Files index shortly after start, so the first open of Files answers at once
+        instead of waiting on a scan of the whole history (seen live: the app gave up first)."""
+        def warm() -> None:
+            if not self._stop.is_set():
+                try:
+                    self.files._first_scan(wait=0)
+                except Exception as exc:
+                    logger.info("speakeasy: files warm-up skipped (%s)", type(exc).__name__)
+        timer = threading.Timer(FILES_WARM_AFTER_S, warm)
+        timer.daemon = True
+        timer.name = "speakeasy-files-warm"
+        timer.start()
 
     # -- secrets (read per use, never stored or returned) ------------------------------------
     @property

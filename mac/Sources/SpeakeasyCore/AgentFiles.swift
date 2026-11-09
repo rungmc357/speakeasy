@@ -237,6 +237,7 @@ public final class AgentFilesModel: ObservableObject {
     public var backend: AgentFilesBackend?
     private var thumbLoads: Set<String> = []
     private var generation = 0
+    private var firstLoad: Task<Void, Never>?
 
     public init(backend: AgentFilesBackend? = nil) { self.backend = backend }
 
@@ -251,6 +252,23 @@ public final class AgentFilesModel: ObservableObject {
         await reload()
     }
 
+    /// The page's first load, on a task the model owns: a page rebuilt while it opens (iPad's
+    /// sidebar closing as Files opens) cancels its own `.task`, and that cancelled request used to
+    /// show "Couldn't reach your Hermes" over a server that was answering. One load at a time.
+    public func loadIfNeeded() {
+        guard !loaded, firstLoad == nil, backend != nil else { return }
+        firstLoad = Task { [weak self] in
+            await self?.reload()
+            self?.firstLoad = nil
+        }
+    }
+
+    /// Waits for a load `loadIfNeeded` started (tests and pull-to-refresh).
+    public func waitForLoad() async { await firstLoad?.value }
+
+    /// Seconds before the one automatic retry of a failed list call (tests shorten it).
+    public var retryDelay: TimeInterval = 1.0
+
     public func reload() async {
         guard let backend else { return }
         generation &+= 1
@@ -258,6 +276,7 @@ public final class AgentFilesModel: ObservableObject {
         loading = !loaded
         defer { if mine == generation { loading = false } }
         var tries = 0
+        var retried = false
         while true {
             do {
                 let page = try await backend.list(kind: kind, cursor: nil)
@@ -273,11 +292,28 @@ public final class AgentFilesModel: ObservableObject {
                 return
             } catch {
                 guard mine == generation else { return }
+                // Nobody is waiting for the answer any more (the page went away): not a failure, and
+                // the next open loads again.
+                if WorkPoll.isCancellation(error) { return }
+                if !retried, AgentFilesModel.worthRetrying(error) {
+                    retried = true
+                    try? await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
+                    guard mine == generation, !Task.isCancelled else { return }
+                    continue
+                }
                 if files.isEmpty { self.error = AgentFilesModel.message(error) }
                 loaded = true
                 return
             }
         }
+    }
+
+    /// A slow answer, a dropped connection or a server hiccup gets one quiet second try; a refusal
+    /// (401, 404, a bad request) would only fail again.
+    static func worthRetrying(_ error: Error) -> Bool {
+        if WorkPoll.isCancellation(error) { return false }
+        if let status = (error as? StatusCarrying)?.status { return status == 0 || status >= 500 || status == 429 }
+        return (error as NSError).domain == NSURLErrorDomain
     }
 
     public func loadMore() async {
@@ -345,8 +381,19 @@ public final class AgentFilesModel: ObservableObject {
         }
     }
 
+    /// What actually happened, in plain words: "Couldn't reach" only when the request never got
+    /// there; a slow answer says it's slow, and an answer that was an error says what Hermes said.
     public static func message(_ error: Error) -> String {
-        if (error as? URLError) != nil { return "Couldn't reach your Hermes. Check the connection and try again." }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            if ConnectionTrouble.unreachable.contains(ns.code) { return ConnectionTrouble.message(for: error, server: nil) }
+            return "Couldn't load your files. Try again."
+        }
+        if let status = (error as? StatusCarrying)?.status, status >= 500 {
+            let said = (error as? LocalizedError)?.errorDescription ?? ""
+            let detail = said.isEmpty || said.hasPrefix("Server HTTP") ? "" : " (\(said))"
+            return "Your Hermes answered with an error while listing your files\(detail). Try again in a moment."
+        }
         if let e = error as? LocalizedError, let text = e.errorDescription { return text }
         return error.localizedDescription
     }
