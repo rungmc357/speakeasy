@@ -57,3 +57,26 @@ def test_home_voice_reply_carries_quote_to_the_job(server, service, hermes, hear
     assert "The shed is green." in str(wait_for(lambda: hermes.calls)[0]["input"])
     if transcribed:
         assert next(e for e in stream(server) if e.get("client_id") == "quoted-voice")["quote"]["id"] == first["reply"]["id"]
+
+
+def test_reply_to_a_job_card_quotes_it_and_focuses_that_job(server, service, hermes):
+    coordinator(service, {"reply": "Let me look for a table.", "action": "start", "request": "Find a dinner table for four"})
+    first = post(server, {"text": "Find a dinner table for four"})[1]
+    run_id = first["run_id"]
+    assert run_id
+    seen = coordinator(service, "Sure, I'll move it to 8.")
+    status, result = post(server, {"text": "change it to 8pm", "reply_to": "r:" + run_id})
+    assert status == 200, result
+    quote = result["message"]["quote"]
+    assert quote["role"] == "card" and quote["run_id"] == run_id and quote["id"] == "r:" + run_id
+    assert quote["text"]
+    system = seen[0][0]["content"]
+    assert "selected right now" in system            # "it" means the quoted job
+    assert run_id not in seen[0][-1]["content"] and "Replying to this job card" in seen[0][-1]["content"]
+    assert next(e for e in stream(server) if e["id"] == result["message"]["id"])["quote"]["run_id"] == run_id
+
+
+def test_reply_to_an_unknown_job_card_is_rejected(server, service):
+    coordinator(service, "unused")
+    assert post(server, {"text": "reply", "reply_to": "r:lr_doesnotexist"})[0] == 400
+    assert not stream(server)
