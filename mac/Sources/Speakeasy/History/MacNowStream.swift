@@ -235,17 +235,12 @@ private struct MacPostedResult: View {
     var body: some View {
         Group {
             if let card {
-                VStack(alignment: .leading, spacing: 6) {
-                    // The job's done line is the card's caption (never a second card saying the same).
-                    if !item.line.isEmpty {
-                        Text(AgentMarkdown.attributed(item.line)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    }
-                    ViewCardView(card)
-                        .environment(\.cardSend, { action in send(action, card: card) })
-                        .cardSurface(style)
-                }
-                .frame(maxWidth: 520, alignment: .leading)
-                .accessibilityIdentifier("mac-now-result")
+                // The job's done line is on its card where it was asked: the email comes alone.
+                ViewCardView(card)
+                    .environment(\.cardSend, { action in send(action, card: card) })
+                    .cardSurface(style)
+                    .frame(maxWidth: 520, alignment: .leading)
+                    .accessibilityIdentifier("mac-now-result")
             }
         }
         .task(id: "\(item.updatedAt?.timeIntervalSince1970 ?? 0)|\(bump)") { await load() }
