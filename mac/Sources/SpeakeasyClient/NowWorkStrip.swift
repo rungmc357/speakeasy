@@ -13,15 +13,23 @@ public struct NowWorkStrip: View {
     public var onBoard: () -> Void
     /// The plugin's pill words ("3 need you · 5 running"); nil: counted here.
     public var pill: String?
+    /// Home's top line (SPK-259): the strip is only the pill; the host draws `NowWorkStripPanel` over
+    /// the thread while it's open (`onExpandedChange`), so opening it never moves the conversation.
+    public var dropDown = false
+    /// Bumped by the host to fold an open strip (the thread scrolled, a tap outside).
+    public var collapseToken = 0
+    /// Tells the host the strip opened or folded (to catch a tap outside it).
+    public var onExpandedChange: ((Bool) -> Void)?
     @State private var expanded = false
-    @State private var page: String?
     @State private var pull: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
 
     public init(items: [NowItem], background: [NowBackgroundItem], onOpen: @escaping (NowItem) -> Void,
-                onBackground: @escaping (NowBackgroundItem) -> Void, onBoard: @escaping () -> Void, pill: String? = nil) {
+                onBackground: @escaping (NowBackgroundItem) -> Void, onBoard: @escaping () -> Void, pill: String? = nil,
+                dropDown: Bool = false, collapseToken: Int = 0, onExpandedChange: ((Bool) -> Void)? = nil) {
         self.pill = pill
+        self.dropDown = dropDown; self.collapseToken = collapseToken; self.onExpandedChange = onExpandedChange
         self.items = items; self.background = background; self.onOpen = onOpen
         self.onBackground = onBackground; self.onBoard = onBoard
     }
@@ -93,46 +101,9 @@ public struct NowWorkStrip: View {
                     if expanded { withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.9)) { expanded = false } }
                 }
                 #endif
-                if expanded || pull > 0 {
-                    VStack(spacing: 8) {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 0) {
-                            ForEach(live) { item in
-                                Button {
-                                    expanded = false; onOpen(item)
-                                } label: {
-                                    stripPage(title: item.title, line: item.line,
-                                              source: item.kind == .question ? "Needs you" : item.sourceLabel ?? "This conversation",
-                                              image: item.thumbs.first)
-                                }
-                                .buttonStyle(.plain).containerRelativeFrame(.horizontal).id("i:" + item.id)
-                                .accessibilityIdentifier("home-work-item")
-                            }
-                            ForEach(background) { item in
-                                Button { expanded = false; onBackground(item) } label: {
-                                    stripPage(title: item.title, line: item.line, source: item.sourceLabel ?? "Background", image: nil)
-                                }
-                                .buttonStyle(.plain).containerRelativeFrame(.horizontal).id("b:" + item.id)
-                                .accessibilityIdentifier("home-work-item")
-                            }
-                        }.scrollTargetLayout()
-                    }
-                    // Leading anchors: Home's thread sets a bottom default anchor that this pager would
-                    // otherwise inherit, which left it showing the end of one page and the start of
-                    // the next (seen live on the strip).
-                    .scrollTargetBehavior(.paging).scrollPosition(id: $page, anchor: .leading)
-                    .defaultScrollAnchor(.leading).scrollIndicators(.hidden)
-                    .frame(height: 92)
-                    HStack(spacing: 5) {
-                        ForEach(keys, id: \.self) { key in
-                            Circle().fill(key == (page ?? keys.first) ? Color.primary : Color.primary.opacity(0.2))
-                                .frame(width: 5, height: 5)
-                        }
-                    }.accessibilityHidden(true)
-                    Button("Open Work") { expanded = false; onBoard() }.font(.footnote.weight(.medium))
-                        .buttonStyle(.plain).accessibilityIdentifier("home-work-board")
-                        .padding(.bottom, 12)
-                    }
+                if !dropDown && (expanded || pull > 0) {
+                    NowWorkStripPanel(items: items, background: background, onOpen: onOpen, onBackground: onBackground,
+                                      onBoard: onBoard, onClose: { expanded = false })
                     .frame(height: expanded ? nil : pull, alignment: .top)
                     .clipped()
                 }
@@ -140,12 +111,81 @@ public struct NowWorkStrip: View {
             .frame(maxWidth: .infinity)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: expanded ? 24 : 18))
             .overlay(RoundedRectangle(cornerRadius: expanded ? 24 : 18).strokeBorder(Color.primary.opacity(0.08)))
-            .onChange(of: keys) { _, keys in if let page, !keys.contains(page) { self.page = keys.first } }
+            .onChange(of: collapseToken) { _, _ in
+                if expanded { withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.9)) { expanded = false } }
+            }
+            .onChange(of: expanded) { _, open in onExpandedChange?(open) }
         }
     }
     private func toggle() {
         withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.88)) { expanded.toggle() }
     }
+}
+
+/// The open strip: one live item per page, its dots, and Open Work. Inside the pill's card, or on its
+/// own as Home's drop-down over the thread (SPK-259).
+public struct NowWorkStripPanel: View {
+    public let items: [NowItem]
+    public let background: [NowBackgroundItem]
+    public var onOpen: (NowItem) -> Void
+    public var onBackground: (NowBackgroundItem) -> Void
+    public var onBoard: () -> Void
+    /// Fold the strip (before any of the actions above).
+    public var onClose: () -> Void
+    @State private var page: String?
+
+    public init(items: [NowItem], background: [NowBackgroundItem], onOpen: @escaping (NowItem) -> Void,
+                onBackground: @escaping (NowBackgroundItem) -> Void, onBoard: @escaping () -> Void,
+                onClose: @escaping () -> Void) {
+        self.items = items; self.background = background; self.onOpen = onOpen
+        self.onBackground = onBackground; self.onBoard = onBoard; self.onClose = onClose
+    }
+    private var live: [NowItem] { items.filter { [.question, .working, .waiting, .stopped].contains($0.kind) } }
+    private var keys: [String] { live.map { "i:" + $0.id } + background.map { "b:" + $0.id } }
+
+    public var body: some View {
+        VStack(spacing: 8) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(live) { item in
+                        Button {
+                            onClose(); onOpen(item)
+                        } label: {
+                            stripPage(title: item.title, line: item.line,
+                                      source: item.kind == .question ? "Needs you" : item.sourceLabel ?? "This conversation",
+                                      image: item.thumbs.first)
+                        }
+                        .buttonStyle(.plain).containerRelativeFrame(.horizontal).id("i:" + item.id)
+                        .accessibilityIdentifier("home-work-item")
+                    }
+                    ForEach(background) { item in
+                        Button { onClose(); onBackground(item) } label: {
+                            stripPage(title: item.title, line: item.line, source: item.sourceLabel ?? "Background", image: nil)
+                        }
+                        .buttonStyle(.plain).containerRelativeFrame(.horizontal).id("b:" + item.id)
+                        .accessibilityIdentifier("home-work-item")
+                    }
+                }.scrollTargetLayout()
+            }
+            // Leading anchors: Home's thread sets a bottom default anchor that this pager would
+            // otherwise inherit, which left it showing the end of one page and the start of
+            // the next (seen live on the strip).
+            .scrollTargetBehavior(.paging).scrollPosition(id: $page, anchor: .leading)
+            .defaultScrollAnchor(.leading).scrollIndicators(.hidden)
+            .frame(height: 92)
+            HStack(spacing: 5) {
+                ForEach(keys, id: \.self) { key in
+                    Circle().fill(key == (page ?? keys.first) ? Color.primary : Color.primary.opacity(0.2))
+                        .frame(width: 5, height: 5)
+                }
+            }.accessibilityHidden(true)
+            Button("Open Work") { onClose(); onBoard() }.font(.footnote.weight(.medium))
+                .buttonStyle(.plain).accessibilityIdentifier("home-work-board")
+                .padding(.bottom, 12)
+        }
+        .onChange(of: keys) { _, keys in if let page, !keys.contains(page) { self.page = keys.first } }
+    }
+
     private func stripPage(title: String, line: String, source: String, image: String?) -> some View {
         HStack(spacing: 10) {
             if let image, let url = URL(string: image) {
