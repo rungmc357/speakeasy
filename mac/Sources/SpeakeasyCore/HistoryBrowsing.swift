@@ -225,7 +225,7 @@ public struct HistoryList: Equatable, Sendable {
         case "discord", "slack", "telegram", "whatsapp", "signal", "matrix": return "bubble.left.and.bubble.right"
         case "cli", "terminal": return "terminal"
         case "cron", "scheduled": return "clock.arrow.circlepath"
-        case "kanban": return "square.grid.3x2"
+        case "kanban": return "rectangle.split.3x1"   // Board's symbol, as on the phone
         case "subagent", "helpers": return "person.2"
         case "email": return "envelope"
         case "gui", "desktop": return "macwindow"
