@@ -101,22 +101,22 @@ struct CardPicture: View {
         } else if let url = value.url {
             data = try? await URLSession.shared.data(from: url).0
         }
-        guard let data, let picture = PlatformPicture(data: data) else { return }
+        guard let data, let picture = await PlatformPicture(data: data) else { return }
         image = picture
     }
 }
 
+/// A card's picture: decoded off the main thread at the size a card draws it (build 73 perf
+/// pass 3), keeping the original bytes so the full-screen viewer can decode it sharper for zoom.
 struct PlatformPicture {
-    #if os(macOS)
-    let native: NSImage
-    init?(data: Data) { guard let i = NSImage(data: data) else { return nil }; native = i }
-    var view: Image { Image(nsImage: native) }
-    #else
-    let native: UIImage
-    init?(data: Data) { guard let i = UIImage(data: data) else { return nil }; native = i }
-    var view: Image { Image(uiImage: native) }
-    #endif
-    var size: CGSize { native.size }
+    let decoded: CGImage
+    let source: Data
+    init?(data: Data, maxPixels: Int = PictureDecode.displayPixels) async {
+        guard let image = await PictureDecode.cgImage(data, maxPixels: maxPixels) else { return nil }
+        decoded = image; source = data
+    }
+    var view: Image { Image(decorative: decoded, scale: 1) }
+    var size: CGSize { CGSize(width: decoded.width, height: decoded.height) }
 }
 
 /// One picture full screen: pinch or double-tap to zoom (up to 5×), drag to look around while
@@ -133,7 +133,8 @@ struct CardPictureViewer: View {
     @State private var offset: CGSize = .zero
     @State private var drag: CGSize = .zero
     @State private var closing = false
-
+    /// The card's picture decoded at full-screen size for zoom (the card's copy is display-sized).
+    @State private var sharp: Image?
     static let maxZoom: CGFloat = 5
     /// How far down (points) a drag must go to close on release; a fast flick closes sooner.
     static let closeDistance: CGFloat = 120
@@ -147,7 +148,7 @@ struct CardPictureViewer: View {
         GeometryReader { geo in
             ZStack(alignment: .topTrailing) {
                 Color.black.opacity(1 - pull * 0.8).ignoresSafeArea()
-                image.view.resizable().scaledToFit()
+                (sharp ?? image.view).resizable().scaledToFit()
                     .frame(width: geo.size.width, height: geo.size.height)
                     .scaleEffect(zoom * (1 - pull * 0.2))
                     .offset(x: offset.width + drag.width, y: offset.height + drag.height)
@@ -173,6 +174,7 @@ struct CardPictureViewer: View {
         // The cover itself is see-through so the faded backdrop shows the thread under it.
         .presentationBackground(.clear)
         #endif
+        .task { sharp = await PictureDecode.image(image.source, maxPixels: PictureDecode.viewerPixels) }
     }
 
     private func toggleZoom() {

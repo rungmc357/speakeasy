@@ -195,11 +195,7 @@ struct ArtifactPhoto: View {
         } else if let number, actions.image != nil {
             IconTile(symbol: symbol).task(id: number) {
                 guard let data = await actions.image?(number) else { return }
-                #if os(macOS)
-                if let image = NSImage(data: data) { loaded = Image(nsImage: image) }
-                #else
-                if let image = UIImage(data: data) { loaded = Image(uiImage: image) }
-                #endif
+                if let image = await PictureDecode.image(data) { loaded = image }
             }
         } else if let url {
             AsyncImage(url: url) { phase in
