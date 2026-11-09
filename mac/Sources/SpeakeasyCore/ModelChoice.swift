@@ -9,7 +9,9 @@ import Foundation
 public enum ReasoningLevel: String, CaseIterable, Sendable, Identifiable, Comparable {
     case none, minimal, low, medium, high, xhigh, max
     public var id: String { rawValue }
-    /// "Medium", "Extra high", "Off".
+    /// "Medium", "Max", "Off". A model's strongest level reads "Max" whichever id it has (GPT's
+    /// `xhigh`, Claude's `max`), so Home and a chat never name the same top level two ways (SPK-309
+    /// D1/D11). Only a list holding both says "Extra high" for `xhigh` (`label(among:)`).
     public var label: String {
         switch self {
         case .none: return "Off"
@@ -17,17 +19,22 @@ public enum ReasoningLevel: String, CaseIterable, Sendable, Identifiable, Compar
         case .low: return "Low"
         case .medium: return "Medium"
         case .high: return "High"
-        case .xhigh: return "Extra high"
-        case .max: return "Max"
+        case .xhigh, .max: return "Max"
         }
     }
-    /// For a segmented control with several levels: "Med", "XHigh".
+    /// The label within a list of levels: `xhigh` is "Extra high" only beside a `max`.
+    public func label(among levels: [ReasoningLevel]) -> String {
+        self == .xhigh && levels.contains(.max) ? "Extra high" : label
+    }
+    public func short(among levels: [ReasoningLevel]) -> String {
+        self == .xhigh && levels.contains(.max) ? "XHigh" : short
+    }
+    /// For a segmented control with several levels: "Med", "Max".
     public var short: String {
         switch self {
         case .none: return "Off"
         case .minimal: return "Min"
         case .medium: return "Med"
-        case .xhigh: return "XHigh"
         default: return label
         }
     }

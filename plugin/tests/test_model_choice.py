@@ -140,7 +140,7 @@ def test_new_chat_choice_runs_the_job_and_sticks_to_its_chat(server, service, he
     task = wait_for(lambda: (service.store.work(started["run_id"]) or {}).get("model", {}).get("served")
                     and service.store.work(started["run_id"]))
     assert task["model"] == {**task["model"], "id": "openai-codex/gpt-6.1-sol", "name": "GPT-6.1 Sol",
-                             "reasoning": "xhigh", "reasoning_label": "Extra high", "source": "task"}
+                             "reasoning": "xhigh", "reasoning_label": "Max", "source": "task"}
     # Its follow-up from the session page keeps the chat's model.
     add_session(state, sid, "api_server", at=NOW - 1)
     add_msg(state, sid, "user", "User: Plan the tomato beds", at=NOW - 2)

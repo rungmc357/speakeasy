@@ -45,11 +45,11 @@ final class ModelChoiceTests: XCTestCase {
     func testChipLabels() {
         let c = catalog
         XCTAssertEqual(c.chipLabel(nil), "Claude Opus 5.5 · Medium")
-        XCTAssertEqual(c.chipLabel(ModelChoice(model: "openai-codex/gpt-5.5", reasoning: .xhigh)), "GPT-5.5 · Extra high")
+        XCTAssertEqual(c.chipLabel(ModelChoice(model: "openai-codex/gpt-5.5", reasoning: .xhigh)), "GPT-5.5 · Max")
         XCTAssertEqual(c.chipLabel(ModelChoice(reasoning: .high)), "Claude Opus 5.5 · High", "level only keeps the model")
         XCTAssertEqual(c.chipLabel(ModelChoice(model: "studio-qwen/qwen3.8-coder", reasoning: .high)), "Qwen3.8 Coder",
                        "a model that doesn't reason shows no level")
-        XCTAssertEqual(c.chipLabel(ModelChoice(model: "openai-codex/gpt-5.5", reasoning: .max)), "GPT-5.5 · Extra high",
+        XCTAssertEqual(c.chipLabel(ModelChoice(model: "openai-codex/gpt-5.5", reasoning: .max)), "GPT-5.5 · Max",
                        "clamped to what the model takes")
     }
 
@@ -58,7 +58,11 @@ final class ModelChoiceTests: XCTestCase {
         XCTAssertEqual(ReasoningLevel.minimal.clamped(to: [.low, .medium]), .low)
         XCTAssertNil(ReasoningLevel.none.clamped(to: [.low, .medium]))
         XCTAssertNil(ReasoningLevel.high.clamped(to: []))
-        XCTAssertEqual(ReasoningLevel.xhigh.label, "Extra high")
+        XCTAssertEqual(ReasoningLevel.xhigh.label, "Max", "the strongest level reads Max on every model")
+        XCTAssertEqual(ReasoningLevel.max.label, "Max")
+        XCTAssertEqual(ReasoningLevel.xhigh.label(among: [.high, .xhigh]), "Max")
+        XCTAssertEqual(ReasoningLevel.xhigh.label(among: [.high, .xhigh, .max]), "Extra high")
+        XCTAssertEqual(ReasoningLevel.xhigh.short, "Max")
         XCTAssertEqual(ReasoningLevel.medium.short, "Med")
     }
 
