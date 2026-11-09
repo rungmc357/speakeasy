@@ -163,6 +163,10 @@ public extension EnvironmentValues {
 /// One job as a slim row: glyph tile, title, one status line, a trailing state word.
 public struct NowWorkRow: View {
     public enum Tone: Sendable { case needs, running, quiet }
+    /// The rows' quiet ink. A concrete colour, not the hierarchical `.secondary`: inside the glass
+    /// drop-down the bare hierarchical style rendered fully transparent on iOS 27 (status lines,
+    /// state words and section titles vanished), while an opacity-derived colour drew.
+    public static let quietInk = Color.primary.opacity(0.58)
     public let title: String
     public let line: String
     public let state: String
@@ -223,12 +227,12 @@ public struct NowWorkRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
                 if !line.isEmpty {
-                    Text(line).font(.footnote).foregroundStyle(Color.secondary).lineLimit(1)
+                    Text(line).font(.footnote).foregroundStyle(NowWorkRow.quietInk).lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text(state).font(.footnote.weight(tone == .needs ? .semibold : .regular))
-                .foregroundStyle(tone == .needs ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.secondary))
+                .foregroundStyle(tone == .needs ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(NowWorkRow.quietInk))
                 .lineLimit(1).fixedSize()
         }
         .padding(.vertical, 8)
@@ -239,7 +243,7 @@ public struct NowWorkRow: View {
     @ViewBuilder private var tile: some View {
         let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
         let glyph = Image(systemName: symbol).font(.footnote.weight(.medium))
-            .foregroundStyle(tone == .needs ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.secondary))
+            .foregroundStyle(tone == .needs ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(NowWorkRow.quietInk))
         Group {
             if let image, let url = URL(string: image) {
                 AsyncImage(url: url) { phase in
@@ -377,7 +381,7 @@ public struct NowWorkAllList: View {
             ForEach(NowWorkSections(items: items, background: background).sections) { section in
                 HStack {
                     Text(section.title).font(.footnote.weight(.semibold))
-                        .foregroundStyle(section.title == "Needs you" ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.secondary))
+                        .foregroundStyle(section.title == "Needs you" ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(NowWorkRow.quietInk))
                     Spacer()
                     Text("\(section.count)").font(.footnote).foregroundStyle(Color.secondary.opacity(0.7))
                 }
