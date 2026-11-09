@@ -9,15 +9,16 @@ import SpeakeasyClient
 enum MacProjectTint {
     static func color(_ c: ProjectColor?) -> Color {
         switch c {
-        case .blue: return .blue
-        case .teal: return .teal
-        case .green: return .green
-        case .yellow: return .yellow
-        case .orange: return .orange
-        case .red: return .red
-        case .pink: return .pink
-        case .purple: return .purple
-        case .gray, .none: return .gray
+        // The phone's muted tints (ProjectTint), so a project wears one colour everywhere.
+        case .blue: return .adaptive(dark: Color(red: 0.49, green: 0.67, blue: 0.95), light: Color(red: 0.16, green: 0.38, blue: 0.72))
+        case .teal: return .adaptive(dark: Color(red: 0.42, green: 0.80, blue: 0.80), light: Color(red: 0.07, green: 0.45, blue: 0.47))
+        case .green: return .adaptive(dark: Color(red: 0.50, green: 0.80, blue: 0.55), light: Color(red: 0.16, green: 0.45, blue: 0.24))
+        case .yellow: return .adaptive(dark: Color(red: 0.95, green: 0.82, blue: 0.42), light: Color(red: 0.55, green: 0.42, blue: 0.02))
+        case .orange: return .adaptive(dark: Color(red: 0.97, green: 0.66, blue: 0.40), light: Color(red: 0.70, green: 0.34, blue: 0.05))
+        case .red: return .adaptive(dark: Color(red: 0.95, green: 0.52, blue: 0.50), light: Color(red: 0.66, green: 0.16, blue: 0.14))
+        case .pink: return .adaptive(dark: Color(red: 0.95, green: 0.58, blue: 0.75), light: Color(red: 0.66, green: 0.20, blue: 0.43))
+        case .purple: return .adaptive(dark: Color(red: 0.74, green: 0.62, blue: 0.95), light: Color(red: 0.42, green: 0.28, blue: 0.70))
+        case .gray, .none: return Color.primary.opacity(0.6)
         }
     }
 }
@@ -70,9 +71,10 @@ struct MacProjectsSidebarSection: View {
     }
 
     /// "Working in Garden shed" while Home files into a project, otherwise "Not in a project".
+    /// Nothing when Home isn't in a project (as on the phone).
     private var homeLine: String {
         if let id = projects.list.selected, let p = projects.list.projects.first(where: { $0.id == id }) { return "Working in \(p.name)" }
-        return "Not in a project"
+        return ""
     }
 
     private func row(id: String?, symbol: String, color: ProjectColor?, name: String, line: String, running: Bool = false) -> some View {
@@ -86,7 +88,7 @@ struct MacProjectsSidebarSection: View {
                         Text(name).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
                         HStack(spacing: 4) {
                             if running { LiveDot(color: Color.primary.opacity(0.6), size: 5).accessibilityHidden(true) }
-                            Text(line).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                            if !line.isEmpty { Text(line).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1) }
                         }
                     }
                     Spacer(minLength: 4)

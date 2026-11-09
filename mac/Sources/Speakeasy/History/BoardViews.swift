@@ -47,9 +47,9 @@ struct BoardSidebarRow: View {
                 Spacer(minLength: 4)
                 if board.needsYouCount > 0 {
                     Text("\(board.needsYouCount)").font(.system(size: 10.5, weight: .bold).monospacedDigit())
-                        .foregroundStyle(.white)
+                        .foregroundStyle(BrandPalette.onBrass)
                         .padding(.horizontal, 6).frame(height: 17)
-                        .background(Capsule().fill(BoardLook.needsYou))
+                        .background(Capsule().fill(BrandPalette.brass))
                         .accessibilityLabel("\(board.needsYouCount) need you")
                 }
             }

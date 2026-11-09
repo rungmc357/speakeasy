@@ -196,7 +196,6 @@ struct HistorySidebar: View {
             if store.supported {
                 MacProjectsSidebarSection(store: store, projects: store.projects).padding(.horizontal, 6).padding(.bottom, 6)
             }
-            Rectangle().fill(SidebarLook.hairline).frame(height: 1).padding(.horizontal, 16)
             if !store.supported { updateNote } else { listBody }
         }
         .overlay(alignment: .bottom) { undoToast }
@@ -250,8 +249,8 @@ struct HistorySidebar: View {
             }
         }
         .padding(.horizontal, 10).frame(height: 30)
-        .background(RoundedRectangle(cornerRadius: SidebarLook.rowRadius, style: .continuous).fill(SidebarLook.well))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+        .background(Capsule().fill(SidebarLook.well))
+        .overlay(Capsule()
             .strokeBorder(searchFocused ? Color.primary.opacity(0.28) : SidebarLook.hairline, lineWidth: searchFocused ? 1 : 0.75))
     }
 
