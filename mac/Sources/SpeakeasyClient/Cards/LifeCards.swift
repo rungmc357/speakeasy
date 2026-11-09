@@ -67,6 +67,9 @@ struct DayCard: View {
                         }
                     }
                     .cardWell(style, padding: style.capsHeaders ? 8 : 12)
+                    // The well reaches into the card's padding so its times and titles stay in the
+                    // same columns as the rows outside it (they sat 12 pt to the right).
+                    .padding(.horizontal, style.capsHeaders ? 0 : -12)
                     .accessibilityElement(children: .contain)
                 } else {
                     row(events[group[0]], next: group[0] == nextIndex(events))
@@ -127,7 +130,8 @@ struct DayCard: View {
                 if next, let join = e["join_url"].url { Link("Join", destination: join).font(.system(size: 11.5, weight: .semibold)) }
             }
         } else {
-            HStack(alignment: .center, spacing: 12) {
+            // The time sits on the title's first baseline, not centred against a two-line title.
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(e["all_day"].bool == true ? "All day" : EventTimes.one(e["start"].string).map(Self.bare) ?? "")
                     .font(.footnote.weight(.semibold)).monospacedDigit().foregroundStyle(style.secondary)
                     .frame(width: 48, alignment: .leading)

@@ -127,8 +127,8 @@ struct SourceMark: View {
     var color: Color
     var body: some View {
         Image(systemName: symbol).font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
-            .frame(width: 28, height: 28)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(color))
+            .frame(width: CleanGrid.glyphTile, height: CleanGrid.glyphTile)
+            .background(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous).fill(color))
             .accessibilityHidden(true)
     }
     static func issue(_ source: String?) -> SourceMark {
@@ -165,23 +165,31 @@ struct SourceMark: View {
 struct AppHeader: View {
     let parts: [String]
     let source: String?
+    @Environment(\.cardStyle) private var style
+    private var titleFont: Font { style.capsHeaders ? .system(size: 13, weight: .semibold) : .subheadline.weight(.semibold) }
+    private var titleInk: Color { style.capsHeaders ? .secondary : style.ink }
     var body: some View {
         if !parts.isEmpty {
-            HStack(spacing: 8) {
+            // The same first line as every other card (`CardTitleRow`, an issue's mark): a 28 pt mark,
+            // the title in the card's ink. It was a smaller 20 pt mark in grey 13 pt, so app cards
+            // sat beside issue and server cards with a header of their own size.
+            HStack(spacing: style.capsHeaders ? 8 : CleanGrid.glyphGap) {
                 if let mark = SourceMark.app(source) {
-                    Image(systemName: mark.symbol).font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white)
-                        .frame(width: 20, height: 20)
-                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(mark.color))
-                        .accessibilityHidden(true)
+                    if style.capsHeaders {   // the Mac's classic look keeps its small mark
+                        Image(systemName: mark.symbol).font(.system(size: 9.5, weight: .bold)).foregroundStyle(.white)
+                            .frame(width: 20, height: 20)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(mark.color))
+                            .accessibilityHidden(true)
+                    } else { mark }
                 }
                 // Whole parts that fit, never one cut mid-word ("12 active jobs se…"): the last parts give
                 // way first, since the app and the view it came from lead.
                 ViewThatFits(in: .horizontal) {
                     ForEach((1...parts.count).reversed(), id: \.self) { n in
-                        Text(parts.prefix(n).joined(separator: " · ")).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                        Text(parts.prefix(n).joined(separator: " · ")).font(titleFont).foregroundStyle(titleInk)
                             .lineLimit(1).fixedSize()
                     }
-                    Text(parts[0]).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(parts[0]).font(titleFont).foregroundStyle(titleInk).lineLimit(1)
                 }
             }
             .accessibilityElement(children: .combine)
@@ -208,7 +216,7 @@ struct IssueCard: View {
     @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
-            HStack(spacing: 10) {
+            HStack(spacing: CleanGrid.glyphGap) {
                 SourceMark.issue(card["source"].string)
                 Text([sourceName(card["source"].string), card["ref"].string].compactMap { $0 }.joined(separator: " · "))
                     .font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
@@ -262,10 +270,11 @@ struct PRCard: View {
         let checks = card["checks"].array
         let number = card["number"].string.map { "#" + $0 }
         return CardBox {
-            HStack(spacing: 8) {
+            // The same first line as the PR and issue cards: 12 pt from the mark, the card's ink.
+            HStack(spacing: CleanGrid.glyphGap) {
                 SourceMark.pr
                 Text(["CI", number, card["repo"].string?.split(separator: "/").last.map(String.init)].compactMap { $0 }.joined(separator: " · "))
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(style.secondary).lineLimit(1)
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
                 Spacer(minLength: 8)
                 if let when = EventTimes.stamp(card["when"].string) { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
             }
@@ -297,7 +306,7 @@ struct PRCard: View {
     }
     private var prBody: some View {
         CardBox {
-            HStack(spacing: 10) {
+            HStack(spacing: CleanGrid.glyphGap) {
                 SourceMark.pr
                 // "owner/repo · #418"; when that can't fit beside the time, the repo's own name (an
                 // owner like NousResearch cut to "NousResearch/he…" said nothing).
@@ -490,7 +499,7 @@ struct SiteCard: View {
                 CardPicture(value: card["image"], label: "Screenshot of \(card["title"].string ?? host)")
                     .frame(maxWidth: .infinity)
             }
-            HStack(spacing: 10) {
+            HStack(spacing: CleanGrid.glyphGap) {
                 SourceMark.site
                 VStack(alignment: .leading, spacing: 1) {
                     Text(card["title"].string ?? host).font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)

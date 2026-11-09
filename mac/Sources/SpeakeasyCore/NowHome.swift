@@ -612,6 +612,12 @@ public struct HomeModelStatus: Equatable, Sendable {
     }
     /// The coordinator's model was picked by the user (otherwise Auto or a fallback is in use).
     public var chosen: Bool { source == "chosen" }
+    /// How the picker names Auto: the fast model it picked, or — when none of the approved fast
+    /// models is connected — the user's work model, which the coordinator then uses.
+    public var autoLabel: String {
+        if let auto { return "Auto · \(auto.name)" }
+        return source == "work" ? "Auto · same as your work model" : "Auto"
+    }
 }
 
 /// How Home's model picker presents a model: a provider glyph (an SF Symbol, never a brand logo)

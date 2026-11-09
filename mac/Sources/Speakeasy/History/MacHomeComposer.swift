@@ -309,7 +309,7 @@ private struct MacHomeBottomBarLive: View {
     var body: some View {
         if voice.state.connection.isOpen && !voice.state.workOnly {
             MacNowCallControls(voice: voice)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .accessibilityIdentifier("mac-home-call-dock")
         } else {
@@ -336,8 +336,8 @@ struct MacHomeModelMenu: View {
                     }
                 }
             }
-            Menu("Chat replies: " + (status.chosen ? (status.model?.name ?? "Auto") : status.auto.map { "Auto · \($0.name)" } ?? "Auto")) {
-                Button((status.chosen ? "" : "✓ ") + (status.auto.map { "Auto · \($0.name)" } ?? "Auto")) { choose(false, nil) }
+            Menu("Chat replies: " + (status.chosen ? (status.model?.name ?? "Auto") : status.autoLabel)) {
+                Button((status.chosen ? "" : "✓ ") + (status.autoLabel)) { choose(false, nil) }
                 ForEach(status.options) { option in
                     Button((status.chosen && status.model?.id == option.id ? "✓ " : "") + option.name) { choose(false, option.id) }
                 }

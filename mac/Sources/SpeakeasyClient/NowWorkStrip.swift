@@ -123,10 +123,10 @@ public struct NowWorkStrip: View {
                     .scrollTargetBehavior(.paging).scrollPosition(id: $page, anchor: .leading)
                     .defaultScrollAnchor(.leading).scrollIndicators(.hidden)
                     .frame(height: 92)
-                    HStack(spacing: 5) {
+                    HStack(spacing: 6) {
                         ForEach(keys, id: \.self) { key in
                             Circle().fill(key == (page ?? keys.first) ? Color.primary : Color.primary.opacity(0.2))
-                                .frame(width: 5, height: 5)
+                                .frame(width: 6, height: 6)
                         }
                     }.accessibilityHidden(true)
                     Button("Open Work") { expanded = false; onBoard() }.font(.footnote.weight(.medium))
@@ -138,8 +138,8 @@ public struct NowWorkStrip: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: expanded ? 24 : 18))
-            .overlay(RoundedRectangle(cornerRadius: expanded ? 24 : 18).strokeBorder(Color.primary.opacity(0.08)))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: expanded ? CleanGrid.cardRadius : 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: expanded ? CleanGrid.cardRadius : 18, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
             .onChange(of: keys) { _, keys in if let page, !keys.contains(page) { self.page = keys.first } }
         }
     }
@@ -147,12 +147,12 @@ public struct NowWorkStrip: View {
         withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.88)) { expanded.toggle() }
     }
     private func stripPage(title: String, line: String, source: String, image: String?) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: CleanGrid.glyphGap) {
             if let image, let url = URL(string: image) {
                 AsyncImage(url: url) { state in
                     if let image = state.image { image.resizable().scaledToFill() }
                     else { Image(systemName: "rectangle.stack").foregroundStyle(.secondary) }
-                }.frame(width: 48, height: 56).clipShape(RoundedRectangle(cornerRadius: 10))
+                }.frame(width: 48, height: 56).clipShape(RoundedRectangle(cornerRadius: CleanGrid.tileRadius, style: .continuous))
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(source).font(.caption).foregroundStyle(.secondary)
@@ -165,7 +165,7 @@ public struct NowWorkStrip: View {
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 14).frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+        .padding(.horizontal, CleanGrid.cardPadding).frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
         .contentShape(Rectangle())
     }
 }
