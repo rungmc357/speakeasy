@@ -175,8 +175,9 @@ public struct TranscriptTurn: Equatable, Sendable, Identifiable {
         self.taskID = taskID; self.taskName = taskName
     }
     /// Written replies stay as written: the speech cleaner would eat bracketed markdown link names.
+    /// Speech shows a spelled-out email as the address (SPK-304); `text` keeps the words as heard.
     public var cleanedText: String {
-        kind != .speech ? text.trimmingCharacters(in: .whitespacesAndNewlines) : cleanTranscript(text)
+        kind != .speech ? text.trimmingCharacters(in: .whitespacesAndNewlines) : SpokenEmail.collapsed(cleanTranscript(text))
     }
 }
 
