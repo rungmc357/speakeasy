@@ -453,19 +453,35 @@ public struct SentFile: Equatable, Sendable, Identifiable {
     }
 }
 
-/// A server-resolved snapshot of the Home message being answered.
+/// A server-resolved snapshot of the Home message being answered. A job card quotes as a mini card:
+/// its title, one status line and the run it stands for (`id` is then "r:<run id>").
 public struct HomeReplyQuote: Equatable, Sendable {
     public var id: String
     public var role: NowStream.Entry.Role
     public var text: String
+    /// A job card (not a message): drawn as a mini card (glyph + title + status line).
+    public var isCard: Bool
+    public var line: String?
+    public var runID: String?
     public init(id: String, role: NowStream.Entry.Role, text: String) {
-        self.id = id; self.role = role; self.text = text
+        self.id = id; self.role = role; self.text = text; isCard = false; line = nil; runID = nil
+    }
+    /// A job card on Home.
+    public init(cardRunID run: String, title: String, line: String?) {
+        id = "r:" + run; role = .assistant; text = title; isCard = true
+        self.line = line.flatMap { $0.isEmpty ? nil : $0 }; runID = run
     }
     public init?(json: Any?) {
-        guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
-              let role = (o["role"] as? String).flatMap(NowStream.Entry.Role.init(rawValue:)),
-              let text = nonEmpty(o["text"]) else { return nil }
-        self.init(id: id, role: role, text: text)
+        guard let o = json as? [String: Any], let id = nonEmpty(o["id"]), let text = nonEmpty(o["text"]),
+              let raw = o["role"] as? String else { return nil }
+        if raw == "card" {
+            guard let run = nonEmpty(o["run_id"]) else { return nil }
+            self.init(cardRunID: run, title: text, line: nonEmpty(o["line"]))
+            self.id = id
+        } else {
+            guard let role = NowStream.Entry.Role(rawValue: raw) else { return nil }
+            self.init(id: id, role: role, text: text)
+        }
     }
 }
 
