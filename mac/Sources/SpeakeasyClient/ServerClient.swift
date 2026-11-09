@@ -649,6 +649,11 @@ public final class ServerClient: @unchecked Sendable {
     }
 
     /// Stop one task by id, with or without a call (plugins with `task_stop`): a panel row's Stop.
+    /// "Start now anyway": a job waiting behind another job on the same project starts now, beside it.
+    public func startNow(runID: String) async throws {
+        _ = try await post("/voice/work/\(escape(runID))/start-now", [String: Any]())
+    }
+
     public func stopTask(runID: String) async throws {
         _ = try await post("/voice/work/\(escape(runID))/stop", [String: Any]())
     }

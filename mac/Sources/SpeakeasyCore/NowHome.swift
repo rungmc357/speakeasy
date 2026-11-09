@@ -191,6 +191,10 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     public var sayOK: Bool = true
     /// Asking on a call with a risky choice: "Can't be undone · Needs a tap".
     public var lockLine: String?
+    /// Waiting behind another job on the same project: the job it starts after ("Checkout fix").
+    public var waitingOn: String?
+    /// A waiting job can start now, beside the other one (`POST /voice/work/{run_id}/start-now`).
+    public var canStartNow = false
     public enum OnCall: String, Sendable { case asking, heard }
 
     public init(id: String, kind: Kind, sessionID: String? = nil, runID: String? = nil, title: String, line: String,
@@ -236,6 +240,8 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         reply = nonEmpty(o["reply"]).map { String($0.prefix(400)) }
         workModel = ReplyAttribution(json: o["model"])
         canceled = o["canceled"] as? Bool ?? false
+        waitingOn = kind == .waiting ? nonEmpty(o["waiting_on"]) : nil
+        canStartNow = kind == .waiting && (o["can_start_now"] as? Bool ?? false) && runID != nil
         if let r = o["replaced"] as? [String: Any] {
             replacedAt = (r["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } ?? updatedAt ?? finishedAt
             replacedBy = nonEmpty(r["by"])

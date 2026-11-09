@@ -2,6 +2,13 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.49 — Home's model chip and waiting jobs
+
+- **The model chip is what runs.** The chip above Home's composer now always names the model your jobs actually run on: your pick on the chip, else the job model saved in Speakeasy's settings, else your Hermes default. Before, it could show your Hermes default while jobs ran on the saved one. *(plugin)*
+- **A job waiting its turn shows up.** When a new job would edit the same project as one already running (say, two changes to the same app), it waits, and now you can see it: its card says "Waiting · after Checkout fix" right away, and Home tells you ("I'll start that as soon as the paint search wraps up."). *(plugin; the waiting card shows on iPhone with the next build)*
+- **Start now anyway.** Tap a waiting card to start it right away, beside the other job. *(plugin + next iPhone build)*
+- **Questions never wait.** Questions, lookups, proposals, plans and research start at once, even while another job is busy on the same project. *(plugin)*
+
 ## Plugin 0.3.48 — Home is chattier
 
 - **Home talks like a person.** Instead of a clipped "On it." or "Checking.", Home answers with a natural line about what you asked ("Let me take a look at where the release is at."), never the same line twice in a row. Small talk gets a real reply, and answers about your jobs lead with the result, then a sentence on what it means. *(plugin)*
