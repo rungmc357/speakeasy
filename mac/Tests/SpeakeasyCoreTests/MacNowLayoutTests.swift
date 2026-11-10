@@ -73,4 +73,43 @@ final class MacNowLayoutTests: XCTestCase {
         XCTAssertEqual(MacNowLayout.callBarSize.height, 56)
         XCTAssertEqual(MacNowLayout.popoverWidth, 360)
     }
+
+    // MARK: B73-22: the Mac against a build 73 plugin
+
+    /// The Mac ignores build 73's additive Home state (`stream.current`, `stack`, `recommendations`,
+    /// an entry's `current`/`answer` marks): a b73 /voice/now reply gives the Mac exactly what the
+    /// same reply without those keys gives it (items, stream, counts, pill, popover rows).
+    func testB73HomeStateLeavesWhatTheMacReadsUnchanged() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "now_b73", withExtension: "json", subdirectory: "Contract"))
+        let full = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertNotNil(full["stack"]); XCTAssertNotNil(full["recommendations"])
+        var older = full
+        older.removeValue(forKey: "stack")
+        older.removeValue(forKey: "recommendations")
+        var stream = try XCTUnwrap(older["stream"] as? [String: Any])
+        XCTAssertNotNil(stream["current"])
+        stream.removeValue(forKey: "current")
+        stream["entries"] = (stream["entries"] as? [[String: Any]] ?? []).map { entry in
+            var e = entry; e.removeValue(forKey: "current"); e.removeValue(forKey: "answer"); return e
+        }
+        older["stream"] = stream
+
+        var b73 = NowHome(json: full)
+        let old = NowHome(json: older)
+        XCTAssertFalse(b73.items.isEmpty)
+        XCTAssertFalse((b73.stream?.entries ?? []).isEmpty)
+        XCTAssertTrue(b73.stream?.entries.contains { $0.current } ?? false, "the fixture marks a current exchange")
+        // Clear only the b73 fields the Mac never reads; everything else must already match.
+        b73.stack = nil
+        b73.recommendations = nil
+        b73.stream?.current = nil
+        if let entries = b73.stream?.entries {
+            b73.stream?.entries = entries.map { var e = $0; e.current = false; e.answer = false; return e }
+        }
+        XCTAssertEqual(b73, old)
+        XCTAssertEqual(MacNowLayout.menuItems(NowHome(json: full).items, onCall: false).map(\.id),
+                       MacNowLayout.menuItems(old.items, onCall: false).map(\.id))
+        XCTAssertEqual(MacNowLayout.menuItems(NowHome(json: full).items, onCall: true).map(\.id),
+                       MacNowLayout.menuItems(old.items, onCall: true).map(\.id))
+    }
 }
