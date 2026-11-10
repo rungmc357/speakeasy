@@ -84,60 +84,108 @@ _TEENS = "ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen
 _TENS = "twenty thirty forty fifty sixty seventy eighty ninety".split()
 _SPELLED = re.compile(r"(?i)\b(?:(" + "|".join(_TENS) + r")(?:[-\s]+(" + "|".join(_UNITS) + r"))?"
                       r"|(" + "|".join(_UNITS[1:] + _TEENS) + r"))\b")
+_NUMBER_WORDS = set(_UNITS + _TEENS + _TENS) | {"zero", "hundred", "thousand", "point"}
+_ORDINAL_AFTER = re.compile(r"(?i)-(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b")
+
+# Words that name one build or one ticket when a number is said right next to them ("release 42", "#12").
+_NAMING = {"build": "build", "release": "build", "version": "build", "v": "build", "rc": "build",
+          "issue": "ticket", "ticket": "ticket", "pr": "ticket", "bug": "ticket", "#": "ticket"}
+# After a bare number these make it an amount of time or money, not a build ("forty minutes").
+_AMOUNT = {"second", "seconds", "sec", "secs", "minute", "minutes", "min", "mins", "hour", "hours", "hr", "hrs",
+           "day", "days", "week", "weeks", "month", "months", "year", "years", "am", "pm", "o'clock",
+           "percent", "%", "dollars", "bucks", "euros", "pounds", "k"}
+_CORRECTION = re.compile(r"(?i)^\W*(?:no|nope|sorry|i\s+mean(?:t)?|make\s+that)\b|\bsorry\W*$")
+_NEAR = 3  # people name the build next door ("sixty-seven" on sixty-eight's task); a count rarely lands this close
 
 
-def digits(text: str) -> str:
-    """Spelled numbers as digits, the way the voice may write what it heard ("forty-one", "forty one",
-    "twelve"). A lone "one" stays a word: "the one you mentioned" names no number."""
+def _token(m: re.Match[str] | None) -> str:
+    return m.group(1).lower() if m else ""
+
+
+def digits(text: str, named_only: bool = False) -> str:
+    """Spelled numbers said on their own as digits, the way the voice may write what it heard ("forty-one",
+    "forty one", "twelve"). Words touching another number stay words, so an ordinal, a decimal, a time or a
+    hundreds number never becomes a different number ("twenty-first", "two point three", "four thirty",
+    "one twenty-three"); a lone "one" stays a word too. ``named_only``: only after a naming word
+    ("release forty-two")."""
+    text = text or ""
+
     def number(m: re.Match[str]) -> str:
+        before = _token(re.search(r"([\w#.']+)[ \t-]+$", text[:m.start()]))
+        after = _token(re.match(r"[ \t-]+([\w.']+)", text[m.end():]))
+        if (any(w[:1].isdigit() or w in _NUMBER_WORDS for w in (before, after))
+                or _ORDINAL_AFTER.match(text, m.end()) or (named_only and before not in _NAMING)):
+            return m.group(0)
         tens, unit, small = (g.lower() if g else g for g in m.groups())
         if small:
             return str((_UNITS + _TEENS).index(small) + 1)
         return str(20 + 10 * _TENS.index(tens) + (_UNITS.index(unit) + 1 if unit else 0))
-    return _SPELLED.sub(number, text or "")
+    return _SPELLED.sub(number, text)
 
 
-_ID_WORDS = {"build", "builds", "release", "releases", "version", "v", "issue", "ticket", "pr", "bug", "number",
-             "#", "rc", "sprint", "milestone"}
-# A bare number said before one of these is a thing's name ("push 41 to public", "42 is fine"); before
-# anything else it most likely counts something ("three blockers", "ten minutes").
-_ID_NEXT = {"to", "is", "isn't", "was", "wasn't", "and", "or", "now", "then", "too", "also", "out", "live",
-            "public", "please", "today", "tonight", "yet", "go", "goes", "gets", "should", "will", "can", "has",
-            "have", "needs", "as", "instead"}
-_COUNTING = {"top", "first", "last", "next", "in", "for", "at", "by", "about", "around", "under", "over", "within",
-             "every", "than", "it", "me", "of", "only", "just", "like", "to", "from", "until", "after", "before",
-             "with", "per"}
-_NOT_IDS = re.compile(r"(?i)\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm|o'clock)\b|\b\d{1,2}\s*[ap]\.m\.|[$€£]\s*\d[\d,.]*"
-                      r"|\d[\d,.]*\s*%")
+def _said(text: str) -> list[str]:
+    """Words and numbers as said: "4:15", "2.3", "41st" and "3pm" stay one token each."""
+    return re.findall(r"[#$€£%]|\d+(?:[.:,]\d+)*[a-z]*|[a-z]+(?:'[a-z]+)*", digits(text).lower())
 
 
-def ids(text: str) -> set[str]:
-    """The identifier numbers a text names, as digit strings: next to a word like build or release
-    ("release forty-two", "#12", "the 41 build"), or bare where a name goes ("pushing 41 to public").
-    Counts, durations and times are not ("top three", "in ten minutes", "the 4:15")."""
-    words = re.findall(r"#|\d+(?:\.\d+)*|[a-z]+(?:'[a-z]+)?", _NOT_IDS.sub(" ", digits(text).lower()))
-    found = set()
+def _is_number(token: str) -> bool:
+    return bool(re.fullmatch(r"\d+(?:\.\d+)*", token))
+
+
+def keyed(text: str, before: bool = True) -> dict[str, set[str]]:
+    """The numbers a text names with a naming word, by family ("build" or "ticket"): "release forty-two",
+    "#12", "v2", a list after the word ("PR 12 and 13") and, with ``before``, two or more digits before it
+    ("the 41 build"). A plural after a number counts things ("the last three builds")."""
+    words, found = _said(text), {}
     for i, word in enumerate(words):
-        if not word[0].isdigit():
+        nxt = words[i + 1] if i + 1 < len(words) else ""
+        family = _NAMING.get(words[i - 1] if i else "")
+        if family is None and before and nxt in _NAMING and word.isdigit() and len(word) >= 2:
+            family = _NAMING[nxt]
+        if family is None or not _is_number(word):
             continue
-        before = words[i - 1] if i else ""
-        after = words[i + 1] if i + 1 < len(words) else ""
-        if (before in _ID_WORDS or after in _ID_WORDS
-                or (before not in _COUNTING and (not after or after in _ID_NEXT))):
-            found.add(word)
+        found.setdefault(family, set()).add(word)
+        j = i + 1
+        while j < len(words) and (_is_number(words[j]) or words[j] in {"and", "or"}):
+            if _is_number(words[j]):
+                found[family].add(words[j])
+            j += 1
     return found
 
 
-def names_other_number(a: str, b: str) -> bool:
-    """Whether two texts are about differently numbered things (build 67 vs build 68): never one task."""
-    x, y = ids(a), ids(b)
-    return bool(x and y and not x & y)
+def names_other_number(task_request: str, follow_up: str) -> bool:
+    """Whether a follow-up names a different one of the build or ticket its task is about, so it must be
+    its own task. Only a task that names its build or ticket with a word can refuse ("release 42"); the
+    follow-up then refuses when it doesn't say that number and either names another with a word of the
+    same family ("release 41") or says a bare number a few away with the same digits ("push 41 now").
+    A correction ("no, I meant 43") stays: the running job should switch."""
+    task = keyed(task_request)
+    if not task:
+        return False
+    words = _said(follow_up)
+    named = {n for numbers in task.values() for n in numbers}
+    if named & set(words) or _CORRECTION.search(follow_up or ""):
+        return False
+    other = keyed(follow_up, before=False)
+    if any(other.get(family) for family in task):
+        return True
+    named_after = {n for numbers in other.values() for n in numbers}
+    for i, m in enumerate(words):
+        prev = words[i - 1] if i else ""
+        nxt = words[i + 1] if i + 1 < len(words) else ""
+        if (not m.isdigit() or len(m) < 2 or m in named_after or prev in {"$", "€", "£", "#"} or nxt in _AMOUNT
+                or any(w[:1].isdigit() or w in _NUMBER_WORDS for w in (prev, nxt))):
+            continue
+        if any(n.isdigit() and len(n) == len(m) and 0 < abs(int(m) - int(n)) <= _NEAR for n in named):
+            return True
+    return False
 
 
 def subject(text: str, recap_words: bool = True) -> set[str]:
-    """What the ask is about: its content words (stemmed), without filler or status words."""
+    """What the ask is about: its content words (stemmed), without filler or status words. A number
+    spelled after a naming word is a number ("build sixty-eight"); a spelled count stays a word."""
     out = set()
-    for raw in _tokens(digits(text)):
+    for raw in _tokens(digits(text, named_only=True)):
         for piece in re.split(r"[.-]", raw):
             if not piece:
                 continue
