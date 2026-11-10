@@ -202,7 +202,7 @@ struct StatsCard: View {
     let card: ViewCard
     var body: some View {
         CardBox {
-            HStack {
+            CardHeaderRow {
                 CardHeader(icon: card.kind == "nutrition" ? "fork.knife" : "chart.bar.fill", title: card["title"].string ?? "")
                 if let serving = card["serving"].string { Text(serving).font(.system(size: 11.5)).foregroundStyle(.secondary) }
             }
