@@ -54,7 +54,7 @@
    defaults to 1 as a backstop. No production change.
 4. `remove()` keeps homes recorded; `test_visual_review` writes its outside image under `tmp_path`.
 
-## Test scenarios (`plugin/tests/test_temp_homes.py`, pytest in a subprocess, own TMPDIR)
+## Test scenarios (`plugin/tests/test_temp_homes.py`; most run pytest in a subprocess, own TMPDIR)
 
 - A session with the `home` fixture, a home written back after its teardown, a bare `make_home()`
   and a failing test: exit 1, "1 failed, 3 passed", the 4 homes were made in that TMPDIR and none
@@ -68,4 +68,11 @@
 - The parallel runner over two files: exit 0, "2 passed, 0 failed, 0 flaky", same listing as
   above (its own shard folder gone).
 - A delivery from the conftest service starts no process and leaves no `installs/` in the home.
-- All of them fail at e2d8cc1.
+- In process: a thread making a home while the exit cleanup runs; both homes go.
+- In process: a notifier built in a module fixture, before any test fixture, sends nothing.
+- In process: the send guard wraps `HermesSendNotifier.__init__` as `(self, *args, **kwargs)`.
+- In process: a notifier given its own runner (positional or keyword) keeps it and uses it.
+- In process: a notifier left with the real launcher (left out, or `subprocess.run` passed) sends
+  nothing.
+- A session whose caller did not set `HERMES_DISABLE_LAZY_INSTALLS` gives its children `1`.
+- The first five fail at e2d8cc1. The rest came in review (340e8a2) and were not run against e2d8cc1.
