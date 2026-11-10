@@ -553,6 +553,11 @@ def test_the_now_reply_matches_the_contract_the_apps_decode(server, service, sta
     if os.environ.get("SPEAKEASY_WRITE_CONTRACT"):
         CONTRACT.write_text(json.dumps(body, indent=1, sort_keys=True) + "\n")
     saved = json.loads(CONTRACT.read_text())
+    # b73 (home_state.py) adds only these keys; the shape the shipped apps decode is unchanged otherwise.
+    body = {k: v for k, v in body.items() if k not in {"stack", "recommendations"}}
+    body["stream"] = {k: v for k, v in body["stream"].items() if k != "current"}
+    for entry in body["stream"]["entries"]:
+        entry.pop("current", None)
     assert _shape({k: v for k, v in body.items() if k != "items"}) == _shape({k: v for k, v in saved.items() if k != "items"})
     by_kind = {i["kind"]: i for i in saved["items"]}
     for item in body["items"]:
