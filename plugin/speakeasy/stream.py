@@ -62,6 +62,38 @@ def _elsewhere(item: dict[str, Any]) -> bool:
     return str(item.get("id") or "").startswith("s:") and not item.get("run_id")
 
 
+ANSWERED = {"new_answer", "seen_answer", "stopped"}
+
+
+def _answer_lines(items: list[dict[str, Any]], folded: set[str],
+                  messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """SPK-314: a card stays where it was asked, so a job that finishes after the user sent something
+    newer would fill in a card above that message and nothing would arrive at the bottom (it reads as
+    out of order, or missing). Such a job also says its answer at the bottom, at the time it finished:
+    a reply entry tied to its card (``item_id``) so apps draw it as a line that opens the card. Older
+    apps draw it as a plain reply with the answer's words. Only while the card itself is on Home."""
+    sent = [float(m["at"]) for m in messages if m.get("kind") == "message" and m.get("role") == "user"]
+    out: list[dict[str, Any]] = []
+    if not sent:
+        return out
+    for item in items:
+        run = item.get("run_id")
+        finished = item.get("finished_at")
+        if (not run or item["id"] in folded or item.get("kind") not in ANSWERED or item.get("canceled")
+                or item.get("call_id") or finished is None):
+            continue
+        started = float(item.get("started_at") or finished)
+        if not any(started < at < float(finished) for at in sent):
+            continue   # nothing of yours came after it started: the card is already the latest thing
+        line = " ".join(str(item.get("line") or "").split())
+        title = " ".join(str(item.get("title") or "").split())
+        if not line or line == "Done.":
+            line = f"{title} is done." if title else "Done."
+        out.append({"id": f"d:{run}", "kind": "message", "role": "assistant", "text": _clip(line, ASK_CHARS),
+                    "at": float(finished), "run_id": run, "item_id": item["id"], "answer": True})
+    return out
+
+
 def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: set[str], now: float,
                  tz: dt.tzinfo, messages: list[dict[str, Any]] | None = None,
                  from_chat: set[str] | None = None,
@@ -123,6 +155,7 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
                             "run_id": item["run_id"], "card_id": entry["id"]})
         entries.append(entry)
     entries.extend(messages or [])
+    entries.extend(_answer_lines(items, folded, messages or []))
     # An ask (or the chat message and reply that started a job) sorts just before its card even
     # when they share a second.
     entries.sort(key=lambda e: (e["at"], 0 if e["kind"] in {"ask", "message"} else 1))
