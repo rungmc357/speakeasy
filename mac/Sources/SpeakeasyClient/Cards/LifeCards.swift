@@ -364,7 +364,7 @@ struct TransitCard: View {
     let card: ViewCard
     var body: some View {
         CardBox {
-            HStack {
+            CardHeaderRow {
                 CardHeader(icon: "tram.fill", title: card["station"].string ?? "Departures")
                 if let status = card["status"].string {
                     Text(status).font(.system(size: 11.5, weight: .medium))
@@ -397,7 +397,7 @@ struct FlightCard: View {
         let status = card["status"].string ?? ""
         let late = status.lowercased().contains("delay") || status.lowercased().contains("cancel")
         CardBox {
-            HStack {
+            CardHeaderRow {
                 CardHeader(icon: "airplane", title: [card["airline"].string, card["number"].string].compactMap { $0 }.joined(separator: " "))
                 Text(status).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(late ? Color.red : Color.green)
             }
@@ -431,7 +431,7 @@ struct PackageCard: View {
     let card: ViewCard
     var body: some View {
         CardBox {
-            HStack {
+            CardHeaderRow {
                 CardHeader(icon: "shippingbox.fill", title: card["carrier"].string ?? "Package")
                 openable(card["url"].url)
             }
@@ -523,10 +523,11 @@ struct DraftCard: View {
             }
         }()
         CardBox(tint: status == "sent" ? .green : nil) {
-            HStack {
+            CardHeaderRow {
                 CardHeader(icon: icon, title: (card["channel"].string ?? "Message") + " to " + (card["to"].string ?? ""))
                 Text(status == "sent" ? "Sent" : "Draft").font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(status == "sent" ? Color.green : Color.orange)
+                    .accessibilityIdentifier("draft-card-status")
             }
             if let subject = card["subject"].string { Text(subject).font(.system(size: 12.5, weight: .semibold)) }
             // Compact: the first lines of the message; the whole text is in the full card.

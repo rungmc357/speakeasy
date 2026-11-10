@@ -164,6 +164,22 @@ struct CardHeader: View {
     }
 }
 
+/// A header with something after its title (a status word, a link, a tag): the WHOLE row keeps
+/// clear of the card's close button, so the trailing word sits before the ×, never under it
+/// (SPK-349: a draft's "Draft" was drawn beneath the call card's close button).
+struct CardHeaderRow<Content: View>: View {
+    @ViewBuilder var content: Content
+    @Environment(\.cardCloseRoom) private var closeRoom
+    var body: some View {
+        HStack {
+            // The header inside leaves no room of its own: the row keeps it once, after the trailing parts.
+            content.environment(\.cardCloseRoom, 0)
+            if closeRoom > 0 { Color.clear.frame(width: closeRoom, height: 1) }
+        }
+        .preference(key: CardHeaderShown.self, value: true)
+    }
+}
+
 /// Room a card keeps at its top-right corner for a close button drawn inside it (the pinned call
 /// card's ×: a 30 pt circle in a 44 pt tap area). 0: no close button.
 public struct CardCloseRoomKey: EnvironmentKey { public static let defaultValue: CGFloat = 0 }

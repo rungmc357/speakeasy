@@ -232,7 +232,7 @@ struct GameCard: View {
     var body: some View {
         let status = card["status"].string ?? "scheduled"
         CardBox {
-            HStack {
+            CardHeaderRow {
                 CardHeader(icon: "sportscourt.fill", title: card["league"].string ?? "Game")
                 if status == "live" {
                     Text("LIVE").font(.system(size: 11.5, weight: .bold)).foregroundStyle(.white)
