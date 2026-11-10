@@ -17,6 +17,10 @@ public struct SecureInputCard: View {
     public var startRevealed: Bool
     /// A fake value already typed (screenshots only).
     public var previewValue: String
+    /// Sheet form (phone/iPad): the card scrolls on its own from the top, with Save / Skip pinned in a
+    /// bar at the bottom, so at the largest text sizes the title is seen first and the buttons are
+    /// always reachable (SPK-274). The Mac window keeps the plain card.
+    public var pinsButtons: Bool
 
     @State private var value = ""
     @State private var identifier = ""
@@ -27,15 +31,23 @@ public struct SecureInputCard: View {
     @State private var error: String?
     @State private var now = Date()
     @FocusState private var focused: Bool
+    @State private var bodyHeight: CGFloat = 0
+    @State private var barHeight: CGFloat = 0
+    @State private var barTop: CGFloat = 0
+    @State private var scrollTop: CGFloat = 0
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// Accessibility text sizes: the header and the field's Show/Paste stack vertically.
+    private var large: Bool { typeSize.isAccessibilitySize }
 
     public init(request: SecureInputRequest, startRevealed: Bool = false, previewValue: String = "",
-                previewIdentifier: String = "",
+                previewIdentifier: String = "", pinsButtons: Bool = false,
                 onSubmit: @escaping (String) async -> String?,
                 onSubmitLogin: ((String, String, String) async -> String?)? = nil,
                 onSkip: @escaping () async -> Void) {
         self.request = request; self.onSubmit = onSubmit; self.onSkip = onSkip; self.startRevealed = startRevealed
         self.previewValue = previewValue; self.previewIdentifier = previewIdentifier; self.onSubmitLogin = onSubmitLogin
+        self.pinsButtons = pinsButtons
     }
     public var previewIdentifier: String
 
@@ -60,6 +72,28 @@ public struct SecureInputCard: View {
     }
 
     public var body: some View {
+        Group {
+            if pinsButtons { pinned } else { plain }
+        }
+        .onAppear {
+            revealed = startRevealed
+            if !previewValue.isEmpty { value = previewValue }
+            if !previewIdentifier.isEmpty { identifier = previewIdentifier }
+            // At accessibility sizes the keyboard would cover half the sheet and scroll the title away
+            // before the user has read what is being asked and by which job (SPK-274): they tap the field.
+            #if os(iOS) || os(visionOS)
+            if large { return }
+            #endif
+            if isLogin && identifier.isEmpty { identifierFocused = true } else { focused = true }
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now = $0 }
+        .onDisappear { value = ""; code = "" }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("secure-input-card-\(request.kind.rawValue)")
+    }
+
+    /// Everything above the buttons.
+    private var details: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
             if isSudo { commandBlock } else if isLogin { siteBlock } else { purpose }
@@ -72,26 +106,74 @@ public struct SecureInputCard: View {
                     .font(.footnote).foregroundStyle(BrandPalette.red)
                     .accessibilityIdentifier("secure-input-error")
             }
+        }
+    }
+
+    private var plain: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            details
             buttons
         }
         .padding(22)
         .frame(maxWidth: 520, alignment: .leading)
-        .onAppear {
-            revealed = startRevealed
-            if !previewValue.isEmpty { value = previewValue }
-            if !previewIdentifier.isEmpty { identifier = previewIdentifier }
-            if isLogin && identifier.isEmpty { identifierFocused = true } else { focused = true }
-        }
-        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now = $0 }
-        .onDisappear { value = ""; code = "" }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("secure-input-card-\(request.kind.rawValue)")
     }
+
+    /// Sheet form: scrolls from the top; the buttons sit in a bar pinned to the bottom. Reports its
+    /// natural height (details + bar) so the sheet can open exactly that tall when it fits.
+    private var pinned: some View {
+        ScrollView {
+            details
+                .padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 12)
+                .frame(maxWidth: 520, alignment: .leading)
+                .frame(maxWidth: .infinity)
+                .background(GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { bodyHeight = proxy.size.height }
+                        .onChange(of: proxy.size.height) { _, h in bodyHeight = h }
+                })
+        }
+        .defaultScrollAnchor(.top)
+        .scrollBounceBehavior(.basedOnSize)
+        .background(GeometryReader { proxy in
+            Color.clear
+                .onAppear { scrollTop = proxy.frame(in: .named(Self.space)).minY }
+                .onChange(of: proxy.frame(in: .named(Self.space)).minY) { _, y in scrollTop = y }
+        })
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            buttons
+                // The bar's buttons stop growing at the first accessibility size: at the largest sizes
+                // two full-size buttons would take half the screen from what is being asked.
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+                .padding(.horizontal, 22).padding(.top, 12).padding(.bottom, 16)
+                .frame(maxWidth: 520)
+                .frame(maxWidth: .infinity)
+                // A bar only when the details scroll under it; otherwise the buttons sit on the card.
+                .background { if overflows { Rectangle().fill(.bar) } }
+                .overlay(alignment: .top) { if overflows { Divider() } }
+                .background(GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { barHeight = proxy.size.height; barTop = proxy.frame(in: .named(Self.space)).minY }
+                        .onChange(of: proxy.size.height) { _, h in barHeight = h }
+                        .onChange(of: proxy.frame(in: .named(Self.space)).minY) { _, y in barTop = y }
+                })
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("secure-input-buttons")
+        }
+        .coordinateSpace(.named(Self.space))
+        .preference(key: SecureInputCardHeight.self, value: bodyHeight > 0 ? bodyHeight + barHeight : 0)
+    }
+
+    private static let space = "secure-input-sheet"
+    /// The details are taller than the space above the button bar (they scroll under it).
+    private var overflows: Bool { barTop > scrollTop && bodyHeight > barTop - scrollTop + 1 }
 
     // MARK: parts
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 14) {
+        // Accessibility sizes: the icon above the words, so the title gets the full width.
+        let layout = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+                           : AnyLayout(HStackLayout(alignment: .top, spacing: 14))
+        return layout {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(accent.opacity(scheme == .dark ? 0.18 : 0.12))
@@ -121,7 +203,10 @@ public struct SecureInputCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("secure-input-title")
                 if !request.askedBy.isEmpty {
-                    Text(request.askedBy).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                    Text(request.askedBy).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(large ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("secure-input-asked-by")
                 }
             }
         }
@@ -152,9 +237,9 @@ public struct SecureInputCard: View {
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(accent.opacity(scheme == .dark ? 0.12 : 0.07)))
     }
 
-    private func boxed<Content: View>(_ isFocused: Bool, @ViewBuilder _ content: () -> Content) -> some View {
+    private func boxed<Content: View>(_ isFocused: Bool, vertical: CGFloat = 10, @ViewBuilder _ content: () -> Content) -> some View {
         content()
-            .padding(.horizontal, 14).padding(.vertical, 10)
+            .padding(.horizontal, 14).padding(.vertical, vertical)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(scheme == .dark ? Color.white.opacity(0.07) : Color.white))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -213,60 +298,112 @@ public struct SecureInputCard: View {
         }
     }
 
-    private var field: some View {
-        HStack(spacing: 8) {
-            Group {
-                if revealed {
-                    TextField(request.fieldPlaceholder, text: $value)
-                        .font(.system(.body, design: .monospaced))
-                } else {
-                    SecureField(request.fieldPlaceholder, text: $value)
+    /// The secret's field. Show and Paste sit beside it, or, at accessibility sizes, on their own row
+    /// under it with words, so the placeholder is never squeezed behind them (SPK-274).
+    @ViewBuilder private var field: some View {
+        if large {
+            VStack(alignment: .leading, spacing: 10) {
+                boxed(focused) { valueField }
+                // Side by side when they fit, else one above the other; never squeezed into a sliver.
+                // They stop growing at the first accessibility size (they're labelled controls, not text).
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) { showButton(withTitle: true); pasteButton }
+                    VStack(alignment: .leading, spacing: 10) { showButton(withTitle: true); pasteButton }
                 }
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
             }
-            #if os(iOS) || os(visionOS)
-            .textContentType(request.kind == .code ? .oneTimeCode : .password)
-            #else
-            .textContentType(.password)
-            #endif
-            .autocorrectionDisabled(true)
-            #if os(iOS) || os(visionOS)
-            .textInputAutocapitalization(.never)
-            .keyboardType(.asciiCapable)
-            #endif
-            .privacySensitive()
-            .focused($focused)
-            .submitLabel(.done)
-            .onSubmit { if canSend { send() } }
-            .textFieldStyle(.plain)
-            .accessibilityIdentifier("secure-input-field")
-            Button { revealed.toggle() } label: {
-                Image(systemName: revealed ? "eye.slash" : "eye")
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain).foregroundStyle(.secondary)
-            .accessibilityLabel(revealed ? "Hide" : "Show")
-            .accessibilityIdentifier("secure-input-show")
-            #if !os(macOS)
-            // A system paste button: pasting from it never triggers the "Allow Paste" prompt.
-            // (On the Mac, ⌘V in the field is the paste.)
-            PasteButton(payloadType: String.self) { strings in
-                if let first = strings.first {
-                    let clean = first.trimmingCharacters(in: .whitespacesAndNewlines)
-                    Task { @MainActor in value = clean }
+        } else {
+            // One row, at least 44 pt tall (no extra vertical padding), so Show is a full 44 pt touch
+            // target while the box stays about as tall as the other fields. The Mac keeps its pointer-
+            // sized eye and the same height as the username/code fields.
+            boxed(focused, vertical: Self.rowPadding) {
+                HStack(spacing: 4) {
+                    valueField
+                    showButton(withTitle: false)
+                    pasteButton
                 }
+                .frame(minHeight: Self.showSide)
             }
-            .labelStyle(.iconOnly)
-            .buttonBorderShape(.capsule)
-            .controlSize(.small)
-            .tint(accent)
-            .accessibilityIdentifier("secure-input-paste")
-            #endif
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(scheme == .dark ? Color.white.opacity(0.07) : Color.white))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(focused ? accent.opacity(0.9) : Color.secondary.opacity(0.25), lineWidth: focused ? 1.5 : 1))
+    }
+
+    #if os(macOS)
+    private static let showSide: CGFloat = 28
+    private static let rowPadding: CGFloat = 5
+    #else
+    private static let showSide: CGFloat = 44
+    private static let rowPadding: CGFloat = 0
+    #endif
+
+    private var valueField: some View {
+        Group {
+            if revealed {
+                TextField(request.fieldPlaceholder, text: $value)
+                    .font(.system(.body, design: .monospaced))
+            } else {
+                SecureField(request.fieldPlaceholder, text: $value)
+            }
+        }
+        #if os(iOS) || os(visionOS)
+        .textContentType(request.kind == .code ? .oneTimeCode : .password)
+        #else
+        .textContentType(.password)
+        #endif
+        .autocorrectionDisabled(true)
+        #if os(iOS) || os(visionOS)
+        .textInputAutocapitalization(.never)
+        .keyboardType(.asciiCapable)
+        #endif
+        .privacySensitive()
+        .focused($focused)
+        .submitLabel(.done)
+        .onSubmit { if canSend { send() } }
+        .textFieldStyle(.plain)
+        .accessibilityIdentifier("secure-input-field")
+    }
+
+    /// Show / Hide: a 44 pt touch target at every size (pointer-sized on the Mac).
+    @ViewBuilder private func showButton(withTitle: Bool) -> some View {
+        Button { revealed.toggle() } label: {
+            if withTitle {
+                Label(revealed ? "Hide" : "Show", systemImage: revealed ? "eye.slash" : "eye")
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.horizontal, 14)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .background(Capsule().fill(Color.secondary.opacity(0.14)))
+                    .contentShape(Capsule())
+            } else {
+                Image(systemName: revealed ? "eye.slash" : "eye")
+                    .frame(width: Self.showSide, height: Self.showSide)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(withTitle ? Color.primary : Color.secondary)
+        .accessibilityLabel(revealed ? "Hide" : "Show")
+        .accessibilityIdentifier("secure-input-show")
+    }
+
+    @ViewBuilder private var pasteButton: some View {
+        #if !os(macOS)
+        // A system paste button: pasting from it never triggers the "Allow Paste" prompt.
+        // (On the Mac, ⌘V in the field is the paste.)
+        let paste = PasteButton(payloadType: String.self) { strings in
+            if let first = strings.first {
+                let clean = first.trimmingCharacters(in: .whitespacesAndNewlines)
+                Task { @MainActor in value = clean }
+            }
+        }
+        if large {
+            // Words beside the icon and the system's large size: a 44 pt target that says what it does.
+            paste.labelStyle(.titleAndIcon).buttonBorderShape(.capsule).controlSize(.large)
+                .tint(accent).accessibilityIdentifier("secure-input-paste")
+        } else {
+            paste.labelStyle(.iconOnly).buttonBorderShape(.capsule).controlSize(.small)
+                .tint(accent).accessibilityIdentifier("secure-input-paste")
+        }
+        #endif
     }
 
     private var whereItGoes: some View {
@@ -281,7 +418,7 @@ public struct SecureInputCard: View {
     }
 
     @ViewBuilder private var buttons: some View {
-        if request.stacksButtons {
+        if request.stacksButtons || large {
             VStack(spacing: 10) { saveButton; skipButton }
         } else {
             HStack(spacing: 12) { skipButton; saveButton }
@@ -377,36 +514,51 @@ struct SecureSecondaryButtonStyle: ButtonStyle {
 /// Shows the oldest open request as a sheet that can't be swiped away: Save or Skip.
 public struct SecureInputPresenter: ViewModifier {
     @ObservedObject var center: SecureInputCenter
-    /// The card's measured height: the sheet opens exactly that tall, so the buttons are never below the
-    /// fold (the login card is taller than a `.medium` sheet).
-    @State private var cardHeight: CGFloat = 0
 
     public func body(content: Content) -> some View {
         content.sheet(item: Binding(get: { center.current }, set: { _ in })) { request in
-            ScrollView {
-                SecureInputCard(request: request,
-                                onSubmit: { await center.submit(request, value: $0) },
-                                onSubmitLogin: { await center.submitLogin(request, identifier: $0, password: $1, code: $2) },
-                                onSkip: { await center.skip(request) })
-                    .frame(maxWidth: .infinity)
-                    .background(GeometryReader { proxy in
-                        Color.clear.preference(key: SecureInputCardHeight.self, value: proxy.size.height)
-                    })
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .onPreferenceChange(SecureInputCardHeight.self) { cardHeight = $0 }
-            #if os(iOS)
-            .presentationDetents(cardHeight > 0 ? [.height(cardHeight), .large] : [.medium, .large])
-            .presentationDragIndicator(.hidden)
-            #endif
-            .interactiveDismissDisabled(true)
+            SecureInputSheetContent(request: request, center: center)
         }
     }
 }
 
-private struct SecureInputCardHeight: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+/// The sheet's body: the card in its pinned form. It opens exactly as tall as the card when that fits
+/// (the login card is taller than a `.medium` sheet), otherwise full height, scrolled to the top with
+/// Save / Skip pinned at the bottom (SPK-274: at the largest text the old sheet opened mid-card).
+private struct SecureInputSheetContent: View {
+    let request: SecureInputRequest
+    @ObservedObject var center: SecureInputCenter
+    @State private var cardHeight: CGFloat = 0
+
+    var body: some View {
+        SecureInputCard(request: request, pinsButtons: true,
+                        onSubmit: { await center.submit(request, value: $0) },
+                        onSubmitLogin: { await center.submitLogin(request, identifier: $0, password: $1, code: $2) },
+                        onSkip: { await center.skip(request) })
+            .onPreferenceChange(SecureInputCardHeight.self) { cardHeight = $0 }
+            .secureInputDetents(cardHeight)
+            .interactiveDismissDisabled(true)
+    }
+}
+
+public extension View {
+    /// Detents for a sheet holding a pinned `SecureInputCard` (`pinsButtons: true`): the card's own
+    /// height when measured, else medium; large is always offered and the system caps a too-tall
+    /// height at large. Read the height with `.onPreferenceChange(SecureInputCardHeight.self)`.
+    @ViewBuilder func secureInputDetents(_ cardHeight: CGFloat) -> some View {
+        #if os(iOS)
+        self.presentationDetents(cardHeight > 0 ? [.height(cardHeight), .large] : [.medium, .large])
+            .presentationDragIndicator(.hidden)
+        #else
+        self
+        #endif
+    }
+}
+
+/// The natural height a pinned `SecureInputCard` reports (details + its button bar).
+public struct SecureInputCardHeight: PreferenceKey {
+    public static let defaultValue: CGFloat = 0
+    public static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 public extension View {
