@@ -39,6 +39,12 @@ ORPHAN_QUIET_S = 10 * 60   # an open row nothing in this process follows, untouc
 NOT_STARTED_NOTE = "Lost track of this before it started."
 ORPHAN_BATCH = 40          # rows one pass may check with Hermes (the rest wait for the next pass)
 
+# SPK-308: a run this process still follows, but whose answer Hermes already has.
+FOLLOWED_CHECK_AFTER_S = 120   # a followed run is asked about once it has run this long
+FOLLOWED_DONE_GRACE_S = 90     # Hermes said it finished this long ago and the follower still hasn't recorded it
+LOST_RESULT_NOTE = {"completed": "Work complete", "cancelled": "Work stopped",
+                    "failed": "Didn't finish", "interrupted": "Didn't finish"}
+
 
 def sweep(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]], live: dict[str, float],
           now: float | None = None, mono: float | None = None, *, hermes: Any = None) -> list[tuple[str, str]]:
@@ -197,3 +203,75 @@ def sweep_orphans(store: Any, hermes: Any, live: set[str], image_roots: Callable
         logger.info("speakeasy: settled %d task(s) nothing was following: %s", len(settled),
                     ", ".join(outcome for _, outcome in settled))
     return settled
+
+
+def finished_followed(store: Any, hermes: Any, followed: dict[str, str], seen_done: dict[str, float], *,
+                      now: float | None = None, mono: float | None = None,
+                      limit: int = ORPHAN_BATCH) -> tuple[list[tuple[str, str, dict[str, Any]]], list[str]]:
+    """Runs this process still follows (*followed*: task key -> Hermes run id) that Hermes says ended
+    a while ago, while their row is still open: the follower never recorded the answer (SPK-308: a
+    432 s turn finished, its answer sat in Hermes, and the job read "working" for the rest of the
+    call). Nothing settles here; the caller hands each one back to the normal settle path.
+
+    A run is asked about once it has run FOLLOWED_CHECK_AFTER_S. A final status seen for the first
+    time is remembered in *seen_done* (key -> *mono*); it is returned only once FOLLOWED_DONE_GRACE_S
+    has passed with the row still open, so a follower that is merely a moment behind always settles
+    it itself. A run Hermes no longer knows (it restarted, or forgot a long-finished run) whose row
+    has been quiet for ORPHAN_QUIET_S is returned in the second list: it should be made unconfirmed,
+    which the unconfirmed sweep settles from the task's session. Every write the caller makes is a
+    checked transition, so a follower that does catch up never collides with it.
+
+    Returns ([(key, Hermes' final status, Hermes' reply)], [keys Hermes forgot])."""
+    now = time.time() if now is None else now
+    mono = time.monotonic() if mono is None else mono
+    rows = {r["key"]: r for r in store.open_runs()}
+    for key in list(seen_done):
+        if key not in followed or key not in rows:
+            seen_done.pop(key, None)  # settled (or no longer followed): nothing to remember
+    done: list[tuple[str, str, dict[str, Any]]] = []
+    forgotten: list[str] = []
+    asked = 0
+    for key, run_id in followed.items():
+        row = rows.get(key)
+        if row is None or row["status"] in (RS.NOT_STARTED | {RS.RunState.AMBIGUOUS.value}):
+            continue  # final already, not started yet, or the unconfirmed sweep's
+        if not run_id or not ID_RE.fullmatch(str(run_id)) or str(run_id).startswith("lr_"):
+            continue  # a thread task: sweep() settles it from its thread
+        if now - float(row.get("created") or row["updated"]) < FOLLOWED_CHECK_AFTER_S:
+            continue
+        if asked >= limit:
+            break
+        asked += 1
+        try:
+            reply = hermes.get_run(run_id)
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404 and now - row["updated"] >= ORPHAN_QUIET_S:
+                forgotten.append(key)
+            seen_done.pop(key, None)
+            continue
+        final = reply.get("status") if isinstance(reply, dict) else None
+        if final not in RS.TERMINAL:
+            seen_done.pop(key, None)
+            continue
+        first = seen_done.setdefault(key, mono)
+        if mono - first >= FOLLOWED_DONE_GRACE_S:
+            done.append((key, final, reply))
+    return done, forgotten
+
+
+def settle_from_hermes(store: Any, key: str, expect: str, final: str, reply: dict[str, Any],
+                       image_roots: Callable[[], tuple[Path, ...]] = tuple, mirror: Any = None) -> bool:
+    """Settle *key* (checked: only from *expect*) with Hermes' own record of how its run ended: the
+    answer for a completed run, the failure for a failed one. True when this write settled it."""
+    output = reply.get("output") if isinstance(reply.get("output"), str) else None
+    result = split_result(P.without_voice_header(output), image_roots()) if output and output.strip() else None
+    extra: dict[str, Any] = {"result": result} if result else {}
+    if final == "failed":
+        from . import failures
+        error = reply.get("error") if isinstance(reply.get("error"), str) else None
+        kind = failures.failure_kind(error) or (None if result else failures.UNKNOWN)
+        extra["failure"] = (kind, None if kind in failures.REASONS else failures.failure_hint(error))
+    if not store.transition(key, final, expect={expect}, orphaned=True, mirror=mirror, **extra):
+        return False
+    store.progress(key, "result", (result or {}).get("full") or LOST_RESULT_NOTE[final])
+    return True
