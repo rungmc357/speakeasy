@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import errno
 import socket
+import subprocess
 
 import pytest
 
 import temp_homes
 from fakes import FakeHermesServer, FakeLiveWorker, FakeTransport, make_home, http  # noqa: F401
+from speakeasy import delivery as _delivery
 from speakeasy import duck as _duck
 from speakeasy import router as _router
 
@@ -50,6 +52,23 @@ def no_real_volume(monkeypatch):
     """Never touch the Mac's real output volume from tests: services get no volume backend unless a
     test passes its own ``volume_backend``."""
     monkeypatch.setattr(_duck, "default_backend", lambda: None)
+
+
+def _no_hermes_send(cmd, **kwargs):
+    return subprocess.CompletedProcess(cmd, 1, "", "")
+
+
+@pytest.fixture(autouse=True)
+def no_real_hermes_send(monkeypatch):
+    """Never launch the Hermes CLI from a test. ``hermes send`` with a temp home as HERMES_HOME
+    builds that home a dependency environment of its own (``<home>/installs``, over a GB) unless
+    lazy installs are off, and can outlive the test. A notifier without its own runner fails, as a
+    real send from a home with no chats does; a test that passes a runner keeps it."""
+    real_init = _delivery.HermesSendNotifier.__init__
+
+    def init(self, hermes_home, profile="", runner=None):
+        real_init(self, hermes_home, profile, runner if runner is not None else _no_hermes_send)
+    monkeypatch.setattr(_delivery.HermesSendNotifier, "__init__", init)
 
 
 @pytest.fixture(autouse=True)

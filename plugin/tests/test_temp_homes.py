@@ -134,6 +134,16 @@ def test_a_session_start_removes_only_stale_speakeasy_test_folders(tmp_path):
     assert sorted(os.listdir(outside)) == ["keep.txt"]
 
 
+def test_a_delivery_from_a_test_never_launches_hermes_into_its_home(service, home, monkeypatch):
+    launched: list = []
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: launched.append(a) or real_popen(*a, **kw))
+    service.settings.patch({"delivery": {"target": "telegram:555"}})
+    assert service.notifier.send("telegram:555", "The dentist is booked.") is False
+    assert launched == []
+    assert (home / "installs").exists() is False
+
+
 def test_the_parallel_runner_sweeps_first_and_leaves_no_folder_of_its_own(tmp_path):
     temp = _temp(tmp_path)
     outside = _neighbours(tmp_path, temp)
