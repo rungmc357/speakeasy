@@ -1,0 +1,406 @@
+{
+ "as_of": 1793984400.0,
+ "background": {
+  "items": [],
+  "running": 0
+ },
+ "call": null,
+ "call_summary": null,
+ "counts": {
+  "finished_unread": 3,
+  "needs_you": 1,
+  "on_its_own_running": 0,
+  "stopped": 1,
+  "waiting": 0,
+  "working": 0
+ },
+ "earlier": {
+  "today": null,
+  "today_more": 0
+ },
+ "items": [
+  {
+   "finished_at": 1793984100.0,
+   "id": "q:run_desk",
+   "kind": "question",
+   "line": "Which desk?",
+   "on_current_call": false,
+   "question": {
+    "approvable": false,
+    "asked_at": 1793984100.0,
+    "options": [
+     {
+      "id": "o1",
+      "text": "Oakline"
+     },
+     {
+      "id": "o2",
+      "text": "Birch"
+     }
+    ],
+    "prompt": "Which desk?",
+    "shape": "words"
+   },
+   "run_id": "run_desk",
+   "session_id": "s_desk",
+   "source": "speakeasy",
+   "started_at": 1793984040.0,
+   "tier": 1,
+   "title": "Order a desk",
+   "unread": false,
+   "updated_at": 1794281732.557632
+  },
+  {
+   "finished_at": 1793984200.0,
+   "fix": {
+    "kind": "open"
+   },
+   "id": "s:s_broke",
+   "kind": "stopped",
+   "line": "Stopped without finishing: Book the plumber. Open it to retry, or dismiss.",
+   "on_current_call": false,
+   "run_id": "run_broke",
+   "session_id": "s_broke",
+   "source": "speakeasy",
+   "started_at": 1793983900.0,
+   "tier": 2,
+   "title": "Book the plumber",
+   "unread": false,
+   "updated_at": 1794281732.558773
+  },
+  {
+   "finished_at": 1793984340.0,
+   "id": "s:s_inbox",
+   "kind": "new_answer",
+   "line": "Four need a reply",
+   "on_current_call": false,
+   "run_id": "run_inbox",
+   "session_id": "s_inbox",
+   "source": "speakeasy",
+   "started_at": 1793984280.0,
+   "tier": 4,
+   "title": "Summarize the inbox",
+   "unread": true,
+   "updated_at": 1794281732.556693
+  },
+  {
+   "finished_at": 1793984160.0,
+   "id": "s:s_mail",
+   "kind": "new_answer",
+   "line": "Drafted the note to Pat, not sent",
+   "on_current_call": false,
+   "run_id": "run_mail",
+   "session_id": "s_mail",
+   "source": "speakeasy",
+   "started_at": 1793983500.0,
+   "tier": 4,
+   "title": "Draft a note",
+   "unread": true,
+   "updated_at": 1794281732.5594912
+  },
+  {
+   "finished_at": 1793984000.0,
+   "id": "s:s_patio",
+   "kind": "new_answer",
+   "line": "Quote is $4,200",
+   "on_current_call": false,
+   "run_id": "run_patio",
+   "session_id": "s_patio",
+   "source": "speakeasy",
+   "started_at": 1793983600.0,
+   "tier": 4,
+   "title": "Quote the patio",
+   "unread": true,
+   "updated_at": 1794281732.560364
+  }
+ ],
+ "notice": null,
+ "pill": "Order a desk",
+ "recommendations": {
+  "computed_at": 1793984400.0,
+  "generic": false,
+  "items": [
+   {
+    "generic": false,
+    "id": "rec:draft:ed_ad5c7f35436331e628ea8e48",
+    "prompt": "Let's finish the email draft \u201cFriday\u201d.",
+    "source": {
+     "draft_id": "ed_ad5c7f35436331e628ea8e48",
+     "kind": "unsent_draft",
+     "label": "Unsent draft",
+     "run_id": "run_mail"
+    },
+    "text": "Finish the email \u201cFriday\u201d"
+   },
+   {
+    "generic": false,
+    "id": "rec:parked:w:r:run_patio",
+    "prompt": "Let's pick back up Quote the patio.",
+    "source": {
+     "kind": "dismissed_on_home",
+     "label": "Still open on Work",
+     "run_id": "run_patio",
+     "stack_id": "w:r:run_patio"
+    },
+    "text": "Pick back up: Quote the patio"
+   },
+   {
+    "generic": false,
+    "id": "rec:follow:run_inbox",
+    "prompt": "Any follow-ups on Summarize the inbox?",
+    "source": {
+     "kind": "follow_up",
+     "label": "Just finished",
+     "run_id": "run_inbox"
+    },
+    "text": "Follow up on Summarize the inbox"
+   }
+  ]
+ },
+ "rev": 2,
+ "sentence": "One question for you, one thing stopped, and three new answers.",
+ "stack": {
+  "count": 4,
+  "items": [
+   {
+    "added_at": 1793984400.0,
+    "at": 1793984100.0,
+    "card_id": "c:run_desk",
+    "id": "w:q:run_desk:1793984100",
+    "item_id": "q:run_desk",
+    "kind": "decision",
+    "line": "Which desk?",
+    "needs_you": true,
+    "result_id": null,
+    "run_id": "run_desk",
+    "source": {
+     "kind": "job",
+     "run_id": "run_desk",
+     "session_id": "s_desk"
+    },
+    "title": "Order a desk"
+   },
+   {
+    "added_at": 1793984400.0,
+    "at": 1793984200.0,
+    "card_id": "c:run_broke",
+    "id": "w:s:run_broke",
+    "item_id": "s:s_broke",
+    "kind": "stopped",
+    "line": "Stopped without finishing: Book the plumber. Open it to retry, or dismiss.",
+    "needs_you": true,
+    "result_id": null,
+    "run_id": "run_broke",
+    "source": {
+     "kind": "job",
+     "run_id": "run_broke",
+     "session_id": "s_broke"
+    },
+    "title": "Book the plumber"
+   },
+   {
+    "added_at": 1793984400.0,
+    "at": 1793984340.0,
+    "card_id": "c:run_inbox",
+    "id": "w:r:run_inbox",
+    "in_current": true,
+    "item_id": "s:s_inbox",
+    "kind": "result",
+    "line": "Four need a reply",
+    "needs_you": false,
+    "result_id": null,
+    "run_id": "run_inbox",
+    "source": {
+     "kind": "job",
+     "run_id": "run_inbox",
+     "session_id": "s_inbox"
+    },
+    "title": "Summarize the inbox"
+   },
+   {
+    "added_at": 1793984400.0,
+    "at": 1793984160.0,
+    "card_id": "c:run_mail",
+    "id": "w:r:run_mail",
+    "item_id": "s:s_mail",
+    "kind": "result",
+    "line": "Drafted the note to Pat, not sent",
+    "needs_you": false,
+    "result_id": "x:run_mail",
+    "run_id": "run_mail",
+    "source": {
+     "kind": "job",
+     "run_id": "run_mail",
+     "session_id": "s_mail"
+    },
+    "title": "Draft a note"
+   }
+  ],
+  "on_work": [
+   {
+    "added_at": 1793984400.0,
+    "at": 1793984000.0,
+    "card_id": "c:run_patio",
+    "dismissed_on_home_at": 1793984400.0,
+    "id": "w:r:run_patio",
+    "item_id": "s:s_patio",
+    "kind": "result",
+    "line": "Quote is $4,200",
+    "needs_you": false,
+    "result_id": null,
+    "run_id": "run_patio",
+    "source": {
+     "kind": "job",
+     "run_id": "run_patio",
+     "session_id": "s_patio"
+    },
+    "title": "Quote the patio"
+   }
+  ]
+ },
+ "stream": {
+  "current": {
+   "card_ids": [
+    "c:run_inbox"
+   ],
+   "clean": false,
+   "entry_ids": [
+    "m:hu_650ceade20d50595",
+    "m:ha_415fececfec9a6d3",
+    "c:run_inbox"
+   ],
+   "last_activity_at": 1793984281.0,
+   "message_id": "m:hu_650ceade20d50595",
+   "reply_ids": [
+    "m:ha_415fececfec9a6d3"
+   ],
+   "resets_at": 1793985481.0,
+   "run_ids": [
+    "run_inbox"
+   ]
+  },
+  "entries": [
+   {
+    "at": 1793983500.0,
+    "id": "a:run_mail",
+    "item_id": "s:s_mail",
+    "kind": "ask",
+    "text": "Draft a note to Pat"
+   },
+   {
+    "at": 1793983500.0,
+    "id": "m:hu_650d3d04a9548f24",
+    "kind": "message",
+    "role": "user",
+    "text": "Find a desk"
+   },
+   {
+    "at": 1793983500.0,
+    "id": "c:run_mail",
+    "item_id": "s:s_mail",
+    "kind": "card",
+    "result_id": "x:run_mail",
+    "state": "new_answer"
+   },
+   {
+    "at": 1793983501.0,
+    "id": "m:ha_e9507df0ad2e65b6",
+    "kind": "message",
+    "role": "assistant",
+    "text": "On it."
+   },
+   {
+    "at": 1793983600.0,
+    "id": "a:run_patio",
+    "item_id": "s:s_patio",
+    "kind": "ask",
+    "text": "Quote the patio"
+   },
+   {
+    "at": 1793983600.0,
+    "id": "c:run_patio",
+    "item_id": "s:s_patio",
+    "kind": "card",
+    "state": "new_answer"
+   },
+   {
+    "at": 1793983900.0,
+    "id": "a:run_broke",
+    "item_id": "s:s_broke",
+    "kind": "ask",
+    "text": "Book the plumber"
+   },
+   {
+    "at": 1793983900.0,
+    "id": "c:run_broke",
+    "item_id": "s:s_broke",
+    "kind": "card",
+    "state": "stopped"
+   },
+   {
+    "at": 1793984040.0,
+    "id": "a:run_desk",
+    "item_id": "q:run_desk",
+    "kind": "ask",
+    "text": "Order a desk"
+   },
+   {
+    "at": 1793984040.0,
+    "id": "c:run_desk",
+    "item_id": "q:run_desk",
+    "kind": "card",
+    "state": "question",
+    "widget": "open"
+   },
+   {
+    "at": 1793984160.0,
+    "card_id": "c:run_mail",
+    "id": "x:run_mail",
+    "item_id": "s:s_mail",
+    "kind": "result",
+    "run_id": "run_mail"
+   },
+   {
+    "at": 1793984280.0,
+    "id": "a:run_inbox",
+    "item_id": "s:s_inbox",
+    "kind": "ask",
+    "text": "Summarize the inbox"
+   },
+   {
+    "at": 1793984280.0,
+    "current": true,
+    "id": "m:hu_650ceade20d50595",
+    "kind": "message",
+    "role": "user",
+    "run_id": "run_inbox",
+    "text": "Summarize the inbox"
+   },
+   {
+    "at": 1793984280.0,
+    "current": true,
+    "id": "c:run_inbox",
+    "item_id": "s:s_inbox",
+    "kind": "card",
+    "state": "new_answer"
+   },
+   {
+    "at": 1793984281.0,
+    "current": true,
+    "id": "m:ha_415fececfec9a6d3",
+    "kind": "message",
+    "role": "assistant",
+    "text": "Reading it now."
+   }
+  ],
+  "folded": [],
+  "needs_you": [
+   "q:run_desk"
+  ]
+ },
+ "tiers": {
+  "1": 1,
+  "2": 1,
+  "4": 3
+ }
+}

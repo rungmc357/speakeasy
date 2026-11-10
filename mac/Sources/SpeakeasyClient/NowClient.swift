@@ -66,6 +66,40 @@ extension ServerClient {
         _ = try await json("/voice/now/\(NowItemPath.segment(itemID))/dismiss", method: "DELETE")
     }
 
+    // MARK: b73 Home state (capability `home_stack`)
+
+    /// `GET /voice/home/stack?tz=`: the widget stack and what waits on Work.
+    public func homeStack(timeZone: TimeZone = .current) async throws -> HomeStack {
+        HomeStack(json: try await json("/voice/home/stack?tz=" + Self.esc(timeZone.identifier))) ?? .empty
+    }
+
+    /// `POST /voice/home/stack/{id}/dismiss {from}`: from Home it leaves the stack and waits on Work
+    /// (`on_work`); from Work it's gone for good. Idempotent.
+    @discardableResult
+    public func homeStackDismiss(_ stackID: String, from: HomeDismissPlace = .home) async throws -> HomeStackDismissal {
+        let reply = try await post("/voice/home/stack/\(Self.esc(stackID))/dismiss", ["from": from.rawValue])
+        return HomeStackDismissal(json: reply, id: stackID, from: from)
+    }
+
+    /// Dismiss a stack item wherever it came from: an older plugin's (derived) item has no stack on
+    /// the server, so it uses the old swipe route for its Home card (which moves it to Earlier).
+    @discardableResult
+    public func homeStackDismiss(_ item: HomeStackItem, from: HomeDismissPlace = .home) async throws -> HomeStackDismissal {
+        guard item.derived else { return try await homeStackDismiss(item.id, from: from) }
+        if let itemID = item.itemID { try await nowDismiss(itemID) }
+        return HomeStackDismissal(id: item.id, from: from, state: .gone)
+    }
+
+    /// `GET /voice/home/recommendations?tz=`.
+    public func homeRecommendations(timeZone: TimeZone = .current) async throws -> HomeRecommendations {
+        HomeRecommendations(json: try await json("/voice/home/recommendations?tz=" + Self.esc(timeZone.identifier))) ?? .init()
+    }
+
+    /// `POST /voice/home/recommendations/{id}/dismiss`: it never comes back. Idempotent.
+    public func homeRecommendationDismiss(_ id: String) async throws {
+        _ = try await post("/voice/home/recommendations/\(Self.esc(id))/dismiss", [:])
+    }
+
     /// Earlier: one page of conversations for the checked kinds, never repeating Home, with the menu.
     public func earlier(kinds: Set<String>, query: String = "", cursor: String? = nil) async throws -> (HistoryPage, [EarlierKind]) {
         var path = "/voice/history?exclude_now=1&kinds=" + EarlierKind.query(kinds)

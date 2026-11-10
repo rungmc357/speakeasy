@@ -434,3 +434,48 @@ def test_an_old_clients_requests_still_get_the_old_shape(server, service, frozen
     status, undo = http(server.base_url, "DELETE", "/voice/now/" + item["id"].replace(":", "%3A") + "/dismiss", None,
                         server.token)
     assert status == 200 and undo == {"ok": True, "id": item["id"], "dismissed": False}
+
+
+# -- the contract the apps decode -------------------------------------------------------------------
+
+CONTRACT_B73 = __import__("pathlib").Path(__file__).resolve().parents[2] / "mac/Tests/SpeakeasyCoreTests/Contract/now_b73.json"
+
+
+def test_the_b73_now_reply_matches_the_contract_the_apps_decode(service, frozen):
+    """mac/.../Contract/now_b73.json is a real /voice/now reply with the b73 keys (invented data):
+    SpeakeasyCore's HomeStateTests decode it. Regenerate with SPEAKEASY_WRITE_CONTRACT=1."""
+    import json
+    import os
+
+    from speakeasy.emails import normalize_draft
+    from test_now import _shape
+    chat = service.home_chat
+    old = chat._add("user", "Find a desk", NOON - 900)
+    chat._add("assistant", "On it.", NOON - 899, reply_to=old)
+    mid = chat._add("user", "Summarize the inbox", NOON - 120)
+    chat._add("assistant", "Reading it now.", NOON - 119, reply_to=mid)
+    task(service.store, "inbox", "completed", session="s_inbox", request="Summarize the inbox",
+         result={"headline": "Four need a reply"}, settled=NOON - 60, created=NOON - 120)
+    chat._link(mid, "run_inbox", "start")
+    _question_task(service, "desk", NOON - 300)
+    task(service.store, "broke", "failed", session="s_broke", request="Book the plumber", settled=NOON - 200,
+         created=NOON - 500)
+    task(service.store, "mail", "completed", session="s_mail", request="Draft a note to Pat",
+         result={"headline": "Drafted the note to Pat, not sent"}, settled=NOON - 240, created=NOON - 900)
+    service.store.add_draft("mail", "s_mail", normalize_draft(
+        {"from": "me@example.com", "to": ["Pat Doe <pat@example.org>"], "cc": [], "bcc": [],
+         "subject": "Friday", "body": "Hi Pat,\n\nStill on for Friday?"}))
+    task(service.store, "patio", "completed", session="s_patio", request="Quote the patio",
+         result={"headline": "Quote is $4,200"}, settled=NOON - 400, created=NOON - 800)
+    _now(service)
+    service.home_stack_dismiss("w:r:run_patio", {"from": "home"})
+    body = json.loads(json.dumps(_now(service), default=str))
+    if os.environ.get("SPEAKEASY_WRITE_CONTRACT"):
+        CONTRACT_B73.write_text(json.dumps(body, indent=1, sort_keys=True) + "\n")
+    saved = json.loads(CONTRACT_B73.read_text())
+    assert _shape(body["stream"]["current"]) == _shape(saved["stream"]["current"])
+    assert body["stack"]["count"] == saved["stack"]["count"] == 4
+    keys = lambda items: set().union(*(set(i) for i in items))  # noqa: E731
+    assert keys(body["stack"]["items"] + body["stack"]["on_work"]) == keys(saved["stack"]["items"] + saved["stack"]["on_work"])
+    assert [r["source"]["kind"] for r in body["recommendations"]["items"]] == \
+        [r["source"]["kind"] for r in saved["recommendations"]["items"]]
