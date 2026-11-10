@@ -3,20 +3,32 @@ import SpeakeasyCore
 
 /// The same in-place work disclosure on phone, tablet and Mac. Raw evidence is selectable,
 /// not a code-answer block: no Copy action, navigation or progress-by-step-count.
+/// Done, it is one closed "How I did it" row (SPK-309 D2): what it did, the task's times, the
+/// thread's notes ("A helper reported back") and the steps all live inside, so the page reads as
+/// your ask, that row, then the answer. Running, the row is the plain live line.
 public struct ReplyWorkCard: View {
     public let work: ReplyWork
     public let images: [ImageCard]
     public let imageIdentity: String
     public let loadImage: (Int) async -> Data?
     public let helpers: [JobSubagent]
+    /// The task's own clock ("Task started 9:40 AM · Done 9:50 AM · Took 10 min"), shown inside.
+    public var times: String? = nil
+    /// Notes the thread folded in here ("A helper reported back", "Earlier messages were summarized").
+    public var notes: [String] = []
+    public static let title = "How I did it"
     @State private var expanded = false
     @State private var open: Set<String> = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
     public init(work: ReplyWork, images: [ImageCard] = [], imageIdentity: String = "", helpers: [JobSubagent] = [],
+                times: String? = nil, notes: [String] = [],
                 loadImage: @escaping (Int) async -> Data? = { _ in nil }) {
         self.work = work; self.images = images; self.imageIdentity = imageIdentity; self.loadImage = loadImage; self.helpers = helpers
+        self.times = times; self.notes = notes
     }
+    /// The row's words: the live line while it works; "How I did it" once done (a stop says what went wrong).
+    private var heading: String { work.running || work.failed ? work.line : Self.title }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,7 +44,7 @@ public struct ReplyWorkCard: View {
                         // crossfading over each other or a wrap onto the next row (SPK-231 R4).
                         LiveStatusLine(work.line, font: .subheadline.weight(.medium), color: .primary)
                     } else {
-                        Text(AgentMarkdown.attributed(work.line)).font(.subheadline.weight(.medium))
+                        Text(AgentMarkdown.attributed(heading)).font(.subheadline.weight(.medium))
                             .multilineTextAlignment(.leading)
                             .lineLimit(expanded || typeSize.isAccessibilitySize ? nil : 2)
                             .fixedSize(horizontal: false, vertical: true)
@@ -50,8 +62,20 @@ public struct ReplyWorkCard: View {
             if expanded {
                 Divider().padding(.horizontal, 14)
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("How it got there").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    // What it did in plain words (the row itself only says "How I did it"), then its clock.
+                    Text(AgentMarkdown.attributed(work.running || work.failed ? "Steps" : work.line))
+                        .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("reply-work-steps")
+                    if let times, !times.isEmpty {
+                        Label(times, systemImage: "clock").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("session-task-times")
+                    }
+                    ForEach(Array(notes.enumerated()), id: \.offset) { _, note in
+                        Text(AgentMarkdown.attributed(note)).font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("reply-work-note")
+                    }
                     if work.calls.isEmpty {
                         Text(work.running ? "No recorded steps yet." : "No recorded steps.")
                             .font(.footnote).foregroundStyle(.secondary)

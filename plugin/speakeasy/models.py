@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 LEVELS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 LABELS = {"none": "Off", "minimal": "Minimal", "low": "Low", "medium": "Medium", "high": "High",
           "xhigh": "Extra high", "max": "Max"}
+# A run's level as the apps print it: a model's strongest level reads "Max" whichever id it has
+# (GPT's xhigh, Claude's max), so Home and a chat never name the same top level two ways (SPK-309).
+RUN_LABELS = {**LABELS, "xhigh": "Max"}
 SHORT_LABELS = {"none": "Off", "minimal": "Min", "low": "Low", "medium": "Med", "high": "High",
                 "xhigh": "XHigh", "max": "Max"}
 DEFAULT_LEVELS: tuple[str, ...] = ("none", "low", "medium", "high")
@@ -474,7 +477,7 @@ def describe(record: dict[str, Any] | None, entries: dict[str, dict[str, Any]], 
         reasoning = clamp(hermes_reasoning, levels) if levels is not None else hermes_reasoning
     out = {"id": mid, "name": entry.get("name") or friendly_name(model), "provider": provider,
            "provider_name": entry.get("provider_name") or provider,
-           "reasoning": reasoning, "reasoning_label": LABELS.get(reasoning or "", None),
+           "reasoning": reasoning, "reasoning_label": RUN_LABELS.get(reasoning or "", None),
            "source": record.get("source") or "hermes", "served": bool(served)}
     if record.get("preset"):
         out["preset"] = record["preset"]
