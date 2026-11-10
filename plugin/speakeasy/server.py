@@ -141,6 +141,17 @@ _NOW_ITEM = r"([^/]{1,600})"
 _NOW_ID = re.compile(r"(?:[qstcg]|call):[^\x00-\x1f\x7f]{1,400}")
 
 
+_HOME_ID = re.compile(r"[A-Za-z0-9_.:-]{3,400}")
+
+
+def _home_id(segment: str, *prefixes: str) -> str:
+    """A stack item (``w:...``) or recommendation (``rec:...`` / ``gen:...``) id, raw or percent-encoded."""
+    item_id = unquote(segment)
+    if not _HOME_ID.fullmatch(item_id) or not item_id.startswith(prefixes):
+        raise ServiceError(404, "not found")
+    return item_id
+
+
 def _now_id(segment: str) -> str:
     item_id = unquote(segment)
     if not _NOW_ID.fullmatch(item_id):
@@ -734,6 +745,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.now_recent(self._query()))
             elif path == "/voice/now":
                 self._reply(200, self.service.now(self._query()))
+            elif path == "/voice/home/stack":
+                self._reply(200, self.service.home_stack(self._query()))
+            elif path == "/voice/home/recommendations":
+                self._reply(200, self.service.home_recommendations(self._query()))
             elif path == "/voice/history/events":
                 self._history_events()
             elif path == "/voice/history":
@@ -852,6 +867,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/voice/projects/offer/dismiss":
                 self._reply(200, self.service.project_offer_dismiss(self._body()))
+                return
+            stack_dismiss = re.fullmatch(rf"/voice/home/stack/{_NOW_ITEM}/dismiss", path)
+            if stack_dismiss:  # b73: swipe-left on a stack widget (Home) or its row on Work
+                self._reply(200, self.service.home_stack_dismiss(_home_id(stack_dismiss.group(1), "w:"), self._body()))
+                return
+            rec_dismiss = re.fullmatch(rf"/voice/home/recommendations/{_NOW_ITEM}/dismiss", path)
+            if rec_dismiss:
+                self._reply(200, self.service.home_recommendation_dismiss(
+                    _home_id(rec_dismiss.group(1), "rec:", "gen:"), self._body()))
                 return
             now_act = re.fullmatch(rf"/voice/now/{_NOW_ITEM}/(later|answer|approval|dismiss)", path)
             if now_act:

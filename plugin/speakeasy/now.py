@@ -719,6 +719,7 @@ class NowModel:
             i.pop("_run_key", None)
             for k in ("_call", "_asked", "_topic"):
                 i.pop(k, None)
+        home_state = self._home_state(items, stream, now, peek)
         counts = {"needs_you": sum(i["kind"] == QUESTION for i in items),
                   "stopped": sum(i["kind"] == STOPPED for i in items),
                   "working": sum(i["kind"] == WORKING for i in items),
@@ -744,6 +745,8 @@ class NowModel:
             "pill": pill_text(counts["needs_you"], counts["working"] + counts["on_its_own_running"],
                               one_title=next((i["title"] for i in items if i["kind"] == QUESTION), None)),
         }
+        if home_state is not None:
+            body.update(home_state)   # b73: ``stack`` and ``recommendations`` (additive)
         body["rev"] = self._rev(body)
         body["as_of"] = round(now, 3)
         if every:
@@ -751,6 +754,33 @@ class NowModel:
         body["notice"] = None if peek else self._notice(rows, marks, edge, cleared)
         self._last_sessions = {i["session_id"] for i in items if i.get("session_id")}
         return body
+
+    def _home_state(self, items: list[dict[str, Any]], stream: dict[str, Any], now: float,
+                    peek: bool) -> dict[str, Any] | None:
+        """b73 (home_state.py): mark the current exchange in ``stream`` and feed the widget stack from
+        Home's final cards (only on a real read: ``peek`` builds read the stack as it is)."""
+        from .home_state import current_exchange
+        entries = stream.get("entries") or []
+        chat = getattr(self.svc, "home_chat", None)
+        users = [e for e in entries if e.get("kind") == "message" and e.get("role") == "user"]
+        extra: set[str] = set()
+        if users and chat is not None:
+            try:
+                extra = chat.runs_for(str(users[-1]["id"]))
+            except Exception:
+                extra = set()
+        stream["current"] = current_exchange(entries, now, extra)
+        state = getattr(self.svc, "home_state", None)
+        if state is None:
+            return None
+        try:
+            if not peek:
+                state.feed(items, entries, now)
+            return {"stack": state.stack(set(stream["current"]["run_ids"])),
+                    "recommendations": state.recommendations(now)}
+        except Exception:
+            logging.getLogger(__name__).warning("speakeasy: Home's stack failed", exc_info=True)
+            return None
 
     def _stream(self, items: list[dict[str, Any]], answered: set[str], now: float, zone_: dt.tzinfo) -> dict[str, Any]:
         """The same cards as one thread: each ask, then its card, in time order (stream.py)."""

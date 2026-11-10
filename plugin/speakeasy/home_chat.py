@@ -587,6 +587,16 @@ class HomeChat:
     def _quote(self, reply_to: Any) -> dict | None:
         if reply_to is None:
             return None
+        if isinstance(reply_to, str) and re.fullmatch(r"w:[A-Za-z0-9_.:-]{1,300}", reply_to):
+            # b73: a widget-stack item (home_state.py): the job behind it, quoted like its card.
+            state = getattr(self.svc, "home_state", None)
+            row = state.row(reply_to) if state is not None else None
+            if row is None or not row.get("run_id"):
+                raise self._error(400, "That item is no longer on Home.")
+            quote = self._card_quote(row["run_id"])
+            if quote is None:
+                raise self._error(400, "That job is no longer on Home.")
+            return quote
         if isinstance(reply_to, str) and re.fullmatch(r"[rd]:[A-Za-z0-9_.:-]{1,128}", reply_to):
             # r: a job card; d: the line its answer posted at the bottom (SPK-314), the same job.
             quote = self._card_quote(reply_to[2:])
@@ -688,6 +698,15 @@ class HomeChat:
                             self.store._db.execute(f"UPDATE {t} SET run_id=? WHERE run_id=?", (real, local))
         except Exception:
             logger.debug("speakeasy: Home's held-job links weren't updated", exc_info=True)
+
+    def runs_for(self, message_id: str) -> set[str]:
+        """Every job one Home message started (``m:hu_...``): its own link plus any extra asks."""
+        mid = message_id[2:] if message_id.startswith("m:") else message_id
+        with self.store._lock:
+            rows = self.store._db.execute("SELECT run_id FROM home_messages WHERE id=? OR reply_to=?",
+                                          (mid, mid)).fetchall()
+            rows += self.store._db.execute("SELECT run_id FROM home_jobs WHERE message_id=?", (mid,)).fetchall()
+        return {r[0] for r in rows if r[0]}
 
     def started_runs(self) -> set[str]:
         """Runs a Home message started or followed up: their card needs no "you asked" bubble (the

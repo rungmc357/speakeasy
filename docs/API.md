@@ -37,6 +37,10 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/now/{id}/answer` | device | Answer a Home question card, on a call or not |
 | POST | `/voice/now/{id}/approval` | device | Answer a Home approval card |
 | POST | `/voice/now/clear-seen` | device | Move every seen answer to Earlier |
+| GET | `/voice/home/stack` | device | Home's widget stack and Work's list of items dismissed on Home (b73) |
+| POST | `/voice/home/stack/{id}/dismiss` | device | Dismiss a stack item: `from` home (stays on Work) or work (gone for good) |
+| GET | `/voice/home/recommendations` | device | Up to three saved recommendations, or generic ideas |
+| POST | `/voice/home/recommendations/{id}/dismiss` | device | Dismiss a recommendation for good |
 | POST | `/voice/pair` | none | Trade a one-time code for a device token |
 | POST | `/voice/sessions` | device | Start (or resume) a voice call |
 | GET | `/voice/interactions/{id}` | device | Call snapshot |
@@ -1146,6 +1150,59 @@ The checked boxes of Earlier's filter menu. The reply adds `kinds: [{id, label, 
 "Conversations", "Scheduled jobs", "Kanban", "Subagents", "Archived"; counts follow the search) and
 lists no pinned-first order. `exclude_now=1` leaves out what Home shows; rows Home shows carry
 `on_now: true`. Without `kinds` the list behaves as before.
+
+## Home state: current exchange, widget stack, recommendations (capability `home_stack`, build 73)
+
+Additive to `GET /voice/now` (an app that doesn't know these keys keeps drawing `items` and `stream`):
+
+```
+"stream": {..., "current": {"clean": false, "entry_ids": ["m:hu_…", "m:ha_…", "c:<run>"],
+                            "message_id": "m:hu_…", "reply_ids": ["m:ha_…"], "card_ids": ["c:<run>"],
+                            "run_ids": ["<run>"], "last_activity_at": 1762455120.4, "resets_at": 1762456320.4}}
+            (each of those entries also carries "current": true)
+"stack": {"items": [StackItem, ...], "count": 3, "on_work": [StackItem, ...]}
+"recommendations": {"items": [Rec, ...], "generic": false, "computed_at": 1762455120.4}
+StackItem = {"id": "w:q:<run>:<asked_at>" | "w:s:<run>" | "w:r:<run>", "kind": "decision" | "stopped" | "result",
+             "needs_you", "item_id", "card_id": "c:<run>", "result_id": "x:<run>" | "d:<run>" | null, "title", "line",
+             "source": {"kind": "job" | "chat", "run_id"?, "session_id"?}, "run_id"?, "added_at", "at",
+             "follows"?: <stack id>, "in_current"?: true, "dismissed_on_home_at"?}
+Rec = {"id": "rec:…" | "gen:…", "text", "prompt", "generic",
+       "source": {"kind": "unsent_draft" | "skipped_question" | "stopped_job" | "dismissed_on_home" | "follow_up"
+                          | "generic", "label", "run_id"?, "stack_id"?, "draft_id"?}}
+```
+
+- **Current exchange.** The latest user message in Home's thread, the assistant replies after it (not
+  an older job's SPK-314 answer line), the card of each job it started (`run_id` on the message or its
+  reply, plus extra asks) and that job's posted result. A newer message makes the previous exchange
+  transcript-only. `stream.entries` is unchanged: complete, ordered, one day after the last Clear.
+- **Reset.** `RESET_AFTER_S` = 20 min after the last message from either side (a job's progress or
+  finish doesn't count, so a result arriving later never pulls an old exchange back), `clean: true`
+  with no `entry_ids`. A reset never touches `stack`.
+- **Stack.** Only a question/approval (`decision`), a stopped job (`stopped`, one per job even when
+  Home groups them) and a new unread answer (`result`); never working, waiting or canceled jobs, and
+  conversations Speakeasy didn't start only when they ask. Needs-you first, then results; newest
+  first in each. Kept in the plugin's store (survives a reload). A result stays until it is
+  dismissed, replied to, or 3 days old (not Home's 12-hour rule); a decision leaves when answered
+  (`done`) or closed unanswered (`skipped`); a stopped job leaves when retried. `result_id` is the
+  job's posted email result, else its SPK-314 answer line, else null (the card itself is the result).
+  `in_current`: the current exchange already shows this job in place. `follows`: the stack item this
+  result came from (the question answered, the result replied to).
+- `GET /voice/home/stack?tz=` → `stack`. `POST /voice/home/stack/{id}/dismiss {from?: "home" | "work"}`
+  (default home; id raw or percent-encoded): home → off the stack, listed in `on_work` until dealt with
+  (`state: "on_work"`); work → gone for good (`state: "gone"`). Idempotent. Unknown id 404, bad `from`
+  400. The old `POST /voice/now/{id}/dismiss` also Home-dismisses that card's stack items.
+- **Dealt with.** `POST /voice/now/{id}/answer` / `approval` close that card's decision. A
+  `POST /voice/home/message` (or voice message) with `reply_to` `w:<stack id>`, `r:<run>` or `d:<run>`
+  closes it too; `reply_to: "w:…"` quotes the job behind that item like its card. Work the reply starts
+  is a normal job; its result enters the stack as a new item with `follows`.
+- **Recommendations** (no model call), at most 3, one per job: unsent email drafts (7 days), skipped
+  questions, stopped jobs dismissed on Home, other items dismissed on Home and still open, then
+  follow-ups on jobs finished in the last 6 hours. Recomputed only when its inputs change (a job
+  finished, a stack item changed or was dismissed, a draft changed, a recommendation was dismissed),
+  else served from the saved list. Nothing personal → the fixed `gen:catch-up`, `gen:plan-week`,
+  `gen:calendar` with `generic: true`.
+- `GET /voice/home/recommendations?tz=` → `recommendations`. `POST /voice/home/recommendations/{id}/dismiss`
+  (empty body): it never returns. Idempotent.
 
 ## Projects (capability `projects`, SPK-254)
 

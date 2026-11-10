@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Unreleased — Home's state for build 73 (plugin only, apps not yet using it)
+
+- **Home knows what's current.** Home's thread now marks the current exchange: your latest message, Todd's reply and the status line of the job it started. Send something new and the previous exchange becomes transcript only; the transcript itself stays complete and in order. *(plugin)*
+- **Home resets after 20 minutes.** With no message from either side for 20 minutes, Home reports itself clean. The reset never removes anything waiting in the widget stack. *(plugin)*
+- **A widget stack.** A separate list of finished results and things that need a decision (a question, an approval, a job that stopped), never running work. Each says which job or chat it came from and which message holds its result. Dismissed on Home, it stays listed for Work; dismissed on Work, it's gone for good. Answering or replying to one takes it off; work that starts is a normal job, and its result comes back as a new item. *(plugin)*
+- **Recommendations, no model call.** Up to three suggestions from unfinished business (an unsent draft, a skipped question, a stopped job you dismissed, anything dismissed on Home but still open) and follow-ups on jobs that just finished. Each names its source, a dismissed one never comes back, and when nothing personal fits there are three fixed generic ideas, marked as generic. *(plugin)*
+- Older apps see the same Home as before: all of this is new fields and new routes. *(plugin)*
+
 ## Unreleased — email drafts you can see and change
 
 - **The draft shows up by itself.** Ask for an email and, when the job finishes, the email itself arrives as a new message at the bottom of Home's chat, without a second "show me". The job's card where you asked says done; tap it to jump down to the email. *(plugin + iPhone build 73 + Mac)*

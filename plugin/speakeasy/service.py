@@ -204,6 +204,11 @@ CAPABILITIES["now_focus"] = True  # SPK-124 phase 3: call.focus, on_call (asking
 # SPK-208: POST /voice/home/message (+ /voice/home/voice-message): Home is a chat with a coordinator;
 # ``stream`` entries of kind ``message`` (user / assistant) interleave with the job cards.
 CAPABILITIES["home_chat"] = True
+# b73 (home_state.py): ``stream.current`` + ``current: true`` on the current exchange's entries (clean
+# after 20 min without a message), ``stack`` {items, count, on_work} and ``recommendations`` on
+# /voice/now; GET /voice/home/stack, POST /voice/home/stack/{id}/dismiss {from: home|work},
+# GET /voice/home/recommendations, POST /voice/home/recommendations/{id}/dismiss.
+CAPABILITIES["home_stack"] = True
 # SPK-254: GET/POST /voice/projects, GET /voice/projects/{id}, PUT /voice/projects/{id}/notes,
 # POST /voice/projects/file, POST /voice/projects/offer/dismiss, PUT /voice/projects/selected (the
 # Home chip; GET /voice/projects carries ``selected``), ``project_id`` on POST /voice/work,
@@ -452,6 +457,9 @@ class VoiceService(SecureInputMixin):
         self.now_model = NowModel(self)
         from .home_chat import HomeChat
         self.home_chat = HomeChat(self)
+        from .home_state import HomeState
+        # b73: Home's current exchange, widget stack, dismiss rules and recommendations (home_state.py).
+        self.home_state = HomeState(self, clock=lambda: self.now_model.clock())
         # SPK-254: Hermes' projects plus Speakeasy's chat/job links (projects.py).
         self.projects = P_.Projects(self.store, self.home, lambda: self.rt.state_db)
         self.store.project_brief = self.projects.for_start  # a filed job's standing notes, in its brief
@@ -3636,6 +3644,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(404, "That card isn't on Home.")
         marks[item_id] = {"sig": model.dismiss_signature(item), "at": time.time()}
         model.set_dismissed(marks)
+        self.home_state.dismiss_for_item(item_id)   # b73: an older app's swipe is a Home dismiss of its stack item
         self._now_changed()
         return {"ok": True, "id": item_id, "dismissed": True}
 
@@ -3671,9 +3680,11 @@ class VoiceService(SecureInputMixin):
                 continue
             sent = asyncio.run_coroutine_threadsafe(worker.answer(task_id, text.strip()[:400]), worker.loop).result(15)
             if sent:
+                self.home_state.dealt_with(item_id=item_id)   # b73: answered, so it leaves the stack
                 self._now_changed()
                 return {"ok": True, "id": item_id, "via": "call", "interaction_id": interaction.interaction_id}
         got = self.history_message(item["session_id"], {"text": text.strip(), "answers": run_id})
+        self.home_state.dealt_with(item_id=item_id, started_run=got.get("run_id"))
         self._now_changed()
         return {"ok": True, "id": item_id, "via": "conversation", **{k: got[k] for k in ("run_id", "delivered_as") if k in got}}
 
@@ -3690,6 +3701,7 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(409, "That approval has closed.")
         got = self.history_approval(session, {"run_id": item["run_id"], "choice": body["choice"]})
         self._now_changed()
+        self.home_state.dealt_with(item_id=item_id)   # b73: decided, so it leaves the stack
         return {**got, "id": item_id}
 
     def history(self, query: dict[str, str], for_now: bool = False) -> dict[str, Any]:
@@ -4630,7 +4642,53 @@ class VoiceService(SecureInputMixin):
 
     def home_message(self, body: dict[str, Any], device_id: str | None = None) -> dict[str, Any]:
         """``POST /voice/home/message``: Home's composer talks to the coordinator (home_chat.py)."""
-        return self.home_chat.message(body, device_id)
+        return self._home_replied(body, self.home_chat.message(body, device_id))
+
+    def _home_replied(self, body: Any, got: dict[str, Any]) -> dict[str, Any]:
+        """b73: a reply to a stack item or a job card (swipe right) deals with it: it leaves the stack;
+        any job the reply starts is a normal job whose result comes back as a new stack item."""
+        reply_to = body.get("reply_to") if isinstance(body, dict) else None
+        if isinstance(reply_to, str) and got.get("ok"):
+            started = got.get("run_id") if isinstance(got.get("run_id"), str) else None
+            try:
+                if reply_to.startswith("w:"):
+                    self.home_state.dealt_with(sid=reply_to, started_run=started)
+                elif reply_to[:2] in {"r:", "d:"}:
+                    self.home_state.dealt_with(run_id=reply_to[2:], started_run=started)
+            except Exception:  # noqa: BLE001
+                logger.debug("speakeasy: couldn't close a replied stack item", exc_info=True)
+        return got
+
+    def home_stack(self, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/home/stack?tz=``: Home's widget stack and Work's list of items dismissed on Home."""
+        return self.now(query)["stack"]
+
+    def home_stack_dismiss(self, stack_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/home/stack/{id}/dismiss {from?: home|work}``: Home (default) takes it off the
+        stack and leaves it on Work; Work removes it for good. Idempotent."""
+        if not isinstance(body, dict) or not set(body) <= {"from"}:
+            raise ServiceError(400, "body may contain only: from")
+        where = body.get("from", "home")
+        if where not in {"home", "work"}:
+            raise ServiceError(400, "from must be home or work")
+        try:
+            got = self.home_state.dismiss(stack_id, where)
+        except KeyError:
+            raise ServiceError(404, "That item isn't in the stack.") from None
+        self._now_changed()
+        return got
+
+    def home_recommendations(self, query: dict[str, str]) -> dict[str, Any]:
+        """``GET /voice/home/recommendations?tz=``: the saved list (recomputed only when it must be)."""
+        return self.now(query)["recommendations"]
+
+    def home_recommendation_dismiss(self, rec_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /voice/home/recommendations/{id}/dismiss``: it never comes back. Idempotent."""
+        if body:
+            raise ServiceError(400, "body must be empty")
+        got = self.home_state.dismiss_rec(rec_id)
+        self._now_changed()
+        return got
 
     def _voice_message_home(self, fields: dict[str, Any], upload: dict[str, Any], data: bytes,
                             device_id: str | None) -> dict[str, Any]:
@@ -4644,6 +4702,7 @@ class VoiceService(SecureInputMixin):
         body = {k: v for k, v in fields.items() if k in {"client_id", "attachments", "model", "reasoning", "agent", "reply_to"}}
         got = self.home_chat.message({**body, "text": transcript}, device_id,
                                      voice={"duration": upload["duration"]}, job_text=note)
+        self._home_replied(body, got)
         session = got.get("session_id")
         if isinstance(session, str) and session and got.get("action") == "start":
             self._note_voice_message(session, note)
