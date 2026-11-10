@@ -2,17 +2,22 @@
 from __future__ import annotations
 
 import errno
-import shutil
 import socket
 
 import pytest
 
+import temp_homes
 from fakes import FakeHermesServer, FakeLiveWorker, FakeTransport, make_home, http  # noqa: F401
 from speakeasy import duck as _duck
 from speakeasy import router as _router
 
 _REAL_DEFAULT_BACKEND = _duck.default_backend
 _REAL_RESULT_HEADLINE = _router.result_headline
+
+
+def pytest_sessionstart(session):
+    """Clear temp homes a killed or timed-out earlier run left behind (this run's own go at exit)."""
+    temp_homes.sweep()
 
 
 @pytest.fixture
@@ -123,7 +128,7 @@ def hermes():
 def home(hermes):
     path = make_home(hermes.httpd.server_address[1])
     yield path
-    shutil.rmtree(path, ignore_errors=True)
+    temp_homes.remove(path)
 
 
 @pytest.fixture

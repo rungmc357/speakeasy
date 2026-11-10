@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -22,6 +21,7 @@ for p in (str(PLUGIN_ROOT), str(HERMES_SRC)):
         sys.path.insert(0, p)
 
 from speakeasy.calls import SidebandWorker  # noqa: E402
+from temp_homes import new_home  # noqa: E402
 
 try:  # PyYAML when installed; Hermes 0.23+ installs ship only Hermes' own YAML module
     import yaml  # noqa: E402
@@ -362,7 +362,7 @@ def read_profile_env(home: Path) -> dict[str, str]:
 
 
 def make_home(api_port: int | None = None) -> Path:
-    home = Path(tempfile.mkdtemp(prefix="speakeasy-test-"))
+    home = new_home()
     env = [f"API_SERVER_KEY={FAKE_API_KEY}", "SPEAKEASY_OPENAI_API_KEY=test-openai-key-not-real"]
     if api_port:
         env.append(f"API_SERVER_PORT={api_port}")
