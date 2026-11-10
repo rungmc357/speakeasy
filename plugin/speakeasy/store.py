@@ -359,6 +359,10 @@ class StateStore:
             # (a last-activity time), so the list's Pinned section and unread dots agree everywhere.
             self._db.execute("""CREATE TABLE IF NOT EXISTS session_marks (
                 session_id TEXT PRIMARY KEY, pinned REAL, read_at REAL, updated REAL NOT NULL)""")
+            if "user_title" not in {row[1] for row in self._db.execute("PRAGMA table_info(session_marks)")}:
+                # The name the user gave a conversation from the app (SPK-320): it always wins over
+                # the name of the newest task that ran in it.
+                self._db.execute("ALTER TABLE session_marks ADD COLUMN user_title TEXT")
             if "timings" not in columns:  # added after the first release
                 self._db.execute("ALTER TABLE runs ADD COLUMN timings TEXT")
             if "failure" not in columns:  # why a run failed: a failures.py kind, never provider text
@@ -807,6 +811,27 @@ class StateStore:
             self._db.execute("INSERT INTO session_marks (session_id, pinned, updated) VALUES (?,?,?) "
                              "ON CONFLICT(session_id) DO UPDATE SET pinned=excluded.pinned, updated=excluded.updated",
                              (session_id, now if pinned else None, now))
+
+    def set_user_title(self, session_id: str, title: str) -> None:
+        """The user renamed this conversation (SPK-320): that name always wins in the list."""
+        now = time.time()
+        with self._lock, self._db:
+            self._db.execute("INSERT INTO session_marks (session_id, user_title, updated) VALUES (?,?,?) "
+                             "ON CONFLICT(session_id) DO UPDATE SET user_title=excluded.user_title, "
+                             "updated=excluded.updated", (session_id, title, now))
+
+    def user_title(self, session_id: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT user_title FROM session_marks WHERE session_id=?", (session_id,)).fetchone()
+        return row[0] if row and row[0] else None
+
+    def task_names(self, session_id: str) -> list[tuple[str | None, str | None, bool]]:
+        """Every name Speakeasy gave the tasks that ran in a session, newest first:
+        (title, own title, continued)."""
+        with self._lock:
+            rows = self._db.execute("SELECT title, own_title, continued FROM runs WHERE session_id=? "
+                                    "ORDER BY rowid DESC", (session_id,)).fetchall()
+        return [(r[0], r[1], bool(r[2])) for r in rows]
 
     def set_read(self, session_id: str, at: float | None = None) -> None:
         """Read up to *at* (default now): its unread dot clears on every device."""

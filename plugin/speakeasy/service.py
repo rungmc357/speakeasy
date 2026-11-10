@@ -3256,7 +3256,30 @@ class VoiceService(SecureInputMixin):
         title = (work.get("job") or {}).get("name") or work.get("title")
         needs_you = needs_you or self._open_question([k for k, _, _ in keys] + self._continuations(session_id)) is not None
         run_ids = [rid for rid in (r or self.store.openable_run_id(k) for k, r, _ in keys[:5]) if rid]
-        return H.Linked(keys=[k for k, _, _ in keys], name=title, running=running, needs_you=needs_you, run_ids=run_ids)
+        current, ours = self._session_names(session_id)
+        return H.Linked(keys=[k for k, _, _ in keys], name=title, running=running, needs_you=needs_you, run_ids=run_ids,
+                        current=current, ours=ours, user_title=self.store.user_title(session_id))
+
+    def _session_names(self, session_id: str) -> tuple[str | None, frozenset[str]]:
+        """(the newest task's own name, every name Speakeasy may have given the session) (SPK-320).
+        The newest name skips ones that name nothing ("Check the earlier task", "New chat"); a chat
+        thread's name on a task that continued it is never Speakeasy's."""
+        from .store import weak_job_name
+        from .text import drop_names
+        settings = self.settings.get()
+        user, assistant = settings.get("user_name") or "", settings.get("assistant_name") or ""
+        current, ours = None, set()
+        for title, own, continued in self.store.task_names(session_id):
+            for name in (own, None if continued else title):
+                if not name:
+                    continue
+                for variant in (name, drop_names(name, user, assistant)):
+                    if variant:
+                        ours.add(H.title_key(variant))
+            name = own or (None if continued else title)
+            if current is None and name and name != CALLS.NEW_CHAT_TITLE and not weak_job_name(name):
+                current = drop_names(name, user, assistant) or name
+        return current, frozenset(ours)
 
     def _continuations(self, session_id: str) -> list[str]:
         """Linked tasks that continued this chat from a history page (idem keys, oldest first), with every
@@ -3856,7 +3879,7 @@ class VoiceService(SecureInputMixin):
         running = any(j.get("status") in ACTIVE_RUN_STATES for j in jobs)
         # No Speakeasy task carrying the live line (a Kanban worker, a chat mid-turn): its own steps do.
         live = H.session_live(self.rt.state_db, sid, entries) if not running and before is None else None
-        title = (meta.get("title") or "").strip() or (link.name if link else None)
+        title = H.shown_title(sid, meta.get("title"), link) or (meta.get("title") or "").strip() or (link.name if link else None)
         first_user = next((e["text"] for e in page["entries"] if e["kind"] == "user"), None)
         needs_you = (any(j.get("status") in RS.ASKING for j in jobs)
                      or bool(open_keys))
@@ -4296,6 +4319,7 @@ class VoiceService(SecureInputMixin):
                 raise ServiceError(400, "A title is 1 to 100 characters.")
             title = " ".join(title.split())
             self._hermes_patch(session_id, {"title": title})
+            self.store.set_user_title(session_id, title)
             event.update(title=title)
             kind = "session_updated"
         elif action == "archive":
