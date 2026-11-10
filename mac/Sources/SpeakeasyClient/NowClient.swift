@@ -77,7 +77,7 @@ extension ServerClient {
     /// (`on_work`); from Work it's gone for good. Idempotent.
     @discardableResult
     public func homeStackDismiss(_ stackID: String, from: HomeDismissPlace = .home) async throws -> HomeStackDismissal {
-        let reply = try await post("/voice/home/stack/\(Self.esc(stackID))/dismiss", ["from": from.rawValue])
+        let reply = try await post(HomeStatePath.stackDismiss(stackID), ["from": from.rawValue])
         return HomeStackDismissal(json: reply, id: stackID, from: from)
     }
 
@@ -96,8 +96,8 @@ extension ServerClient {
     }
 
     /// `POST /voice/home/recommendations/{id}/dismiss`: it never comes back. Idempotent.
-    public func homeRecommendationDismiss(_ id: String) async throws {
-        _ = try await post("/voice/home/recommendations/\(Self.esc(id))/dismiss", [:])
+    public func dismissRecommendation(_ id: String) async throws {
+        _ = try await post(HomeStatePath.recommendationDismiss(id), [:])
     }
 
     /// Earlier: one page of conversations for the checked kinds, never repeating Home, with the menu.

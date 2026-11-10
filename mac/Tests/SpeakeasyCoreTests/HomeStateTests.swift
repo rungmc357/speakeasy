@@ -25,7 +25,7 @@ final class HomeStateTests: XCTestCase {
         XCTAssertEqual(cur.runIDs, ["run_inbox"])
         XCTAssertEqual(cur.replyIDs.count, 1)
         let activity = try XCTUnwrap(cur.lastActivityAt), resets = try XCTUnwrap(cur.resetsAt)
-        XCTAssertEqual(resets.timeIntervalSince(activity), HomeCurrentExchange.resetAfter, accuracy: 0.01)
+        XCTAssertEqual(resets.timeIntervalSince(activity), HomeCurrent.resetAfter, accuracy: 0.01)
         // Each entry of it carries `current`, and nothing else does.
         XCTAssertEqual(stream.entries.filter(\.current).map(\.id), cur.entryIDs.sorted { a, b in
             stream.entries.firstIndex { $0.id == a }! < stream.entries.firstIndex { $0.id == b }! })
@@ -64,6 +64,9 @@ final class HomeStateTests: XCTestCase {
         XCTAssertEqual(parked.id, "w:r:run_patio")
         XCTAssertNotNil(parked.dismissedOnHomeAt)
         XCTAssertEqual(home.widgetStack(), stack, "the plugin's stack is used as is")
+        // Needs you: the decision and the stopped job on the stack (none waiting on Work here).
+        XCTAssertEqual(home.needsYouCount, 2)
+        XCTAssertEqual(home.counts.needsYou, 1, "the plugin's own count is questions only")
     }
 
     func testDecodesRecommendations() throws {
@@ -86,7 +89,10 @@ final class HomeStateTests: XCTestCase {
         XCTAssertEqual(item?.follows, "w:r:run_a")
         XCTAssertEqual(item?.needsYou, false, "needs_you derives from the kind when missing")
         XCTAssertEqual(item?.cardID, "c:run_b")
-        XCTAssertNil(HomeStackItem(json: ["id": "w:z:x", "kind": "something_new", "title": "?"]))
+        let newer = HomeStackItem(json: ["id": "w:z:x", "kind": "something_new", "needs_you": true, "title": "?"])
+        XCTAssertEqual(newer?.kind, .unknown, "a kind a newer plugin added still decodes")
+        XCTAssertEqual(newer?.needsYou, true)
+        XCTAssertNil(HomeStackItem(json: ["id": "w:z:y", "title": "no kind"]))
         let stack = HomeStack(json: ["items": [["id": "w:s:run_c", "kind": "stopped", "title": "Plumber"]]])
         XCTAssertEqual(stack?.count, 1)
         XCTAssertEqual(stack?.items.first?.needsYou, true)
@@ -103,6 +109,14 @@ final class HomeStateTests: XCTestCase {
         XCTAssertEqual(HomeStackDismissal(json: ["ok": true, "id": "w:r:a", "from": "home", "state": "on_work"], id: "w:r:a", from: .home).state, .onWork)
         XCTAssertEqual(HomeStackDismissal(json: ["ok": true, "id": "w:r:a", "from": "work", "state": "gone"], id: "w:r:a", from: .work).state, .gone)
         XCTAssertEqual(HomeStackDismissal(json: [:], id: "w:r:a", from: .work).state, .gone)
+    }
+
+    func testStackAndRecommendationIDsArePercentEncodedForTheDismissRoutes() {
+        XCTAssertEqual(HomeStatePath.stackDismiss("w:q:run_desk:1793984100"), "/voice/home/stack/w%3Aq%3Arun_desk%3A1793984100/dismiss")
+        XCTAssertEqual(HomeStatePath.stackDismiss("w:r:run_patio"), "/voice/home/stack/w%3Ar%3Arun_patio/dismiss")
+        XCTAssertEqual(HomeStatePath.recommendationDismiss("rec:parked:w:r:run_patio"),
+                       "/voice/home/recommendations/rec%3Aparked%3Aw%3Ar%3Arun_patio/dismiss")
+        XCTAssertEqual(HomeStatePath.recommendationDismiss("gen:catch-up"), "/voice/home/recommendations/gen%3Acatch-up/dismiss")
     }
 
     func testCapability() throws {
@@ -134,6 +148,7 @@ final class HomeStateTests: XCTestCase {
         XCTAssertEqual(stack.items.map(\.cardID), ["c:run_c_q", "c:run_c_f", "c:run_c_a"])
         XCTAssertEqual(stack.onWork, [])
         XCTAssertEqual(stack.count, 3)
+        XCTAssertEqual(home.needsYouCount, 2, "counts.needs_you + counts.stopped: a stopped job needs you")
         // Recommendations: the plugin's fixed generic ideas.
         let recs = home.recommendationsOrFallback
         XCTAssertTrue(recs.generic && recs.derived)
@@ -154,22 +169,26 @@ final class HomeStateTests: XCTestCase {
                        NowStream.Entry(id: "c:run_a", kind: .card, at: t0.addingTimeInterval(5), itemID: "s:a"),
                        NowStream.Entry(id: "c:run_old", kind: .card, at: t0.addingTimeInterval(-500), itemID: "s:o"),
                        answerLine, result]
-        let cur = HomeCurrentExchange.derive(from: entries, now: t0.addingTimeInterval(60))
+        let rule = HomeCurrent.resetAfter
+        let cur = HomeCurrent.derive(from: entries, now: t0.addingTimeInterval(60), resetAfter: rule)
         XCTAssertFalse(cur.clean)
         XCTAssertEqual(cur.entryIDs, ["m:hu_1", "m:ha_1", "c:run_a", "x:run_a"])
         XCTAssertEqual(cur.messageID, "m:hu_1")
         XCTAssertEqual(cur.replyIDs, ["m:ha_1"], "an older job's answer line isn't a reply in this exchange")
         XCTAssertEqual(cur.runIDs, ["run_a"])
-        XCTAssertEqual(cur.resetsAt, t0.addingTimeInterval(5 + HomeCurrentExchange.resetAfter))
+        XCTAssertEqual(cur.resetsAt, t0.addingTimeInterval(5 + HomeCurrent.resetAfter))
         // 20 minutes after the last message: clean (a later result doesn't count as activity).
-        let late = HomeCurrentExchange.derive(from: entries, now: t0.addingTimeInterval(5 + HomeCurrentExchange.resetAfter))
+        let late = HomeCurrent.derive(from: entries, now: t0.addingTimeInterval(5 + rule), resetAfter: rule)
         XCTAssertTrue(late.clean)
         XCTAssertEqual(late.entryIDs, [])
         XCTAssertEqual(late.lastActivityAt, t0.addingTimeInterval(5))
-        XCTAssertTrue(HomeCurrentExchange.derive(from: [], now: t0).clean)
-        // Through the stream (no plugin `current`), and the stack flags the job shown in place.
+        XCTAssertTrue(HomeCurrent.derive(from: [], now: t0).clean)
+        // An older plugin has no reset (D1): the app's fallback keeps the exchange however long it's been.
         let stream = NowStream(entries: entries)
-        XCTAssertEqual(stream.currentExchange(now: t0.addingTimeInterval(60)), cur)
+        let old = stream.currentExchange(now: t0.addingTimeInterval(86_400))
+        XCTAssertFalse(old.clean)
+        XCTAssertNil(old.resetsAt)
+        XCTAssertEqual(old.entryIDs, cur.entryIDs)
         let item = NowItem(id: "s:a", kind: .newAnswer, runID: "run_a", title: "Find a lamp", line: "Three lamps",
                            finishedAt: t0.addingTimeInterval(40), unread: true)
         let stack = HomeStack.derive(from: [item], stream: stream, currentRunIDs: Set(cur.runIDs))

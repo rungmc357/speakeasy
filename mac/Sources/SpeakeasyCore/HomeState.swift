@@ -10,7 +10,7 @@ import Foundation
 /// `stream.current`: the latest message, the replies after it, the cards of the jobs it started and
 /// their results. Everything else in `stream.entries` is transcript only. `clean` after 20 minutes
 /// without a message from either side.
-public struct HomeCurrentExchange: Equatable, Sendable {
+public struct HomeCurrent: Equatable, Sendable {
     /// The plugin's reset interval (`RESET_AFTER_S`): 20 minutes after the last message.
     public static let resetAfter: TimeInterval = 20 * 60
 
@@ -27,7 +27,7 @@ public struct HomeCurrentExchange: Equatable, Sendable {
     /// Worked out by the app from an older plugin's thread, not sent by the plugin.
     public var derived = false
 
-    public static let empty = HomeCurrentExchange(clean: true)
+    public static let empty = HomeCurrent(clean: true)
 
     public init(clean: Bool, entryIDs: [String] = [], messageID: String? = nil, replyIDs: [String] = [],
                 cardIDs: [String] = [], runIDs: [String] = [], lastActivityAt: Date? = nil, resetsAt: Date? = nil,
@@ -50,27 +50,29 @@ public struct HomeCurrentExchange: Equatable, Sendable {
 
     public func contains(_ entryID: String) -> Bool { !clean && entryIDs.contains(entryID) }
 
-    /// As of *now*: clean once `resetsAt` has passed, even if the app hasn't fetched since.
-    public func asOf(_ now: Date) -> HomeCurrentExchange {
+    /// As of *now*: clean once the plugin's `resetsAt` has passed, even if the refresh scheduled for
+    /// that moment hasn't landed yet (the plugin's time, never an app timer).
+    public func asOf(_ now: Date) -> HomeCurrent {
         guard !clean, let resetsAt, now >= resetsAt else { return self }
-        return HomeCurrentExchange(clean: true, lastActivityAt: lastActivityAt, derived: derived)
+        return HomeCurrent(clean: true, lastActivityAt: lastActivityAt, derived: derived)
     }
 
     /// The plugin's rule, for an older plugin's thread: the latest user message, the assistant replies
     /// after it (never an SPK-314 answer line), the cards of the jobs those name, and those jobs' own
-    /// results and answer lines. Clean after `resetAfter` without a message.
+    /// results and answer lines. No reset by default (D1: the reset is the plugin's; an older plugin
+    /// has none); pass *resetAfter* only to mirror the plugin's rule in tests.
     public static func derive(from entries: [NowStream.Entry], now: Date = Date(),
-                              resetAfter: TimeInterval = HomeCurrentExchange.resetAfter) -> HomeCurrentExchange {
+                              resetAfter: TimeInterval? = nil) -> HomeCurrent {
         guard let last = entries.last(where: { $0.kind == .message && $0.role == .user }) else {
-            return HomeCurrentExchange(clean: true, derived: true)
+            return HomeCurrent(clean: true, derived: true)
         }
         let replies = entries.filter {
             $0.id != last.id && $0.at >= last.at && $0.kind == .message && $0.role == .assistant && !$0.answer
         }
         var runs = Set([last.runID].compactMap { $0 } + replies.compactMap(\.runID))
         let activity = ([last.at] + replies.map(\.at)).max() ?? last.at
-        if now.timeIntervalSince(activity) >= resetAfter {
-            return HomeCurrentExchange(clean: true, lastActivityAt: activity, derived: true)
+        if let resetAfter, now.timeIntervalSince(activity) >= resetAfter {
+            return HomeCurrent(clean: true, lastActivityAt: activity, derived: true)
         }
         let cards = entries.filter { $0.kind == .card && runs.contains(String($0.id.dropFirst(2))) }
         let tied = entries.filter {
@@ -80,16 +82,16 @@ public struct HomeCurrentExchange: Equatable, Sendable {
         var ids: [String] = []
         for e in [last] + replies + cards + tied where !ids.contains(e.id) { ids.append(e.id) }
         runs.formUnion(cards.map { String($0.id.dropFirst(2)) })
-        return HomeCurrentExchange(clean: false, entryIDs: ids, messageID: last.id, replyIDs: replies.map(\.id),
+        return HomeCurrent(clean: false, entryIDs: ids, messageID: last.id, replyIDs: replies.map(\.id),
                                    cardIDs: cards.map(\.id), runIDs: runs.sorted(), lastActivityAt: activity,
-                                   resetsAt: activity.addingTimeInterval(resetAfter), derived: true)
+                                   resetsAt: resetAfter.map { activity.addingTimeInterval($0) }, derived: true)
     }
 }
 
 public extension NowStream {
     /// The current exchange as of *now*: the plugin's when it sent one, else worked out from the thread.
-    func currentExchange(now: Date = Date()) -> HomeCurrentExchange {
-        (current ?? HomeCurrentExchange.derive(from: entries, now: now)).asOf(now)
+    func currentExchange(now: Date = Date()) -> HomeCurrent {
+        (current ?? HomeCurrent.derive(from: entries, now: now)).asOf(now)
     }
 
     /// The entries of the current exchange, in thread order (empty when Home is clean).
@@ -103,7 +105,8 @@ public extension NowStream {
 
 /// One thing in Home's widget stack: a decision (question or approval), a stopped job, or a new result.
 public struct HomeStackItem: Equatable, Sendable, Identifiable {
-    public enum Kind: String, Sendable { case decision, stopped, result }
+    /// `unknown`: a kind a newer plugin added (its `needs_you` still says where it sorts).
+    public enum Kind: String, Sendable { case decision, stopped, result, unknown }
     public struct Source: Equatable, Sendable {
         public enum Kind: String, Sendable { case job, chat }
         public var kind: Kind
@@ -149,7 +152,8 @@ public struct HomeStackItem: Equatable, Sendable, Identifiable {
                 resultID: String? = nil, title: String, line: String = "", source: Source, runID: String? = nil,
                 addedAt: Date? = nil, at: Date? = nil, follows: String? = nil, inCurrent: Bool = false,
                 dismissedOnHomeAt: Date? = nil, derived: Bool = false) {
-        self.id = id; self.kind = kind; self.needsYou = needsYou ?? (kind != .result); self.itemID = itemID
+        self.id = id; self.kind = kind; self.needsYou = needsYou ?? (kind == .decision || kind == .stopped)
+        self.itemID = itemID
         self.cardID = cardID; self.resultID = resultID; self.title = title; self.line = line; self.source = source
         self.runID = runID; self.addedAt = addedAt; self.at = at; self.follows = follows; self.inCurrent = inCurrent
         self.dismissedOnHomeAt = dismissedOnHomeAt; self.derived = derived
@@ -157,7 +161,8 @@ public struct HomeStackItem: Equatable, Sendable, Identifiable {
 
     public init?(json: Any?) {
         guard let o = json as? [String: Any], let id = nonEmpty(o["id"]),
-              let kind = (o["kind"] as? String).flatMap(Kind.init(rawValue:)) else { return nil }
+              let rawKind = nonEmpty(o["kind"]) else { return nil }
+        let kind = Kind(rawValue: rawKind) ?? .unknown
         func date(_ k: String) -> Date? { (o[k] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) } }
         let source = Source(json: o["source"], runID: nonEmpty(o["run_id"]))
         let run = nonEmpty(o["run_id"]) ?? source.runID
@@ -336,18 +341,34 @@ public struct HomeRecommendations: Equatable, Sendable {
     }
 }
 
+/// The URL path piece for a stack item or recommendation id (`w:q:<run>:<t>` -> `w%3Aq%3A<run>%3A<t>`):
+/// the whole id percent-encoded, which the plugin's routes decode.
+public enum HomeStatePath {
+    private static let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
+    public static func segment(_ id: String) -> String { id.addingPercentEncoding(withAllowedCharacters: unreserved) ?? id }
+    public static func stackDismiss(_ id: String) -> String { "/voice/home/stack/\(segment(id))/dismiss" }
+    public static func recommendationDismiss(_ id: String) -> String { "/voice/home/recommendations/\(segment(id))/dismiss" }
+}
+
 // MARK: - On Home
 
 public extension NowHome {
     /// The current exchange as of *now* (the plugin's, or worked out from an older plugin's thread).
-    func currentExchange(now: Date = Date()) -> HomeCurrentExchange {
-        stream?.currentExchange(now: now) ?? HomeCurrentExchange(clean: true, derived: true)
+    func currentExchange(now: Date = Date()) -> HomeCurrent {
+        stream?.currentExchange(now: now) ?? HomeCurrent(clean: true, derived: true)
     }
 
     /// The widget stack: the plugin's, else worked out from an older plugin's items.
     func widgetStack(now: Date = Date()) -> HomeStack {
         if let stack { return stack }
         return HomeStack.derive(from: items, stream: stream, currentRunIDs: Set(currentExchange(now: now).runIDs))
+    }
+
+    /// What needs you: the `needs_you` items on the stack and on Work (a stopped job counts); with no
+    /// `stack` (an older plugin), `counts.needs_you + counts.stopped`.
+    var needsYouCount: Int {
+        guard let stack else { return counts.needsYou + counts.stopped }
+        return stack.items.filter(\.needsYou).count + stack.onWork.filter(\.needsYou).count
     }
 
     /// The plugin's recommendations, else the fixed generic ideas.
