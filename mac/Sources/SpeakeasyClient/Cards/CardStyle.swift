@@ -135,10 +135,56 @@ public struct CardSurface: View {
                 shape.fill(style.fill)
                 shape.strokeBorder(style.edge, lineWidth: 0.7)
             }
+            #if canImport(UIKit)
+            // A shadow cast from the card's rounded rectangle (`shadowPath`), not from its rendered
+            // pixels: SwiftUI's `.shadow` re-rendered every card offscreen on every frame of a scroll
+            // (build 73 perf pass 3). Same colour, blur and offset.
+            .background(PathShadow(color: style.shadow, radius: 18, y: 8, corner: radius ?? style.radius))
+            #else
             .shadow(color: style.shadow, radius: 18, y: 8)
+            #endif
         }
     }
 }
+
+#if canImport(UIKit)
+/// A soft drop shadow for a rounded rectangle, drawn by Core Animation from a path (no offscreen
+/// pass), standing in for `.shadow(color:radius:y:)` on the glass surface (blur radius halved for
+/// `CALayer.shadowRadius`; checked side by side against the SwiftUI shadow).
+struct PathShadow: UIViewRepresentable {
+    var color: Color
+    var radius: CGFloat
+    var y: CGFloat
+    var corner: CGFloat
+
+    func makeUIView(context: Context) -> ShadowView {
+        let view = ShadowView()
+        view.isUserInteractionEnabled = false
+        view.backgroundColor = .clear
+        return view
+    }
+
+    func updateUIView(_ view: ShadowView, context: Context) {
+        view.color = UIColor(color)
+        view.corner = corner
+        view.layer.shadowRadius = radius / 2
+        view.layer.shadowOffset = CGSize(width: 0, height: y)
+        view.layer.shadowOpacity = 1
+        view.overrideUserInterfaceStyle = context.environment.colorScheme == .dark ? .dark : .light
+        view.setNeedsLayout()
+    }
+
+    final class ShadowView: UIView {
+        var color: UIColor = .clear
+        var corner: CGFloat = 0
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            layer.shadowColor = color.resolvedColor(with: traitCollection).cgColor
+            layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: corner).cgPath
+        }
+    }
+}
+#endif
 
 public extension View {
     /// The card's own surface, unless a host already draws one (`cardHosted`).

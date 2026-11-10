@@ -324,11 +324,8 @@ private struct PictureOption: View {
         .frame(maxWidth: .infinity)
         .task(id: picture) {
             guard picture > 0, image == nil, let data = await load(picture) else { return }
-            #if os(macOS)
-            if let ns = NSImage(data: data) { image = Image(nsImage: ns) }
-            #else
-            if let ui = UIImage(data: data) { image = Image(uiImage: ui) }
-            #endif
+            // Off the main thread, at the size it's drawn (build 73 perf pass 3).
+            if let decoded = await PictureDecode.image(data) { image = decoded }
         }
         #if os(macOS)
         .onHover { hover = $0 }

@@ -61,12 +61,9 @@ public struct PictureGallery: View {
             loaded = [:]; page = nil; expanded = nil
             for card in images {
                 guard !Task.isCancelled, let data = await load(card.number) else { continue }
+                let image = await PictureDecode.image(data)
                 guard !Task.isCancelled else { return }
-                #if os(macOS)
-                if let image = NSImage(data: data) { loaded[card.number] = Image(nsImage: image) }
-                #else
-                if let image = UIImage(data: data) { loaded[card.number] = Image(uiImage: image) }
-                #endif
+                if let image { loaded[card.number] = image }
             }
         }
         .sheet(item: $expanded) { selected in
