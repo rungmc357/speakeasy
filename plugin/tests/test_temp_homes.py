@@ -1,17 +1,24 @@
 """SPK-293: test runs leave no speakeasy-test-* folders behind, and clear what a killed run left.
 
-Each test runs a real pytest session (or the parallel runner) in a subprocess whose temp folder is
-this test's own, then looks at what is left in it.
+Most tests run a real pytest session (or the parallel runner) in a subprocess whose temp folder is
+this test's own, then look at what is left in it.
 """
 from __future__ import annotations
 
+import inspect
 import os
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 
+import pytest
+
+import temp_homes
 from fakes import HERMES_SRC, PLUGIN_ROOT
+from speakeasy import delivery
 
 TESTS = Path(__file__).resolve().parent
 RUNNER = PLUGIN_ROOT.parent / "scripts" / "plugin-tests-parallel.py"
@@ -73,13 +80,14 @@ def _env(tmp_path: Path, temp: Path) -> dict[str, str]:
             "MADE_LOG": str(tmp_path / "made.txt")}
 
 
-def _session(tmp_path: Path, temp: Path, source: str) -> subprocess.CompletedProcess:
+def _session(tmp_path: Path, temp: Path, source: str, unset: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
     """One pytest session over *source*, with the suite's conftest, in temp folder *temp*."""
     suite = tmp_path / "suite"
     suite.mkdir(exist_ok=True)
     (suite / "test_inner.py").write_text(source)
+    env = {k: v for k, v in _env(tmp_path, temp).items() if k not in unset}
     return subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "conftest",
-                           str(suite / "test_inner.py")], cwd=suite, env=_env(tmp_path, temp),
+                           str(suite / "test_inner.py")], cwd=suite, env=env,
                           capture_output=True, text=True, timeout=120)
 
 
@@ -171,3 +179,90 @@ def test_the_parallel_runner_sweeps_first_and_leaves_no_folder_of_its_own(tmp_pa
     assert sorted(os.listdir(temp)) == ["other-stale", "speakeasy-test-file", "speakeasy-test-fresh",
                                         "speakeasy-test-link"]
     assert sorted(os.listdir(outside)) == ["keep.txt"]
+
+
+def test_the_exit_cleanup_also_removes_a_home_a_thread_makes_while_it_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(temp_homes, "_made", set())
+    first = temp_homes.new_home()
+    real_remove = temp_homes.remove
+
+    def remove(path):
+        if path == first:
+            thread = threading.Thread(target=temp_homes.new_home, daemon=True)
+            thread.start()
+            thread.join()
+        real_remove(path)
+    monkeypatch.setattr(temp_homes, "remove", remove)
+    temp_homes.remove_all()
+    assert len(temp_homes._made) == 2
+    assert _left(tmp_path) == []
+
+
+def _runner(cmd, **kwargs):
+    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+
+@pytest.fixture
+def launches(monkeypatch) -> list:
+    launched: list = []
+
+    def popen(*args, **kwargs):
+        launched.append(args)
+        raise OSError("a test may not launch hermes send")
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    return launched
+
+
+@pytest.fixture(scope="module")
+def notifier_from_a_module_fixture(tmp_path_factory):
+    return delivery.HermesSendNotifier(tmp_path_factory.mktemp("module-home"))
+
+
+def test_a_notifier_built_before_any_test_fixture_launches_nothing(notifier_from_a_module_fixture, launches):
+    assert notifier_from_a_module_fixture.send("telegram:555", "The dentist is booked.") is False
+    assert launches == []
+
+
+def test_the_send_guard_wraps_the_notifier_without_restating_its_parameters():
+    init = delivery.HermesSendNotifier.__init__
+    assert init.__wrapped__.__module__ == "speakeasy.delivery"
+    assert str(inspect.signature(init, follow_wrapped=False)) == "(self, *args, **kwargs)"
+
+
+@pytest.mark.parametrize("build", [
+    lambda home: delivery.HermesSendNotifier(home, "work", _runner),
+    lambda home: delivery.HermesSendNotifier(hermes_home=home, profile="work", runner=_runner),
+], ids=["positional", "keyword"])
+def test_a_notifier_given_its_own_runner_keeps_it(build, tmp_path, launches):
+    notifier = build(tmp_path)
+    assert (notifier.hermes_home, notifier.profile, notifier.runner) == (tmp_path, "work", _runner)
+    assert notifier.send("telegram:555", "The dentist is booked.") is True
+    assert launches == []
+
+
+@pytest.mark.parametrize("build", [
+    lambda home: delivery.HermesSendNotifier(home, "work"),
+    lambda home: delivery.HermesSendNotifier(hermes_home=home, profile="work"),
+    lambda home: delivery.HermesSendNotifier(home, "work", subprocess.run),
+], ids=["positional", "keyword", "the-real-launcher-passed-in"])
+def test_a_notifier_left_with_the_real_launcher_launches_nothing(build, tmp_path, launches):
+    notifier = build(tmp_path)
+    assert (notifier.hermes_home, notifier.profile) == (tmp_path, "work")
+    assert notifier.send("telegram:555", "The dentist is booked.") is False
+    assert launches == []
+
+
+CHILD_SEES_LAZY_INSTALLS = '''
+import subprocess, sys
+
+def test_a_child_of_a_test_has_lazy_installs_off():
+    code = "import os; print(os.environ.get('HERMES_DISABLE_LAZY_INSTALLS'))"
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True).stdout
+    assert out.strip() == "1"
+'''
+
+
+def test_a_session_turns_lazy_installs_off_when_its_caller_did_not(tmp_path):
+    done = _session(tmp_path, _temp(tmp_path), CHILD_SEES_LAZY_INSTALLS, unset=("HERMES_DISABLE_LAZY_INSTALLS",))
+    assert done.returncode == 0, done.stdout + done.stderr

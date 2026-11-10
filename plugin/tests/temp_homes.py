@@ -36,8 +36,12 @@ def remove(path: Path) -> None:
 
 @atexit.register
 def remove_all() -> None:
-    for path in _made:
-        remove(path)
+    # Daemon threads still run at exit and can make a home mid-loop: take snapshots until none is new.
+    done: set[Path] = set()
+    while left := _made - done:
+        for path in left:
+            remove(path)
+        done |= left
 
 
 def sweep(root: str | os.PathLike | None = None, max_age_s: float = MAX_AGE_S) -> list[str]:

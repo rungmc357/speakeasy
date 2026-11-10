@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import errno
+import functools
+import inspect
+import os
 import socket
 import subprocess
 
@@ -54,21 +57,30 @@ def no_real_volume(monkeypatch):
     monkeypatch.setattr(_duck, "default_backend", lambda: None)
 
 
+# Never launch the Hermes CLI from a test: ``hermes send`` into a temp home builds it a dependency
+# environment of its own (``<home>/installs``, over a GB) unless lazy installs are off, and can outlive
+# the test. Installed at import, like the API port guard below, so a notifier built outside any test's
+# fixtures is covered too; it fails, as a real send from a home with no chats does. One given its own
+# runner keeps it. The environment default covers plugin copies imported under another package name
+# (test_live_reload), whose notifier class this guard never sees.
+os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
+
+_REAL_NOTIFIER_INIT = _delivery.HermesSendNotifier.__init__
+_REAL_SEND_RUNNER = inspect.signature(_REAL_NOTIFIER_INIT).parameters["runner"].default
+
+
 def _no_hermes_send(cmd, **kwargs):
     return subprocess.CompletedProcess(cmd, 1, "", "")
 
 
-@pytest.fixture(autouse=True)
-def no_real_hermes_send(monkeypatch):
-    """Never launch the Hermes CLI from a test. ``hermes send`` with a temp home as HERMES_HOME
-    builds that home a dependency environment of its own (``<home>/installs``, over a GB) unless
-    lazy installs are off, and can outlive the test. A notifier without its own runner fails, as a
-    real send from a home with no chats does; a test that passes a runner keeps it."""
-    real_init = _delivery.HermesSendNotifier.__init__
+@functools.wraps(_REAL_NOTIFIER_INIT)
+def _notifier_init_without_hermes_send(self, *args, **kwargs):
+    _REAL_NOTIFIER_INIT(self, *args, **kwargs)
+    if self.runner is _REAL_SEND_RUNNER:
+        self.runner = _no_hermes_send
 
-    def init(self, hermes_home, profile="", runner=None):
-        real_init(self, hermes_home, profile, runner if runner is not None else _no_hermes_send)
-    monkeypatch.setattr(_delivery.HermesSendNotifier, "__init__", init)
+
+_delivery.HermesSendNotifier.__init__ = _notifier_init_without_hermes_send  # type: ignore[method-assign]
 
 
 @pytest.fixture(autouse=True)

@@ -49,9 +49,10 @@
    session start; `test_credentials_rule` uses the `home` fixture; `test_live_reload` uses `home`
    and `tmp_path` (its own mkdtemp/rmtree pair goes).
 2. Parallel runner: `sweep()` first, shard folder from `new_home()`.
-3. conftest autouse `no_real_hermes_send`: a `HermesSendNotifier` without its own runner starts
-   no process and fails (what a real send from a test home returns). No production change.
-4. `remove()` keeps homes recorded; `test_visual_review` removes its `-outside.png` at teardown.
+3. conftest, at import for the whole run: a `HermesSendNotifier` left with the real launcher starts
+   no process and fails (what a real send from a test home returns); `HERMES_DISABLE_LAZY_INSTALLS`
+   defaults to 1 as a backstop. No production change.
+4. `remove()` keeps homes recorded; `test_visual_review` writes its outside image under `tmp_path`.
 
 ## Test scenarios (`plugin/tests/test_temp_homes.py`, pytest in a subprocess, own TMPDIR)
 
