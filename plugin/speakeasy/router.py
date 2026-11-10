@@ -672,7 +672,9 @@ class Chat:
 class Decision:
     parts: list[Part]
     channel: str | None = None     # an opted-in channel label picked by topic, or None
-    source: str = "fallback"       # "model" | "marked" | "fallback"
+    # What picked it: "model" | "marked" | "focus" | "quick" | "fragment" | "just_started" | "refers_back" |
+    # "jev" | "fallback", or "kept_apart" when a picked task was about another build (SPK-172).
+    source: str = "fallback"
     latency_ms: int = 0
     conversation: str | None = None  # a Chat.ref to continue in, or None
     show: bool = False             # the user wants to SEE something (what it looks like), not just hear it
@@ -1404,27 +1406,31 @@ def decide(request: str, tasks: list[OpenTask], marked_task_id: Any = None, topi
     """Route one handoff. A task id the voice model marked wins outright (no model call). A focused
     task is a strong prior: the model is told the user is looking at it and sends the request there
     unless it is clearly unrelated; without a model answer the request goes to the focused task.
-    Whoever picked it, a request never joins a task about a differently numbered thing (SPK-172)."""
-    decision = _decide(request, tasks, marked_task_id, topics, call, timeout, chats, call_so_far, replied_task_id,
-                       jev_place, focus)
+    Whoever picked it, a request never joins a task about a different build or ticket (SPK-172)."""
+    decision = _decide(request, tasks, marked_task_id=marked_task_id, topics=topics, call=call, timeout=timeout,
+                       chats=chats, call_so_far=call_so_far, replied_task_id=replied_task_id, jev_place=jev_place,
+                       focus=focus)
     return _keep_apart(decision, tasks)
 
 
 def _keep_apart(decision: Decision, tasks: list[OpenTask]) -> Decision:
     """A follow-up to a task about another build or release ("push forty-one" onto release 42's task)
-    becomes its own new task."""
+    becomes its own new task, and the decision's source says so ("kept_apart"). The task's whole request
+    is read, "(following up: ...)" included: after one follow-up its build is often only named there."""
     about = {t.task_id: t.request for t in tasks}
 
     def other(p: Part) -> bool:
-        return p.kind == "follow_up" and recap.names_other_number(p.request, about.get(p.task_id or "", ""))
+        return p.kind == "follow_up" and recap.names_other_number(about.get(p.task_id or "", ""), p.request)
 
     if not any(other(p) for p in decision.parts):
         return decision
-    logger.info("speakeasy: the request names another number than the task it was sent to: a new task")
-    return dataclasses.replace(decision, parts=[Part(NEW, p.request) if other(p) else p for p in decision.parts])
+    logger.info("speakeasy: the request names another build than the task it was sent to (%s): a new task",
+                decision.source)
+    return dataclasses.replace(decision, parts=[Part(NEW, p.request) if other(p) else p for p in decision.parts],
+                               source="kept_apart")
 
 
-def _decide(request: str, tasks: list[OpenTask], marked_task_id: Any, topics: list[Topic] | None,
+def _decide(request: str, tasks: list[OpenTask], *, marked_task_id: Any, topics: list[Topic] | None,
             call: Callable[[list[dict[str, str]]], str | None] | None, timeout: float, chats: list[Chat] | None,
             call_so_far: str, replied_task_id: str | None,
             jev_place: Callable[..., dict[str, Any] | None] | None, focus: Focus | None) -> Decision:
