@@ -966,6 +966,9 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     /// Hermes' projects in Speakeasy (SPK-254): `GET/POST /voice/projects`, a project page, filing
     /// chats and jobs, and the job card's project suggestion. Off on a Hermes without projects.
     public var projects: Bool = false
+    /// Build 73's Home state (`home_stack`): `stream.current`, `stack` and `recommendations` on
+    /// `/voice/now`, `GET /voice/home/stack` + its dismiss, `GET /voice/home/recommendations` + dismiss.
+    public var homeStack: Bool = false
     public init(cardActions: Bool = false, jobProgress: Bool = false, spokenChoices: Bool = false, taskMessages: Bool = false,
                 jobActivity: Bool = false, toolLog: Bool = false, startJobs: Bool = false, jobSubagents: Bool = false,
                 history: Bool = false, callNoLimit: Bool = false, modelChoice: Bool = false, codexLogin: Bool = false,
@@ -984,7 +987,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case messageModes = "message_modes", questionState = "question_state", agents
         case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
         case voiceNotes = "voice_notes", newVoiceNotes = "new_voice_notes"
-        case now, homeChat = "home_chat", projects
+        case now, homeChat = "home_chat", projects, homeStack = "home_stack"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1008,6 +1011,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         newVoiceNotes = (try? c.decodeIfPresent(Bool.self, forKey: .newVoiceNotes)) ?? false
         homeChat = (try? c.decodeIfPresent(Bool.self, forKey: .homeChat)) ?? false
         projects = (try? c.decodeIfPresent(Bool.self, forKey: .projects)) ?? false
+        homeStack = (try? c.decodeIfPresent(Bool.self, forKey: .homeStack)) ?? false
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false

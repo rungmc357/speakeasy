@@ -23,6 +23,12 @@ public struct NowHome: Equatable, Sendable {
     /// The tracker pill's words at any volume ("3 need you · 5 running"), from the plugin; nil from an
     /// older plugin (the app counts for itself). Counts, never a cut-off title.
     public var pill: String?
+    /// b73 (capability `home_stack`): the widget stack, exactly as the plugin sent it. Nil from an
+    /// older plugin; read `widgetStack` for the stack with a fallback derived from `items`.
+    public var stack: HomeStack?
+    /// b73: up to three recommended next things. Nil from an older plugin; read
+    /// `recommendationsOrFallback` for the fixed generic ideas then.
+    public var recommendations: HomeRecommendations?
 
     public struct Counts: Equatable, Sendable {
         public var needsYou = 0, stopped = 0, working = 0, waiting = 0, finishedUnread = 0, onItsOwn = 0
@@ -60,6 +66,8 @@ public struct NowHome: Equatable, Sendable {
         callSummary = NowCallSummary(json: json["call_summary"])
         stream = NowStream(json: json["stream"])
         pill = nonEmpty(json["pill"])
+        stack = HomeStack(json: json["stack"])
+        recommendations = HomeRecommendations(json: json["recommendations"])
     }
 
     /// Nothing live or new: Home shows a quiet "All caught up." instead of a header (build 69 drops
@@ -537,6 +545,12 @@ public struct NowStream: Equatable, Sendable {
         /// result: the id of the job's card up where it was asked.
         public var resultID: String? = nil
         public var cardID: String? = nil
+        /// b73: part of Home's current exchange (the plugin marks it; `NowStream.currentExchange`
+        /// works it out for an older plugin).
+        public var current = false
+        /// An SPK-314 answer line (an older job's verdict posted as a message), never part of the
+        /// current exchange it lands in.
+        public var answer = false
         public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
                     line: String? = nil, itemIDs: [String] = [], role: Role? = nil, attribution: ReplyAttribution? = nil,
                     voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil,
@@ -564,6 +578,8 @@ public struct NowStream: Equatable, Sendable {
             cardID = nonEmpty(o["card_id"])
             if kind == .result && (itemID == nil || runID == nil) { return nil }
             replacedAt = (o["replaced_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+            current = o["current"] as? Bool ?? false
+            answer = o["answer"] as? Bool ?? false
         }
     }
     public var entries: [Entry]
@@ -571,11 +587,17 @@ public struct NowStream: Equatable, Sendable {
     public var hasMessages: Bool { entries.contains { $0.kind == .message } }
     /// Item ids waiting on the user, for the count on the work strip.
     public var needsYou: [String]
-    public init(entries: [Entry] = [], needsYou: [String] = []) { self.entries = entries; self.needsYou = needsYou }
+    /// b73 (capability `home_stack`): the current exchange as the plugin sent it. Nil from an older
+    /// plugin; read `currentExchange(now:)` for it with a fallback.
+    public var current: HomeCurrentExchange?
+    public init(entries: [Entry] = [], needsYou: [String] = [], current: HomeCurrentExchange? = nil) {
+        self.entries = entries; self.needsYou = needsYou; self.current = current
+    }
     public init?(json: Any?) {
         guard let o = json as? [String: Any] else { return nil }
         self.init(entries: (o["entries"] as? [Any] ?? []).compactMap(Entry.init(json:)),
-                  needsYou: (o["needs_you"] as? [Any] ?? []).compactMap(nonEmpty))
+                  needsYou: (o["needs_you"] as? [Any] ?? []).compactMap(nonEmpty),
+                  current: HomeCurrentExchange(json: o["current"]))
     }
 }
 
