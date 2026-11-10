@@ -1403,7 +1403,31 @@ def decide(request: str, tasks: list[OpenTask], marked_task_id: Any = None, topi
            focus: Focus | None = None) -> Decision:
     """Route one handoff. A task id the voice model marked wins outright (no model call). A focused
     task is a strong prior: the model is told the user is looking at it and sends the request there
-    unless it is clearly unrelated; without a model answer the request goes to the focused task."""
+    unless it is clearly unrelated; without a model answer the request goes to the focused task.
+    Whoever picked it, a request never joins a task about a differently numbered thing (SPK-172)."""
+    decision = _decide(request, tasks, marked_task_id, topics, call, timeout, chats, call_so_far, replied_task_id,
+                       jev_place, focus)
+    return _keep_apart(decision, tasks)
+
+
+def _keep_apart(decision: Decision, tasks: list[OpenTask]) -> Decision:
+    """A follow-up to a task about another build or release ("push forty-one" onto release 42's task)
+    becomes its own new task."""
+    about = {t.task_id: t.request for t in tasks}
+
+    def other(p: Part) -> bool:
+        return p.kind == "follow_up" and recap.names_other_number(p.request, about.get(p.task_id or "", ""))
+
+    if not any(other(p) for p in decision.parts):
+        return decision
+    logger.info("speakeasy: the request names another number than the task it was sent to: a new task")
+    return dataclasses.replace(decision, parts=[Part(NEW, p.request) if other(p) else p for p in decision.parts])
+
+
+def _decide(request: str, tasks: list[OpenTask], marked_task_id: Any, topics: list[Topic] | None,
+            call: Callable[[list[dict[str, str]]], str | None] | None, timeout: float, chats: list[Chat] | None,
+            call_so_far: str, replied_task_id: str | None,
+            jev_place: Callable[..., dict[str, Any] | None] | None, focus: Focus | None) -> Decision:
     request = (request or "").strip()
     topics = topics or []
     open_tasks = tasks[-MAX_OPEN_TASKS:]

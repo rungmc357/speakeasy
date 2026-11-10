@@ -178,6 +178,7 @@ SAME_TASK = [
     (ASK_42, "42 is fine to push"),
     (ASK_42, "push it to public now"),
     ("book a table for 4", "make it six"),
+    ("set the thermostat to 72", "set it to 70"),
     (ASK_42, "give me the top three blockers"),
     (ASK_42, "check again in ten minutes"),
     (ASK_42, "the 4:15 then"),
