@@ -155,7 +155,10 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
                             "run_id": item["run_id"], "card_id": entry["id"]})
         entries.append(entry)
     entries.extend(messages or [])
-    entries.extend(_answer_lines(items, folded, messages or []))
+    # A job whose result was already posted at the bottom (an email draft) needs no answer line too:
+    # the result entry is what arrives at the bottom for it (b73 integration of email-card73 + SPK-314).
+    entries.extend(a for a in _answer_lines(items, folded, messages or [])
+                   if str(a.get("run_id") or "") not in results)
     # An ask (or the chat message and reply that started a job) sorts just before its card even
     # when they share a second.
     entries.sort(key=lambda e: (e["at"], 0 if e["kind"] in {"ask", "message"} else 1))
