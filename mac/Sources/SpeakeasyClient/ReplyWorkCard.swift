@@ -40,8 +40,8 @@ public struct ReplyWorkCard: View {
                         .font(.system(size: 18))
                         .foregroundStyle(work.failed ? Color.orange : Color.accentColor)
                     if work.running && !expanded && !typeSize.isAccessibilitySize {
-                        // Its live line changes as it works: one line pushed in place, never two lines
-                        // crossfading over each other or a wrap onto the next row (SPK-231 R4).
+                        // Its live line changes as it works: one fixed-height line crossfading in place,
+                        // never a wrap onto the next row or a re-layout of the row (SPK-231 R4, B73-05).
                         LiveStatusLine(work.line, font: .subheadline.weight(.medium), color: .primary)
                     } else {
                         Text(AgentMarkdown.attributed(heading)).font(.subheadline.weight(.medium))
