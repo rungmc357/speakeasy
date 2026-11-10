@@ -29,7 +29,7 @@ public struct CardActionBar: View {
     }
     /// The server's buttons the row draws (a card that places its own, like a day's Move, keeps them).
     @MainActor static func serverActions(_ card: ViewCard, model: VoicePanelModel) -> [CardAction] {
-        model.capabilities?.cardActions == true && !CardLinks.inCardActions.contains(card.kind) ? card.actions : []
+        model.capabilities?.cardActions == true && !CardLinks.drawsOwnActions(card) ? card.actions : []
     }
     /// Copy is offered under cards whose text is worth pasting (a chart copies its numbers; a stats grid
     /// alone under a lone Copy read as filler, SPK-231 reps).
@@ -38,7 +38,7 @@ public struct CardActionBar: View {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-demoNoCardCopy") { return false }
         #endif
-        return copyKinds.contains(card.kind)
+        return copyKinds.contains(card.kind) && !CardLinks.drawsOwnActions(card)
     }
     static let mapsKinds: Set<String> = ["place", "route", "transit"]
     static let copyKinds: Set<String> = ["chart", "list", "steps", "fact", "conversion", "math", "translation",
@@ -177,6 +177,9 @@ public struct ActionableCard: View {
                 .environment(\.cardHosted, hosted)
                 .environment(\.cardRunAction, model.capabilities?.cardActions == true ? { id in
                     if let action = card.actions.first(where: { $0.id == id }) { model.runCardAction(taskID: taskID, card: card, action: action) }
+                } : nil)
+                .environment(\.cardSend, model.capabilities?.cardActions == true ? { action in
+                    model.runCardAction(taskID: taskID, card: card, action: action)
                 } : nil)
             if card.kind == "confirm", model.capabilities?.cardActions == true {
                 ConfirmActionBar(taskID: taskID, card: card, model: model)

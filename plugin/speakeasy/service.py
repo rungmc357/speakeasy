@@ -47,7 +47,7 @@ from .calls import (ACTIVE_RUN_STATES, SHARE_NOTE_KEY, APPROVED_MILESTONE, INPUT
                     is_greeting, typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
 from .devices import CLIENT_HEADER, DeviceStore, parse_client
-from .emails import canonical_json, extract_email_drafts
+from .emails import CONTEXT_KEY, DraftInvalid, apply_edit, canonical_json, extract_email_drafts
 from . import agent_slot
 from .backends.hermes import hermes_agent
 from .hermes_api import HermesAPI, HermesError
@@ -1975,10 +1975,18 @@ class VoiceService(SecureInputMixin):
         if found is None:
             raise ServiceError(404, "not found")
         key, result = found
-        views = result.get("views") if isinstance(result.get("views"), list) else []
+        stored_views = result.get("views") if isinstance(result.get("views"), list) else []
+        drafts = self.store.drafts_for(key)
+        views = stored_views
+        if drafts:
+            # The same cards the app was shown (store.work adds the email card without moving any).
+            from .emails import with_email_views
+            views = with_email_views(stored_views, drafts)
         if index >= len(views) or not isinstance(views[index], dict):
             raise ServiceError(404, "that card isn't on this task")
         view = views[index]
+        if view.get("kind") == "draft" and view.get("draft_id"):
+            return self._email_card_action(view, action, value)
         if view.get("kind") != "confirm" and action not in {a.get("id") for a in view.get("actions") or [] if isinstance(a, dict)}:
             raise ServiceError(400, "that card has no such button")
         if view.get("kind") == "home" and action == "toggle":
@@ -1995,8 +2003,9 @@ class VoiceService(SecureInputMixin):
             if not reply.ok:
                 raise ServiceError(409, reply.spoken)
             if card is not None:
-                views[index] = card
-                result["views"] = views
+                # Only the stored list is saved: the email card is drawn from its draft on every read.
+                stored_views[index] = card
+                result["views"] = stored_views
                 self.store.set_result(key, result)
                 self.store.progress(key, "milestone", reply.spoken)
             self.publish_all(key)
@@ -2015,6 +2024,55 @@ class VoiceService(SecureInputMixin):
             self.task_message(run_id, {"text": words, "source": "typed"})
             return {"ok": True, "message": "Sent to the task."}
         raise ServiceError(400, "this server doesn't do that action yet")
+
+    def _email_card_action(self, view: dict[str, Any], action: str, value: Any) -> dict[str, Any]:
+        """The email card's own buttons, on the stored draft it was drawn from. Each carries the
+        hash the card showed (an older app's Send carries none: the card's own), so a draft that
+        changed since is refused, never sent unseen. ``edit`` holds the changed fields and may
+        go on to ``send`` or ``save`` the edited draft in the same tap."""
+        draft_id, shown = view["draft_id"], view.get("sha256") or ""
+        if isinstance(value, dict):
+            value = dict(value)
+            digest = value.pop("sha256", shown)
+            after = value.pop("after", None)
+        else:
+            digest, after = (value if isinstance(value, str) else shown), None
+        if not isinstance(digest, str):
+            raise ServiceError(400, "sha256 must be the draft's hash")
+        decide = {"send": "approve", "discard": "deny", "save": "save"}
+        if action == "discard":
+            # Discarding never sends: a card a step behind the user's own edit still discards it.
+            draft_id, digest = self._edit_base(draft_id, digest)
+        if action in decide:
+            out = self.decide_draft(draft_id, {"action": decide[action], "sha256": digest})
+            return {"ok": True, "message": {"send": "Sending.", "discard": "Discarded.",
+                                            "save": "Saving it to your Drafts."}[action], **out}
+        if action == "edit":
+            if not isinstance(value, dict) or after not in (None, "send", "save"):
+                raise ServiceError(400, "edit takes the changed fields (and after: send or save)")
+            draft_id, digest = self._edit_base(draft_id, digest)
+            out = self.decide_draft(draft_id, {"action": "edit", "sha256": digest, "edit": value})
+            if after:
+                fresh = out["draft"]
+                out = self.decide_draft(fresh["draft_id"], {"action": decide[after], "sha256": fresh["sha256"]})
+            return {"ok": True, "message": {"send": "Sending.", "save": "Saving it to your Drafts."}.get(
+                after or "", "Changes saved."), **out}
+        raise ServiceError(400, "that card has no such button")
+
+    def _edit_base(self, draft_id: str, digest: str) -> tuple[str, str]:
+        """The draft an edit applies to. The card only knows the hash it was drawn with; after the
+        user's own edit (or Save) the current draft has a new one. An edit based on an earlier draft
+        is accepted when only the user's own edits came after it (it carries every field it shows,
+        so what goes out is what's on screen); a revision by the task since then is a 409."""
+        current = self.store.draft(draft_id) if re.fullmatch(r"ed_[0-9a-f]{24}", draft_id or "") else None
+        if current is None or secrets.compare_digest(current["sha256"], digest):
+            return draft_id, digest
+        chain = self.store.draft_chain(current["_key"])
+        base = next((i for i, d in enumerate(chain) if secrets.compare_digest(d["sha256"], digest)), None)
+        if base is None or not all((d.get(CONTEXT_KEY) or {}).get("edited") for d in chain[base + 1:]):
+            raise ServiceError(409, "draft changed; review the current draft")
+        newest = chain[-1]
+        return newest["draft_id"], newest["sha256"]
 
     def work(self, run_id: str) -> dict[str, Any]:
         if not ID_RE.fullmatch(run_id):
@@ -4856,9 +4914,12 @@ class VoiceService(SecureInputMixin):
     def decide_draft(self, draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """approve | deny | revise one draft, bound to the exact hash the user saw."""
         action, digest, instructions = body.get("action"), body.get("sha256"), body.get("instructions")
-        if (not set(body) <= {"action", "sha256", "instructions"} or action not in {"approve", "deny", "revise"}
+        if (not set(body) <= {"action", "sha256", "instructions", "edit"}
+                or action not in {"approve", "deny", "revise", "edit", "save"}
                 or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
-            raise ServiceError(400, "action (approve|deny|revise) and sha256 are required")
+            raise ServiceError(400, "action (approve|deny|revise|edit|save) and sha256 are required")
+        if ("edit" in body) != (action == "edit"):
+            raise ServiceError(400, "edit carries the changed fields, and only for action edit")
         if action == "revise":
             if not isinstance(instructions, str) or not instructions.strip() or len(instructions) > 2000:
                 raise ServiceError(400, "revise needs instructions (up to 2000 characters)")
@@ -4871,6 +4932,10 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(404, "draft not found")
         if not secrets.compare_digest(draft["sha256"], digest):
             raise ServiceError(409, "draft changed; review the current draft")
+        if action == "edit":
+            return self._edit_draft(draft, body["edit"])
+        if action == "save":
+            return self._save_draft(draft)
         target = {"approve": "approved", "deny": "denied", "revise": "revising"}[action]
         # Idempotent: repeating a decision already taken returns the current state, never re-sends.
         already = {"approve": {"approved", "sent", "failed"}, "deny": {"denied"}, "revise": {"revising"}}[action]
@@ -4884,7 +4949,8 @@ class VoiceService(SecureInputMixin):
         names = P.Names.from_settings(self.settings.get())
         public = {k: v for k, v in draft.items() if not k.startswith("_") and k not in
                   {"draft_id", "sha256", "status", "created_at", "updated_at", "error"}}
-        message = {"approve": lambda: P.draft_approved_message(names, canonical_json(public)),
+        edited = bool((draft.get(CONTEXT_KEY) or {}).get("edited"))
+        message = {"approve": lambda: P.draft_approved_message(names, canonical_json(public), edited=edited),
                    "deny": lambda: P.draft_denied_message(names),
                    "revise": lambda: P.draft_revise_message(names, instructions or "")}[action]()
         key, session_id = draft["_key"], draft["_session_id"]
@@ -4909,6 +4975,40 @@ class VoiceService(SecureInputMixin):
         threading.Thread(target=self._follow_draft_run, args=(draft_id, action, run_id, key), daemon=True,
                          name="speakeasy-draft").start()
         return self._draft_view(self.store.draft(draft_id) or draft)
+
+    def _edit_draft(self, draft: dict[str, Any], edit: Any) -> dict[str, Any]:
+        """The user changed recipients, subject or body on the card: a new pending draft (new hash)
+        replaces this one. Nothing reaches the task until Send or Save; Send then tells it the
+        email was edited, so a copy it saved in the mail account is updated, never sent stale."""
+        if draft["status"] != "pending":
+            raise ServiceError(409, f"draft is {draft['status']}")
+        try:
+            edited = apply_edit(draft, edit)
+        except DraftInvalid as exc:
+            raise ServiceError(400, str(exc)) from None
+        if canonical_json(edited) == canonical_json(draft):
+            return self._draft_view(draft)  # nothing changed: same draft, same hash
+        fresh = self.store.add_draft(draft["_key"], draft["_session_id"], edited)
+        self.store.progress(draft["_key"], "milestone", "You edited the email draft")
+        self.publish_all(draft["_key"])
+        return self._draft_view(fresh)
+
+    def _save_draft(self, draft: dict[str, Any]) -> dict[str, Any]:
+        """Save draft: the task puts exactly this email in the mail account's Drafts (or updates the
+        copy it saved). Nothing is sent; the card stays pending."""
+        if draft["status"] != "pending":
+            raise ServiceError(409, f"draft is {draft['status']}")
+        names = P.Names.from_settings(self.settings.get())
+        key, session_id = draft["_key"], draft["_session_id"]
+        try:
+            run_id = self.agent.start_run(P.draft_save_message(names, canonical_json(draft)),
+                                          f"speakeasy_draft_{draft['draft_id']}_save_{draft['sha256'][:12]}", session_id)
+        except HermesError as exc:
+            raise ServiceError(502, f"{self.agent_name} did not accept the decision") from exc
+        self.store.progress(key, "milestone", "Saving the email to your Drafts")
+        threading.Thread(target=self._follow_draft_run, args=(draft["draft_id"], "save", run_id, key), daemon=True,
+                         name="speakeasy-draft").start()
+        return self._draft_view(draft)
 
     def _follow_draft_run(self, draft_id: str, action: str, run_id: str, key: str) -> None:
         final: dict[str, Any] = {}
@@ -4950,6 +5050,9 @@ class VoiceService(SecureInputMixin):
                 self.store.progress(key, "milestone", "Revised email draft ready")
             else:
                 self.store.transition_draft(draft_id, {"revising"}, "pending", error="No revised draft came back")
+        elif action == "save":
+            self.store.progress(key, "milestone", "Email saved in your Drafts" if status == "completed"
+                                else "Couldn't save the email to your Drafts")
         self.publish_all(key)
         interaction = self.interaction_for_key(key)
         if interaction is not None and interaction.worker is not None and spoken:

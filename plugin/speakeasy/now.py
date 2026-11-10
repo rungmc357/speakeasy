@@ -780,7 +780,31 @@ class NowModel:
                 from_chat |= self._chat_descendants(items, from_chat)
             except Exception:
                 logging.getLogger(__name__).debug("speakeasy: Home's chat messages failed", exc_info=True)
-        return build_stream(items, asks, marked, now, zone_, messages=messages, from_chat=from_chat)
+        results: dict[str, dict[str, Any]] = {}
+        if chat is not None:
+            try:
+                results = self._posted_results(items, chat, now)
+            except Exception:
+                logging.getLogger(__name__).debug("speakeasy: Home's result messages failed", exc_info=True)
+        return build_stream(items, asks, marked, now, zone_, messages=messages, from_chat=from_chat,
+                            results=results)
+
+    def _posted_results(self, items: list[dict[str, Any]], chat: Any, now: float) -> dict[str, dict[str, Any]]:
+        """Finished jobs whose result is a draft message (an email): the result is posted once as a
+        new message at the bottom of the thread, at the time the job finished (b73: shown without
+        being asked, never replacing the job's card where it was asked). run id -> {id, at}."""
+        out: dict[str, dict[str, Any]] = {}
+        for item in items:
+            run, key = item.get("run_id"), item.get("_run_key")
+            if not run or not key or item.get("kind") not in {"new_answer", "seen_answer"}:
+                continue
+            posted = chat.result_for(str(run))
+            if posted is None:
+                if not self.store.drafts_for(key):
+                    continue
+                posted = chat.post_result(str(run), float(item.get("finished_at") or now))
+            out[str(run)] = posted
+        return out
 
     def _chat_children(self, runs: set[str]) -> set[str]:
         """Runs that continue a chat-born job (answering its question, a follow-up): they belong to

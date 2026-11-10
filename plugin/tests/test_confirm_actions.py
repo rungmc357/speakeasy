@@ -23,6 +23,7 @@ def service(tmp_path, monkeypatch, *, output="", status="completed", fail_start=
     view = C.clean(checkout()); s = store(tmp_path, view)
     s.key_for_run = lambda run: "key" if run == "run_card" else None
     s.session_for = lambda key: "session_example"
+    s.drafts_for = lambda key: []
     s.run_result = lambda run: ("key", json.loads(s._db.execute("SELECT result_json FROM runs").fetchone()[0]))
     starts = []
     def start(*args):

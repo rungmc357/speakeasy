@@ -2,6 +2,13 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Unreleased — email drafts you can see and change
+
+- **The draft shows up by itself.** Ask for an email and, when the job finishes, the email itself arrives as a new message at the bottom of Home's chat, without a second "show me". The job's card where you asked says done; tap it to jump down to the email. *(plugin + iPhone build 73 + Mac)*
+- **Every recipient, with their address.** The card shows To, Cc and Bcc with names and full addresses, and "Reply in thread: … · 4 messages" when it answers a thread. If the job couldn't find a person you named, the card says so, with Add. A company you name next to someone ("email Ben and his firm") is never a missing recipient: it shows beside their name when their address is at that firm. *(plugin + iPhone build 73)*
+- **Tap for the whole email.** All headers, the full body, the message it replies to, attachments. Change recipients, subject or body right there, then Send, Save draft or Discard. Send waits 5 seconds with Undo. *(plugin + iPhone build 73)*
+- **Nothing you said gets dropped.** Every person, company and detail you name goes into the draft, or the card says why not. *(plugin)*
+
 ## Plugin 0.3.49 — Home's model chip, waiting jobs and replies
 
 - **The model chip is what runs.** The chip above Home's composer now always names the model your jobs actually run on: your pick on the chip, else the job model saved in Speakeasy's settings, else your Hermes default. Before, it could show your Hermes default while jobs ran on the saved one. *(plugin)*

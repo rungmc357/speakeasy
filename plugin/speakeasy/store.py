@@ -21,7 +21,7 @@ from . import activity as activity_mod
 from . import live_status
 from . import runstate as RS
 from .runstate import FINAL, RunState
-from .emails import canonical_json, draft_sha256
+from .emails import draft_sha256, stored_json, with_email_views
 from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
                    short_title, valid_short_status)
@@ -2637,6 +2637,10 @@ class StateStore:
                 first_req = self._db.execute("SELECT text FROM work_events WHERE idem_key=? AND kind='request' "
                                              "ORDER BY seq LIMIT 1", (key,)).fetchone()
             asked = first_req[0] if first_req else None
+        drafts = self.drafts_for(key)
+        if drafts and isinstance(result, dict):
+            # The email it drafted is the answer's card (Home shows it in place of the done card).
+            result = {**result, "views": with_email_views(result.get("views"), drafts)}
         work = {
             "run_id": actual_run_id, "status": status, "stale": stale, "updated": updated,
             "events": [{"kind": kind, "text": text, "at": created} for kind, text, created in reversed(events)],
@@ -2644,7 +2648,7 @@ class StateStore:
             "source_run_id": actual_run_id, "updated_at": display_updated,
             "status_source": source, "result": _current_steps(public_result(result), status),
             "title": title, "summary": summary, "dismissed": bool(dismissed),
-            "email_drafts": self.drafts_for(key),
+            "email_drafts": drafts,
             "plan": concrete_plan(self.plan(key), next((t for k, t, _ in reversed(events) if k == "request"), None),
                                   title),
             "job": self.job(key, session_id, continued),
@@ -2852,7 +2856,7 @@ class StateStore:
     def _add_draft_locked(self, key: str, session_id: str | None, draft: dict[str, Any], now: float) -> str:
         """Insert without a nested connection context (which would commit the outer transaction)."""
         draft_id = "ed_" + secrets.token_hex(12)
-        body, digest = canonical_json(draft), draft_sha256(draft)
+        body, digest = stored_json(draft), draft_sha256(draft)
         self._db.execute(
             "UPDATE email_drafts SET status='superseded', updated=? WHERE status IN ('pending','revising') "
             "AND (idem_key=? OR (? IS NOT NULL AND session_id=?))", (now, key, session_id, session_id))
@@ -2893,6 +2897,14 @@ class StateStore:
                 "SELECT draft_id,idem_key,session_id,draft_json,sha256,status,created,updated,action_run_id,error "
                 "FROM email_drafts WHERE idem_key=? AND status!='superseded' ORDER BY created", (key,)).fetchall()
         return [{k: v for k, v in self._draft_row(r).items() if not k.startswith("_")} for r in rows]
+
+    def draft_chain(self, key: str) -> list[dict[str, Any]]:
+        """Every draft of one task, superseded ones too, oldest first (server-side fields kept)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT draft_id,idem_key,session_id,draft_json,sha256,status,created,updated,action_run_id,error "
+                "FROM email_drafts WHERE idem_key=? ORDER BY created, rowid", (key,)).fetchall()
+        return [self._draft_row(r) for r in rows]
 
     def transition_draft(self, draft_id: str, expected: set[str], status: str, *,
                          action_run_id: str | None = None, error: str | None = None) -> bool:

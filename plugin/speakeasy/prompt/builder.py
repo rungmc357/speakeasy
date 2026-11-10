@@ -617,13 +617,36 @@ VISUAL_RESULTS_RULE = (
     "for this, say so in one line and ask what they're into. "
 )
 
+# The email-draft block's fields, shared by the job and thread rules. The card shows every
+# recipient by name and address and the thread it answers, and names anyone the task could not
+# find, so a name the user said never silently drops off (b73: a firm named beside a person).
+EMAIL_DRAFT_SHAPE = (
+    "{\"from\": \"<sender address>\", \"to\": [\"Full Name <address>\"], \"cc\": [], \"bcc\": [], "
+    "\"subject\": \"...\", \"body\": \"<plain text>\", \"reply_to_message_id\": \"<optional>\", "
+    "\"account\": \"<optional mail account>\", \"thread_subject\": \"<optional: the thread it replies to>\", "
+    "\"thread_count\": <optional: messages in that thread>, \"thread_last\": {\"from\": \"Name <address>\", "
+    "\"when\": \"...\", \"text\": \"<the message it replies to, plain text>\"}, \"unresolved\": [\"<a PERSON "
+    "named you couldn't find an address for; never a company>\"], \"orgs\": {\"<Full Name>\": \"<the firm named "
+    "beside them, only when their address is at that firm>\"}, \"notes\": [\"<one short line per thing you changed "
+    "or left out from what was asked, and why>\"]}"
+)
+EMAIL_DRAFT_FIDELITY = (
+    "Write every recipient as \"Full Name <address>\". Every person or company {user_name} named must be "
+    "accounted for: a person in to/cc/bcc, or in unresolved when you couldn't find their address. A company or "
+    "firm named next to a person is usually that person's employer, not a recipient: put it in orgs beside them "
+    "(only when their address domain is that firm's) or in notes saying who it maps to, never in unresolved. "
+    "Never drop one silently. Keep every detail "
+    "{user_name} asked to include, in their words; if you doubt one, keep it and say why in notes rather than "
+    "leaving it out. "
+)
+
 EMAIL_DRAFT_RULE = (
     "When this task produces an email to send on {user_possessive} behalf, do NOT send it. You may save it as a draft "
     "in the mail account if that helps. Either way, end "
-    "your answer with a fenced block labeled `email-draft` containing one JSON object: {\"from\": \"<sender address>\", "
-    "\"to\": [\"...\"], \"cc\": [], \"bcc\": [], \"subject\": \"...\", \"body\": \"<plain text>\", "
-    "\"reply_to_message_id\": \"<optional>\", \"account\": \"<optional mail account>\"}, then the DONE and SPOKEN lines, "
-    "and stop. {user_name_cap} reviews it on a card in the app and approves, denies or asks for changes there; "
+    "your answer with a fenced block labeled `email-draft` containing one JSON object: " + EMAIL_DRAFT_SHAPE + ", "
+    "then the DONE and SPOKEN lines, and stop. " + EMAIL_DRAFT_FIDELITY + "The block is what {user_name} sees: the "
+    "app shows it as the email card right away, so never describe the draft instead of including it. "
+    "{user_name_cap} reviews it on that card and sends, edits, saves or discards it there; "
     "you will be told in this session. Never send an email without that approval message. "
 )
 
@@ -1031,9 +1054,8 @@ THREAD_EMAIL_DRAFT_RULE = (
     "If this produces an email to send on {user_possessive} behalf, do NOT send it. You may save it as a draft in the "
     "mail account if that helps. Show the "
     "draft readably in your reply, then end the reply with a fenced block labeled `email-draft` containing one JSON "
-    "object: {\"from\": \"<sender address>\", \"to\": [\"...\"], \"cc\": [], \"bcc\": [], \"subject\": \"...\", "
-    "\"body\": \"<plain text>\", \"reply_to_message_id\": \"<optional>\", \"account\": \"<optional mail account>\"}. "
-    "{user_name_cap} reviews it on a card in the Speakeasy app and approves, denies or asks for changes there; you "
+    "object: " + EMAIL_DRAFT_SHAPE + ". " + EMAIL_DRAFT_FIDELITY +
+    "{user_name_cap} reviews it on a card in the Speakeasy app and sends, edits or discards it there; you "
     "will be told in this thread. Never send an email without that approval message."
 )
 
@@ -1045,12 +1067,24 @@ def without_voice_header(text: str) -> str:
 
 # -- email draft decisions (sent into the task's own session) ---------------------------
 
-def draft_approved_message(names: Names, draft_json: str) -> str:
+def draft_approved_message(names: Names, draft_json: str, edited: bool = False) -> str:
+    saved = ("{user_name_cap} edited this email on the card, so it differs from what you wrote: if you saved a copy "
+             "in the mail account, update that saved draft to exactly these fields and send it (or delete it and "
+             "send this), never the old version" if edited else
+             "if you saved it as a draft, send that saved draft rather than a second copy")
     return render(
-        "{user_name_cap} approved exactly this email draft by pressing Approve on the email card. Send it now, "
-        "unchanged, with your email tool, from the given account (if you saved it as a draft, send that saved draft "
-        "rather than a second copy), then report the result in one line "
+        "{user_name_cap} approved exactly this email draft by pressing Send on the email card. Send it now, "
+        "unchanged, with your email tool, from the given account (" + saved + "), then report the result in one line "
         "(sent, or the exact error). Do not change any field. End with DONE and SPOKEN lines as before.\n\n",
+        names) + "```json\n" + draft_json + "\n```"
+
+
+def draft_save_message(names: Names, draft_json: str) -> str:
+    return render(
+        "{user_name_cap} pressed Save draft on the email card. Do NOT send it. Save exactly this email as a draft in "
+        "the given mail account (if you already saved one for it, update that draft to these fields instead of "
+        "making a second), keeping it in its thread when there is a reply_to_message_id. Report the result in one "
+        "line (saved in Drafts, or the exact error). End with DONE and SPOKEN lines as before.\n\n",
         names) + "```json\n" + draft_json + "\n```"
 
 

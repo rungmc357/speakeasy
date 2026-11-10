@@ -198,6 +198,21 @@ final class NowHomeTests: XCTestCase {
         XCTAssertNil(NowStream.Entry(json: ["id": "x", "kind": "mystery", "at": 1]), "an unknown kind is dropped, not shown")
     }
 
+    // b73: a drafted email posts as its own entry at the bottom; the job's card links down to it.
+    func testAPostedResultAndItsCardLinkEachOther() throws {
+        let stream = try XCTUnwrap(NowStream(json: ["entries": [
+            ["id": "c:run_a", "kind": "card", "at": 100, "item_id": "n:a", "result_id": "x:run_a"],
+            ["id": "m:hu_1", "kind": "message", "role": "user", "text": "thanks", "at": 150],
+            ["id": "x:run_a", "kind": "result", "at": 200, "item_id": "n:a", "run_id": "run_a", "card_id": "c:run_a"],
+            ["id": "x:run_b", "kind": "result", "at": 210],   // no job behind it: dropped
+        ], "needs_you": []]))
+        XCTAssertEqual(stream.entries.map(\.id), ["c:run_a", "m:hu_1", "x:run_a"])
+        XCTAssertEqual(stream.entries[0].resultID, "x:run_a")
+        XCTAssertEqual(stream.entries[2].kind, .result)
+        XCTAssertEqual(stream.entries[2].cardID, "c:run_a")
+        XCTAssertEqual(stream.entries[2].runID, "run_a")
+    }
+
     func testRecentRowsSayDoneStoppedOrInProgress() throws {
         let rows = ["completed", "failed", "running"].compactMap {
             NowRecentItem(json: ["id": "t:\($0)", "title": "Plan the trip", "state": $0, "at": 5])

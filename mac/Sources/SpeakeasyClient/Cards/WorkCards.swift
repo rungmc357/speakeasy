@@ -712,6 +712,11 @@ public enum CardLinks {
     }
     /// Kinds whose server actions the card draws inside itself (the host row leaves them out).
     public static let inCardActions: Set<String> = ["calendar_day"]
+    /// Whether this card draws its own buttons (the host row draws none, Copy included): the
+    /// kinds above, and an email card (Send / Edit / Undo live inside it).
+    public static func drawsOwnActions(_ card: ViewCard) -> Bool {
+        inCardActions.contains(card.kind) || EmailCardInfo(card) != nil
+    }
 
     public static func links(_ card: ViewCard) -> [Link] {
         let own = kindLinks(card)

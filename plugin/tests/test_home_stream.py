@@ -163,3 +163,38 @@ def test_other_chats_stay_out_of_the_thread_unless_they_need_you():
     out = S.build_stream(items, {}, set(), NOON, TZ)
     assert [e["item_id"] for e in out["entries"] if e["kind"] == "card"] == ["t:1", "s:chat_c"]
     assert out["needs_you"] == ["s:chat_c"]
+
+
+def test_a_drafted_email_posts_at_the_bottom_and_its_card_links_to_it(service):
+    """b73: when a job finishes with an email draft, the email lands as a NEW entry at the bottom of
+    the thread (where the chat was when it finished), the job's card stays where it was asked and
+    carries the result's id, and the posted entry keeps its id and place on every later read."""
+    from speakeasy.emails import normalize_draft
+    _clock(service, NOON)
+    task(service.store, "mail", "completed", session="s_mail", request="Draft a note to Pat about Friday",
+         result={"headline": "Drafted the note to Pat, not sent"}, settled=NOON - 120, created=NOON - 900)
+    draft = normalize_draft({"from": "me@example.com", "to": ["Pat Doe <pat@example.org>"], "cc": [], "bcc": [],
+                             "subject": "Friday", "body": "Hi Pat,\n\nStill on for Friday?\n\nThanks"})
+    service.store.add_draft("mail", "s_mail", draft)
+    task(service.store, "other", "running", session="s_other", request="Find a standing desk", created=NOON - 600)
+    body = service.now({"tz": NY})
+    ent = body["stream"]["entries"]
+    kinds = [e["kind"] for e in ent]
+    assert kinds == ["ask", "card", "ask", "card", "result"]
+    card = next(e for e in ent if e["kind"] == "card" and e["item_id"] == ent[-1]["item_id"])
+    result = ent[-1]
+    assert result["id"].startswith("x:") and card["result_id"] == result["id"]
+    assert result["card_id"] == card["id"] and result["run_id"] == "run_mail"
+    assert result["at"] == NOON - 120
+    # A later read (and a later edit of the draft) keeps the same id and place.
+    _clock(service, NOON + 300)
+    again = service.now({"tz": NY})["stream"]["entries"]
+    assert [e for e in again if e["kind"] == "result"] == [result]
+
+
+def test_a_finished_job_without_a_draft_posts_nothing(service):
+    _clock(service, NOON)
+    task(service.store, "plain", "completed", session="s_plain", request="Summarize the inbox",
+         result={"headline": "Four need a reply"}, settled=NOON - 60, created=NOON - 300)
+    ent = service.now({"tz": NY})["stream"]["entries"]
+    assert "result" not in {e["kind"] for e in ent} and not any("result_id" in e for e in ent)

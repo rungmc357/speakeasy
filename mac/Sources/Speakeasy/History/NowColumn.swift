@@ -170,7 +170,8 @@ struct MacNowColumn: View {
                         callSummary(summary)
                     }
                     if let stream = now.home?.stream {
-                        MacNowThread(stream: stream, now: now, store: store)
+                        MacNowThread(stream: stream, now: now, store: store,
+                                     onJump: { id in withAnimation { proxy.scrollTo(id, anchor: .center) } })
                     } else {
                         ForEach(now.visible) { item in
                             MacNowCard(item: item, now: now, selected: isOpen(item), focused: now.home?.call?.focus == item.id) {

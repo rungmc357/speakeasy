@@ -85,7 +85,7 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/titles` | device | Set one task's title (from the app's on-device titler); the job's name follows |
 | GET | `/voice/card-image/{run_id}/{1-8}` | device | Image bytes for an image card |
 | GET | `/voice/shared-image/{run_id}/{n}` | device | An image the user shared with a task |
-| POST | `/voice/drafts/{draft_id}` | device | Approve / deny / revise an email draft |
+| POST | `/voice/drafts/{draft_id}` | device | Approve / deny / revise / edit / save an email draft |
 | GET, PATCH | `/voice/settings` | device | Server settings |
 | GET | `/voice/approvals` | device | This Hermes' approval rules in plain words (read-only) |
 | GET, PUT | `/voice/brief` | device | The voice brief |
@@ -1815,8 +1815,47 @@ plain `name@domain` or `Name <name@domain>`; at most 50 recipients per field; `s
 300 characters; `body` is plain text (no HTML) of up to 20,000 characters; at most 3 drafts per
 answer. Invalid blocks are dropped, never shown half-parsed.
 
-Each valid draft gets a `draft_id` and a `sha256` of its canonical JSON (keys sorted, compact
-separators, UTF-8). Drafts show on the task as `email_drafts` and in the SSE `email_drafts` event.
+Card-only optional fields (shown on the email card, never sent and never part of the hash):
+`thread_subject`, `thread_count` (1–999), `thread_last` (`{"from", "when", "text"}`, the message it
+replies to), `unresolved` (people the task couldn't find an address for), `orgs` (`{"Full Name":
+"Firm"}`, the firm the ask named beside a person), `notes` (what it changed
+or left out from the ask, and why), `attachments` (names). Malformed ones are dropped; the draft
+stays valid. The draft's stored JSON keeps them under `context`.
+
+An organisation named in the ask is never a missing recipient: the card's `unresolved` keeps people
+only (an entry that reads as a firm, e.g. has `&` or `LLP`, or matches a recipient's address domain,
+is dropped from it), and a firm shows as `org` on a recipient (`{"name", "address", "org"}`) only
+when that recipient's address domain matches the firm's name. Personal mail hosts never match.
+
+Each valid draft gets a `draft_id` and a `sha256` of its canonical JSON (the sendable fields only:
+keys sorted, compact separators, UTF-8). Drafts show on the task as `email_drafts` and in the SSE
+`email_drafts` event.
+
+**The email card.** A task with a live draft also carries it as a view in `result.views`: a
+`draft` card with `channel: "email"`, `draft_id`, `sha256`, `status`, `send_as`, `subject`,
+`body`, `recipients` (`{"to": [{"name", "address"}], "cc": [...], "bcc": [...]}`, `cc`/`bcc` only
+when present), `to` (a short display line, for older apps), `thread`, `thread_count`,
+`thread_last`, `unresolved`, `notes`, `attachments`, `edited`. It replaces a draft card the task
+drew for the same email, else goes last (no other card's index moves), and apps show it as the
+job's answer in place of the done card. Its buttons go through the card-action route
+(`POST /voice/work/{run_id}/card-action`, `{"view": i, "action", "value"}`):
+
+| action | value | does |
+|---|---|---|
+| `send` | the card's `sha256` | approves exactly that draft (as `approve` below) |
+| `save` | the card's `sha256` | the task saves it to the mail account's Drafts; stays `pending` |
+| `discard` | the card's `sha256` | denies it |
+| `edit` | `{"sha256", "to", "cc", "bcc", "subject", "body", "after"?}` | a new `pending` draft (new hash) with those fields replaces it; `after: "send"\|"save"` then sends or saves the edited draft in the same request |
+
+A stale hash is `409`. An `edit` (or `discard`) based on an earlier hash is accepted only when every
+draft since was the user's own edit; after a task revision it is `409`. Sending an edited draft
+tells the task it was edited, so a copy it saved in the mail account is updated, never sent stale.
+
+In Home's one stream (`GET /voice/now` → `stream.entries`), a finished job with a draft also posts
+a `result` entry (`{"id": "x:<run_id>", "kind": "result", "at", "item_id", "run_id", "card_id"}`)
+at the time the job finished, so the email arrives at the bottom of the chat; the job's `card`
+entry stays where it was asked and carries `result_id` (apps scroll there on a tap). The posted
+entry keeps its id and place on later reads and edits. Older apps ignore the unknown kind.
 
 | status | meaning |
 |---|---|

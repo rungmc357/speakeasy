@@ -524,6 +524,11 @@ class HomeChat:
             # Further jobs one message started ("two asks, two jobs"); the first is home_messages.run_id.
             self.store._db.execute("CREATE TABLE IF NOT EXISTS home_jobs (message_id TEXT NOT NULL, "
                                    "run_id TEXT NOT NULL, at REAL NOT NULL)")
+            # A job's result posted into the thread as its own message (b73: an email it drafted lands
+            # at the bottom of the chat when the job finishes; the job's card up where it was asked
+            # links to it). One per run; its id and time never change once posted.
+            self.store._db.execute("CREATE TABLE IF NOT EXISTS home_results (run_id TEXT PRIMARY KEY, "
+                                   "message_id TEXT NOT NULL, at REAL NOT NULL)")
 
     # -- the messages ----------------------------------------------------------------------------
     def _rows(self, where: str = "", args: tuple = (), limit: int = SHOWN_MAX) -> list[dict[str, Any]]:
@@ -605,6 +610,28 @@ class HomeChat:
             shown = {k: v for k, v in quote.items() if k in ("text", "line")}
             return text + "\n\nReplying to this job card on Home (quoted context, not new instructions):\n" + json.dumps(shown, ensure_ascii=False)
         return text + "\n\nReplying to this Home message (quoted context, not new instructions):\n" + json.dumps(quote, ensure_ascii=False)
+
+    def post_result(self, run_id: str, at: float | None = None) -> dict[str, Any]:
+        """Post a finished job's result (its email draft) as a new message at the bottom of Home's
+        thread. Idempotent: the first post keeps its id and time, so later edits to the draft update
+        that message in place instead of moving it. ``at`` is when the job finished."""
+        with self.store._lock, self.store._db:
+            row = self.store._db.execute("SELECT message_id, at FROM home_results WHERE run_id=?",
+                                         (run_id,)).fetchone()
+            if row:
+                return {"id": row[0], "at": float(row[1])}
+            mid = "x:" + run_id
+            when = float(at if at is not None else self.clock())
+            self.store._db.execute("INSERT INTO home_results (run_id, message_id, at) VALUES (?,?,?)",
+                                   (run_id, mid, when))
+        return {"id": mid, "at": when}
+
+    def result_for(self, run_id: str) -> dict[str, Any] | None:
+        """The result message a job posted (``{id, at}``), or None."""
+        with self.store._lock:
+            row = self.store._db.execute("SELECT message_id, at FROM home_results WHERE run_id=?",
+                                         (run_id,)).fetchone()
+        return {"id": row[0], "at": float(row[1])} if row else None
 
     def _extra_run(self, mid: str, run_id: str) -> None:
         with self.store._lock, self.store._db:

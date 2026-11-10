@@ -1663,7 +1663,7 @@ struct WorkDetailView: View {
                                 .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.06)))
                         }
                     }
-                    if let drafts = info?.emailDrafts, !drafts.isEmpty {
+                    if let drafts = info?.draftsWithoutCard, !drafts.isEmpty {
                         section(drafts.count == 1 ? "Email draft" : "Email drafts") {
                             VStack(alignment: .leading, spacing: 8) {
                                 ForEach(drafts) { draft in EmailDraftCard(draft: draft, model: model) }
