@@ -589,15 +589,15 @@ public struct NowStream: Equatable, Sendable {
     public var needsYou: [String]
     /// b73 (capability `home_stack`): the current exchange as the plugin sent it. Nil from an older
     /// plugin; read `currentExchange(now:)` for it with a fallback.
-    public var current: HomeCurrentExchange?
-    public init(entries: [Entry] = [], needsYou: [String] = [], current: HomeCurrentExchange? = nil) {
+    public var current: HomeCurrent?
+    public init(entries: [Entry] = [], needsYou: [String] = [], current: HomeCurrent? = nil) {
         self.entries = entries; self.needsYou = needsYou; self.current = current
     }
     public init?(json: Any?) {
         guard let o = json as? [String: Any] else { return nil }
         self.init(entries: (o["entries"] as? [Any] ?? []).compactMap(Entry.init(json:)),
                   needsYou: (o["needs_you"] as? [Any] ?? []).compactMap(nonEmpty),
-                  current: HomeCurrentExchange(json: o["current"]))
+                  current: HomeCurrent(json: o["current"]))
     }
 }
 
