@@ -660,7 +660,7 @@ final class HistoryStore: ObservableObject {
     /// The session just got a message: it moves to the top of the list, working.
     private func bump(_ sessionID: String, text: String) {
         guard var s = list.sessions.first(where: { $0.id == sessionID }) else { return }
-        s.lastActivity = Date(); s.preview = text
+        s.lastActivity = HistoryGroup.touchedTime(among: list.sessions); s.preview = text
         if s.state == .idle { s.state = .running }
         list.upsert(s)
     }

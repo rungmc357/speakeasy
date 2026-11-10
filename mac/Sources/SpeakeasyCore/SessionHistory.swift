@@ -331,14 +331,27 @@ public enum HistoryGroup: String, CaseIterable, Sendable, Identifiable {
         (sessions.filter(\.pinned), grouped(sessions.filter { !$0.pinned }, now: now, calendar: calendar))
     }
 
-    /// Sessions in their groups, newest first inside each; empty groups left out.
+    /// Sessions in their groups, newest first inside each; empty groups left out. `lastActivity` is
+    /// the server's order time (the person's own activity: their messages, a task starting, a finished
+    /// reply; SPK-319), so this agrees with the server's order; equal times keep the order they came in
+    /// (the server's tie-break), never a sort's whim, so a reload never swaps two rows.
     public static func grouped(_ sessions: [HistorySession], now: Date = Date(),
                                calendar: Calendar = .current) -> [(HistoryGroup, [HistorySession])] {
-        let buckets = Dictionary(grouping: sessions) { of($0.lastActivity, now: now, calendar: calendar) }
+        let buckets = Dictionary(grouping: sessions.enumerated()) { of($0.element.lastActivity, now: now, calendar: calendar) }
         return allCases.compactMap { group in
             guard let rows = buckets[group], !rows.isEmpty else { return nil }
-            return (group, rows.sorted { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) })
+            return (group, rows.sorted { a, b in
+                let ta = a.element.lastActivity ?? .distantPast, tb = b.element.lastActivity ?? .distantPast
+                return ta != tb ? ta > tb : a.offset < b.offset
+            }.map(\.element))
         }
+    }
+
+    /// The order time for a session the person just touched here (a message sent, a chat started):
+    /// now, but never below the newest row already listed, so a phone clock running behind the
+    /// server's can't sort the row they just used under another one.
+    public static func touchedTime(among sessions: [HistorySession], now: Date = Date()) -> Date {
+        max(now, sessions.compactMap(\.lastActivity).max() ?? now)
     }
 }
 

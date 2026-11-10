@@ -161,15 +161,18 @@ def test_a_busy_thread_takes_its_time_and_place_from_its_newest_message(server, 
     assert [s["id"] for s in rest["sessions"]] == ["busy"]
 
 
-def test_a_heartbeat_newer_than_every_message_still_counts(server, state):
-    """Mid-turn the heartbeat runs ahead of the message rows (a long tool call): that time wins."""
+def test_a_heartbeat_newer_than_every_message_does_not_move_the_row(server, state):
+    """Mid-turn the heartbeat runs ahead of the message rows (a long tool call). That is the task
+    working, not the person: the row keeps its place and its time (SPK-319, superseding SPK-69's
+    heartbeat-wins rule, which reshuffled the list every few seconds while tasks ran)."""
     add_session(state, "think", "discord", title="Long think", display="Workshop / #build / Long think",
                 chat_type="thread", at=NOW - 900)
     add_msg(state, "think", "user", "Compare the three quotes", at=NOW - 900)
     _set_activity(state, "think", NOW - 10)
     _, body = get(server, "/voice/history")
-    assert body["sessions"][0]["id"] == "think"
-    assert body["sessions"][0]["last_activity"] == pytest.approx(NOW - 10, abs=0.01)
+    row = next(s for s in body["sessions"] if s["id"] == "think")
+    assert body["sessions"][0]["id"] != "think"
+    assert row["last_activity"] == pytest.approx(NOW - 900, abs=0.01)
 
 
 def test_a_chat_sorts_by_its_linked_tasks_newest_message_too(state):

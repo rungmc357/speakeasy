@@ -110,6 +110,34 @@ final class SessionHistoryTests: XCTestCase {
         XCTAssertEqual(groups[2].1.map(\.id), ["old", "nodate"])
     }
 
+    /// SPK-319: rows with the same order time (minute-identical tasks, several running) keep the
+    /// server's order on every reload instead of trading places by a sort's whim.
+    func testEqualTimesKeepTheServersOrderAcrossReloads() {
+        let now = Date(timeIntervalSince1970: 1_793_880_000)
+        let ids = (0..<12).map { "task\($0)" }
+        let rows = ids.map { HistorySession(id: $0, title: "", source: "speakeasy", sourceLabel: "Speakeasy", lastActivity: now) }
+        for _ in 0..<20 {
+            XCTAssertEqual(HistoryGroup.grouped(rows, now: now).flatMap(\.1).map(\.id), ids)
+        }
+        let mixed = [HistorySession(id: "b", title: "", source: "cli", sourceLabel: "Terminal", lastActivity: now),
+                     HistorySession(id: "new", title: "", source: "cli", sourceLabel: "Terminal", lastActivity: now.addingTimeInterval(5)),
+                     HistorySession(id: "a", title: "", source: "cli", sourceLabel: "Terminal", lastActivity: now)]
+        XCTAssertEqual(HistoryGroup.grouped(mixed, now: now).flatMap(\.1).map(\.id), ["new", "b", "a"])
+    }
+
+    /// A row the person just used goes on top even when this device's clock runs behind the server's.
+    func testTouchedTimeNeverSortsTheRowUnderAnother() {
+        let server = Date(timeIntervalSince1970: 1_793_880_000)
+        let rows = [HistorySession(id: "a", title: "", source: "cli", sourceLabel: "Terminal", lastActivity: server),
+                    HistorySession(id: "b", title: "", source: "cli", sourceLabel: "Terminal", lastActivity: server.addingTimeInterval(-60))]
+        let slowClock = server.addingTimeInterval(-30)
+        var touched = rows[1]
+        touched.lastActivity = HistoryGroup.touchedTime(among: rows, now: slowClock)
+        XCTAssertEqual(HistoryGroup.grouped([touched, rows[0]], now: server).flatMap(\.1).map(\.id), ["b", "a"])
+        XCTAssertEqual(HistoryGroup.touchedTime(among: rows, now: server.addingTimeInterval(9)), server.addingTimeInterval(9))
+        XCTAssertEqual(HistoryGroup.touchedTime(among: [], now: slowClock), slowClock)
+    }
+
     func testConversationDecodesEntriesToolsJobsAndSends() {
         let c = HistoryConversation(json: json(#"""
         {"session": {"id": "d1", "title": "Shelf brackets", "source": "discord", "source_label": "Discord · #build",
