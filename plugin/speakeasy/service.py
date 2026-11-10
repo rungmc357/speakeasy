@@ -604,11 +604,37 @@ class VoiceService(SecureInputMixin):
         except ValueError:
             raise ServiceError(400, "limit must be a number") from None
         try:
-            return self.files.listing(kind=str(query.get("kind") or ""), q=str(query.get("q") or ""),
-                                      session_id=str(query.get("session_id") or ""),
-                                      cursor=query.get("cursor") or None, limit=limit)
+            out = self.files.listing(kind=str(query.get("kind") or ""), q=str(query.get("q") or ""),
+                                     session_id=str(query.get("session_id") or ""),
+                                     cursor=query.get("cursor") or None, limit=limit)
         except F.FilesError as exc:
             raise ServiceError(exc.status, exc.message) from None
+        self._mark_home_files(out.get("files") or [])
+        return out
+
+    def _mark_home_files(self, rows: list[dict[str, Any]]) -> None:
+        """A file from a job Home's chat started carries ``home_run``: Open chat goes to that job's card
+        on Home, where the user asked for it, instead of the job's own session page."""
+        chat = getattr(self, "home_chat", None)
+        if chat is None or not rows:
+            return
+        try:
+            home_runs = chat.started_runs()
+            home_runs |= self.now_model._chat_children(home_runs)
+        except Exception:
+            logger.debug("speakeasy: Home runs for files failed", exc_info=True)
+            return
+        if not home_runs:
+            return
+        cache: dict[str, str | None] = {}
+        for row in rows:
+            sid = str(row.get("session_id") or "")
+            if not sid:
+                continue
+            if sid not in cache:
+                cache[sid] = next((run for _, run, _ in self.store.keys_for_session(sid) if run in home_runs), None)
+            if cache[sid]:
+                row["home_run"] = cache[sid]
 
     def file_open(self, file_id: str) -> tuple[Path, str, int]:
         try:

@@ -390,6 +390,10 @@ class FileIndex:
             rows.append({"id": fid, "name": path.name, "kind": k, "mime": mime_of(path.name),
                          "bytes": int(info.st_size), "at": entry["at"] or info.st_mtime,
                          "session_id": chat["open"], "chat": title, "source": chat.get("source") or ""})
+            if entry.get("message_id") and entry["session_id"] == chat["open"]:
+                # The reply it came in, as the session page names its entries ("m<row id>"): Open chat
+                # scrolls there. A helper's file opens its parent chat with no message to point at.
+                rows[-1]["message_id"] = f"m{entry['message_id']}"
         if gone:
             with self.lock:
                 for fid in gone:
