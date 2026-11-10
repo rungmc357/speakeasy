@@ -79,10 +79,65 @@ def _tokens(text: str) -> list[str]:
     return re.findall(r"[A-Za-z0-9][A-Za-z0-9'.-]*", text or "")
 
 
+_UNITS = "one two three four five six seven eight nine".split()
+_TEENS = "ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
+_TENS = "twenty thirty forty fifty sixty seventy eighty ninety".split()
+_SPELLED = re.compile(r"(?i)\b(?:(" + "|".join(_TENS) + r")(?:[-\s]+(" + "|".join(_UNITS) + r"))?"
+                      r"|(" + "|".join(_UNITS[1:] + _TEENS) + r"))\b")
+
+
+def digits(text: str) -> str:
+    """Spelled numbers as digits, the way the voice may write what it heard ("forty-one", "forty one",
+    "twelve"). A lone "one" stays a word: "the one you mentioned" names no number."""
+    def number(m: re.Match[str]) -> str:
+        tens, unit, small = (g.lower() if g else g for g in m.groups())
+        if small:
+            return str((_UNITS + _TEENS).index(small) + 1)
+        return str(20 + 10 * _TENS.index(tens) + (_UNITS.index(unit) + 1 if unit else 0))
+    return _SPELLED.sub(number, text or "")
+
+
+_ID_WORDS = {"build", "builds", "release", "releases", "version", "v", "issue", "ticket", "pr", "bug", "number",
+             "#", "rc", "sprint", "milestone"}
+# A bare number said before one of these is a thing's name ("push 41 to public", "42 is fine"); before
+# anything else it most likely counts something ("three blockers", "ten minutes").
+_ID_NEXT = {"to", "is", "isn't", "was", "wasn't", "and", "or", "now", "then", "too", "also", "out", "live",
+            "public", "please", "today", "tonight", "yet", "go", "goes", "gets", "should", "will", "can", "has",
+            "have", "needs", "as", "instead"}
+_COUNTING = {"top", "first", "last", "next", "in", "for", "at", "by", "about", "around", "under", "over", "within",
+             "every", "than", "it", "me", "of", "only", "just", "like", "to", "from", "until", "after", "before",
+             "with", "per"}
+_NOT_IDS = re.compile(r"(?i)\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm|o'clock)\b|\b\d{1,2}\s*[ap]\.m\.|[$€£]\s*\d[\d,.]*"
+                      r"|\d[\d,.]*\s*%")
+
+
+def ids(text: str) -> set[str]:
+    """The identifier numbers a text names, as digit strings: next to a word like build or release
+    ("release forty-two", "#12", "the 41 build"), or bare where a name goes ("pushing 41 to public").
+    Counts, durations and times are not ("top three", "in ten minutes", "the 4:15")."""
+    words = re.findall(r"#|\d+(?:\.\d+)*|[a-z]+(?:'[a-z]+)?", _NOT_IDS.sub(" ", digits(text).lower()))
+    found = set()
+    for i, word in enumerate(words):
+        if not word[0].isdigit():
+            continue
+        before = words[i - 1] if i else ""
+        after = words[i + 1] if i + 1 < len(words) else ""
+        if (before in _ID_WORDS or after in _ID_WORDS
+                or (before not in _COUNTING and (not after or after in _ID_NEXT))):
+            found.add(word)
+    return found
+
+
+def names_other_number(a: str, b: str) -> bool:
+    """Whether two texts are about differently numbered things (build 67 vs build 68): never one task."""
+    x, y = ids(a), ids(b)
+    return bool(x and y and not x & y)
+
+
 def subject(text: str, recap_words: bool = True) -> set[str]:
     """What the ask is about: its content words (stemmed), without filler or status words."""
     out = set()
-    for raw in _tokens(text):
+    for raw in _tokens(digits(text)):
         for piece in re.split(r"[.-]", raw):
             if not piece:
                 continue
