@@ -1633,6 +1633,15 @@ def extract_question(output: str) -> tuple[str, dict[str, Any] | None]:
         if cleaned:
             image = opt.get("image") if isinstance(opt, dict) and isinstance(opt.get("image"), str) else ""
             pairs.append((cleaned, image.strip()))
+    if view.get("question") and len(pairs) < 2:
+        # SPK-345: a question marked as one but sent without its answers (none, or one). The
+        # choices it names ("Oakline or Birch?") or Yes / No become its one-tap answers, so it
+        # still arrives as a question card instead of being lost in the reply's prose.
+        derived = [o for o in (clean_option(a) for a in derive_answers(view["question"])) if o]
+        if len(derived) >= 2:
+            pairs = [(o, "") for o in derived]
+            view["derived"] = True
+            view.pop("recommended", None)
     if not view.get("question") or len(pairs) < 2:
         return rest, None
     view["options"] = [o for o, _ in pairs]
@@ -1648,6 +1657,57 @@ def extract_question(output: str) -> tuple[str, dict[str, Any] | None]:
     if approvable(view):
         view["approvable"] = True
     return rest, view
+
+
+# -- one-tap answers from a question's own words (SPK-345) ------------------------------------------
+_ANSWER_FILLER = re.compile(r"(?i)^(?:(?:so|okay|ok|alright|great|sure|got it|quick question|one question)[,.:!]?\s+(?!to\b))+")
+_YES_NO_LEAD = re.compile(
+    r"(?i)^(?:should|shall|do|does|did|is|are|was|were|can|could|would|will|may|might|must|have|has|had|"
+    r"want|wanna|ok(?:ay)? to|good to|ready to|fine to|all right to|alright to)\b")
+_CHOICE_ASK = re.compile(
+    r"(?i)^(?:(?:do|would) you (?:want|like|prefer|rather)(?: me)?(?: to)?|should (?:i|we)|shall (?:i|we)|"
+    r"want me to|would you rather|do you prefer|are you thinking|is (?:it|this|that)|prefer|"
+    r"(?:which|what)\b[^,:]*?\b(?:want|like|prefer|order|pick|choose|go with|use|book|buy|get|send|do)"
+    r"(?: me to)?(?: do)?)\s+")
+_WH_START = re.compile(r"(?i)^(?:which|what|who|where|when|how|why)\b")
+_NOT_CHOICE = re.compile(r"(?i)\bor (?:not|no|something|anything|so|whatever|nothing|later|else)\b|\bwhether or\b|"
+                         r"\beither way\b")
+ANSWER_MAX = 4
+ANSWER_MAX_WORDS = 5
+
+
+def derive_answers(question: str) -> list[str]:
+    """The short answers a question asked in plain words already names, for one-tap answering.
+    Deterministic, no model call: the choices it lists ("Oakline or Birch?" -> Oakline, Birch;
+    "Den, bedroom, or both?"), else Yes / No for a yes-no question ("Should I order it?"), else
+    nothing ("Which one should I order?" names no choices)."""
+    text = " ".join(str(question or "").split())
+    asked = re.findall(r"[^.!?]*\?", text)
+    q = (asked[-1] if asked else text).strip()
+    q = _ANSWER_FILLER.sub("", q).strip()
+    if not q:
+        return []
+    body = q.rstrip("?").strip()
+    if re.search(r"(?i)\bor\b", body) and not _NOT_CHOICE.search(body):
+        if ":" in body:   # "Which one: Kayak, Expedia or Google Flights"
+            body = body.split(":", 1)[1]
+        parts = [p.strip(" ,.;:") for p in re.split(r"(?i),\s*(?:or\s+)?|\s+or\s+", body)]
+        parts = [p for p in parts if p]
+        if len(parts) >= 3 and _WH_START.match(parts[0]):
+            parts = parts[1:]   # "Which one should I order, Oakline or Birch" -> the named two
+        if parts:
+            parts[0] = _CHOICE_ASK.sub("", parts[0], count=1).strip()
+            # "book Nopa" beside "Zuni": the first answer keeps only as many words as the longest other.
+            longest = max(len(p.split()) for p in parts[1:]) if len(parts) > 1 else 0
+            if longest and len(parts[0].split()) > longest:
+                parts[0] = " ".join(parts[0].split()[-longest:])
+        options = [p[0].upper() + p[1:] for p in parts if p]
+        if (2 <= len(options) <= ANSWER_MAX and all(len(o.split()) <= ANSWER_MAX_WORDS for o in options)
+                and len({o.lower() for o in options}) == len(options) and not _WH_START.match(options[0])):
+            return options
+    if _YES_NO_LEAD.match(q) and not re.search(r"(?i)\bor\b", re.sub(r"(?i),?\s+or not\b", "", q)):
+        return ["Yes", "No"]
+    return []
 
 
 # Words that start a sentence but are not names: these lose their capital mid-sentence
