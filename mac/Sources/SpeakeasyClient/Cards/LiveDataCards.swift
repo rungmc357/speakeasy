@@ -284,10 +284,12 @@ struct GamesCard: View {
 
 struct StandingsCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
             CardHeader(icon: "list.number", title: card["title"].string ?? "Standings")
-            ForEach(Array(card["rows"].array.prefix(12).enumerated()), id: \.offset) { i, row in
+            // Compact (a Home widget, the call): the top of the table, then "N more".
+            ForEach(Array(card["rows"].array.prefix(fit.rows(12) + (fit == .compact ? 1 : 0)).enumerated()), id: \.offset) { i, row in
                 HStack(spacing: 8) {
                     Text(row["rank"].string ?? "\(i + 1)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
                         .frame(width: 18, alignment: .trailing)
@@ -298,6 +300,7 @@ struct StandingsCard: View {
                     if let note = row["note"].string { Text(note).font(.system(size: 11)).foregroundStyle(.secondary) }
                 }
             }
+            MoreRows(total: min(card["rows"].array.count, 12), shown: fit.rows(12) + (fit == .compact ? 1 : 0))
         }
     }
 }

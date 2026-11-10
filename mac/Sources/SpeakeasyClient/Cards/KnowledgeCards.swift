@@ -6,6 +6,7 @@ import SpeakeasyCore
 
 struct MediaCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         let nowPlaying = card.kind == "now_playing"
         CardBox {
@@ -39,7 +40,7 @@ struct MediaCard: View {
                 .font(.system(size: 9.5).monospacedDigit()).foregroundStyle(.tertiary)
             }
             if let overview = card["overview"].string {
-                Text(overview).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4)
+                Text(overview).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(fit == .compact ? 2 : 4)
             }
         }
     }
@@ -583,6 +584,7 @@ struct NewsCard: View {
 
 struct HomeCard: View {
     let card: ViewCard
+    @Environment(\.cardFit) private var fit
     var body: some View {
         CardBox {
             if card.kind == "thermostat" {
@@ -604,7 +606,8 @@ struct HomeCard: View {
             } else {
                 CardHeader(icon: "house.fill", title: card["title"].string ?? "Home")
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                    ForEach(Array(card["devices"].array.prefix(12).enumerated()), id: \.offset) { _, d in
+                    // Compact: the first four tiles (two rows), then "N more".
+                    ForEach(Array(card["devices"].array.prefix(fit == .compact ? 4 : 12).enumerated()), id: \.offset) { _, d in
                         let on = d["on"].bool ?? false
                         VStack(alignment: .leading, spacing: 4) {
                             Image(systemName: deviceSymbol(d["kind"].string, on: on)).font(.system(size: 16))
@@ -618,6 +621,7 @@ struct HomeCard: View {
                     }
                 }
             }
+            if card.kind != "thermostat" { MoreRows(total: min(card["devices"].array.count, 12), shown: fit == .compact ? 4 : 12) }
         }
     }
 }
