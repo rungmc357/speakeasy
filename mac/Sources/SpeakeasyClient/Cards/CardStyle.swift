@@ -70,12 +70,15 @@ public extension CardStyle {
         good: .green, warn: JobLook.brass, bad: .red, info: .blue,
         capsHeaders: true)
 
-    /// Home v7 · Clean. Values match the approved v7 Clean mockups (tier-1 glass, tier-2 wells).
+    /// Home v7 · Clean, in build 73's G1 treatment (B73-20): a SOLID neutral sheet, white in light and
+    /// a raised graphite in dark, with a hairline edge and a faint shadow. Opaque on purpose: the old
+    /// see-through glass picked up the page colour behind it (blue cards at the top, peach at the
+    /// bottom). The glass surface's material sits under an opaque fill, so nothing shows through.
     static let clean = CardStyle(
         name: "clean", surface: .glass, radius: 22, padding: 16,
-        fill: .adaptive(dark: Color.white.opacity(0.075), light: Color.white.opacity(0.58)),
-        edge: .adaptive(dark: Color.white.opacity(0.10), light: Color.white.opacity(0.85)),
-        shadow: .adaptive(dark: Color.black.opacity(0.30), light: Color(hex: 0x3d3322, alpha: 0.07)),
+        fill: .adaptive(dark: Color(white: 0.115), light: Color.white),
+        edge: .adaptive(dark: Color.white.opacity(0.06), light: Color.black.opacity(0.05)),
+        shadow: .adaptive(dark: Color.clear, light: Color.black.opacity(0.04)),
         well: .adaptive(dark: Color.white.opacity(0.065), light: Color(hex: 0x1c1a17, alpha: 0.045)), wellRadius: 14,
         hairline: .adaptive(dark: Color.white.opacity(0.08), light: Color(hex: 0x1c1a17, alpha: 0.08)),
         ink: .adaptive(dark: Color(white: 0.96), light: Color(hex: 0x1c1a17)),
@@ -88,7 +91,9 @@ public extension CardStyle {
         needsYou: BrandPalette.brass,
         good: .adaptive(dark: Color(red: 0.45, green: 0.80, blue: 0.56), light: Color(red: 0.16, green: 0.52, blue: 0.30)),
         warn: .adaptive(dark: Color(red: 0.96, green: 0.70, blue: 0.32), light: Color(hex: 0x9a5b00)),
-        bad: .adaptive(dark: Color(red: 0.96, green: 0.48, blue: 0.40), light: Color(hex: 0xc2410c)),
+        // G1: the only red in the app is the call's End button; failed / destructive read in a
+        // warm neutral (the words say it), not red.
+        bad: .adaptive(dark: Color(hex: 0xe2cdb4), light: Color(hex: 0x5a4636)),
         info: .adaptive(dark: Color(red: 0.55, green: 0.70, blue: 0.95), light: Color(hex: 0x2f5fa8)),
         capsHeaders: false)
 
