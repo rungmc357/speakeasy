@@ -13,7 +13,13 @@
   teardown and no atexit: everything it made stays, and nothing ever sweeps it.
 - `scripts/plugin-tests-parallel.py:128` makes `pt-*` (every shard's TMPDIR, holding the shards'
   homes and pytest tmp folders) and never removes it, on any exit.
-- Full Hermes homes (`installs/`): `test_follow_through.py:91,105,117,128` set
+- Measured (full suite at e2d8cc1, own TMPDIR, spawn probe): 33 `speakeasy-test-*` left. 27 are
+  homes a `hermes send` child was launched into (44 launches from ~40 tests in 12 files, e.g.
+  `test_follow_through`, `test_routing`, `test_screen_dispatch`); the child wrote them back with
+  `installs/` after the fixture removed them. 3 held only `speakeasy/` (a service thread wrote it
+  after teardown), 2 only `.env` (test_credentials_rule), 1 is a file:
+  `test_visual_review.py:156` writes `<home>-outside.png` next to the home and never removes it.
+- Full Hermes homes (`installs/`): e.g. `test_follow_through.py:91,105,117,128` set
   `delivery.target=telegram:555` on the conftest `service`, built with `notifier=None`, which
   `service.py:380` turns into a real `HermesSendNotifier`. `delivery.py:53` runs
   `python -m hermes_cli.main send` with `HERMES_HOME=<speakeasy-test-*>`. Hermes' launcher
@@ -26,7 +32,8 @@
 
 - Owner: `plugin/tests/temp_homes.py`, the only place a `speakeasy-test-*` folder is made.
   `new_home()` records it in the creating process; `remove(path)` deletes it early (the `home`
-  fixture); an atexit hook deletes whatever is still recorded, pass or fail.
+  fixture) and keeps it recorded; an atexit hook deletes every recorded home again, pass or fail,
+  so one written back after its test still goes.
 - Leftover: a directory (not a symlink, not a file) directly in `tempfile.gettempdir()` whose name
   starts `speakeasy-test-` and whose mtime is more than 6 h old. Its owner is gone: no run lasts
   6 h (shards stop at 25 min). Fresh ones belong to a run that may still be going and are kept.
@@ -44,11 +51,13 @@
 2. Parallel runner: `sweep()` first, shard folder from `new_home()`.
 3. conftest autouse `no_real_hermes_send`: a `HermesSendNotifier` without its own runner starts
    no process and fails (what a real send from a test home returns). No production change.
+4. `remove()` keeps homes recorded; `test_visual_review` removes its `-outside.png` at teardown.
 
 ## Test scenarios (`plugin/tests/test_temp_homes.py`, pytest in a subprocess, own TMPDIR)
 
-- A session with the `home` fixture, a bare `make_home()` and a failing test: exit 1,
-  "1 failed, 2 passed", the 3 homes were made in that TMPDIR and none is left.
+- A session with the `home` fixture, a home written back after its teardown, a bare `make_home()`
+  and a failing test: exit 1, "1 failed, 3 passed", the 4 homes were made in that TMPDIR and none
+  is left.
 - A SIGKILLed session (exit -9) leaves one home; the next session keeps it (fresh); after it is
   backdated 7 h the next session removes it.
 - Session start with: stale and fresh `speakeasy-test-*` dirs, a stale `other-stale` dir, a stale

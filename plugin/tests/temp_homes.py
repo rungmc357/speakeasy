@@ -2,7 +2,7 @@
 
 - ``new_home()`` makes one and records it for this process.
 - ``remove(path)`` deletes it early (the ``home`` fixture does, after each test).
-- Whatever is still recorded is deleted when the process exits, pass or fail.
+- Every recorded home is deleted (again) when the process exits, pass or fail.
 - ``sweep()`` deletes what a killed run left: ``speakeasy-test-*`` directories directly in the temp
   folder, last modified more than ``MAX_AGE_S`` ago. Fresh ones belong to a run still going.
 
@@ -30,13 +30,13 @@ def new_home() -> Path:
 
 
 def remove(path: Path) -> None:
-    _made.discard(Path(path))
+    # Stays recorded: a service thread that outlives its test can write the home back.
     shutil.rmtree(path, ignore_errors=True)
 
 
 @atexit.register
 def remove_all() -> None:
-    for path in list(_made):
+    for path in _made:
         remove(path)
 
 

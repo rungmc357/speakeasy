@@ -150,11 +150,12 @@ def _held_run_with(server, service, hermes, events, key="req_live_1"):
     return session, worker
 
 
-def test_live_image_from_tool_preview_and_media_seen(server, service, hermes, home):
+def test_live_image_from_tool_preview_and_media_seen(server, service, hermes, home, request):
     shot = _image(home, "browser_screenshot_live.png")
     design = _image(home, "draft-hero.png")
     outside = home.parent / (home.name + "-outside.png")
     outside.write_bytes(PNG)
+    request.addfinalizer(lambda: outside.unlink(missing_ok=True))
     session, _ = _held_run_with(server, service, hermes, [
         {"event": "tool.completed", "tool": "browser_vision",
          "preview": json.dumps({"success": True, "screenshot_path": str(shot)})},

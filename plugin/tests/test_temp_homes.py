@@ -19,13 +19,25 @@ SEVEN_HOURS_AGO = time.time() - 7 * 3600
 
 MAKES_HOMES = '''
 import os
+import pytest
 from fakes import make_home
 
 def _note(path):
     with open(os.environ["MADE_LOG"], "a") as f:
         f.write(f"{path}\\n")
 
+@pytest.fixture
+def written_back():
+    """Like a service thread that outlives its test: writes the home again after it was removed."""
+    seen = {}
+    yield seen
+    (seen["home"] / "speakeasy").mkdir(parents=True)
+
 def test_with_the_home_fixture(home):
+    _note(home)
+
+def test_with_a_home_written_back_after_its_test(written_back, home):
+    written_back["home"] = home
     _note(home)
 
 def test_with_make_home_directly():
@@ -85,11 +97,11 @@ def test_a_session_leaves_none_of_its_homes_behind_even_when_a_test_fails(tmp_pa
     temp = _temp(tmp_path)
     done = _session(tmp_path, temp, MAKES_HOMES)
     assert done.returncode == 1, done.stdout + done.stderr
-    assert "1 failed, 2 passed" in done.stdout
+    assert "1 failed, 3 passed" in done.stdout
     made = (tmp_path / "made.txt").read_text().split()
-    assert len(made) == 3
-    assert [Path(p).parent for p in made] == [temp, temp, temp]
-    assert [Path(p).exists() for p in made] == [False, False, False]
+    assert len(made) == 4
+    assert [Path(p).parent for p in made] == [temp, temp, temp, temp]
+    assert [Path(p).exists() for p in made] == [False, False, False, False]
     assert _left(temp) == []
 
 
