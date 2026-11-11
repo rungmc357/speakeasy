@@ -683,6 +683,20 @@ SHOW_IT_FOCUS = (" (They want to SEE this, not just hear about it: include a pic
                  "product, place or thing, or a render or screenshot of the work, as MEDIA:<absolute path>.)")
 SHOW_ME_REQUESTED = ("There's no picture yet. I've asked for a screenshot of what it's looking at; "
                      "it will open in the app when it arrives.")
+
+
+def show_me_requested(doing: str | None = None, eta_s: float | None = None) -> str:
+    """Spoken when "show me" asked a running task for a screenshot: nothing is on screen yet, so say
+    what it's busy with and roughly when the picture should land, never "here it is"."""
+    step = notice_text(" ".join(str(doing or "").split()).rstrip(". "), 90)
+    eta = wait_estimate(eta_s)
+    if not step and not eta:
+        return SHOW_ME_REQUESTED
+    step = (step[:1].lower() + step[1:] if step[:2].istitle() else step) if step else ""
+    busy = f"it's still {step}" if step and not step.lower().startswith(("it", "i ")) else (step or "it's mid-step")
+    when = f", likely in {eta}" if eta else ""
+    return (f"There's no picture yet; {busy}. I've asked for a screenshot, and it'll open in the app "
+            f"when it arrives{when}.")
 SHOW_ME_NOTHING = "That task has no picture to show. The details are in the app."
 SCREENSHOT_STEER = ("The user wants to see what you are looking at. Take a screenshot of what you are working on "
                     "right now (or render your current result) and share it by including MEDIA:<absolute path> "
@@ -1183,11 +1197,14 @@ def tool_step(name: str) -> str:
 def status_answer(name: str, status: str | None, steps: list[str], age_s: float, result: str | None,
                   live: list[str] | None = None, request: str | None = None, tools: list[str] | None = None,
                   findings: list[str] | None = None, queued_behind: str | None = None,
-                  confused: bool = False, card: str | None = None, question: str | None = None) -> str:
+                  confused: bool = False, card: str | None = None, question: str | None = None,
+                  card_up: bool | None = None, waiting: str | None = None) -> str:
     """What the voice says to "what's the status?", built from what the task has reported and, when it
     has said little, from what its session has actually been doing. ``card``: what the task's card
     says right now (its live line and recap, calls.spoken_card); the answer leads with it, so the
-    voice and the app tell the same story."""
+    voice and the app tell the same story. ``card_up``: whether the task's card is on the user's Home
+    (False: say it's coming, never "here it is"); ``waiting``: why it waits and for how long
+    (waiting_reason / queued_wait), said instead of a bare "Queued."."""
     concrete = [re.sub(r"\s+", " ", s).strip().rstrip(".") for s in steps if s and not _PLUMBING.search(s)]
     minutes = int(age_s // 60)
     running = f"{minutes} min" if minutes else "under a minute"
@@ -1210,7 +1227,7 @@ def status_answer(name: str, status: str | None, steps: list[str], age_s: float,
         facts += (" It is still in progress: relay each step in the tense it is written (\"submitting\" means not "
                   "submitted yet), and never say it is done, submitted, sent, pushed, shipped or live.")
     if queued_behind and status not in {"completed", "failed", "interrupted", "cancelled"}:
-        facts = f"It hasn't started: it's queued behind \"{notice_text(queued_behind, 80)}\" in the same chat. " + facts
+        facts = f"It hasn't started: it's lined up behind \"{notice_text(queued_behind, 80)}\" in the same chat. " + facts
     job = []
     asked = notice_text(request, 300) if request else None
     if asked and _words_of(asked) != _words_of(name):
@@ -1237,7 +1254,11 @@ def status_answer(name: str, status: str | None, steps: list[str], age_s: float,
                  "testing or checking and why), e.g. \"The pricing-page fix: it changed the plan names; now it's running "
                  "the full test suite before shipping.\" Name it once in plain words, never just \"the test run\" or "
                  "\"the task\", and never read out a command, a file path or a tool name. ")
-    return (opener + specifics + " ".join(job + [facts]))[:2000]
+    live_now = status not in {"completed", "failed", "interrupted", "cancelled"}
+    screen = (f"{CARD_NOT_UP}. " if card_up is False and live_now else "")
+    why = (f"Why it's waiting: {notice_text(waiting, 300)} Say that reason and the rough wait in plain words; "
+           "never answer with a one-word status. " if waiting and live_now else "")
+    return (opener + screen + why + specifics + " ".join(job + [facts]))[:2000]
 
 
 def task_answer(name: str, question: str, answer: str) -> str:
@@ -1476,12 +1497,91 @@ def late_result(asked: str, spoken: str) -> str:
             f"is about \"{asked}\" (in a few words) and give it: {spoken}")[:2000]
 
 
-def status_note(detail: str) -> str:
-    """A silent status note for the voice model: context for "how's it going?", never a cue to talk."""
+def status_note(detail: str, card_up: bool = False) -> str:
+    """A silent status note for the voice model: context for "how's it going?", never a cue to talk.
+    ``card_up``: the task's card is already on the user's Home (calls.card_on_home); otherwise the
+    note says nothing is on screen yet, so a status line is never presented as "here it is"."""
     return ("Background status of a task that is still in progress (not finished), do not say anything now; only "
             "use it if asked how the task is going, and then in the tense it is written (\"submitting\" is not "
-            "\"submitted\"; it isn't done, sent or live until its result says so): "
+            "\"submitted\"; it isn't done, sent or live until its result says so)"
+            + ("" if card_up else f". {CARD_NOT_UP}") + ": "
             + re.sub(r"\s+", " ", without_resume_lead(detail or "") or "").strip()[:300])
+
+
+# -- what is on screen yet, and why a job waits (SPK-398) -------------------------------------
+
+# A task's card goes up on Home when the server places its result there (calls.card_on_home), not
+# when the voice hears a status line about it: until then "here it is" is false.
+CARD_NOT_UP = ("Its card isn't on their screen yet (it goes up on Home when the task finishes): if they ask to see "
+               "it, say it's coming; never present it as already there")
+
+_HERE_IT_IS = re.compile(r"(?i)^\s*(?:(?:okay|ok|so|alright|right)[,.]?\s+)?(?:here\s+it\s+is|here(?:'|\u2019)?s\s+(?:it|the\s+\w+)"
+                         r"|it(?:'|\u2019)?s\s+(?:up|on\s+(?:your|the)\s+screen))\s*[:.,\u2014-]*\s*")
+
+
+def without_here_it_is(text: str | None) -> str | None:
+    """A spoken line about a card that isn't on Home yet, without its "Here it is:" lead (the card
+    isn't there to point at). The rest of the line stays, capitalised."""
+    if not text:
+        return text
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    out = []
+    for part in parts:
+        rest = _HERE_IT_IS.sub("", part, count=1).strip()
+        if rest:
+            out.append(rest[:1].upper() + rest[1:] if rest != part else part)
+    return " ".join(out) or None
+
+
+def card_on_home_note(cards: int) -> str:
+    """At the result: what the user can see on Home now, as fact for the voice model (not read aloud)."""
+    if cards:
+        return (f"Fact, not to read aloud: this task's card is on their Home now ({cards} "
+                f"card{'s' if cards != 1 else ''}); you may point them to it.")
+    return ("Fact, not to read aloud: this task put no card on their Home. Never present anything as showing "
+            "on their screen; give the answer in words.")
+
+
+def wait_estimate(seconds: float | None) -> str | None:
+    """A rough, spoken wait ("about 30 seconds", "a minute or two"); None when nothing is known."""
+    if seconds is None or seconds <= 0:
+        return None
+    if seconds < 20:
+        return "a few seconds"
+    if seconds < 45:
+        return "about 30 seconds"
+    if seconds < 90:
+        return "about a minute"
+    if seconds < 180:
+        return "a minute or two"
+    if seconds < 600:
+        return f"about {int(round(seconds / 60))} minutes"
+    return "several minutes or more"
+
+
+def queued_spoken(behind: str | None, doing: str | None, eta_s: float | None) -> str:
+    """A lined-up task said aloud: why it hasn't started and roughly when it will, never "Queued."."""
+    who = f"the {notice_text(behind, 60)} work" if behind else "the work already running in that chat"
+    who = re.sub(r"(?i)^the the ", "the ", who)
+    step = notice_text(" ".join(str(doing or "").split()).rstrip(". "), 90)
+    step = (step[:1].lower() + step[1:] if step[:2].istitle() else step) if step else ""
+    eta = wait_estimate(eta_s)
+    line = f"It's lined up behind {who}" + (f", which is {step}" if step else "")
+    return line + (f"; it should start in {eta}." if eta else "; it starts as soon as that finishes.")
+
+
+def waiting_reason(doing: str | None, eta_s: float | None) -> str:
+    """Why work is waiting and for how long, from the task's live step (calls.step_wait)."""
+    step = notice_text(" ".join(str(doing or "").split()).rstrip("."), 120)
+    eta = wait_estimate(eta_s)
+    if step:
+        step = step[:1].lower() + step[1:] if step[:2].istitle() else step
+        head = f"It's in the middle of a step ({step}) and reads new input when that step ends"
+    else:
+        head = "It's in the middle of a step and reads new input when that step ends"
+    if eta:
+        return f"{head}, likely in {eta} (from how long its recent steps took)."
+    return f"{head}; how long that step takes isn't known yet, so don't guess a time."
 
 
 def home_question(question: str) -> str:
@@ -1545,12 +1645,14 @@ def approval_which(descriptions: list[str]) -> str:
 
 # -- what the user adds to a running task (receipts.py) -------------------------------------
 
-def follow_up_queued_note(earlier: str) -> str:
-    """Hermes accepted a follow-up for a running task: it is queued, not yet read."""
-    return (f"Queued: what they just said is lined up for the task already working on: {earlier}. Hermes took it, "
-            "but the task has not read it yet; it does at its next step. Acknowledge it in a few words (for "
-            "example that it's lined up for that task). Do not say the task has it, is on it or that it's done. "
-            "If a later note says it was read, you may say so if they ask.")
+def follow_up_queued_note(earlier: str, doing: str | None = None, eta_s: float | None = None) -> str:
+    """Hermes accepted a follow-up for a running task: it is lined up, not yet read. ``doing``: the task's
+    live step, ``eta_s``: roughly how long until that step ends (calls.step_wait), so the voice can say
+    why it waits and for how long instead of a bare "Queued."."""
+    return (f"Lined up, not read yet: what they just said is waiting for the task already working on: {earlier}. "
+            f"Hermes took it, but the task has not read it yet. {waiting_reason(doing, eta_s)} Acknowledge it in "
+            "a few words that give that reason and the wait. Never answer with a one-word status, and do not say the task has it, is on it or that it's done. If a later note says it "
+            "was read, you may say so if they ask.")
 
 
 def follow_up_landed_note(earlier: str, words: str) -> str:

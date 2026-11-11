@@ -2489,7 +2489,8 @@ class SidebandWorker:
             misheard = list(backend.misheard)
         if misheard and corrections_mod.mentions(detail, misheard):
             return  # still about the misheard words: not the voice's picture of the task
-        await self.quiet("status:" + str(backend.say_id), backend.say_id, P.status_note(detail))
+        await self.quiet("status:" + str(backend.say_id), backend.say_id,
+                         P.status_note(detail, card_up=bool(self.card_on_home(backend.idem_key))))
 
     def card_line(self, key: str) -> tuple[str, str | None, bool] | None:
         """What the task's card says right now (store.work, the same data every app draws): its line,
@@ -2513,6 +2514,41 @@ class SidebandWorker:
         if source == "tool":
             return line, detail, False
         return None  # the handoff guess: the voice said that when it handed the task over
+
+    def card_on_home(self, key: str | None) -> int:
+        """How many of this task's cards the server has placed on Home: its finished result's views,
+        cards and pictures (store.work carries a result only once the run settled). 0 while it runs, so
+        the voice says a card is coming, never "here it is" (SPK-398)."""
+        if not key:
+            return 0
+        try:
+            work = self.store.work(idem_key=key) or {}
+        except Exception:
+            return 0
+        result = work.get("result") if isinstance(work.get("result"), dict) else {}
+        review = work.get("review") if isinstance(work.get("review"), dict) else {}
+        return (len([v for v in result.get("views") or [] if isinstance(v, dict)])
+                + len(result.get("cards") or []) + len(review.get("images") or []))
+
+    def step_wait(self, key: str | None) -> tuple[str | None, float | None]:
+        """What the task is doing now (its card's live line) and roughly how long until that step ends,
+        from how far apart its recent steps were: why something waits on it, and for how long."""
+        if not key:
+            return None, None
+        card = self.card_line(key)
+        doing = card[0] if card else None
+        try:
+            events = (self.store.work(idem_key=key) or {}).get("events") or []
+        except Exception:
+            events = []
+        times = sorted(float(e["at"]) for e in events  # the task's own steps, not "You added: …" receipts
+                       if e.get("kind") in {"milestone", "tool"} and isinstance(e.get("at"), (int, float))
+                       and not str(e.get("text") or "").startswith("You "))[-7:]
+        gaps = sorted(b - a for a, b in zip(times, times[1:]) if b - a > 0)
+        if not gaps:
+            return doing, None
+        typical = min(max(gaps[len(gaps) // 2], STEP_WAIT_MIN_S), STEP_WAIT_MAX_S)
+        return doing, max(typical - (time.time() - times[-1]), STEP_WAIT_MIN_S)
 
     def card_update(self, backend: BackendRun, card: tuple[str, str | None, bool]) -> str | None:
         """The spoken line for `card`: its line, plus its recap when that changed since the last update
@@ -2584,6 +2620,8 @@ class SidebandWorker:
         line = None
         if card is not None and self.card_changed(backend, card):
             line = await asyncio.to_thread(self.card_update, backend, card)
+        if line and not self.card_on_home(backend.idem_key):
+            line = P.without_here_it_is(line)  # a progress line is not the card: nothing to point at yet
         if not line or not self.call_connected():
             with self.interaction.lock:
                 if self.interaction.progress_spoken_at == now:
@@ -3653,8 +3691,48 @@ class SidebandWorker:
                 "tool_details": tool_details, "touched": touched,
                 "findings": [f.get("text", "") for f in ((work or {}).get("findings") or [])],
                 "queued": (work or {}).get("queued_behind"),
+                "card_up": bool(self.card_on_home(key)) if key else None,
+                "waiting": self.waiting_text(key, (work or {}).get("queued_behind")) if key and status not in TERMINAL
+                else None,
                 "card": spoken_card(card[0], card[1], so_far=card[2], limit=60) if card else None,
                 "card_line": card[0] if card else None}
+
+    def blocker(self, key: str, behind: str | None) -> str | None:
+        """The running task this one waits behind: the one ``behind`` names, else another of this call's
+        open tasks working in the same Hermes session."""
+        with self.interaction.lock:
+            keys = [r.idem_key for r in self.interaction.runs.values()
+                    if r.idem_key and r.idem_key != key and r.status not in TERMINAL]
+        if behind:
+            found = next((k for k in keys if self.store.title(k) == behind), None)
+            if found:
+                return found
+        try:
+            mine = self.store.session_for(key)
+            return next((k for k in keys if mine and self.store.session_for(k) == mine), None)
+        except Exception:
+            return None
+
+    def queued_wait(self, key: str, behind: str | None = None) -> str:
+        """Why a lined-up task hasn't started, and roughly how long until it does, from the live step of
+        the task it waits behind: said instead of a bare "Queued." (SPK-398)."""
+        other = self.blocker(key, behind)
+        doing, eta = self.step_wait(other)
+        name = (self.spoken_task_name(other) if other else None) or behind  # its subject, not its title
+        return P.queued_spoken(name, doing, eta)
+
+    def waiting_text(self, key: str, behind: str | None) -> str | None:
+        """Why a running task's new input or result waits, and roughly how long, for a status answer:
+        lined up behind other work in its chat (that work's live step), or what they added still unread."""
+        if behind:
+            return self.queued_wait(key, behind)
+        try:
+            unread = self.store.open_follow_ups(key)
+        except Exception:
+            unread = []
+        if not unread:
+            return None  # nothing of theirs is waiting on it: the status answer covers the rest
+        return "what they added hasn't been read yet. " + P.waiting_reason(*self.step_wait(key))
 
     async def answer_status(self, delegation_id: str, task_id: str, confused: bool = False,
                             question: str | None = None, facts: dict[str, Any] | None = None) -> None:
@@ -3670,7 +3748,7 @@ class SidebandWorker:
                           P.status_answer(f["name"], f["status"], f["steps"], f["age"], f["result"], f["live"],
                                           request=f["request"], tools=f["tools"], findings=f["findings"],
                                           queued_behind=f["queued"], confused=confused, card=f["card"],
-                                          question=question))
+                                          question=question, card_up=f.get("card_up"), waiting=f.get("waiting")))
 
     @staticmethod
     def facts_text(f: dict[str, Any]) -> str:
@@ -4088,13 +4166,15 @@ class SidebandWorker:
         if running and not run.run_id:
             return False  # a thread task: the request goes into its thread (see message_thread_task)
         if running and run.run_id:
+            wait = self.step_wait(key)  # what it's on and how long that step runs, before this ask is logged
             accepted = await asyncio.to_thread(self.hermes.steer, run.run_id, P.SCREENSHOT_STEER)
             if accepted:
                 with self.interaction.lock:
                     self.show_pending.add(key)
                 self.store.progress(key, "milestone", "You asked to see what it's looking at")
                 self.show_action(run.run_id, target.task_id, "detail")
-                await self.append("session.commentary.append", delegation_id, P.SHOW_ME_REQUESTED)
+                await self.append("session.commentary.append", delegation_id,
+                                  P.show_me_requested(*wait))
                 return True
         await self.append("session.commentary.append", delegation_id, P.SHOW_ME_NOTHING)
         return True
@@ -4824,7 +4904,8 @@ class SidebandWorker:
                     self.interaction.latest_delegation_id = target.delegation_id
                 self.publish()
                 # Accepted only means queued: the voice may say it's lined up, not that the task has it.
-                await self.append("session.thinking.append", delegation_id, P.follow_up_queued_note(earlier))
+                await self.append("session.thinking.append", delegation_id,
+                                  P.follow_up_queued_note(earlier, *self.step_wait(key)))
                 self.handoff_at.pop(delegation_id, None)
                 return
         work = self.store.work(idem_key=key) or {}
@@ -6216,7 +6297,10 @@ class SidebandWorker:
                 # The answer text says "here's the building" either way; tell the voice what the user
                 # can actually see, so it never claims a picture is up when none reached the app.
                 pictures = len(((self.store.work(idem_key=idem) or {}).get("review") or {}).get("images") or [])
-                notes.append(P.pictures_note(pictures))
+                cards = self.card_on_home(idem)
+                if pictures or not cards:  # a card with no picture: "nothing on screen" would be false
+                    notes.append(P.pictures_note(pictures))
+                notes.append(P.card_on_home_note(cards))
                 if stored_drafts:
                     d = stored_drafts[-1]
                     notes.append(P.draft_waiting_note(self.names, d.get("subject"), d.get("to") or []))
@@ -6270,7 +6354,9 @@ class SidebandWorker:
                               P.follow_up_not_read_spoken(unread, status == "completed"))
 
 
-LATE_RESULT_S = 20.0  # the user spoke in the last 20 s of a task that took longer: say what it answers
+LATE_RESULT_S = 20.0
+STEP_WAIT_MIN_S = 10.0   # step_wait: never promise less than this (a step that's overdue ends "any moment")
+STEP_WAIT_MAX_S = 900.0  # nor read one slow step as a longer wait than this  # the user spoke in the last 20 s of a task that took longer: say what it answers
 
 
 def new_event_id() -> str:
