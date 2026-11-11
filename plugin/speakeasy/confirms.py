@@ -159,6 +159,13 @@ def clean(raw: Any) -> dict | None:
     return view
 
 
+def pending(result: Any) -> dict | None:
+    """The first confirm card in a saved result still waiting on Post or Cancel, else None."""
+    views = result.get("views") if isinstance(result, dict) else None
+    return next((v for v in views or [] if isinstance(v, dict) and v.get("kind") == "confirm"
+                 and v.get("state") == "pending"), None)
+
+
 class Conflict(ValueError):
     pass
 

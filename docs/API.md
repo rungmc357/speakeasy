@@ -1083,6 +1083,7 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
         "title", "line", "source", "source_label"?, "started_at", "updated_at", "finished_at"?, "unread",
         "idle_seconds"?, "step_kind"?, "steps"?: [{"text", "kind", "at"?, "running"?}],
         "thumbs"?: [{"url"}], "waiting_on"?, "can_start_now"?, "dismissed_question"?,
+        "needs_you"?: true,
         "provenance"?: {"kind": "yesterday" | "earlier_call" | "later", "at"},
         "fix"?: {"kind": "credits" | "sign_in" | "retry" | "setup" | "open"},
         "question"?: {"shape": "words" | "things" | "approval", "prompt", "context"?, "why"?, "affects"?,
@@ -1104,13 +1105,20 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
   Questions sort by expiry, then high risk first, then oldest; a working card keeps its place while it
   keeps working (new ones go on top); answers newest first; waiting oldest first. Up to 60 items;
   the device caps are the app's, from `tiers`.
+- `needs_you: true` (SPK-357): a finished job whose result holds an approval card (a `confirm` view,
+  `state: "pending"`, Post / Cancel). It stays `new_answer` and `unread` so apps draw the card with its
+  buttons, but it waits on you like a question: hearing it on a call, opening it, the 4 AM rollover,
+  the 12-hour rule and Clear don't take it off Home, and it is never folded into another card or into
+  "Earlier today". It leaves when Post or Cancel is tapped (or it is dismissed). `counts.needs_you`
+  includes it; `counts.finished_unread` doesn't.
 - On a call (`call` is set; capability `now_focus`): `call.focus` is the item id of the card the voice
   is talking about (Vision Pro's own focus wins; it lapses 10 min after the voice last spoke of it),
   `call.focus_label` "Talking about this". A question asked on this call (or the one being talked
   about) comes first with `tier: 0`, `on_call: "asking"`, `asking_label: "Asking now"` and `say_ok`
   (false when a choice is `risk: high`: the voice says "That one needs a tap." and a spoken yes does
   nothing; `lock_line` then reads "Can't be undone · Needs a tap"). An answer the voice read out is
-  marked seen everywhere and listed as `seen_answer` with `on_call: "heard"`, line "Told you on the call.".
+  marked seen everywhere and listed as `seen_answer` with `on_call: "heard"`, line "Told you on the call."
+  (not one with `needs_you`: an approval the voice offered stays `new_answer` until it is tapped).
 - `call_summary` (off a call): the call that just ended, until Clear-seen, the next 4 AM or 6 hours:
   `{id: "call:<interaction>", title: "Your call · 6 min", minutes, started_at, ended_at, session_id,
   things: [what it started, up to 4], more_things, decisions: [the user's own answers, up to 3],
@@ -1192,7 +1200,9 @@ Rec = {"id": "rec:…", "text", "prompt", "generic": false, "why",
   conversations Speakeasy didn't start only when they ask. Needs-you first, then results; newest
   first in each. Kept in the plugin's store (survives a reload). A result stays until it is
   dismissed, replied to, or 3 days old (not Home's 12-hour rule); a decision leaves when answered
-  (`done`) or closed unanswered (`skipped`); a stopped job leaves when retried. `result_id` is the
+  (`done`) or closed unanswered (`skipped`); a stopped job leaves when retried. An answer with
+  `needs_you` (an approval card nobody has tapped) is a `decision` too, id `w:q:<run>:<finished_at>`;
+  it stays while the card is pending and leaves as `done` on Post or Cancel. `result_id` is the
   job's posted email result, else its SPK-314 answer line, else null (the card itself is the result).
   `in_current`: the current exchange already shows this job in place. `follows`: the stack item this
   result came from (the question answered, the result replied to).
@@ -2211,7 +2221,7 @@ Each event notifies a device once.
 | kind | when | title |
 |---|---|---|
 | `finished` | a task completed | `Done: <task>` |
-| `needs_you` | an approval is waiting, a result asks a question, or an email draft is ready | `Needs you: <task>` |
+| `needs_you` | an approval is waiting, a result asks a question, a result holds an approval card ("Waiting for you to tap Post."), or an email draft is ready | `Needs you: <task>` |
 | `failed` | a task failed | `Failed: <task>` |
 | `reply` | an answer landed in a Hermes conversation the task was sent to | `New reply: <task>` |
 

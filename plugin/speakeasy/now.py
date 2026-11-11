@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import live_status, runstate as RS
+from .confirms import pending as pending_confirm
 from .failures import NO_REASON, UNKNOWN, failure_reason
 from .text import notice_text
 from .home_words import (clean_ask, collapse, fold_duplicates, hero_box, near_duplicate, picture_caption,
@@ -540,6 +541,11 @@ class NowModel:
                     return None
                 item.update(kind=WAITING, line="Paused. Its question is in the conversation.",
                             dismissed_question=True)
+            elif pending_confirm(result) is not None:
+                # An approval card (Post / Cancel) waits on you like a question: hearing it on a call
+                # or opening it doesn't settle it. It stays until tapped (or dismissed), and it draws
+                # as its answer so the card's own buttons show.
+                item.update(kind=NEW_ANSWER, line=line, unread=True, needs_you=True)
             else:
                 # Home is what's live or new: an answer leaves once it's opened, at the 4 AM rollover
                 # after it finished (read or not), 12 h after it finished, or on Clear. A seen one
@@ -592,7 +598,7 @@ class NowModel:
         item["on_current_call"] = bool(call is not None and (
             row.get("interaction_id") == call.interaction_id or task_id is not None))
         if task_id is not None:
-            if item["kind"] in {NEW_ANSWER, SEEN_ANSWER} and task_id in call_info["spoken"]:
+            if item["kind"] in {NEW_ANSWER, SEEN_ANSWER} and task_id in call_info["spoken"] and not item.get("needs_you"):
                 # Told on the call: already read; the card keeps its own answer line.
                 item.update(kind=SEEN_ANSWER, unread=False, on_call="heard")
             elif item["kind"] == QUESTION and (task_id == call_info["talking"] or float(
@@ -688,8 +694,9 @@ class NowModel:
                 answered_keys.add(row["key"])
             held = by_place.get(place)
             if held is not None:
-                # One card per conversation, except a question, which keeps its own card.
-                if item["kind"] == QUESTION and held["kind"] != QUESTION:
+                # One card per conversation, except a question or an approval waiting on you, which
+                # keeps its own card.
+                if item.get("needs_you") or (item["kind"] == QUESTION and held["kind"] != QUESTION):
                     items.append(item)
                 elif item["kind"] in ANSWERS and held["kind"] in ANSWERS:
                     held["folded"] = int(held.get("folded") or 0) + 1
@@ -698,10 +705,10 @@ class NowModel:
                 # Repeated answers in one conversation (a call's follow-ups, a retry's chain) fold into
                 # the newest; the live call keeps one card per answer.
                 newer = by_thread.get(item["_thread"])
-                if newer is not None:
+                if newer is not None and not item.get("needs_you"):
                     newer["folded"] = int(newer.get("folded") or 0) + 1
                     continue
-                by_thread[item["_thread"]] = item
+                by_thread.setdefault(item["_thread"], item)
             by_place[place] = item
             items.append(item)
         items.extend(self._handoff_items(items, {r["key"] for r in rows}, call, now))
@@ -781,11 +788,11 @@ class NowModel:
         # SPK-376: the live call's start, so its answers join the stack even once the voice read them out.
         self._call_since = (float(getattr(call, "started_at", 0) or 0) or None) if call is not None else None
         home_state = self._home_state(items, stream, now, peek)
-        counts = {"needs_you": sum(i["kind"] == QUESTION for i in items),
+        counts = {"needs_you": sum(waits_on_you(i) for i in items),
                   "stopped": sum(i["kind"] == STOPPED for i in items),
                   "working": sum(i["kind"] == WORKING for i in items),
                   "waiting": sum(i["kind"] == WAITING for i in items),
-                  "finished_unread": sum(i["kind"] == NEW_ANSWER for i in items),
+                  "finished_unread": sum(i["kind"] == NEW_ANSWER and not i.get("needs_you") for i in items),
                   "on_its_own_running": len(background)}
         tiers: dict[str, int] = {}
         for i in items:
@@ -804,7 +811,7 @@ class NowModel:
             "stream": stream,
             # The tracker pill's words at any volume ("3 need you · 5 running"): counts, never a cut title.
             "pill": pill_text(counts["needs_you"], counts["working"] + counts["on_its_own_running"],
-                              one_title=next((i["title"] for i in items if i["kind"] == QUESTION), None)),
+                              one_title=next((i["title"] for i in items if waits_on_you(i)), None)),
         }
         if home_state is not None:
             body.update(home_state)   # b73: ``stack`` and ``recommendations`` (additive)
@@ -1145,6 +1152,11 @@ class NowModel:
 # -- stopped, superseded, folded -------------------------------------------------------------------
 
 ANSWERS = (NEW_ANSWER, SEEN_ANSWER)
+
+
+def waits_on_you(item: dict[str, Any]) -> bool:
+    """A question, or an answer holding an approval card nobody has tapped yet."""
+    return item["kind"] == QUESTION or bool(item.get("needs_you"))
 _LIVE_STATES = None
 
 
@@ -1322,7 +1334,7 @@ def fold_call_duplicates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     counts the rest as ``also``. Questions and stopped work keep their own cards."""
     foldable = {WORKING, NEW_ANSWER, SEEN_ANSWER}
     for i in items:
-        if i.get("_call") and i["kind"] in foldable:
+        if i.get("_call") and i["kind"] in foldable and not i.get("needs_you"):
             # Work the live call brought in or is talking about stays its own card.
             i["_fold"] = (i["_call"], i["kind"] == WORKING, bool(i.get("on_current_call")), i.get("on_call"))
     out = fold_duplicates(items, key="title", group="_fold")
@@ -1334,11 +1346,12 @@ def fold_call_duplicates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def fold_earlier(items: list[dict[str, Any]], now: float,
                  keep_s: float = ANSWER_CARD_S) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Answers more than 4 h old leave Home's cards for one "Earlier today · N" row. An answer on
-    the live call keeps its card."""
+    the live call keeps its card, and so does an approval waiting on you."""
     keep, old = [], []
     for i in items:
         at = i.get("finished_at")
         if i["kind"] in ANSWERS and not i.get("on_call") and not i.get("call_id") and not i.get("in_chat") \
+                and not i.get("needs_you") \
                 and at is not None \
                 and now - float(at) > keep_s:
             old.append(i)
