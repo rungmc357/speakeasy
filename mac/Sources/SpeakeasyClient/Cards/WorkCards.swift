@@ -55,11 +55,13 @@ struct CardPicture: View {
                 #endif
             } else if failed {
                 RoundedRectangle(cornerRadius: corner, style: .continuous).fill(Color.primary.opacity(0.05))
-                    .overlay(Label("Picture didn't load", systemImage: "photo.badge.exclamationmark")
-                        .font(.caption).foregroundStyle(.secondary).padding(6))
+                    // The broken-picture glyph on each tile (one sentence per card, not per tile:
+                    // NowCard says "No pictures came with this" when none of them came).
+                    .overlay(Image(systemName: "photo.badge.exclamationmark").font(.title3).foregroundStyle(.secondary))
                     .frame(width: stretch ? nil : (width ?? (height.map { $0 * 0.75 } ?? 160)), height: height ?? 64)
                     .frame(maxWidth: stretch ? .infinity : nil)
-                    .accessibilityElement(children: .combine)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Picture didn't load")
                     .accessibilityIdentifier("card-picture-missing")
             } else if placeholder {
                 RoundedRectangle(cornerRadius: corner, style: .continuous).fill(Color.primary.opacity(0.06))
