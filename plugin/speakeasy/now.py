@@ -738,6 +738,8 @@ class NowModel:
             i.pop("_run_key", None)
             for k in ("_call", "_asked", "_topic"):
                 i.pop(k, None)
+        # SPK-376: the live call's start, so its answers join the stack even once the voice read them out.
+        self._call_since = (float(getattr(call, "started_at", 0) or 0) or None) if call is not None else None
         home_state = self._home_state(items, stream, now, peek)
         counts = {"needs_you": sum(i["kind"] == QUESTION for i in items),
                   "stopped": sum(i["kind"] == STOPPED for i in items),
@@ -794,7 +796,7 @@ class NowModel:
             return None
         try:
             if not peek:
-                state.feed(items, entries, now)
+                state.feed(items, entries, now, getattr(self, "_call_since", None))
             return {"stack": state.stack(set(stream["current"]["run_ids"])),
                     "recommendations": state.recommendations(now)}
         except Exception:
