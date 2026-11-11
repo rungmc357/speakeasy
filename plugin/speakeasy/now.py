@@ -27,7 +27,7 @@ import time
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import runstate as RS
+from . import live_status, runstate as RS
 from .failures import NO_REASON, UNKNOWN, failure_reason
 from .home_words import (clean_ask, collapse, fold_duplicates, hero_box, near_duplicate, picture_caption,
                          pill_text, replaced_questions, short_title, status_line)
@@ -440,7 +440,25 @@ class NowModel:
                                   "asked_at": float(row.get("updated") or now)})
         elif status in RS.UNDER_WAY or status in {RS.RunState.CANCEL_REQUESTED, RS.RunState.AMBIGUOUS}:
             line = live_line(work.get("now_line") or work.get("short_status"), work.get("short_status"))
+            activity = [a for a in (work.get("activity") or []) if isinstance(a, dict)]
+            kind = live_status.step_kind(activity[-1]) if activity else None
+            if not line and not activity and not work.get("short_status") and not work.get("now_line"):
+                # No step yet: say the true state from the first poll on, never nothing (build 73:
+                # a typed-chat job's first tool call came ~36 s after it started, and Home sat on a
+                # grey "Working on it" all that time). Handing over, Stop on its way, or the model's
+                # first turn under way.
+                if status == RS.RunState.ADMITTING:
+                    line, kind = "Starting", "think"
+                elif status == RS.RunState.CANCEL_REQUESTED:
+                    line, kind = "Stopping", "think"
+                elif status in RS.WORKING:
+                    line, kind = live_status.START_LINE, "think"
             item.update(kind=WORKING, line=_clip(line, LINE_CHARS))
+            if line and kind:
+                item["step_kind"] = kind
+            steps = live_status.home_steps(activity)
+            if steps:
+                item["steps"] = steps
             if isinstance(work.get("quiet_s"), (int, float)) and work["quiet_s"] >= 120:
                 item["idle_seconds"] = int(work["quiet_s"])
         elif status == RS.RunState.WAITING_ON_TASK:

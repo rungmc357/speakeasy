@@ -153,3 +153,34 @@ def test_the_model_never_words_a_quiet_spell():
                      spawn=lambda fn: fn())
     got = s.line("k", state(item(1, "Read a file", "read", 9_000.0)), request="", started=8_000.0)
     assert got["source"] == "idle" and got["now"].startswith("No new steps")
+
+
+# -- Home's step capsule (build 73 home-fixes) ----------------------------------------------------
+
+def test_step_kind_names_what_the_call_touches_then_the_kind_of_work():
+    k = L.step_kind
+    assert k({"text": "Ran gws gmail search flight", "kind": "run", "tool": "terminal"}) == "mail"
+    assert k({"text": "Used google calendar list events", "kind": "tool", "tool": "mcp__gcal__list"}) == "calendar"
+    assert k({"text": "Read www.example.com", "kind": "browse", "tool": "web_extract"}) == "web"
+    assert k({"text": "Searched the web for “cabins”", "kind": "search", "tool": "web_search"}) == "web"
+    assert k({"text": "Ran the tests", "kind": "run", "tool": "terminal"}) == "terminal"
+    assert k({"text": "Read beds.md", "kind": "read", "tool": "read_file"}) == "doc"
+    assert k({"text": "Edited beds.py", "kind": "edit", "tool": "patch"}) == "edit"
+    assert k({"text": "Searched the files for “seed”", "kind": "search", "tool": "search_files"}) == "search"
+    assert k({"text": "Thinking it over", "kind": "think"}) == "think"
+    assert k({"text": "Handed part of the work to a helper", "kind": "tool", "tool": "delegate_task"}) == "helper"
+    # Reading notes ABOUT email, or a file called calendar.md, is still reading a file.
+    assert k({"text": "Read its notes on email-operations", "kind": "read", "tool": "skill_view"}) == "doc"
+    assert k({"text": "Read calendar.md", "kind": "read", "tool": "read_file"}) == "doc"
+    assert k({"text": "", "kind": "read"}) is None and k(None) is None
+
+
+def test_home_steps_are_the_newest_plain_words_oldest_first_without_arguments():
+    acts = [{"id": f"a{n}", "text": f"Read file{n}.md", "kind": "read", "tool": "read_file", "at": 100.0 + n,
+             "args": "secret-arg", "status": "done"} for n in range(12)]
+    acts[-1].update(status="running", started_at=111.5)
+    steps = L.home_steps(acts)
+    assert len(steps) == L.HOME_STEPS and steps[0]["text"] == "Read file4.md" and steps[-1]["text"] == "Read file11.md"
+    assert steps[-1] == {"text": "Read file11.md", "kind": "doc", "at": 111.5, "running": True}
+    assert all(set(s) <= {"text", "kind", "at", "running"} for s in steps)
+    assert L.home_steps(None) == [] and L.home_steps([{"kind": "read"}]) == []
