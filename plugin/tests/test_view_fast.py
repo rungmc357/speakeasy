@@ -61,7 +61,7 @@ class FastModel:
         return {"tool": self.tool, "args": dict(self.args), "text": ""}, {"model": "fast-model"}
 
 
-@pytest.mark.parametrize("words", ["show me build 75 tickets", "show linear widget for build 74.1 work",
+@pytest.mark.parametrize("words", ["show me build 75 tickets", "pull up the linear list for build 73.2",
                                    "what's in build 76", "list agent-ready issues", "pull up the speakeasy board"])
 def test_list_requests_are_views(words):
     assert V.wanted(words)
@@ -74,7 +74,7 @@ def test_work_is_never_a_view(words):
 
 
 def test_the_view_prompt_is_small():
-    assert V.prompt_chars("show linear widget for build 74.1 work") < 4000
+    assert V.prompt_chars("pull up the linear list for build 73.2") < 4000
 
 
 def test_build_rows_widget_from_one_linear_read():
