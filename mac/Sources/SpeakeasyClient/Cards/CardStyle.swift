@@ -121,6 +121,20 @@ public extension EnvironmentValues {
         get { self[CardHostedKey.self] }
         set { self[CardHostedKey.self] = newValue }
     }
+    /// Set by a Home widget around its card: the widget's own headline. The widget already says what
+    /// the card is (its label row: the source's mark and name) and its title, so the card's body
+    /// leaves out its source row and a title that echoes the headline (`TextEcho.nearDuplicate`): one headline per widget.
+    var cardWidgetTitle: String? {
+        get { self[CardWidgetTitleKey.self] }
+        set { self[CardWidgetTitleKey.self] = newValue }
+    }
+}
+
+public struct CardWidgetTitleKey: EnvironmentKey { public static let defaultValue: String? = nil }
+
+extension EnvironmentValues {
+    /// In a Home widget: its label row already names the source (mark + name).
+    var inWidget: Bool { cardWidgetTitle != nil }
 }
 
 /// The card surface for a style: flat fill + hairline, or glass (material + tint + bright edge +

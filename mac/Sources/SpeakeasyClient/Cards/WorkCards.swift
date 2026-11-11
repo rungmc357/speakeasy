@@ -326,8 +326,15 @@ struct IssueCard: View {
     let card: ViewCard
     @Environment(\.cardStyle) private var style
     @Environment(\.cardFit) private var fit
+    @Environment(\.cardWidgetTitle) private var widgetTitle
     var body: some View {
         CardBox {
+            if widgetTitle != nil {
+                // In a Home widget the label row already shows the source's mark and name: only the
+                // issue's number and when, on one quiet line.
+                let ref = [card["ref"].string, EventTimes.stamp(card["updated"].string)].compactMap { $0 }
+                if !ref.isEmpty { Text(ref.joined(separator: " · ")).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
+            } else {
             HStack(spacing: CleanGrid.glyphGap) {
                 SourceMark.issue(card["source"].string)
                 Text([sourceName(card["source"].string), card["ref"].string].compactMap { $0 }.joined(separator: " · "))
@@ -335,10 +342,14 @@ struct IssueCard: View {
                 Spacer(minLength: 8)
                 if let when = EventTimes.stamp(card["updated"].string) { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
             }
+            }
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(card["title"].string ?? "").font(.title3.weight(.semibold)).foregroundStyle(style.ink)
-                        .fixedSize(horizontal: false, vertical: true)
+                    let title = card["title"].string ?? ""
+                    if !(widgetTitle.map { TextEcho.nearDuplicate(title, $0) } ?? false) {
+                        Text(title).font(.title3.weight(.semibold)).foregroundStyle(style.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let state = card["state"].string {
                         let tone = StateWords.tone(state, given: card["tone"].string) ?? "warn"
                         CardTag(icon: StateWords.symbol(state, tone: tone), text: state, tint: style.tone(tone))
@@ -369,6 +380,7 @@ struct PRCard: View {
     let card: ViewCard
     @Environment(\.cardStyle) private var style
     @Environment(\.cardFit) private var fit
+    @Environment(\.cardWidgetTitle) private var widgetTitle
     var body: some View {
         if PRCard.ciOnly(card), fit != .compact { ciBody } else { prBody }
     }
@@ -384,7 +396,7 @@ struct PRCard: View {
         return CardBox {
             // The same first line as the PR and issue cards: 12 pt from the mark, the card's ink.
             HStack(spacing: CleanGrid.glyphGap) {
-                SourceMark.pr
+                if widgetTitle == nil { SourceMark.pr }
                 Text(["CI", number, card["repo"].string?.split(separator: "/").last.map(String.init)].compactMap { $0 }.joined(separator: " · "))
                     .font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
                 Spacer(minLength: 8)
@@ -418,6 +430,13 @@ struct PRCard: View {
     }
     private var prBody: some View {
         CardBox {
+            if widgetTitle != nil {
+                // In a Home widget the label row already shows the mark and "GitHub": the repo and
+                // number on one quiet line.
+                let parts = [card["repo"].string?.split(separator: "/").last.map(String.init), PRCard.headerNumber(card),
+                             EventTimes.stamp(card["when"].string)].compactMap { $0 }
+                if !parts.isEmpty { Text(parts.joined(separator: " · ")).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
+            } else {
             HStack(spacing: CleanGrid.glyphGap) {
                 SourceMark.pr
                 // "owner/repo · #418"; when that can't fit beside the time, the repo's own name (an
@@ -435,8 +454,12 @@ struct PRCard: View {
                 Spacer(minLength: 8)
                 if let when = EventTimes.stamp(card["when"].string) { Text(when).font(.footnote).foregroundStyle(style.faint).lineLimit(1) }
             }
-            Text(card["title"].string ?? "").font(.title3.weight(.semibold)).foregroundStyle(style.ink)
-                .fixedSize(horizontal: false, vertical: true)
+            }
+            let title = card["title"].string ?? ""
+            if !(widgetTitle.map { TextEcho.nearDuplicate(title, $0) } ?? false) {
+                Text(title).font(.title3.weight(.semibold)).foregroundStyle(style.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(spacing: 8) {
                 if let label = PRState.label(card["state"].string) {
                     CardTag(icon: stateIcon, text: label, tint: style.tone(PRState.tone(card["state"].string)))
@@ -481,7 +504,7 @@ struct PRCard: View {
                         }
                     }
                     }
-                    .cardWell(style)
+                    .checksWell(style, flat: widgetTitle != nil)
                 } else {
                 VStack(alignment: .leading, spacing: 7) {
                     // One shared state is said once, but only as the summary line above says it; checks
@@ -491,7 +514,7 @@ struct PRCard: View {
                         Text(rest).font(.footnote).foregroundStyle(style.faint)
                     }
                 }
-                .cardWell(style)
+                .checksWell(style, flat: widgetTitle != nil)
                 }
             }
         }
@@ -761,4 +784,12 @@ public enum CardLinks {
 
 extension Array where Element: Hashable {
     func removingDuplicates() -> [Element] { var seen = Set<Element>(); return filter { seen.insert($0).inserted } }
+}
+
+extension View {
+    /// A PR's checks: in their own well on a card; flat in a Home widget (the widget is already the
+    /// one surface, and a well inside it read as a card inside a card).
+    @ViewBuilder func checksWell(_ style: CardStyle, flat: Bool) -> some View {
+        if flat { self.frame(maxWidth: .infinity, alignment: .leading) } else { self.cardWell(style) }
+    }
 }

@@ -146,7 +146,12 @@ struct CardHeader: View {
     var lines: Int = 1
     @Environment(\.cardCloseRoom) private var closeRoom
     @Environment(\.cardStyle) private var style
+    @Environment(\.cardWidgetTitle) private var widgetTitle
     var body: some View {
+        // In a Home widget whose headline already says this title: no second headline.
+        if let widgetTitle, TextEcho.nearDuplicate(title, widgetTitle) { EmptyView() } else { header }
+    }
+    private var header: some View {
         HStack(alignment: style.capsHeaders ? .firstTextBaseline : .center, spacing: 6) {
             if style.capsHeaders {
                 Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
