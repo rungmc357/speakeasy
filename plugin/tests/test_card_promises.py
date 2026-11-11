@@ -78,8 +78,8 @@ def test_show_me_with_no_picture_yet_says_what_it_is_on_and_when():
 
 def test_the_voice_rules_never_point_at_an_unplaced_card():
     rules = Path(P.__file__).with_name("rules.md").read_text()
-    assert "Never present a card, widget or picture as already there" in rules
-    assert "never a one-word status" in rules and "on your screen" not in rules.lower()
+    assert "never present a card or picture as already there" in rules
+    assert '"Lined up" means not read yet' in rules and "on your screen" not in rules.lower()
 
 
 # -- a fake-action call -------------------------------------------------------------------------

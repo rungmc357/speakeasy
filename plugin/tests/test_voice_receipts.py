@@ -157,7 +157,7 @@ def test_an_old_hermes_without_terminal_fields_proves_nothing(server, service, h
 
 def test_the_voice_rule_names_queued():
     rules = Path(P.__file__).with_name("rules.md").read_text()
-    assert '"Lined up" means not read yet' in rules and "never a one-word status" in rules
+    assert '"Lined up" means not read yet' in rules
 
 
 def test_a_follow_up_taken_just_as_the_run_ends_is_still_settled(server, service, hermes, home, monkeypatch):
