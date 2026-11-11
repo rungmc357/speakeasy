@@ -1952,7 +1952,10 @@ Every button must carry the hash of the draft the card showed (64 lowercase hex)
 hash of whichever draft is newest, so a revision the user never saw can't be sent. The email card
 has no generic `actions` (older apps' hash-less Send under the card is gone). A stale hash is `409`.
 An `edit` (or `discard`) based on an earlier hash is accepted only when every draft since was the
-user's own edit; after a task revision it is `409`. `edited` is set only by the user's own `edit`
+user's own edit; after a task revision it is `409`. Such an `edit` must carry all of `to`, `cc`,
+`bcc`, `subject` and `body` (what that card shows), else `409`. A `draft` card with `channel:
+"email"` but no `draft_id` (one the task drew without a valid `email-draft` block) has no Send, and
+`send` on it is `409`: email goes out only from a stored draft. `edited` is set only by the user's own `edit`
 (a task's `email-draft` block can't set it). Sending an edited draft tells the task it was edited,
 so a copy it saved in the mail account is updated, never sent stale.
 

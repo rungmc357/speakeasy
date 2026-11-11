@@ -2489,6 +2489,10 @@ class VoiceService(SecureInputMixin):
         view = views[index]
         if view.get("kind") == "draft" and view.get("draft_id"):
             return self._email_card_action(view, action, value)
+        if view.get("kind") == "draft" and str(view.get("channel", "")).lower() == "email" and action == "send":
+            # A hand-drawn email card (no stored draft, so no hash; answers stored before SPK-363 still
+            # carry its Send): never handed to the agent to send whatever it holds.
+            raise ServiceError(409, "Open the email again and check it first.")
         if view.get("kind") != "confirm" and action not in {a.get("id") for a in view.get("actions") or [] if isinstance(a, dict)}:
             raise ServiceError(400, "that card has no such button")
         if view.get("kind") == "home" and action == "toggle":
@@ -2553,7 +2557,12 @@ class VoiceService(SecureInputMixin):
         if action == "edit":
             if not isinstance(value, dict) or after not in (None, "send", "save"):
                 raise ServiceError(400, "edit takes the changed fields (and after: send or save)")
+            shown = digest
             draft_id, digest = self._edit_base(draft_id, digest)
+            if digest != shown and not {"to", "cc", "bcc", "subject", "body"} <= set(value):
+                # Based on an earlier draft: only every field it shows, or a field the user changed
+                # elsewhere since would go out unseen.
+                raise ServiceError(409, "Open the email again and check it first.")
             out = self.decide_draft(draft_id, {"action": "edit", "sha256": digest, "edit": value})
             if after:
                 fresh = out["draft"]
