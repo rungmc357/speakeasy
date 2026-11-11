@@ -21,9 +21,16 @@ extension ClientIdentity {
     }()
 
     /// Sets the header on a request to the plugin (all of them: authenticated routes, pairing, probes).
-    public static func tag(_ request: inout URLRequest) {
+    /// Also says `X-Speakeasy-Projects: off` when this app holds Projects out (iOS sets the
+    /// `SpeakeasyProjectsHeldOut` default at launch): the plugin then files nothing this app starts
+    /// into a project, and the person's selection on their Hermes is never changed.
+    public static func tag(_ request: inout URLRequest, defaults: UserDefaults = .standard) {
         if let value = current { request.setValue(value, forHTTPHeaderField: headerName) }
+        if defaults.bool(forKey: projectsHeldOutKey) { request.setValue("off", forHTTPHeaderField: projectsHeaderName) }
     }
+
+    public static let projectsHeaderName = "X-Speakeasy-Projects"
+    public static let projectsHeldOutKey = "SpeakeasyProjectsHeldOut"
 
     #if os(iOS)
     private static func machine() -> String {

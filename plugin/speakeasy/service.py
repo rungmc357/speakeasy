@@ -46,7 +46,7 @@ from .calls import (ACTIVE_RUN_STATES, SHARE_NOTE_KEY, APPROVED_MILESTONE, INPUT
                     Interaction, Notices, Runtime, SidebandWorker, call_work_running, end_shared, interaction_tasks, publish_state,
                     is_greeting, typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
-from .devices import CLIENT_HEADER, DeviceStore, parse_client
+from .devices import CLIENT_HEADER, PROJECTS_HEADER, DeviceStore, parse_client
 from .emails import CONTEXT_KEY, DraftInvalid, apply_edit, canonical_json, extract_email_drafts
 from . import agent_slot
 from .backends.hermes import hermes_agent
@@ -463,7 +463,11 @@ class VoiceService(SecureInputMixin):
         # SPK-254: Hermes' projects plus Speakeasy's chat/job links (projects.py).
         self.projects = P_.Projects(self.store, self.home, lambda: self.rt.state_db)
         self.store.project_brief = self.projects.for_start  # a filed job's standing notes, in its brief
-        self.store.project_auto = self.projects.auto_file  # a call's job joins the project Home works in
+        self.store.project_auto = self._project_auto  # a call's job joins the project Home works in
+        # Apps that hold Projects out (iOS build 73+) say so on every request (`X-Speakeasy-Projects:
+        # off`): nothing they start, from Home or on a call, is filed into a project, and the person's
+        # selection on this Hermes is left as it is. device id -> off, from that device's latest request.
+        self._projects_off: dict[str, bool] = {}
         self.history_events.after_change = self._now_changed
         self.rt.history_events = self.history_events
         Q.wire(self.store, self.rt)  # every closed question: decision_resolved + the push withdrawn
@@ -840,7 +844,19 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(401, "unauthorized")
         if presence:
             self.push.seen(device_id)
+        self._projects_off[device_id] = str(headers.get(PROJECTS_HEADER) or "").strip().lower() == "off"
         return device_id
+
+    def projects_off(self, device_id: str | None) -> bool:
+        """This device's app holds Projects out (``X-Speakeasy-Projects: off`` on its latest request):
+        new work it starts goes to no project, whatever is selected."""
+        return bool(device_id) and self._projects_off.get(device_id or "", False)
+
+    def _project_auto(self, key: str, device_id: str = "") -> str | None:
+        """A call's job joins the selected project, unless the call's app holds Projects out."""
+        if self.projects_off(device_id):
+            return None
+        return self.projects.auto_file(key)
 
     # -- push notifications (push.py) ----------------------------------------------------------
     def register_push(self, device_id: str, body: dict[str, Any]) -> dict[str, Any]:
