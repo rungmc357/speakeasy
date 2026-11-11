@@ -51,7 +51,7 @@ LINE_CHARS = 90
 TITLE_CHARS = 80
 # Names that say nothing about the job (store.PLACEHOLDER_TITLES and the old fallback): a finished
 # job with one of these is named from its result's headline instead.
-_PLACEHOLDER_NAMES = frozenset({"Voice task", "Quick answer", "A quick choice", "A task"})
+_PLACEHOLDER_NAMES = frozenset({"Voice task", "Quick answer", "A quick choice", "New task", "A task"})
 LATER_KEPT_S = 7 * 86400
 
 QUESTION, STOPPED, WORKING, WAITING, NEW_ANSWER, SEEN_ANSWER = (
