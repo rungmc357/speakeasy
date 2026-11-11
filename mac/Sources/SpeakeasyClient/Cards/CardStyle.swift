@@ -121,6 +121,36 @@ public extension EnvironmentValues {
         get { self[CardHostedKey.self] }
         set { self[CardHostedKey.self] = newValue }
     }
+    /// Set by a Home widget around its card: the widget's own headline. The widget already says what
+    /// the card is (its label row: the source's mark and name) and its title, so the card's body
+    /// leaves out its source row and a title that echoes the headline (`TextEcho.nearDuplicate`): one headline per widget.
+    var cardWidgetTitle: String? {
+        get { self[CardWidgetTitleKey.self] }
+        set { self[CardWidgetTitleKey.self] = newValue }
+    }
+}
+
+public struct CardWidgetTitleKey: EnvironmentKey { public static let defaultValue: String? = nil }
+public struct CardWidgetLabelKey: EnvironmentKey { public static let defaultValue: String? = nil }
+
+public extension EnvironmentValues {
+    /// Set by a Home widget around its card: the name in its label row ("Parcel Express", "Linear").
+    /// A card header that only says this name again is left out.
+    var cardWidgetLabel: String? {
+        get { self[CardWidgetLabelKey.self] }
+        set { self[CardWidgetLabelKey.self] = newValue }
+    }
+}
+
+extension EnvironmentValues {
+    /// In a Home widget: its label row already names the source (mark + name).
+    var inWidget: Bool { cardWidgetTitle != nil }
+    /// A Home widget at its SLIM size (SPK-358 pass 4): the card's short form, its key fact and
+    /// visual only (a flight's route row, a package's status and bar, a game's score, the day's next
+    /// two events, a table's top three, a quote's price and sparkline, an issue's state and owner, a
+    /// checkout's item and total), so two widgets fit a phone. The full card (`.full`) shows the
+    /// rest. The call's compact fit (no widget) is unchanged.
+    var widgetSlim: Bool { cardWidgetTitle != nil && cardFit == .compact }
 }
 
 /// The card surface for a style: flat fill + hairline, or glass (material + tint + bright edge +
@@ -380,5 +410,15 @@ public struct CardLiveDot: View {
             .background(Circle().fill(c.opacity(0.25)).frame(width: 12, height: 12))
             .frame(width: 12, height: 12)
             .accessibilityHidden(true)
+    }
+}
+
+public struct CardTextAuditKey: EnvironmentKey { public static let defaultValue = false }
+public extension EnvironmentValues {
+    /// UI tests only: cards keep each visible line as its own accessibility element (no merged
+    /// summary), so a test can read every line a widget draws.
+    var cardTextAudit: Bool {
+        get { self[CardTextAuditKey.self] }
+        set { self[CardTextAuditKey.self] = newValue }
     }
 }

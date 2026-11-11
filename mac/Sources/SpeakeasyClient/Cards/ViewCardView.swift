@@ -85,8 +85,12 @@ public struct ViewCardView: View {
 /// lost its identity).
 struct CardAccessibility: ViewModifier {
     let card: ViewCard
+    @Environment(\.cardTextAudit) private var audit
     func body(content: Content) -> some View {
-        if ["explore", "compare", "status", "timeline", "rows", "preview", "confirm", "issue", "pr", "jobs", "site", "mockups",
+        if audit {
+            // Tests: every visible line stays its own element (a widget's "no line twice" check).
+            content.accessibilityElement(children: .contain)
+        } else if ["explore", "compare", "status", "timeline", "rows", "preview", "confirm", "issue", "pr", "jobs", "site", "mockups",
             "calendar_day"].contains(card.kind) {
             // Each thing and its buttons (Play, Maps, Open) stay their own elements.
             content
@@ -146,7 +150,13 @@ struct CardHeader: View {
     var lines: Int = 1
     @Environment(\.cardCloseRoom) private var closeRoom
     @Environment(\.cardStyle) private var style
+    @Environment(\.cardWidgetTitle) private var widgetTitle
+    @Environment(\.cardWidgetLabel) private var widgetLabel
     var body: some View {
+        // In a Home widget whose headline or label row already says this title: not again.
+        if let widgetTitle, TextEcho.nearDuplicate(title, widgetTitle) || TextEcho.repeats(title, in: widgetLabel) { EmptyView() } else { header }
+    }
+    private var header: some View {
         HStack(alignment: style.capsHeaders ? .firstTextBaseline : .center, spacing: 6) {
             if style.capsHeaders {
                 Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
