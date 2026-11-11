@@ -126,3 +126,10 @@ def test_a_done_answer_whose_question_moved_on_still_carries_the_ask(service):
     item = next(i for i in service.now({})["items"] if i.get("run_id") == "run_g")
     assert item["kind"] in (N.NEW_ANSWER, N.SEEN_ANSWER)
     assert item["asks"]["prompt"] == "Want me to swap the two players?" and item["asks"]["closed"] == "superseded"
+
+
+def test_a_flight_never_prints_none_for_no_delay():
+    out = V.flight_display({"kind": "flight", "departs": "3:18 PM (gate E67)", "status": "En route", "gate": "75",
+                            "delay": "None"})
+    assert "delay" not in out and out["gate"] == "75" and out["departs"] == "3:18 PM (gate E67)"
+    assert V.flight_display({"kind": "flight", "delay": "25 min"})["delay"] == "25 min"
