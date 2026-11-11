@@ -44,7 +44,7 @@ class FakeLinear(V.LinearSource):
         return {"issues": {"nodes": self.label_issues}}
 
 
-BUILD_75 = [_issue(398, "Call voice promises a card only once it's on screen", "In Progress", "started", who="Claire"),
+BUILD_75 = [_issue(398, "Call voice promises a card only once it's on screen", "In Progress", "started", who="Dana"),
             _issue(387, "Every Claude call waited 30 s before starting", "Done", "completed"),
             _issue(390, "Home widget swipe reply keeps its page", "Ready to ship", "started", ("build-75", "iOS"))]
 
@@ -84,7 +84,7 @@ def test_build_rows_widget_from_one_linear_read():
     assert view["kind"] == "rows" and view["entity"] == "issue" and view["title"] == "Build 75"
     assert [i["ref"] for i in view["items"]] == ["SPK-398", "SPK-390", "SPK-387"]   # open first, done last
     first = view["items"][0]
-    assert first["state"] == "In Progress" and first["who"] == "Claire" and first["url"].startswith("https://linear.app/")
+    assert first["state"] == "In Progress" and first["who"] == "Dana" and first["url"].startswith("https://linear.app/")
     assert view["items"][1]["note"] == "iOS"                                       # the build label isn't repeated
     assert spoken.startswith("Build 75: 3 issues")
 
