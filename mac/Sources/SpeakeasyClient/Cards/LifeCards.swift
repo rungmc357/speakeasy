@@ -477,7 +477,11 @@ struct PackageCard: View {
             }
             Text(card["item"].string ?? "").font(.system(size: 12.5, weight: .medium)).lineLimit(2)
             HStack(spacing: 8) {
-                Text(card["status"].string ?? "").font(.system(size: 13, weight: .semibold))
+                // The status, unless the timeline's latest scan below says it already (one line, once).
+                let latest = card["steps"].array.last(where: { $0["done"].bool != false })?["text"].string
+                if !TextEcho.repeats(latest, in: card["status"].string) {
+                    Text(card["status"].string ?? "").font(.system(size: 13, weight: .semibold))
+                }
                 if let eta = card["eta"].string { Text(eta).font(.system(size: 11)).foregroundStyle(.secondary) }
             }
             let steps = card["steps"].array
