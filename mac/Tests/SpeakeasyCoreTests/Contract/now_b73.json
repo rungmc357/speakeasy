@@ -130,30 +130,8 @@
      "label": "Unsent draft",
      "run_id": "run_mail"
     },
-    "text": "Finish the email \u201cFriday\u201d"
-   },
-   {
-    "generic": false,
-    "id": "rec:parked:w:r:run_patio",
-    "prompt": "Let's pick back up Quote the patio.",
-    "source": {
-     "kind": "dismissed_on_home",
-     "label": "Still open on Work",
-     "run_id": "run_patio",
-     "stack_id": "w:r:run_patio"
-    },
-    "text": "Pick back up: Quote the patio"
-   },
-   {
-    "generic": false,
-    "id": "rec:follow:run_inbox",
-    "prompt": "Any follow-ups on Summarize the inbox?",
-    "source": {
-     "kind": "follow_up",
-     "label": "Just finished",
-     "run_id": "run_inbox"
-    },
-    "text": "Follow up on Summarize the inbox"
+    "text": "Finish the email \u201cFriday\u201d",
+    "why": "unsent draft, newest on its thread, no reply or job on it since it was written"
    }
   ]
  },

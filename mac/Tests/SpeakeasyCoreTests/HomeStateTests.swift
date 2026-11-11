@@ -74,11 +74,9 @@ final class HomeStateTests: XCTestCase {
         let recs = try XCTUnwrap(home.recommendations)
         XCTAssertFalse(recs.generic)
         XCTAssertNotNil(recs.computedAt)
-        XCTAssertEqual(recs.items.map(\.source.kind), [.unsentDraft, .dismissedOnHome, .followUp])
+        XCTAssertEqual(recs.items.map(\.source.kind), [.unsentDraft], "only what waits on you; never a follow-up on a finished job")
         XCTAssertNotNil(recs.items[0].source.draftID)
         XCTAssertEqual(recs.items[0].source.runID, "run_mail")
-        XCTAssertEqual(recs.items[1].source.stackID, "w:r:run_patio")
-        XCTAssertEqual(recs.items[2].source.label, "Just finished")
         XCTAssertTrue(recs.items.allSatisfy { !$0.prompt.isEmpty && !$0.generic })
         XCTAssertEqual(home.recommendationsOrFallback, recs)
     }
