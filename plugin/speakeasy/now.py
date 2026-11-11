@@ -78,6 +78,8 @@ TALKING_S = 600
 CALL_CARD_S = 6 * 3600
 CALL_LIST_KEEP = 3              # the call card lists this many jobs/answers (four when that's all), then "N more"
 
+HANDOFF_KEPT_S = 30.0  # a held handoff's card leaves after this long even if nothing released it
+
 
 def number(n: int) -> str:
     """One to nine as words, 10 and up as numerals."""
@@ -203,6 +205,41 @@ class NowModel:
         self.lock = threading.Lock()
         self._live: dict[str, tuple[float, str | None]] = {}
         self._last_sessions: set[str] = set()
+        # snappy (latency plan #2): a handoff accepted but not yet a task. Its Working card shows at
+        # once, under the id the task's own card will have, so the run later fills in the same card.
+        self._handoffs: dict[str, dict[str, Any]] = {}
+
+    # -- handoffs on their way (calls.SidebandWorker.handoff_card) -------------------------------
+    def hold_handoff(self, key: str, item_id: str, idem: str, request: str, interaction_id: str | None) -> None:
+        """A request was accepted (the spoken "okay", or typed on a call): Home shows it as Working
+        now, before settling and routing, as the card *item_id* its task's run will fill in."""
+        with self.lock:
+            was = self._handoffs.get(key)
+            self._handoffs[key] = {"id": item_id, "idem": idem, "request": request,
+                                   "interaction_id": interaction_id, "at": was["at"] if was else self.clock()}
+
+    def release_handoff(self, key: str) -> bool:
+        """It became a task (whose row now speaks for the card), or never will. True if one was held."""
+        with self.lock:
+            return self._handoffs.pop(key, None) is not None
+
+    def _handoff_items(self, items: list[dict[str, Any]], keys: set[str], call: Any, now: float) -> list[dict[str, Any]]:
+        with self.lock:
+            for k in [k for k, h in self._handoffs.items() if now - h["at"] > HANDOFF_KEPT_S]:
+                self._handoffs.pop(k, None)   # one that never said how it ended: never a stuck card
+            held = list(self._handoffs.values())
+        shown = {i["id"] for i in items}
+        live = getattr(call, "interaction_id", None) if call is not None else None
+        out = []
+        for h in sorted(held, key=lambda h: h["at"]):
+            if h["idem"] in keys or h["id"] in shown:
+                continue  # its task's row is there: that card is this one
+            out.append({"id": h["id"], "session_id": h["id"][2:] if h["id"].startswith("s:") else None,
+                        "run_id": None, "title": _clip(h["request"], TITLE_CHARS), "source": "speakeasy",
+                        "line": _clip(h["request"], LINE_CHARS), "kind": WORKING, "step_kind": "think",
+                        "started_at": h["at"], "updated_at": h["at"], "unread": False, "handoff": True,
+                        "on_current_call": bool(live and h["interaction_id"] == live)})
+        return out
 
     # -- helpers ---------------------------------------------------------------------------------
     @property
@@ -667,6 +704,7 @@ class NowModel:
                 by_thread[item["_thread"]] = item
             by_place[place] = item
             items.append(item)
+        items.extend(self._handoff_items(items, {r["key"] for r in rows}, call, now))
         # Hermes conversations Speakeasy didn't start: running ones, and replies nobody has read yet.
         background: list[dict[str, Any]] = []
         mine = {i["session_id"] for i in items if i.get("session_id")}

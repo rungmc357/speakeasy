@@ -461,6 +461,8 @@ class VoiceService(SecureInputMixin):
         self.history_events = HistoryEvents(self._history_stamp)
         from .now import NowModel
         self.now_model = NowModel(self)
+        # snappy: a call's accepted handoff shows as a Working card before routing (calls.handoff_card).
+        self.rt.now_model = self.now_model
         from .home_chat import HomeChat
         self.home_chat = HomeChat(self)
         from .home_state import HomeState
@@ -3701,6 +3703,7 @@ class VoiceService(SecureInputMixin):
         if rev != getattr(self, "_now_rev_published", None):
             self._now_rev_published = rev
             self.history_events.publish("now", {"rev": rev})
+            logger.info("speakeasy: now.published rev=%s t=%.3f", str(rev)[:12], time.monotonic())
 
     def now_later(self, item_id: str, body: dict[str, Any], undo: bool = False) -> dict[str, Any]:
         """``POST /voice/now/{id}/later {until?: epoch, on_change?: true}``: off Home until then (or until
