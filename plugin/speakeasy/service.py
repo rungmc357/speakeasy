@@ -83,6 +83,11 @@ ROUTING_HINT = ("Also: `hermes voice routing` on the machine that runs Hermes. "
 
 MAX_SDP = 96 * 1024
 # UX contract flags in GET /voice/status ("capabilities"); clients hide what a server lacks.
+# F4: an automatic reload waits this long after any call is asked for, admitted, abandoned or ended,
+# so it never lands between an app's connect retries (they come a few seconds apart).
+CALL_SETTLE_S = 60.0
+UPDATE_LOG_EVERY_S = 30.0   # a waiting plugin update is logged when it starts waiting, then this often
+
 CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True,
                 "task_messages": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
@@ -505,6 +510,7 @@ class VoiceService(SecureInputMixin):
         self.codex_signin = CodexLogin(self.dir / "codex-login", popen=codex_login_popen or _sp.Popen,
                                        on_signed_in=self._codex_signed_in)
         self._install_lock = threading.Lock()
+        self._call_event_at = 0.0   # F4: wall clock of the last call asked for, admitted or abandoned
         self._install: dict[str, Any] = {"state": "", "message": "", "switch": False}
         self._grok_credential = grok_credential
         self._grok_connect = grok_connect
@@ -686,24 +692,58 @@ class VoiceService(SecureInputMixin):
         new code, which picks its Hermes event stream up where it left off (``resume_open_work``),
         and a job held behind another one stays held. Only what the next code couldn't pick up
         counts (``_unresumable``): the second or two while a job is handed to Hermes, an approval
-        answer on its way, or a chat-thread turn."""
+        answer on its way, or a chat-thread turn.
+
+        Only the reloader asks, and only when new files are waiting, so this also logs each deferral
+        with how long the update has waited (F4; here rather than in reloader.py, which is the shell
+        that only a gateway restart replaces)."""
+        reason = self.busy_reason()
+        now = time.monotonic()
+        since = getattr(self, "_update_waiting_since", None)
+        if reason is not None:
+            if since is None:
+                self._update_waiting_since = since = now
+                self._update_logged_at = 0.0
+            if now - getattr(self, "_update_logged_at", 0.0) >= UPDATE_LOG_EVERY_S:
+                self._update_logged_at = now
+                logger.info("speakeasy: plugin update waiting (%s); it has waited %.0fs", reason, now - since)
+        elif since is not None:
+            logger.info("speakeasy: plugin update loading after waiting %.0fs", now - since)
+            self._update_waiting_since = None
+        return reason is not None
+
+    def busy_reason(self, now: float | None = None) -> str | None:
+        """Why an automatic reload must wait (None = it may go now). Besides a live call, any call
+        admitted, abandoned or ended in the last CALL_SETTLE_S counts (F4, build 74 live: a reload
+        landed in the seconds between an abandoned connect and the app's retry, and the retry hit a
+        cold plugin)."""
+        now = time.time() if now is None else now
         with self.lock:
             live = list(self.interactions.values())
+        if now - getattr(self, "_call_event_at", 0.0) < CALL_SETTLE_S:
+            return "a call is connecting"
         for interaction in live:
             # A paused call counts until its pause is bookkept as ended (PAUSE_NOTICE_AFTER_S): a call
             # paused and never resumed (or ended on the device while paused) must not hold back an
             # update forever. Resuming it after a reload starts a fresh call on the app's side.
             if not interaction.call_closed or (interaction.paused and not interaction.pause_bookkept):
-                return True
+                return "a call is live"
+            last = max(float(interaction.started_at or 0), float(interaction.ended_at or 0))
+            if now - last < CALL_SETTLE_S:
+                return "a call just connected or ended"
             with interaction.lock:
                 if any(self._unresumable(r) for r in interaction.runs.values()):
-                    return True
+                    return "a job is being handed to Hermes"
         text = self._text_worker
         if text is not None:
             with text.interaction.lock:
                 if any(self._unresumable(r) for r in text.interaction.runs.values()):
-                    return True
-        return False
+                    return "a job is being handed to Hermes"
+        return None
+
+    def note_call_event(self) -> None:
+        """A call was asked for, admitted or abandoned: an automatic reload waits CALL_SETTLE_S."""
+        self._call_event_at = time.time()
 
     @staticmethod
     def _unresumable(run: Any) -> bool:
@@ -929,6 +969,7 @@ class VoiceService(SecureInputMixin):
                        local: bool = False) -> dict[str, Any]:
         if self.updated_underneath():
             raise ServiceError(503, RESTART_NEEDED)
+        self.note_call_event()   # F4: no automatic reload while this connect (or its retry) is settling
         resume_from = body.get("resume_from")
         relay = self.settings.get()["voice"]["provider"] == "grok"
         if relay:
@@ -1072,6 +1113,7 @@ class VoiceService(SecureInputMixin):
                     interaction.room_nudged = False
         with self.lock:
             self.interactions[interaction_id] = interaction
+        self.note_call_event()
         self.store.complete_session(request_id, client_result)
         self._start_worker(interaction, provider, transport).start()
         # Weather is the most common quick question: have the home forecast ready before it's asked.
@@ -1218,6 +1260,7 @@ class VoiceService(SecureInputMixin):
             if interaction.call_state not in (CallState.CONNECTING, CallState.LIVE) or interaction.paused:
                 return {"interaction_id": interaction_id, "abandoned": interaction.abandoned}
             interaction.abandoned = True
+        self.note_call_event()   # F4: the app's retry is seconds away; the plugin must still be warm
         worker = interaction.worker
         try:
             if hasattr(worker, "end_call"):

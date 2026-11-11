@@ -103,6 +103,15 @@ ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 # so most turns that start work get the acknowledgement; a 2.5 s deadline is inside Geo's "quick"
 # and leaves the few one-call answers that come back faster with no line in front of them.
 ACK_DEADLINE_S = 2.5
+# home-live-fix (F5, build 74 live: 0 of 5 typed turns had words within 2.5 s of the tap). The clock
+# starts when the request arrives, and the deadline is split so words land inside it after the
+# network and the phone's own drawing: the model's acknowledgement goes up as soon as it is ready
+# once the turn is ACK_EARLY_SHARE in without an answer; at ACK_FALLBACK_SHARE the line derived from
+# the ask goes up, unless the answer is expected within ANSWER_GRACE_S (then it comes alone).
+ACK_EARLY_SHARE = 0.48        # 1.2 s of 2.5
+ACK_FALLBACK_SHARE = 0.72     # 1.8 s of 2.5
+ANSWER_GRACE_S = 0.5
+DECIDE_EMA = 0.3              # weight of the newest coordinator time in its running estimate
 ACK_TOKENS = 60
 ACK_TIMEOUT_S = 8.0
 INTERRUPTED_S = 3600          # a turn cut off by a restart this recent gets a line saying so
@@ -374,7 +383,7 @@ class _Turn:
     """One Home message in flight. Whichever of the coordinator's reply and the acknowledgement reaches
     the thread first is the turn's first words; both sides decide that under ``lock``."""
 
-    def __init__(self, user_id: str) -> None:
+    def __init__(self, user_id: str, started: float | None = None) -> None:
         self.user_id = user_id
         self.lock = threading.Lock()
         self.done = threading.Event()
@@ -383,7 +392,9 @@ class _Turn:
         self.ack_row: str | None = None
         self.result: dict[str, Any] | None = None
         self.error: BaseException | None = None
-        self.started = time.monotonic()
+        self.started = time.monotonic() if started is None else started   # F5: when the request arrived
+        self.decided = threading.Event()   # the coordinator has answered: its reply is being posted
+        self.decide_started: float | None = None
         self.first_words_s: float | None = None
         self.first_kind = ""
 
@@ -691,6 +702,10 @@ class HomeChat:
         self._ack_call: Callable[..., Any] | None = None   # tests script the acknowledgement writer
         self.deadline_s = ACK_DEADLINE_S
         self._inflight: dict[str, _Turn] = {}
+        self._decide_s: float | None = None   # running estimate of how long the coordinator takes
+        self._pub_lock = threading.Lock()
+        self._pub_running = False
+        self._pub_again = False
         with self.store._lock, self.store._db:
             self.store._db.execute("""CREATE TABLE IF NOT EXISTS home_messages (
                 id TEXT PRIMARY KEY, client_id TEXT, role TEXT NOT NULL, text TEXT NOT NULL, at REAL NOT NULL,
@@ -969,6 +984,7 @@ class HomeChat:
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
                 "text", "client_id", "attachments", "model", "reasoning", "agent", "source", "focus", "reply_to"}:
             raise self._error(400, "Send the message as text.")
+        arrived = time.monotonic()   # F5: the turn's clock starts on arrival, not after Home's build
         text, client_id = body.get("text"), body.get("client_id")
         ids = body.get("attachments") or []
         if not isinstance(ids, list):
@@ -996,7 +1012,7 @@ class HomeChat:
             if not mine:
                 raise self._error(409, "That message is still being sent. Try again in a moment.")
         try:
-            return self._turn(text, client_id, ids, body, device_id, voice, job_text)
+            return self._turn(text, client_id, ids, body, device_id, voice, job_text, arrived)
         finally:
             if client_id:
                 self._release(client_id)
@@ -1032,19 +1048,94 @@ class HomeChat:
             out["replayed"] = True
         return out
 
+    def publish_soon(self) -> None:
+        """F5: ``svc._now_changed()`` (a full Home build) off the request thread. Calls that come in
+        while one runs fold into one more run after it, so a burst costs at most two builds."""
+        with self._pub_lock:
+            if self._pub_running:
+                self._pub_again = True
+                return
+            self._pub_running = True
+
+        def run() -> None:
+            while True:
+                try:
+                    self.svc._now_changed()
+                except Exception:  # noqa: BLE001 - the next change publishes again
+                    logger.debug("speakeasy: Home's publish failed", exc_info=True)
+                with self._pub_lock:
+                    if not self._pub_again:
+                        self._pub_running = False
+                        return
+                    self._pub_again = False
+        threading.Thread(target=run, name="home-publish", daemon=True).start()
+
+    def _answer_due_in(self, turn: _Turn) -> float | None:
+        """How soon the coordinator's answer is expected, from how long it has been taking (None
+        when there is no estimate yet or it is already overdue)."""
+        if turn.decided.is_set():
+            return 0.0
+        if self._decide_s is None or turn.decide_started is None:
+            return None
+        left = self._decide_s - (time.monotonic() - turn.decide_started)
+        return left if left > 0 else None
+
+    def _noted_decide(self, took: float) -> None:
+        self._decide_s = took if self._decide_s is None else (
+            (1 - DECIDE_EMA) * self._decide_s + DECIDE_EMA * took)
+
+    def _await_first_words(self, turn: _Turn, ack_box: dict[str, Any], ack_ready: threading.Event,
+                           text: str, files: list[dict], last: str | None) -> None:
+        """F5: until the turn has words, by the clock started on arrival: nothing before the early
+        mark (an answer that quick comes alone); then the model's acknowledgement the moment it is
+        ready; at the fallback mark the line from the ask, unless the answer is under
+        ANSWER_GRACE_S away (then it comes alone, still inside the deadline)."""
+        deadline = max(0.0, self.deadline_s)
+        early, hard = deadline * ACK_EARLY_SHARE, deadline * ACK_FALLBACK_SHARE
+        grace = min(ANSWER_GRACE_S, deadline * 0.2)
+
+        def until(mark: float) -> float:
+            return max(0.0, turn.started + mark - time.monotonic())
+        if turn.done.wait(until(early)):
+            return
+        while not turn.done.is_set() and not turn.visible and not ack_box.get("text") and until(hard) > 0:
+            if ack_ready.is_set():
+                turn.done.wait(min(0.02, until(hard)))   # the model wrote nothing usable: on to the fallback
+            else:
+                ack_ready.wait(min(0.02, until(hard)))
+        if turn.done.is_set() or turn.visible:
+            return
+        due = self._answer_due_in(turn)
+        if due is not None and due <= grace:
+            # The answer is moments away: wait for it (at most the grace, still inside the deadline)
+            # instead of a line it would repeat in the same second.
+            stop = time.monotonic() + grace
+            while time.monotonic() < stop and not turn.done.is_set() and not turn.visible:
+                turn.done.wait(0.02)
+            if turn.done.is_set() or turn.visible:
+                return
+        said = ack_box.get("text") or fallback_ack(text, files, avoid=last)
+        with turn.lock:
+            if not turn.visible:
+                turn.ack_row = self._add("assistant", said, self.clock(), reply_to=turn.user_id, part=PART_ACK,
+                                         model=ack_box.get("model") if ack_box.get("text") else None)
+                turn.ack = said
+                turn.visible = True
+                turn.first_words_s = time.monotonic() - turn.started
+                turn.first_kind = "ack" if ack_box.get("text") else "fallback ack"
+
     def _turn(self, text: str, client_id: str | None, ids: list[str], body: dict[str, Any],
-              device_id: str | None, voice: dict | None, job_text: str | None) -> dict[str, Any]:
+              device_id: str | None, voice: dict | None, job_text: str | None,
+              arrived: float | None = None) -> dict[str, Any]:
         history = self.shown()[-HISTORY_TURNS:]
-        jobs, aliases = self.jobs()
         # The thread shows what was sent (the clip, the picture), not a placeholder: read what the
         # staged items are before the job claims them. Words stay "" when there were none.
         staged = getattr(self.svc, "staged", None)
         files = staged.describe(device_id, ids) if ids and staged is not None else []
         quote = self._quote(body.get("reply_to"))
         user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files, quote=quote)
-        self.svc._now_changed()   # every device shows the message while the coordinator thinks
         last = next((m.get("text") for m in reversed(history) if m.get("role") == "assistant"), None)
-        turn = _Turn(user_id)
+        turn = _Turn(user_id, arrived)
         self._inflight[user_id] = turn
         ack_box: dict[str, Any] = {}
         ack_ready = threading.Event()
@@ -1064,8 +1155,9 @@ class HomeChat:
 
         def work() -> None:
             try:
+                jobs_aliases = self.jobs()   # F5: read on the turn's thread, not before the reply clock
                 turn.result = self._rest(turn, text, client_id, ids, body, device_id, voice, job_text,
-                                         history, (jobs, aliases), files, quote)
+                                         history, jobs_aliases, files, quote)
             except BaseException as exc:  # noqa: BLE001 - re-raised to the request when it still waits
                 turn.error = exc
                 if turn.ack is not None:
@@ -1075,24 +1167,16 @@ class HomeChat:
                 turn.done.set()
                 self._inflight.pop(user_id, None)
                 if turn.ack is not None:
-                    self.svc._now_changed()   # the request already returned: the answer is news
+                    self.publish_soon()   # the request already returned: the answer is news
         threading.Thread(target=work, name="home-turn", daemon=True).start()
-        if not turn.done.wait(max(0.0, self.deadline_s)):
-            # Not answered within the deadline: an acknowledgement goes up now (the model's line if it
-            # is ready, else one derived from the ask), and the answer follows in this exchange.
-            ack_ready.wait(0.05)
-            said = ack_box.get("text") or fallback_ack(text, files, avoid=last)
-            with turn.lock:
-                if not turn.visible:
-                    turn.ack_row = self._add("assistant", said, self.clock(), reply_to=user_id, part=PART_ACK,
-                                             model=ack_box.get("model") if ack_box.get("text") else None)
-                    turn.ack = said
-                    turn.visible = True
-                    turn.first_words_s = time.monotonic() - turn.started
-                    turn.first_kind = "ack" if ack_box.get("text") else "fallback ack"
+        self.publish_soon()   # every device shows the message while the coordinator thinks (off this thread)
+        self._await_first_words(turn, ack_box, ack_ready, text, files, last)
+        if not turn.done.is_set():
+            # Not answered in time: the acknowledgement is up (the model's line if it was ready, else
+            # one derived from the ask), and the answer follows in this exchange.
             if turn.ack is not None:
                 logger.info("speakeasy: Home's first words in %.1fs (%s)", turn.first_words_s or 0, turn.first_kind)
-                self.svc._now_changed()
+                self.publish_soon()
                 if not turn.done.is_set():
                     user = self._rows("WHERE id=?", (user_id,), limit=1)[0]
                     ack_row = self._rows("WHERE id=?", (turn.ack_row,), limit=1)[0]
@@ -1159,7 +1243,10 @@ class HomeChat:
         if focus is None and quote and quote.get("run_id"):
             focus = quote["run_id"]   # replying to a job card: "this"/"it" is that job
         context_text = self._with_quote(text, quote)
+        turn.decide_started = time.monotonic()
         decided, model = self._decide(context_text, history, (jobs, aliases), len(ids), focus=focus)
+        if decided is not None:
+            self._noted_decide(time.monotonic() - turn.decide_started)
         if decided is not None and decided["action"] == "none" and claims_work(decided["reply"]):
             # "Looking for a rain jacket." with no tool call starts nothing (seen live on a fast model):
             # ask once more, showing it what it wrote, so the work it promised really starts.
@@ -1201,6 +1288,7 @@ class HomeChat:
                            "request": decided.get("request")}
         reply_row = None
         if decided["reply"]:
+            turn.decided.set()
             reply_row = self._post_reply(turn, decided["reply"], decided["action"], model, user_id)
         started = None
         run_id = None
@@ -1324,7 +1412,7 @@ class HomeChat:
         if turn.ack is None and not turn.visible:
             turn.first_words_s = time.monotonic() - turn.started
             turn.first_kind = "card" if run_id else "nothing"
-        self.svc._now_changed()
+        self.publish_soon()   # F5: the reply is in this response; other devices hear of it off this thread
         user = self._rows("WHERE id=?", (user_id,), limit=1)[0]
         reply = self._rows("WHERE id=?", ((reply_row or turn.ack_row),), limit=1)[0] if (reply_row or turn.ack_row) else None
         logger.info("speakeasy: Home message handled (%s; first words %.1fs, %s; done %.1fs)", action,
