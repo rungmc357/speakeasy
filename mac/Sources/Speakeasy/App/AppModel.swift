@@ -634,6 +634,10 @@ final class AppModel: ObservableObject {
         if let http = error as? ServerClient.HTTPError {
             if http.status == 401 || http.status == 403 { return "This Mac isn't paired anymore. Pair again in Settings › Connection." }
             if http.status == 404 { return "This needs a newer Speakeasy on your Hermes." }
+            // A proxy/tunnel or timeout answered, not Hermes (SPK-279); a plain 500 stays "couldn't do that".
+            if ConnectionTrouble.isGatewayStatus(http.status) {
+                return "Couldn't reach your Hermes. Check that the Hermes machine is on and awake, then try again."
+            }
             NSLog("Speakeasy: request failed: HTTP %d %@", http.status, http.message)
             return PlainFailure.couldntDoThat
         }

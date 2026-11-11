@@ -43,6 +43,16 @@ public enum ConnectionTrouble {
         #endif
     }
 
+    /// SPK-279: the HTTP codes that mean "couldn't get to Hermes" rather than "Hermes failed": a timeout
+    /// (408), a proxy in front of Hermes with nothing behind it (502/503/504 from Tailscale serve or
+    /// any reverse proxy) and Cloudflare's own tunnel errors (520–527, 530). A plain 500 (or any other
+    /// 5xx) came from Hermes itself: something went wrong there, and it never reads as "can't reach".
+    /// The one list every client asks (iPhone banner and Home, Mac errors), so they can't drift.
+    public static func isGatewayStatus(_ status: Int) -> Bool {
+        status == 408 || status == 502 || status == 503 || status == 504
+            || (520...527).contains(status) || status == 530
+    }
+
     /// True when the message is the Tailscale hint, so the app can offer an "Open Tailscale" button.
     public static func suggestsTailscale(_ message: String) -> Bool {
         message.contains("Tailscale may be off")

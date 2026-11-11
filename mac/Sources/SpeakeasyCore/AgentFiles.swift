@@ -407,6 +407,10 @@ public final class AgentFilesModel: ObservableObject {
             if ConnectionTrouble.unreachable.contains(ns.code) { return ConnectionTrouble.message(for: error, server: nil) }
             return "Couldn't load your files. Try again."
         }
+        if let status = (error as? StatusCarrying)?.status, ConnectionTrouble.isGatewayStatus(status) {
+            // A proxy or tunnel answered for a Hermes that isn't there (SPK-279), not Hermes failing.
+            return "Couldn't reach your Hermes. Check that the computer it runs on is awake and online, then try again."
+        }
         if let status = (error as? StatusCarrying)?.status, status >= 500 {
             let said = (error as? LocalizedError)?.errorDescription ?? ""
             let detail = said.isEmpty || said.hasPrefix("Server HTTP") ? "" : " (\(said))"
