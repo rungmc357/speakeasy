@@ -161,3 +161,62 @@ def offered(home: Path, settings: dict[str, Any]) -> set[str]:
 
 def state_db(home: Path, agent: str) -> Path:
     return agent_home(home, agent) / "state.db"
+
+
+# -- profile switching (GET /voice/profiles, X-Speakeasy-Profile) -----------------------------------
+# The app can switch which profile it looks at. The phone only ever sends a profile NAME; the plugin
+# checks it against the profiles this gateway really serves and talks to that profile with the
+# profile's own API key, read here on the server. No key ever goes to the phone.
+
+PROFILE_HEADER = "X-Speakeasy-Profile"
+
+
+def default_model(home: Path, agent: str) -> str:
+    """The model a profile's own config.yaml runs on (``model.default`` or a bare ``model``), read
+    only; "" when it names none."""
+    from .settings import hermes_config
+    try:
+        cfg = hermes_config(agent_home(home, agent)) or {}
+    except Exception:
+        return ""
+    model = cfg.get("model") if isinstance(cfg, dict) else None
+    if isinstance(model, str):
+        return model.strip()[:80]
+    if isinstance(model, dict):
+        return str(model.get("default") or model.get("model") or "").strip()[:80]
+    return ""
+
+
+def switchable(home: Path, settings: dict[str, Any]) -> list[str]:
+    """Profiles the app may switch to: every profile this gateway serves (a real config, not parked,
+    not standalone), Speakeasy's own first. Without multiplexing that is only the own profile."""
+    own = own_agent(home, settings.get("hermes_profile", ""))
+    return [own] + [a for a in available(home, own) if a != own]
+
+
+def check_view(home: Path, settings: dict[str, Any], raw: Any) -> str | None:
+    """The other profile a request's header names: None when it names none or the own profile.
+    Raises ValueError for a name this gateway doesn't serve (never falls back silently: a message
+    meant for one profile must not land in another)."""
+    name = str(raw or "").strip().lower()
+    if not name:
+        return None
+    if not AGENT_RE.fullmatch(name) or name not in switchable(home, settings):
+        raise ValueError("unknown profile")
+    return None if name == own_agent(home, settings.get("hermes_profile", "")) else name
+
+
+def profiles(home: Path, settings: dict[str, Any], current: str | None) -> dict[str, Any]:
+    """``GET /voice/profiles``: each profile the app can switch to (id, name, its own default model,
+    read only) and which one this request looks at."""
+    own = own_agent(home, settings.get("hermes_profile", ""))
+    now = current or own
+    rows = []
+    for agent in switchable(home, settings):
+        entry = describe(home, agent, own)
+        entry.pop("default", None)
+        entry["model"] = default_model(home, agent) or None
+        entry["own"] = agent == own
+        entry["current"] = agent == now
+        rows.append(entry)
+    return {"profiles": rows, "current": now, "own": own}
