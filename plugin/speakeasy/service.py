@@ -462,6 +462,12 @@ class VoiceService(SecureInputMixin):
         self.now_model = NowModel(self)
         from .home_chat import HomeChat
         self.home_chat = HomeChat(self)
+        # The view fast path (view_fast.py): "show me build 75 tickets" answered by the coordinator's
+        # fast model with two read-only tools, as a native list widget, never a full agent task.
+        from . import view_fast
+        self.rt.view_call = self.home_chat.view_turn
+        self.rt.view_sources = view_fast.Sources(
+            view_fast.LinearSource(kanban_root(self.home) / "scripts" / "linear.py"), self.boards)
         from .home_state import HomeState
         # b73: Home's current exchange, widget stack, dismiss rules and recommendations (home_state.py).
         self.home_state = HomeState(self, clock=lambda: self.now_model.clock())
