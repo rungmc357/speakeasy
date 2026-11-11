@@ -114,6 +114,8 @@ def test_an_email_card_the_task_drew_by_hand_never_hands_send_to_the_agent(store
     with pytest.raises(ServiceError) as refused:
         VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "send"})
     assert refused.value.status == 409 and told == []
+    # Reopening shows the same card, so the refusal says what works instead.
+    assert refused.value.message == "This email can't be sent from here. Ask for the draft again."
 
 
 def test_an_edit_on_an_earlier_draft_must_carry_every_field_it_shows(server, service, hermes):
