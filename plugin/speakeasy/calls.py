@@ -562,6 +562,16 @@ class Runtime:
     session_db: Callable[[str | None], Path] | None = None
     # Live speech answers a saved confirmation through the same single-use claim as an app tap.
     confirm_card: Callable[..., dict[str, Any]] | None = None
+    # Home's stack row for a run closes as done (home_state.dealt_with) once its approval is
+    # answered, wherever it was answered. None = nothing to close.
+    dealt_with: Callable[[str], Any] | None = None
+
+    def approval_dealt_with(self, run_id: str | None) -> None:
+        if run_id and self.dealt_with is not None:
+            try:
+                self.dealt_with(run_id)
+            except Exception:
+                logger.debug("speakeasy: closing Home's approval row failed", exc_info=True)
 
     @property
     def names(self) -> P.Names:
@@ -845,6 +855,21 @@ class Interaction:
             seen.add(id(nxt))
             current = nxt
         return current
+
+
+def approval_from_event(event: Any) -> dict[str, Any] | None:
+    """Hermes' approval request (an ``approval.request`` event, or the ``approval`` a waiting run's
+    status carries) as Speakeasy keeps it: {request_id, description, choices}; None when unusable.
+    The answers are the ones Hermes offers; Speakeasy never sends "always" (hermes_api.approve)."""
+    if not isinstance(event, dict):
+        return None
+    request_id = event.get("request_id")
+    if not isinstance(request_id, str) or not ID_RE.fullmatch(request_id):
+        return None
+    description = safe_user_text(event.get("description") or event.get("reason"), 500)
+    offered = event.get("choices") if isinstance(event.get("choices"), list) else []
+    choices = ["once"] + (["session"] if "session" in offered else []) + ["deny"]
+    return {"request_id": request_id, "description": description or "Consequential action", "choices": choices}
 
 
 def interaction_tasks(store: Any, interaction: Interaction, assistant_name: str = "Hermes") -> list[dict[str, Any]]:
@@ -3127,6 +3152,7 @@ class SidebandWorker:
         if resolving:
             self.move(run, "working")
         self.store.progress(run.idem_key, "milestone", APPROVED_MILESTONE[choice])
+        self.rt.approval_dealt_with(run.run_id)   # Home's row closes as done, never "skipped"
         self.publish()
         return choice
 
@@ -6062,22 +6088,19 @@ class SidebandWorker:
                 if derived:
                     self.store.tool_progress(idem, *derived)
         elif kind == "approval.request":
-            request_id = event.get("request_id")
-            if not isinstance(request_id, str) or not ID_RE.fullmatch(request_id):
+            safe = approval_from_event(event)
+            if safe is None:
                 return
+            request_id, choices = safe["request_id"], safe["choices"]
             description = safe_user_text(event.get("description") or event.get("reason"), 500)
-            # The answers Hermes offers for this request; Speakeasy never sends "always" (hermes_api.approve).
-            offered = event.get("choices") if isinstance(event.get("choices"), list) else []
-            choices = ["once"] + (["session"] if "session" in offered else []) + ["deny"]
-            safe = {"request_id": request_id, "description": description or "Consequential action",
-                    "choices": choices}
             with self.interaction.lock:
                 if backend.status == "ambiguous":
                     return
+                backend.approval = safe   # held before the status says "waiting": Home never sees one unarmed
             if not self.move(backend, "waiting_for_approval"):
+                with self.interaction.lock:
+                    backend.approval = None
                 return  # stopped or finished meanwhile: no card for a question nobody can answer
-            with self.interaction.lock:
-                backend.approval = safe
             self.store.progress(idem, "milestone", "Waiting for your approval")
             if not self.call_connected():
                 self.notices.needs_you(request_id, safe["description"])

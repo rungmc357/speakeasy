@@ -955,6 +955,8 @@ class HomeChat:
             out["run_id"] = row["run_id"]
         if row.get("part") in (PART_ACK, ANSWER) and row["role"] == "assistant":
             out["part"] = row["part"]   # home-ack: above the status capsule (ack) or after it (answer)
+        if row.get("reply_to") and row["role"] == "assistant":
+            out["reply_to"] = "m:" + row["reply_to"]   # the user message it answers (never a later one)
         if row.get("client_id") and row["role"] == "user":
             out["client_id"] = row["client_id"]   # the app swaps its own "sending" bubble for this one
         if row.get("pending") and row["role"] == "user":

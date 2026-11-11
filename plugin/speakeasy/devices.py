@@ -194,6 +194,11 @@ class DeviceStore:
                 return False
             device["push"] = {"apns_token": apns_token, "environment": environment, "kinds": list(kinds),
                               "updated_at": time.time() if now is None else now}
+            # One phone, one push target: a re-paired phone's old record (same app on the same phone,
+            # so the same APNs token) stops getting notifications, sealed with a key it threw away.
+            for other_id, other in data["devices"].items():
+                if other_id != device_id and (other.get("push") or {}).get("apns_token") == apns_token:
+                    del other["push"]
             self._save(data)
         return True
 

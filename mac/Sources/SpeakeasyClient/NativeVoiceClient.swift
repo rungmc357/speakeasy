@@ -818,8 +818,9 @@ public final class NativeVoiceClient: VoiceCallClient {
                 if self.model.state.resumeFrom != nil, let http = error as? ServerClient.HTTPError,
                    http.status == 404 || http.status == 409, self.model.state.connection == .connecting {
                     call.close()
+                    let notice = CallReconnect.resumeRefusedNotice(reconnect: self.model.state.phase.reconnectAttempt)
                     self.dispatch(.connectFallback(dropResume: true))
-                    self.dispatch(.error("Couldn't resume the paused call; started a new one"))
+                    if let notice { self.dispatch(.error(notice)) }
                     self.connect(api)
                     return
                 }
