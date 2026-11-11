@@ -5,6 +5,7 @@ import SpeakeasyCore
 
 struct QuoteCard: View {
     let card: ViewCard
+    @Environment(\.widgetSlim) private var slim
     var body: some View {
         let change = card["change_pct"].double ?? 0
         let up = change >= 0
@@ -39,8 +40,9 @@ struct QuoteCard: View {
                 }
             }
             let points = card["points"].doubles
-            if points.count > 2 { Sparkline(points: points, up: up) }
-            if let asOf = card["as_of"].string {
+            // A slim widget: the price row and a short sparkline; the full card the taller chart and its time.
+            if points.count > 2 { Sparkline(points: points, up: up, height: slim ? 30 : 56) }
+            if !slim, let asOf = card["as_of"].string {
                 Text(asOf).font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }
@@ -229,9 +231,12 @@ struct TeamRow: View {
 
 struct GameCard: View {
     let card: ViewCard
+    @Environment(\.widgetSlim) private var slim
     var body: some View {
         let status = card["status"].string ?? "scheduled"
         CardBox {
+            // A slim widget: the score rows only (its label row names the league).
+            if !slim {
             CardHeaderRow {
                 CardHeader(icon: "sportscourt.fill", title: card["league"].string ?? "Game")
                 if status == "live" {
@@ -242,12 +247,15 @@ struct GameCard: View {
                         .padding(.horizontal, 5).padding(.vertical, 1.5).background(Capsule().fill(.primary.opacity(0.08)))
                 }
             }
+            }
             ForEach(Array(card["teams"].array.enumerated()), id: \.offset) { _, side in
                 TeamRow(side: side, showScore: status != "scheduled")
             }
-            Text([status == "scheduled" ? card["when"].string : card["detail"].string, card["venue"].string,
-                  card["broadcast"].string].compactMap { $0 }.joined(separator: " · "))
-                .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+            if !slim {
+                Text([status == "scheduled" ? card["when"].string : card["detail"].string, card["venue"].string,
+                      card["broadcast"].string].compactMap { $0 }.joined(separator: " · "))
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+            }
         }
     }
 }
@@ -285,11 +293,14 @@ struct GamesCard: View {
 struct StandingsCard: View {
     let card: ViewCard
     @Environment(\.cardFit) private var fit
+    @Environment(\.widgetSlim) private var slim
+    /// Rows drawn: a slim widget the top three, the call's compact fit four, the full card up to 12.
+    private var shown: Int { slim ? 3 : fit.rows(12) + (fit == .compact ? 1 : 0) }
     var body: some View {
         CardBox {
-            CardHeader(icon: "list.number", title: card["title"].string ?? "Standings")
+            if !slim { CardHeader(icon: "list.number", title: card["title"].string ?? "Standings") }
             // Compact (a Home widget, the call): the top of the table, then "N more".
-            ForEach(Array(card["rows"].array.prefix(fit.rows(12) + (fit == .compact ? 1 : 0)).enumerated()), id: \.offset) { i, row in
+            ForEach(Array(card["rows"].array.prefix(shown).enumerated()), id: \.offset) { i, row in
                 HStack(spacing: 8) {
                     Text(row["rank"].string ?? "\(i + 1)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
                         .frame(width: 18, alignment: .trailing)

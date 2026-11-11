@@ -44,7 +44,34 @@ struct DayCard: View {
     @Environment(\.cardFit) private var fit
     @Environment(\.cardStyle) private var style
     @Environment(\.cardRunAction) private var runAction
+    @Environment(\.widgetSlim) private var slim
+    /// Events a slim widget shows: the next two, one line each, then "N more".
+    static let slimRows = 2
     var body: some View {
+        if slim { slimBody } else { fullBody }
+    }
+    /// A slim widget: the next two events on one line each (time, title), then "N more".
+    private var slimBody: some View {
+        let all = card["events"].array
+        let events = Array(all.prefix(Self.slimRows))
+        return CardBox {
+            if events.isEmpty {
+                Text("Nothing scheduled.").font(.subheadline).foregroundStyle(style.secondary)
+            }
+            ForEach(Array(events.enumerated()), id: \.offset) { _, e in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(e["all_day"].bool == true ? "All day" : EventTimes.one(e["start"].string).map(Self.bare) ?? "")
+                        .font(.footnote.weight(.semibold)).monospacedDigit().foregroundStyle(style.secondary)
+                        .frame(width: 48, alignment: .leading)
+                    Text(e["title"].string ?? "").font(.subheadline.weight(.medium)).foregroundStyle(style.ink).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            MoreRows(total: min(all.count, 12), shown: events.count)
+        }
+    }
+    @ViewBuilder private var fullBody: some View {
         let events = Array(card["events"].array.prefix(fit.rows(12)))
         let pairs = DayOverlaps.pairs(events)
         CardBox {
@@ -395,13 +422,17 @@ struct TransitCard: View {
 
 struct FlightCard: View {
     let card: ViewCard
+    @Environment(\.widgetSlim) private var slim
     var body: some View {
         let status = card["status"].string ?? ""
         let late = status.lowercased().contains("delay") || status.lowercased().contains("cancel")
         CardBox {
-            CardHeaderRow {
-                CardHeader(icon: "airplane", title: [card["airline"].string, card["number"].string].compactMap { $0 }.joined(separator: " "))
-                Text(status).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(late ? Color.red : Color.green)
+            // A slim widget: the route row only (its headline says the flight and its status).
+            if !slim {
+                CardHeaderRow {
+                    CardHeader(icon: "airplane", title: [card["airline"].string, card["number"].string].compactMap { $0 }.joined(separator: " "))
+                    Text(status).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(late ? Color.red : Color.green)
+                }
             }
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -419,12 +450,14 @@ struct FlightCard: View {
                     Text(card["arrives"].string ?? "").font(.system(size: 11.5)).foregroundStyle(.secondary)
                 }
             }
-            HStack(spacing: 12) {
-                if let t = card["terminal"].string { Text("Terminal \(t)") }
-                if let g = card["gate"].string { Text("Gate \(g)") }
-                if let d = card["delay"].string { Text(d).foregroundStyle(.red) }
+            if !slim {
+                HStack(spacing: 12) {
+                    if let t = card["terminal"].string { Text("Terminal \(t)") }
+                    if let g = card["gate"].string { Text("Gate \(g)") }
+                    if let d = card["delay"].string { Text(d).foregroundStyle(.red) }
+                }
+                .font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            .font(.system(size: 11)).foregroundStyle(.secondary)
         }
     }
 }
@@ -432,6 +465,7 @@ struct FlightCard: View {
 struct PackageCard: View {
     let card: ViewCard
     @Environment(\.cardFit) private var fit
+    @Environment(\.widgetSlim) private var slim
     /// Steps done of all steps (the compact form's progress bar); nil without steps.
     static func progress(_ card: ViewCard) -> Double? {
         let steps = card["steps"].array
@@ -445,11 +479,14 @@ struct PackageCard: View {
     /// shipped to delivered, and the latest scan. The full timeline is one tap away.
     private var compact: some View {
         CardBox {
-            CardHeaderRow {
-                CardHeader(icon: "shippingbox.fill", title: card["carrier"].string ?? "Package")
-                openable(card["url"].url)
+            // A slim widget: the status, when it comes and the bar (its label row names the carrier).
+            if !slim {
+                CardHeaderRow {
+                    CardHeader(icon: "shippingbox.fill", title: card["carrier"].string ?? "Package")
+                    openable(card["url"].url)
+                }
+                if let item = card["item"].string { Text(item).font(.system(size: 12.5, weight: .medium)).lineLimit(1) }
             }
-            if let item = card["item"].string { Text(item).font(.system(size: 12.5, weight: .medium)).lineLimit(1) }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(card["status"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(1)
                 Spacer(minLength: 4)
@@ -459,7 +496,7 @@ struct PackageCard: View {
                 Bar(fraction: p, tint: .green, height: 5)
             }
             // The latest scan, unless it only says the status above again.
-            if let last = card["steps"].array.last(where: { $0["done"].bool != false }),
+            if !slim, let last = card["steps"].array.last(where: { $0["done"].bool != false }),
                !TextEcho.repeats(last["text"].string, in: card["status"].string) {
                 HStack(spacing: 6) {
                     Text(last["text"].string ?? "").lineLimit(1)

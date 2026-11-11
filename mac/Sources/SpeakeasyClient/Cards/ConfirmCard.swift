@@ -23,7 +23,41 @@ struct ConfirmCard: View {
         default: return "checkmark.shield"
         }
     }
+    @Environment(\.widgetSlim) private var slim
+    /// A slim Home widget (SPK-358 pass 4): a pending checkout's item, total and who/where on one
+    /// quiet line, so its Buy / Cancel buttons never fall under the composer; the full card (one tap)
+    /// shows the breakdown.
+    private var slimCheckout: Bool { slim && card["type"].string == "checkout" && state == "pending" }
     var body: some View {
+        if slimCheckout { slimBody } else { fullBody }
+    }
+    private var slimBody: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(card["items"].array.prefix(2).enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .center, spacing: 10) {
+                    if item["photo_url"].url != nil {
+                        ArtifactPhoto(url: item["photo_url"].url, symbol: "shippingbox")
+                            .frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 9))
+                    }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(AgentMarkdown.attributed(item["name"].string ?? "")).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        Text(ConfirmCard.itemFacts(item)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            let who = [details["merchant"].string, details["address"].string,
+                       details["payment_last4"].string.map { "•••• \($0)" }].compactMap { $0 }
+            if !who.isEmpty {
+                Text(who.joined(separator: " · ")).font(.caption).foregroundStyle(style.secondary).lineLimit(1)
+            }
+            amount("Total", key: "total", prominent: true)
+        }
+        .modifier(ConfirmSurface(style: style, hosted: hosted))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("confirm-card")
+    }
+    private var fullBody: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: style.capsHeaders ? 10 : CleanGrid.glyphGap) {
                 if style.capsHeaders {

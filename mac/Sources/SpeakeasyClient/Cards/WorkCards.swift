@@ -327,7 +327,28 @@ struct IssueCard: View {
     @Environment(\.cardStyle) private var style
     @Environment(\.cardFit) private var fit
     @Environment(\.cardWidgetTitle) private var widgetTitle
+    @Environment(\.widgetSlim) private var slim
     var body: some View {
+        if slim { slimBody } else { fullBody }
+    }
+    /// A slim widget: the issue's state and who has it, on one row (its headline says the rest).
+    private var slimBody: some View {
+        CardBox {
+            HStack(spacing: CleanGrid.s) {
+                if let state = card["state"].string {
+                    let tone = StateWords.tone(state, given: card["tone"].string) ?? "warn"
+                    CardTag(icon: StateWords.symbol(state, tone: tone), text: state, tint: style.tone(tone))
+                }
+                let who = [card["assignee"].string, card["priority"].string.map { "\($0) priority" }].compactMap { $0 }
+                if !who.isEmpty {
+                    CardFactLine(icon: card["assignee"].string == nil ? "chart.bar.fill" : "person.fill", text: who.joined(separator: " · "))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+    private var fullBody: some View {
         CardBox {
             if widgetTitle != nil {
                 // In a Home widget the label row already shows the source's mark and name: only the
@@ -347,7 +368,9 @@ struct IssueCard: View {
                 VStack(alignment: .leading, spacing: 10) {
                     let title = card["title"].string ?? ""
                     if !(widgetTitle.map { TextEcho.nearDuplicate(title, $0) } ?? false) {
-                        Text(title).font(.title3.weight(.semibold)).foregroundStyle(style.ink)
+                        // In a widget the widget's headline leads: the issue's own title is body text
+                        // under it (two headlines in one weight read as two things).
+                        Text(title).font(widgetTitle != nil ? .body : .title3.weight(.semibold)).foregroundStyle(style.ink)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if let state = card["state"].string {

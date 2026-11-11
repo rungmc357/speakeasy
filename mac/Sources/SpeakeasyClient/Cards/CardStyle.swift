@@ -145,6 +145,12 @@ public extension EnvironmentValues {
 extension EnvironmentValues {
     /// In a Home widget: its label row already names the source (mark + name).
     var inWidget: Bool { cardWidgetTitle != nil }
+    /// A Home widget at its SLIM size (SPK-358 pass 4): the card's short form, its key fact and
+    /// visual only (a flight's route row, a package's status and bar, a game's score, the day's next
+    /// two events, a table's top three, a quote's price and sparkline, an issue's state and owner, a
+    /// checkout's item and total), so two widgets fit a phone. The full card (`.full`) shows the
+    /// rest. The call's compact fit (no widget) is unchanged.
+    var widgetSlim: Bool { cardWidgetTitle != nil && cardFit == .compact }
 }
 
 /// The card surface for a style: flat fill + hairline, or glass (material + tint + bright edge +
