@@ -1,7 +1,5 @@
 """SPK-361: a model picked on a call (Profile > New work, PATCH /voice/settings jobs) decides every
 task a call runs, a continued conversation too, until it is changed. Invented requests and catalog."""
-import time
-
 import pytest
 
 from fakes import SDP, http, wait_for
@@ -73,9 +71,9 @@ def test_a_conversation_continued_on_the_call_runs_on_the_pick_not_its_old_model
 
 
 def test_with_no_pick_on_a_call_a_continued_conversation_keeps_its_model(server, service, hermes, catalog):
-    _, worker = start_call(server, service, "req_pick_4")
+    first, worker = start_call(server, service, "req_pick_4")
     run(service, hermes, worker, "call_soup", "List three soups")
-    end_call(server, service, _)
+    end_call(server, service, first)
     pick(server, GPT)  # a new default set with no call live: conversations keep theirs (SPK-210)
     assert service.store.model_choice("call") is None
     _, again = start_call(server, service, "req_pick_5")
@@ -83,6 +81,20 @@ def test_with_no_pick_on_a_call_a_continued_conversation_keeps_its_model(server,
     assert sent["model"] == "claude-opus-5-5" and record["source"] == "existing"
     sent, _ = run(service, hermes, again, "call_bread", "Name two breads")
     assert sent["model"] == "gpt-6.1-sol"  # a new task still takes the new default
+
+
+def test_a_pick_made_while_the_call_is_paused_holds_after_resume(server, service, hermes, catalog):
+    session, worker = start_call(server, service, "req_pick_11")
+    run(service, hermes, worker, "call_soup", "List three soups")
+    iid = session["interaction_id"]
+    assert http(server.base_url, "POST", f"/voice/interactions/{iid}/pause", {}, server.token)[0] == 200
+    worker.call_closed()  # the app closes its voice session on pause; the call is still on, paused
+    pick(server, GPT)
+    status, resumed = http(server.base_url, "POST", "/voice/sessions", {"sdp": SDP, "resume_from": iid},
+                           server.token, {"Idempotency-Key": "req_pick_11_resume"})
+    assert status == 201, resumed
+    sent, record = run(service, hermes, service.workers[-1], "call_more", "Add a fourth soup", task_id="call_soup")
+    assert sent["model"] == "gpt-6.1-sol" and record["source"] == "call"
 
 
 def test_picking_hermes_default_on_a_call_moves_a_continued_conversation_to_it(server, service, hermes, catalog):
@@ -105,7 +117,6 @@ def test_a_chat_pick_made_after_the_call_pick_wins_for_that_chat(server, service
     _, worker = start_call(server, service, "req_pick_9")
     pick(server, GPT)
     sent, _ = run(service, hermes, worker, "call_soup", "List three soups")
-    time.sleep(0.01)
     service.store.set_model_choice("session:" + sent["session_id"], "anthropic/claude-sonnet-5-5", None)
     sent, _ = run(service, hermes, worker, "call_more", "Add a fourth soup", task_id="call_soup")
     assert sent["model"] == "claude-sonnet-5-5"
@@ -127,8 +138,8 @@ def test_text_typed_on_a_tasks_page_during_the_call_keeps_that_chats_model(serve
 def test_the_pick_is_kept_until_changed_and_cleared_by_a_pick_off_a_call(server, service, hermes, catalog):
     session, _ = start_call(server, service, "req_pick_8")
     pick(server, GPT, "high")
-    assert service.store.model_choice("call") == {**service.store.model_choice("call"), "model": GPT,
-                                                  "reasoning": "high"}
+    row = service.store.model_choice("call")
+    assert (row["model"], row["reasoning"]) == (GPT, "high")
     pick(server, "")
     assert service.store.model_choice("call")["model"] == "default"
     end_call(server, service, session)
