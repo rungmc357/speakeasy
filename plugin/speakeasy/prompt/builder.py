@@ -727,6 +727,14 @@ LOOKUP_SOURCES_RULE = (
     "dates and the city for each. "
 )
 
+# Looking at work is not doing it (11-11: "status of snappy" loaded a 99k-char build-worker skill and
+# made 8 tool calls). Build-worker skills are for the build itself.
+VIEW_ONLY_RULE = (
+    "A status question or a request to see something (where some work stands, a list of tickets, a board) "
+    "is a read: answer it from one or two lookups (the issue and its card) in a few short lines, and do not "
+    "load build-worker skills such as speakeasy-linear-worker for it; those are only for doing the build work. "
+)
+
 _OPENER_FILLER = re.compile(
     r"(?i)^(?:(?:good|great|nice) catch|you(?:'|\u2019)re (?:right|absolutely right)|thanks(?: for [^.!?]{0,30})?|"
     r"thank you|got it|sure thing|of course|absolutely|okay|ok|right)\b[\s,.!\u2014-]*")
@@ -816,7 +824,7 @@ def build_task_prompt(names: Names, revision: int, context: str, focus: str | No
         "another board or session. "
         + truthfulness(names) + " "
         "Do not auto-approve consequential actions. Return concise verified facts and status suitable for speech. "
-        + render(LOOKUP_SOURCES_RULE, names) + PRODUCT_CARDS_RULE + VIEWS_RULE + ARTIFACTS_RULE + CONFIRM_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
+        + render(LOOKUP_SOURCES_RULE, names) + VIEW_ONLY_RULE + PRODUCT_CARDS_RULE + VIEWS_RULE + ARTIFACTS_RULE + CONFIRM_RULE + render(VISUAL_RESULTS_RULE, names) + render(QUESTION_RULE, names)
         + render(EMAIL_DRAFT_RULE, names)
         + (render("Your task: ", names) + f"{focus} " + render(
             "Other parts of what {user_name} said run as separate tasks; do not do them, and do not "

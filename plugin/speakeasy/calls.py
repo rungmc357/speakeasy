@@ -4167,8 +4167,15 @@ class SidebandWorker:
         to see, the fast path is off or missing, or anything in it fails: the agent takes it."""
         from . import view_fast
         fast = self.rt.settings().get("fast_routing") or {}
+        base = _base(backend.delegation_id)
+        # Something shared with it (pictures, files, "this page" on a shared screen) needs the agent.
+        # Every call handoff has a share_refs entry (False when nothing points at the screen).
+        try:
+            bound = bool(self.interaction.attachments.bound(base))
+        except Exception:  # noqa: BLE001 - no attachments panel here
+            bound = False
         if (self.rt.view_call is None or self.rt.view_sources is None or not fast.get("views", True)
-                or not view_fast.wanted(request) or _base(backend.delegation_id) in self.share_refs):
+                or not view_fast.wanted(request) or self.share_refs.get(base) or bound):
             return False
         marks: dict[str, int] = {"view_routing_ms": int((time.monotonic() - entered) * 1000)}
         started = time.monotonic()

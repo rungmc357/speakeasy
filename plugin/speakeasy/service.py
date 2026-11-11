@@ -3687,12 +3687,17 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(404, "This call is no longer saved on your Hermes.")
         return conversation(logged, self.store.call_written_answers(interaction_id))
 
-    def now(self, query: dict[str, str]) -> dict[str, Any]:
+    def now(self, query: dict[str, str], *, delivered: bool = True) -> dict[str, Any]:
         """``GET /voice/now?tz=<IANA zone>``: Home's one ordered list (now.py)."""
         self.sweep_questions()
         tz = (query or {}).get("tz") or None
         body = self.now_model.build(tz)
         self._now_rev_sent = body["rev"]
+        if delivered and getattr(self, "home_state", None) is not None:
+            try:  # delivery timing: when a phone first gets a result after it lands on the stack
+                self.home_state.note_fetched(((body.get("stack") or {}).get("items") or []))
+            except Exception:  # noqa: BLE001 - a log line never breaks Home
+                logger.debug("speakeasy: delivery timing failed", exc_info=True)
         return body
 
     def now_recent(self, query: dict[str, str]) -> dict[str, Any]:
@@ -4806,7 +4811,7 @@ class VoiceService(SecureInputMixin):
 
     def home_recommendations(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/home/recommendations?tz=``: the saved list (recomputed only when it must be)."""
-        return self.now(query)["recommendations"]
+        return self.now(query, delivered=False)["recommendations"]
 
     def home_recommendation_dismiss(self, rec_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """``POST /voice/home/recommendations/{id}/dismiss``: it never comes back. Idempotent."""

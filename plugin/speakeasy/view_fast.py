@@ -72,21 +72,83 @@ TOOLS = [
 
 
 def wanted(request: str | None) -> bool:
-    """Only wants to see a list: "show me build 75 tickets", "what's in build 76", "pull up the
-    speakeasy board". Never anything that changes something or asks for reasoning."""
+    """Only wants to see a list ("show me build 75 tickets", "what's in build 76", "pull up the
+    speakeasy board") or where some work stands ("status of snappy", "how's SPK-391 going").
+    Never anything that changes something or asks for reasoning."""
     text = " ".join((request or "").split())
-    if not text or len(text.split()) > 20 or _WORK.search(text):
+    if not text or len(text.split()) > 20:
+        return False
+    if status_wanted(text):
+        return True
+    if _WORK.search(text):
         return False
     return bool(_VERB.search(text) and _OBJECT.search(text))
 
 
+# -- status questions ("status of snappy", "where is the swipe reply fix", "how's SPK-391 going") -----
+# Measured before this (11-11 17:23, "status of \"snappy\" work for speakeasy"): the task agent got a
+# 27k prompt, loaded the 99k-char build-worker skill, made 8 tool calls and wrote 6,250 chars.
+STATUS_TOOL = "speakeasy_work_status"
+STATUS_ROWS = 5
+_STATUS = re.compile(r"(?i)^\s*(?:(?:hey|ok|okay|so|um|uh|and|can you tell me|tell me|todd|quick)[,\s]+)*"
+                     r"(?:(?:what(?:'s|s|\s+is)\s+the\s+)?(?:status|progress|latest)\s+(?:of|on|for|with)"
+                     r"|status\s+update\s+on|any\s+(?:news|updates?)\s+on|where(?:'s|s|\s+is|\s+are)\s+(?:we\s+(?:on|with|at)\s+)?"
+                     r"|how(?:'s|s|\s+is|\s+are)\s+(?:the\s+)?(?!come\b))")
+# Words that ask for a change, for reasoning, or are chit-chat: the agent (or the voice) takes those.
+_STATUS_NOT = re.compile(r"(?i)\b(?:and\s+(?:then\s+)?(?:fix|move|close|ship|merge|start|stop|send|update|change)|"
+                         r"why|explain|compare|weather|time\s+is\s+it|you|your|yours|yourself|I|me|my|mine|"
+                         r"family|mom|dad|day|weekend|trip)\b")
+_STATUS_FILLER = re.compile(r"(?i)\b(?:the|of|on|for|with|work|working|going|coming\s+along|doing|at|now|"
+                            r"right|currently|today|please|ticket|issue|card|task|job|thing|stuff|speakeasy|"
+                            r"in\s+linear|on\s+the\s+board)\b|[\"\u201c\u201d'`?.!,]")
+_STATUS_VAGUE = {"it", "that", "this", "everything", "things", "all", "we", "they", "he", "she", "life", "stuff"}
+
+
+def status_wanted(request: str | None) -> bool:
+    """A question about where some piece of work stands: "status of \"snappy\" work for speakeasy",
+    "where is the swipe reply fix", "how's SPK-391 going". Not chit-chat ("how's it going", "how are
+    you"), not a change, and there must be something left to look up."""
+    text = " ".join((request or "").split())
+    if not text or len(text.split()) > 20:
+        return False
+    m = _STATUS.search(text)
+    if not m or _STATUS_NOT.search(text[m.end():]):
+        return False
+    rest = status_words(text)
+    return bool(rest) and rest.lower() not in _STATUS_VAGUE
+
+
+def status_words(request: str) -> str:
+    """The words to search for: the question with its lead ("status of") and filler taken off."""
+    text = " ".join((request or "").split())
+    m = _STATUS.search(text)
+    rest = text[m.end():] if m else text
+    rest = _STATUS_FILLER.sub(" ", rest)
+    return " ".join(rest.split())[:80]
+
+
+STATUS_SYSTEM = ("You look up where a piece of work stands, for a phone app that draws the answer as a native "
+                 "widget. Call speakeasy_work_status exactly once with the few words that name the work "
+                 "(\"snappy\", \"swipe reply\", \"SPK-391\"), then stop. Never answer in text.")
+
+STATUS_TOOLS = [{"type": "function", "function": {
+    "name": STATUS_TOOL,
+    "description": "Read-only. The Linear issues matching some words, each with its Kanban card's status and "
+                   "latest progress note when it has one.",
+    "parameters": {"type": "object", "properties": {
+        "words": {"type": "string", "description": "What the work is called, e.g. 'snappy', 'SPK-391'."}},
+        "required": ["words"]}}}]
+
+
 def messages(request: str) -> list[dict[str, str]]:
-    return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": " ".join(request.split())[:400]}]
+    system = STATUS_SYSTEM if status_wanted(request) else SYSTEM
+    return [{"role": "system", "content": system}, {"role": "user", "content": " ".join(request.split())[:400]}]
 
 
 def prompt_chars(request: str) -> int:
     """The whole prompt the model sees (system + user + tool schemas), for the size budget."""
-    return sum(len(m["content"]) for m in messages(request)) + len(json.dumps(TOOLS))
+    tools = STATUS_TOOLS if status_wanted(request) else TOOLS
+    return sum(len(m["content"]) for m in messages(request)) + len(json.dumps(tools))
 
 
 # -- Linear ------------------------------------------------------------------------------------------
@@ -157,6 +219,24 @@ class LinearSource:
         nodes = self._gql("query($t:String!,$f:IssueFilter){searchIssues(term:$t,first:%d,filter:$f){nodes{%s}}}"
                           % (MAX_ROWS * 2, _ISSUE), {"t": words, "f": team_filter})
         return {"title": f"\u201c{words[:40]}\u201d", "scope": "search", "issues": nodes["searchIssues"]["nodes"]}
+
+    def search(self, words: str) -> list[dict[str, Any]]:
+        """Status questions: the issues best matching *words* ("SPK-391" is that issue; "build 75" its
+        build), Linear's own ranking, at most STATUS_ROWS."""
+        words = " ".join(str(words or "").split())[:120]
+        if not words:
+            raise LookupError("nothing to look up")
+        ref = re.fullmatch(r"(?i)([A-Z]+)-(\d+)", words)
+        if ref:
+            got = self._gql("query($id:String!){issue(id:$id){%s}}" % _ISSUE, {"id": words.upper()})
+            return [got["issue"]] if got.get("issue") else []
+        if _BUILD.search(words):
+            return list(self.issues(words, "build").get("issues") or [])
+        team = self.team()
+        team_filter = {"team": {"key": {"eq": team}}} if team else {}
+        nodes = self._gql("query($t:String!,$f:IssueFilter){searchIssues(term:$t,first:%d,filter:$f){nodes{%s}}}"
+                          % (STATUS_ROWS, _ISSUE), {"t": words, "f": team_filter})
+        return list(nodes["searchIssues"]["nodes"])
 
     def _view(self, name: str, contains: bool = False) -> dict[str, Any] | None:
         op = "containsIgnoreCase" if contains else "eqIgnoreCase"
@@ -256,12 +336,61 @@ def kanban_rows(got: dict[str, Any]) -> tuple[dict[str, Any], str]:
 
 # -- the one model turn ------------------------------------------------------------------------------
 
+_CARD_WORD = {"running": "running", "ready": "queued", "blocked": "waiting on you", "done": "done"}
+
+
+def _clip(text: Any, n: int) -> str:
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= n else s[: n - 1].rstrip() + "\u2026"
+
+
+def status_rows(words: str, issues: list[dict[str, Any]], cards: dict[str, dict[str, Any]],
+                now: float | None = None) -> tuple[dict[str, Any], str]:
+    """Where some work stands: a ``rows`` widget (one row per matching issue: its Linear state, and its
+    Kanban card's status and latest note when it has one) and at most 3 short lines to say."""
+    now = time.time() if now is None else now
+    issues = [i for i in issues if isinstance(i, dict) and i.get("title")][:STATUS_ROWS]
+    if not issues:
+        raise LookupError("no matching work")
+    items = []
+    for i in issues:
+        ref = str(i.get("identifier") or "")
+        card = cards.get(ref.upper()) or {}
+        state = (i.get("state") or {}).get("name") or ""
+        stype = (i.get("state") or {}).get("type") or ""
+        note, when = "", _ago(i.get("updatedAt"), now)
+        if card:
+            col = _CARD_WORD.get(card.get("column") or "", card.get("status") or "")
+            said = card.get("heartbeat") if card.get("column") != "done" else (card.get("summary") or card.get("heartbeat"))
+            note = f"Card {col}" + (f": {_clip(said, 120)}" if said else "")
+            at = card.get("heartbeat_at") if card.get("column") != "done" else (card.get("completed_at") or card.get("heartbeat_at"))
+            if at:
+                s = max(0, int(now - at))
+                when = f"{s // 60}m ago" if s < 3600 else f"{s // 3600}h ago" if s < 86400 else f"{s // 86400}d ago"
+        tone = "good" if stype == "completed" or card.get("column") == "done" else \
+            "warn" if card.get("column") == "blocked" else "neutral"
+        items.append({"ref": ref, "name": i["title"], "state": state, "tone": tone,
+                      "who": (i.get("assignee") or {}).get("displayName") or (i.get("delegate") or {}).get("displayName") or "",
+                      "when": when, "note": note, "url": i.get("url") or ""})
+    top, card = items[0], cards.get(items[0]["ref"].upper()) or {}
+    lines = [_clip(f"{top['ref']} {top['name']}: {top['state'] or 'no state'} in Linear"
+                   + (f", card {_CARD_WORD.get(card.get('column') or '', card.get('status') or '')}" if card else "") + ".", 140)]
+    said = (card.get("summary") or card.get("heartbeat")) if card.get("column") == "done" else card.get("heartbeat")
+    if said:
+        lines.append(_clip(said, 140))
+    if len(items) > 1:
+        lines.append(f"{len(items) - 1} more match{'es' if len(items) > 2 else ''} below.")
+    view = {"kind": "rows", "source": "Linear", "entity": "issue", "title": _clip(f"Status: {words}", 60),
+            "scope": f"{len(items)} match{'es' if len(items) != 1 else ''}", "items": items}
+    return view, "\n".join(lines[:3])
+
+
 def tool_call(answer: Any) -> tuple[str, dict[str, Any]] | None:
     """The single tool call in a model answer (``{"tool", "args"}``, home_chat's shape), or None.
     A Claude subscription route names tools ``mcp__<name>`` on the wire; the name is the same tool."""
     name = str(answer.get("tool") or "") if isinstance(answer, dict) else ""
     name = name.removeprefix("mcp__").removeprefix("functions.")
-    if isinstance(answer, dict) and name in (LINEAR_TOOL, KANBAN_TOOL):
+    if isinstance(answer, dict) and name in (LINEAR_TOOL, KANBAN_TOOL, STATUS_TOOL):
         raw = answer.get("args")
         args: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
         return name, args
@@ -284,9 +413,24 @@ class Sources:
             if self.boards is None:
                 raise LookupError("no boards here")
             return kanban_rows(kanban_board(self.boards, str(args.get("board") or "")))
+        if tool == STATUS_TOOL:
+            if self.linear is None:
+                raise LookupError("no Linear here")
+            words = str(args.get("words") or args.get("filter") or "")
+            issues = self.linear.search(words)
+            refs = [str(i.get("identifier") or "") for i in issues if isinstance(i, dict)]
+            cards: dict[str, dict[str, Any]] = {}
+            if self.boards is not None and hasattr(self.boards, "cards_for"):
+                try:
+                    cards = self.boards.cards_for(refs)
+                except Exception:  # noqa: BLE001 - the Linear rows still answer
+                    logger.info("speakeasy: status card lookup failed", exc_info=True)
+            return status_rows(" ".join(words.split())[:40], issues, cards)
         raise LookupError(f"unknown tool {tool}")
 
-    def tools(self) -> list[dict[str, Any]]:
+    def tools(self, status: bool = False) -> list[dict[str, Any]]:
+        if status:
+            return list(STATUS_TOOLS) if self.linear is not None else []
         return [t for t in TOOLS if (t["function"]["name"] != LINEAR_TOOL or self.linear is not None)
                 and (t["function"]["name"] != KANBAN_TOOL or self.boards is not None)]
 
@@ -297,7 +441,8 @@ def serve(request: str, call: Callable[[list[dict[str, str]], list[dict[str, Any
     None (no tools here, the model didn't call one, or the tool failed): the request then goes to the
     agent as before. *mark*(name, ms) records each step's time."""
     mark = mark or (lambda name, ms: None)
-    tools = sources.tools()
+    status = status_wanted(request)
+    tools = sources.tools(status=status) if status else sources.tools()
     if not tools:
         return None
     started = time.monotonic()
@@ -305,11 +450,15 @@ def serve(request: str, call: Callable[[list[dict[str, str]], list[dict[str, Any
         got = call(messages(request), tools)
     except Exception as exc:  # noqa: BLE001 - the fast path is a nicety; the agent still answers
         logger.info("speakeasy: view fast path model failed (%s)", type(exc).__name__)
-        return None
+        if not status:
+            return None
+        got = None   # a status question still has its own words to look up
     answer, model = got if isinstance(got, tuple) else (got, None)
     t_model = time.monotonic()
     mark("view_first_model_ms", int((t_model - started) * 1000))
     picked = tool_call(answer)
+    if status and (picked is None or picked[0] != STATUS_TOOL or not str(picked[1].get("words") or "").strip()):
+        picked = (STATUS_TOOL, {"words": status_words(request)})   # the question's own words, no second turn
     if picked is None or picked[0] not in {t["function"]["name"] for t in tools}:
         logger.info("speakeasy: view fast path model called no view tool; to the agent")
         return None

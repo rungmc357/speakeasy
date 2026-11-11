@@ -207,6 +207,48 @@ class KanbanBoards:
         return {"slug": slug, "name": self._name(slug, meta), "now": now, "change": f"{change or 0}",
                 "done_days": DONE_DAYS, "columns": columns}
 
+    def cards_for(self, refs: list[str]) -> dict[str, dict[str, Any]]:
+        """Status questions (view_fast.py): per Linear ref ("SPK-391"), the newest card on any board
+        whose title starts with it: its status, column, board, and latest heartbeat note (or, for a
+        done card, its handoff summary). Read-only; refs with no card are left out."""
+        want = [r for r in dict.fromkeys(str(r).upper() for r in refs) if re.fullmatch(r"[A-Z]+-\d+", r)][:8]
+        out: dict[str, dict[str, Any]] = {}
+        if not want:
+            return out
+        for slug in self._slugs():
+            meta = self._meta(slug)
+            try:
+                with _closing(self._open(slug)) as conn:
+                    for ref in want:
+                        t = conn.execute(
+                            "SELECT id, title, status, created_at, completed_at FROM tasks WHERE status != 'archived'"
+                            " AND (title LIKE ? OR title LIKE ?) ORDER BY created_at DESC LIMIT 1",
+                            (f"{ref}:%", f"{ref} %")).fetchone()
+                        if t is None or (ref in out and (out[ref]["created_at"] or 0) >= (_int(t["created_at"]) or 0)):
+                            continue
+                        beat = conn.execute(
+                            "SELECT payload, created_at FROM task_events WHERE task_id = ? AND kind = 'heartbeat'"
+                            " AND payload IS NOT NULL ORDER BY id DESC LIMIT 1", (t["id"],)).fetchone()
+                        note, at = None, None
+                        if beat is not None:
+                            try:
+                                payload = json.loads(beat["payload"] or "{}")
+                            except ValueError:
+                                payload = {}
+                            note = _plain(payload.get("note"), REASON_CHARS) if isinstance(payload, dict) else None
+                            at = _int(beat["created_at"])
+                        summary = None
+                        if t["status"] == "done":
+                            summary = self._summaries(conn, [t["id"]]).get(t["id"])
+                        out[ref] = {"id": t["id"], "title": _plain(t["title"], 160), "status": t["status"],
+                                    "column": COLUMN_OF.get(t["status"]), "board": self._name(slug, meta),
+                                    "created_at": _int(t["created_at"]), "completed_at": _int(t["completed_at"]),
+                                    "heartbeat": note, "heartbeat_at": at,
+                                    "summary": _plain(summary, SUMMARY_CHARS) if summary else None}
+            except sqlite3.Error as exc:
+                logger.debug("speakeasy: kanban board %s unreadable: %s", slug, exc)
+        return out
+
     def _card(self, t: sqlite3.Row, col: str, ev: dict[str, Any], run: sqlite3.Row | None,
               summary: str | None) -> dict[str, Any]:
         status = t["status"]

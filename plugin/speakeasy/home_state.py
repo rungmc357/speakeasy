@@ -196,6 +196,8 @@ class HomeState:
         self.store = service.store
         self.clock = clock
         self._lock = threading.RLock()
+        self._fetched: dict[str, float] = {}       # delivery timing (note_fetched)
+        self._fetch_born = clock()
         with self.store._lock, self.store._db:
             self.store._db.execute("""CREATE TABLE IF NOT EXISTS home_stack (
                 id TEXT PRIMARY KEY, kind TEXT NOT NULL, run_id TEXT, item_id TEXT, card_id TEXT,
@@ -474,6 +476,31 @@ class HomeState:
     def row(self, sid: str) -> dict[str, Any] | None:
         rows = self._rows("WHERE id=?", (sid,))
         return rows[0] if rows else None
+
+    # -- delivery timing -------------------------------------------------------------------------
+    def note_fetched(self, items: list[dict[str, Any]]) -> list[str]:
+        """A phone just fetched Home: each result it gets for the first time is logged once, with the
+        gap since it landed on the stack (and since its job finished), so phone-side delays can be
+        measured. Returns the ids logged (tests)."""
+        now = self.clock()
+        seen, born = self._fetched, self._fetch_born
+        out = []
+        for it in items or []:
+            if not isinstance(it, dict) or it.get("kind") != RESULT or it.get("id") in seen:
+                continue
+            seen[it["id"]] = now
+            landed = float(it.get("added_at") or 0)
+            finished = float(it.get("at") or 0)
+            if landed and landed < born:
+                continue   # landed before this process started: its first fetch was already logged (or lost)
+            logger.info("speakeasy: delivery.first_fetch id=%s run=%s landed_to_fetch_ms=%d finished_to_fetch_ms=%s",
+                        it["id"], it.get("run_id") or "-", int(max(0.0, now - landed) * 1000) if landed else -1,
+                        int(max(0.0, now - finished) * 1000) if finished else "-")
+            out.append(it["id"])
+        if len(seen) > 2000:   # bounded: forget the oldest
+            for k in sorted(seen, key=lambda k: seen[k])[:1000]:
+                seen.pop(k, None)
+        return out
 
     # -- 6: recommendations ----------------------------------------------------------------------
     def invalidate(self) -> None:
