@@ -166,21 +166,20 @@ class HermesAPI:
     def _key_for(self, base: str | None) -> str:
         """The API key for a request to *base*: this client's own key for its own base; for another
         profile's ``/p/<name>`` prefix that profile's OWN key (``agent_key``, read on the server
-        from that profile's secrets), never this profile's: Hermes checks the key of the profile
-        the URL names. No ``agent_key`` (or no key there) = no key sent, and Hermes refuses."""
+        from that profile's secrets): Hermes checks the key of the profile the URL names. A profile
+        with no key of its own gets this client's key, exactly as before build 75 (same gateway, so
+        nothing leaves the machine), and Hermes accepts or refuses it."""
         if not base or base == self.base:
             return self.key_fn()
         prefix = f"{self.root}/p/"
-        if not base.startswith(prefix):
+        if not base.startswith(prefix) or self.agent_key is None:
             return self.key_fn()
         agent = base[len(prefix):].split("/", 1)[0]
-        if self.agent_key is None:
-            return ""
         try:
-            return self.agent_key(agent) or ""
+            return self.agent_key(agent) or self.key_fn()
         except Exception:
             logger.info("speakeasy: no key for another profile (%s)", "lookup failed")
-            return ""
+            return self.key_fn()
 
     def remember_agent(self, kind: str, ident: str, agent: str | None) -> None:
         if not ident or not agent or agent in {self.own_agent, self.profile}:

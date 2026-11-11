@@ -2911,6 +2911,10 @@ class VoiceService(SecureInputMixin):
         """*link_to*: the chat session this job continues from a history page (store.history_links).
         *staged*: attachments claimed for this job (carried with its handoff). *choice*: the model /
         reasoning picked for it (models.parse_choice); a new chat (*new_chat*) keeps it as its own."""
+        linked_agent = self.store.agent("session:" + link_to) if link_to and choice is None else None
+        if linked_agent and linked_agent != self._own_agent():
+            # A chat that lives on another profile (profile switching): its linked task runs there too.
+            choice = {"agent": linked_agent}
         if choice is None and link_to:
             resolved, _ = self._next_choice(link_to)
             if resolved and (resolved.get("unavailable") or (resolved.get("model") and "/" not in resolved["model"])):
