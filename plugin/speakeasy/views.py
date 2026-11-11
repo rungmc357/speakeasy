@@ -443,7 +443,14 @@ def flight_display(view: dict[str, Any]) -> dict[str, Any]:
             out["arrives"] = f"{_clock(arr)} {arr.strftime('%a')}"
     if not _str(view.get("status")):
         out["status"] = "Status unavailable"
+    for key in ("delay", "gate", "terminal", "seat"):
+        # A task that wrote "None" / "N/A" / "0 min" for no delay: the phone would print it in red.
+        if key in out and _NOTHING.match(str(out[key] or "")):
+            out.pop(key)
     return out
+
+
+_NOTHING = re.compile(r"(?i)^\s*(?:|none|null|n/?a|nil|-+|—|0|0 ?min(?:utes?)?|no delay|tbd|unknown)\s*$")
 
 
 def _tone(row: dict[str, Any], allowed: set[str] = TONES) -> dict[str, Any]:
