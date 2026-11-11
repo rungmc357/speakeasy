@@ -261,7 +261,7 @@ private struct MacPostedResult: View {
             if let card {
                 // The job's done line is on its card where it was asked: the email comes alone.
                 ViewCardView(card)
-                    .environment(\.cardSend, { action in send(action, card: card) })
+                    .environment(\.cardSend, { action in await send(action, card: card) })
                     .cardSurface(style)
                     .frame(maxWidth: 520, alignment: .leading)
                     .accessibilityIdentifier("mac-now-result")
@@ -275,13 +275,16 @@ private struct MacPostedResult: View {
         if let info = try? await api.work(runID: runID), let pick = ResultCardPick.pick(info.views) { card = pick }
     }
 
-    private func send(_ action: CardAction, card: ViewCard) {
-        guard let api = now.api() else { return }
+    private func send(_ action: CardAction, card: ViewCard) async -> Bool {
+        guard let api = now.api() else { return false }
         let value: Any? = { if case .null = action.value { return nil }; return action.value.foundation }()
-        Task {
-            _ = try? await api.cardAction(interactionID: nil, runID: runID, view: card.number - 1, action: action.id, value: value)
-            try? await Task.sleep(for: .milliseconds(400))
-            bump += 1   // the server settled the new draft: draw it
-        }
+        let took: Bool
+        do {
+            _ = try await api.cardAction(interactionID: nil, runID: runID, view: card.number - 1, action: action.id, value: value)
+            took = true
+        } catch { took = false }
+        try? await Task.sleep(for: .milliseconds(400))
+        bump += 1   // the server settled the new draft: draw it
+        return took
     }
 }
