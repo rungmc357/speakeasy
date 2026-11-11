@@ -14,7 +14,6 @@ from test_now import _clock, task
 GRAB = {"question": "Grab the remux?", "approvable": True, "recommended": 0,
         "context": "Cleanup is paused, so nothing gets deleted.", "why": "Best quality.",
         "options": [{"text": "Grab the big one", "detail": "80 GB, 1,000 seeders", "risk": "low", "reversible": True},
-                    {"text": "Grab the small one", "detail": "30 GB, faster", "risk": "low", "reversible": True},
                     {"text": "Hold off", "detail": "Nothing gets grabbed", "risk": "low", "reversible": True}]}
 
 
@@ -33,6 +32,15 @@ def test_a_pick_or_a_risky_ask_stays_a_choice():
     assert N.public_question({**GRAB, "approvable": False}, "run_x", 1.0)["shape"] == "words"
     no_rec = {k: v for k, v in GRAB.items() if k != "recommended"}
     assert N.public_question(no_rec, "run_x", 1.0)["shape"] == "words"
+
+
+def test_an_ask_with_a_second_way_to_say_yes_stays_a_choice():
+    two = {**GRAB, "options": [GRAB["options"][0], {"text": "Grab the small one", "detail": "30 GB, faster"},
+                               GRAB["options"][1]]}
+    q = N.public_question(two, "run_x", 1.0)
+    assert q["shape"] != "approval" and "approve" not in q and len(q["options"]) == 3
+    for no in ("Not now", "Don't grab it", "Skip it", "No, leave it", "Keep waiting"):
+        assert N.public_question({**GRAB, "options": [GRAB["options"][0], {"text": no}]}, "r", 1.0)["shape"] == "approval"
 
 
 def _approvable_question(server, service, hermes, state):
