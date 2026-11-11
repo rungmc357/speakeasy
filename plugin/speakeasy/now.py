@@ -541,11 +541,14 @@ class NowModel:
                     return None
                 item.update(kind=WAITING, line="Paused. Its question is in the conversation.",
                             dismissed_question=True)
-            elif pending_confirm(result) is not None:
+            elif (card := pending_confirm(result)) is not None:
                 # An approval card (Post / Cancel) waits on you like a question: hearing it on a call
                 # or opening it doesn't settle it. It stays until tapped (or dismissed), and it draws
-                # as its answer so the card's own buttons show.
-                item.update(kind=NEW_ANSWER, line=line, unread=True, needs_you=True)
+                # as its answer so the card's own buttons show. Its own id, like a question's: another
+                # job in the same conversation keeps its card too. ``_approval`` (the card's digest)
+                # makes a re-asked card a new stack decision.
+                item.update(kind=NEW_ANSWER, line=line, unread=True, needs_you=True, id=f"t:{run_id}",
+                            _approval=str(card.get("sha256") or "")[:12])
             else:
                 # Home is what's live or new: an answer leaves once it's opened, at the 4 AM rollover
                 # after it finished (read or not), 12 h after it finished, or on Clear. A seen one
@@ -692,11 +695,15 @@ class NowModel:
                     known_projects, project_links, project_selected))
             if row.get("answered"):
                 answered_keys.add(row["key"])
+            if item.get("needs_you"):
+                # An approval waiting on you keeps its own card: it never folds into another one, and
+                # nothing folds into it (a "+N" on a Post / Cancel card would be wrong).
+                items.append(item)
+                continue
             held = by_place.get(place)
             if held is not None:
-                # One card per conversation, except a question or an approval waiting on you, which
-                # keeps its own card.
-                if item.get("needs_you") or (item["kind"] == QUESTION and held["kind"] != QUESTION):
+                # One card per conversation, except a question, which keeps its own card.
+                if item["kind"] == QUESTION and held["kind"] != QUESTION:
                     items.append(item)
                 elif item["kind"] in ANSWERS and held["kind"] in ANSWERS:
                     held["folded"] = int(held.get("folded") or 0) + 1
@@ -705,7 +712,7 @@ class NowModel:
                 # Repeated answers in one conversation (a call's follow-ups, a retry's chain) fold into
                 # the newest; the live call keeps one card per answer.
                 newer = by_thread.get(item["_thread"])
-                if newer is not None and not item.get("needs_you"):
+                if newer is not None:
                     newer["folded"] = int(newer.get("folded") or 0) + 1
                     continue
                 by_thread.setdefault(item["_thread"], item)
@@ -788,6 +795,8 @@ class NowModel:
         # SPK-376: the live call's start, so its answers join the stack even once the voice read them out.
         self._call_since = (float(getattr(call, "started_at", 0) or 0) or None) if call is not None else None
         home_state = self._home_state(items, stream, now, peek)
+        for i in items:
+            i.pop("_approval", None)   # the stack's only
         counts = {"needs_you": sum(waits_on_you(i) for i in items),
                   "stopped": sum(i["kind"] == STOPPED for i in items),
                   "working": sum(i["kind"] == WORKING for i in items),
