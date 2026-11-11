@@ -1739,6 +1739,31 @@ class HomeChat:
                         "instructions are about that job unless they clearly start something new.\n")
         return ""
 
+    def view_turn(self, messages: list[dict[str, str]], tools: list[dict[str, Any]]) -> tuple[Any, dict | None]:
+        """One turn of the coordinator's fast model for the view fast path (view_fast.py): its small
+        prompt and the read-only view tools, never the coordinator's own. Same model choice as a Home
+        reply (``route``); if that model fails, the routing model once. Returns (answer, badge)."""
+        from . import view_fast
+        call_llm, extract = host_mod.aux_client()
+        if extract is None:
+            return None, None
+        from .router import _profile_scope
+        route = self.route()
+        kwargs: dict[str, Any] = dict(messages=messages, temperature=0, max_tokens=view_fast.MAX_TOKENS,
+                                      timeout=view_fast.MODEL_TIMEOUT_S, tools=tools)
+        with _profile_scope():
+            try:
+                if route.get("task"):
+                    response = call_llm(task=route["task"], **kwargs)
+                else:
+                    response = call_llm(provider=route["provider"], model=route["model"], **kwargs)
+            except Exception:
+                if route.get("task") == FALLBACK_TASK:
+                    raise
+                route = {"task": FALLBACK_TASK}
+                response = call_llm(task=FALLBACK_TASK, **kwargs)
+        return self._answer_of(response, extract), self._served(response, route)
+
     def _model_call(self, messages: list[dict[str, str]]) -> tuple[Any, dict | None]:
         """One coordinator turn. Returns the answer (plain text, or ``{"tool", "args", "text"}`` for a
         tool call) and the model that wrote it, as the reply's attribution badge."""

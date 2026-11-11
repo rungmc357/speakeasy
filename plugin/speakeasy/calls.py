@@ -46,6 +46,7 @@ from . import transcript as transcript_mod
 from . import session_titles
 from . import home_chat as home_chat_mod
 from . import quick as quick_mod
+from . import view_fast as view_fast_mod
 from . import views as views_mod
 from . import activity as activity_mod
 from . import agent_slot
@@ -537,6 +538,11 @@ class Runtime:
     home: Any = None
     # Quick answers (quick.answer); None = the real one. Tests swap in a fake.
     quick_call: Callable[[str, str], str | None] | None = None
+    # The view fast path (view_fast.py): one turn of the coordinator's fast model with the view tools,
+    # (messages, tools) -> answer or (answer, model badge); and the tools' data (view_fast.Sources).
+    # Either None = "show me build 75 tickets" goes to the agent as before.
+    view_call: Callable[[list[dict[str, str]], list[dict[str, Any]]], Any] | None = None
+    view_sources: Any = None
     # The local log of ended calls that "Tune from my calls" learns from (tune.CallLog); None = not kept.
     call_log: Any = None
     # Lowers the Mac's volume while the call is speaking (duck.Ducker); None = never.
@@ -4154,6 +4160,41 @@ class SidebandWorker:
         await self.append("session.commentary.append", delegation_id, P.quick_note(spoken))
         return True
 
+    async def view_fast(self, backend: BackendRun, idem: str, request: str, entered: float) -> bool:
+        """"Show me build 75 tickets": one fast-model turn with the read-only view tools, one tool
+        call, the list drawn as a native widget (view_fast.py). The task's row already exists; it is
+        finished here and never reaches Hermes. False (nothing changed) when the words aren't a list
+        to see, the fast path is off or missing, or anything in it fails: the agent takes it."""
+        from . import view_fast
+        fast = self.rt.settings().get("fast_routing") or {}
+        if (self.rt.view_call is None or self.rt.view_sources is None or not fast.get("views", True)
+                or not view_fast.wanted(request) or _base(backend.delegation_id) in self.share_refs):
+            return False
+        marks: dict[str, int] = {"view_routing_ms": int((time.monotonic() - entered) * 1000)}
+        started = time.monotonic()
+        got = await asyncio.to_thread(view_fast.serve, request, self.rt.view_call, self.rt.view_sources,
+                                      marks.__setitem__)
+        if got is None:
+            logger.info("speakeasy: view fast path passed to Hermes after %d ms", int((time.monotonic() - started) * 1000))
+            for name, ms in marks.items():
+                self.store.set_timing(idem, name, ms)
+            return False
+        result = {"spoken": got["spoken"], "full": got["spoken"], "views": got["views"]}
+        from .store import local_run_id
+        if not self.store.transition(idem, "completed", result=result, run_id=local_run_id(idem), mirror=backend):
+            return False
+        self.store.progress(idem, "result", got["spoken"])
+        marks["view_total_ms"] = int((time.monotonic() - entered) * 1000)
+        for name, ms in marks.items():
+            self.store.set_timing(idem, name, ms)
+        logger.info("speakeasy: view fast path answered with %s in %d ms", got["tool"], marks["view_total_ms"])
+        self.handoff_at.pop(backend.say_id, None)
+        self.replied_task = backend.delegation_id
+        self.publish()
+        self._home_moved()  # its Working card (same id) is the widget now, not on the next poll
+        await self.append("session.commentary.append", backend.say_id, P.quick_note(got["spoken"]))
+        return True
+
     async def show_me(self, delegation_id: str, request: str, task_id: str | None = None,
                       only_if_visible: bool = False) -> bool:
         """'Show me' / 'what are you looking at' about existing work: open that task's image in the
@@ -5291,6 +5332,7 @@ class SidebandWorker:
         the user actually said when *request* carries more (a correction's steer); *note* is guidance
         beside the words. A later turn in a session whose first turn's rules are still in its
         context gets only these (``P.build_follow_up_prompt``), never the full brief again."""
+        entered = time.monotonic()
         idem = idem or self._idem(task_id, revision)
         backend = BackendRun(task_id, revision, idem, voice_id=voice_id, deliver_to=deliver_to,
                              status="waiting_on_task" if resume else "admitting")
@@ -5334,6 +5376,11 @@ class SidebandWorker:
             # instead of on the history watcher's next look (HistoryEvents.POLL_S).
             if not self.handoff_card_done(task_id):
                 self._home_moved()
+            # The view fast path finishes that same row (the Working card turns into the widget).
+            if not continuing and not replaces and request and await self.view_fast(
+                    backend, idem, next((w for w in (asked, words, request) if w and view_fast_mod.wanted(w)), ""),
+                    entered):
+                return
         # Same-project fence: a new edit to a project a running task is already editing waits for it.
         fenced = self.fence_blocker(task_id, request, exclude={replaces}) if request else None
         if fenced is None and resume:
