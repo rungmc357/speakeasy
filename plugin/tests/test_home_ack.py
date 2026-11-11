@@ -209,6 +209,13 @@ def test_fallback_ack_is_specific_and_varies():
     assert len({a, b, c}) == 3
     assert HC.fallback_ack("check my flight info for japan", avoid=b) != b
     assert HC.fallback_ack("", files=[{"kind": "picture"}]).startswith("Let me take a look at")
+    assert HC.fallback_ack("that's a fun idea honestly") == "Hmm, let me think about that."
+    assert HC.fallback_ack("swiping to dismiss suggestions on build 73 also tries to move you to another screen") == \
+        "Let me look into that."
+    assert HC.fallback_ack("can you draft a note to the invented landlord about the leak") == \
+        "I'll draft a note to the invented landlord about the leak."
+    assert HC.fallback_ack("show me the email here") == "I'll show you the email here."
+    assert "your flight info for japan" in HC.fallback_ack("what\u2019s my flight info for japan")
 
 
 def test_after_ack_never_repeats_the_acknowledgement():
@@ -222,6 +229,6 @@ def test_after_ack_never_repeats_the_acknowledgement():
 
 
 def test_clean_ack_rejects_read_backs_and_skip():
-    assert HC.clean_ack("SKIP", "hi") is None
+    assert HC.clean_ack("SKIP", "hi") is None and HC.clean_ack("Ha, fair point.", "hermes is great") == "Ha, fair point."
     assert HC.clean_ack("I'll dig into the swipe bug. It might be the gesture.", "swipe bug") == "I'll dig into the swipe bug."
     assert HC.clean_ack("Pulling up your Japan flight details", "flight?") == "Pulling up your Japan flight details."

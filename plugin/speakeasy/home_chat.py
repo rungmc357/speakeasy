@@ -95,11 +95,13 @@ ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 # Home never "thinks" in silence (Geo, 11-11: "it said thinking for like almost a minute before it
 # said anything back"). Every Home turn shows words within ACK_DEADLINE_S of the message reaching the
-# plugin: the coordinator's own reply when it is that quick (measured ~1.9-2.0 s median on the fast
-# tier, so most instant answers still come with no acknowledgement in front), else a one-line
-# acknowledgement for this ask, written in parallel by the same fast model (ACK_TOKENS, no tools) or,
-# when that is late or fails too, derived from the ask without a model (``fallback_ack``). The answer,
-# the job's status capsule and its widget follow in the same exchange.
+# plugin: the coordinator's own reply when it is that quick, else a one-line acknowledgement for this
+# ask, written in parallel by the same fast model (ACK_TOKENS, no tools) or, when that is late or
+# fails too, derived from the ask without a model (``fallback_ack``). The answer, the job's status
+# capsule and its widget follow in the same exchange. Measured on the live plugin (44 Home turns,
+# Nov 7-10): the coordinator's reply landed a median 3.8 s after the message (p90 6.2 s, max 23 s),
+# so most turns that start work get the acknowledgement; a 2.5 s deadline is inside Geo's "quick"
+# and leaves the few one-call answers that come back faster with no line in front of them.
 ACK_DEADLINE_S = 2.5
 ACK_TOKENS = 60
 ACK_TIMEOUT_S = 8.0
@@ -238,6 +240,23 @@ _FALLBACK_WHY = ("Let me look into why {t}.", "Let me find out why {t}.")
 TOPIC_WORDS = 8
 _WHY = re.compile(r"(?i)^(?:(?:hey|so|ok(?:ay)?|todd)[\s,]+)*(?:why|how come)\b[\s,]*")
 _AUX = {"is", "are", "does", "do", "did", "was", "were", "can't", "won't", "isn't", "doesn't", "didn't", "does"}
+_ASKING = re.compile(
+    r"(?i)^(?:(?:hey|hi|yo|ok(?:ay)?|so|todd|hermes|please|pls)\b[\s,:!.-]*)*"
+    r"(?:why|how|what|when|where|who|which|whose|is|are|was|were|do|does|did|can|could|would|will|should|"
+    r"any|find|check|draft|show|look|send|book|get|make|tell|write|summari[sz]e|pull|set|remind|add|"
+    r"schedule|cancel|fix|open|search|see|help|compare|plan|order|buy|reply|email|text|call|play|turn|"
+    r"start|stop|run|list|read|track|research|i need|i want|i'?d like|let'?s|let me know)\b")
+
+
+def asking(text: str) -> bool:
+    """The message asks for something (a question or a request), not a remark or an opinion."""
+    t = (text or "").strip()
+    return "?" in t or bool(_ASKING.match(t))
+
+
+_DO = {"find", "check", "draft", "show", "look", "send", "book", "get", "make", "write", "summarize", "summarise",
+       "pull", "set", "remind", "add", "schedule", "cancel", "fix", "open", "search", "compare", "plan", "order",
+       "buy", "reply", "email", "text", "track", "research", "list", "read"}
 
 
 def _topic(text: str) -> tuple[str, bool]:
@@ -266,6 +285,23 @@ def fallback_ack(asked: str, files: Any = None, avoid: str | None = None) -> str
                 else f"Let me take a look at the {noun.split(' ', 1)[-1]}.")
     if small_talk(asked):
         return "One sec."
+    asked = asked.replace("\u2019", "'").replace("\u2018", "'")
+    if not asking(asked):
+        if len(asked.split()) < 8:
+            return "Hmm, let me think about that." if avoid != "Hmm, let me think about that." else "Let me think about that."
+        return "Let me look into that." if avoid != "Let me look into that." else "Looking into that now."
+    first = re.sub(r"(?i)^(?:(?:hey|hi|yo|ok(?:ay)?|so|todd|hermes|please|pls)\b[\s,:!.-]*)*"
+                   r"(?:(?:can|could|would|will) you(?: please)?\s+)?", "", asked.strip())
+    verb = (first.split() or [""])[0].lower()
+    if verb in _DO:
+        words = [_SWAP.get(w.lower(), w) for w in re.findall(r"[\w$'./-]+", re.split(r"[.,;:!?]", first)[0])][:TOPIC_WORDS + 2]
+        while len(words) > 1 and words[-1].lower() in _TAIL:
+            words.pop()
+        if len(words) >= 2:
+            words[0] = words[0].lower()
+            line = f"I'll {' '.join(words)}."
+            if line != avoid:
+                return line
     topic, why = _topic(asked)
     if len(topic.split()) < 2:
         return pick_ack(asked, avoid=avoid)
@@ -329,7 +365,9 @@ sentence (at most 14 words) that tells them you're on it, naming what you're abo
 of your own words: "Let me check where the release build is at.", "I'll dig into why the swipe jumps \
 screens.", "Pulling up your Japan flight details." Never read their whole message back, never answer \
 it, never promise a result or a time, no emoji, no "Great question". Vary the opening. If the message \
-is only a greeting or thanks, write exactly SKIP."""
+isn't asking for anything (a greeting, thanks, a remark or an opinion), write instead a natural \
+conversational beat of two to five words ("Ha, fair point.", "Hmm, let me think."), never a promise \
+to look into something."""
 
 
 class _Turn:
