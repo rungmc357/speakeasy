@@ -2783,6 +2783,8 @@ class VoiceService(SecureInputMixin):
         if not isinstance(chats, bool):
             raise ServiceError(400, "chat_replies must be true or false.")
         project_id = body.get("project_id")
+        if project_id is not None and not P_.available():
+            project_id = None   # SPK-362: a project page left open across the switch still starts the job, unfiled
         if project_id is not None:
             # SPK-254: a job started inside a project (or "for <project>, ..." at Home) is filed there,
             # and the project's standing notes go into its first brief.
@@ -4321,6 +4323,8 @@ class VoiceService(SecureInputMixin):
     # -- Projects (SPK-254, projects.py) -----------------------------------------------------------
     def _projects_call(self, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         if not P_.available():
+            if P_.held_out():
+                raise ServiceError(501, "Projects aren't in this version of Speakeasy yet.")
             raise ServiceError(501, f"This {self.agent_name} doesn't have projects yet. Update Hermes to use them.")
         try:
             return fn()
