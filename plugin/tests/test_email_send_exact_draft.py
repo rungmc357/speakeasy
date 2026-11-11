@@ -97,6 +97,40 @@ def test_the_email_card_offers_no_hashless_send():
     assert "actions" not in email_view(draft)
 
 
+@pytest.mark.parametrize("stored_actions", [[], [{"id": "send", "label": "Send", "style": "primary", "confirm": True}]])
+def test_an_email_card_the_task_drew_by_hand_never_hands_send_to_the_agent(stored_actions):
+    """No stored draft (its block was missing, or another job's draft replaced it): nothing names the
+    email, so Send is refused rather than telling the agent to send whatever it holds. An answer
+    stored before this change still carries the old Send; that is refused too."""
+    from types import SimpleNamespace
+
+    from speakeasy.service import ServiceError, VoiceService
+    told = []
+    hand = {"kind": "draft", "channel": "email", "to": "Pat Doe", "body": "Are we still on?",
+            "actions": stored_actions}
+    fake = SimpleNamespace(store=SimpleNamespace(run_result=lambda run: ("key_1", {"views": [hand]}),
+                                                 drafts_for=lambda key: []),
+                           task_message=lambda run, body: told.append(body))
+    with pytest.raises(ServiceError) as refused:
+        VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "send"})
+    assert refused.value.status == 409 and told == []
+
+
+def test_an_edit_on_an_earlier_draft_must_carry_every_field_it_shows(server, service, hermes):
+    """Another device changed the subject; this card still shows the first draft. Sending only its
+    body would send a subject it never showed."""
+    task = _call_with_rich_draft(server, service, hermes)
+    run, shown = task["run_id"], task["email_drafts"][0]
+    url = f"/voice/work/{run}/card-action"
+    status, _ = http(server.base_url, "POST", url, {"view": 0, "action": "edit", "value": {
+        "sha256": shown["sha256"], "subject": "Changed on the other device"}}, server.token)
+    assert status == 200
+    before = len(hermes.calls)
+    status, _ = http(server.base_url, "POST", url, {"view": 0, "action": "edit", "value": {
+        "sha256": shown["sha256"], "after": "send", "body": "Hi Pat,\n\nFriday works."}}, server.token)
+    assert status == 409 and len(hermes.calls) == before
+
+
 @pytest.mark.parametrize("value, expected", [
     ("e" * 64, "e" * 64),
     ({"sha256": "0" * 64, "body": "x"}, "0" * 64),
@@ -215,3 +249,23 @@ def test_a_thread_task_settled_after_a_restart_keeps_its_email_draft(tmp_path, m
     monkeypatch.setattr(recovery.T, "session_answer", lambda db, sid, since=None: answer_with(DRAFT))
     assert recovery.sweep(store, tmp_path / "state.db", tuple, {}) == [("k1", "completed")]
     _has_the_draft(store, "k1")
+
+
+def test_the_email_of_a_job_recovered_after_a_restart_sends_from_its_card(server, service, hermes):
+    """What the person does next: open the recovered job, press Send on its email card."""
+    store = service.store
+    store.reserve_run("k_rec", "int_x", "call_k_rec", 1)
+    store.progress("k_rec", "request", "Email Pat asking if dinner Friday is still on")
+    with store._lock, store._db:
+        store._db.execute("UPDATE runs SET status='working', run_id='run_rec_1' WHERE idem_key='k_rec'")
+    assert recovery.settle_from_hermes(store, "k_rec", "working", "completed", {"output": answer_with(DRAFT)})
+    status, body = http(server.base_url, "GET", "/voice/work/run_rec_1", token=server.token)
+    assert status == 200
+    views = body["work"]["result"]["views"]
+    index, card = next((i, v) for i, v in enumerate(views) if v.get("draft_id"))
+    hermes.responder = lambda prompt, sid: "Sent.\nDONE: Email sent\nSPOKEN: Sent."
+    before = len(hermes.calls)
+    status, out = http(server.base_url, "POST", "/voice/work/run_rec_1/card-action",
+                       {"view": index, "action": "send", "value": card["sha256"]}, server.token)
+    assert status == 200 and out["draft"]["draft_id"] == card["draft_id"]
+    assert len(_sends(hermes, before)) == 1 and "Dinner on Friday" in hermes.calls[-1]["input"]
