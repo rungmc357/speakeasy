@@ -71,6 +71,10 @@ def decide(service: Any, run_id: str, index: int, expected: str, action: str, *,
             key, view, dispatch = C.claim(service.store, run_id, index, expected, action, source="voice", live_call=True)
     else:
         key, view, dispatch = C.claim(service.store, run_id, index, expected, action, source=source)
+    if view["state"] == "cancelled":
+        # SPK-357: whoever cancelled was looking at the card and nothing more will arrive, so Home doesn't
+        # bring the job back as a new result.
+        service.store.mark_seen(key)
     service.publish_all(key)
     if not dispatch:
         return {"ok": True, "message": "Cancelled. The cart was left unchanged." if view["state"] == "cancelled" and view["type"] == "checkout"
