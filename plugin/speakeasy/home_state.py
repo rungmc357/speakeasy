@@ -67,8 +67,8 @@ def current_exchange(entries: list[dict[str, Any]], now: float, extra_runs: set[
     order, *extra_runs* any more jobs the latest message started (``home_jobs``). Marks those entries
     ``current: true`` in place and returns ``stream.current``."""
     users = [e for e in entries if e.get("kind") == "message" and e.get("role") == "user"]
-    clean = {"clean": True, "entry_ids": [], "message_id": None, "reply_ids": [], "card_ids": [],
-             "run_ids": [], "last_activity_at": None, "resets_at": None}
+    clean = {"clean": True, "entry_ids": [], "message_id": None, "reply_ids": [], "parts": [], "pending": False,
+             "card_ids": [], "run_ids": [], "last_activity_at": None, "resets_at": None}
     for e in entries:
         e.pop("current", None)
     if not users:
@@ -95,6 +95,10 @@ def current_exchange(entries: list[dict[str, Any]], now: float, extra_runs: set[
             ids.append(e["id"])
             e["current"] = True
     return {"clean": False, "entry_ids": ids, "message_id": last["id"], "reply_ids": [e["id"] for e in replies],
+            # home-ack: the agent's side of the exchange, in order: an acknowledgement (above the
+            # status capsule), then the answer; a reply that came in time is the one "reply" part.
+            "parts": [{"id": e["id"], "part": e.get("part") or "reply"} for e in replies],
+            "pending": bool(last.get("pending")),
             "card_ids": [e["id"] for e in cards], "run_ids": sorted(runs), "last_activity_at": activity,
             "resets_at": activity + reset_after}
 
