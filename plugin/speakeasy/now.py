@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import live_status, runstate as RS
 from .failures import NO_REASON, UNKNOWN, failure_reason
+from .text import notice_text
 from .home_words import (clean_ask, collapse, fold_duplicates, hero_box, near_duplicate, picture_caption,
                          pill_text, replaced_questions, short_title, status_line)
 
@@ -495,7 +496,7 @@ class NowModel:
             item["_cause"] = stopped_cause(status, row.get("failure"), row.get("failure_hint"), reason)
         elif status == RS.RunState.COMPLETED:
             line = _clip(result.get("headline") or work.get("summary") or result.get("spoken") or "Done.", 240)
-            if question and row.get("question_closed") == "dismissed":
+            if question and row.get("question_closed") == "dismissed" and not row.get("answered"):
                 if (finished or 0) < max(edge, cleared):
                     return None
                 item.update(kind=WAITING, line="Paused. Its question is in the conversation.",
@@ -816,7 +817,8 @@ class NowModel:
                 except Exception:
                     text = None
                 if text:
-                    asks[i["id"]] = clean_ask(text, assistant) or text
+                    text = clean_ask(text, assistant) or text
+                    asks[i["id"]] = self._answer_words(key, text)
         marked = {i["id"] for i in items if i.get("_run_key") in answered}
         chat = getattr(self.svc, "home_chat", None)
         messages: list[dict[str, Any]] = []
@@ -853,6 +855,26 @@ class NowModel:
                 posted = chat.post_result(str(run), float(item.get("finished_at") or now))
             out[str(run)] = posted
         return out
+
+    def _answer_words(self, key: str, text: str) -> str:
+        """An answer to a job's question is asked as "<the answer>: <the question>" (calls.picked_request,
+        so the job and its title know what it answers). The thread shows the user's own words only:
+        the question already sits on the card above (SPK-303)."""
+        try:
+            parent = self.store.parent_of(key)
+            work = self.store.work(idem_key=parent) if parent else None
+        except Exception:
+            return text
+        asked = ((work or {}).get("result") or {}).get("question")
+        question = asked.get("question") if isinstance(asked, dict) else asked if isinstance(asked, str) else None
+        if not isinstance(question, str) or not question.strip():
+            return text
+        question = " ".join(question.split())
+        words = " ".join(text.split())
+        for tail in (question, notice_text(question, 200)):
+            if tail and words.endswith(": " + tail) and len(words) > len(tail) + 2:
+                return words[: -len(tail) - 2].rstrip() or text
+        return text
 
     def _chat_children(self, runs: set[str]) -> set[str]:
         """Runs that continue a chat-born job (answering its question, a follow-up): they belong to

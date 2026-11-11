@@ -1360,7 +1360,10 @@ class StateStore:
         question_closed), so a card closes there too."""
         self._db.execute("UPDATE runs SET question_state=?, question_state_at=? WHERE idem_key=?", (reason, now, key))
         if reason == "answered":
-            self._db.execute("UPDATE runs SET answered=COALESCE(answered, ?) WHERE idem_key=?", (now, key))
+            # An answer after a dismiss (✕, then the user typed the answer anyway) wins outright: the
+            # older column must not keep saying "dismissed", or Home keeps the card on "Paused" (SPK-303).
+            self._db.execute("UPDATE runs SET answered=COALESCE(answered, ?), question_closed=NULL, "
+                             "question_closed_at=NULL WHERE idem_key=?", (now, key))
         elif reason == "set_aside":
             self._db.execute("UPDATE runs SET set_aside=COALESCE(set_aside, ?) WHERE idem_key=?", (now, key))
         else:
