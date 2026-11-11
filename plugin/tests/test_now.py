@@ -561,7 +561,8 @@ def test_the_now_reply_matches_the_contract_the_apps_decode(server, service, sta
     assert _shape({k: v for k, v in body.items() if k != "items"}) == _shape({k: v for k, v in saved.items() if k != "items"})
     by_kind = {i["kind"]: i for i in saved["items"]}
     for item in body["items"]:
-        assert set(item) <= set(by_kind[item["kind"]]) | {"provenance", "idle_seconds"}, item["kind"]
+        # home-fixes-73 adds, additively, a running item's step kind and newest steps (the capsule).
+        assert set(item) <= set(by_kind[item["kind"]]) | {"provenance", "idle_seconds", "step_kind", "steps"}, item["kind"]
 
 
 @pytest.mark.parametrize("raw,status,shown", [
@@ -621,3 +622,40 @@ def test_running_work_is_on_home_for_someone_who_never_uses_kanban(service, stat
     assert "Pack list for the cabin" in working, working
     assert body["counts"]["working"] >= 3
     assert "in the works" in body["sentence"]
+
+
+# -- Home's step capsule (build 73 home-fixes) ----------------------------------------------------
+
+def test_a_just_started_job_says_its_model_is_on_its_first_turn_not_nothing(service):
+    """Build 73: a typed-chat job's first tool call came ~36 s after it started and Home showed a grey
+    "Working on it" all that time. From the first poll the item carries the true state and its kind."""
+    now = _at(NY, 2026, 11, 6, 22, 0)
+    _clock(service, now)
+    task(service.store, "fresh", "running", session="s_fresh", request="Find the cabin booking")
+    task(service.store, "handing", "admitting", request="Sort the garden photos")
+    items = {i["title"]: i for i in service.now({"tz": NY})["items"]}
+    fresh = next(i for t, i in items.items() if "cabin" in t.lower())
+    assert fresh["kind"] == "working" and fresh["line"] == "Thinking it over" and fresh["step_kind"] == "think"
+    assert "steps" not in fresh
+    handing = next((i for t, i in items.items() if "garden" in t.lower()), None)
+    if handing is not None and handing["kind"] == "working":
+        assert handing["line"] == "Starting" and handing["step_kind"] == "think"
+
+
+def test_a_running_job_carries_its_step_kind_and_newest_steps(service):
+    import time as _t
+    now = _at(NY, 2026, 11, 6, 22, 0)
+    _clock(service, now)
+    task(service.store, "mail", "working", session="s_mail", request="Find the cabin booking in my mail")
+    t = _t.time()
+    service.store.set_activity("mail", {"v": 1, "next": 3, "next_f": 1, "findings": [], "touched": [], "edits": {},
+                                        "sources": [], "trials": None, "diff_preview": None, "items": [
+        {"id": "a1", "text": "Read its notes on email-operations", "kind": "read", "tool": "skill_view", "at": t - 6,
+         "status": "done"},
+        {"id": "a2", "text": "Ran gws gmail search cabin", "kind": "run", "tool": "terminal", "at": t - 2,
+         "started_at": t - 2, "status": "running"}]})
+    item = next(i for i in service.now({"tz": NY})["items"] if i.get("run_id") == "run_mail")
+    assert item["kind"] == "working" and item["line"] and "gws" not in item["line"] or item["line"] == ""
+    assert item["step_kind"] == "mail" if item["line"] else "step_kind" not in item
+    assert [s["kind"] for s in item["steps"]] == ["doc", "mail"] and item["steps"][-1].get("running") is True
+    assert all("tool" not in s and "args" not in s for s in item["steps"])

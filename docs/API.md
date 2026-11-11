@@ -1081,7 +1081,8 @@ zone (the 4:00 AM rollover and "From yesterday" use it; without it, the Hermes c
  "notice": {"kind": "rollover", "moved": 3, "text": "Moved three seen answers to Earlier."} | null}
 Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "session_id", "run_id"?,
         "title", "line", "source", "source_label"?, "started_at", "updated_at", "finished_at"?, "unread",
-        "idle_seconds"?, "thumbs"?: [{"url"}], "waiting_on"?, "can_start_now"?, "dismissed_question"?,
+        "idle_seconds"?, "step_kind"?, "steps"?: [{"text", "kind", "at"?, "running"?}],
+        "thumbs"?: [{"url"}], "waiting_on"?, "can_start_now"?, "dismissed_question"?,
         "provenance"?: {"kind": "yesterday" | "earlier_call" | "later", "at"},
         "fix"?: {"kind": "credits" | "sign_in" | "retry" | "setup" | "open"},
         "question"?: {"shape": "words" | "things" | "approval", "prompt", "context"?, "why"?, "affects"?,
@@ -1091,6 +1092,14 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
                       "approval"?: {"choices"}}}
 ```
 
+- A `working` item's step (home-fixes-73, additive): `line` is its current step in plain words and
+  `step_kind` the kind of thing it is doing, for the app's glyph: `mail`, `calendar`, `web`,
+  `terminal`, `doc`, `edit`, `search`, `think`, `message`, `helper`, `tool` (named from the job's newest
+  activity item: the tool it called and the words made of it; never guessed). From the first poll a job
+  with no step yet reads `"Starting"` (being handed to Hermes), `"Thinking it over"` (its model's first
+  turn, before the first tool call) or `"Stopping"`, kind `think`. `steps` is the newest 8 activity
+  items, oldest first, in the same plain words (no arguments, results or tool names), `running` on the
+  call still going: the app's expanded capsule. Older apps ignore both.
 - Kinds and tiers: `question` 1, `stopped` 2, `working` 3, `new_answer` 4, `waiting` 5, `seen_answer` 6.
   Questions sort by expiry, then high risk first, then oldest; a working card keeps its place while it
   keeps working (new ones go on top); answers newest first; waiting oldest first. Up to 60 items;

@@ -374,3 +374,62 @@ class Summarizer:
                 on_ready()
             except Exception:
                 pass
+
+
+# -- Home's step capsule (build 73 home-fixes) ---------------------------------------------------
+#
+# Home draws a running job as a small capsule under the reply: a glyph for the KIND of thing the
+# job is doing and its current step. ``step_kind`` names that kind from the job's newest activity
+# item (the tool it called and the words activity.py already made of it), never from a guess.
+# ``START_LINE`` is the step a job shows from the moment its run is under way until its first tool
+# call lands: the model is working on its first turn then (build 73 data: a typed-chat job's first
+# tool call came 35-38 s after it started, and until then Home had no step at all).
+
+START_LINE = "Thinking it over"
+STEP_KINDS = ("mail", "calendar", "web", "terminal", "doc", "edit", "search", "think", "message", "helper", "tool")
+HOME_STEPS = 8   # the newest steps a running Home item carries (the capsule's expanded view)
+
+_MAIL_RE = re.compile(r"(?i)\b(?:g?mail|e-?mails?|inbox|himalaya|agentmail|messages? from)\b|gmail")
+_CAL_RE = re.compile(r"(?i)\b(?:calendars?|gcal|ical|agenda|schedule[ds]?)\b")
+_FILE_TOOLS = frozenset({"read_file", "search_files", "write_file", "patch", "edit_file", "skill_view", "skill_manage"})
+_WEB_TOOL_RE = re.compile(r"(?i)^(?:browser_|web_|fetch$|mcp__aside|mcp__browser)")
+
+
+def step_kind(item: dict[str, Any] | None) -> str | None:
+    """The kind of one activity item for Home's glyph: what the call touches first (mail, a
+    calendar), else what kind of work it is (activity.py's ``kind``). None for no item."""
+    if not isinstance(item, dict) or not item.get("text"):
+        return None
+    tool = str(item.get("tool") or item.get("_tool") or "")
+    kind = str(item.get("kind") or "tool")
+    text = str(item.get("text") or "")
+    hay = f"{tool} {text}"
+    if tool in _FILE_TOOLS:
+        pass  # reading notes on "email-operations" or a file named calendar.md is still reading a file
+    elif _MAIL_RE.search(hay):
+        return "mail"
+    elif _CAL_RE.search(hay):
+        return "calendar"
+    if kind == "browse" or _WEB_TOOL_RE.search(tool) or text.startswith(("Searched the web", "Fetched from the web")):
+        return "web"
+    if tool == "delegate_task" or tool == "subagent":
+        return "helper"
+    return {"read": "doc", "edit": "edit", "run": "terminal", "search": "search", "think": "think",
+            "message": "message"}.get(kind, "tool")
+
+
+def home_steps(activity: list[dict[str, Any]] | None, limit: int = HOME_STEPS) -> list[dict[str, Any]]:
+    """The newest *limit* steps, oldest first, as Home's expanded capsule lists them: the words
+    activity.py already wrote (past tense, plain, redacted), the kind, when, and whether it is the
+    call still running. No arguments, no results, no raw tool names."""
+    out: list[dict[str, Any]] = []
+    for item in [i for i in (activity or []) if isinstance(i, dict) and i.get("text")][-limit:]:
+        step: dict[str, Any] = {"text": _clean(str(item["text"]), 80) or str(item["text"])[:80],
+                                "kind": step_kind(item) or "tool"}
+        at = item.get("started_at") or item.get("at")
+        if isinstance(at, (int, float)):
+            step["at"] = float(at)
+        if item.get("status") == "running":
+            step["running"] = True
+        out.append(step)
+    return out

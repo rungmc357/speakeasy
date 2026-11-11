@@ -13,6 +13,12 @@ extension ServerClient {
         NowHome(json: try await json("/voice/now?tz=" + Self.esc(timeZone.identifier)))
     }
 
+    /// The same reply as `now()`, undecoded: Home keeps the last good one on disk and draws it at the
+    /// next launch before the first refresh answers (home-fixes-73).
+    public func nowData(timeZone: TimeZone = .current) async throws -> Data {
+        try await data("/voice/now?tz=" + Self.esc(timeZone.identifier))
+    }
+
     /// The saved call, not the voice provider's (non-Hermes) session.
     public func savedCall(_ interactionID: String) async throws -> SavedCall {
         SavedCall(json: try await json("/voice/calls/" + Self.esc(interactionID)))
