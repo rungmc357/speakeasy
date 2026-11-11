@@ -20,6 +20,15 @@ public enum MicFault: String, Equatable, Sendable {
     case unanswered = "spoke but the voice never heard it"
 }
 
+/// What to do about a dead mic (74.1, F4(a)).
+public enum MicRepairStep: Equatable, Sendable {
+    /// Restart the device's audio unit on the SAME connection (iPhone: toggle WebRTC's audio and
+    /// re-activate the audio session). No new server session; about a second instead of ~10.
+    case restartAudio
+    /// Reopen the voice connection (a new server session).
+    case reconnect
+}
+
 /// Checks, from the device's own call stats, that the mic is really getting through:
 ///  1. the mic delivers samples (a working mic never reads a flat zero, even in a silent room);
 ///  2. those samples are leaving the device (audio packets sent keeps growing);
@@ -46,10 +55,17 @@ public struct MicCheck: Sendable {
     public static let answerWithin: TimeInterval = 10
     /// Automatic reopen attempts per call before asking the user to restart.
     public static let maxRepairs = 2
+    /// After restarting the audio unit in place, sound must show within this long, or the
+    /// connection is reopened. (The first-sound window itself is unchanged.)
+    public static let restartGrace: TimeInterval = 2.5
 
     public private(set) var health: MicHealth = .checking
     public private(set) var repairs = 0
     public private(set) var lastFault: MicFault?
+    /// The audio unit was restarted in place on this connection (at most once per connection).
+    public private(set) var restartedAudio = false
+    /// The last fault came before the mic ever gave sound on this connection (the first-sound window).
+    public private(set) var lastFaultInFirstWindow = false
     private var watchingSince: Date?
     private var lastSound: Date?
     private var lastPackets: Int?
@@ -61,6 +77,8 @@ public struct MicCheck: Sendable {
     /// connection (the failure seen: calls that never register a word), so a noisy room
     /// mid-conversation can't trigger needless reconnects.
     private var heardAny = false
+    /// The first-sound grace after an in-place restart (`restartGrace`); nil = `firstSoundGrace`.
+    private var graceOverride: TimeInterval?
 
     /// How long a new connection may stay silent before it counts as dead.
     public var firstSoundGrace: TimeInterval
@@ -69,14 +87,43 @@ public struct MicCheck: Sendable {
     public private(set) var lastPacketCount: Int?
     public private(set) var watchedFor: TimeInterval = 0
 
-    public init(firstSoundGrace: TimeInterval = MicCheck.firstSoundWithin) {
+    /// The device can restart its audio unit in place (iPhone, Vision Pro); the Mac reopens.
+    public var canRestartAudio: Bool
+
+    public init(firstSoundGrace: TimeInterval = MicCheck.firstSoundWithin, canRestartAudio: Bool = false) {
         self.firstSoundGrace = firstSoundGrace
+        self.canRestartAudio = canRestartAudio
     }
 
     /// A voice connection is live (call start, or after a repair): judge it afresh.
     public mutating func connectionOpened() {
         reset()
+        restartedAudio = false
         if health != .broken { health = .checking }
+    }
+
+    /// What to do about `fault`: no sound during the first-sound window is first met by restarting
+    /// the audio unit on the same connection (once per connection, and only where the device can);
+    /// everything else, or a restart that didn't help, reopens the connection.
+    public func repairStep(for fault: MicFault) -> MicRepairStep {
+        guard canRestartAudio, fault == .noSound, lastFaultInFirstWindow, !restartedAudio else { return .reconnect }
+        return .restartAudio
+    }
+
+    /// The audio unit is being restarted in place: judge the same connection afresh, with
+    /// `restartGrace` for the first sound. Not a reopen (doesn't count toward `maxRepairs`).
+    public mutating func audioRestarted() {
+        restartedAudio = true
+        reset()
+        graceOverride = Self.restartGrace
+        if health != .broken { health = .checking }
+    }
+
+    /// The in-place restart couldn't run (the session wouldn't re-activate): the connection is
+    /// reopened instead, unless the reopens already ran out (then the mic is broken).
+    public mutating func audioRestartFailed() {
+        restartedAudio = true
+        if repairs >= Self.maxRepairs { health = .broken }
     }
 
     /// A repair (reopen of the voice connection) is starting.
@@ -117,13 +164,14 @@ public struct MicCheck: Sendable {
         let sendingOK = packetsSent == nil || (lastPacketsGrew.map { now.timeIntervalSince($0) < Self.deadAfter } ?? false)
         if soundOK && sendingOK && health == .checking { health = .ok }
 
-        let grace = lastSound == nil ? firstSoundGrace : Self.deadAfter
+        let firstWindow = lastSound == nil
+        let grace = firstWindow ? (graceOverride ?? firstSoundGrace) : Self.deadAfter
         if now.timeIntervalSince(since) >= grace {
             // Once the voice has heard you on this connection, the mic is proven: a stretch of
             // pure zeros after that is a headset gating silence while you pause (AirPods do),
             // not a dead mic. Only audio that stops leaving the device still counts then.
-            if !soundOK && !heardAny { return fault(.noSound) }
-            if !sendingOK { return fault(.notSending) }
+            if !soundOK && !heardAny { return fault(.noSound, firstWindow: firstWindow) }
+            if !sendingOK { return fault(.notSending, firstWindow: firstWindow) }
         }
 
         // Clear speech that the voice never acknowledged.
@@ -136,14 +184,16 @@ public struct MicCheck: Sendable {
             speechStart = nil
         }
         if let pending = unansweredSince, now.timeIntervalSince(pending) >= Self.answerWithin {
-            return fault(.unanswered)
+            return fault(.unanswered, firstWindow: false)
         }
         return nil
     }
 
-    private mutating func fault(_ kind: MicFault) -> MicFault? {
+    private mutating func fault(_ kind: MicFault, firstWindow: Bool) -> MicFault? {
         lastFault = kind
-        if repairs >= Self.maxRepairs {
+        lastFaultInFirstWindow = firstWindow
+        // An in-place restart is still open to a first-window "no sound" even after the reopens ran out.
+        if repairs >= Self.maxRepairs, repairStep(for: kind) == .reconnect {
             health = .broken
             return nil
         }
@@ -153,5 +203,6 @@ public struct MicCheck: Sendable {
     private mutating func reset() {
         watchingSince = nil; lastSound = nil; lastPackets = nil; lastPacketsGrew = nil
         speechStart = nil; lastSpeech = nil; unansweredSince = nil; heardAny = false
+        graceOverride = nil
     }
 }

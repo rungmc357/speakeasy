@@ -23,7 +23,14 @@ public protocol CallTransport: AnyObject {
     func holdAudio()
     func releaseAudio()
     var isAudioHeld: Bool { get }
+    /// Restart the device's audio unit on the same connection (74.1); false = can't, reopen instead.
+    func restartLocalAudio() -> Bool
     func close()
+}
+
+extension CallTransport {
+    /// Transports that can't restart their audio in place reopen the connection instead.
+    public func restartLocalAudio() -> Bool { false }
 }
 
 extension NativeCallEngine: CallTransport {}
