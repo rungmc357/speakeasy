@@ -146,6 +146,8 @@ class HermesAPI:
         self.own_agent = ""
         self.agent_lookup: Callable[[str, str], str | None] = lambda kind, ident: None
         self._agents: dict[tuple[str, str], str] = {}
+        # Another profile's own API key, by profile name (set by the service; never logged/returned).
+        self.agent_key: Callable[[str], str] | None = None
         self.last_error = ""  # Hermes' own message for the last failed background run
         # Whether Hermes reads images: "unknown" until the first check (refresh_image_support).
         self.image_support: dict[str, Any] = {"images": image_input_available(), "vision": "unknown"}
@@ -160,6 +162,25 @@ class HermesAPI:
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", agent):
             raise HermesError(400, "invalid agent")
         return f"{self.root}/p/{agent}"
+
+    def _key_for(self, base: str | None) -> str:
+        """The API key for a request to *base*: this client's own key for its own base; for another
+        profile's ``/p/<name>`` prefix that profile's OWN key (``agent_key``, read on the server
+        from that profile's secrets), never this profile's: Hermes checks the key of the profile
+        the URL names. No ``agent_key`` (or no key there) = no key sent, and Hermes refuses."""
+        if not base or base == self.base:
+            return self.key_fn()
+        prefix = f"{self.root}/p/"
+        if not base.startswith(prefix):
+            return self.key_fn()
+        agent = base[len(prefix):].split("/", 1)[0]
+        if self.agent_key is None:
+            return ""
+        try:
+            return self.agent_key(agent) or ""
+        except Exception:
+            logger.info("speakeasy: no key for another profile (%s)", "lookup failed")
+            return ""
 
     def remember_agent(self, kind: str, ident: str, agent: str | None) -> None:
         if not ident or not agent or agent in {self.own_agent, self.profile}:
@@ -192,7 +213,7 @@ class HermesAPI:
                  headers: dict[str, str] | None = None, base: str | None = None) -> urllib.request.Request:
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request((base or self.base) + path, data=data, method=method or ("POST" if data else "GET"))
-        key = self.key_fn()
+        key = self._key_for(base)
         if key:
             req.add_header("Authorization", f"Bearer {key}")
         req.add_header("Content-Type", "application/json")

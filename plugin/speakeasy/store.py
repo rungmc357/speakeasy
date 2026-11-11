@@ -572,6 +572,12 @@ class StateStore:
             row = self._db.execute("SELECT agent FROM agent_choices WHERE scope=?", (scope,)).fetchone()
         return row[0] if row else None
 
+    def interaction_of(self, key: str) -> str | None:
+        """The call a task (by idem key) was started on, if any."""
+        with self._lock:
+            row = self._db.execute("SELECT interaction_id FROM runs WHERE idem_key=?", (key,)).fetchone()
+        return row[0] if row and row[0] else None
+
     def agent_sessions(self) -> dict[str, str]:
         """{session id: agent} for every chat Speakeasy started on another agent."""
         with self._lock:

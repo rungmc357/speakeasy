@@ -714,6 +714,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/voice/codex/login": self.service.codex_login_status,
                 "/voice/setup-check": self.service.setup_check,
                 "/voice/agents": self.service.agents,
+                "/voice/profiles": self.service.profiles,
             }
             if path in routes:
                 self._reply(200, routes[path]())
