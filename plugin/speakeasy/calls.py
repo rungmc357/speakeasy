@@ -4771,12 +4771,7 @@ class SidebandWorker:
     async def _timed_route(self, cand_task: Any, request: str, tasks: list[router.OpenTask], marked: Any,
                            earlier: str, replied: str | None, focus: Any) -> tuple[tuple[list[Any], int], tuple[Any, int]]:
         """The candidate chats, then the routing decision for *request*; both only read (snappy #4c)."""
-        try:
-            candidates, cand_ms = await cand_task
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # never let matching break a request
-            candidates, cand_ms = [], 0
+        candidates, cand_ms = await cand_task   # a failed lookup fails the request visibly, as before
         now = time.time()
         chats = [router.Chat(f"c{i + 1}", c.conv.where, c.snippets, c.voice_request,
                              max(0.0, now - c.conv.last_active) if c.conv.last_active else None)
