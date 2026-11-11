@@ -441,15 +441,16 @@ struct PRCard: View {
                 Circle().fill(tint).frame(width: 7, height: 7)
                 Text(name).font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
             }
-            Text(count ?? word.prefix(1).uppercased() + word.dropFirst()).font(.title2.weight(.bold)).foregroundStyle(style.ink).lineLimit(1)
+            // Flat in a widget the failure has no red tile around it: its word carries the red.
+            Text(count ?? word.prefix(1).uppercased() + word.dropFirst()).font(.title2.weight(.bold))
+                .foregroundStyle(state == "failed" && widgetTitle != nil ? style.bad : style.ink).lineLimit(1)
             if count != nil { Text(word).font(.footnote).foregroundStyle(style.secondary) }
             if let note = check["note"].string {
                 Text(note).font(.footnote).foregroundStyle(style.faint).lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(state == "failed" ? style.bad.opacity(0.08) : style.well))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(state == "failed" ? style.bad.opacity(0.6) : style.hairline))
+        .padding(widgetTitle == nil ? 12 : 0).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .ciTileWell(style, failed: state == "failed", flat: widgetTitle != nil)
     }
     private var prBody: some View {
         CardBox {
@@ -814,5 +815,15 @@ extension View {
     /// one surface, and a well inside it read as a card inside a card).
     @ViewBuilder func checksWell(_ style: CardStyle, flat: Bool) -> some View {
         if flat { self.frame(maxWidth: .infinity, alignment: .leading) } else { self.cardWell(style) }
+    }
+    /// A CI card's check tile: its own tile on a card; flat in a Home widget (tiles inside the
+    /// widget's surface read as cards inside a card). A failure keeps its red dot and word either way.
+    @ViewBuilder func ciTileWell(_ style: CardStyle, failed: Bool, flat: Bool) -> some View {
+        if flat {
+            self
+        } else {
+            self.background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(failed ? style.bad.opacity(0.08) : style.well))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(failed ? style.bad.opacity(0.6) : style.hairline))
+        }
     }
 }
