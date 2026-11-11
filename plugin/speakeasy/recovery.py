@@ -37,6 +37,7 @@ LIVE_WAIT_MAX_S = 35 * 60  # a wait older than its own timeout has been orphaned
 
 ORPHAN_QUIET_S = 10 * 60   # an open row nothing in this process follows, untouched this long, is orphaned
 NOT_STARTED_NOTE = "Lost track of this before it started."
+APPROVAL_EXPIRED_NOTE = "This approval expired when Hermes restarted. Ask again to carry on."
 ORPHAN_BATCH = 40          # rows one pass may check with Hermes (the rest wait for the next pass)
 
 # SPK-308: a run this process still follows, but whose answer Hermes already has.
@@ -197,6 +198,13 @@ def sweep_orphans(store: Any, hermes: Any, live: set[str], image_roots: Callable
                     "completed": "Work complete", "cancelled": "Work stopped",
                     "failed": "Didn't finish", "interrupted": "Didn't finish"}[final])
                 settled.append((key, final))
+        elif status in RS.ASKING:
+            # An approval whose request this process never held (it lived in the process before a
+            # restart) and Hermes no longer offers: nothing can answer it, so it says it expired
+            # rather than showing buttons that can only fail.
+            if store.transition(key, "interrupted", expect={status}, orphaned=True):
+                store.progress(key, "result", APPROVAL_EXPIRED_NOTE)
+                settled.append((key, "interrupted"))
         elif store.transition(key, "ambiguous", expect={status}):
             settled.append((key, "ambiguous"))
     if settled:

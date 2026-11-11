@@ -87,7 +87,9 @@ def current_exchange(entries: list[dict[str, Any]], now: float, extra_runs: set[
     at = float(last.get("at") or 0)
     after = [e for e in entries if float(e.get("at") or 0) >= at and e is not last]
     replies = [e for e in after if e.get("kind") == "message" and e.get("role") == "assistant"
-               and not e.get("answer")]   # an SPK-314 answer line belongs to an older job, not this exchange
+               and not e.get("answer")   # an SPK-314 answer line belongs to an older job, not this exchange
+               # A slow answer to an earlier message stays with that message (reply_to), never the next one.
+               and e.get("reply_to") in (None, last.get("id"))]
     runs = {str(r) for r in (last.get("run_id"), *(e.get("run_id") for e in replies)) if r}
     runs |= set(extra_runs or ())
     activity = max([at, *(float(e.get("at") or 0) for e in replies)])
@@ -115,14 +117,36 @@ def current_exchange(entries: list[dict[str, Any]], now: float, extra_runs: set[
 
 # -- 3 + 4: the widget stack -----------------------------------------------------------------------
 
-def candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+# home-live-fix (F1, build 74 live: no finished job reached the stack after Nov 10 01:44, 7 of 8 with
+# views). A finished job is on the stack because of what it brought back (views, cards, pictures,
+# files, an email draft, a decision), not because nobody read or heard it yet: an answer spoken on a
+# call, or one that belongs to the call that just ended (``call_id``, which only collapses Home's
+# cards), enters too. It leaves when opened in full or dismissed, or after RESULT_KEPT_S.
+ANSWER_KINDS = {"new_answer", "seen_answer"}
+LOOK_GAP_S = 5 * 60   # a real read of Home this long after the previous one starts a new look
+
+
+def substantive(result: Any, drafts: Any = None) -> bool:
+    """A finished job's result is worth a widget: something to see or act on, not just words."""
+    if drafts:
+        return True
+    if not isinstance(result, dict):
+        return False
+    return any(result.get(k) for k in ("views", "cards", "images", "files", "question"))
+
+
+def candidates(items: list[dict[str, Any]], eligible: Callable[[str], bool] | None = None,
+               call_since: float | None = None) -> list[dict[str, Any]]:
     """Home's final cards -> the stack rows they would make. Never running work; a canceled job is
-    not waiting on anyone; a finished answer only while it is new (unread); conversations Speakeasy
-    didn't start only when they ask something. A group of stopped jobs is one row per job."""
+    not waiting on anyone; a finished answer while it is new (unread), and once read or heard on a
+    call too when its result has something to see or act on (``eligible(run_id)``; without it,
+    every finished answer); during a call (``call_since``) any answer of this call that finished on
+    it, heard or not (SPK-376, Claire); conversations Speakeasy didn't start only when they ask something. A
+    group of stopped jobs is one row per job."""
     out: list[dict[str, Any]] = []
     for item in items:
         kind, run = item.get("kind"), item.get("run_id")
-        if item.get("canceled") or item.get("call_id"):
+        if item.get("canceled"):
             continue
         if kind == "question" and not item.get("replaced"):
             asked = int(float(((item.get("question") or {}).get("asked_at")) or item.get("updated_at") or 0))
@@ -136,9 +160,19 @@ def candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                        "title": m.get("title") or item.get("title")}
                 if one.get("run_id"):
                     out.append(_cand(one, STOPPED, str(one["run_id"]), one["run_id"]))
-        elif kind == "new_answer" and run:
+        elif kind in ANSWER_KINDS and run and (kind == "new_answer" or eligible is None or eligible(str(run))):
+            out.append(_cand(item, RESULT, str(run), run))
+        elif kind == "seen_answer" and run and _call_answer(item, call_since):
             out.append(_cand(item, RESULT, str(run), run))
     return out
+
+
+def _call_answer(item: dict[str, Any], call_since: float | None) -> bool:
+    """This live call's own answer, finished while the call was on (heard or not). Older answers a
+    call brings in stay where they were: a result someone already opened doesn't come back."""
+    if call_since is None or not item.get("on_current_call"):
+        return False
+    return float(item.get("finished_at") or 0) >= float(call_since)
 
 
 def _cand(item: dict[str, Any], kind: str, ref: str, run: Any) -> dict[str, Any]:
@@ -201,19 +235,91 @@ class HomeState:
             return {}
         return {"key": row[0], "status": str(row[1] or ""), "answered": row[2], "question_closed": row[3]}
 
+    def _eligible(self, run_id: str) -> bool:
+        """F1: the finished job brought back something to see or act on (``substantive``). A
+        finished result doesn't change, so the answer is kept per run."""
+        cache: dict[str, bool] = self.__dict__.setdefault("_worth", {})
+        if run_id in cache:
+            return cache[run_id]
+        with self.store._lock:
+            row = self.store._db.execute("SELECT idem_key, result_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            return False
+        try:
+            result = json.loads(row[1]) if row[1] else None
+        except ValueError:
+            result = None
+        try:
+            drafts = self.store.drafts_for(row[0]) if row[0] else None
+        except Exception:  # noqa: BLE001
+            drafts = None
+        worth = substantive(result, drafts)
+        if row[1]:
+            if len(cache) > 2000:
+                cache.clear()
+            cache[run_id] = worth
+        return worth
+
+    def _opened_at(self, run_id: str | None) -> float:
+        """F1: when this job was opened in full in an app (``POST /voice/tasks/{run}/seen``), 0 if never."""
+        if not run_id:
+            return 0.0
+        key = self._run_state(run_id).get("key")
+        if not key:
+            return 0.0
+        try:
+            return float(self.store.get_meta(f"now_opened:{key}") or 0)
+        except ValueError:
+            return 0.0
+
+    def _looked(self, now: float) -> None:
+        """F1 ordering: a real read of Home this long after the previous one is a new look; what was
+        added since the last look ended is new. Kept in memory, written at most once a minute."""
+        last = self.__dict__.get("_last_read")
+        if last is None:
+            try:
+                last = float(self.store.get_meta("home_last_read") or 0)
+                self._seen_through = float(self.store.get_meta("home_seen_through") or 0)
+            except ValueError:
+                last, self._seen_through = 0.0, 0.0
+            self._last_written = last
+        if now - last > LOOK_GAP_S and last:
+            self._seen_through = last
+            self.store.set_meta("home_seen_through", repr(last))
+        self._last_read = now
+        if now - self.__dict__.get("_last_written", 0.0) >= 60:
+            self._last_written = now
+            self.store.set_meta("home_last_read", repr(now))
+
+    def seen_through(self) -> float:
+        if "_seen_through" not in self.__dict__:
+            try:
+                self._seen_through = float(self.store.get_meta("home_seen_through") or 0)
+            except ValueError:
+                self._seen_through = 0.0
+        return self._seen_through
+
     # -- feeding the stack (called from now.build) ------------------------------------------------
-    def feed(self, items: list[dict[str, Any]], entries: list[dict[str, Any]], now: float) -> None:
+    def feed(self, items: list[dict[str, Any]], entries: list[dict[str, Any]], now: float,
+             call_since: float | None = None) -> None:
         """Home's final cards in, the stack table updated: new rows for new results/decisions,
-        snapshots refreshed, and rows whose item was dealt with closed."""
+        snapshots refreshed, and rows whose item was dealt with closed. ``call_since``: when the
+        live call started (its answers join the stack heard or not), None off a call."""
         with self._lock:
             results = {str(e.get("run_id")): e["id"] for e in entries if e.get("kind") == "result" and e.get("run_id")}
             lines = {str(e.get("run_id")): e["id"] for e in entries
                      if e.get("kind") == "message" and e.get("answer") and e.get("run_id")}
-            cands = candidates(items)
+            cands = candidates(items, self._eligible, call_since)
+            self._looked(now)
             seen = {c["id"] for c in cands}
             known = {r["id"]: r for r in self._rows()}
             hidden = set(self.store.later_items())
             for row in known.values():
+                if row["state"] == OPEN and row["kind"] == RESULT and row["run_id"] \
+                        and self._opened_at(row["run_id"]) >= float(row["at"] or row["added_at"] or 0) - 1:
+                    self._set(row["id"], state=DONE, state_at=now)   # F1: opened in full, so it leaves
+                    row["state"] = DONE
+                    continue
                 if row["state"] != OPEN or row["id"] in seen:
                     continue
                 if row["kind"] == RESULT:
@@ -237,6 +343,9 @@ class HomeState:
                 result_id = (results.get(str(c["run_id"])) or lines.get(str(c["run_id"]))) if c["kind"] == RESULT else None
                 row = known.get(c["id"])
                 if row is None:
+                    if c["kind"] == RESULT and c["run_id"] and c["at"] \
+                            and self._opened_at(c["run_id"]) >= float(c["at"]) - 1:
+                        continue   # F1: already opened in full after it finished: nothing new to show
                     follows = self._follows(c, known)
                     with self.store._lock, self.store._db:
                         self.store._db.execute(
@@ -295,10 +404,15 @@ class HomeState:
         and what was dismissed on Home but is still open, for Work."""
         current_runs = current_runs or set()
         rows = self._rows("WHERE state='open'")
-        order = lambda r: (0 if r["kind"] in {DECISION, STOPPED} else 1, -float(r["added_at"] or 0), r["id"])  # noqa: E731
+        # F1: what came in since you last looked first; then needs-you before results, newest first.
+        through = self.seen_through()
+        fresh = lambda r: float(r["added_at"] or 0) > through  # noqa: E731
+        order = lambda r: (0 if fresh(r) else 1, 0 if r["kind"] in {DECISION, STOPPED} else 1,  # noqa: E731
+                           -float(r["added_at"] or 0), r["id"])
         on_home = sorted((r for r in rows if not r["home_dismissed_at"]), key=order)
         on_work = sorted((r for r in rows if r["home_dismissed_at"]), key=order)
-        return {"items": [self._shape(r, current_runs) for r in on_home[:STACK_MAX]],
+        shaped = [self._shape(r, current_runs) for r in on_home[:STACK_MAX]]
+        return {"items": shaped,
                 "count": len(on_home),
                 "on_work": [self._shape(r, current_runs) for r in on_work[:ON_WORK_MAX]]}
 

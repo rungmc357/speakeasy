@@ -135,6 +135,8 @@ class FakeHermes(BaseHTTPRequestHandler):
             status = {"run_id": parts[2], "status": run["status"], "output": run["output"]}
             if run.get("error"):
                 status["error"] = run["error"]
+            if run.get("approval"):
+                status["approval"] = run["approval"]   # Hermes' pending request while it waits
             self._json(200, status)
             return
         self._json(404, {"error": "not found"})

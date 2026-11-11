@@ -85,6 +85,11 @@ ROUTING_HINT = ("Also: `hermes voice routing` on the machine that runs Hermes. "
 
 MAX_SDP = 96 * 1024
 # UX contract flags in GET /voice/status ("capabilities"); clients hide what a server lacks.
+# F4: an automatic reload waits this long after any call is asked for, admitted, abandoned or ended,
+# so it never lands between an app's connect retries (they come a few seconds apart).
+CALL_SETTLE_S = 60.0
+UPDATE_LOG_EVERY_S = 30.0   # a waiting plugin update is logged when it starts waiting, then this often
+
 CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True,
                 "task_messages": True}
 PAUSE_NOTICE_AFTER_S = 15 * 60
@@ -434,6 +439,7 @@ class VoiceService(SecureInputMixin):
             self.hermes.own_agent = self._own_agent()
             self.hermes.agent_lookup = self.store.agent_lookup
         self.rt.session_db = self._db_for
+        self.rt.dealt_with = lambda run_id: self.home_state.dealt_with(run_id=run_id)
         self.store.describe_model = self.describe_model
         # A running task's live line (live_status.py): a deterministic line from its steps, plus the
         # task's own STATUS/DETAIL. The side model words it only when the user picked their own side
@@ -457,6 +463,8 @@ class VoiceService(SecureInputMixin):
         self.history_events = HistoryEvents(self._history_stamp)
         from .now import NowModel
         self.now_model = NowModel(self)
+        # snappy: a call's accepted handoff shows as a Working card before routing (calls.handoff_card).
+        self.rt.now_model = self.now_model
         from .home_chat import HomeChat
         self.home_chat = HomeChat(self)
         from .home_state import HomeState
@@ -507,6 +515,7 @@ class VoiceService(SecureInputMixin):
         self.codex_signin = CodexLogin(self.dir / "codex-login", popen=codex_login_popen or _sp.Popen,
                                        on_signed_in=self._codex_signed_in)
         self._install_lock = threading.Lock()
+        self._call_event_at = 0.0   # F4: wall clock of the last call asked for, admitted or abandoned
         self._install: dict[str, Any] = {"state": "", "message": "", "switch": False}
         self._grok_credential = grok_credential
         self._grok_connect = grok_connect
@@ -688,24 +697,58 @@ class VoiceService(SecureInputMixin):
         new code, which picks its Hermes event stream up where it left off (``resume_open_work``),
         and a job held behind another one stays held. Only what the next code couldn't pick up
         counts (``_unresumable``): the second or two while a job is handed to Hermes, an approval
-        answer on its way, or a chat-thread turn."""
+        answer on its way, or a chat-thread turn.
+
+        Only the reloader asks, and only when new files are waiting, so this also logs each deferral
+        with how long the update has waited (F4; here rather than in reloader.py, which is the shell
+        that only a gateway restart replaces)."""
+        reason = self.busy_reason()
+        now = time.monotonic()
+        since = getattr(self, "_update_waiting_since", None)
+        if reason is not None:
+            if since is None:
+                self._update_waiting_since = since = now
+                self._update_logged_at = 0.0
+            if now - getattr(self, "_update_logged_at", 0.0) >= UPDATE_LOG_EVERY_S:
+                self._update_logged_at = now
+                logger.info("speakeasy: plugin update waiting (%s); it has waited %.0fs", reason, now - since)
+        elif since is not None:
+            logger.info("speakeasy: plugin update loading after waiting %.0fs", now - since)
+            self._update_waiting_since = None
+        return reason is not None
+
+    def busy_reason(self, now: float | None = None) -> str | None:
+        """Why an automatic reload must wait (None = it may go now). Besides a live call, any call
+        admitted, abandoned or ended in the last CALL_SETTLE_S counts (F4, build 74 live: a reload
+        landed in the seconds between an abandoned connect and the app's retry, and the retry hit a
+        cold plugin)."""
+        now = time.time() if now is None else now
         with self.lock:
             live = list(self.interactions.values())
+        if now - getattr(self, "_call_event_at", 0.0) < CALL_SETTLE_S:
+            return "a call is connecting"
         for interaction in live:
             # A paused call counts until its pause is bookkept as ended (PAUSE_NOTICE_AFTER_S): a call
             # paused and never resumed (or ended on the device while paused) must not hold back an
             # update forever. Resuming it after a reload starts a fresh call on the app's side.
             if not interaction.call_closed or (interaction.paused and not interaction.pause_bookkept):
-                return True
+                return "a call is live"
+            last = max(float(interaction.started_at or 0), float(interaction.ended_at or 0))
+            if now - last < CALL_SETTLE_S:
+                return "a call just connected or ended"
             with interaction.lock:
                 if any(self._unresumable(r) for r in interaction.runs.values()):
-                    return True
+                    return "a job is being handed to Hermes"
         text = self._text_worker
         if text is not None:
             with text.interaction.lock:
                 if any(self._unresumable(r) for r in text.interaction.runs.values()):
-                    return True
-        return False
+                    return "a job is being handed to Hermes"
+        return None
+
+    def note_call_event(self) -> None:
+        """A call was asked for, admitted or abandoned: an automatic reload waits CALL_SETTLE_S."""
+        self._call_event_at = time.time()
 
     @staticmethod
     def _unresumable(run: Any) -> bool:
@@ -761,7 +804,8 @@ class VoiceService(SecureInputMixin):
         followed = held = 0
         worker = None
         for row in rows:
-            if row["status"] not in RESUMABLE_RUN_STATES or not row.get("run_id"):
+            waiting = row["status"] == "waiting_for_approval"
+            if (row["status"] not in RESUMABLE_RUN_STATES and not waiting) or not row.get("run_id"):
                 continue
             try:
                 reply = self.hermes.get_run(row["run_id"])
@@ -769,10 +813,20 @@ class VoiceService(SecureInputMixin):
                 continue  # Hermes forgot it (restarted) or can't be reached: the sweep settles it
             if not isinstance(reply, dict) or reply.get("status") not in HERMES_LIVE_RUN:
                 continue
+            # An approval still waiting on Hermes is armed again from the request Hermes holds (its
+            # id lived only in the old process), so its buttons work; one Hermes no longer offers
+            # is left to the orphan sweep, which says it expired.
+            approval = CALLS.approval_from_event(reply.get("approval")) \
+                if reply.get("status") == "waiting_for_approval" else None
+            if waiting and approval is None and reply.get("status") == "waiting_for_approval":
+                continue
             worker = worker or self.text_worker()
             backend = self._adopt(worker, row)
             if backend is None:
                 continue
+            if approval is not None:
+                with worker.interaction.lock:
+                    backend.approval, backend.status = approval, "waiting_for_approval"
             seq = seqs.get(row["key"])
             known = isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0
             CALLS.on_loop_soon(worker.follow_run(backend, seq if known else -1,
@@ -931,6 +985,7 @@ class VoiceService(SecureInputMixin):
                        local: bool = False) -> dict[str, Any]:
         if self.updated_underneath():
             raise ServiceError(503, RESTART_NEEDED)
+        self.note_call_event()   # F4: no automatic reload while this connect (or its retry) is settling
         resume_from = body.get("resume_from")
         relay = self.settings.get()["voice"]["provider"] == "grok"
         if relay:
@@ -1074,6 +1129,7 @@ class VoiceService(SecureInputMixin):
                     interaction.room_nudged = False
         with self.lock:
             self.interactions[interaction_id] = interaction
+        self.note_call_event()
         self.store.complete_session(request_id, client_result)
         self._start_worker(interaction, provider, transport).start()
         # Weather is the most common quick question: have the home forecast ready before it's asked.
@@ -1220,6 +1276,7 @@ class VoiceService(SecureInputMixin):
             if interaction.call_state not in (CallState.CONNECTING, CallState.LIVE) or interaction.paused:
                 return {"interaction_id": interaction_id, "abandoned": interaction.abandoned}
             interaction.abandoned = True
+        self.note_call_event()   # F4: the app's retry is seconds away; the plugin must still be warm
         worker = interaction.worker
         try:
             if hasattr(worker, "end_call"):
@@ -1247,12 +1304,29 @@ class VoiceService(SecureInputMixin):
             logger.warning("speakeasy: pause-expiry bookkeeping failed: %s", type(exc).__name__)
 
     def resumable(self, interaction_id: str) -> Interaction:
+        """The call a resume continues: a paused one, or one whose connection dropped (the app
+        reconnects with resume_from; nobody pressed pause, so the same conversation must go on)."""
         source = self.interaction(interaction_id)
+        live_drop = False
         with source.lock:
-            if not source.paused:
-                raise ServiceError(409, "call is not paused")
             if source.successor is not None:
                 raise ServiceError(409, "call was already resumed")
+            if not source.paused:
+                if source.abandoned or source.carried_by is not None:
+                    raise ServiceError(409, "call is not paused")
+                if source.call_closed:
+                    # Dropped: the transport closed by itself (an End confirms finalization). Held
+                    # as long as a paused call is.
+                    dropped = source.finalization == "open" and (
+                        source.ended_at is None or time.time() - source.ended_at < PAUSE_NOTICE_AFTER_S)
+                    if not dropped:
+                        raise ServiceError(409, "call is not paused")
+                else:
+                    # The app saw the drop before the plugin did (it reconnects after a second): the
+                    # old leg is paused here first, so two voice sessions never run for one call.
+                    live_drop = True
+        if live_drop:
+            self.pause(interaction_id, stop_transport=True)
         return source
 
     def pause_history(self, source: Interaction) -> list[dict[str, str]]:
@@ -1959,6 +2033,7 @@ class VoiceService(SecureInputMixin):
                 if backend.status == "resolving_approval":
                     backend.status = self.store.run_status(backend.idem_key) or "working"
         self.store.progress(backend.idem_key, "milestone", APPROVED_MILESTONE[choice])
+        self.rt.approval_dealt_with(backend.run_id, request_id)   # Home: done, never "skipped"
         publish_state(self.store, interaction, name)
         return {"interaction_id": interaction_id, "choice": choice, "run_id": backend.run_id,
                 "resolved": result.get("resolved", 0)}
@@ -3630,6 +3705,7 @@ class VoiceService(SecureInputMixin):
         if rev != getattr(self, "_now_rev_published", None):
             self._now_rev_published = rev
             self.history_events.publish("now", {"rev": rev})
+            logger.info("speakeasy: now.published rev=%s t=%.3f", str(rev)[:12], time.monotonic())
 
     def now_later(self, item_id: str, body: dict[str, Any], undo: bool = False) -> dict[str, Any]:
         """``POST /voice/now/{id}/later {until?: epoch, on_change?: true}``: off Home until then (or until

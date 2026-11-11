@@ -486,6 +486,7 @@ VIEWS_RULE = (
     "items[{name, value, detail, tone, history[]}]}; tone is good, warn, bad, info or neutral. "
     "Use https URLs only (before_after images may be an absolute path of a screenshot you took), never invent images "
     "or numbers, and skip the block when nothing is worth showing. "
+    "Never say where cards show: the app decides. "
     "Cards show after the work is done, so never draw a progress bar or a percent for a count: a count or breakdown "
     "(how many of the items had something) is a stats card with each number once and its unit once, e.g. "
     "stats {title: Failed checkouts, items[{label: Failures, value: 12}, {label: With a saved log, value: 4}]}. "

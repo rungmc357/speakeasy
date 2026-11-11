@@ -75,7 +75,7 @@ _HOW = (r"(?:what'?s up|whats up|wassup|what'?s new|how'?s it going|how is it go
         r"|how(?:'re| are) (?:you|ya|things)(?:\s+doing)?(?:\s+today)?|how have you been"
         r"|how'?s (?:your|the) (?:day|morning|evening|week)(?:\s+going)?|you there|are you there|you around)")
 GREETING_RE = re.compile(rf"(?i)^\s*(?:{_HELLO}(?:[\s,.!]+{_HOW})?|{_HOW})\s*[.!?,]*\s*$")
-SETTLE_S = 1.5         # wait this long after a handoff for the user to keep going
+SETTLE_S = 0.8         # wait this long after a handoff for the user to keep going (1.5 before snappy #4c)
 SETTLE_MAX_S = 6.0     # and never longer than this in total
 ABSORB_WINDOW_S = 15.0 # a handoff of words already folded into an earlier task is dropped
 ECHO_WINDOW_S = 8.0    # a second handoff this soon that only repeats the last request's words is dropped
@@ -549,6 +549,8 @@ class Runtime:
     discard_files: Callable[[list[str]], int] | None = None
     # Phone notifications while the app is closed (push.PushNotifier); None = never.
     push: Any = None
+    # Home's model (now.NowModel): a handoff's Working card is held there until its task exists.
+    now_model: Any = None
     # The model/reasoning a run starts with (task_id, idem key, session id, request) -> Hermes'
     # per-request overrides (models.run_fields), or None for its own config. None = never chosen.
     choose_model: Callable[[str, str, str | None, str | None], dict[str, Any] | None] | None = None
@@ -563,6 +565,27 @@ class Runtime:
     session_db: Callable[[str | None], Path] | None = None
     # Live speech answers a saved confirmation through the same single-use claim as an app tap.
     confirm_card: Callable[..., dict[str, Any]] | None = None
+    # Home's stack row for a run closes as done (home_state.dealt_with) once its approval is
+    # answered, wherever it was answered. None = nothing to close.
+    dealt_with: Callable[[str], Any] | None = None
+
+    def approval_dealt_with(self, run_id: str | None, request_id: str | None = None) -> None:
+        if run_id and self.dealt_with is not None:
+            try:
+                self.dealt_with(run_id)
+            except Exception:
+                logger.debug("speakeasy: closing Home's approval row failed", exc_info=True)
+        # QA74 #15: like a closed question, an answered approval tells every device
+        # (decision_resolved: the phones clear its notification by run id) and withdraws its push.
+        try:
+            events = getattr(self, "history_events", None)
+            if events is not None and run_id:
+                events.publish("decision_resolved", {"run_id": run_id, "session_id": None})
+            notifier = getattr(self, "push", None)
+            if notifier is not None and hasattr(notifier, "withdraw") and request_id:
+                notifier.withdraw(f"approval:{request_id}")
+        except Exception:
+            logger.debug("speakeasy: telling the apps an approval closed failed", exc_info=True)
 
     @property
     def names(self) -> P.Names:
@@ -846,6 +869,21 @@ class Interaction:
             seen.add(id(nxt))
             current = nxt
         return current
+
+
+def approval_from_event(event: Any) -> dict[str, Any] | None:
+    """Hermes' approval request (an ``approval.request`` event, or the ``approval`` a waiting run's
+    status carries) as Speakeasy keeps it: {request_id, description, choices}; None when unusable.
+    The answers are the ones Hermes offers; Speakeasy never sends "always" (hermes_api.approve)."""
+    if not isinstance(event, dict):
+        return None
+    request_id = event.get("request_id")
+    if not isinstance(request_id, str) or not ID_RE.fullmatch(request_id):
+        return None
+    description = safe_user_text(event.get("description") or event.get("reason"), 500)
+    offered = event.get("choices") if isinstance(event.get("choices"), list) else []
+    choices = ["once"] + (["session"] if "session" in offered else []) + ["deny"]
+    return {"request_id": request_id, "description": description or "Consequential action", "choices": choices}
 
 
 def interaction_tasks(store: Any, interaction: Interaction, assistant_name: str = "Hermes") -> list[dict[str, Any]]:
@@ -1741,6 +1779,7 @@ class SidebandWorker:
     def schedule_dispatch(self, delegation_id: str, context: str, marked: Any = None) -> None:
         self.close_choices()  # answered (or moved past) out loud: the card goes
         self.handoff_at[delegation_id] = self.last_handoff_at = time.monotonic()
+        logger.info("speakeasy: handoff.received t=%.3f", self.last_handoff_at)
         with self.interaction.lock:
             self.interaction.revision += 1
             revision = self.interaction.revision
@@ -2840,10 +2879,50 @@ class SidebandWorker:
                            type(exc).__name__, str(exc)[:200])
             await self._handoff_failed(delegation_id, revision, exc)
         finally:
+            self.handoff_card_done(delegation_id)  # however it ended, its held Working card goes
             self.handoff_rooms.pop(delegation_id, None)  # this handoff's work is over (or never started)
             if delegation_id.startswith(TYPED_WORK_PREFIX) and delegation_id not in self.releasing:
                 # It claimed the call's pictures at Send; any no run took go back to the tray.
                 self.finish_shared(delegation_id)
+
+    def _home_moved(self) -> None:
+        """Publish Home's new rev now (the phone listens on the history feed), off the event loop:
+        a Home build is 20-60 ms of CPU that must not delay the call."""
+        hook = getattr(self.rt, "now_changed", None)
+        if not callable(hook):
+            return
+        try:
+            asyncio.get_running_loop().run_in_executor(None, hook)
+        except RuntimeError:  # no loop (a test calling in directly): publish inline
+            try:
+                hook()
+            except Exception:
+                logger.debug("speakeasy: Home change hook failed", exc_info=True)
+
+    def handoff_card(self, delegation_id: str, revision: int, request: str) -> None:
+        """snappy (latency plan #2): the request is accepted: Home shows it Working now, before the
+        settle and routing (4-6 s on a call), under the id its task's own card will have
+        (``s:<task session>``), so the run fills in this card and never adds a second one."""
+        model = getattr(self.rt, "now_model", None)
+        if model is None or not request or self.VOICELESS:
+            return
+        idem = self._idem(delegation_id, revision)
+        model.hold_handoff(delegation_id, "s:" + task_session_id(idem), idem, request,
+                           self.interaction.interaction_id)
+        logger.info("speakeasy: handoff.card shown t=%.3f (%d words)", time.monotonic(), len(request.split()))
+        self._home_moved()
+
+    def handoff_card_done(self, task_id: str | None) -> bool:
+        """The handoff became its task (whose row now speaks for the card) or never will: let go.
+        A split request's parts (``<id>-p1``) release the handoff they came from. True if one was held
+        (Home's rev was published)."""
+        model = getattr(self.rt, "now_model", None)
+        if model is None or not task_id:
+            return False
+        if model.release_handoff(task_id) or model.release_handoff(task_id.split("-p")[0]):
+            self._home_moved()
+            return True
+        return False
 
     async def settle(self, request: str) -> str:
         """Wait SETTLE_S after the handoff; every new user turn in that time restarts the wait (up to
@@ -3136,6 +3215,7 @@ class SidebandWorker:
         if resolving:
             self.move(run, "working")
         self.store.progress(run.idem_key, "milestone", APPROVED_MILESTONE[choice])
+        self.rt.approval_dealt_with(run.run_id, approval.get("request_id"))   # Home: done, never "skipped"
         self.publish()
         return choice
 
@@ -3291,6 +3371,7 @@ class SidebandWorker:
     async def _drop(self, delegation_id: str, revision: int, reason: str, spoken: str | None,
                     context: str = "") -> None:
         """A handoff that should never become a task. It ends visibly (no lingering "Waiting for")."""
+        self.handoff_card_done(delegation_id)
         drops = getattr(self, "drops", None)
         if drops is None:
             drops = self.drops = []
@@ -3468,6 +3549,8 @@ class SidebandWorker:
         home_follow = isinstance(marked, str) and marked in self.home_tasks
         if (not marked or home_follow) and await self.home_control(delegation_id, revision, last_request):
             return
+        if not marked:
+            self.handoff_card(delegation_id, revision, last_request)  # on Home now, before settle/routing
         showing = self.bind_shared(delegation_id, last_request)
         # In a call that declared ``ready`` but isn't sharing, a request that needs the screen waits for
         # it once settled (``wait_for_screen``, in _dispatch_bound), instead of going on without it.
@@ -3487,9 +3570,17 @@ class SidebandWorker:
         sharing is on (already settled, never held again)."""
         # Home commands stay instant. Anything else waits a beat in case the user is still talking,
         # so a breath mid-thought doesn't send half a request.
+        stages: dict[str, int] = {}
+        t0 = time.monotonic()
+        # snappy (latency plan #4c): which chats this could continue is a read-only lookup (0.5-2 s of
+        # state.db on a busy host); it starts now, alongside the settle, and is reused when the words
+        # didn't change.
+        cand_for, cand_task = last_request, (asyncio.ensure_future(self._timed_candidates(last_request))
+                                            if not marked else None)
         if not released and not marked and router.continues_newest(last_request, self.open_tasks()) is None:
             before_settle = last_request
             settled = await self.settle(last_request)
+            stages["settle"] = int((time.monotonic() - t0) * 1000)
             if settled != last_request and self.interaction.attachments.declared and router.refers_to_screen(settled):
                 self.share_refs[delegation_id] = showing = True  # "what's" ... "this error?"
             last_request = settled
@@ -3501,14 +3592,17 @@ class SidebandWorker:
                 # "...because he": the thought stopped mid-sentence. Never send a fragment: ask.
                 self.pending_thought = (last_request, context, time.monotonic())
                 logger.info("speakeasy: request trails off (%d words); asked before sending", len(last_request.split()))
+                if cand_task is not None:
+                    cand_task.cancel()
                 await self._drop(delegation_id, revision, "Waiting for the rest", None)
                 await self.append("session.thinking.append", delegation_id, P.unfinished_note(self.names))
                 return
+        if cand_task is not None and last_request != cand_for:
+            cand_task.cancel()   # more words came while settling: look again for what was really asked
+            cand_task = None
         if not released and await self.wait_for_screen(delegation_id, revision, context, marked, last_request):
-            return
-        if not marked and not showing and await self.reuse_earlier(delegation_id, revision, context, last_request):
-            return  # "where are we on X?" again: the task that already knows answers (recap.py)
-        if not marked and not showing and await self.quick_answer(delegation_id, revision, last_request):
+            if cand_task is not None:
+                cand_task.cancel()
             return
         focus = None
         if not marked:
@@ -3517,20 +3611,37 @@ class SidebandWorker:
                 # The task on screen (or in the headset) is a strong prior for the routing model, not
                 # an order: an unrelated request still goes elsewhere.
                 focus = router.Focus(focused, self.focus_job(focused), detail)
-        candidates = await self.conversation_candidates(last_request)
+        earlier = "\n".join(line for line in context.splitlines()[:-1] if line.startswith(("User: ", "Assistant: ")))
+        if cand_task is None:
+            cand_task = asyncio.ensure_future(self._timed_candidates(last_request))
+        # Routing (one model call) runs alongside the quick lanes below: it only reads, so when a quick
+        # lane answers, its decision is dropped. It needs the candidate chats, so it waits for those.
+        route_task = asyncio.ensure_future(self._timed_route(
+            cand_task, last_request, self.open_tasks(), marked, earlier, self.replied_task, focus))
+        try:
+            t1 = time.monotonic()
+            if not marked and not showing and await self.reuse_earlier(delegation_id, revision, context, last_request):
+                route_task.cancel()
+                return  # "where are we on X?" again: the task that already knows answers (recap.py)
+            stages["reuse"] = int((time.monotonic() - t1) * 1000)
+            t1 = time.monotonic()
+            if not marked and not showing and await self.quick_answer(delegation_id, revision, last_request):
+                route_task.cancel()
+                return
+            stages["quick"] = int((time.monotonic() - t1) * 1000)
+            t1 = time.monotonic()
+            (candidates, cand_ms), (decision, route_ms) = await route_task
+            stages.update(waited=int((time.monotonic() - t1) * 1000), candidates=cand_ms, route=route_ms)
+        except BaseException:
+            route_task.cancel()
+            raise
+        finally:
+            stages["total"] = int((time.monotonic() - t0) * 1000)
+            logger.info("speakeasy: handoff stages %s", " ".join(f"{k}={v}ms" for k, v in stages.items()))
         now = time.time()
         chats = [router.Chat(f"c{i + 1}", c.conv.where, c.snippets, c.voice_request,
                              max(0.0, now - c.conv.last_active) if c.conv.last_active else None)
                  for i, c in enumerate(candidates)]
-        earlier = "\n".join(line for line in context.splitlines()[:-1] if line.startswith(("User: ", "Assistant: ")))
-        try:
-            decision = await asyncio.to_thread(self.rt.route, last_request, self.open_tasks(), marked, chats,
-                                               transcript_mod.tail_text(earlier, transcript_mod.ROUTER_CONTEXT_CHARS),
-                                               replied_task_id=self.replied_task,
-                                               **({"focus": focus} if focus else {}))
-        except Exception as exc:  # routing is a nicety: without it the request still becomes new work
-            logger.warning("speakeasy: routing failed, starting as new work (%s)", type(exc).__name__)
-            decision = router.fallback_decision(last_request)
         self.route_timings[delegation_id] = decision.latency_ms
         part = decision.parts[0]
         if focus is not None:
@@ -4689,6 +4800,29 @@ class SidebandWorker:
             return
         await self.start_task(delegation_id, revision, context, request)
 
+    async def _timed_candidates(self, request: str) -> tuple[list[continuity.Candidate], int]:
+        t = time.monotonic()
+        found = await self.conversation_candidates(request)
+        return found, int((time.monotonic() - t) * 1000)
+
+    async def _timed_route(self, cand_task: Any, request: str, tasks: list[router.OpenTask], marked: Any,
+                           earlier: str, replied: str | None, focus: Any) -> tuple[tuple[list[Any], int], tuple[Any, int]]:
+        """The candidate chats, then the routing decision for *request*; both only read (snappy #4c)."""
+        candidates, cand_ms = await cand_task   # a failed lookup fails the request visibly, as before
+        now = time.time()
+        chats = [router.Chat(f"c{i + 1}", c.conv.where, c.snippets, c.voice_request,
+                             max(0.0, now - c.conv.last_active) if c.conv.last_active else None)
+                 for i, c in enumerate(candidates)]
+        t = time.monotonic()
+        try:
+            decision = await asyncio.to_thread(self.rt.route, request, tasks, marked, chats,
+                                               transcript_mod.tail_text(earlier, transcript_mod.ROUTER_CONTEXT_CHARS),
+                                               replied_task_id=replied, **({"focus": focus} if focus else {}))
+        except Exception as exc:  # routing is a nicety: without it the request still becomes new work
+            logger.warning("speakeasy: routing failed, starting as new work (%s)", type(exc).__name__)
+            decision = router.fallback_decision(request)
+        return (candidates, cand_ms), (decision, int((time.monotonic() - t) * 1000))
+
     async def conversation_candidates(self, request: str) -> list[continuity.Candidate]:
         """Existing chats this request might continue: the ones voice work was last sent to, the
         most recently active, and the ones whose recent messages mention what was asked."""
@@ -4728,6 +4862,7 @@ class SidebandWorker:
     async def follow_up(self, delegation_id: str, revision: int, context: str, part: router.Part) -> None:
         """Add to an open task when its run still accepts guidance; otherwise continue in that
         task's own session with a run that knows the earlier request and result."""
+        self.handoff_card_done(delegation_id)  # the task it goes to already has its card
         with self.interaction.lock:
             target = self.interaction.runs.get(part.task_id or "")
             run_id = target.run_id if target else None
@@ -5194,6 +5329,11 @@ class SidebandWorker:
             if request:
                 self.store.progress(idem, "request", request)
                 self.name_task(idem, request, parent, asked=asked)
+            logger.info("speakeasy: run.created t=%.3f", time.monotonic())
+            # Its row now speaks for the handoff's held card (same id); Home's rev goes out at once
+            # instead of on the history watcher's next look (HistoryEvents.POLL_S).
+            if not self.handoff_card_done(task_id):
+                self._home_moved()
         # Same-project fence: a new edit to a project a running task is already editing waits for it.
         fenced = self.fence_blocker(task_id, request, exclude={replaces}) if request else None
         if fenced is None and resume:
@@ -6071,22 +6211,19 @@ class SidebandWorker:
                 if derived:
                     self.store.tool_progress(idem, *derived)
         elif kind == "approval.request":
-            request_id = event.get("request_id")
-            if not isinstance(request_id, str) or not ID_RE.fullmatch(request_id):
+            safe = approval_from_event(event)
+            if safe is None:
                 return
+            request_id, choices = safe["request_id"], safe["choices"]
             description = safe_user_text(event.get("description") or event.get("reason"), 500)
-            # The answers Hermes offers for this request; Speakeasy never sends "always" (hermes_api.approve).
-            offered = event.get("choices") if isinstance(event.get("choices"), list) else []
-            choices = ["once"] + (["session"] if "session" in offered else []) + ["deny"]
-            safe = {"request_id": request_id, "description": description or "Consequential action",
-                    "choices": choices}
             with self.interaction.lock:
                 if backend.status == "ambiguous":
                     return
+                backend.approval = safe   # held before the status says "waiting": Home never sees one unarmed
             if not self.move(backend, "waiting_for_approval"):
+                with self.interaction.lock:
+                    backend.approval = None
                 return  # stopped or finished meanwhile: no card for a question nobody can answer
-            with self.interaction.lock:
-                backend.approval = safe
             self.store.progress(idem, "milestone", "Waiting for your approval")
             if not self.call_connected():
                 self.notices.needs_you(request_id, safe["description"])
