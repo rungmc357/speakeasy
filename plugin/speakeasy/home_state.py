@@ -105,10 +105,13 @@ def current_exchange(entries: list[dict[str, Any]], now: float, extra_runs: set[
 
 # -- 3 + 4: the widget stack -----------------------------------------------------------------------
 
-def candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def candidates(items: list[dict[str, Any]], call_since: float | None = None) -> list[dict[str, Any]]:
     """Home's final cards -> the stack rows they would make. Never running work; a canceled job is
-    not waiting on anyone; a finished answer only while it is new (unread); conversations Speakeasy
-    didn't start only when they ask something. A group of stopped jobs is one row per job."""
+    not waiting on anyone; a finished answer only while it is new (unread), or, during a call
+    (``call_since`` = when it started), any answer of this call that finished on it: the voice reads
+    an answer out the moment it lands, which marks it heard, and in-call Home shows only the stack
+    (SPK-376). Conversations Speakeasy didn't start only when they ask something. A group of stopped
+    jobs is one row per job."""
     out: list[dict[str, Any]] = []
     for item in items:
         kind, run = item.get("kind"), item.get("run_id")
@@ -128,7 +131,17 @@ def candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     out.append(_cand(one, STOPPED, str(one["run_id"]), one["run_id"]))
         elif kind == "new_answer" and run:
             out.append(_cand(item, RESULT, str(run), run))
+        elif kind == "seen_answer" and run and _call_answer(item, call_since):
+            out.append(_cand(item, RESULT, str(run), run))
     return out
+
+
+def _call_answer(item: dict[str, Any], call_since: float | None) -> bool:
+    """This live call's own answer, finished while the call was on (heard or not). Older answers a
+    call brings in stay where they were: a result someone already opened doesn't come back."""
+    if call_since is None or not item.get("on_current_call"):
+        return False
+    return float(item.get("finished_at") or 0) >= float(call_since)
 
 
 def _cand(item: dict[str, Any], kind: str, ref: str, run: Any) -> dict[str, Any]:
@@ -192,14 +205,16 @@ class HomeState:
         return {"key": row[0], "status": str(row[1] or ""), "answered": row[2], "question_closed": row[3]}
 
     # -- feeding the stack (called from now.build) ------------------------------------------------
-    def feed(self, items: list[dict[str, Any]], entries: list[dict[str, Any]], now: float) -> None:
+    def feed(self, items: list[dict[str, Any]], entries: list[dict[str, Any]], now: float,
+             call_since: float | None = None) -> None:
         """Home's final cards in, the stack table updated: new rows for new results/decisions,
-        snapshots refreshed, and rows whose item was dealt with closed."""
+        snapshots refreshed, and rows whose item was dealt with closed. ``call_since``: when the
+        live call started (its answers join the stack heard or not), None off a call."""
         with self._lock:
             results = {str(e.get("run_id")): e["id"] for e in entries if e.get("kind") == "result" and e.get("run_id")}
             lines = {str(e.get("run_id")): e["id"] for e in entries
                      if e.get("kind") == "message" and e.get("answer") and e.get("run_id")}
-            cands = candidates(items)
+            cands = candidates(items, call_since)
             seen = {c["id"] for c in cands}
             known = {r["id"]: r for r in self._rows()}
             hidden = set(self.store.later_items())
