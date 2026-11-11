@@ -1986,7 +1986,7 @@ class VoiceService(SecureInputMixin):
                 if backend.status == "resolving_approval":
                     backend.status = self.store.run_status(backend.idem_key) or "working"
         self.store.progress(backend.idem_key, "milestone", APPROVED_MILESTONE[choice])
-        self.rt.approval_dealt_with(backend.run_id)   # Home's row closes as done, never "skipped"
+        self.rt.approval_dealt_with(backend.run_id, request_id)   # Home: done, never "skipped"
         publish_state(self.store, interaction, name)
         return {"interaction_id": interaction_id, "choice": choice, "run_id": backend.run_id,
                 "resolved": result.get("resolved", 0)}

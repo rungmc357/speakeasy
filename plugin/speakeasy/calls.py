@@ -566,12 +566,23 @@ class Runtime:
     # answered, wherever it was answered. None = nothing to close.
     dealt_with: Callable[[str], Any] | None = None
 
-    def approval_dealt_with(self, run_id: str | None) -> None:
+    def approval_dealt_with(self, run_id: str | None, request_id: str | None = None) -> None:
         if run_id and self.dealt_with is not None:
             try:
                 self.dealt_with(run_id)
             except Exception:
                 logger.debug("speakeasy: closing Home's approval row failed", exc_info=True)
+        # QA74 #15: like a closed question, an answered approval tells every device
+        # (decision_resolved: the phones clear its notification by run id) and withdraws its push.
+        try:
+            events = getattr(self, "history_events", None)
+            if events is not None and run_id:
+                events.publish("decision_resolved", {"run_id": run_id, "session_id": None})
+            notifier = getattr(self, "push", None)
+            if notifier is not None and hasattr(notifier, "withdraw") and request_id:
+                notifier.withdraw(f"approval:{request_id}")
+        except Exception:
+            logger.debug("speakeasy: telling the apps an approval closed failed", exc_info=True)
 
     @property
     def names(self) -> P.Names:
@@ -3152,7 +3163,7 @@ class SidebandWorker:
         if resolving:
             self.move(run, "working")
         self.store.progress(run.idem_key, "milestone", APPROVED_MILESTONE[choice])
-        self.rt.approval_dealt_with(run.run_id)   # Home's row closes as done, never "skipped"
+        self.rt.approval_dealt_with(run.run_id, approval.get("request_id"))   # Home: done, never "skipped"
         self.publish()
         return choice
 

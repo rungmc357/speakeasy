@@ -135,6 +135,33 @@ def test_an_approval_answered_from_the_call_screen_leaves_the_stack_as_done(serv
     assert not [r for r in service.home_state._rows() if r["state"] == HS.SKIPPED]
 
 
+# -- #15 ---------------------------------------------------------------------------------------------
+
+def test_an_answered_approval_tells_every_device_and_withdraws_its_push(server, service, hermes, frozen):  # noqa: F811
+    session, worker = _waiting(server, service, hermes)
+    _, run = worker.pending_approvals()[0]
+    request_id = run.approval["request_id"]
+    seq = service.history_events.seq
+    status, body = http(server.base_url, "POST", f"/voice/interactions/{session['interaction_id']}/approval",
+                        {"choice": "once", "run_id": run.run_id, "request_id": request_id}, server.token)
+    assert status == 200, body
+    resolved = [e[2] for e in service.history_events.since(seq) or [] if e[1] == "decision_resolved"]
+    assert any(r.get("run_id") == run.run_id and r.get("session_id") is None for r in resolved)
+    assert service.push._withdrawn.get(f"approval:{request_id}")
+
+
+def test_an_approval_said_on_the_call_tells_every_device_too(server, service, hermes):
+    _, worker = _waiting(server, service, hermes)
+    _, run = worker.pending_approvals()[0]
+    request_id = run.approval["request_id"]
+    seq = service.history_events.seq
+    say(worker, "call_ok", "approved")
+    wait_for(lambda: hermes.approvals)
+    wait_for(lambda: service.push._withdrawn.get(f"approval:{request_id}"))
+    resolved = [e[2] for e in service.history_events.since(seq) or [] if e[1] == "decision_resolved"]
+    assert any(r.get("run_id") == run.run_id for r in resolved)
+
+
 # -- #10 ---------------------------------------------------------------------------------------------
 
 def _waiting_job(server, service, hermes, text="Tidy the old garden photos"):
