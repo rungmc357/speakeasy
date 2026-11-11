@@ -26,6 +26,12 @@ public struct HomeCurrent: Equatable, Sendable {
     public var resetsAt: Date?
     /// Worked out by the app from an older plugin's thread, not sent by the plugin.
     public var derived = false
+    /// home-ack: the agent's side of the exchange in order (`reply_ids` with each one's part:
+    /// "ack", "answer" or "reply"), and whether the answer/job is still being worked out.
+    public struct Part: Equatable, Sendable { public var id: String; public var part: String
+        public init(id: String, part: String) { self.id = id; self.part = part } }
+    public var parts: [Part] = []
+    public var pending = false
 
     public static let empty = HomeCurrent(clean: true)
 
@@ -45,7 +51,12 @@ public struct HomeCurrent: Equatable, Sendable {
         self.init(clean: (o["clean"] as? Bool) ?? entryIDs.isEmpty, entryIDs: entryIDs, messageID: nonEmpty(o["message_id"]),
                   replyIDs: ids("reply_ids"), cardIDs: ids("card_ids"), runIDs: ids("run_ids"),
                   lastActivityAt: date("last_activity_at"), resetsAt: date("resets_at"))
-        if clean { self.entryIDs = []; resetsAt = nil }
+        parts = (o["parts"] as? [Any] ?? []).compactMap { raw in
+            guard let p = raw as? [String: Any], let id = nonEmpty(p["id"]) else { return nil }
+            return Part(id: id, part: nonEmpty(p["part"]) ?? "reply")
+        }
+        pending = o["pending"] as? Bool ?? false
+        if clean { self.entryIDs = []; resetsAt = nil; parts = []; pending = false }
     }
 
     public func contains(_ entryID: String) -> Bool { !clean && entryIDs.contains(entryID) }

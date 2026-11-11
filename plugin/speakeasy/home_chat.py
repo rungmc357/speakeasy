@@ -93,6 +93,21 @@ FAST_FAMILIES = 3             # "Fast replies" offers only these leading familie
 FAST_OPTIONS = 3              # "Fast replies" rows besides Auto (one per connected family of those)
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
+# Home never "thinks" in silence (Geo, 11-11: "it said thinking for like almost a minute before it
+# said anything back"). Every Home turn shows words within ACK_DEADLINE_S of the message reaching the
+# plugin: the coordinator's own reply when it is that quick, else a one-line acknowledgement for this
+# ask, written in parallel by the same fast model (ACK_TOKENS, no tools) or, when that is late or
+# fails too, derived from the ask without a model (``fallback_ack``). The answer, the job's status
+# capsule and its widget follow in the same exchange. Measured on the live plugin (44 Home turns,
+# Nov 7-10): the coordinator's reply landed a median 3.8 s after the message (p90 6.2 s, max 23 s),
+# so most turns that start work get the acknowledgement; a 2.5 s deadline is inside Geo's "quick"
+# and leaves the few one-call answers that come back faster with no line in front of them.
+ACK_DEADLINE_S = 2.5
+ACK_TOKENS = 60
+ACK_TIMEOUT_S = 8.0
+INTERRUPTED_S = 3600          # a turn cut off by a restart this recent gets a line saying so
+PART_ACK, ANSWER = "ack", "answer"  # home_messages.part: the acknowledgement (above the capsule) / what follows it
+
 _SMALL_TALK = re.compile(
     r"(?i)^\W*(?:yo+|hi+|hey+|hello|hiya|sup|what'?s up|good (?:morning|afternoon|evening|night)|"
     r"thanks?(?: you)?|thank you|thx|ty|ok(?:ay)?|cool|nice|great|perfect|got it|lol|haha|bye|"
@@ -208,6 +223,169 @@ def acknowledgement(reply: str, asked: str, start: bool = True) -> str:
     elif not kept or kept[0] != sentences[0]:
         kept.insert(0, pick_ack(asked))
     return " ".join(kept)
+
+
+_LEAD = re.compile(
+    r"(?i)^(?:(?:hey|hi|yo|ok(?:ay)?|so|um+|uh+|todd|hermes|please|pls|quick question)\b[\s,:!.-]*)*"
+    r"(?:(?:can|could|would|will) you(?: please)?|i (?:need|want) you to|i'?d like you to|help me|"
+    r"do you know|any idea|tell me|let me know|i wonder(?: if)?|"
+    r"what'?s|what is|what are|what|when'?s|when is|when|where'?s|where is|where|who'?s|who is|who|which|"
+    r"how'?s|how is|how do i|how do|how|is there|are there|any)\b[\s,]*")
+_SWAP = {"my": "your", "mine": "yours", "me": "you", "i": "you", "i'm": "you're", "im": "you're",
+         "myself": "yourself", "our": "your", "we": "you", "us": "you", "i've": "you've", "i'll": "you'll"}
+_TAIL = {"a", "an", "the", "and", "or", "of", "on", "in", "for", "to", "with", "at", "from", "about",
+         "by", "your", "is", "are", "that", "this", "it", "so", "but", "if", "just", "also", "also"}
+_FALLBACK = ("Let me look into {t}.", "Taking a look at {t} now.", "Give me a moment on {t}.")
+_FALLBACK_WHY = ("Let me look into why {t}.", "Let me find out why {t}.")
+TOPIC_WORDS = 8
+_WHY = re.compile(r"(?i)^(?:(?:hey|so|ok(?:ay)?|todd)[\s,]+)*(?:why|how come)\b[\s,]*")
+_AUX = {"is", "are", "does", "do", "did", "was", "were", "can't", "won't", "isn't", "doesn't", "didn't", "does"}
+_ASKING = re.compile(
+    r"(?i)^(?:(?:hey|hi|yo|ok(?:ay)?|so|todd|hermes|please|pls)\b[\s,:!.-]*)*"
+    r"(?:why|how|what|when|where|who|which|whose|is|are|was|were|do|does|did|can|could|would|will|should|"
+    r"any|find|check|draft|show|look|send|book|get|make|tell|write|summari[sz]e|pull|set|remind|add|"
+    r"schedule|cancel|fix|open|search|see|help|compare|plan|order|buy|reply|email|text|call|play|turn|"
+    r"start|stop|run|list|read|track|research|i need|i want|i'?d like|let'?s|let me know)\b")
+
+
+def asking(text: str) -> bool:
+    """The message asks for something (a question or a request), not a remark or an opinion."""
+    t = (text or "").strip()
+    return "?" in t or bool(_ASKING.match(t))
+
+
+_DO = {"find", "check", "draft", "show", "look", "send", "book", "get", "make", "write", "summarize", "summarise",
+       "pull", "set", "remind", "add", "schedule", "cancel", "fix", "open", "search", "compare", "plan", "order",
+       "buy", "reply", "email", "text", "track", "research", "list", "read"}
+
+
+def _topic(text: str) -> tuple[str, bool]:
+    """The ask in a few words for a fallback acknowledgement: lead-ins and question words off,
+    "my" -> "your", at most TOPIC_WORDS words, never ending on a dangling word. (words, is_why)."""
+    first = re.split(r"(?<=[.!?])\s+|\n", " ".join((text or "").split()), maxsplit=1)[0]
+    first = first.strip(" .!?\"'\u201c\u201d")
+    why = bool(_WHY.match(first))
+    first = _WHY.sub("", first) if why else _LEAD.sub("", first)
+    words = [_SWAP.get(w.lower(), w) for w in re.findall(r"[\w$'\u2019./-]+", first)]
+    if why and len(words) > 2 and words[0].lower() in _AUX:
+        # "why is the build failing" -> "why the build is failing"
+        words = [words[1], words[0], *words[2:]] if len(words) == 3 else [*words[1:3], words[0], *words[3:]]
+    words = words[:TOPIC_WORDS]
+    while words and words[-1].lower().strip(".") in _TAIL:
+        words.pop()
+    return " ".join(words).strip(" ,;:-"), why
+
+
+def fallback_ack(asked: str, files: Any = None, avoid: str | None = None) -> str:
+    """The acknowledgement when no model wrote one in time: derived from the ask, never the same line
+    as *avoid* (the last thing Home said). Deterministic (the same ask gives the same line)."""
+    if not (asked or "").strip():
+        noun = _sent_noun(files)
+        return ("Let me take a look at what you sent." if noun == "something"
+                else f"Let me take a look at the {noun.split(' ', 1)[-1]}.")
+    if small_talk(asked):
+        return "One sec."
+    asked = asked.replace("\u2019", "'").replace("\u2018", "'")
+    if not asking(asked):
+        if len(asked.split()) < 8:
+            return "Hmm, let me think about that." if avoid != "Hmm, let me think about that." else "Let me think about that."
+        return "Let me look into that." if avoid != "Let me look into that." else "Looking into that now."
+    first = re.sub(r"(?i)^(?:(?:hey|hi|yo|ok(?:ay)?|so|todd|hermes|please|pls)\b[\s,:!.-]*)*"
+                   r"(?:(?:can|could|would|will) you(?: please)?\s+)?", "", asked.strip())
+    verb = (first.split() or [""])[0].lower()
+    if verb in _DO:
+        words = [_SWAP.get(w.lower(), w) for w in re.findall(r"[\w$'./-]+", re.split(r"[.,;:!?]", first)[0])][:TOPIC_WORDS + 2]
+        while len(words) > 1 and words[-1].lower() in _TAIL:
+            words.pop()
+        if len(words) >= 2:
+            words[0] = words[0].lower()
+            line = f"I'll {' '.join(words)}."
+            if line != avoid:
+                return line
+    topic, why = _topic(asked)
+    if len(topic.split()) < 2:
+        return pick_ack(asked, avoid=avoid)
+    lines = _FALLBACK_WHY if why else _FALLBACK
+    i = sum(map(ord, asked)) % len(lines)
+    for k in range(len(lines)):
+        line = lines[(i + k) % len(lines)].format(t=topic)
+        if line != avoid:
+            return line
+    return pick_ack(asked, avoid=avoid)
+
+
+def clean_ack(raw: Any, asked: str) -> str | None:
+    """A model-written acknowledgement, checked: one short sentence, no read-back, no SKIP. None when
+    it isn't usable (the fallback is used)."""
+    if not isinstance(raw, str):
+        return None
+    text = " ".join(raw.split()).strip(" \"'\u201c\u201d")
+    if not text or text.upper().startswith("SKIP"):
+        return None
+    text = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+    if len(text) > 140 or len(text.split()) < 2 or parrots(text, asked) or _MECHANICS.search(text):
+        return None
+    if not re.search(r"[.!?]$", text):
+        text += "."
+    return us_units_first(text)
+
+
+def _sentences(text: str) -> list[str]:
+    return [x for x in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if x]
+
+
+def _ackish(sentence: str) -> bool:
+    """A sentence that only says work is about to happen ("Let me check.", "Pulling it up now.")."""
+    return clipped(sentence) or sentence in ACKS or (claims_work(sentence) and len(sentence.split()) <= 16)
+
+
+def after_ack(reply: str, action: str, ack: str) -> str:
+    """What the coordinator's reply still adds once an acknowledgement is already on screen: never a
+    second acknowledgement, never the ack's words again. For a job (start / follow-up / cancel) the
+    reply's lead sentence is its acknowledgement, so it goes; an answer keeps every sentence that isn't
+    an acknowledgement."""
+    kept = _sentences(reply)
+    if action != "none" and kept:
+        kept = kept[1:]
+    seen = _ack_words(ack)
+    out = []
+    for x in kept:
+        w = _ack_words(x)
+        if (action != "none" and _ackish(x)) or (action == "none" and x is kept[0] and _ackish(x) and len(kept) > 1):
+            continue
+        if w and seen and len(w & seen) * 4 >= len(w) * 3:
+            continue
+        out.append(x)
+    return " ".join(out)
+
+
+_ACK_PROMPT = """You are {name}, the user's AI assistant on the Home screen of the Speakeasy app. The \
+user just sent the message below; a slower step is working out the full answer. Write the ONE short \
+sentence (at most 14 words) that tells them you're on it, naming what you're about to look at in a few \
+of your own words: "Let me check where the release build is at.", "I'll dig into why the swipe jumps \
+screens.", "Pulling up your Japan flight details." Never read their whole message back, never answer \
+it, never promise a result or a time, no emoji, no "Great question". Vary the opening. If the message \
+isn't asking for anything (a greeting, thanks, a remark or an opinion), write instead a natural \
+conversational beat of two to five words ("Ha, fair point.", "Hmm, let me think."), never a promise \
+to look into something."""
+
+
+class _Turn:
+    """One Home message in flight. Whichever of the coordinator's reply and the acknowledgement reaches
+    the thread first is the turn's first words; both sides decide that under ``lock``."""
+
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+        self.lock = threading.Lock()
+        self.done = threading.Event()
+        self.visible = False          # words for this turn are in the thread
+        self.ack: str | None = None   # the acknowledgement posted at the deadline, if one was
+        self.ack_row: str | None = None
+        self.result: dict[str, Any] | None = None
+        self.error: BaseException | None = None
+        self.started = time.monotonic()
+        self.first_words_s: float | None = None
+        self.first_kind = ""
 
 
 def _version(model: str) -> tuple[int, ...]:
@@ -510,6 +688,9 @@ class HomeChat:
         self._lock = threading.Lock()
         self._busy: dict[str, threading.Event] = {}
         self._titles: dict[str, str] = {}
+        self._ack_call: Callable[..., Any] | None = None   # tests script the acknowledgement writer
+        self.deadline_s = ACK_DEADLINE_S
+        self._inflight: dict[str, _Turn] = {}
         with self.store._lock, self.store._db:
             self.store._db.execute("""CREATE TABLE IF NOT EXISTS home_messages (
                 id TEXT PRIMARY KEY, client_id TEXT, role TEXT NOT NULL, text TEXT NOT NULL, at REAL NOT NULL,
@@ -519,6 +700,8 @@ class HomeChat:
                 self.store._db.execute("ALTER TABLE home_messages ADD COLUMN files TEXT")
             if "quote" not in columns:
                 self.store._db.execute("ALTER TABLE home_messages ADD COLUMN quote TEXT")
+            if "part" not in columns:   # home-ack: "ack" / "answer" on an assistant row of a turn
+                self.store._db.execute("ALTER TABLE home_messages ADD COLUMN part TEXT")
             self.store._db.execute("CREATE UNIQUE INDEX IF NOT EXISTS home_messages_client "
                                    "ON home_messages(client_id) WHERE client_id IS NOT NULL")
             # Further jobs one message started ("two asks, two jobs"); the first is home_messages.run_id.
@@ -529,14 +712,43 @@ class HomeChat:
             # links to it). One per run; its id and time never change once posted.
             self.store._db.execute("CREATE TABLE IF NOT EXISTS home_results (run_id TEXT PRIMARY KEY, "
                                    "message_id TEXT NOT NULL, at REAL NOT NULL)")
+        self._recover_interrupted()
+
+    def _recover_interrupted(self) -> None:
+        """A turn a restart cut off after its acknowledgement (the user's row was never linked: no
+        action) keeps the acknowledgement and gets one honest line under it, so the exchange doesn't
+        promise an answer that will never come."""
+        try:
+            with self.store._lock:
+                rows = self.store._db.execute(
+                    "SELECT u.id FROM home_messages u WHERE u.role='user' AND u.action IS NULL AND u.at >= ? "
+                    "AND EXISTS (SELECT 1 FROM home_messages a WHERE a.reply_to=u.id AND a.part=?) "
+                    "AND NOT EXISTS (SELECT 1 FROM home_messages b WHERE b.reply_to=u.id AND b.part=?)",
+                    (self.clock() - INTERRUPTED_S, PART_ACK, ANSWER)).fetchall()
+            for (uid,) in rows:
+                self._add("assistant", "Hermes restarted before I could finish that one. Ask me again?",
+                          self.clock(), reply_to=uid, part=ANSWER)
+                self._link(uid, None, "interrupted")
+        except Exception:
+            logger.debug("speakeasy: Home's interrupted turns weren't checked", exc_info=True)
+
+    def pending(self, user_entry_id: str | None) -> bool:
+        """The turn for this user message (``m:hu_...``) is still being worked out (its words are up,
+        the answer or the job isn't yet): Home shows the status capsule under the acknowledgement."""
+        if not user_entry_id:
+            return False
+        mid = user_entry_id[2:] if user_entry_id.startswith("m:") else user_entry_id
+        turn = self._inflight.get(mid)
+        return bool(turn is not None and not turn.done.is_set())
 
     # -- the messages ----------------------------------------------------------------------------
     def _rows(self, where: str = "", args: tuple = (), limit: int = SHOWN_MAX) -> list[dict[str, Any]]:
         with self.store._lock:
             rows = self.store._db.execute(
-                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to, files, quote FROM home_messages "
-                f"{where} ORDER BY at DESC, rowid DESC LIMIT ?", (*args, limit)).fetchall()
-        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to", "files", "quote")
+                "SELECT id, client_id, role, text, at, model, run_id, action, voice, reply_to, files, quote, part "
+                f"FROM home_messages {where} ORDER BY at DESC, rowid DESC LIMIT ?", (*args, limit)).fetchall()
+        names = ("id", "client_id", "role", "text", "at", "model", "run_id", "action", "voice", "reply_to", "files", "quote",
+                 "part")
         out: list[dict[str, Any]] = [dict(zip(names, r)) for r in rows]
         for r in out:
             for k in ("model", "voice", "files", "quote"):
@@ -548,15 +760,15 @@ class HomeChat:
 
     def _add(self, role: str, text: str, at: float, client_id: str | None = None, model: dict | None = None,
              voice: dict | None = None, reply_to: str | None = None, files: list[dict] | None = None,
-             quote: dict | None = None) -> str:
+             quote: dict | None = None, part: str | None = None) -> str:
         mid = ("hu_" if role == "user" else "ha_") + secrets.token_hex(8)
         with self.store._lock, self.store._db:
             self.store._db.execute(
-                "INSERT INTO home_messages (id, client_id, role, text, at, model, voice, reply_to, files, quote) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO home_messages (id, client_id, role, text, at, model, voice, reply_to, files, quote, part) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (mid, client_id, role, text, at, json.dumps(model) if model else None,
                  json.dumps(voice) if voice else None, reply_to, json.dumps(files) if files else None,
-                 json.dumps(quote) if quote else None))
+                 json.dumps(quote) if quote else None, part))
         return mid
 
     def _card_quote(self, run_id: str) -> dict | None:
@@ -675,7 +887,11 @@ class HomeChat:
         """The messages Home shows: the last day's, after the last Clear, oldest first."""
         now = self.clock() if now is None else now
         self._relink_held()
-        return self._rows("WHERE at >= ?", (max(now - SHOWN_S, self._cleared()),))
+        rows = self._rows("WHERE at >= ?", (max(now - SHOWN_S, self._cleared()),))
+        for r in rows:
+            if r["role"] == "user" and self.pending(r["id"]):
+                r["pending"] = True   # its acknowledgement is up; the answer or the job isn't yet
+        return rows
 
     def _relink_held(self) -> None:
         """A job held behind another (calls.wait_for_fence) is linked under its waiting id (a local
@@ -737,8 +953,12 @@ class HomeChat:
             out["voice"] = row["voice"]
         if row.get("run_id"):
             out["run_id"] = row["run_id"]
+        if row.get("part") in (PART_ACK, ANSWER) and row["role"] == "assistant":
+            out["part"] = row["part"]   # home-ack: above the status capsule (ack) or after it (answer)
         if row.get("client_id") and row["role"] == "user":
             out["client_id"] = row["client_id"]   # the app swaps its own "sending" bubble for this one
+        if row.get("pending") and row["role"] == "user":
+            out["pending"] = True   # home-ack: the status capsule shows under its acknowledgement
         return out
 
     # -- the coordinator turn --------------------------------------------------------------------
@@ -823,6 +1043,118 @@ class HomeChat:
         quote = self._quote(body.get("reply_to"))
         user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files, quote=quote)
         self.svc._now_changed()   # every device shows the message while the coordinator thinks
+        last = next((m.get("text") for m in reversed(history) if m.get("role") == "assistant"), None)
+        turn = _Turn(user_id)
+        self._inflight[user_id] = turn
+        ack_box: dict[str, Any] = {}
+        ack_ready = threading.Event()
+        if text and not small_talk(text) and self.deadline_s > 0:
+            # The acknowledgement is written while the coordinator decides, so it is ready by the
+            # deadline when the decision isn't (one ~60-token call, no tools).
+            def write_ack() -> None:
+                try:
+                    ack_box["text"], ack_box["model"] = self._write_ack(text, last)
+                except Exception as exc:  # noqa: BLE001 - the fallback line is used
+                    logger.info("speakeasy: Home's acknowledgement wasn't written (%s)", type(exc).__name__)
+                finally:
+                    ack_ready.set()
+            threading.Thread(target=write_ack, name="home-ack", daemon=True).start()
+        else:
+            ack_ready.set()
+
+        def work() -> None:
+            try:
+                turn.result = self._rest(turn, text, client_id, ids, body, device_id, voice, job_text,
+                                         history, (jobs, aliases), files, quote)
+            except BaseException as exc:  # noqa: BLE001 - re-raised to the request when it still waits
+                turn.error = exc
+                if turn.ack is not None:
+                    logger.warning("speakeasy: Home's turn failed after its acknowledgement (%s)",
+                                   type(exc).__name__)
+            finally:
+                turn.done.set()
+                self._inflight.pop(user_id, None)
+                if turn.ack is not None:
+                    self.svc._now_changed()   # the request already returned: the answer is news
+        threading.Thread(target=work, name="home-turn", daemon=True).start()
+        if not turn.done.wait(max(0.0, self.deadline_s)):
+            # Not answered within the deadline: an acknowledgement goes up now (the model's line if it
+            # is ready, else one derived from the ask), and the answer follows in this exchange.
+            ack_ready.wait(0.05)
+            said = ack_box.get("text") or fallback_ack(text, files, avoid=last)
+            with turn.lock:
+                if not turn.visible:
+                    turn.ack_row = self._add("assistant", said, self.clock(), reply_to=user_id, part=PART_ACK,
+                                             model=ack_box.get("model") if ack_box.get("text") else None)
+                    turn.ack = said
+                    turn.visible = True
+                    turn.first_words_s = time.monotonic() - turn.started
+                    turn.first_kind = "ack" if ack_box.get("text") else "fallback ack"
+            if turn.ack is not None:
+                logger.info("speakeasy: Home's first words in %.1fs (%s)", turn.first_words_s or 0, turn.first_kind)
+                self.svc._now_changed()
+                if not turn.done.is_set():
+                    user = self._rows("WHERE id=?", (user_id,), limit=1)[0]
+                    ack_row = self._rows("WHERE id=?", (turn.ack_row,), limit=1)[0]
+                    out = self._reply(user, ack_row)
+                    out.update(action="pending", pending=True)
+                    return out
+            turn.done.wait(TIMEOUT_S * 3 + 60)   # the reply is up; what's left is starting the job
+        if turn.error is not None:
+            raise turn.error
+        if turn.result is None:
+            raise self._error(504, "Home's reply is taking too long. It will show up when it's ready.")
+        return turn.result
+
+    def _write_ack(self, asked: str, last: str | None) -> tuple[str | None, dict | None]:
+        """The fast model's one-sentence acknowledgement for this ask (None when it wrote SKIP or
+        something unusable)."""
+        name = (self.svc.settings.get() or {}).get("assistant_name") or "Hermes"
+        messages = [{"role": "system", "content": _ACK_PROMPT.format(name=name)},
+                    {"role": "user", "content": asked[:1200]}]
+        if self._ack_call is not None:
+            got = self._ack_call(messages)
+            raw, model = (got if isinstance(got, tuple) else (got, None))
+        else:
+            call_llm, extract = host_mod.aux_client()
+            if extract is None:
+                return None, None
+            from .router import _profile_scope
+            route = self.route()
+            kwargs: dict[str, Any] = dict(messages=messages, temperature=0.7, max_tokens=ACK_TOKENS,
+                                          timeout=ACK_TIMEOUT_S)
+            with _profile_scope():
+                if route.get("task"):
+                    response = call_llm(task=route["task"], **kwargs)
+                else:
+                    response = call_llm(provider=route["provider"], model=route["model"], **kwargs)
+            raw, model = self._answer_of(response, extract), self._served(response, route)
+        said = clean_ack(raw if isinstance(raw, str) else None, asked)
+        if said and said == last:
+            said = None
+        return said, model
+
+    def _post_reply(self, turn: _Turn | None, said: str, action: str, model: dict | None,
+                    user_id: str) -> str | None:
+        """The coordinator's reply into the thread. After an acknowledgement it is the answer part:
+        only what the acknowledgement didn't already say (nothing at all for a job's bare ack)."""
+        if turn is None:
+            return self._add("assistant", said, self.clock(), model=model, reply_to=user_id)
+        with turn.lock:
+            if turn.ack is not None:
+                rest = after_ack(said, action, turn.ack)
+                return self._add("assistant", rest, self.clock(), model=model, reply_to=user_id,
+                                 part=ANSWER) if rest else None
+            turn.visible = True
+            turn.first_words_s = time.monotonic() - turn.started
+            turn.first_kind = "reply"
+            return self._add("assistant", said, self.clock(), model=model, reply_to=user_id)
+
+    def _rest(self, turn: _Turn, text: str, client_id: str | None, ids: list[str], body: dict[str, Any],
+              device_id: str | None, voice: dict | None, job_text: str | None, history: list[dict[str, Any]],
+              jobs_aliases: tuple[str, dict[str, str]], files: list[dict], quote: dict | None) -> dict[str, Any]:
+        jobs, aliases = jobs_aliases
+        user_id = turn.user_id
         focus = body.get("focus") if isinstance(body.get("focus"), str) else None
         if focus is None and quote and quote.get("run_id"):
             focus = quote["run_id"]   # replying to a job card: "this"/"it" is that job
@@ -869,8 +1201,7 @@ class HomeChat:
                            "request": decided.get("request")}
         reply_row = None
         if decided["reply"]:
-            reply_id = self._add("assistant", decided["reply"], self.clock(), model=model, reply_to=user_id)
-            reply_row = reply_id
+            reply_row = self._post_reply(turn, decided["reply"], decided["action"], model, user_id)
         started = None
         run_id = None
         action = decided["action"]
@@ -954,7 +1285,7 @@ class HomeChat:
             if reply_row:
                 self._delete(reply_row)
             self._add("assistant", "That didn't go through. Try again in a moment.", self.clock(),
-                      reply_to=user_id)
+                      reply_to=user_id, part=ANSWER if turn.ack is not None else None)
             self._link(user_id, None, "failed")
             self.svc._now_changed()
             raise
@@ -962,7 +1293,10 @@ class HomeChat:
         if action == "start" and isinstance(started, dict) and started.get("held"):
             # Held behind another job on the same project: the reply says when it starts, warmly
             # (no extra model call), and its card in the thread says "Waiting · after ...".
-            reply_row = self._say_held(reply_row, decided["reply"], started["held"].get("after"), user_id)
+            if turn.ack is not None:
+                reply_row = self._say_held(reply_row, "", started["held"].get("after"), user_id, part=ANSWER)
+            else:
+                reply_row = self._say_held(reply_row, decided["reply"], started["held"].get("after"), user_id)
         for n, words in enumerate(decided.get("extra") or []):
             # "Those are two different tasks": each further ask in the message is its own job.
             job_body = {"text": self._with_quote(words, quote), "source": "voice_message" if voice else "typed"}
@@ -983,10 +1317,16 @@ class HomeChat:
                 self._extra_run(user_id, more["run_id"])
         if reply_row:
             self._link(reply_row, run_id, action)
+        if turn.ack_row:
+            self._link(turn.ack_row, run_id, action)   # the ack belongs to the job it announced
+        if turn.ack is None and not turn.visible:
+            turn.first_words_s = time.monotonic() - turn.started
+            turn.first_kind = "card" if run_id else "nothing"
         self.svc._now_changed()
         user = self._rows("WHERE id=?", (user_id,), limit=1)[0]
-        reply = self._rows("WHERE id=?", (reply_row,), limit=1)[0] if reply_row else None
-        logger.info("speakeasy: Home message handled (%s)", action)
+        reply = self._rows("WHERE id=?", ((reply_row or turn.ack_row),), limit=1)[0] if (reply_row or turn.ack_row) else None
+        logger.info("speakeasy: Home message handled (%s; first words %.1fs, %s; done %.1fs)", action,
+                    turn.first_words_s or 0, turn.first_kind or "-", time.monotonic() - turn.started)
         return self._reply(user, reply, started=started)
 
     def _start(self, job_body: dict[str, Any], device_id: str | None, asked: str) -> dict[str, Any]:
@@ -1005,7 +1345,7 @@ class HomeChat:
             return self.svc.start_job(job_body, device_id, never_wait=never_wait)
         return self.svc.start_job(job_body, device_id)   # a stand-in service without the keyword
 
-    def _say_held(self, reply_row: str | None, said: str, after: Any, user_id: str) -> str:
+    def _say_held(self, reply_row: str | None, said: str, after: Any, user_id: str, part: str | None = None) -> str:
         """The coordinator's reply when the job it started is held: "I'll start that as soon as the
         paint search wraps up." (alone for a bare acknowledgement, else after what it said)."""
         line = held_line(after)
@@ -1015,7 +1355,7 @@ class HomeChat:
             with self.store._lock, self.store._db:
                 self.store._db.execute("UPDATE home_messages SET text=? WHERE id=?", (text, reply_row))
             return reply_row
-        return self._add("assistant", text, self.clock(), reply_to=user_id)
+        return self._add("assistant", text, self.clock(), reply_to=user_id, part=part)
 
     def _job_choice(self, job_body: dict[str, Any], body: dict[str, Any]) -> None:
         """A job started from Home runs on the work model (``work_route``, the same answer the chip

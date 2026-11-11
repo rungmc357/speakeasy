@@ -48,7 +48,7 @@
    "tier": 1,
    "title": "Order a desk",
    "unread": false,
-   "updated_at": 1794281732.557632
+   "updated_at": 1794385723.3651881
   },
   {
    "finished_at": 1793984200.0,
@@ -66,7 +66,7 @@
    "tier": 2,
    "title": "Book the plumber",
    "unread": false,
-   "updated_at": 1794281732.558773
+   "updated_at": 1794385723.3658051
   },
   {
    "finished_at": 1793984340.0,
@@ -81,7 +81,7 @@
    "tier": 4,
    "title": "Summarize the inbox",
    "unread": true,
-   "updated_at": 1794281732.556693
+   "updated_at": 1794385723.364394
   },
   {
    "finished_at": 1793984160.0,
@@ -96,7 +96,7 @@
    "tier": 4,
    "title": "Draft a note",
    "unread": true,
-   "updated_at": 1794281732.5594912
+   "updated_at": 1794385723.3664582
   },
   {
    "finished_at": 1793984000.0,
@@ -111,7 +111,7 @@
    "tier": 4,
    "title": "Quote the patio",
    "unread": true,
-   "updated_at": 1794281732.560364
+   "updated_at": 1794385723.3673139
   }
  ],
  "notice": null,
@@ -122,10 +122,10 @@
   "items": [
    {
     "generic": false,
-    "id": "rec:draft:ed_ad5c7f35436331e628ea8e48",
+    "id": "rec:draft:ed_dd3b2b7c3926874a869c73e6",
     "prompt": "Let's finish the email draft \u201cFriday\u201d.",
     "source": {
-     "draft_id": "ed_ad5c7f35436331e628ea8e48",
+     "draft_id": "ed_dd3b2b7c3926874a869c73e6",
      "kind": "unsent_draft",
      "label": "Unsent draft",
      "run_id": "run_mail"
@@ -265,14 +265,21 @@
    ],
    "clean": false,
    "entry_ids": [
-    "m:hu_650ceade20d50595",
-    "m:ha_415fececfec9a6d3",
+    "m:hu_6f2670f80305d8ed",
+    "m:ha_feb98b3652199990",
     "c:run_inbox"
    ],
    "last_activity_at": 1793984281.0,
-   "message_id": "m:hu_650ceade20d50595",
+   "message_id": "m:hu_6f2670f80305d8ed",
+   "parts": [
+    {
+     "id": "m:ha_feb98b3652199990",
+     "part": "reply"
+    }
+   ],
+   "pending": false,
    "reply_ids": [
-    "m:ha_415fececfec9a6d3"
+    "m:ha_feb98b3652199990"
    ],
    "resets_at": 1793985481.0,
    "run_ids": [
@@ -289,7 +296,7 @@
    },
    {
     "at": 1793983500.0,
-    "id": "m:hu_650d3d04a9548f24",
+    "id": "m:hu_6a0c5696bde45038",
     "kind": "message",
     "role": "user",
     "text": "Find a desk"
@@ -304,7 +311,7 @@
    },
    {
     "at": 1793983501.0,
-    "id": "m:ha_e9507df0ad2e65b6",
+    "id": "m:ha_7f558c103f76139c",
     "kind": "message",
     "role": "assistant",
     "text": "On it."
@@ -370,7 +377,7 @@
    {
     "at": 1793984280.0,
     "current": true,
-    "id": "m:hu_650ceade20d50595",
+    "id": "m:hu_6f2670f80305d8ed",
     "kind": "message",
     "role": "user",
     "run_id": "run_inbox",
@@ -387,7 +394,7 @@
    {
     "at": 1793984281.0,
     "current": true,
-    "id": "m:ha_415fececfec9a6d3",
+    "id": "m:ha_feb98b3652199990",
     "kind": "message",
     "role": "assistant",
     "text": "Reading it now."

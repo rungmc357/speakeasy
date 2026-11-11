@@ -453,7 +453,7 @@ def test_the_b73_now_reply_matches_the_contract_the_apps_decode(service, frozen)
     old = chat._add("user", "Find a desk", NOON - 900)
     chat._add("assistant", "On it.", NOON - 899, reply_to=old)
     mid = chat._add("user", "Summarize the inbox", NOON - 120)
-    chat._add("assistant", "Reading it now.", NOON - 119, reply_to=mid)
+    chat._add("assistant", "Reading it now.", NOON - 119, reply_to=mid, part="ack")   # home-ack: an acknowledgement part
     task(service.store, "inbox", "completed", session="s_inbox", request="Summarize the inbox",
          result={"headline": "Four need a reply"}, settled=NOON - 60, created=NOON - 120)
     chat._link(mid, "run_inbox", "start")
