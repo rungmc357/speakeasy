@@ -441,7 +441,9 @@ struct PRCard: View {
                 Circle().fill(tint).frame(width: 7, height: 7)
                 Text(name).font(.subheadline.weight(.semibold)).foregroundStyle(style.ink).lineLimit(1)
             }
-            Text(count ?? word.prefix(1).uppercased() + word.dropFirst()).font(.title2.weight(.bold)).foregroundStyle(style.ink).lineLimit(1)
+            // Flat in a widget the failure has no red tile around it: its word carries the red.
+            Text(count ?? word.prefix(1).uppercased() + word.dropFirst()).font(.title2.weight(.bold))
+                .foregroundStyle(state == "failed" && widgetTitle != nil ? style.bad : style.ink).lineLimit(1)
             if count != nil { Text(word).font(.footnote).foregroundStyle(style.secondary) }
             if let note = check["note"].string {
                 Text(note).font(.footnote).foregroundStyle(style.faint).lineLimit(2).fixedSize(horizontal: false, vertical: true)
