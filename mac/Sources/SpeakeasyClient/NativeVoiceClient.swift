@@ -145,7 +145,7 @@ public final class NativeVoiceClient: VoiceCallClient {
     /// 74.1 (F4): when each connect step happened since the tap (logged on the device, and in the
     /// call's mic-check note once the first transcript arrives).
     private var connectTimeline: ConnectTimeline?
-    private static let connectLog = Logger(subsystem: "co.georgio.speakeasy", category: "call-connect")
+    private static let connectLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "speakeasy", category: "call-connect")
     /// Set while a dead mic is being repaired (pause → immediate resume).
     private var micRepairPending = false
     private var endDeadline: DispatchWorkItem?
