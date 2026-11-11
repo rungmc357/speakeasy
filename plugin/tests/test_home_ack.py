@@ -135,14 +135,16 @@ def test_a_slow_ack_model_is_not_waited_for(server, service, hermes):
 
 def test_no_home_turn_goes_past_the_deadline_without_words(server, service, hermes):
     """The hard server-side deadline at its real value: a coordinator that hangs for 6 s still has
-    words in the thread by ACK_DEADLINE_S (plus scheduling slack)."""
+    words in the thread by the fallback mark (ACK_FALLBACK_SHARE of ACK_DEADLINE_S, counted from the
+    request's arrival), so they reach the phone inside ACK_DEADLINE_S."""
     gate = threading.Event()
     script(service, {"reply": "Here.", "action": "none"}, gate=gate, ack=None, deadline=HC.ACK_DEADLINE_S)
     assert 2.0 <= HC.ACK_DEADLINE_S <= 3.0
     t0 = time.monotonic()
     _, body = post(server, {"text": "summarize what came in from the contractor", "client_id": "c_hard"})
     took = time.monotonic() - t0
-    assert HC.ACK_DEADLINE_S - 0.1 <= took < HC.ACK_DEADLINE_S + 0.5, took
+    hard = HC.ACK_DEADLINE_S * HC.ACK_FALLBACK_SHARE
+    assert hard - 0.1 <= took < HC.ACK_DEADLINE_S, took
     assert body["reply"]["part"] == "ack" and body["reply"]["text"]
     gate.set()
 

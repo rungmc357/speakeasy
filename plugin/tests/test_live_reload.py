@@ -127,7 +127,7 @@ def test_hermes_voice_reload_loads_it_now_even_mid_call(plugin):
 def test_busy_is_true_only_for_a_live_call_or_work_a_reload_cannot_pick_up(service):
     from speakeasy.calls import BackendRun, Interaction
     assert service.busy() is False
-    call = Interaction("int_a", "sess_a")
+    call = Interaction("int_a", "sess_a", started_at=time.time() - 120)   # connected over CALL_SETTLE_S ago
     service.interactions["int_a"] = call
     assert service.busy() is True                      # call open
     call.call_closed = True
@@ -144,7 +144,7 @@ def test_a_paused_call_holds_back_a_reload_only_until_its_pause_runs_out(service
     """A paused call (listening mode pauses calls too) can be resumed, so a reload waits for it; but a
     call paused and never resumed, or ended on the device while paused, must not block updates forever."""
     from speakeasy.calls import Interaction
-    call = Interaction("int_p", "sess_p")
+    call = Interaction("int_p", "sess_p", started_at=time.time() - 120)
     call.call_closed = True
     call.paused = True
     service.interactions["int_p"] = call

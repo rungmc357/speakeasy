@@ -7,6 +7,8 @@ only a live call (or state that lives only in memory) defers the automatic reloa
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from fakes import FakeLiveWorker, FakeTransport, http, wait_for
@@ -121,7 +123,7 @@ def test_a_running_job_carries_on_through_a_reload_and_its_answer_lands_once(ser
 
 def test_only_a_live_call_or_memory_only_state_holds_back_a_reload(service):
     assert service.busy() is False
-    call = Interaction("int_a", "sess_a")
+    call = Interaction("int_a", "sess_a", started_at=time.time() - 120)   # connected over CALL_SETTLE_S ago
     service.interactions["int_a"] = call
     assert service.busy() is True                       # a live call
     call.call_closed = True
