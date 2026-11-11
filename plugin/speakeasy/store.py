@@ -26,6 +26,7 @@ from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
                    short_title, valid_short_status, NEW_TASK_TITLE, fallback_title, title_text)
 from .text import TITLE_META, fix_product_names, outcome_headline, request_notes, stand_in_titles as _stand_ins, vague_title
+from .views import stamp_as_of
 
 STALE_AFTER_S = 90
 # A task that ended this way never sends its held messages or reads its steers: both settle unused,
@@ -2716,7 +2717,8 @@ class StateStore:
             "events": [{"kind": kind, "text": text, "at": created} for kind, text, created in reversed(events)],
             "short_status": display_status, "detail": display_detail,
             "source_run_id": actual_run_id, "updated_at": display_updated,
-            "status_source": source, "result": _current_steps(public_result(result), status),
+            "status_source": source, "result": stamp_as_of(_current_steps(public_result(result), status),
+                                                           settled_at or updated),
             "title": title, "summary": summary, "dismissed": bool(dismissed),
             "email_drafts": drafts,
             "plan": concrete_plan(self.plan(key), next((t for k, t, _ in reversed(events) if k == "request"), None),

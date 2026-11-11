@@ -561,8 +561,10 @@ def test_the_now_reply_matches_the_contract_the_apps_decode(server, service, sta
     assert _shape({k: v for k, v in body.items() if k != "items"}) == _shape({k: v for k, v in saved.items() if k != "items"})
     by_kind = {i["kind"]: i for i in saved["items"]}
     for item in body["items"]:
-        # home-fixes-73 adds, additively, a running item's step kind and newest steps (the capsule).
-        assert set(item) <= set(by_kind[item["kind"]]) | {"provenance", "idle_seconds", "step_kind", "steps"}, item["kind"]
+        # home-fixes-73 adds, additively, a running item's step kind and newest steps (the capsule);
+        # widgets-decide adds when its data is from (as_of), an unanswered ask on a done answer, unsent drafts.
+        assert set(item) <= set(by_kind[item["kind"]]) | {"provenance", "idle_seconds", "step_kind", "steps",
+                                                           "as_of", "asks", "unsent_drafts"}, item["kind"]
 
 
 @pytest.mark.parametrize("raw,status,shown", [
