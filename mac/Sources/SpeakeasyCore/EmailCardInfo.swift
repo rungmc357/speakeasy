@@ -164,6 +164,46 @@ public struct EmailCardInfo: Equatable, Sendable {
     }
 }
 
+/// What this device did to one draft since its card was drawn. Hermes's status is the truth once
+/// it moves: an ask only stands while the draft is still pending.
+public enum EmailCardPhase: Equatable, Sendable {
+    case waiting(String, until: Date)   // "send" | "discard", with Undo until then
+    case asked(String)                  // posted to Hermes: "send" | "save" | "discard"
+
+    /// What stays once Hermes answers the POST. A refused or unreached ask gives the buttons back; a
+    /// saved draft is still a draft; a send or discard Hermes took waits for the status to move.
+    public static func answered(_ verb: String, ok: Bool) -> EmailCardPhase? {
+        ok && verb != "save" ? .asked(verb) : nil
+    }
+
+    public func shown(_ status: EmailCardInfo.Status) -> EmailCardPhase? {
+        if case .asked = self, status != .pending { return nil }
+        return self
+    }
+}
+
+public extension EmailCardInfo {
+    /// The word in the card's corner: what this device asked while Hermes still says pending,
+    /// then Hermes's own status ("Sent", "Didn't send").
+    func stateWord(_ phase: EmailCardPhase?, editedHere: Bool) -> String {
+        switch phase?.shown(status) {
+        case .asked("send")?: return "Sending…"
+        case .asked("save")?: return editedHere ? "Saving…" : "Saving to Drafts…"
+        case .asked("discard")?: return "Discarded"
+        default: break
+        }
+        switch status {
+        case .pending: return editedHere || edited ? "Draft · edited" : "Draft"
+        case .approved: return "Sending…"
+        case .sent: return "Sent"
+        case .denied: return "Discarded"
+        case .revising: return "Revising…"
+        case .failed: return "Didn't send"
+        case .superseded: return "Replaced"
+        }
+    }
+}
+
 public extension WorkInfo {
     /// Drafts the job's own email card already shows (the server adds one per job): surfaces
     /// that list `emailDrafts` beside `views` leave these out, so an email is never drawn twice.
