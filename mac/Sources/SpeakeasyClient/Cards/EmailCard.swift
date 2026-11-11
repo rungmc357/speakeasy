@@ -12,10 +12,10 @@ import UIKit
 // no "are you sure"; it waits 5 seconds with Undo first (D6).
 
 /// The host's way to run one of the card's own buttons (an action with a value), or nil where the
-/// server can't take card buttons.
-public struct CardSendKey: EnvironmentKey { public static let defaultValue: ((CardAction) -> Void)? = nil }
+/// server can't take card buttons. True once Hermes took it; false when it was refused or never went.
+public struct CardSendKey: EnvironmentKey { public static let defaultValue: ((CardAction) async -> Bool)? = nil }
 public extension EnvironmentValues {
-    var cardSend: ((CardAction) -> Void)? {
+    var cardSend: ((CardAction) async -> Bool)? {
         get { self[CardSendKey.self] }
         set { self[CardSendKey.self] = newValue }
     }
@@ -26,25 +26,23 @@ public extension EnvironmentValues {
 /// still shows as such after scrolling away and back.
 @MainActor public final class EmailCardMemory: ObservableObject {
     public static let shared = EmailCardMemory()
-    public enum Phase: Equatable {
-        case waiting(String, until: Date)   // "send" | "discard", with Undo until then
-        case asked(String)                  // sent to Hermes: "send" | "save" | "discard"
-    }
-    @Published public private(set) var phase: [String: Phase] = [:]
+    @Published public private(set) var phase: [String: EmailCardPhase] = [:]
     /// Edits made on this device not yet sent or saved (the card shows them).
     @Published public var edits: [String: EmailCardInfo.Fields] = [:]
     private var timers: [String: Task<Void, Never>] = [:]
     public static var undoSeconds: Double = 5
 
-    public func schedule(_ draftID: String, verb: String, run: @escaping @MainActor () -> Void) {
+    /// What the card shows for this draft: this device's ask only while Hermes still says pending.
+    public func phase(for info: EmailCardInfo) -> EmailCardPhase? { phase[info.draftID]?.shown(info.status) }
+
+    public func schedule(_ draftID: String, verb: String, post: @escaping @MainActor () async -> Bool) {
         timers[draftID]?.cancel()
         phase[draftID] = .waiting(verb, until: Date().addingTimeInterval(Self.undoSeconds))
         timers[draftID] = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Self.undoSeconds))
             guard !Task.isCancelled, let self else { return }
             self.timers[draftID] = nil
-            self.phase[draftID] = .asked(verb)
-            run()
+            self.ask(draftID, verb, post: post)
         }
     }
 
@@ -53,11 +51,19 @@ public extension EnvironmentValues {
         phase[draftID] = nil
     }
 
-    public func asked(_ draftID: String, _ verb: String) { phase[draftID] = .asked(verb) }
+    public func ask(_ draftID: String, _ verb: String, post: @escaping @MainActor () async -> Bool) {
+        phase[draftID] = .asked(verb)
+        Task { @MainActor [weak self] in
+            let ok = await post()
+            // A newer tap on this draft owns the phase now.
+            guard let self, self.phase[draftID] == .asked(verb) else { return }
+            self.phase[draftID] = EmailCardPhase.answered(verb, ok: ok)
+        }
+    }
 
     #if DEBUG
     /// Shots and tests: a card frozen mid-Undo.
-    public func debugSet(_ draftID: String, _ value: Phase?) { phase[draftID] = value }
+    public func debugSet(_ draftID: String, _ value: EmailCardPhase?) { phase[draftID] = value }
     #endif
 }
 
@@ -160,7 +166,7 @@ struct EmailCard: View {
     }
 
     @ViewBuilder private var footer: some View {
-        switch memory.phase[info.draftID] {
+        switch memory.phase(for: info) {
         case .waiting(let verb, let until)?:
             HStack(spacing: 12) {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -190,23 +196,7 @@ struct EmailCard: View {
         }
     }
 
-    private var stateWord: String {
-        switch memory.phase[info.draftID] {
-        case .asked("send")?: return "Sending…"
-        case .asked("save")?: return editedHere ? "Saving…" : "Saving to Drafts…"
-        case .asked("discard")?: return "Discarded"
-        default: break
-        }
-        switch info.status {
-        case .pending: return editedHere || info.edited ? "Draft · edited" : "Draft"
-        case .approved: return "Sending…"
-        case .sent: return "Sent"
-        case .denied: return "Discarded"
-        case .revising: return "Revising…"
-        case .failed: return "Didn't send"
-        case .superseded: return "Replaced"
-        }
-    }
+    private var stateWord: String { info.stateWord(memory.phase[info.draftID], editedHere: editedHere) }
 
     private var stateColor: Color {
         switch info.status {
@@ -251,9 +241,9 @@ struct EmailCard: View {
             action = CardAction(id: verb, label: verb == "send" ? "Send" : "Save draft", value: .string(sha))
         }
         switch verb {
-        case "send", "discard": memory.schedule(id, verb: verb) { send(action) }
-        case "keep": send(action)   // edits kept on the server, nothing sent
-        default: memory.asked(id, verb); send(action)
+        case "send", "discard": memory.schedule(id, verb: verb) { await send(action) }
+        case "keep": Task { _ = await send(action) }   // edits kept on the server, nothing sent
+        default: memory.ask(id, verb) { await send(action) }
         }
     }
 }
@@ -341,7 +331,7 @@ struct EmailDetailSheet: View {
         _showBcc = State(initialValue: !current.bcc.isEmpty)
     }
 
-    private var editable: Bool { info.status == .pending && send != nil && EmailCardMemory.shared.phase[info.draftID] == nil }
+    private var editable: Bool { info.status == .pending && send != nil && memory.phase(for: info) == nil }
 
     var body: some View {
         VStack(spacing: 0) {
