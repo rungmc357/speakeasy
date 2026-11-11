@@ -5,6 +5,7 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 import SpeakeasyCore
+import os
 #if os(iOS)
 import UIKit
 #endif
@@ -135,12 +136,16 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     private static func freshMicCheck() -> MicCheck {
         #if os(iOS) || os(visionOS)
-        return MicCheck(firstSoundGrace: MicCheck.firstSoundWithinHandheld)
+        return MicCheck(firstSoundGrace: MicCheck.firstSoundWithinHandheld, canRestartAudio: true)
         #else
         return MicCheck()
         #endif
     }
     private var micTimer: Timer?
+    /// 74.1 (F4): when each connect step happened since the tap (logged on the device, and in the
+    /// call's mic-check note once the first transcript arrives).
+    private var connectTimeline: ConnectTimeline?
+    private static let connectLog = Logger(subsystem: "co.georgio.speakeasy", category: "call-connect")
     /// Set while a dead mic is being repaired (pause → immediate resume).
     private var micRepairPending = false
     private var endDeadline: DispatchWorkItem?
@@ -306,9 +311,11 @@ public final class NativeVoiceClient: VoiceCallClient {
         case .inputDelta, .outputDelta: micCheck.heard()
         default: break
         }
+        if case .inputDelta = event { markConnect(.firstTranscript) }
         // The call heard the user after listening mode was turned off: never answer over them.
         if case .inputDelta = event { roomCall?.noteHeardUser() }
         if old.connection != .live && new.connection == .live {
+            markConnect(.live)
             micCheck.connectionOpened()
             micRepairPending = false
             if new.micHealth != micCheck.health { dispatch(.micHealth(micCheck.health)) }
@@ -317,6 +324,38 @@ public final class NativeVoiceClient: VoiceCallClient {
         if !new.connection.isInCall && new.connection != .paused && micTimer != nil {
             micTimer?.invalidate(); micTimer = nil
         }
+        if (old.connection.isInCall || old.connection == .paused), !new.connection.isInCall, new.connection != .paused {
+            reportConnect(ended: true)
+            connectTimeline = nil
+        }
+    }
+
+    /// Marks a connect stage (first time only) and logs it on the device.
+    private func markConnect(_ stage: ConnectTimeline.Stage) {
+        guard var t = connectTimeline else { return }
+        let now = Date()
+        if t.mark(stage, at: now) {
+            let s = String(format: "+%.1fs", now.timeIntervalSince(t.tap))
+            Self.connectLog.notice("connect stage: \(stage.rawValue, privacy: .public) \(s, privacy: .public)")
+        }
+        connectTimeline = t
+        if stage == .firstTranscript { reportConnect(ended: false) }
+    }
+
+    private func noteConnect(_ event: String) {
+        guard connectTimeline != nil else { return }
+        connectTimeline?.note(event, at: Date())
+        Self.connectLog.notice("connect event: \(event, privacy: .public)")
+    }
+
+    /// The timeline's one summary line: on the device, and in the call's mic-check note (agent.log).
+    private func reportConnect(ended: Bool) {
+        guard var t = connectTimeline, t.due(ended: ended) else { return }
+        t.markReported()
+        connectTimeline = t
+        let line = t.summary()
+        Self.connectLog.notice("\(line, privacy: .public)")
+        reportMic(line)
     }
 
     private func startMicTimer() {
@@ -334,6 +373,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         let listening = state.mic == .live && earlyCapture == nil && !engine.isAudioHeld && !speaking
         engine.micProbe { [weak self] level, packets in
             guard let self, self.engine === engine else { return }
+            if (packets ?? 0) > 0 { self.markConnect(.firstMicPacket) }
             let fault = self.micCheck.sample(level: level, packetsSent: packets, listening: listening, now: Date())
             if self.model.state.micHealth != self.micCheck.health { self.dispatch(.micHealth(self.micCheck.health)) }
             if let fault { self.repairMic(fault) }
@@ -359,6 +399,21 @@ public final class NativeVoiceClient: VoiceCallClient {
             return
         }
         #endif
+        // 74.1 (F4(a)): no sound at the very start is first met by restarting the audio unit on this
+        // same connection (about a second); the connection is reopened (a new session, ~10 s) only
+        // if that can't run or doesn't bring the sound back.
+        if micCheck.repairStep(for: fault) == .restartAudio {
+            if let engine, engine.restartLocalAudio() {
+                micCheck.audioRestarted()
+                noteConnect("mic restarted in place")
+                reportMic("restarted the mic in place: \(fault.rawValue) (\(detail))")
+                if model.state.micHealth != micCheck.health { dispatch(.micHealth(micCheck.health)) }
+                return
+            }
+            micCheck.audioRestartFailed()
+            if micCheck.health == .broken { dispatch(.micHealth(.broken)); return }
+        }
+        noteConnect("reconnect: \(fault.rawValue)")
         micCheck.repairStarted()
         micRepairPending = true
         skipEarlyCapture = true
@@ -383,6 +438,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         guard case .connecting(let attempt) = model.state.phase else { return }
         let stage = connectStage
         reportMic("connect stalled (attempt \(attempt.attempt)) at: \(stage); \(micReportDetail())")
+        noteConnect("connect stalled at \(stage)")
         // A call from listening mode keeps what the user already said for the retried call
         // (which connects without the listener) instead of answering from the room over it.
         if roomCall != nil, let heard = earlyCapture?.heardSoFar, !cleanTranscript(heard).isEmpty {
@@ -666,6 +722,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.workExpanded = false
         model.captionExpanded = false
         workOnlyTask?.cancel()
+        connectTimeline = ConnectTimeline(tap: Date())
         dispatch(.startRequested)
         // A call from listening mode always opens unmuted: the words said next are the request.
         if startMuted && takeoffAt == nil { dispatch(.setMic(.muted)) }
@@ -768,6 +825,7 @@ public final class NativeVoiceClient: VoiceCallClient {
                 self.voiceProvider = admission.voiceProvider
                 self.codexStopRequested = false
                 self.dispatch(.sessionAdmitted(interactionID: admission.interactionID))
+                self.markConnect(.sessionCreated)
                 self.connectStage = "admitted; connecting audio"
                 let early = self.earlyCapture
                 if let relay = admission.relay {
@@ -846,7 +904,10 @@ public final class NativeVoiceClient: VoiceCallClient {
             guard let self, let transport, self.engine === transport else { return }
             self.channelClosed()
         }
-        transport.onChannelOpen = { [weak self] in self?.connectStage = "channel open; waiting for the call to start" }
+        transport.onChannelOpen = { [weak self] in
+            self?.connectStage = "channel open; waiting for the call to start"
+            self?.markConnect(.channelOpen)
+        }
         transport.onAudioFormatChanged = { [weak self] in self?.audioDevicesChanged() }
         transport.onConnectionFailed = { [weak self, weak transport] in
             guard let self, let transport, self.engine === transport,
