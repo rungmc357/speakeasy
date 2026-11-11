@@ -91,7 +91,7 @@ def test_tapping_post_takes_it_off_home(service, state):
     assert "skipped_question" not in [r["source"]["kind"] for r in body["recommendations"]["items"]]
 
 
-def test_cancel_on_the_card_closes_the_decision_and_its_outcome_follows(server, service, state):
+def test_cancel_on_the_card_takes_it_off_home_and_nothing_comes_back(server, service, state):
     store = service.store
     view = _filed(store, "k_cancel", "Post the release notes", interaction="vi_typed")
     [decision] = _decisions(_home(service))
@@ -99,7 +99,17 @@ def test_cancel_on_the_card_closes_the_decision_and_its_outcome_follows(server, 
                          {"view": 0, "action": "cancel", "value": view["sha256"]})
     assert status == 200 and reply["message"] == "Cancelled."
     body = _home(service)
-    assert _decisions(body) == [] and service.home_state.row(decision["id"])["state"] == "done"
+    assert service.home_state.row(decision["id"])["state"] == "done"
+    # The card they just cancelled doesn't come straight back as a "Ready to post" result.
+    assert body["stack"]["items"] == [] and body["counts"]["finished_unread"] == 0
+
+
+def test_after_post_an_unopened_jobs_outcome_follows_the_decision(service, state):
+    store = service.store
+    view = _filed(store, "k_posted", "Post the release notes", interaction="vi_typed")
+    [decision] = _decisions(_home(service))
+    C.claim(store, "run_k_posted", 0, view["sha256"], "approve", source="tap")
+    body = _home(service)
     # Never opened, so the job's outcome is a new result that says which decision it came from.
     assert [(s["kind"], s.get("follows")) for s in body["stack"]["items"]] == [("result", decision["id"])]
 

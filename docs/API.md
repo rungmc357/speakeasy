@@ -1204,9 +1204,10 @@ Rec = {"id": "rec:…", "text", "prompt", "generic": false, "why",
   (`done`) or closed unanswered (`skipped`); a stopped job leaves when retried. An answer with
   `needs_you` (an approval card nobody has tapped) is a `decision` too, id `w:q:<run>:<first 12 of the
   card's sha256>`: it stays while that card is pending (3 days at most, then `expired`) and leaves as
-  `done` on Post or Cancel, or when its job is dismissed. A card the service asks again with new terms is a new decision. After the
-  tap, an unopened job's outcome enters as a `result` with `follows`. `result_id` is the
-  job's posted email result, else its SPK-314 answer line, else null (the card itself is the result).
+  `done` on Post or Cancel, or when its job is dismissed. A card the service asks again with new
+  terms, or a draft you edit, is a new decision. After Post, an unopened job's outcome enters as a
+  `result` with `follows`; after Cancel the job counts as read, so nothing comes back. `result_id` is
+  the job's posted email result, else its SPK-314 answer line, else null (the card itself is the result).
   `in_current`: the current exchange already shows this job in place. `follows`: the stack item this
   result came from (the question answered, the result replied to).
 - `GET /voice/home/stack?tz=` → `stack`. `POST /voice/home/stack/{id}/dismiss {from?: "home" | "work"}`

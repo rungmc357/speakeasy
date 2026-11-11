@@ -715,7 +715,7 @@ class NowModel:
                 if newer is not None:
                     newer["folded"] = int(newer.get("folded") or 0) + 1
                     continue
-                by_thread.setdefault(item["_thread"], item)
+                by_thread[item["_thread"]] = item
             by_place[place] = item
             items.append(item)
         items.extend(self._handoff_items(items, {r["key"] for r in rows}, call, now))
