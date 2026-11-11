@@ -10,6 +10,7 @@ capped, unknown fields are dropped. Nothing here fetches anything.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import math
 import re
@@ -388,10 +389,61 @@ def settled(view: dict[str, Any]) -> dict[str, Any]:
 
 
 def settled_all(views: Any) -> Any:
-    """``settled`` over a stored result's views (results saved before this kept their progress bars)."""
+    """``settled`` over a stored result's views (results saved before this kept their progress bars),
+    with each flight's times made display-ready (``flight_display``)."""
     if not isinstance(views, list):
         return views
-    return [settled(x) if isinstance(x, dict) else x for x in views]
+    return [flight_display(settled(x)) if isinstance(x, dict) else x for x in views]
+
+
+def _iso_time(value: Any) -> dt.datetime | None:
+    if not isinstance(value, str) or not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", value.strip()):
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _clock(t: dt.datetime) -> str:
+    return f"{t.hour % 12 or 12}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
+
+
+def _day(t: dt.datetime) -> str:
+    return f"{t.strftime('%a')}, {t.strftime('%b')} {t.day}"
+
+
+def stamp_as_of(result: Any, at: Any) -> Any:
+    """A stored result whose views each say when their data is from (``as_of``, epoch seconds): the
+    apps say "as of <time>" on a card older than its kind stays true for. A view that already says
+    keeps its own time."""
+    if not isinstance(result, dict) or not isinstance(result.get("views"), list) or not isinstance(at, (int, float)):
+        return result
+    if isinstance(at, bool) or at <= 0:
+        return result
+    return {**result, "views": [({**v, "as_of": float(at)} if isinstance(v, dict) and "as_of" not in v else v)
+                                for v in result["views"]]}
+
+
+def flight_display(view: dict[str, Any]) -> dict[str, Any]:
+    """A flight card the phone can print as it is: departs/arrives as local clock times ("3:14 PM",
+    the airport's own time from the ISO offset; an arrival on a later day says the day), the day it
+    leaves (``date``), the raw instants kept (``departs_at``/``arrives_at``), and a status always:
+    "Status unavailable" when the task couldn't get one. Times that aren't ISO pass through."""
+    if view.get("kind") != "flight":
+        return view
+    out = dict(view)
+    dep, arr = _iso_time(view.get("departs")), _iso_time(view.get("arrives"))
+    if dep is not None:
+        out["departs_at"], out["departs"] = view["departs"], _clock(dep)
+        out.setdefault("date", _day(dep))
+    if arr is not None:
+        out["arrives_at"], out["arrives"] = view["arrives"], _clock(arr)
+        if dep is None or arr.date() != dep.date():
+            out["arrives"] = f"{_clock(arr)} {arr.strftime('%a')}"
+    if not _str(view.get("status")):
+        out["status"] = "Status unavailable"
+    return out
 
 
 def _tone(row: dict[str, Any], allowed: set[str] = TONES) -> dict[str, Any]:
