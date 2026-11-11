@@ -60,6 +60,7 @@ from .store import fold_tasks
 from .plain_errors import STREAM_ENDED_EARLY, TASK_START_FAILED, THREAD_WAIT_LOST
 from .text import (ID_RE, MAX_TRANSCRIPT, TERMINAL, clean_transcript, delivery_text, derive_tool_status,
                    interim_progress, live_images_in, notice_text, safe_user_text, short_title, home_title, split_result,
+                   fallback_title,
                    thread_commentary, vetted_live_ref)
 
 logger = logging.getLogger(__name__)
@@ -1276,7 +1277,8 @@ class SidebandWorker:
     def names(self) -> P.Names:
         return self.rt.names
 
-    def name_task(self, idem: str, request: str | None, parent_key: str | None = None) -> None:
+    def name_task(self, idem: str, request: str | None, parent_key: str | None = None,
+                  asked: str | None = None) -> None:
         """Show the instant word-based label now, then swap in a proper name once the titler answers,
         unless something better (a thread's name) has replaced the label meanwhile. A request that
         names nothing itself ("Fix and ship", "Do both") shows the task it answers until then, and
@@ -1295,7 +1297,12 @@ class SidebandWorker:
             self.store.set_title(idem, NEW_CHAT_TITLE)
             self.title_session(idem)
             return
-        provisional = self._no_names(short_title(request))
+        if asked:
+            # A typed Home message: *request* is the brief Home wrote; the user's own words name the
+            # task until the titler does (and whenever the brief can't name it).
+            self.store.set_asked(idem, asked)
+        provisional = self._no_names(short_title(asked)) if asked else None
+        provisional = provisional or self._no_names(short_title(request))
         parent = self.store.parent_name(parent_key)
         fragment = text_mod.is_fragment(request)
         if (fragment or provisional is None) and parent:
@@ -1303,8 +1310,10 @@ class SidebandWorker:
             # it answers, so it takes that task's name rather than none at all.
             provisional = parent
         self.store.set_title(idem, provisional)
-        if not request or not provisional:
+        if not request:
             return
+        # No word-cut label (the request carries only an address or link, say) still gets the
+        # titler: a task left without a name showed the generic "Voice task" for good.
         context = self._title_context(request, parent_key, parent)
         titler = self.rt.title_call or router.smart_title
         polisher = self.rt.polish_call or router.polish_request
@@ -1667,7 +1676,7 @@ class SidebandWorker:
                     drafts: list[dict[str, Any]], event: dict[str, Any]) -> None:
         """A task ended: Done / Needs you (a question or an email draft) / Failed / New reply (an
         answer in a Hermes conversation). Stopped by the user, or still going elsewhere: nothing."""
-        title = self.store.title(idem) or self.store.request_text(idem)
+        title = self.store.shown_title(idem)
         run = backend.run_id or idem
         if status == "failed":
             self.push("failed", f"run:{run}", title, reason or "It stopped before finishing.", backend.run_id)
@@ -1829,7 +1838,7 @@ class SidebandWorker:
             # One write: a board fetched mid-way must never show the card without its question.
             self.store.record_finished_run(
                 idem, self.interaction.interaction_id, delegation_id,
-                (whole if len(whole) <= 60 else short_title(question)) or "A quick choice",
+                (whole if len(whole) <= 60 else short_title(question)) or fallback_title(question),
                 {"spoken": question, "full": f"**{question}**\n{listed}", "question": view, "views": [view]},
                 about=about)
         except Exception:
@@ -3939,7 +3948,7 @@ class SidebandWorker:
         try:
             self.store.reserve_run(idem, self.interaction.interaction_id, delegation_id, revision)
             # Named for what the house did ("Office lamp off · Bedroom lamps on"), else the ask itself.
-            self.store.set_title(idem, (home_title(reply.spoken) if reply.ok else None) or short_title(request) or "Home")
+            self.store.set_title(idem, (home_title(reply.spoken) if reply.ok else None) or fallback_title(request))
             self.store.progress(idem, "request", request)
             result = split_result(reply.spoken, ()) or {}
             if cards:
@@ -4017,7 +4026,7 @@ class SidebandWorker:
             self.interaction.latest_delegation_id = delegation_id
         try:
             self.store.reserve_run(idem, self.interaction.interaction_id, delegation_id, revision)
-            self.store.set_title(idem, short_title(request) or "Quick answer")
+            self.store.set_title(idem, fallback_title(request))
             self.retitle(idem, request)
             self.store.progress(idem, "request", request)
             result = split_result(spoken, ()) or {"spoken": spoken, "full": spoken}
@@ -5136,7 +5145,7 @@ class SidebandWorker:
                          deliver_to: str | None = None, ack: str | None = None,
                          ack_place: str | None = None, named: bool = False, parent: str | None = None,
                          continues: str = "", words: str | None = None, note: str = "",
-                         resume: bool = False, idem: str | None = None) -> None:
+                         resume: bool = False, idem: str | None = None, asked: str | None = None) -> None:
         """*parent*: the task this one answers or follows up (its idem key), which names it.
 
         *resume* (with its stored *idem*): a task that was held behind another task on the same
@@ -5184,7 +5193,7 @@ class SidebandWorker:
             self.record_timing(task_id, idem)
             if request:
                 self.store.progress(idem, "request", request)
-                self.name_task(idem, request, parent)
+                self.name_task(idem, request, parent, asked=asked)
         # Same-project fence: a new edit to a project a running task is already editing waits for it.
         fenced = self.fence_blocker(task_id, request, exclude={replaces}) if request else None
         if fenced is None and resume:
@@ -5740,7 +5749,7 @@ class SidebandWorker:
         message = P.thread_task_message(self.names, asked, summary, context)
         try:
             opened = await asyncio.to_thread(self.rt.threads.open, channel.target, message=message,
-                                             title=short_title(request) or "Voice task", delivery_id=idem)
+                                             title=fallback_title(request), delivery_id=idem)
         except (ThreadError, OSError) as exc:
             logger.info("speakeasy: new thread unavailable, posting to the channel instead (%s)", exc)
             await self.start_task(task_id, revision, context, request, deliver_to=channel.target,

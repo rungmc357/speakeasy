@@ -1243,7 +1243,9 @@ class HomeChat:
                     job_body["attachments"] = ids
                 if client_id:
                     job_body["client_id"] = ("hj" + client_id)[:128]
-                started = self._start(job_body, device_id, text or job_text or "")
+                # Named from what the user typed, unless that message holds more than this one job.
+                started = self._start(job_body, device_id, text or job_text or "",
+                                      named_by=None if decided.get("extra") else (text or job_text or ""))
                 run_id = started.get("run_id")
                 self._chip_filed(chip, run_id)
             elif action == "follow_up":
@@ -1329,7 +1331,8 @@ class HomeChat:
                     turn.first_words_s or 0, turn.first_kind or "-", time.monotonic() - turn.started)
         return self._reply(user, reply, started=started)
 
-    def _start(self, job_body: dict[str, Any], device_id: str | None, asked: str) -> dict[str, Any]:
+    def _start(self, job_body: dict[str, Any], device_id: str | None, asked: str,
+               named_by: str | None = None) -> dict[str, Any]:
         """Start one Home job. Who waits behind another job (the rule, see calls.fence_blocker): only
         work that would edit files in a project another running job is editing. When what the user
         typed isn't an edit (a question, a lookup, a proposal, plans or research: fence.is_edit_request
@@ -1341,6 +1344,13 @@ class HomeChat:
             takes = "never_wait" in inspect.signature(self.svc.start_job).parameters
         except (TypeError, ValueError):
             takes = False
+        try:
+            names = inspect.signature(self.svc.start_job).parameters
+        except (TypeError, ValueError):
+            names = {}
+        if takes and "asked" in names and named_by is not None and named_by.strip():
+            # The job's name comes from what the user typed, never a generic stand-in.
+            return self.svc.start_job(job_body, device_id, never_wait=never_wait, asked=named_by)
         if takes:
             return self.svc.start_job(job_body, device_id, never_wait=never_wait)
         return self.svc.start_job(job_body, device_id)   # a stand-in service without the keyword

@@ -450,7 +450,8 @@ JOB_PREFIX = "job_"
 
 async def start_job(worker: "SidebandWorker", text: str, session_id: str | None = None,
                     context: str | None = None, staged: list[Any] | None = None,
-                    choice: dict[str, Any] | None = None, never_wait: bool = False) -> dict[str, Any]:
+                    choice: dict[str, Any] | None = None, never_wait: bool = False,
+                    asked: str | None = None) -> dict[str, Any]:
     """A new job from text typed in the app, no call needed (``POST /voice/work``): the same
     ``start_task`` a spoken request reaches, on this worker. Runs on the worker's loop and returns
     ``{task_id}`` once Hermes has the run (or it ended), at most START_WAIT_S later; the job keeps
@@ -474,7 +475,7 @@ async def start_job(worker: "SidebandWorker", text: str, session_id: str | None 
         worker.store.set_agent("task:" + task_id, choice["agent"])
     carry(worker, task_id, staged)
     job = asyncio.get_running_loop().create_task(worker.start_task(task_id, 0, context or f"User: {text}", text,
-                                                                   session_id=session_id))
+                                                                   session_id=session_id, asked=asked))
     worker.dispatch_tasks.add(job)
     job.add_done_callback(worker.dispatch_tasks.discard)
     deadline = time.monotonic() + START_WAIT_S

@@ -215,7 +215,7 @@ def open_thread(base: str, key: str, target: str, *, message: str, title: str, d
                 opener: Callable[..., Any] = urllib.request.urlopen, timeout: float = 20) -> Opened:
     """Ask Hermes to open a thread for ``target`` and run ``message`` there."""
     route = route_name(target)
-    body = json.dumps({"event_type": EVENT, "message": message, "title": title[:90] or "Voice task"}).encode()
+    body = json.dumps({"event_type": EVENT, "message": message, "title": title[:90] or "New task"}).encode()
     req = urllib.request.Request(f"{base.rstrip('/')}/webhooks/{route}", data=body, method="POST")
     stamp = str(int(time.time()))
     req.add_header("Content-Type", "application/json")

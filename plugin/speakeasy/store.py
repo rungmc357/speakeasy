@@ -24,7 +24,7 @@ from .runstate import FINAL, RunState
 from .emails import draft_sha256, stored_json, with_email_views
 from .failures import failure_reason, public_failure
 from .text import (MAX_CARDS, AUTHORED_PRECEDENCE_S, SETTLED, TERMINAL, notice_text, public_result, safe_user_text,
-                   short_title, valid_short_status)
+                   short_title, valid_short_status, NEW_TASK_TITLE, fallback_title, title_text)
 from .text import TITLE_META, fix_product_names, outcome_headline, request_notes, stand_in_titles as _stand_ins, vague_title
 
 STALE_AFTER_S = 90
@@ -103,7 +103,8 @@ def local_run_id(idem_key: str) -> str:
     return "lr_" + hashlib.sha256(idem_key.encode()).hexdigest()[:32]
 
 
-def _is_stand_in(title: str | None, request: str | None, continued: str | None = None) -> bool:
+def _is_stand_in(title: str | None, request: str | None, continued: str | None = None,
+                 asked: str | None = None) -> bool:
     """A task title that is only the word-based label made from its own request (or missing). A task
     in a chat thread shows the thread's name, which a rename here would split from the thread itself."""
     if '"thread_id"' in (continued or ""):
@@ -112,10 +113,12 @@ def _is_stand_in(title: str | None, request: str | None, continued: str | None =
         return True  # no name, a generic placeholder, or a sentence cut off with an ellipsis
     if vague_title(title):
         return True  # "Check work status", "Confirm the earlier task": names nothing, renamed on read
-    return title in _stand_ins(request)
+    return title in _stand_ins(request) or bool(asked and title in _stand_ins(asked))
 
 
-PLACEHOLDER_TITLES = {"Voice task", "Quick answer", "A quick choice"}
+# Generic labels older plugins stored as a task's title. None is ever shown: a task under one is
+# named from its own words (fallback_title) until the titler names it.
+PLACEHOLDER_TITLES = {"Voice task", "Quick answer", "A quick choice", NEW_TASK_TITLE}
 
 
 def plain_chat(activity: dict[str, Any] | None, work: dict[str, Any]) -> bool:
@@ -316,6 +319,10 @@ class StateStore:
             # request placed into a chat thread that other, unrelated work also uses is its own job.
             self._db.execute("""CREATE TABLE IF NOT EXISTS job_links (
                 idem_key TEXT PRIMARY KEY, job_id TEXT NOT NULL, created REAL NOT NULL)""")
+            # What the user typed or said for a task whose request is a brief the assistant wrote
+            # (a Home message): its name, until the titler's, comes from these words.
+            self._db.execute("""CREATE TABLE IF NOT EXISTS asked_words (
+                idem_key TEXT PRIMARY KEY, text TEXT NOT NULL, created REAL NOT NULL)""")
             # What the user added to a running task by voice (/steer), and whether it is known to have
             # reached the agent: queued -> landed | not_read (see receipts.py). ``body`` is the exact text
             # sent, kept server-side only to look for it in the transcript; clients get ``words``.
@@ -1084,10 +1091,13 @@ class StateStore:
                 first = self._older_title(job_id, key)
             name = job_name(first[1]) if first else None
             if not name:
-                # Not named yet (the titler is still working): a stand-in from the request, not stored.
+                # Not named yet (the titler is still working): named from the user's own words, not
+                # stored. Never a generic stand-in.
                 request = self._db.execute("SELECT text FROM work_events WHERE idem_key=? AND kind='request' "
                                            "ORDER BY seq LIMIT 1", (key,)).fetchone()
-                return {"id": job_id, "name": job_name(short_title(request[0]) if request else None) or "Voice task"}
+                asked = self._db.execute("SELECT text FROM asked_words WHERE idem_key=?", (key,)).fetchone()
+                shown = fallback_title(asked[0] if asked else None, request[0] if request else None)
+                return {"id": job_id, "name": job_name(shown) or shown}
             self._db.execute("INSERT OR IGNORE INTO jobs (job_id,name,from_key,updated) VALUES (?,?,?,?)",
                              (job_id, name, first[0], time.time()))
         return {"id": job_id, "name": name}
@@ -1854,6 +1864,28 @@ class StateStore:
                 "SELECT text FROM work_events WHERE idem_key=? AND kind='request' ORDER BY seq LIMIT 1", (key,)).fetchone()
         return row[0] if row else None
 
+    def set_asked(self, key: str, text: str | None) -> None:
+        """Record the user's own words for a task whose request is a brief (a typed Home message)."""
+        words = " ".join(str(text or "").split())[:400]
+        if not words:
+            return
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO asked_words (idem_key,text,created) VALUES (?,?,?)",
+                             (key, words, time.time()))
+
+    def asked_text(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT text FROM asked_words WHERE idem_key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def shown_title(self, key: str) -> str:
+        """The name a task shows anywhere (a notification, the Live Activity): its title, else one
+        from the user's own words. Never a generic stand-in."""
+        title = self.title(key)
+        if title and title not in PLACEHOLDER_TITLES:
+            return title
+        return fallback_title(self.asked_text(key), self.request_text(key))
+
     # -- corrections (corrections.py) -------------------------------------------------------
     def corrections(self, key: str) -> list[dict[str, Any]]:
         """Every correction made to this task's words, oldest first: {"wrong", "right", "at"}."""
@@ -1962,7 +1994,7 @@ class StateStore:
                     continue
                 full = result.get("full") or result.get("spoken")
                 if isinstance(full, str) and full.strip():
-                    out.append({"task_id": task_id, "title": title or "", "full": full,
+                    out.append({"task_id": task_id, "title": "" if title in PLACEHOLDER_TITLES else title or "", "full": full,
                                 "spoken": result.get("spoken") or ""})
             except (ValueError, TypeError):
                 continue
@@ -1987,7 +2019,8 @@ class StateStore:
                     result = ""
             call = calls.setdefault(interaction, {"id": interaction, "ended": 0.0, "turns": [], "tasks": []})
             call["ended"] = max(call["ended"], float(updated or 0))
-            call["tasks"].append({"request": request, "title": title or "", "status": status, "result": result})
+            shown = title if title and title not in PLACEHOLDER_TITLES else fallback_title(request)
+            call["tasks"].append({"request": request, "title": shown, "status": status, "result": result})
         return list(calls.values())
 
     def recent_subject_tasks(self, since_s: float = 12 * 3600, limit: int = 40) -> list[Any]:
@@ -2406,10 +2439,12 @@ class StateStore:
                 tuple(sorted(TERMINAL))).fetchall()
         out = []
         for key, delegation_id, title, updated, continued, request_text in rows:
-            request = notice_text(request_text, 1200)
-            if not request or not _is_stand_in(title, request_text, continued):
+            asked = self.asked_text(key)
+            request = title_text(request_text, 1200) or title_text(asked, 1200)
+            if not request or not _is_stand_in(title, request_text, continued, asked):
                 continue  # a real name (the titler's, a chat thread's, an older row's), or nothing to title from
-            out.append({"task_id": delegation_id or key, "title": title or "",
+            out.append({"task_id": delegation_id or key,
+                        "title": "" if title in PLACEHOLDER_TITLES else title or "",
                         "request": request, "updated": float(updated or 0)})
             if len(out) >= limit:
                 break
@@ -2503,7 +2538,9 @@ class StateStore:
             row = self._db.execute(
                 "SELECT r.title, r.continued, (SELECT e.text FROM work_events e WHERE e.idem_key=r.idem_key "
                 "AND e.kind='request' ORDER BY e.seq LIMIT 1) FROM runs r WHERE r.idem_key=?", (key,)).fetchone()
-            if not row or not _is_stand_in(row[0], row[2], row[1]):
+            asked = self._db.execute("SELECT text FROM asked_words WHERE idem_key=?", (key,)).fetchone()
+            asked = asked[0] if asked else None
+            if not row or not _is_stand_in(row[0], row[2], row[1], asked):
                 return False
             title = fix_product_names(title)
             self._db.execute("UPDATE runs SET title=? WHERE idem_key=?", (title, key))
@@ -2513,7 +2550,8 @@ class StateStore:
                 # The job this task named takes the new name only while it still has the stand-in's
                 # name; a job named any other way keeps its name.
                 stand_ins = {n for n in (job_name(row[0]), *(job_name(t) for t in _stand_ins(row[2])),
-                                         "Voice task") if n}
+                                         *(job_name(t) for t in (_stand_ins(asked) if asked else ())),
+                                         *(job_name(t) for t in PLACEHOLDER_TITLES)) if n}
                 marks = ",".join("?" * len(stand_ins))
                 self._db.execute(f"UPDATE jobs SET name=?, updated=? WHERE from_key=? AND name IN ({marks})",
                                  (name, time.time(), key, *stand_ins))
@@ -2665,6 +2703,10 @@ class StateStore:
                 first_req = self._db.execute("SELECT text FROM work_events WHERE idem_key=? AND kind='request' "
                                              "ORDER BY seq LIMIT 1", (key,)).fetchone()
             asked = first_req[0] if first_req else None
+        if not title or title in PLACEHOLDER_TITLES:
+            # Not named yet (or an old generic label): the user's own words name it, everywhere a
+            # client shows it (Work, Chats, Home, notifications, the Live Activity).
+            title = fallback_title(self.asked_text(key), asked)
         drafts = self.drafts_for(key)
         if drafts and isinstance(result, dict):
             # The email it drafted is the answer's card (Home shows it in place of the done card).
