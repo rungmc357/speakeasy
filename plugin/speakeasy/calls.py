@@ -5250,7 +5250,9 @@ class SidebandWorker:
         project_auto = getattr(self.store, "project_auto", None)  # SPK-254: Home's project chip
         if project_auto is not None and not self.VOICELESS:
             try:
-                project_auto(idem)   # a job started on a call files into the project Home works in
+                # a job started on a call files into the project Home works in (not from an app
+                # that holds Projects out: Service.projects_off)
+                project_auto(idem, device_id=self.interaction.device_id)
             except Exception:  # noqa: BLE001 - filing is a bonus; the job still starts
                 logger.debug("speakeasy: couldn't file a call's job", exc_info=True)
         project_brief = getattr(self.store, "project_brief", None)  # SPK-254: a filed job's standing notes

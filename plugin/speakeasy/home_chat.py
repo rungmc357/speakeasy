@@ -868,6 +868,11 @@ class HomeChat:
         # message starts into that existing project. Only the person's own words decide it.
         filed_to = None
         projects = getattr(self.svc, "projects", None)
+        held_out = getattr(self.svc, "projects_off", None)
+        if projects is not None and callable(held_out) and held_out(device_id):
+            # The app holds Projects out (X-Speakeasy-Projects: off): no project with this work, not
+            # the chip's selection and not a "for <project>, ..." the person can't see anywhere.
+            projects = None
         if action == "start" and projects is not None and text:
             try:
                 hit = projects.directive(text)

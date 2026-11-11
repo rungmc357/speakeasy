@@ -283,6 +283,60 @@ def test_call_job_with_home_selected_stays_unfiled(server, service, hermes, stat
     assert get(server, f"/voice/projects/{pid}")[1]["jobs"] == []
 
 
+# -- an app that holds Projects out (iOS build 73+: X-Speakeasy-Projects: off) ---------------------
+
+OFF = {"X-Speakeasy-Projects": "off"}
+
+
+def test_held_out_app_home_job_goes_to_no_project_and_selection_is_untouched(server, service, hermes, state):
+    pid = make_project(service, "Lantern")
+    put(server, "/voice/projects/selected", {"project_id": pid})
+    status, _ = http(server.base_url, "POST", "/voice/home/message", {"text": "Find why the checkout test fails"},
+                     server.token, OFF)
+    assert status in (200, 202)
+    wait_for(lambda: next((c for c in hermes.calls if "checkout test" in str(c["input"])), None))
+    assert get(server, f"/voice/projects/{pid}")[1]["jobs"] == []          # not filed
+    assert get(server, "/voice/projects")[1]["selected"] == pid             # the person's choice stands
+
+
+def test_held_out_app_never_files_by_selection_or_by_name(service, monkeypatch):
+    pid = make_project(service, "Lantern")
+    sent = []
+    monkeypatch.setattr(service.home_chat, "_decide", lambda *a, **k: (
+        {"reply": "On it.", "action": "start", "run_id": None, "request": "Fix the sign-in screen"}, None))
+    monkeypatch.setattr(service, "start_job", lambda body, device_id=None: sent.append(body) or {"run_id": None})
+    service.projects.select({"project_id": pid})
+    service._projects_off["d_phone"] = True
+    service.home_chat._turn("fix the sign-in screen", None, [], {}, "d_phone", None, None)
+    assert "project_id" not in sent[-1]
+    service.home_chat._turn("for Lantern, fix the sign-in screen", None, [], {}, "d_phone", None, None)
+    assert "project_id" not in sent[-1]
+    service.home_chat._turn("fix the sign-in screen", None, [], {}, "d_mac", None, None)   # an app that shows them
+    assert sent[-1]["project_id"] == pid
+    assert service.projects.selected() == pid
+
+
+def test_held_out_app_call_job_goes_to_no_project(server, service, hermes, state):
+    from test_tasks import SDP
+    pid = make_project(service, "Lantern")
+    put(server, "/voice/projects/selected", {"project_id": pid})
+    status, _ = http(server.base_url, "POST", "/voice/sessions", {"sdp": SDP}, server.token,
+                     {"Idempotency-Key": "req_off_1", **OFF})
+    assert status == 201
+    worker = service.workers[-1]
+    worker.delegate("call_shelf", "Size the shelf brackets")
+    wait_for(lambda: next((c for c in hermes.calls if "shelf brackets" in str(c["input"])), None))
+    assert get(server, f"/voice/projects/{pid}")[1]["jobs"] == []
+    assert get(server, "/voice/projects")[1]["selected"] == pid
+
+
+def test_the_header_follows_the_latest_request(server, service, state):
+    device = service.authenticate({"Authorization": f"Bearer {server.token}", **OFF})
+    assert service.projects_off(device)
+    assert not service.projects_off(service.authenticate({"Authorization": f"Bearer {server.token}"}))
+    assert not service.projects_off(None)
+
+
 def test_chip_filed_job_naming_another_project_asks_once_never_moves(service):
     proj = service.projects
     lantern, shed = make_project(service, "Lantern"), make_project(service, "Garden shed")

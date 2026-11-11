@@ -30,6 +30,7 @@ _CODE_ALPHABET = "0123456789"
 # build behind a call is known. Platform, OS version, app version + build and a device class only:
 # no hardware identifiers, nothing personal. Anything that doesn't fit the shape is ignored.
 CLIENT_HEADER = "X-Speakeasy-Client"
+PROJECTS_HEADER = "X-Speakeasy-Projects"  # "off": the app holds Projects out (Service.projects_off)
 PLATFORMS = ("iOS", "iPadOS", "macOS", "visionOS")
 _CLIENT_RE = re.compile(
     r"^\s*(?P<platform>iOS|iPadOS|macOS|visionOS) (?P<os>\d{1,3}(?:\.\d{1,3}){0,2})\s*;"
