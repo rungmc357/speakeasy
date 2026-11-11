@@ -437,6 +437,7 @@ class VoiceService(SecureInputMixin):
             self.hermes.own_agent = self._own_agent()
             self.hermes.agent_lookup = self.store.agent_lookup
         self.rt.session_db = self._db_for
+        self.rt.dealt_with = lambda run_id: self.home_state.dealt_with(run_id=run_id)
         self.store.describe_model = self.describe_model
         # A running task's live line (live_status.py): a deterministic line from its steps, plus the
         # task's own STATUS/DETAIL. The side model words it only when the user picked their own side
@@ -799,7 +800,8 @@ class VoiceService(SecureInputMixin):
         followed = held = 0
         worker = None
         for row in rows:
-            if row["status"] not in RESUMABLE_RUN_STATES or not row.get("run_id"):
+            waiting = row["status"] == "waiting_for_approval"
+            if (row["status"] not in RESUMABLE_RUN_STATES and not waiting) or not row.get("run_id"):
                 continue
             try:
                 reply = self.hermes.get_run(row["run_id"])
@@ -807,10 +809,20 @@ class VoiceService(SecureInputMixin):
                 continue  # Hermes forgot it (restarted) or can't be reached: the sweep settles it
             if not isinstance(reply, dict) or reply.get("status") not in HERMES_LIVE_RUN:
                 continue
+            # An approval still waiting on Hermes is armed again from the request Hermes holds (its
+            # id lived only in the old process), so its buttons work; one Hermes no longer offers
+            # is left to the orphan sweep, which says it expired.
+            approval = CALLS.approval_from_event(reply.get("approval")) \
+                if reply.get("status") == "waiting_for_approval" else None
+            if waiting and approval is None and reply.get("status") == "waiting_for_approval":
+                continue
             worker = worker or self.text_worker()
             backend = self._adopt(worker, row)
             if backend is None:
                 continue
+            if approval is not None:
+                with worker.interaction.lock:
+                    backend.approval, backend.status = approval, "waiting_for_approval"
             seq = seqs.get(row["key"])
             known = isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0
             CALLS.on_loop_soon(worker.follow_run(backend, seq if known else -1,
@@ -1288,12 +1300,29 @@ class VoiceService(SecureInputMixin):
             logger.warning("speakeasy: pause-expiry bookkeeping failed: %s", type(exc).__name__)
 
     def resumable(self, interaction_id: str) -> Interaction:
+        """The call a resume continues: a paused one, or one whose connection dropped (the app
+        reconnects with resume_from; nobody pressed pause, so the same conversation must go on)."""
         source = self.interaction(interaction_id)
+        live_drop = False
         with source.lock:
-            if not source.paused:
-                raise ServiceError(409, "call is not paused")
             if source.successor is not None:
                 raise ServiceError(409, "call was already resumed")
+            if not source.paused:
+                if source.abandoned or source.carried_by is not None:
+                    raise ServiceError(409, "call is not paused")
+                if source.call_closed:
+                    # Dropped: the transport closed by itself (an End confirms finalization). Held
+                    # as long as a paused call is.
+                    dropped = source.finalization == "open" and (
+                        source.ended_at is None or time.time() - source.ended_at < PAUSE_NOTICE_AFTER_S)
+                    if not dropped:
+                        raise ServiceError(409, "call is not paused")
+                else:
+                    # The app saw the drop before the plugin did (it reconnects after a second): the
+                    # old leg is paused here first, so two voice sessions never run for one call.
+                    live_drop = True
+        if live_drop:
+            self.pause(interaction_id, stop_transport=True)
         return source
 
     def pause_history(self, source: Interaction) -> list[dict[str, str]]:
@@ -2000,6 +2029,7 @@ class VoiceService(SecureInputMixin):
                 if backend.status == "resolving_approval":
                     backend.status = self.store.run_status(backend.idem_key) or "working"
         self.store.progress(backend.idem_key, "milestone", APPROVED_MILESTONE[choice])
+        self.rt.approval_dealt_with(backend.run_id, request_id)   # Home: done, never "skipped"
         publish_state(self.store, interaction, name)
         return {"interaction_id": interaction_id, "choice": choice, "run_id": backend.run_id,
                 "resolved": result.get("resolved", 0)}

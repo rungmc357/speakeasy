@@ -149,6 +149,12 @@ final class CallPhaseTests: XCTestCase {
         XCTAssertEqual(s.connection, .connecting)
     }
 
+    func testARefusedReconnectAfterADropNeverSaysThePausedCallWasReplaced() {
+        XCTAssertNil(CallReconnect.resumeRefusedNotice(reconnect: 1), "nobody paused a dropped call")
+        XCTAssertNil(CallReconnect.resumeRefusedNotice(reconnect: 3))
+        XCTAssertEqual(CallReconnect.resumeRefusedNotice(reconnect: 0), "Couldn't resume the paused call; started a new one")
+    }
+
     // MARK: Snapshots from another session
 
     func testForeignFinalSnapshotDoesNotEndTheNewCall() {

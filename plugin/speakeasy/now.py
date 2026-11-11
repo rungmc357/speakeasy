@@ -436,9 +436,11 @@ class NowModel:
                 if result.get("reply"):
                     item["reply"] = _clip(result["reply"], 240)  # said above what it found, in the thread
         elif status in RS.ASKING:
-            item.update(kind=QUESTION, id=f"q:{run_id}", line="Hermes needs your OK to go on.",
-                        question={"shape": "approval", "prompt": "Hermes needs your OK to go on.",
-                                  "asked_at": float(row.get("updated") or now)})
+            # Waiting on an approval nothing here can answer any more (its request lived in the
+            # process before a restart, and Hermes no longer offers it): a plain line, never buttons
+            # that can only fail.
+            item.update(kind=STOPPED, line=APPROVAL_EXPIRED_LINE, fix={"kind": "open"})
+            item["_cause"] = "approval_expired"
         elif status in RS.UNDER_WAY or status in {RS.RunState.CANCEL_REQUESTED, RS.RunState.AMBIGUOUS}:
             line = live_line(work.get("now_line") or work.get("short_status"), work.get("short_status"))
             activity = [a for a in (work.get("activity") or []) if isinstance(a, dict)]
@@ -1234,6 +1236,7 @@ def group_stopped(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 REPLACED_LINE = "Replaced by a newer question."
+APPROVAL_EXPIRED_LINE = "This approval expired when Hermes restarted. Open the job to ask again."
 
 
 def mark_replaced(items: list[dict[str, Any]], threads: dict[str, Any]) -> list[dict[str, Any]]:

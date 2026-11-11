@@ -104,6 +104,11 @@ public enum CallReconnect {
     public static let connectAttempts = 2
     public static let gaveUp = "Lost the connection to your Hermes and couldn't get it back."
     static func isMicRefusal(_ message: String) -> Bool { message.hasPrefix("Microphone access is off") }
+    /// What the app says when the server won't continue the call it asked to resume and a fresh call
+    /// starts instead. A reconnect after a drop says nothing about pausing: nobody paused.
+    public static func resumeRefusedNotice(reconnect: Int) -> String? {
+        reconnect > 0 ? nil : "Couldn't resume the paused call; started a new one"
+    }
 }
 
 public enum MicState: Equatable, Sendable { case live, muted }

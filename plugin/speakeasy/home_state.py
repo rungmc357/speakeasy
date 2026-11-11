@@ -87,7 +87,9 @@ def current_exchange(entries: list[dict[str, Any]], now: float, extra_runs: set[
     at = float(last.get("at") or 0)
     after = [e for e in entries if float(e.get("at") or 0) >= at and e is not last]
     replies = [e for e in after if e.get("kind") == "message" and e.get("role") == "assistant"
-               and not e.get("answer")]   # an SPK-314 answer line belongs to an older job, not this exchange
+               and not e.get("answer")   # an SPK-314 answer line belongs to an older job, not this exchange
+               # A slow answer to an earlier message stays with that message (reply_to), never the next one.
+               and e.get("reply_to") in (None, last.get("id"))]
     runs = {str(r) for r in (last.get("run_id"), *(e.get("run_id") for e in replies)) if r}
     runs |= set(extra_runs or ())
     activity = max([at, *(float(e.get("at") or 0) for e in replies)])
