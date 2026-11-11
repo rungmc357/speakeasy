@@ -13,10 +13,12 @@ transcript, computed on the plugin so every app agrees.
 4. Dismiss: on Home -> off the stack, still listed for Work (``on_work``); on Work -> gone for good.
    A dealt-with item (answered, replied to, retried) leaves; work it starts is a normal job, and its
    result enters the stack as a new item (``follows`` names the item it came from).
-5. Recommendations v1 (no model call): up to three, from unfinished business and follow-ups on jobs
-   that finished recently, each naming its source; a dismissed one never returns. Recomputed only
+5. Recommendations v1 (no model call): up to three, only things genuinely waiting on you (an email
+   draft nobody has touched since, a skipped question, a stopped job or a question you put off), each
+   naming its source and ``why`` it qualified; a dismissed one never returns. A finished job is never
+   a recommendation ("Follow up on ..."): its result is its widget on the stack. Recomputed only
    when its inputs change (a job finished, something was dismissed, a draft changed) and served from
-   the saved list otherwise. With nothing personal, a small fixed set of generic ideas.
+   the saved list otherwise. When nothing qualifies the list is empty: no filler.
 
 Everything here is additive: apps that don't know these keys keep drawing ``items`` and ``stream``.
 """
@@ -25,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any, Callable
@@ -36,8 +39,12 @@ RESULT_KEPT_S = 3 * 86400        # a result nobody dismissed or answered leaves 
 STACK_MAX = 30                   # stack items served (the app shows two and tucks the rest)
 ON_WORK_MAX = 30
 RECS_MAX = 3                     # North Star: "Max three"
-FOLLOW_UP_S = 6 * 3600           # "follow-ups on what just finished": jobs finished this recently
 UNFINISHED_S = 7 * 86400         # unfinished business older than this is no longer recommended
+# An email draft is recommended only while the plugin can still vouch that nothing happened to it:
+# it cannot see the mailbox, so past this age a reply sent from Mail or Gmail is likely and unknown.
+DRAFT_FRESH_S = 2 * 86400
+DRAFT_WORK_SLACK_S = 5.0         # the draft's own job posting its result right after storing it
+SUBJECT_MATCH_CHARS = 6          # a later request naming a subject this short is not evidence
 TITLE_CHARS = 120
 LINE_CHARS = 240
 
@@ -46,12 +53,15 @@ DECISION, STOPPED, RESULT = "decision", "stopped", "result"
 _GROUP = {DECISION: "q", STOPPED: "s", RESULT: "r"}
 OPEN, DONE, SKIPPED, EXPIRED, GONE = "open", "done", "skipped", "expired", "gone"
 
-# Shown when nothing personal qualifies (flagged ``generic``). Fixed, so tests and apps can rely on them.
-GENERIC = (
-    ("gen:catch-up", "Catch me up on what came in today", "Catch me up on what came in today."),
-    ("gen:plan-week", "Plan the rest of my week", "Help me plan the rest of my week."),
-    ("gen:calendar", "What's on my calendar tomorrow?", "What's on my calendar tomorrow?"),
-)
+
+def _subject_key(subject: Any) -> str:
+    """A thread's subject without reply/forward prefixes, lower-cased, for matching."""
+    text = " ".join(str(subject or "").split()).lower()
+    while True:
+        cut = re.sub(r"^(re|fwd?|aw|sv)\s*:\s*", "", text)
+        if cut == text:
+            return text
+        text = cut
 
 
 def _clip(text: Any, limit: int) -> str:
@@ -359,102 +369,129 @@ class HomeState:
         with self.store._lock:
             return {r[0] for r in self.store._db.execute("SELECT id FROM home_recs_dismissed").fetchall()}
 
-    def _finished_recent(self, now: float) -> list[dict[str, Any]]:
-        with self.store._lock:
-            rows = self.store._db.execute(
-                "SELECT idem_key, run_id, settled_at, title FROM runs WHERE status='completed' AND settled_at >= ?"
-                " AND run_id IS NOT NULL ORDER BY settled_at DESC LIMIT 20", (now - FOLLOW_UP_S,)).fetchall()
-        return [{"key": r[0], "run_id": r[1], "at": float(r[2] or 0), "title": r[3]} for r in rows]
-
     def _pending_drafts(self, now: float) -> list[dict[str, Any]]:
+        """Email drafts genuinely waiting on you, each with ``why``. A draft qualifies only when it is
+        pending (not sent, saved, denied or being revised), younger than ``DRAFT_FRESH_S``, the newest
+        draft on its thread (no later draft there, whatever became of it), no job has touched it since
+        (no later step of its own job, no later job in its Hermes session or whose request names its
+        subject), and its job's result was not replied to or cleared from Work. When in doubt: not."""
         try:
             with self.store._lock:
-                rows = self.store._db.execute(
-                    "SELECT d.draft_id, d.idem_key, d.draft_json, d.created, r.run_id FROM email_drafts d "
-                    "LEFT JOIN runs r ON r.idem_key=d.idem_key WHERE d.status IN ('pending','revising') "
-                    "AND d.created >= ? ORDER BY d.created DESC LIMIT 10", (now - UNFINISHED_S,)).fetchall()
+                db = self.store._db
+                rows = db.execute(
+                    "SELECT d.draft_id, d.idem_key, d.session_id, d.draft_json, d.created, d.updated, r.run_id "
+                    "FROM email_drafts d LEFT JOIN runs r ON r.idem_key=d.idem_key WHERE d.status='pending' "
+                    "AND d.created >= ? ORDER BY d.created DESC LIMIT 10", (now - DRAFT_FRESH_S,)).fetchall()
+                if not rows:
+                    return []
+                since = min(float(r[4] or 0) for r in rows)
+                keys = sorted({r[1] for r in rows})
+                marks = ",".join("?" * len(keys))
+                drafts = db.execute(
+                    "SELECT draft_id, draft_json, created FROM email_drafts WHERE created > ? AND status != 'superseded'",
+                    (since,)).fetchall()
+                events = db.execute(f"SELECT idem_key, created FROM work_events WHERE created > ? AND idem_key IN ({marks})",
+                                    (since, *keys)).fetchall()
+                requests = db.execute(
+                    "SELECT e.idem_key, e.text, e.created, r.session_id FROM work_events e LEFT JOIN runs r "
+                    "ON r.idem_key=e.idem_key WHERE e.kind='request' AND e.created > ?", (since,)).fetchall()
+                stack = {r[0]: r[1] for r in db.execute(
+                    "SELECT run_id, state FROM home_stack WHERE run_id IS NOT NULL AND kind=?", (RESULT,)).fetchall()}
         except Exception:  # noqa: BLE001  (no drafts table yet)
             return []
-        out = []
-        for draft_id, key, body, created, run_id in rows:
-            try:
-                subject = (json.loads(body) or {}).get("subject")
-            except ValueError:
-                subject = None
-            out.append({"draft_id": draft_id, "key": key, "subject": subject, "at": float(created or 0),
-                        "run_id": run_id})
-        return out
 
-    def _title(self, key: str | None, fallback: Any = None) -> str:
-        title = fallback
-        if not title and key:
+        def load(body: Any) -> dict[str, Any]:
             try:
-                title = (self.store.work(idem_key=key) or {}).get("title") or self.store.request_text(key)
-            except Exception:  # noqa: BLE001
-                title = None
-        return _clip(title or "that job", 80)
+                out = json.loads(body) or {}
+            except ValueError:
+                return {}
+            return out if isinstance(out, dict) else {}
+
+        def thread(d: dict[str, Any]) -> tuple[str, str]:
+            ctx = d.get("context")
+            ctx = ctx if isinstance(ctx, dict) else {}
+            return str(d.get("reply_to_message_id") or ""), _subject_key(ctx.get("thread_subject") or d.get("subject"))
+
+        later = [(did, thread(load(body)), float(created or 0)) for did, body, created in drafts]
+        out = []
+        for draft_id, key, session_id, body, created, updated, run_id in rows:
+            d = load(body)
+            created = float(created or 0)
+            touched = max(created, float(updated or 0))
+            reply_to, subject = thread(d)
+            if any(did != draft_id and at > created and ((reply_to and t[0] == reply_to) or (subject and t[1] == subject))
+                   for did, t, at in later):
+                continue   # a later draft on the same thread (sent, saved, or another one waiting)
+            if any(k == key and at > touched + DRAFT_WORK_SLACK_S for k, at in events):
+                continue   # its own job did more after it
+            if any(k != key and at > created and ((session_id and sess == session_id)
+                                                 or (len(subject) >= SUBJECT_MATCH_CHARS
+                                                     and subject in _subject_key(text)))
+                   for k, text, at, sess in requests):
+                continue   # another job worked on it (or its thread) since
+            if run_id and stack.get(run_id) in {DONE, GONE}:
+                continue   # its result was replied to, or cleared from Work
+            out.append({"draft_id": draft_id, "key": key, "subject": d.get("subject"), "at": created,
+                        "run_id": run_id,
+                        "why": "unsent draft, newest on its thread, no reply or job on it since it was written"})
+        return out
 
     def _inputs(self, now: float) -> dict[str, Any]:
         rows = self._rows("WHERE state IN ('open','skipped') AND added_at >= ?", (now - UNFINISHED_S,))
-        return {"rows": rows, "finished": self._finished_recent(now), "drafts": self._pending_drafts(now),
-                "dismissed": self._dismissed_recs()}
+        return {"rows": rows, "drafts": self._pending_drafts(now), "dismissed": self._dismissed_recs()}
 
     @staticmethod
     def _signature(inputs: dict[str, Any]) -> str:
         sig = {"rows": sorted((r["id"], r["state"], bool(r["home_dismissed_at"])) for r in inputs["rows"]),
-               "finished": sorted(f["run_id"] for f in inputs["finished"]),
                "drafts": sorted(d["draft_id"] for d in inputs["drafts"]),
                "dismissed": sorted(inputs["dismissed"])}
         return hashlib.sha256(json.dumps(sig, sort_keys=True).encode()).hexdigest()
 
     def compute(self, inputs: dict[str, Any]) -> list[dict[str, Any]]:
-        """Up to three, unfinished business first (unsent drafts, skipped questions, stopped jobs you
-        already acknowledged, other things dismissed on Home but still open on Work), then follow-ups
-        on jobs that finished recently. One per job; a dismissed recommendation never returns."""
+        """Up to three, only things waiting on you: unsent drafts nobody touched since (see
+        ``_pending_drafts``), skipped questions, stopped jobs you already acknowledged, and questions
+        you put off on Home that are still open. Never a finished job (no "Follow up on ..."): its
+        result is its widget. One per job; a dismissed recommendation never returns; nothing
+        qualifying means an empty list. Each item says ``why`` it qualified."""
         dismissed = inputs["dismissed"]
         recs: list[dict[str, Any]] = []
         runs: set[str] = set()
 
-        def add(rid: str, text: str, prompt: str, source: dict[str, Any], run: str | None) -> None:
+        def add(rid: str, text: str, prompt: str, source: dict[str, Any], run: str | None, why: str) -> None:
             if rid in dismissed or len(recs) >= RECS_MAX or (run and run in runs):
                 return
             if run:
                 runs.add(run)
-            recs.append({"id": rid, "text": text, "prompt": prompt, "source": source, "generic": False})
+            recs.append({"id": rid, "text": text, "prompt": prompt, "source": source, "generic": False, "why": why})
 
         for d in inputs["drafts"]:
             subject = _clip(d["subject"] or "your email", 80)
             add(f"rec:draft:{d['draft_id']}", f"Finish the email \u201c{subject}\u201d",
                 f"Let's finish the email draft \u201c{subject}\u201d.",
                 {"kind": "unsent_draft", "label": "Unsent draft", "draft_id": d["draft_id"], "run_id": d["run_id"]},
-                d["run_id"])
+                d["run_id"], d["why"])
         rows = inputs["rows"]
         skipped = sorted((r for r in rows if r["state"] == SKIPPED), key=lambda r: -float(r["state_at"] or 0))
         for r in skipped:
             add(f"rec:skipped:{r['id']}", f"Answer the question on {r['title'] or 'that job'}",
                 f"Let's go back to the question on {r['title'] or 'that job'}.",
                 {"kind": "skipped_question", "label": "Skipped question", "stack_id": r["id"], "run_id": r["run_id"]},
-                r["run_id"])
-        parked = sorted((r for r in rows if r["state"] == OPEN and r["home_dismissed_at"]),
+                r["run_id"], "question closed without your answer")
+        # Put off on Home and still open on Work. A finished result is not here: it is its widget on
+        # Work, never a prompt to send back ("Pick back up: <job>" was a follow-up by another name).
+        parked = sorted((r for r in rows if r["state"] == OPEN and r["home_dismissed_at"] and r["kind"] != RESULT),
                         key=lambda r: (r["kind"] != STOPPED, -float(r["home_dismissed_at"] or 0)))
         for r in parked:
             if r["kind"] == STOPPED:
                 add(f"rec:stopped:{r['id']}", f"Retry {r['title'] or 'the job that stopped'}",
                     f"Retry {r['title'] or 'the job that stopped'}.",
                     {"kind": "stopped_job", "label": "Stopped job", "stack_id": r["id"], "run_id": r["run_id"]},
-                    r["run_id"])
+                    r["run_id"], "job stopped, not retried, put off on Home")
             else:
                 add(f"rec:parked:{r['id']}", f"Pick back up: {r['title'] or 'an open item'}",
                     f"Let's pick back up {r['title'] or 'that'}.",
                     {"kind": "dismissed_on_home", "label": "Still open on Work", "stack_id": r["id"],
-                     "run_id": r["run_id"]}, r["run_id"])
-        for f in inputs["finished"]:
-            title = self._title(f["key"], f.get("title"))
-            add(f"rec:follow:{f['run_id']}", f"Follow up on {title}", f"Any follow-ups on {title}?",
-                {"kind": "follow_up", "label": "Just finished", "run_id": f["run_id"]}, f["run_id"])
-        if not recs:
-            recs = [{"id": rid, "text": text, "prompt": prompt, "source": {"kind": "generic", "label": "Idea"},
-                     "generic": True} for rid, text, prompt in GENERIC if rid not in dismissed]
+                     "run_id": r["run_id"]}, r["run_id"], "question still open, put off on Home")
         return recs
 
     def recommendations(self, now: float | None = None) -> dict[str, Any]:

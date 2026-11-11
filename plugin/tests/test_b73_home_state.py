@@ -322,91 +322,178 @@ def test_a_retried_stopped_job_leaves_the_stack(service, frozen):
 
 # -- 6. recommendations --------------------------------------------------------------------------------
 
-def test_nothing_personal_gives_the_fixed_generic_ideas(service, frozen):
+def _draft(service, key, subject="Friday", *, session=None, reply_to=None, age=60.0):
+    """An invented pending draft for task ``key``, written ``age`` seconds ago (wall clock, as the store)."""
+    import time
+
+    from speakeasy.emails import normalize_draft
+    raw = {"from": "me@example.com", "to": ["pat@example.org"], "cc": [], "bcc": [], "subject": subject, "body": "Hi"}
+    if reply_to:
+        raw["reply_to_message_id"] = reply_to
+    d = service.store.add_draft(key, session or "s_" + key, normalize_draft(raw))
+    with service.store._lock, service.store._db:
+        service.store._db.execute("UPDATE email_drafts SET created=?, updated=? WHERE draft_id=?",
+                                  (time.time() - age, time.time() - age, d["draft_id"]))
+        service.store._db.execute("UPDATE work_events SET created=created-? WHERE idem_key=?", (age + 1, key))
+    return d["draft_id"]
+
+
+def _mail_task(service, key="mail", subject="Friday", **kw):
+    task(service.store, key, "completed", session="s_" + key, request=f"Draft a note to Pat about {subject}",
+         result={"headline": "Drafted"}, settled=NOON - 600, created=NOON - 900)
+    return _draft(service, key, subject, **kw)
+
+
+def _kinds(service):
+    return [r["source"]["kind"] for r in _now(service)["recommendations"]["items"]]
+
+
+def test_nothing_waiting_gives_an_empty_list_not_filler(service, frozen):
     recs = _now(service)["recommendations"]
-    assert recs["generic"] is True
-    assert [r["id"] for r in recs["items"]] == [g[0] for g in HS.GENERIC]
-    assert all(r["generic"] and r["source"]["kind"] == "generic" for r in recs["items"])
+    assert recs["items"] == [] and recs["generic"] is False
+    assert not hasattr(HS, "GENERIC")
 
 
-def test_a_recently_finished_job_is_a_follow_up_naming_its_source(service, frozen):
+def test_a_finished_job_is_never_a_follow_up_recommendation(service, frozen):
     task(service.store, "patio", "completed", session="s_patio", request="Quote the patio",
          result={"headline": "Quote is $4,200"}, settled=NOON - 60, created=NOON - 400)
-    recs = _now(service)["recommendations"]
-    assert recs["generic"] is False
-    (rec,) = recs["items"]
-    assert rec["source"] == {"kind": "follow_up", "label": "Just finished", "run_id": "run_patio"}
-    assert rec["prompt"] and rec["text"].startswith("Follow up on")
+    body = _now(service)
+    assert body["recommendations"]["items"] == []
+    # Its result is the surface: a widget on the stack, not a prompt to send.
+    assert [i["id"] for i in body["stack"]["items"]] == ["w:r:run_patio"]
+    # Put off on Home, it stays a Work item; still no "Pick back up" or "Follow up" prompt.
+    service.home_stack_dismiss("w:r:run_patio", {"from": "home"})
+    assert _now(service)["recommendations"]["items"] == []
+
+
+def test_no_follow_up_items_ever_and_dismissing_pulls_none_in(service, frozen):
+    for n in range(5):
+        task(service.store, f"f{n}", "completed", session=f"s_f{n}", request=f"Finished job {n}",
+             result={"headline": "Done"}, settled=NOON - 600 - n, created=NOON - 900)
+    draft_id = _mail_task(service)
+    recs = _now(service)["recommendations"]["items"]
+    assert [r["id"] for r in recs] == [f"rec:draft:{draft_id}"]
+    service.home_state.dismiss_rec(recs[0]["id"])
+    assert _now(service)["recommendations"]["items"] == []   # nothing pulled in behind it
+    texts = [r["text"] + r["prompt"] for r in recs]
+    assert not any("follow up" in t.lower() or "follow-ups" in t.lower() for t in texts)
+
+
+def test_a_draft_waiting_on_you_says_why(service, frozen):
+    draft_id = _mail_task(service)
+    (rec,) = _now(service)["recommendations"]["items"]
+    assert rec["id"] == f"rec:draft:{draft_id}" and rec["source"]["kind"] == "unsent_draft"
+    assert rec["why"] and not rec["generic"]
+
+
+@pytest.mark.parametrize("status", ["approved", "sent", "saved", "denied", "revising", "failed"])
+def test_a_sent_saved_denied_or_revising_draft_is_not_recommended(service, frozen, status):
+    draft_id = _mail_task(service)
+    with service.store._lock, service.store._db:
+        service.store._db.execute("UPDATE email_drafts SET status=? WHERE draft_id=?", (status, draft_id))
+    assert _kinds(service) == []
+
+
+def test_a_draft_with_a_later_draft_on_its_thread_is_not_recommended(service, frozen):
+    old = _mail_task(service, reply_to="<m1@example.org>", age=600)
+    task(service.store, "reply", "completed", session="s_reply", request="Answer Pat",
+         result={"headline": "Replied"}, settled=NOON - 60, created=NOON - 120)
+    newer = _draft(service, "reply", "Re: Friday", reply_to="<m1@example.org>", age=30)
+    with service.store._lock, service.store._db:
+        service.store._db.execute("UPDATE email_drafts SET status='sent' WHERE draft_id=?", (newer,))
+    ids = [r["id"] for r in _now(service)["recommendations"]["items"]]
+    assert f"rec:draft:{old}" not in ids and ids == []   # a reply went out on that thread since
+
+
+def test_a_draft_a_later_job_worked_on_is_not_recommended(service, frozen):
+    _mail_task(service, subject="Sam <> Ahmad", age=600)
+    assert _kinds(service) == ["unsent_draft"]
+    # A separate job naming the draft's thread, after the draft was written: it was handled there.
+    task(service.store, "finish", "completed", session="s_finish",
+         request="Finish the email draft \u201cRe: Sam <> Ahmad\u201d, say I'm away until the 22nd",
+         result={"headline": "Sent"}, settled=NOON - 30, created=NOON - 60)
+    assert _kinds(service) == []
+
+
+def test_a_draft_its_own_session_went_on_from_is_not_recommended(service, frozen):
+    _mail_task(service, age=600)
+    task(service.store, "more", "completed", session="s_mail", request="Make it shorter and send it",
+         result={"headline": "Done"}, settled=NOON - 30, created=NOON - 60)
+    assert _kinds(service) == []
+
+
+def test_a_draft_its_own_job_did_more_on_is_not_recommended(service, frozen):
+    _mail_task(service, age=600)
+    service.store.progress("mail", "milestone", "Sending the email")
+    assert _kinds(service) == []
+
+
+def test_a_draft_whose_result_was_replied_to_or_cleared_is_not_recommended(service, frozen):
+    _mail_task(service, age=600)
+    _now(service)
+    service.home_stack_dismiss("w:r:run_mail", {"from": "work"})
+    assert _kinds(service) == []
+
+
+def test_an_old_draft_is_not_recommended(service, frozen):
+    import time
+    frozen(time.time())   # the draft's age is on the store's wall clock
+    _mail_task(service, age=HS.DRAFT_FRESH_S + 60)
+    assert _kinds(service) == []
 
 
 def test_unfinished_business_comes_first_and_at_most_three(service, frozen):
-    from speakeasy.emails import normalize_draft
-    for n in range(4):
-        task(service.store, f"f{n}", "completed", session=f"s_f{n}", request=f"Finished job {n}",
-             result={"headline": "Done"}, settled=NOON - 600 - n, created=NOON - 900)
-    task(service.store, "mail", "completed", session="s_mail", request="Draft a note to Pat",
-         result={"headline": "Drafted"}, settled=NOON - 7 * 3600, created=NOON - 8 * 3600)
-    service.store.add_draft("mail", "s_mail", normalize_draft(
-        {"from": "me@example.com", "to": ["pat@example.org"], "cc": [], "bcc": [], "subject": "Friday", "body": "Hi"}))
+    draft_id = _mail_task(service)
     task(service.store, "broke", "failed", session="s_broke", request="Book the plumber", settled=NOON - 200,
          created=NOON - 500)
     _now(service)
     service.home_stack_dismiss("w:s:run_broke", {"from": "home"})   # acknowledged, still open on Work
     recs = _now(service)["recommendations"]["items"]
-    assert len(recs) == HS.RECS_MAX
-    assert [r["source"]["kind"] for r in recs] == ["unsent_draft", "stopped_job", "follow_up"]
-    assert recs[0]["source"]["draft_id"] and recs[1]["source"]["stack_id"] == "w:s:run_broke"
+    assert len(recs) <= HS.RECS_MAX
+    assert [r["source"]["kind"] for r in recs] == ["unsent_draft", "stopped_job"]
+    assert recs[0]["source"]["draft_id"] == draft_id and recs[1]["source"]["stack_id"] == "w:s:run_broke"
+    assert all(r["why"] for r in recs)
 
 
-def test_skipped_questions_and_items_dismissed_on_home_are_recommended(service, frozen):
+def test_skipped_questions_and_questions_put_off_on_home_are_recommended(service, frozen):
     _question_task(service, "desk", NOON - 300)
-    task(service.store, "lamp", "completed", session="s_lamp", request="Find a lamp",
-         result={"headline": "Three lamps"}, settled=NOON - 7 * 3600, created=NOON - 8 * 3600)
-    # Found while unread, then the follow-up window passes: only "still open on Work" names it.
-    with service.store._lock, service.store._db:
-        service.store._db.execute("UPDATE runs SET settled_at=? WHERE idem_key='lamp'", (NOON - 60,))
+    _question_task(service, "chair", NOON - 200, title="Order a chair")
     _now(service)
-    with service.store._lock, service.store._db:
-        service.store._db.execute("UPDATE runs SET settled_at=? WHERE idem_key='lamp'", (NOON - 7 * 3600,))
-    service.home_stack_dismiss("w:r:run_lamp", {"from": "home"})
+    (chair,) = [i["id"] for i in _now(service)["stack"]["items"] if "run_chair" in i["id"]]
+    service.home_stack_dismiss(chair, {"from": "home"})
     service.store.close_question("desk", "expired")
-    recs = _now(service)["recommendations"]["items"]
-    kinds = [r["source"]["kind"] for r in recs]
+    kinds = _kinds(service)
     assert "skipped_question" in kinds and "dismissed_on_home" in kinds
 
 
 def test_a_dismissed_recommendation_never_returns(server, service, frozen):
-    task(service.store, "patio", "completed", session="s_patio", request="Quote the patio",
-         result={"headline": "Quote"}, settled=NOON - 60, created=NOON - 400)
+    _mail_task(service)
     (rec,) = _now(service)["recommendations"]["items"]
     status, got = http(server.base_url, "POST", "/voice/home/recommendations/" + rec["id"].replace(":", "%3A")
                        + "/dismiss", {}, server.token)
     assert status == 200 and got["dismissed"]
     again = _now(service)["recommendations"]["items"]
     assert rec["id"] not in [r["id"] for r in again]
-    # Something else finishing recomputes, and it still stays away.
-    task(service.store, "lamp", "completed", session="s_lamp", request="Find a lamp",
-         result={"headline": "Lamp"}, settled=NOON - 30, created=NOON - 400)
+    # Something else waiting recomputes, and it still stays away.
+    _mail_task(service, key="mail2", subject="Saturday")
     later = _now(service)["recommendations"]["items"]
     assert rec["id"] not in [r["id"] for r in later] and later
     status, _ = http(server.base_url, "GET", "/voice/home/recommendations?tz=" + NY, None, server.token)
     assert status == 200
 
 
-def test_recommendations_are_served_from_the_saved_list_until_a_job_finishes_or_a_dismiss(service, frozen, monkeypatch):
+def test_recommendations_are_served_from_the_saved_list_until_something_changes(service, frozen, monkeypatch):
     calls = []
     real = service.home_state.compute
     monkeypatch.setattr(service.home_state, "compute", lambda inputs: calls.append(1) or real(inputs))
-    task(service.store, "patio", "completed", session="s_patio", request="Quote the patio",
-         result={"headline": "Quote"}, settled=NOON - 60, created=NOON - 400)
+    _mail_task(service)
     first = _now(service)["recommendations"]
     _now(service)
     service.home_state.recommendations()
     assert len(calls) == 1
-    task(service.store, "lamp", "completed", session="s_lamp", request="Find a lamp",
-         result={"headline": "Lamp"}, settled=NOON - 30, created=NOON - 400)
+    _mail_task(service, key="mail2", subject="Saturday")
     assert _now(service)["recommendations"] != first and len(calls) == 2
-    service.home_state.dismiss_rec("rec:follow:run_lamp")
+    service.home_state.dismiss_rec(first["items"][0]["id"])
     _now(service)
     assert len(calls) == 3
 

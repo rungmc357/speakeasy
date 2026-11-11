@@ -1175,9 +1175,9 @@ StackItem = {"id": "w:q:<run>:<asked_at>" | "w:s:<run>" | "w:r:<run>", "kind": "
              "needs_you", "item_id", "card_id": "c:<run>", "result_id": "x:<run>" | "d:<run>" | null, "title", "line",
              "source": {"kind": "job" | "chat", "run_id"?, "session_id"?}, "run_id"?, "added_at", "at",
              "follows"?: <stack id>, "in_current"?: true, "dismissed_on_home_at"?}
-Rec = {"id": "rec:…" | "gen:…", "text", "prompt", "generic",
-       "source": {"kind": "unsent_draft" | "skipped_question" | "stopped_job" | "dismissed_on_home" | "follow_up"
-                          | "generic", "label", "run_id"?, "stack_id"?, "draft_id"?}}
+Rec = {"id": "rec:…", "text", "prompt", "generic": false, "why",
+       "source": {"kind": "unsent_draft" | "skipped_question" | "stopped_job" | "dismissed_on_home",
+                  "label", "run_id"?, "stack_id"?, "draft_id"?}}
 ```
 
 - **Current exchange.** The latest user message in Home's thread, the assistant replies after it (not
@@ -1204,12 +1204,16 @@ Rec = {"id": "rec:…" | "gen:…", "text", "prompt", "generic",
   `POST /voice/home/message` (or voice message) with `reply_to` `w:<stack id>`, `r:<run>` or `d:<run>`
   closes it too; `reply_to: "w:…"` quotes the job behind that item like its card. Work the reply starts
   is a normal job; its result enters the stack as a new item with `follows`.
-- **Recommendations** (no model call), at most 3, one per job: unsent email drafts (7 days), skipped
-  questions, stopped jobs dismissed on Home, other items dismissed on Home and still open, then
-  follow-ups on jobs finished in the last 6 hours. Recomputed only when its inputs change (a job
-  finished, a stack item changed or was dismissed, a draft changed, a recommendation was dismissed),
-  else served from the saved list. Nothing personal → the fixed `gen:catch-up`, `gen:plan-week`,
-  `gen:calendar` with `generic: true`.
+- **Recommendations** (no model call), at most 3, one per job, only things genuinely waiting on you,
+  each with `why` (one line saying why it qualified): an unsent email draft (status pending, under 2
+  days old, the newest draft on its thread, no later step of its own job, no later job in its Hermes
+  session or whose request names its subject, its result not replied to or cleared from Work), a
+  skipped question, a stopped job dismissed on Home, a question dismissed on Home and still open.
+  A finished job is never a recommendation (no "Follow up on …"; its result is its stack widget), and
+  neither is a result dismissed on Home. Recomputed only when its inputs change (a stack item changed
+  or was dismissed, a draft changed or was worked on, a recommendation was dismissed), else served from
+  the saved list. Nothing qualifying → `items: []` (no generic filler; `generic` stays false).
+  `follow_up` and `generic` source kinds are no longer sent.
 - `GET /voice/home/recommendations?tz=` → `recommendations`. `POST /voice/home/recommendations/{id}/dismiss`
   (empty body): it never returns. Idempotent.
 
