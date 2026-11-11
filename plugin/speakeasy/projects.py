@@ -23,6 +23,7 @@ Nothing here ever files anything on its own: a link is made only by an explicit 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -60,8 +61,21 @@ speakeasy hermes quick question answer reply again still more some any all one t
 """.split())
 
 
+# SPK-362: builds 73 and 74 hold Projects out. Off unless the plugin's environment has
+# SPEAKEASY_PROJECTS=1, even on a Hermes with projects: /voice/status says ``projects: false``, so no
+# phone or Mac shows Home's chip or a card's "Lantern?", and nothing is filed into a project. Links
+# made while it was on stay in the store, unused, for when Projects ships.
+ENABLE_ENV = "SPEAKEASY_PROJECTS"
+
+
+def held_out() -> bool:
+    return os.environ.get(ENABLE_ENV, "").strip() != "1"
+
+
 def _hermes_projects():
-    """``hermes_cli.projects_db``, or None on a Hermes without projects."""
+    """``hermes_cli.projects_db``, or None on a Hermes without projects (or while they're held out)."""
+    if held_out():
+        return None
     try:
         from hermes_cli import projects_db  # type: ignore[import-not-found]
     except Exception:  # noqa: BLE001 - an older Hermes: the feature is simply off
