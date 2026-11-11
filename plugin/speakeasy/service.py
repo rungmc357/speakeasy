@@ -3296,8 +3296,8 @@ class VoiceService(SecureInputMixin):
             if session_id:
                 self.store.set_agent("session:" + session_id, agent)
             return {"agent": agent}
-        # A call runs it: the run is on a live call's interaction (the typed worker's never is), and it
-        # isn't text typed on a chat page, which follows that page's chip.
+        # A call runs it: the run belongs to a call, live or ended (the typed worker's interaction is never
+        # registered), and it isn't text typed on a chat page, which follows that page's chip.
         interaction_id = (self.store.run_row(idem) or {}).get("interaction_id")
         with self.lock:
             on_call = interaction_id in self.interactions and not M.is_message_id(task_id)
@@ -5421,9 +5421,8 @@ class VoiceService(SecureInputMixin):
         plain default and conversations keep their own model again (SPK-210)."""
         if (before["model"], before["reasoning"]) == (after["model"], after["reasoning"]):
             return
-        with self.lock:
-            live = any(not i.call_closed and i.status not in {"closed", "rejected"}
-                       for i in self.interactions.values())
+        with self.lock:  # a paused call is still on (pausing closes its transport), as busy() counts it
+            live = any(not i.call_closed or (i.paused and not i.pause_bookkept) for i in self.interactions.values())
         if live:
             self.store.set_model_choice("call", after["model"] or "default", after["reasoning"] or None)
             logger.info("speakeasy: a model was picked on a call; the call's tasks use it")
