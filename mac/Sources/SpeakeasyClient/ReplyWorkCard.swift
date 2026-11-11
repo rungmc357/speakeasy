@@ -68,7 +68,10 @@ public struct ReplyWorkCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("reply-work-steps")
                     if let times, !times.isEmpty {
+                        // One element, read as the line: the clock glyph is decoration (it was its own
+                        // "Clock" stop under the same id, so VoiceOver heard a stray word).
                         Label(times, systemImage: "clock").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .accessibilityElement(children: .combine)
                             .accessibilityIdentifier("session-task-times")
                     }
                     ForEach(Array(notes.enumerated()), id: \.offset) { _, note in

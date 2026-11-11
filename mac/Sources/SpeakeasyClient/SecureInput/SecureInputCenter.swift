@@ -16,6 +16,12 @@ public final class SecureInputCenter: ObservableObject {
     /// Ids answered or skipped here, so a stale list never re-opens the card.
     private var closed = Set<String>()
     public var interval: TimeInterval = 3
+    /// The wait between polls, when the host knows better than `interval` (the iPhone: a 30 s
+    /// backstop while its history feed is connected, which calls `poke()` when something moved).
+    public var rest: (@MainActor () -> TimeInterval)?
+    /// One `/voice/secrets` request at a time; asked again while one runs, one more after it.
+    private var refreshing = false
+    private var refreshAgain = false
 
     public init(client: @escaping () -> ServerClient?) { self.client = client }
 
@@ -27,7 +33,7 @@ public final class SecureInputCenter: ObservableObject {
         poller = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
-                let wait = self?.interval ?? 3
+                let wait = max(0.5, self?.rest?() ?? self?.interval ?? 3)
                 try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             }
         }
@@ -35,15 +41,31 @@ public final class SecureInputCenter: ObservableObject {
 
     public func stop() { poller?.cancel(); poller = nil }
 
+    /// Something may have asked for a secret (a feed event): look now instead of at the next poll.
+    /// Only while polling (the app in front); a request already in flight answers it.
+    public func poke() {
+        guard poller != nil, !unsupported else { return }
+        if refreshing { refreshAgain = true; return }
+        poller?.cancel(); poller = nil
+        start()
+    }
+
     public func refresh() async {
         guard let server = client(), !unsupported else { return }
-        do {
-            let data = try await server.data("/voice/secrets", timeout: 10)
-            apply(SecureInputRequest.list(data))
-        } catch let error as ServerClient.HTTPError where error.status == 404 {
-            unsupported = true
-            stop()
-        } catch {}
+        if refreshing { refreshAgain = true; return }
+        refreshing = true
+        defer { refreshing = false }
+        repeat {
+            refreshAgain = false
+            do {
+                let data = try await server.data("/voice/secrets", timeout: 10)
+                apply(SecureInputRequest.list(data))
+            } catch let error as ServerClient.HTTPError where error.status == 404 {
+                unsupported = true
+                stop()
+                return
+            } catch {}
+        } while refreshAgain && poller != nil
     }
 
     /// A call's `secure_inputs` event.
