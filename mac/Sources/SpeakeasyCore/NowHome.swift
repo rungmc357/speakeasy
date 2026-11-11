@@ -578,6 +578,12 @@ public struct NowStream: Equatable, Sendable {
         /// An SPK-314 answer line (an older job's verdict posted as a message), never part of the
         /// current exchange it lands in.
         public var answer = false
+        /// home-ack: an assistant message's place in its exchange: `.ack` (the quick line above the
+        /// status capsule) or `.answer` (what followed it). Nil: a reply that came in time.
+        public enum Part: String, Sendable { case ack, answer }
+        public var part: Part? = nil
+        /// home-ack: your message whose acknowledgement is up and whose answer/job isn't yet.
+        public var pending = false
         public init(id: String, kind: Kind, at: Date, text: String? = nil, itemID: String? = nil, widget: Widget? = nil,
                     line: String? = nil, itemIDs: [String] = [], role: Role? = nil, attribution: ReplyAttribution? = nil,
                     voiceDuration: TimeInterval? = nil, runID: String? = nil, clientID: String? = nil,
@@ -607,6 +613,8 @@ public struct NowStream: Equatable, Sendable {
             replacedAt = (o["replaced_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
             current = o["current"] as? Bool ?? false
             answer = o["answer"] as? Bool ?? false
+            part = (o["part"] as? String).flatMap(Part.init(rawValue:))
+            pending = o["pending"] as? Bool ?? false
         }
     }
     public var entries: [Entry]
