@@ -155,6 +155,14 @@ def _files(items: list[dict[str, Any]]) -> list[str]:
     return names
 
 
+_CODE_EXT = {"py", "swift", "js", "ts", "tsx", "jsx", "go", "rs", "rb", "java", "kt", "c", "h", "cc", "cpp", "m",
+             "mm", "cs", "php", "sh", "sql", "css", "scss", "html", "vue", "svelte", "lua", "toml", "gradle"}
+
+
+def _code(files: list[str]) -> bool:
+    return any(f.rsplit(".", 1)[-1].lower() in _CODE_EXT for f in files)
+
+
 def _join(parts: list[str]) -> str:
     if len(parts) <= 1:
         return "".join(parts)
@@ -172,7 +180,9 @@ def _now_line(recent: list[dict[str, Any]]) -> str:
             shown = files[-2:]
             more = len(files) - len(shown)
             return "Editing " + _join(shown) + (f" and {more} more" if more > 0 else "")
-    if kind == "read" and len(same) >= 3 and not _files(same[-1:]):
+    if kind == "read" and len(same) >= 3 and not _files(same[-1:]) and _code(_files(same)):
+        # Only when what it read is code: reading notes, a playbook or a calendar is no code at all
+        # (a catch-up on email showed "Reading through the code").
         return "Reading through the code"
     line = present(str(newest.get("text") or ""))
     # What came just before, when it was a different kind of work ("Running the tests after editing store.py").

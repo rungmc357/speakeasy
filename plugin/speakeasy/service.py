@@ -2686,11 +2686,13 @@ class VoiceService(SecureInputMixin):
         return run
 
     def start_job(self, body: dict[str, Any], device_id: str | None = None,
-                  never_wait: bool = False) -> dict[str, Any]:
+                  never_wait: bool = False, asked: str | None = None) -> dict[str, Any]:
         """``POST /voice/work``: a new job from text typed in the app, with no call (the plugin-update
         notice's Update button). It runs like a job started on a call, on the voiceless worker, never
         through routing, and shows on the board. Idempotent on client_id. *never_wait* (Home, in
-        process only): not an edit, so it never waits behind another job on the same project."""
+        process only): not an edit, so it never waits behind another job on the same project.
+        *asked* (Home, in process only): what the user typed, when *text* is the brief Home wrote;
+        the job is named from it until the titler names it."""
         if not isinstance(body, dict) or "text" not in body or not set(body) <= {
                 "text", "source", "client_id", "attachments", "model", "reasoning", "agent", "project_id",
                 "chat_replies"}:
@@ -2737,7 +2739,7 @@ class VoiceService(SecureInputMixin):
         def start(staged: list[A.Attachment]) -> dict[str, Any]:
             if project_id:
                 self.projects.expect(text, project_id)
-            got = self._start_job(text, staged, choice=choice, new_chat=True, never_wait=never_wait)
+            got = self._start_job(text, staged, choice=choice, new_chat=True, never_wait=never_wait, asked=asked)
             if project_id:
                 key = self.store.key_for_task(got.get("task_id") or "") if got.get("task_id") else None
                 key = key or (self.store.key_for_run(got["run_id"]) if got.get("run_id") else None)
@@ -2782,7 +2784,7 @@ class VoiceService(SecureInputMixin):
 
     def _start_job(self, text: str, staged: list[A.Attachment] | None = None, session_id: str | None = None,
                    context: str | None = None, link_to: str | None = None, choice: dict[str, Any] | None = None,
-                   new_chat: bool = False, never_wait: bool = False) -> dict[str, Any]:
+                   new_chat: bool = False, never_wait: bool = False, asked: str | None = None) -> dict[str, Any]:
         """*link_to*: the chat session this job continues from a history page (store.history_links).
         *staged*: attachments claimed for this job (carried with its handoff). *choice*: the model /
         reasoning picked for it (models.parse_choice); a new chat (*new_chat*) keeps it as its own."""
@@ -2794,7 +2796,7 @@ class VoiceService(SecureInputMixin):
         worker = self.text_worker()
         future = asyncio.run_coroutine_threadsafe(
             M.start_job(worker, text, session_id=session_id, context=context, staged=staged or None,
-                        choice=choice, never_wait=never_wait), worker.loop)
+                        choice=choice, never_wait=never_wait, asked=asked), worker.loop)
         try:
             got = future.result(M.START_WAIT_S + 10)
         except Exception as exc:

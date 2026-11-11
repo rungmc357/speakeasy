@@ -929,14 +929,58 @@ def _best_clause(text: str) -> tuple[str, bool]:
     return chosen, chosen is not clauses[-1]
 
 
+def title_text(request: Any, limit: int = 400) -> str | None:
+    """The request as safe words to name a task from. A request that carries an email address, a
+    path, a link or an opaque id somewhere ("Catch the user up on everything that came in today: new
+    emails in g@... ") is named from the words before the first such token, rather than not at all:
+    a brief like that used to get no name, so its job showed the generic stand-in."""
+    text = notice_text(request, limit)
+    if text or not isinstance(request, str):
+        return text
+    words = " ".join(request.split())
+    unsafe = (EMAIL_RE, HOME_PATH_RE, URL_SECRET_RE, OPAQUE_RE, SECRET_FILE_RE, SENSITIVE_TEXT_RE, re.compile(r"```"),
+              re.compile(r"https?://\S+"))
+    for _ in range(8):
+        cut = min((m.start() for rx in unsafe for m in [rx.search(words)] if m), default=None)
+        if cut is None:
+            break
+        words = words[:cut]
+    words = re.sub(r"[\s(\[{\"'“‘,;:-]+$", "", words)
+    return notice_text(words, limit) if len(_title_content(words)) >= 2 else None
+
+
+NEW_TASK_TITLE = "New task"  # only when there are no words at all to name it from
+
+
+def fallback_title(*requests: Any) -> str:
+    """A task's name before a real one exists: from the user's own words (the first request that
+    names something), never a generic stand-in like "Voice task" or "Quick answer". Only a request
+    with no words at all is a "New task", and that counts as a stand-in a real title replaces."""
+    for request in requests:
+        title = short_title(request)
+        if title:
+            return title
+    for request in requests:
+        text = title_text(request, 120)
+        words = (text or "").rstrip(".!?").split()[:6]
+        if words:
+            name = " ".join(words).strip(" ,.;:!?-")
+            if name:
+                return (name[0].upper() + name[1:])[:60]
+    return NEW_TASK_TITLE
+
+
 def short_title(request: str | None) -> str | None:
     """A to-do style label from the spoken request (no classifier). The call's notes and
     self-corrections are dropped, the clause that names the task is used, a short clause is kept
     whole, and a cut never ends mid-phrase ("Turn off the office lamp", not "Turn off the office
     lamp, turn"; "What's the weather tomorrow", not "What's the weather going to look")."""
-    text = notice_text(request, 400)
+    text = title_text(request, 400)
     if not text:
         return None
+    # A brief the assistant wrote speaks of "the user"; a name is in the user's own voice.
+    text = re.sub(r"(?i)\bthe user's\b", "my", text)
+    text = re.sub(r"(?i)\bthe user\b", "me", text)
     text, _ = request_notes(text)
     parts = _TITLE_CORRECTION.split(text)
     if len(parts) > 1:
@@ -1006,7 +1050,8 @@ def legacy_short_title(request: str | None) -> str | None:
 def stand_in_titles(request: str | None) -> set[str]:
     """Every word-cut label this or an older version may have shown for *request*."""
     asked = notice_text(request, 1200) or ""
-    return {t for t in (short_title(asked), v1_short_title(asked), legacy_short_title(asked)) if t}
+    return {t for t in (short_title(request), short_title(asked), v1_short_title(asked), legacy_short_title(asked),
+                        fallback_title(request)) if t}
 
 
 def title_input(request: str, *, parent: str | None = None, parent_request: str | None = None,

@@ -1341,6 +1341,13 @@ class HomeChat:
             takes = "never_wait" in inspect.signature(self.svc.start_job).parameters
         except (TypeError, ValueError):
             takes = False
+        try:
+            names = inspect.signature(self.svc.start_job).parameters
+        except (TypeError, ValueError):
+            names = {}
+        if takes and "asked" in names and asked.strip():
+            # The job's name comes from what the user typed, never a generic stand-in.
+            return self.svc.start_job(job_body, device_id, never_wait=never_wait, asked=asked)
         if takes:
             return self.svc.start_job(job_body, device_id, never_wait=never_wait)
         return self.svc.start_job(job_body, device_id)   # a stand-in service without the keyword
