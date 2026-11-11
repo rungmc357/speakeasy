@@ -114,7 +114,33 @@ def test_new_since_you_last_looked_comes_first(service, frozen):
 
 def test_the_job_prompt_never_lets_a_result_claim_where_its_cards_show():
     from speakeasy.prompt import builder
-    assert "Never say where the cards will show" in builder.VIEWS_RULE
+    assert "Never say where cards show" in builder.VIEWS_RULE
+
+
+def test_a_typed_home_flight_job_read_before_the_next_poll_lands_on_clean_home(service, frozen):
+    """Live repro 16:05 Nov 11 (the Dino flight run): a typed Home turn whose job finished with a
+    flight view and was marked read (seen) before Home's next poll. Build 74 kept it off the stack
+    (seen_answer), so clean Home kept the exchange's card as the only trace of it. Within one poll it
+    must be finished in items and the exchange, and its widget on the stack, flagged as this exchange's."""
+    flight = {"headline": "DL 2195 in the air, arriving LGA 12 minutes early", "spoken": "It's in the air.",
+              "views": [{"kind": "flight", "title": "DL 2195", "status": "En route"}]}
+    chat = service.home_chat
+    chat.clock = service.now_model.clock                 # Home's chat on the same invented clock
+    mid = chat._add("user", "what's the flight info", NOON - 270)
+    chat._add("assistant", "Checking the flight.", NOON - 267, reply_to=mid, part="ack")
+    run = task(service.store, "flight", "completed", session="s_flight", request="what's the flight info",
+               result=flight, settled=NOON - 130, created=NOON - 268)
+    chat._link(mid, run, "start")
+    service.store.mark_seen("flight")
+    body = _now(service)
+    (item,) = [i for i in body["items"] if i.get("run_id") == run]
+    assert item["kind"] == "seen_answer"                 # finished: nothing for a Working card to show
+    cur = body["stream"]["current"]
+    assert run in cur["run_ids"] and not cur["clean"]
+    (card,) = [e for e in body["stream"]["entries"] if e["id"] in cur["card_ids"]]
+    assert card["state"] == "seen_answer"
+    (widget,) = [i for i in body["stack"]["items"] if i.get("run_id") == run]
+    assert widget["kind"] == "result" and widget["in_current"] is True
 
 
 # -- F5: first words inside the deadline, counted from arrival ---------------------------------------
