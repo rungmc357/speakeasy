@@ -12,7 +12,9 @@ shard. No pytest-xdist needed (the Hermes venv doesn't ship it).
 - Files are balanced over shards by their last measured time (kept in
   ~/.cache/speakeasy-plugin-test-times.json, refreshed from every run's JUnit report); unknown
   files are weighed by size.
-- Each shard gets its own TMPDIR, so temp homes, sockets and stores never collide.
+- Each shard gets its own TMPDIR, so temp homes, sockets and stores never collide. They all sit in
+  one speakeasy-test-* folder, deleted when the runner exits; a killed run's is swept by a later
+  run (plugin/tests/temp_homes.py).
 - A test that fails in its shard is rerun on its own (up to --retries times, default 2). Every
   first-pass failure stays in the ledger (ledger.json in the log dir + one LEDGER line each: test,
   shard, shard log, solo-retry results, revision, known issue), whatever its retries do.
@@ -34,6 +36,9 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugin" / "tests"))
+import temp_homes  # noqa: E402
 
 TIMES = Path.home() / ".cache" / "speakeasy-plugin-test-times.json"
 SHARD_TIMEOUT_S = 1500  # one shard should take a few minutes; a hang must not hold a release
@@ -125,7 +130,8 @@ def main() -> int:
         return 2
     log_dir = Path(args.log_dir or tempfile.mkdtemp(prefix="plugin-tests-"))
     log_dir.mkdir(parents=True, exist_ok=True)
-    base_tmp = Path(tempfile.mkdtemp(prefix="pt-", dir=os.environ.get("TMPDIR")))
+    temp_homes.sweep()
+    base_tmp = temp_homes.new_home()
     times = load_times()
     shards = balance(files, args.jobs, times)
     started = time.monotonic()

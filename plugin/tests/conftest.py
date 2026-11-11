@@ -2,17 +2,27 @@
 from __future__ import annotations
 
 import errno
-import shutil
+import functools
+import inspect
+import os
 import socket
+import subprocess
 
 import pytest
 
+import temp_homes
 from fakes import FakeHermesServer, FakeLiveWorker, FakeTransport, make_home, http  # noqa: F401
+from speakeasy import delivery as _delivery
 from speakeasy import duck as _duck
 from speakeasy import router as _router
 
 _REAL_DEFAULT_BACKEND = _duck.default_backend
 _REAL_RESULT_HEADLINE = _router.result_headline
+
+
+def pytest_sessionstart(session):
+    """Clear temp homes a killed or timed-out earlier run left behind (this run's own go at exit)."""
+    temp_homes.sweep()
 
 
 @pytest.fixture
@@ -45,6 +55,32 @@ def no_real_volume(monkeypatch):
     """Never touch the Mac's real output volume from tests: services get no volume backend unless a
     test passes its own ``volume_backend``."""
     monkeypatch.setattr(_duck, "default_backend", lambda: None)
+
+
+# Never launch the Hermes CLI from a test: ``hermes send`` into a temp home builds it a dependency
+# environment of its own (``<home>/installs``, over a GB) unless lazy installs are off, and can outlive
+# the test. Installed at import, like the API port guard below, so a notifier built outside any test's
+# fixtures is covered too; it fails, as a real send from a home with no chats does. One given its own
+# runner keeps it. The environment default covers plugin copies imported under another package name
+# (test_live_reload), whose notifier class this guard never sees.
+os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
+
+_REAL_NOTIFIER_INIT = _delivery.HermesSendNotifier.__init__
+_REAL_SEND_RUNNER = inspect.signature(_REAL_NOTIFIER_INIT).parameters["runner"].default
+
+
+def _no_hermes_send(cmd, **kwargs):
+    return subprocess.CompletedProcess(cmd, 1, "", "")
+
+
+@functools.wraps(_REAL_NOTIFIER_INIT)
+def _notifier_init_without_hermes_send(self, *args, **kwargs):
+    _REAL_NOTIFIER_INIT(self, *args, **kwargs)
+    if self.runner is _REAL_SEND_RUNNER:
+        self.runner = _no_hermes_send
+
+
+_delivery.HermesSendNotifier.__init__ = _notifier_init_without_hermes_send  # type: ignore[method-assign]
 
 
 @pytest.fixture(autouse=True)
@@ -123,7 +159,7 @@ def hermes():
 def home(hermes):
     path = make_home(hermes.httpd.server_address[1])
     yield path
-    shutil.rmtree(path, ignore_errors=True)
+    temp_homes.remove(path)
 
 
 @pytest.fixture

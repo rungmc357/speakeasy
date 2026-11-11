@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from fakes import make_home, read_profile_env
+from fakes import read_profile_env
 from speakeasy import settings as S
 
 PLUGIN = Path(__file__).resolve().parents[1] / "speakeasy"
@@ -29,8 +29,7 @@ def test_no_plugin_module_builds_a_credential_file_path():
     assert offenders == []
 
 
-def test_secrets_are_read_through_hermes(tmp_path, monkeypatch):
-    home = make_home()
+def test_secrets_are_read_through_hermes(home, monkeypatch):
     import agent.secret_scope as scope
     seen: list[str] = []
     real = scope.get_secret
@@ -43,8 +42,7 @@ def test_secrets_are_read_through_hermes(tmp_path, monkeypatch):
     assert "SPEAKEASY_TEST_ONLY_VAR" in seen  # a profile miss falls through to Hermes' get_secret
 
 
-def test_the_profile_scope_is_the_one_hermes_builds(monkeypatch):
-    home = make_home()
+def test_the_profile_scope_is_the_one_hermes_builds(home, monkeypatch):
     import agent.secret_scope as scope
     built: list[Path] = []
     real = scope.build_profile_secret_scope

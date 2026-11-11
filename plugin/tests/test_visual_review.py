@@ -129,12 +129,19 @@ def test_live_refs_are_vetted_against_roots(tmp_path):
     outside = tmp_path / "secret.png"
     outside.write_bytes(PNG)
     roots = default_image_roots(root)
+    assert roots[0] == root
+    # its path string starts with the root's: refused only if containment is by path component
+    beside = root.with_name(root.name + "-outside.png")
+    beside.write_bytes(PNG)
     preview = json.dumps({"success": True, "analysis": "A login page", "screenshot_path": str(shot)})
     assert live_images_in(preview, roots) == [("path", str(shot.resolve()), shot.name)]
     assert live_images_in(f"Looking now.\nMEDIA:{shot}\n", roots)[0][1] == str(shot.resolve())
     assert live_images_in(json.dumps({"note": f"share via MEDIA:{shot}"}), roots)[0][1] == str(shot.resolve())
     assert live_images_in(f"MEDIA:{outside}", roots) == []
     assert live_images_in(json.dumps({"screenshot_path": str(outside)}), roots) == []
+    assert str(beside).startswith(str(root))
+    assert live_images_in(f"MEDIA:{beside}", roots) == []
+    assert live_images_in(json.dumps({"screenshot_path": str(beside)}), roots) == []
     assert live_images_in("MEDIA:/etc/passwd", roots) == []
     assert live_images_in("MEDIA:https://127.0.0.1/a.png", roots) == []
 
@@ -150,10 +157,10 @@ def _held_run_with(server, service, hermes, events, key="req_live_1"):
     return session, worker
 
 
-def test_live_image_from_tool_preview_and_media_seen(server, service, hermes, home):
+def test_live_image_from_tool_preview_and_media_seen(server, service, hermes, home, tmp_path):
     shot = _image(home, "browser_screenshot_live.png")
     design = _image(home, "draft-hero.png")
-    outside = home.parent / (home.name + "-outside.png")
+    outside = tmp_path / "outside.png"
     outside.write_bytes(PNG)
     session, _ = _held_run_with(server, service, hermes, [
         {"event": "tool.completed", "tool": "browser_vision",

@@ -6,15 +6,12 @@ import json
 import shutil
 import socket
 import sys
-import tempfile
 import threading
 import time
 import urllib.request
 from pathlib import Path
 
 import pytest
-
-from fakes import make_home
 
 SRC = Path(__file__).resolve().parents[1] / "speakeasy"
 
@@ -37,15 +34,14 @@ def _set_version(pkg: Path, version: str) -> None:
 
 
 @pytest.fixture
-def plugin(hermes):
+def plugin(home, tmp_path):
     """A copy of the plugin under its own package name, as Hermes would load it."""
-    root = Path(tempfile.mkdtemp(prefix="speakeasy-reload-"))
+    root = tmp_path
     name = f"sp_reload_{int(time.time() * 1000) % 10**8}"
     pkg = root / name
     shutil.copytree(SRC, pkg, ignore=shutil.ignore_patterns("__pycache__"))
     _set_version(pkg, "1.0.0")
     sys.path.insert(0, str(root))
-    home = make_home(hermes.httpd.server_address[1])  # its Hermes calls reach the fake, never 8642
     reloader_mod = importlib.import_module(f"{name}.reloader")
     port = _free_port()
     r = reloader_mod.LiveReloader(name, pkg, home, "127.0.0.1", port, check_s=3600)  # ticks driven by the test
@@ -55,8 +51,6 @@ def plugin(hermes):
     sys.path.remove(str(root))
     for mod in [m for m in sys.modules if m == name or m.startswith(name + ".")]:
         sys.modules.pop(mod, None)
-    shutil.rmtree(root, ignore_errors=True)
-    shutil.rmtree(home, ignore_errors=True)
 
 
 def _settle(r) -> list:
