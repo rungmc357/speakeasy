@@ -131,6 +131,16 @@ public extension EnvironmentValues {
 }
 
 public struct CardWidgetTitleKey: EnvironmentKey { public static let defaultValue: String? = nil }
+public struct CardWidgetLabelKey: EnvironmentKey { public static let defaultValue: String? = nil }
+
+public extension EnvironmentValues {
+    /// Set by a Home widget around its card: the name in its label row ("Parcel Express", "Linear").
+    /// A card header that only says this name again is left out.
+    var cardWidgetLabel: String? {
+        get { self[CardWidgetLabelKey.self] }
+        set { self[CardWidgetLabelKey.self] = newValue }
+    }
+}
 
 extension EnvironmentValues {
     /// In a Home widget: its label row already names the source (mark + name).
@@ -394,5 +404,15 @@ public struct CardLiveDot: View {
             .background(Circle().fill(c.opacity(0.25)).frame(width: 12, height: 12))
             .frame(width: 12, height: 12)
             .accessibilityHidden(true)
+    }
+}
+
+public struct CardTextAuditKey: EnvironmentKey { public static let defaultValue = false }
+public extension EnvironmentValues {
+    /// UI tests only: cards keep each visible line as its own accessibility element (no merged
+    /// summary), so a test can read every line a widget draws.
+    var cardTextAudit: Bool {
+        get { self[CardTextAuditKey.self] }
+        set { self[CardTextAuditKey.self] = newValue }
     }
 }

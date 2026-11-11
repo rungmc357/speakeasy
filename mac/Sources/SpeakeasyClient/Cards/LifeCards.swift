@@ -458,7 +458,9 @@ struct PackageCard: View {
             if let p = Self.progress(card) {
                 Bar(fraction: p, tint: .green, height: 5)
             }
-            if let last = card["steps"].array.last(where: { $0["done"].bool != false }) {
+            // The latest scan, unless it only says the status above again.
+            if let last = card["steps"].array.last(where: { $0["done"].bool != false }),
+               !TextEcho.repeats(last["text"].string, in: card["status"].string) {
                 HStack(spacing: 6) {
                     Text(last["text"].string ?? "").lineLimit(1)
                     if let w = last["when"].string { Text("· " + w).foregroundStyle(.secondary).lineLimit(1) }
