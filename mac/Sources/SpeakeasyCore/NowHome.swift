@@ -151,6 +151,25 @@ public struct NowBackgroundItem: Equatable, Sendable, Identifiable {
     }
 }
 
+/// One step a running job took, as the plugin words it ("Searched mail for “cabin”"): its kind for
+/// the glyph, when it started, and whether it is the call still going.
+public struct NowStep: Equatable, Sendable, Hashable {
+    public var text: String
+    public var kind: String
+    public var at: Date?
+    public var running: Bool
+    public init(text: String, kind: String, at: Date? = nil, running: Bool = false) {
+        self.text = text; self.kind = kind; self.at = at; self.running = running
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let text = o["text"] as? String,
+              case let t = text.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+        self.init(text: String(t.prefix(120)), kind: (o["kind"] as? String) ?? "tool",
+                  at: (o["at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
+                  running: o["running"] as? Bool ?? false)
+    }
+}
+
 public struct NowItem: Equatable, Sendable, Identifiable {
     public enum Kind: String, Sendable, CaseIterable {
         case question, stopped, working, waiting, newAnswer = "new_answer", seenAnswer = "seen_answer"
@@ -209,6 +228,12 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     /// A waiting job can start now, beside the other one (`POST /voice/work/{run_id}/start-now`).
     public var canStartNow = false
     public enum OnCall: String, Sendable { case asking, heard }
+    /// A running job's kind of current step (`step_kind`: "mail", "calendar", "web", "terminal", "doc",
+    /// "edit", "search", "think", "message", "helper", "tool"), for the step capsule's glyph. nil from
+    /// an older plugin (the app then reads the kind from the step's words, `LiveStepKind.infer`).
+    public var stepKind: String?
+    /// A running job's newest steps, oldest first, in plain words (`steps`; home-fixes-73).
+    public var steps: [NowStep] = []
 
     public init(id: String, kind: Kind, sessionID: String? = nil, runID: String? = nil, title: String, line: String,
                 sourceLabel: String? = nil, startedAt: Date? = nil, updatedAt: Date? = nil, finishedAt: Date? = nil,
@@ -248,6 +273,8 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         onCurrentCall = o["on_current_call"] as? Bool ?? false
         sayOK = o["say_ok"] as? Bool ?? true
         lockLine = nonEmpty(o["lock_line"])
+        stepKind = kind == .working ? nonEmpty(o["step_kind"]) : nil
+        steps = kind == .working ? (o["steps"] as? [Any] ?? []).prefix(12).compactMap(NowStep.init(json:)) : []
         pictures = (o["thumbs"] as? [Any] ?? []).compactMap(NowPicture.init(json:))
         fullTitle = nonEmpty(o["full_title"])
         reply = nonEmpty(o["reply"]).map { String($0.prefix(400)) }
