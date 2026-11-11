@@ -94,7 +94,7 @@ def test_stored_views_say_when_their_data_is_from_and_flights_read_ready(service
 
 def test_an_untitled_run_is_named_from_its_headline_never_a_task(service):
     _clock(service, NOW)
-    task(service.store, "u", "completed", session="s_u", request="x",
+    task(service.store, "u", "completed", session="s_u", request="",
          result={"spoken": "Done.", "headline": "Check-in open; one reply needed"}, settled=NOW - 30)
     with service.store._lock, service.store._db:
         service.store._db.execute("UPDATE runs SET own_title=NULL, title=NULL WHERE idem_key='u'")
