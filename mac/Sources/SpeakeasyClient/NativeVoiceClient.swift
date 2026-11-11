@@ -112,6 +112,17 @@ public final class NativeVoiceClient: VoiceCallClient {
     private var workOnlyTask: Task<Void, Never>?
     /// Which `/voice/work/latest` answers may still touch the board (see `WorkPollGate`).
     private var workPoll = WorkPollGate()
+    /// The one `/voice/work/latest` request in flight (the board loop and every refresh share it),
+    /// with the list epoch it was sent under. A stalled server never piles up requests: on Nov 11
+    /// dozens hung ~56 s each before Home said it couldn't reach Hermes.
+    private var workFetch: (task: Task<(WorkInfo?, [TaskItem]), Error>, epoch: Int)?
+    /// A refresh asked for while one runs: one more after it, never one per ask.
+    private var tasksRefreshing = false
+    private var tasksRefreshAgain = false
+    /// How long the idle board waits between reads of `/voice/work/latest` (default 2 s, as before).
+    /// A host with its own change feed (the iPhone's history feed) makes this a slow backstop and
+    /// calls `refreshTasks()` when the feed says something moved.
+    public var workPollRest: @MainActor () -> TimeInterval = { 2 }
     private var ticker: Timer?
     private var levelTimer: Timer?
     /// Checks the call's mic really gets through (see MicCheck); runs even with the screen off.
@@ -1314,11 +1325,25 @@ public final class NativeVoiceClient: VoiceCallClient {
         }
     }
 
+    /// `GET /voice/work/latest`, at most one at a time: a caller while one is in flight shares its
+    /// answer (when it was sent under the current list epoch) or waits for it and then asks again.
+    private func latestWorkOnce(_ api: ServerClient) async throws -> (WorkInfo?, [TaskItem]) {
+        while let fetch = workFetch {
+            if fetch.epoch == workPoll.listEpoch { return try await fetch.task.value }
+            _ = try? await fetch.task.value   // sent before the list changed here: let it land, then ask anew
+            if workFetch?.task == fetch.task { workFetch = nil }
+        }
+        let task = Task { try await api.latestWork() }
+        workFetch = (task, workPoll.listEpoch)
+        defer { if workFetch?.task == task { workFetch = nil } }
+        return try await task.value
+    }
+
     /// Refetch tasks so the card shows the server's current draft (SSE also pushes it).
     private func refreshDraftSources() async {
         guard let api else { return }
         let ticket = workPoll.ticket()
-        if let (work, tasks) = try? await api.latestWork(), workPoll.accepts(ticket) {
+        if let (work, tasks) = try? await latestWorkOnce(api), workPoll.accepts(ticket) {
             if !tasks.isEmpty, tasks.map(\.id) == model.state.tasks.map(\.id) || model.state.workOnly || !model.state.connection.isOpen {
                 dispatch(.tasks(tasks))
             } else if !tasks.isEmpty {
@@ -1332,8 +1357,26 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// Re-read the tasks now (a question answered on another device, a session changed): the board,
     /// Live Activity and widgets follow the model, so they clear within the feed's ~1 s.
+    /// Asked again while a refresh runs: one more read after it (a burst of feed events is one or two
+    /// requests, never one each).
     public func refreshTasks() {
-        Task { [weak self] in await self?.refreshDraftSources() }
+        if tasksRefreshing { tasksRefreshAgain = true; return }
+        tasksRefreshing = true
+        Task { [weak self] in
+            repeat {
+                self?.tasksRefreshAgain = false
+                await self?.refreshDraftSources()
+            } while self?.tasksRefreshAgain == true
+            self?.tasksRefreshing = false
+        }
+    }
+
+    /// The app went to the background: the idle board stops reading `/voice/work/latest` (an answer
+    /// still on its way is dropped). Opening the board again (`showWork`) starts a fresh loop.
+    public func pauseWorkPoll() {
+        guard model.state.workOnly, workOnlyTask != nil else { return }
+        workOnlyTask?.cancel(); workOnlyTask = nil
+        workPoll.stop()
     }
 
     public func hideIfIdle() {
@@ -1441,8 +1484,9 @@ public final class NativeVoiceClient: VoiceCallClient {
             while !Task.isCancelled {
                 guard let ticket = self?.workPoll.ticket(generation: loop) else { return }
                 do {
-                    let (work, tasks) = try await api.latestWork()
-                    guard let self, !Task.isCancelled, self.model.state.workOnly else { return }
+                    guard let self else { return }
+                    let (work, tasks) = try await self.latestWorkOnce(api)
+                    guard !Task.isCancelled, self.model.state.workOnly else { return }
                     // Sent before a newer loop or before the user cleared tasks: may be older than the board.
                     guard self.workPoll.accepts(ticket) else { continue }
                     self.workPoll.succeeded(ticket)
@@ -1456,7 +1500,8 @@ public final class NativeVoiceClient: VoiceCallClient {
                         self.dispatch(.error(notice))
                     }
                 }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let rest = max(0.5, self?.workPollRest() ?? 2)
+                try? await Task.sleep(nanoseconds: UInt64(rest * 1_000_000_000))
             }
         }
     }
