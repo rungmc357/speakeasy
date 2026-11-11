@@ -169,8 +169,10 @@ def test_after_a_restart_a_run_hermes_forgot_is_unconfirmed_and_can_be_cleared(t
     store = StateStore(tmp_path / "s.sqlite3")
     task(store, "k1")
     force(store, "k1", status, "run_1", age_s=5)
-    assert recovery.sweep_orphans(store, Hermes(), set(), started_at=time.time()) == [("k1", "ambiguous")]
-    assert row(store, "k1")[0] == "ambiguous"
+    # An approval nothing can answer any more says it expired (QA74 #10); other open rows are unconfirmed.
+    want = "interrupted" if status in RS.ASKING else "ambiguous"
+    assert recovery.sweep_orphans(store, Hermes(), set(), started_at=time.time()) == [("k1", want)]
+    assert row(store, "k1")[0] == want
     assert store.dismiss_key("k1")
 
 
