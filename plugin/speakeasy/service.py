@@ -3211,12 +3211,14 @@ class VoiceService(SecureInputMixin):
         return qualified or model
 
     def _next_choice(self, sid: str | None, *, idem: str | None = None, task_id: str | None = None,
-                     request: str | None = None) -> tuple[dict[str, Any] | None, str | None]:
+                     request: str | None = None, on_call: bool = False) -> tuple[dict[str, Any] | None, str | None]:
         """One prediction/dispatch resolver. Explicit preferences are never replaced by served fallback.
 
         A chat pick newer than a task pick supersedes it; a newer task pick is local to that task.
         Existing Hermes sessions retain their known route before new-chat defaults. A bare model is
         qualified only by an unambiguous catalog match; unknown routes fail rather than silently switch.
+        *on_call*: a call runs this task, so a model picked on a call (newer than the chat's and the
+        task's own picks) decides it, a continued conversation too (SPK-361).
         """
         canonical, chain = self._model_context(sid, idem)
         chat = self._chat_choice(canonical)
@@ -3231,30 +3233,35 @@ class VoiceService(SecureInputMixin):
         task_ids += [(self.store.run_row(k) or {}).get("delegation_id") for k in chain]
         tasks = [t for tid in task_ids if tid and (t := self.store.model_choice("task:" + tid))]
         task = max(tasks, key=lambda t: t["updated"]) if tasks else None
-        if task and (not chat or task["updated"] > chat["updated"]):
-            layers.append(("task", task))
-        follows_default = bool(chat and chat.get("model") == "default")
-        layers.append(("chat", None if follows_default else chat))
-        for key in chain:
-            earlier = self.store.run_model(key)
-            if earlier and earlier.get("source") in {"voice", "task"} and not chat:
-                layers.append((earlier["source"], earlier))
-        meta = H.session_meta(self.rt.state_db, canonical) if canonical else None
-        if not follows_default and not (chat or {}).get("model") and meta and meta.get("model"):
-            model, provider = meta["model"], meta.get("model_provider")
-            mid = self._existing_route(model, provider, entries, raw)
-            layers.append(("existing", {"model": mid, "reasoning": meta.get("model_reasoning")}))
-        # Persisted requested route is preferable to a fallback. Served evidence is the last resort.
-        if not follows_default and (not meta or not meta.get("model")):
+        picked = MD.call_pick(self.store.model_choice("call"), chat, task) if on_call else None
+        if picked:
+            layers.append(("call", {"model": None if picked["model"] == "default" else picked["model"],
+                                    "reasoning": picked["reasoning"]}))
+        else:
+            if task and (not chat or task["updated"] > chat["updated"]):
+                layers.append(("task", task))
+            follows_default = bool(chat and chat.get("model") == "default")
+            layers.append(("chat", None if follows_default else chat))
             for key in chain:
-                record = self.store.run_model(key) or {}
-                if record.get("model"):
-                    layers.append(("existing", {"model": record["model"], "reasoning": record.get("reasoning")}))
-                    break
-                served = record.get("served") or {}
-                if served.get("provider") and served.get("model"):
-                    layers.append(("historical", {"model": MD.make_id(served["provider"], served["model"])}))
-                    break
+                earlier = self.store.run_model(key)
+                if earlier and earlier.get("source") in {"voice", "task"} and not chat:
+                    layers.append((earlier["source"], earlier))
+            meta = H.session_meta(self.rt.state_db, canonical) if canonical else None
+            if not follows_default and not (chat or {}).get("model") and meta and meta.get("model"):
+                model, provider = meta["model"], meta.get("model_provider")
+                mid = self._existing_route(model, provider, entries, raw)
+                layers.append(("existing", {"model": mid, "reasoning": meta.get("model_reasoning")}))
+            # Persisted requested route is preferable to a fallback. Served evidence is the last resort.
+            if not follows_default and (not meta or not meta.get("model")):
+                for key in chain:
+                    record = self.store.run_model(key) or {}
+                    if record.get("model"):
+                        layers.append(("existing", {"model": record["model"], "reasoning": record.get("reasoning")}))
+                        break
+                    served = record.get("served") or {}
+                    if served.get("provider") and served.get("model"):
+                        layers.append(("historical", {"model": MD.make_id(served["provider"], served["model"])}))
+                        break
         # A conversation with no recorded model at all (older chats, many Discord/Telegram threads,
         # sessions from before Hermes recorded one) runs on the default with its effort, exactly as
         # build 69 did (SPK-228). Only a recorded route that is now unavailable or ambiguous asks.
@@ -3289,7 +3296,12 @@ class VoiceService(SecureInputMixin):
             if session_id:
                 self.store.set_agent("session:" + session_id, agent)
             return {"agent": agent}
-        choice, _ = self._next_choice(session_id, idem=idem, task_id=task_id, request=request)
+        # A call runs it: the run is on a live call's interaction (the typed worker's never is), and it
+        # isn't text typed on a chat page, which follows that page's chip.
+        interaction_id = (self.store.run_row(idem) or {}).get("interaction_id")
+        with self.lock:
+            on_call = interaction_id in self.interactions and not M.is_message_id(task_id)
+        choice, _ = self._next_choice(session_id, idem=idem, task_id=task_id, request=request, on_call=on_call)
         if choice and (choice.get("unavailable") or (choice.get("model") and "/" not in choice["model"])):
             raise ServiceError(409, "This conversation's model is unavailable or unknown. Choose a model before sending.", reason="model")
         record: dict[str, Any] = {"model": (choice or {}).get("model"), "reasoning": (choice or {}).get("reasoning"),
@@ -5385,19 +5397,38 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(409, CONFIG_LEFT_UNCHANGED) from None
 
     def patch_settings(self, body: dict[str, Any]) -> dict[str, Any]:
-        if isinstance(body, dict) and isinstance(body.get("jobs"), dict):
+        jobs = isinstance(body, dict) and isinstance(body.get("jobs"), dict)
+        if jobs:
             self._check_job_models(body["jobs"])
         if isinstance(body, dict) and ("server" in body or "address_drop" in body):
             # Where the server is published is decided on the computer, never from a paired device.
             raise ServiceError(403, "server addresses are set on the computer that runs Hermes "
                                     "(hermes voice setup / hermes voice config)")
+        before = self.settings.get()["jobs"] if jobs else None
         try:
             saved = self.settings.patch(body)
         except SettingsError as exc:
             raise ServiceError(400, str(exc)) from None
+        if before is not None:
+            self._note_call_pick(before, saved["jobs"])
         if isinstance(body, dict) and "delivery" in body:
             self.sync_thread_routes(saved)
         return {"settings": saved}
+
+    def _note_call_pick(self, before: dict[str, Any], after: dict[str, Any]) -> None:
+        """The job default changed. Picked during a call, every task a call runs follows it until it
+        changes again, conversations a call continues too (SPK-361); picked with no call live, it is a
+        plain default and conversations keep their own model again (SPK-210)."""
+        if (before["model"], before["reasoning"]) == (after["model"], after["reasoning"]):
+            return
+        with self.lock:
+            live = any(not i.call_closed and i.status not in {"closed", "rejected"}
+                       for i in self.interactions.values())
+        if live:
+            self.store.set_model_choice("call", after["model"] or "default", after["reasoning"] or None)
+            logger.info("speakeasy: a model was picked on a call; the call's tasks use it")
+        else:
+            self.store.set_model_choice("call", None, None)
 
     def thread_channels(self, s: dict[str, Any]) -> list[dict[str, Any]]:
         """Every destination that wants a thread per task: opted-in channels, plus the default."""

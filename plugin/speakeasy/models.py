@@ -398,6 +398,17 @@ def voice_preset(text: str | None) -> tuple[str | None, str]:
     return kind, cleaned or text
 
 
+def call_pick(call: dict[str, Any] | None, chat: dict[str, Any] | None, task: dict[str, Any] | None
+              ) -> dict[str, Any] | None:
+    """The model picked while on a call, when it decides a task a call runs: newer than the chat's
+    own pick and the task's. None = the conversation keeps its own model (SPK-210). Each argument is
+    a saved choice ({model, reasoning, updated}) or None."""
+    if not call:
+        return None
+    newer = [p["updated"] for p in (chat, task) if p and p["updated"] >= call["updated"]]
+    return None if newer else call
+
+
 def resolve(layers: list[tuple[str, dict[str, Any] | None]], entries: dict[str, dict[str, Any]] | None
             ) -> dict[str, Any] | None:
     """The first layer naming a model gives the model; the first naming a reasoning level gives that
