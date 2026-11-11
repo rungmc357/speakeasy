@@ -175,6 +175,13 @@ final class AgentFilesTests: XCTestCase {
         XCTAssertEqual(third.error, "Pair this device again.")
 
         XCTAssertTrue(AgentFilesModel.message(URLError(.cannotConnectToHost)).hasPrefix("Couldn't reach your Hermes"))
+
+        // SPK-279: a proxy answering for a missing Hermes is "can't reach"; a 500 is Hermes' own error.
+        for status in [502, 503, 504, 530] {
+            XCTAssertTrue(AgentFilesModel.message(ScheduleProblem(status: status, message: "Server HTTP \(status)"))
+                .hasPrefix("Couldn't reach your Hermes"), "\(status)")
+        }
+        XCTAssertFalse(AgentFilesModel.message(ScheduleProblem(status: 500, message: "Server HTTP 500")).contains("reach"))
     }
 
     func testOpenChatKnowsTheReplyAndTheHomeJob() {
