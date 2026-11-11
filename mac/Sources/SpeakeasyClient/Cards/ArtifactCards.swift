@@ -46,6 +46,7 @@ struct ExploreSection: View {
                 Image(systemName: ArtifactLinks.symbol(entity)).font(.system(size: 12, weight: .semibold)).foregroundStyle(gold)
                     .frame(width: 26, height: 26).background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(gold.opacity(0.16)))
                 Text(section["label"].string ?? "").font(.system(size: 17, weight: .semibold))
+                    .accessibilityIdentifier("explore-section-label")
                 Spacer(minLength: 4)
             }
             ScrollView(.horizontal) {
@@ -62,7 +63,9 @@ struct ExploreSection: View {
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned)
             .scrollPosition(id: $page)
-            .scrollClipDisabled()
+            // Clipped to the card's content width (SPK-401): with clipping off, the peeking tile drew
+            // over the card's padding out to the screen edge on Home. Tiles are 82% wide, so the
+            // next one still peeks, inside the card.
             if items.count > 1 {
                 HStack(spacing: 5) {
                     ForEach(0..<items.count, id: \.self) { i in
@@ -152,6 +155,7 @@ struct EntityTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(look.hairline))
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("explore-tile")
     }
 
     private func run(_ a: EntityActions.Action) {
@@ -189,6 +193,13 @@ struct ArtifactPhoto: View {
     @Environment(\.questionActions) private var actions
     @State private var loaded: Image?
     var body: some View {
+        // The caller sets the size, never the picture (SPK-401): a filled wide photo reported its own
+        // width, so an event tile grew wider than its slot, hung off the card and drew its panel
+        // under the next tile. Color.clear takes exactly the offered size; the photo fills it, cut.
+        Color.clear.overlay { picture }.clipped()
+    }
+
+    @ViewBuilder private var picture: some View {
         Group {
         if let loaded {
             loaded.resizable().aspectRatio(contentMode: .fill)
