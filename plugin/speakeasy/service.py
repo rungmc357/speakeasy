@@ -47,7 +47,7 @@ from .calls import (ACTIVE_RUN_STATES, SHARE_NOTE_KEY, APPROVED_MILESTONE, INPUT
                     is_greeting, typed_text)
 from .cards import ImageRejected, _sniff, default_image_roots, fetch_image, read_local_image
 from .devices import CLIENT_HEADER, PROJECTS_HEADER, DeviceStore, parse_client
-from .emails import CONTEXT_KEY, DraftInvalid, apply_edit, canonical_json, extract_email_drafts
+from .emails import CONTEXT_KEY, DraftInvalid, apply_edit, canonical_json, card_hash, extract_email_drafts
 from . import agent_slot
 from .backends.hermes import hermes_agent
 from .hermes_api import HermesAPI, HermesError
@@ -2528,19 +2528,20 @@ class VoiceService(SecureInputMixin):
         raise ServiceError(400, "this server doesn't do that action yet")
 
     def _email_card_action(self, view: dict[str, Any], action: str, value: Any) -> dict[str, Any]:
-        """The email card's own buttons, on the stored draft it was drawn from. Each carries the
-        hash the card showed (an older app's Send carries none: the card's own), so a draft that
-        changed since is refused, never sent unseen. ``edit`` holds the changed fields and may
-        go on to ``send`` or ``save`` the edited draft in the same tap."""
-        draft_id, shown = view["draft_id"], view.get("sha256") or ""
+        """The email card's own buttons, on the stored draft it was drawn from. Each must carry the
+        hash of the draft the card showed: one without it is refused (409), never bound to the
+        server's newest draft, and a draft that changed since is refused too, so nothing goes out
+        unseen. ``edit`` holds the changed fields and may go on to ``send`` or ``save`` the edited
+        draft in the same tap."""
+        if action not in {"send", "discard", "save", "edit"}:
+            raise ServiceError(400, "that card has no such button")
+        digest = card_hash(value)
+        if digest is None:
+            raise ServiceError(409, "Open the email again and check it first.")
+        draft_id, after = view["draft_id"], None
         if isinstance(value, dict):
-            value = dict(value)
-            digest = value.pop("sha256", shown)
+            value = {k: v for k, v in value.items() if k != "sha256"}
             after = value.pop("after", None)
-        else:
-            digest, after = (value if isinstance(value, str) else shown), None
-        if not isinstance(digest, str):
-            raise ServiceError(400, "sha256 must be the draft's hash")
         decide = {"send": "approve", "discard": "deny", "save": "save"}
         if action == "discard":
             # Discarding never sends: a card a step behind the user's own edit still discards it.

@@ -128,8 +128,8 @@ def draft_context(raw: Any) -> dict[str, Any]:
         kept = {n: o for n, o in ((_line(k, 120), _line(v, 120)) for k, v in list(orgs.items())[:10]) if n and o}
         if kept:
             out["orgs"] = kept
-    if raw.get("edited") is True:
-        out["edited"] = True
+    # Never "edited" from the task's block: that means the person changed it on the card (apply_edit
+    # alone sets it), and it lets an older card's edit through onto this draft (service._edit_base).
     return out
 
 
@@ -142,6 +142,17 @@ def sendable(draft: dict[str, Any]) -> dict[str, Any]:
     """The fields that go out (and are hashed): no card context, no server bookkeeping."""
     return {k: v for k, v in draft.items() if k != CONTEXT_KEY and not k.startswith("_")
             and k not in {"draft_id", "sha256", "status", "created_at", "updated_at", "error"}}
+
+
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def card_hash(value: Any) -> str | None:
+    """The hash of the draft a card button was pressed on: the value itself (send, save, discard)
+    or its ``sha256`` (edit). Only a whole sha256 counts. None means the card didn't say which
+    draft it showed, and the server never fills that in with whichever draft is newest."""
+    digest = value.get("sha256") if isinstance(value, dict) else value
+    return digest if isinstance(digest, str) and SHA256_RE.fullmatch(digest) else None
 
 
 def canonical_json(draft: dict[str, Any]) -> str:
@@ -284,9 +295,7 @@ def email_view(draft: dict[str, Any]) -> dict[str, Any]:
         "subject": draft.get("subject") or "", "body": draft.get("body") or "",
         "draft_id": draft.get("draft_id"), "sha256": draft.get("sha256"),
         "status": draft.get("status") or "pending",
-        # Older apps draw Send under the card; the server turns it into this draft's approval.
-        "actions": [{"id": "send", "label": "Send", "style": "primary", "confirm": True}]
-        if (draft.get("status") or "pending") == "pending" else [],
+        # No generic `actions`: that Send carried no hash. Apps draw the card's own buttons, each with it.
     }
     if draft.get("from"):
         view["send_as"] = draft["from"]

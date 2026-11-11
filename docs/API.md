@@ -1947,9 +1947,17 @@ job's answer in place of the done card. Its buttons go through the card-action r
 | `discard` | the card's `sha256` | denies it |
 | `edit` | `{"sha256", "to", "cc", "bcc", "subject", "body", "after"?}` | a new `pending` draft (new hash) with those fields replaces it; `after: "send"\|"save"` then sends or saves the edited draft in the same request |
 
-A stale hash is `409`. An `edit` (or `discard`) based on an earlier hash is accepted only when every
-draft since was the user's own edit; after a task revision it is `409`. Sending an edited draft
-tells the task it was edited, so a copy it saved in the mail account is updated, never sent stale.
+Every button must carry the hash of the draft the card showed (64 lowercase hex). One without it
+(no `value`, `null`, anything else) is `409` and nothing happens: the server never fills in the
+hash of whichever draft is newest, so a revision the user never saw can't be sent. The email card
+has no generic `actions` (older apps' hash-less Send under the card is gone). A stale hash is `409`.
+An `edit` (or `discard`) based on an earlier hash is accepted only when every draft since was the
+user's own edit; after a task revision it is `409`. `edited` is set only by the user's own `edit`
+(a task's `email-draft` block can't set it). Sending an edited draft tells the task it was edited,
+so a copy it saved in the mail account is updated, never sent stale.
+
+A job settled after a restart or a lost stream (the recovery sweeps) keeps its email draft and card,
+exactly as one that finished while followed.
 
 In Home's one stream (`GET /voice/now` → `stream.entries`), a finished job with a draft also posts
 a `result` entry (`{"id": "x:<run_id>", "kind": "result", "at", "item_id", "run_id", "card_id"}`)
