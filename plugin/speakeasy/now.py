@@ -1358,6 +1358,17 @@ def order(items: list[dict[str, Any]], first_seen: dict[str, float]) -> list[dic
 _CHOICE_ASK = re.compile(r"(?i)^\s*(?:which|what|how|when|where|who|why)\b|\bor\b")
 
 
+# An option that declines rather than picks ("Hold off", "Not now", "Skip it", "No, leave it").
+_DECLINE = re.compile(r"(?i)^\s*(?:no\b|nope|don'?t|do not|not (?:now|yet)|hold off|skip|leave (?:it|them|as)|"
+                      r"wait|cancel|keep (?:it|them|as|waiting)|later|ignore|never ?mind|stop|pass)")
+
+
+def _only_one_way_to_say_yes(options: list[dict[str, Any]], recommended: int) -> bool:
+    """Every option but the recommended one declines, so allow / don't loses nothing. "Grab CINEPHILES /
+    Grab MUSHROOM / Hold off" has a second yes, which an approval's two buttons would hide."""
+    return all(n == recommended or _DECLINE.match(o.get("text") or "") for n, o in enumerate(options))
+
+
 def _yes_no(prompt: Any) -> bool:
     """A question you answer yes or no ("Grab the remux?"), not a pick ("Which remix first?",
     "Find the cause first, or build anyway?")."""
@@ -1396,12 +1407,14 @@ def public_question(view: dict[str, Any], run_id: str | None, asked_at: float) -
         out["recommended"] = rec
         out["risk"] = options[rec].get("risk") or "high"
     out["approvable"] = bool(view.get("approvable"))
-    if out["approvable"] and "recommended" in out and not any_image and _yes_no(out["prompt"]):
+    if out["approvable"] and "recommended" in out and not any_image and _yes_no(out["prompt"]) \
+            and _only_one_way_to_say_yes(options, out["recommended"]):
         # An approvable yes/no ask (views.approvable: its recommended answer is low risk, reversible,
         # spends nothing, speaks for no one) is drawn as an approval: "Needs your OK" with allow /
         # don't. Allow answers with the recommended option (``approve``); don't answers "no".
         # The options stay, so an app can still offer the others. A "which one?" ask stays a choice
-        # (allow/don't would hide what is being allowed); picture choices keep their tiles.
+        # (allow/don't would hide what is being allowed), and so does an ask with a second way to say
+        # yes (its buttons would hide it); picture choices keep their tiles.
         out["shape"] = "approval"
         out["approval"] = {"choices": ["once", "deny"]}
         out["approve"] = {"option_id": options[out["recommended"]]["id"],
