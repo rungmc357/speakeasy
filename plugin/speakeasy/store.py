@@ -426,7 +426,8 @@ class StateStore:
             if "context" not in columns:  # its last model call when it finished: model + context fill (context_use.py)
                 self._db.execute("ALTER TABLE runs ADD COLUMN context TEXT")
             # A chosen model/reasoning (models.py): scope "session:<hermes session id>" (Use for this chat)
-            # or "task:<idem key>" (one task: a voice preset, a new chat's first job).
+            # or "task:<idem key>" (one task: a voice preset, a new chat's first job), or "call" (the
+            # job default as last picked during a call: every task a call runs follows it, SPK-361).
             self._db.execute("""CREATE TABLE IF NOT EXISTS model_choices (
                 scope TEXT PRIMARY KEY, model TEXT, reasoning TEXT, updated REAL NOT NULL)""")
             # A message sent "when it's done" (mode queue): held here, across reloads, until the task it
