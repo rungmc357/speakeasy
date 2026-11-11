@@ -62,6 +62,15 @@ def test_flag_turns_projects_back_on(server, service, monkeypatch):
     assert status == 200 and [p["id"] for p in listing["projects"]] == [pid]
 
 
+def test_flag_on_an_older_hermes_still_says_update_hermes(server, service, monkeypatch):
+    from speakeasy import projects as P
+    monkeypatch.setenv(FLAG, "1")
+    monkeypatch.setattr(P, "_hermes_projects", lambda: None)   # a Hermes without projects_db
+    assert service.status()["capabilities"]["projects"] is False
+    assert get(server, "/voice/projects") == (
+        501, {"error": "This Hermes doesn't have projects yet. Update Hermes to use them."})
+
+
 def test_a_project_chosen_before_files_no_home_job(server, service, hermes, state, monkeypatch):
     chosen_before(service, monkeypatch, "Lantern", "Swift 6 only.")
     before = links(service)
