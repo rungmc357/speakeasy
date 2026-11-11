@@ -115,6 +115,7 @@
   }
  ],
  "notice": null,
+ "paused_call": null,
  "pill": "Order a desk",
  "recommendations": {
   "computed_at": 1793984400.0,

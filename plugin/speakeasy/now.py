@@ -222,6 +222,24 @@ class NowModel:
                     and i.worker is not None]
         return live[-1] if live else None
 
+    def paused_call(self) -> dict[str, Any] | None:
+        """The call that is paused and still resumable (QA74 #20): an app relaunched while a call was
+        paused has no memory of it, so Home names it and the app can offer Resume again. Not one
+        that was resumed, taken over by a later call, or paused so long it is bookkept as ended."""
+        with self.svc.lock:
+            held = [i for i in self.svc.interactions.values()
+                    if i.paused and not i.pause_bookkept and i.successor is None and i.carried_by is None
+                    and not i.abandoned]
+        if not held:
+            return None
+        call = max(held, key=lambda i: i.paused_at or 0)
+        with call.lock:
+            return {"interaction_id": call.interaction_id, "paused_at": call.paused_at,
+                    "pause_reason": call.pause_reason or "user",
+                    **({"idle_paused_minutes": call.idle_paused_minutes}
+                       if call.pause_reason == "idle" and call.idle_paused_minutes else {}),
+                    **({"device_id": call.device_id} if call.device_id else {})}
+
     def last_call(self, now: float, edge: float, cleared: float) -> Any:
         """The call that ended most recently, while its "Your call" card still shows: until it's
         cleared, opened, or the next 4 AM; and for at most CALL_CARD_S."""
@@ -755,6 +773,8 @@ class NowModel:
             "call": ({"interaction_id": call.interaction_id, "started_at": getattr(call, "started_at", None),
                       "focus": focus, "focus_label": "Talking about this" if focus else None}
                      if call is not None else None),
+            # QA74 #20: the paused call an app can resume (only off a live call). Additive: older apps ignore it.
+            "paused_call": self.paused_call() if call is None else None,
             "call_summary": self._undismissed_call(
                 self._latered_call(self.call_summary(ended, now) if ended is not None else None, now)),
             "items": items, "background": {"running": len(background), "items": background[:BACKGROUND_ITEMS]},

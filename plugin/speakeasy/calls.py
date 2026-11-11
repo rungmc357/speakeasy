@@ -773,6 +773,7 @@ class Interaction:
     # Why the call is paused: "user", "idle" (idle_paused_minutes of quiet) or "cap" (its length
     # cap); None while not paused. Set only through Service.pause, with paused/limit_paused/idle_paused_minutes.
     pause_reason: str | None = None
+    paused_at: float | None = None  # when it paused (Home's ``paused_call``, QA74 #20)
     # The app gave up on this call before it went live (a stalled connection retried elsewhere).
     abandoned: bool = False
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)

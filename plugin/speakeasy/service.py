@@ -1192,6 +1192,7 @@ class VoiceService(SecureInputMixin):
             already_closed = interaction.call_closed
             interaction.paused = True
             interaction.pause_reason = reason
+            interaction.paused_at = time.time()
             interaction.idle_paused_minutes = idle_minutes if reason == "idle" else None
             interaction.limit_paused = reason == "cap"
         worker = interaction.worker
