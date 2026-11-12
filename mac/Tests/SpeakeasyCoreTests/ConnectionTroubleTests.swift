@@ -9,6 +9,16 @@ final class ConnectionTroubleTests: XCTestCase {
 
     override func tearDown() { TailnetInterface.override = nil }
 
+    /// SPK-279: only timeouts and proxy/tunnel answers mean "can't reach"; a 500 is Hermes failing.
+    func testGatewayStatusesAreTheOnlyCantReachCodes() {
+        for status in [408, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530] {
+            XCTAssertTrue(ConnectionTrouble.isGatewayStatus(status), "\(status)")
+        }
+        for status in [0, 200, 400, 401, 403, 404, 409, 410, 429, 500, 501, 505, 511, 519, 528, 529, 599] {
+            XCTAssertFalse(ConnectionTrouble.isGatewayStatus(status), "\(status)")
+        }
+    }
+
     func testHostNotFoundOnTailnetPointsAtTailscale() {
         TailnetInterface.override = false
         let m = ConnectionTrouble.message(for: err(NSURLErrorCannotFindHost), server: tailnet)
