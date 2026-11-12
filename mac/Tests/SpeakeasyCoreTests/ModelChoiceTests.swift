@@ -142,6 +142,12 @@ final class ModelChoiceTests: XCTestCase {
                        "the pick must read back, or Profile shows the default and Reasoning saves over it")
         XCTAssertEqual(JobModelDefaults(settingsJSON: ["settings": ["jobs": ["model": "", "reasoning": ""]]]),
                        JobModelDefaults(), "nothing saved = Hermes' own")
+        // The recorded server reply (Contract/settings.json, written by plugin/tests/e2e_local.py) is wrapped
+        // the same way. It predates `jobs`, so it reads as unreadable, never as "nothing saved".
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "settings", withExtension: "json", subdirectory: "Contract"))
+        let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(Array(recorded.keys), ["settings"])
+        XCTAssertNil(JobModelDefaults(settingsJSON: recorded) as JobModelDefaults?)
         // No `jobs` section is unreadable, never "nothing saved" (that read is what erased the pick).
         XCTAssertNil(JobModelDefaults(settingsJSON: ["settings": ["voice": [:]]]) as JobModelDefaults?)
         XCTAssertNil(JobModelDefaults(settingsJSON: ["ok": true]) as JobModelDefaults?)
