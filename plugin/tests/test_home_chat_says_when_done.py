@@ -41,10 +41,16 @@ def start_held(server, service, hermes, client_id="c_cafe"):
     hermes.responder = lambda prompt, sid: f"Found one.\nDONE: Cafe found\nSPOKEN: {SPOKEN}"
     coordinator(service, ASK)
     status, body = post(server, {"text": "find me a quiet cafe near the river, early", "client_id": client_id})
-    assert status == 200 and body["action"] == "start" and body["run_id"], body
-    run_id = body["run_id"]
+    # Under load the turn may answer "pending" (its acknowledgement went up first): wait for the whole
+    # turn (reply posted, job started, every row linked) before anything is compared.
+    assert status == 200 and body["action"] in {"start", "pending"}, body
+    mid = body["message"]["id"][2:]
+    wait_for(lambda: not service.home_chat.pending("m:" + mid), timeout=60)
+    row = service.home_chat._rows("WHERE id=?", (mid,), limit=1)[0]
+    assert row["action"] == "start" and row["run_id"], row
+    run_id = row["run_id"]
     wait_for(lambda: run_id in hermes.runs)
-    return run_id, body["message"]["id"][2:]
+    return run_id, mid
 
 
 def finish(service, hermes, run_id):
@@ -218,8 +224,11 @@ def test_a_failed_job_says_it_stopped(server, service, hermes):
     hermes.fail_with = "the provider refused the request"
     coordinator(service, ASK)
     status, body = post(server, {"text": "find me a quiet cafe near the river, early", "client_id": "c_fail"})
-    assert status == 200 and body["run_id"]
-    run_id = body["run_id"]
+    assert status == 200, body
+    mid = body["message"]["id"][2:]
+    wait_for(lambda: not service.home_chat.pending("m:" + mid), timeout=60)
+    run_id = service.home_chat._rows("WHERE id=?", (mid,), limit=1)[0]["run_id"]
+    assert run_id
     lines = wait_for(lambda: [r for r in assistant_rows(service, run_id) if "stopped before finishing" in r["text"]])
     assert len(lines) == 1
     from speakeasy.home_words import short_title
