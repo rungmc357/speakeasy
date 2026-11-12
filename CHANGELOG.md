@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.51 + iPhone build 77: faster calls, cooler phone
+
+- **Calls connect in about a second.** Your Hermes keeps a voice session ready, so a call goes live almost as soon as you tap. The phone also waits for a slow start instead of giving up and trying twice. *(plugin + iPhone build 77)*
+- **A dropped connection no longer ends the call.** If the voice service resets mid-call, the app shows Reconnecting… and the same call carries on, with the same tasks and voice. Hanging up still ends it at once. *(plugin + iPhone build 77)*
+- **Much less heat and battery on calls.** A call shown on Home uses about a third of the processor it did; the call clock no longer redraws Home every second. When the phone is hot or in Low Power Mode, the app eases off animation. Audio is untouched. *(iPhone build 77)*
+- **Large text fits.** Flow steps never break a word in half, and charts, status cards and flight cards stay inside their cards at the largest text sizes. *(iPhone build 77)*
+- **Plugin updates load cleanly.** Updating the plugin closes the old version's database connections first, and recovers by itself if the database can't be opened. *(plugin)*
+
 ## Plugin 0.3.50 + iPhone build 76: decide from Home, faster updates
 
 - **Approve and Cancel work from the card again.** Tapping either one on an approval card no longer fails with "The preview changed". *(iPhone build 76)*
