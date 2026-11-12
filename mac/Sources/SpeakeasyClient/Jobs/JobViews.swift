@@ -274,6 +274,8 @@ public struct JobOrb: View {
     var placement = ""
     /// The mic is hearing the user right now (the ring follows the mic level).
     var hearing = false
+    /// SPK-430: 30 fps, 20 when the phone is hot or in Low Power Mode; plain timer ticks (CappedSchedule).
+    @ObservedObject private var energy = EnergyGovernor.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(state: OrbState, size: CGFloat = 40, level: Double = 0, mark: PillPresentation.Mark? = nil,
@@ -292,7 +294,7 @@ public struct JobOrb: View {
             if reduceMotion {
                 Circle().stroke(blue.opacity(0.6), style: StrokeStyle(lineWidth: lw, dash: [3, 3]))
             } else {
-                TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
+                TimelineView(CappedSchedule(interval: energy.policy.frameInterval)) { ctx in
                     let t = ctx.date.timeIntervalSinceReferenceDate
                     Circle().trim(from: 0, to: 0.3)
                         .stroke(blue, style: StrokeStyle(lineWidth: lw, lineCap: .round))
@@ -334,19 +336,19 @@ public struct JobOrb: View {
                 switch state {
                 case .talking:
                     // Breathing: a slow swell, lifted by the voice.
-                    TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
+                    TimelineView(CappedSchedule(interval: energy.policy.frameInterval)) { ctx in
                         let t = ctx.date.timeIntervalSinceReferenceDate
                         let breath = (sin(t * 2.4) + 1) / 2
                         orb(scale: 1 + 0.04 * breath + 0.2 * voice, glow: 0.45 + 0.35 * breath + 0.3 * Double(voice))
                     }
                 case _ where mark == .connecting:
-                    TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
+                    TimelineView(CappedSchedule(interval: energy.policy.frameInterval)) { ctx in
                         let t = ctx.date.timeIntervalSinceReferenceDate
                         orb(scale: 0.92 + 0.06 * CGFloat((sin(t * 3.2) + 1) / 2), glow: 0.3)
                     }
                 case .working:
                     // Soft pulse of the glow only; the orb keeps its size (it still lifts a little with the voice).
-                    TimelineView(.animation(minimumInterval: 1 / 20)) { ctx in
+                    TimelineView(CappedSchedule(interval: max(1.0 / 20, energy.policy.frameInterval))) { ctx in
                         let t = ctx.date.timeIntervalSinceReferenceDate
                         orb(scale: 1 + speakingLift, glow: 0.25 + 0.4 * (sin(t * 1.6) + 1) / 2)
                     }

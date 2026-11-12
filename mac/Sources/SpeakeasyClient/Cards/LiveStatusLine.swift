@@ -164,6 +164,8 @@ public struct LiveShimmerLine: View {
     public let ink: Color
     public let shimmer: Bool
     @State private var sweep = false
+    /// Call energy / SPK-430: no sweep behind a call or while the phone is hot (the words stay, still).
+    @ObservedObject private var energy = EnergyGovernor.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(text: String, font: Font, ink: Color, shimmer: Bool) {
@@ -172,6 +174,7 @@ public struct LiveShimmerLine: View {
 
     public var body: some View {
         // Width follows the words (so the capsule hugs them), height never does.
+        let shimmer = self.shimmer && energy.policy.shimmer
         Text(verbatim: text.isEmpty ? "Ag" : text).font(font).lineLimit(1).hidden()
             .overlay(alignment: .leading) {
                 ZStack(alignment: .leading) {
