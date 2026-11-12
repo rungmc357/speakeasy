@@ -196,7 +196,8 @@ struct ArtifactPhoto: View {
         // The caller sets the size, never the picture (SPK-401): a filled wide photo reported its own
         // width, so an event tile grew wider than its slot, hung off the card and drew its panel
         // under the next tile. Color.clear takes exactly the offered size; the photo fills it, cut.
-        Color.clear.overlay { picture }.clipped()
+        // Decorative (the name is on the tile), and hidden so its uncut frame isn't the tile's.
+        Color.clear.overlay { picture }.clipped().accessibilityHidden(true)
     }
 
     @ViewBuilder private var picture: some View {
