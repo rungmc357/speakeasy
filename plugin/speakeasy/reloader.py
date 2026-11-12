@@ -14,7 +14,13 @@ as a whole:
 * when no call is live (running and held jobs carry on through it), or when ``hermes voice reload``
   asks, stop the server, drop every non-shell module, import the new code fresh and start again on
   the same port;
-* if the new code fails to import or start, put the old modules back and restart the old server.
+* if the new code fails to import or start, put the old modules back and restart the old server;
+* close every state-store connection the old code held before the next code opens its own, and
+  check that none are left (SPK-443: leftovers kept stale -wal/-shm handles in the gateway process,
+  and every later open of the same file failed with "disk I/O error");
+* if a build still fails with "disk I/O error", back the database up from a separate process, move
+  the copy over the original (a new file, so none of this process's stale SQLite state applies to
+  it), drop the old -wal/-shm, keep the old files aside, and try once more.
 
 The contract with the swapped code is small and must stay stable: ``router.bind_home(home)``,
 ``service.VoiceService(home)`` with ``.busy()``, ``server.SpeakeasyServer(service, host, port)``
@@ -22,11 +28,15 @@ with ``.start()``, ``.stop()``, ``.service`` and ``.base_url``.
 """
 from __future__ import annotations
 
+import gc
 import hashlib
 import importlib
 import json
 import logging
+import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -43,6 +53,21 @@ RETRY_MAX_S = 60.0    # ...backing off to this
 REQUEST_FILE = "reload-request"
 RESULT_FILE = "reload-result.json"
 RESTORE_LOG_EVERY_S = 3600.0  # a repeating re-import is logged at most this often (with a count)
+DB_NAME = "state.sqlite3"
+FRESH_EVERY_S = 60.0   # the new-file recovery runs at most this often
+KEEP_RECOVERED = 3     # old database copies kept aside after a recovery
+BACKUP_TIMEOUT_S = 120.0
+# Runs in a separate process: this one's stale SQLite state for the file is what broke it.
+_BACKUP = (
+    "import sqlite3, sys\n"
+    "src = sqlite3.connect(sys.argv[1], timeout=10)\n"
+    "dst = sqlite3.connect(sys.argv[2])\n"
+    "src.backup(dst)\n"
+    "ok = dst.execute('PRAGMA integrity_check').fetchone()[0]\n"
+    "dst.execute('PRAGMA journal_mode=DELETE')\n"
+    "dst.close(); src.close()\n"
+    "print(ok)\n"
+)
 
 
 def fingerprint(plugin_dir: Path) -> str:
@@ -68,6 +93,44 @@ def manifest_version(plugin_dir: Path) -> str:
     return match.group(1) if match else "0.0.0"
 
 
+def _fd_path(fd: int) -> str | None:
+    if sys.platform == "darwin":
+        import fcntl
+        try:
+            raw = fcntl.fcntl(fd, getattr(fcntl, "F_GETPATH", 50), bytes(1024))
+        except OSError:
+            return None
+        return raw.split(b"\0", 1)[0].decode(errors="replace") or None
+    try:
+        return os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        return None
+
+
+def open_db_handles(db: Path) -> list[str]:
+    """This process's open file handles on the database and its -wal/-shm, including ones whose file
+    was deleted or replaced underneath (they still count: they are what broke later opens)."""
+    names: set[str] = set()
+    for base in {str(db), os.path.realpath(db)}:
+        names |= {base, base + "-wal", base + "-shm", base + "-journal"}
+    try:
+        fds = [int(n) for n in os.listdir("/dev/fd" if sys.platform == "darwin" else "/proc/self/fd")]
+    except (OSError, ValueError):
+        return []
+    out = []
+    for fd in fds:
+        path = _fd_path(fd)
+        if path is None:
+            continue
+        if path.removesuffix(" (deleted)") in names:
+            out.append(path)
+    return out
+
+
+def is_disk_io_error(exc: BaseException) -> bool:
+    return type(exc).__name__ == "OperationalError" and "disk i/o error" in str(exc).lower()
+
+
 class LiveReloader:
     def __init__(self, package: str, plugin_dir: Path, home: Path, host: str, port: int,
                  check_s: float = CHECK_S):
@@ -86,6 +149,9 @@ class LiveReloader:
         self.restores = 0           # times the running code was put back (see _note_restore)
         self._restore_cause: tuple[tuple[str, ...], tuple[str, ...]] | None = None
         self._restore_logged = 0.0
+        self.handles_left = 0       # database handles still open after the last release (should be 0)
+        self.fresh_files = 0        # times the database was moved to a new file (disk I/O recovery)
+        self._fresh_at = -FRESH_EVERY_S
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -94,6 +160,95 @@ class LiveReloader:
     @property
     def state_dir(self) -> Path:
         return self.home / "speakeasy"
+
+    @property
+    def db_path(self) -> Path:
+        return self.state_dir / DB_NAME
+
+    # -- database handles (SPK-443) ------------------------------------------------------------
+    def _close_stores(self, modules: dict[str, ModuleType] | None = None) -> int:
+        """Close every state store opened by one set of modules (default: what's loaded now), even
+        one whose service never finished building."""
+        mods = modules if modules is not None else self._owned()
+        store_mod = mods.get(f"{self.package}.store")
+        close_all = getattr(store_mod, "close_all", None)
+        closed = 0
+        if callable(close_all):
+            try:
+                closed = int(close_all() or 0)
+            except Exception as exc:
+                logger.warning("speakeasy: closing the old state store failed: %s", exc)
+        return closed
+
+    def _release(self, modules: dict[str, ModuleType] | None, why: str) -> int:
+        """After a server stopped (or a build failed): close its stores, drop unreachable ones, and
+        check no handle on the database is left. Returns how many are left (0 = clean)."""
+        self._close_stores(modules)
+        gc.collect()  # a half-built service's store is only reachable from a dead cycle
+        left = open_db_handles(self.db_path)
+        self.handles_left = len(left)
+        if left:
+            logger.error("speakeasy: %d database handle(s) still open after %s (should be none): %s",
+                         len(left), why, ", ".join(sorted({Path(p).name for p in left})))
+        return len(left)
+
+    def _fresh_db(self) -> bool:
+        """The "disk I/O error" recovery: a consistent backup made by a separate process, moved over
+        the original so it is a new file, the old -wal/-shm removed, the old files kept aside.
+        Returns True when the database was replaced."""
+        db = self.db_path
+        now = time.monotonic()
+        if not db.exists() or now - self._fresh_at < FRESH_EVERY_S or not sys.executable:
+            return False
+        self._fresh_at = now
+        tmp = db.with_name(DB_NAME + ".fresh")
+        tmp.unlink(missing_ok=True)
+        try:
+            done = subprocess.run([sys.executable, "-c", _BACKUP, str(db), str(tmp)], capture_output=True,
+                                  text=True, timeout=BACKUP_TIMEOUT_S, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.error("speakeasy: database recovery could not run the backup: %s", exc)
+            tmp.unlink(missing_ok=True)
+            return False
+        if done.returncode != 0 or done.stdout.strip() != "ok" or not tmp.exists():
+            logger.error("speakeasy: database recovery stopped, the backup was not clean (%s): %s",
+                         done.returncode, (done.stdout.strip() or done.stderr.strip())[-300:])
+            tmp.unlink(missing_ok=True)
+            return False
+        keep = self.state_dir / f"recovered-{time.strftime('%Y%m%d-%H%M%S')}"
+        try:
+            keep.mkdir(parents=True, exist_ok=True)
+            for suffix in ("", "-wal", "-shm"):
+                old = db.with_name(DB_NAME + suffix)
+                if old.exists():
+                    shutil.copy2(old, keep / old.name)
+            os.replace(tmp, db)
+            for suffix in ("-wal", "-shm"):
+                db.with_name(DB_NAME + suffix).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.error("speakeasy: database recovery failed while swapping files: %s", exc)
+            tmp.unlink(missing_ok=True)
+            return False
+        for old in sorted(self.state_dir.glob("recovered-*"))[:-KEEP_RECOVERED]:
+            shutil.rmtree(old, ignore_errors=True)
+        self.fresh_files += 1
+        logger.warning("speakeasy: the state database failed with \"disk I/O error\"; moved a checked backup "
+                       "into place as a new file (old files kept in %s)", keep.name)
+        return True
+
+    def _build_safe(self) -> Any:
+        """Build a server; on "disk I/O error" close what the attempt opened, do the new-file recovery
+        once, and try again."""
+        try:
+            return self._build()
+        except Exception as exc:
+            if not is_disk_io_error(exc):
+                raise
+            self._release(None, "a build failed with disk I/O error")
+            if not self._fresh_db():
+                raise
+            importlib.invalidate_caches()
+            return self._build()
 
     # -- modules -------------------------------------------------------------------------------
     def _owned(self) -> dict[str, ModuleType]:
@@ -137,7 +292,7 @@ class LiveReloader:
         """Start the server with the code already loaded, then watch for updates."""
         with self._lock:
             self.loaded_fp = self.seen_fp = fingerprint(self.plugin_dir)
-            self.server = self._build()
+            self.server = self._build_safe()
             self.modules = self._owned()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="speakeasy-reloader")
         self._thread.start()
@@ -151,6 +306,7 @@ class LiveReloader:
                     self.server.stop()
                 finally:
                     self.server = None
+                    self._close_stores(self.modules)
 
     def _loop(self) -> None:
         while not self._stop.wait(self.check_s):
@@ -221,18 +377,21 @@ class LiveReloader:
                 old_server.stop()
             except Exception as exc:
                 logger.warning("speakeasy: stopping the old server failed: %s", exc)
+            old_server = None
+            self._release(old_modules, "stopping " + (old_version or "the old server"))
             self._evict()
             importlib.invalidate_caches()
             try:
-                self.server = self._build()
+                self.server = self._build_safe()
             except Exception as exc:
                 logger.error("speakeasy: new plugin code failed to load, keeping %s: %s: %s",
                              old_version, type(exc).__name__, exc)
+                self._release(None, "the new code failed to load")
                 self._restore(old_modules)
                 self.failed_fp = target_fp
                 self.server = None
                 try:
-                    self.server = self._build()
+                    self.server = self._build_safe()
                 except Exception as again:
                     # Seen live: a transient "disk I/O error" failed both. Never stay down: tick() keeps
                     # trying (at once on `hermes voice reload`, otherwise with backoff).
@@ -283,10 +442,11 @@ class LiveReloader:
                 self._restore(modules)
             importlib.invalidate_caches()
             try:
-                self.server = self._build()
+                self.server = self._build_safe()
             except Exception as exc:
                 self.server = None
                 errors.append(f"{label}: {type(exc).__name__}: {exc}")
+                self._release(None, f"a {label} build failed")
                 continue
             self.modules = self._owned()
             if modules is None:
@@ -316,6 +476,7 @@ class LiveReloader:
             (self.state_dir / REQUEST_FILE).unlink(missing_ok=True)
             (self.state_dir / RESULT_FILE).write_text(json.dumps(
                 {"ok": ok, "version": version, "error": error[:500], "at": time.time(),
-                 "running": self.server is not None}))
+                 "running": self.server is not None, "db_handles_left": self.handles_left,
+                 "fresh_files": self.fresh_files}))
         except OSError as exc:
             logger.warning("speakeasy: could not record the reload result: %s", exc)
