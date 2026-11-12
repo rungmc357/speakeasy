@@ -423,15 +423,31 @@ struct TransitCard: View {
 struct FlightCard: View {
     let card: ViewCard
     @Environment(\.widgetSlim) private var slim
+    @Environment(\.cardStyle) private var style
     var body: some View {
         let status = card["status"].string ?? ""
         let late = status.lowercased().contains("delay") || status.lowercased().contains("cancel")
+        let title = [card["airline"].string, card["number"].string].compactMap { $0 }.joined(separator: " ")
+        let statusText = Text(status).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(late ? Color.red : Color.green)
         CardBox {
             // A slim widget: the route row only (its headline says the flight and its status).
             if !slim {
-                CardHeaderRow {
-                    CardHeader(icon: "airplane", title: [card["airline"].string, card["number"].string].compactMap { $0 }.joined(separator: " "))
-                    Text(status).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(late ? Color.red : Color.green)
+                // The airline and its status share the row when both fit whole. When they don't (the
+                // accessibility text sizes, a narrow card), the status goes under the name rather than
+                // the name shrinking to "Delt…" (SPK-438).
+                ViewThatFits(in: .horizontal) {
+                    CardHeaderRow {
+                        CardHeader(icon: "airplane", title: title)
+                        statusText.lineLimit(1)
+                    }
+                    CardHeaderRow {
+                        VStack(alignment: .leading, spacing: 2) {
+                            CardHeader(icon: "airplane", title: title, lines: 2)
+                            statusText.fixedSize(horizontal: false, vertical: true)
+                                .padding(.leading, style.capsHeaders ? 0 : CleanGrid.glyphTile + CleanGrid.glyphGap)
+                        }
+                        Spacer(minLength: 0)
+                    }
                 }
             }
             HStack(alignment: .center) {
