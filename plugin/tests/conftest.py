@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 
+import offline_model
 import process_state
 import temp_homes
 from fakes import FakeHermesServer, FakeLiveWorker, FakeTransport, make_home, http  # noqa: F401
@@ -49,6 +50,7 @@ def no_real_routing_model(monkeypatch):
     monkeypatch.setattr(router, "working_status", lambda request, timeout=10.0: None)
     monkeypatch.setattr(router, "plan_steps", lambda request, timeout=10.0: None)
     monkeypatch.setattr(router, "result_shape", lambda *args, **kwargs: None)
+    monkeypatch.setattr(router, "verdict_rewrite", lambda request, report, line, timeout=10.0: None)
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +73,22 @@ os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
 # Python: the first test to import gateway.run would swap sys.path, PYTHONPATH and PATH for the rest
 # of the run (later ``import PIL`` resolved to a python3.14 tree inside a 3.11 run). Import it once
 # here with that activation off and the path/environment put back, so later imports are no-ops.
+#
+# The run never reads the developer's Hermes home: it gets its own, offline, before the bootstrap
+# (which loads the home's .env) or any Hermes config reader runs.
+offline_model.pin_run_home()
 process_state.import_hermes_bootstrap_inert()
+# …and no test reaches a real model: Hermes' side-model calls fail at once for the whole run (also in
+# threads a test leaves behind), exactly as on a Hermes with no usable provider, which every plugin
+# caller already handles as "no side model". The calls are counted in the run's summary.
+offline_model.block_real_model_calls()
+
+
+def pytest_terminal_summary(terminalreporter):
+    calls = offline_model.REAL_MODEL_CALLS
+    if calls:
+        terminalreporter.write_line(f"speakeasy: {len(calls)} side-model call(s) were blocked "
+                                    "(tests never reach a real model)")
 
 
 @pytest.fixture(autouse=True)
