@@ -72,6 +72,49 @@ final class CallPhaseTests: XCTestCase {
         XCTAssertEqual(s.phase, before.phase)
     }
 
+    // MARK: The provider dropped the call; the plugin holds it (reconnect_required)
+
+    func testThePluginsReconnectRequiredIsParsed() {
+        XCTAssertEqual(parseServerStreamEvent(SSEEvent(name: "reconnect_required",
+                                                       data: #"{"interaction_id":"vi_1","reason":"provider","attempt":1}"#)),
+                       [.reconnectRequired(interactionID: "vi_1")])
+    }
+
+    func testAProviderDropReconnectsIntoTheSameCallAtOnceOnAnyDevice() {
+        for reconnects in [true, false] {   // the Mac too: the plugin says the call is held
+            var s = live(reconnects: reconnects)
+            s = reduce(s, .reconnectRequired(interactionID: "vi_1"), now: t0)
+            guard case .reconnecting(1, let deadline, let from) = s.phase else { return XCTFail("\(s.phase)") }
+            XCTAssertEqual(from, "vi_1", "the resume continues the same conversation")
+            XCTAssertEqual(deadline.timeIntervalSince(t0), CallReconnect.serverAskedDelay, accuracy: 0.001)
+            XCTAssertLessThanOrEqual(CallReconnect.serverAskedDelay, 0.5, "a short gap, not a redial")
+            XCTAssertEqual(s.connection, .connecting, "shown as Reconnecting…, not ended")
+            // The old session's channel closing now is part of the same drop: nothing changes.
+            XCTAssertEqual(reduce(s, .transportLost, now: t0).phase, s.phase)
+            XCTAssertEqual(reduce(s, .serverClosed(.incomplete, error: nil), now: t0).phase, s.phase)
+            s = reduce(s, .reconnectDue(attempt: 1), now: deadline)
+            s = reduce(s, .sessionAdmitted(interactionID: "vi_2"), now: deadline)
+            s = reduce(s, .sessionStarted, now: deadline.addingTimeInterval(1))
+            XCTAssertEqual(s.phase, .live(id: "vi_2"))
+        }
+    }
+
+    func testReconnectRequiredForAnotherCallOrAPausedOneDoesNothing() {
+        let s = live()
+        XCTAssertEqual(reduce(s, .reconnectRequired(interactionID: "vi_other"), now: t0).phase, s.phase)
+        let pausing = reduce(s, .pauseRequested, now: t0)
+        XCTAssertEqual(reduce(pausing, .reconnectRequired(interactionID: "vi_1"), now: t0).phase, pausing.phase)
+    }
+
+    func testAHangUpStillEndsAtOnce() {
+        var s = live()
+        s = reduce(s, .endRequested, now: t0)
+        XCTAssertEqual(reduce(s, .reconnectRequired(interactionID: "vi_1"), now: t0).phase, s.phase,
+                       "a call being ended never reconnects")
+        s = reduce(s, .serverClosed(.complete, error: nil), now: t0)
+        XCTAssertEqual(s.phase, .ended(.complete))
+    }
+
     func testStopOnTheBannerAndEndBothEndTheReconnect() {
         var s = reduce(live(), .transportLost, now: t0)
         XCTAssertEqual(reduce(s, .reconnectCancelled, now: t0).phase, .ended(.incomplete))
