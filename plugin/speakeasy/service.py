@@ -385,7 +385,7 @@ class VoiceService(SecureInputMixin):
                  grok_signin: Callable[[], tuple[bool, bool, str]] | None = None,
                  codex_install: Callable[[], bool] | None = None, codex_login_popen: Callable[..., Any] | None = None,
                  codex_candidates: Callable[[], list[Path]] | None = None,
-                 agent_model: Callable[[], str] | None = None):
+                 agent_model: Callable[[], str] | None = None, codex_spare: bool | None = None):
         self.home = Path(hermes_home)
         from .agent_model import UNKNOWN, ModelCheck, resolve
         # Only the gateway's service asks Hermes' own provider resolver (its HERMES_HOME is this
@@ -541,6 +541,14 @@ class VoiceService(SecureInputMixin):
         # Secure input (secure_input.py): only the gateway's long-lived service answers Hermes' secret
         # and sudo prompts for Speakeasy's runs; a CLI or test service never takes them over.
         self._init_secure(wire=start_threads)
+        # One pre-warmed Codex app-server so a tap pays only for the voice (codex_spare). Only the
+        # gateway's long-lived service keeps one; tests opt in with codex_spare=True.
+        from .codex_spare import CodexSpare, DeviceConnects
+        self.connects = DeviceConnects()
+        self.codex_spare = (CodexSpare(self._new_codex_transport)
+                            if (start_threads if codex_spare is None else codex_spare) else None)
+        if start_threads and self.codex_spare is not None:
+            threading.Thread(target=self.warm_codex, daemon=True, name="speakeasy-codex-warm").start()
         if start_threads:
             # Which model ran each task and how full its context got (context_use.py): the gateway's
             # long-lived service keeps the records; a CLI or test service never takes them over.
@@ -902,6 +910,8 @@ class VoiceService(SecureInputMixin):
                 except Exception:
                     pass
         self.duck.close()  # put the volume back before a reload swaps this code out
+        if self.codex_spare is not None:
+            self.codex_spare.close()  # its app-server must not outlive this code (a reload warms a new one)
         self.codex_signin.close()  # a waiting sign-in's Codex child must not outlive the service
         if self._text_worker is not None:
             self._text_worker.stop()
@@ -1114,6 +1124,8 @@ class VoiceService(SecureInputMixin):
         if self.updated_underneath():
             raise ServiceError(503, RESTART_NEEDED)
         self.note_call_event()   # F4: no automatic reload while this connect (or its retry) is settling
+        from .connect_stages import ConnectStages
+        stages = ConnectStages()
         resume_from = body.get("resume_from")
         relay = self.settings.get()["voice"]["provider"] == "grok"
         if relay:
@@ -1162,6 +1174,7 @@ class VoiceService(SecureInputMixin):
             if not live:
                 raise ServiceError(409, "session replay unavailable after server restart; create a new offer")
             return replay
+        stages.mark("checks")
         s = self.settings.get()
         names = P.Names.from_settings(s)
         history: list[dict[str, str]] = []
@@ -1175,6 +1188,7 @@ class VoiceService(SecureInputMixin):
                 room = _merge_rooms(source.room, heard) if heard else source.room
         else:
             away, resume = self.store.away(), ""
+        stages.mark("context")
         # A new call (not a resume) picks up the workspace: earlier calls' tasks that are running,
         # waiting on the user or finished but not cleared stay on its board, and its voice knows them.
         donors = self.carry_donors() if source is None else []
@@ -1185,16 +1199,18 @@ class VoiceService(SecureInputMixin):
             open_work = P.open_work_block(earlier, names)
             shown = {t.get("run_id") for t in earlier}
             away = [a for a in away if a.get("run_id") not in shown]
+        stages.mark("carry")
         if room:
             logger.info("speakeasy: call has the room transcript from listening mode (%d words)", len(room.split()))
         instructions = self.instructions(away=away, resume=resume, tour=tour, room=room, open_work=open_work)
         seed = P.resume_input(history)
+        stages.mark("instructions")
         provider = s["voice"]["provider"]
         voice = default_voice(s)
         transport = None
         try:
             if provider == "codex":
-                transport = self._start_codex(sdp, instructions, seed, voice, s)
+                transport = self._start_codex(sdp, instructions, seed, voice, s, stages=stages, device_id=device_id)
                 live_id, answer = transport.thread_id, transport_answer(transport)
             elif provider == "grok":
                 if not grok_beta_on(s):
@@ -1218,11 +1234,15 @@ class VoiceService(SecureInputMixin):
                 answer = (result.get("transport") or {}).get("sdp")
         except ServiceError:
             self.store.fail_session(request_id)
+            stages.note("outcome", "failed")
+            stages.log()
             raise
         except Exception as exc:
             if transport is not None and hasattr(transport, "stop"):
                 transport.stop()
             self.store.fail_session(request_id)
+            stages.note("outcome", "failed")
+            stages.log()
             from .codex_transport import CodexStartError
             if isinstance(exc, CodexStartError):
                 logger.warning("speakeasy: voice start failed: %s", exc)
@@ -1262,7 +1282,11 @@ class VoiceService(SecureInputMixin):
             self.interactions[interaction_id] = interaction
         self.note_call_event()
         self.store.complete_session(request_id, client_result)
+        stages.mark("admit")
         self._start_worker(interaction, provider, transport).start()
+        stages.mark("worker")
+        stages.note("provider", provider)
+        stages.log()
         # Weather is the most common quick question: have the home forecast ready before it's asked.
         home = (s.get("fast_routing") or {}).get("home_place") or ""
         if home and s.get("fast_routing", {}).get("quick_answers", True):
@@ -1270,18 +1294,127 @@ class VoiceService(SecureInputMixin):
             threading.Thread(target=weather.warm, args=(home,), daemon=True, name="speakeasy-weather-warm").start()
         return client_result
 
-    def _start_codex(self, sdp: str, instructions: str, seed: list, voice: str, s: dict[str, Any]) -> Any:
+    # -- Codex voice start: pre-warmed spare, one start per tap ------------------------------------
+    def _new_codex_transport(self, key: Any) -> Any:
+        """A new, unprepared Codex transport for *key* (the spare's key: binary path + sign-in epoch)."""
         if self._codex_factory is not None:
-            transport = self._codex_factory()
-        else:
-            from .codex_transport import CodexTransport
-            # The copy signed in with ChatGPT, wherever it is on the machine (codex_discovery).
-            binary = self.codex_discovery()["binary"]
-            if binary is None:
-                raise ServiceError(409, "Codex not found: install the ChatGPT desktop app (it includes Codex) or the Codex CLI, then run `hermes voice setup`")
-            transport = CodexTransport(binary, self.dir / "codex", max_call_seconds(s))
-        transport._answer = transport.start(sdp, instructions, seed, voice)
+            return self._codex_factory()
+        from .codex_transport import CodexTransport
+        return CodexTransport(Path(key[0]), self.dir / "codex", max_call_seconds(self.settings.get()))
+
+    def _codex_key(self, binary: Any) -> Any:
+        if self._codex_factory is not None:
+            return ("factory", 0)
+        from .codex_transport import signin_epoch
+        return (str(binary), signin_epoch(binary))
+
+    def _codex_binary(self) -> Any:
+        if self._codex_factory is not None:
+            return None
+        # The copy signed in with ChatGPT, wherever it is on the machine (codex_discovery).
+        binary = self.codex_discovery()["binary"]
+        if binary is None:
+            raise ServiceError(409, "Codex not found: install the ChatGPT desktop app (it includes Codex) or the Codex CLI, then run `hermes voice setup`")
+        return binary
+
+    def warm_codex(self, wait: bool = False) -> None:
+        """Have the Codex spare ready (at start, and after each call takes it). Codex voice only."""
+        if self.codex_spare is None or self._stop.is_set():
+            return
+        try:
+            if self.settings.get()["voice"]["provider"] != "codex":
+                return
+            self.codex_spare.warm(self._codex_key(self._codex_binary()), wait=wait)
+        except Exception as exc:
+            logger.info("speakeasy: codex warm-up skipped (%s)", type(exc).__name__)
+
+    def _prepared_codex(self, s: dict[str, Any], stages: Any) -> tuple[Any, bool]:
+        """(a transport with its thread ready, whether it was the spare)."""
+        binary = self._codex_binary()
+        if stages is not None:
+            stages.mark("discover")
+        key = self._codex_key(binary)
+        transport = self.codex_spare.take(key) if self.codex_spare is not None else None
+        spare = transport is not None
+        if transport is None:
+            transport = self._new_codex_transport(key)
+        transport.max_call_s = max_call_seconds(s)
+        if hasattr(transport, "prepare"):
+            transport.prepare()
+        if self.codex_spare is not None:
+            self.codex_spare.warm(key)  # the next tap's spare, in the background
+        if stages is not None:
+            stages.note("spare", "hit" if spare else "miss")
+            stages.mark("prepare")
+            stages.add(getattr(transport, "timings", None) if not spare else None, prefix="voice.")
+        return transport, spare
+
+    def _start_codex(self, sdp: str, instructions: str, seed: list, voice: str, s: dict[str, Any],
+                     stages: Any = None, device_id: str = "") -> Any:
+        """Start Codex voice for this tap. A retry from the same device while an earlier start is
+        still preparing takes that start over (DeviceConnects): one Codex start per tap."""
+        token, earlier = self.connects.begin(device_id)
+        pending = None
+        if earlier is not None:
+            earlier.ready.wait(60)
+            if earlier.transport is not None and earlier.error is None:
+                pending = earlier
+                logger.info("speakeasy: a retried connect took over the start already under way")
+                if stages is not None:
+                    stages.note("attached", "retry")
+                    stages.mark("attach")
+        spare = False
+        if pending is None:
+            pending = self.connects.track(device_id, token)
+            try:
+                pending.transport, spare = self._prepared_codex(s, stages)
+            except BaseException as exc:
+                pending.error = exc
+                raise
+            finally:
+                pending.ready.set()
+        if not self.connects.claim_voice(device_id, pending, token):
+            # A retry from this device took the prepared transport; it starts the voice, not us.
+            if stages is not None:
+                stages.note("superseded", "retry")
+            raise ServiceError(409, "a newer connect from this device took over this one")
+        transport = pending.transport
+        try:
+            transport._answer = transport.start(sdp, instructions, seed, voice)
+        except Exception as exc:
+            from .codex_transport import CodexStartError
+            known = isinstance(exc, CodexStartError) and getattr(exc, "reason", None)
+            if not spare or known:
+                raise
+            # A spare that went bad while it waited (not a sign-in or plan problem): start cold once.
+            logger.info("speakeasy: the codex spare failed to start (%s); starting fresh", type(exc).__name__)
+            try:
+                transport.stop()
+            except Exception:
+                pass
+            transport, _ = self._prepared_codex_cold(s)
+            transport._answer = transport.start(sdp, instructions, seed, voice)
+        if stages is not None:
+            stages.mark("voice")
+            stages.add({"realtime": (getattr(transport, "timings", None) or {}).get("realtime")}, prefix="voice.")
+        if not self.connects.is_latest(device_id, token):
+            # The phone retried while this voice was starting: the retry runs its own, so this one
+            # (answering an offer the phone already dropped) closes instead of running beside it.
+            try:
+                transport.stop()
+            except Exception:
+                pass
+            if stages is not None:
+                stages.note("superseded", "retry")
+            raise ServiceError(409, "a newer connect from this device took over this one")
         return transport
+
+    def _prepared_codex_cold(self, s: dict[str, Any]) -> tuple[Any, bool]:
+        transport = self._new_codex_transport(self._codex_key(self._codex_binary()))
+        transport.max_call_s = max_call_seconds(s)
+        if hasattr(transport, "prepare"):
+            transport.prepare()
+        return transport, False
 
     def _start_worker(self, interaction: Interaction, provider: str, transport: Any) -> SidebandWorker:
         if provider == "codex":
@@ -5707,6 +5840,10 @@ class VoiceService(SecureInputMixin):
         _LOGIN_CACHE.pop(str(binary), None)
         mark_signed_in(binary)
         self._remember_codex(binary)
+        if self.codex_spare is not None:
+            # A spare started before this sign-in holds the old (or no) account: warm a new one.
+            self.codex_spare.discard("signed in")
+            threading.Thread(target=self.warm_codex, daemon=True, name="speakeasy-codex-warm").start()
 
     def codex_state(self) -> tuple[bool, bool, str]:
         found = self.codex_discovery()
