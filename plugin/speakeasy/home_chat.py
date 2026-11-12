@@ -931,7 +931,7 @@ class HomeChat:
         except ValueError:
             opened = False
         heard = bool(r[0]) and from_a_call({"interaction_id": r[5]})
-        seen = opened or heard or self._heard_on_a_call(key)
+        seen = opened or heard or self._heard_on_a_call(key, float(r[2]) if r[2] else None)
         place = r[4] or r[3] or key
         read_at = (self.store.session_marks().get(place) or {}).get("read_at")
         try:
@@ -950,13 +950,16 @@ class HomeChat:
             return []
         return [c for c in found if from_a_call({"interaction_id": getattr(c, "interaction_id", None)})]
 
-    def _heard_on_a_call(self, key: str) -> bool:
+    def _heard_on_a_call(self, key: str, finished: float | None) -> bool:
         """A call's voice read this task's answer out (its ``spoken_tasks``, what now.call_state reads),
-        on the live call or one that has ended since."""
+        on the live call or one that has ended since. Only once it finished: a status question asked
+        while it ran also lands in ``spoken_tasks`` (calls.answer_status) and is not its answer."""
+        since = (finished or 0) - 1
         for call in self._calls():
             try:
                 with call.lock:
-                    if any(r.idem_key == key and t in call.spoken_tasks for t, r in call.runs.items()):
+                    if any(r.idem_key == key and float(call.spoken_tasks.get(t) or 0) >= since > 0
+                           for t, r in call.runs.items()):
                         return True
             except Exception:
                 continue
@@ -1065,14 +1068,16 @@ class HomeChat:
                 if line:
                     out["line"] = line[:300]
                 return out
-        row = None
+        # Not on Home any more (dismissed, cleared): the job itself, by its title. SPK-407: its finish
+        # line (``d:<run>``) stays in the thread after its card left, and a swipe-reply quotes it here.
         try:
-            row = self.store.run_row(run_id)
+            key = self.store.key_for_run(run_id) or (run_id if self.store.run_row(run_id) else None)
+            title = self.store.title(key) if key else None
         except Exception:
-            row = None
-        if not row:
+            key, title = None, None
+        if not key:
             return None
-        title = str(row.get("title") or "").strip() or "A job"
+        title = str(title or "").strip() or "A job"
         return {"id": "r:" + run_id, "role": "card", "text": title[:300], "run_id": run_id}
 
     def _quote(self, reply_to: Any) -> dict | None:
@@ -1141,15 +1146,19 @@ class HomeChat:
                                    (mid, run_id, self.clock()))
         self._if_settled(run_id)
 
-    def _if_settled(self, run_id: Any) -> None:
+    def _if_settled(self, run_id: Any, since: float | None = None) -> None:
         """SPK-407: a job that settled before its Home message was linked to it (it failed at once) was
-        no Home job yet when the settle listener ran; its finish line is noted now."""
+        no Home job yet when the settle listener ran; its finish line is noted now. *since*: only when
+        it settled at or after this time."""
         if not isinstance(run_id, str) or not run_id:
             return
         try:
             key = self.store.key_for_run(run_id)
             status = self.store.run_status(key) if key else None
+            settled = (self.store.run_row(key) or {}).get("settled_at") if key else None
         except Exception:
+            return
+        if since is not None and (not settled or float(settled) < since):
             return
         if key and status in FINISHED:
             self.note_settled(key, status)
@@ -1169,8 +1178,14 @@ class HomeChat:
     def _link(self, mid: str, run_id: str | None, action: str) -> None:
         with self.store._lock, self.store._db:
             self.store._db.execute("UPDATE home_messages SET run_id=?, action=? WHERE id=?", (run_id, action, mid))
-        if mid.startswith("hu_") and action == "start":   # a follow-up may name a job that finished long ago
+        if mid.startswith("hu_") and action == "start":
             self._if_settled(run_id)
+        elif mid.startswith("hu_") and action == "follow_up":
+            # A follow-up may name a job that finished long ago: only a run that settled after this
+            # message (a new run that failed at once) is noted.
+            with self.store._lock:
+                row = self.store._db.execute("SELECT at FROM home_messages WHERE id=?", (mid,)).fetchone()
+            self._if_settled(run_id, since=float(row[0]) - 1 if row else None)
 
     def _cleared(self) -> float:
         try:

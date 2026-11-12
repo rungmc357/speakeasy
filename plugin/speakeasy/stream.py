@@ -159,7 +159,9 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
     # job's one line at the bottom: no made-up ``d:<run>`` line beside it.
     card_of = {str(i["run_id"]): i["id"] for i in items if i.get("run_id")}   # folded ones open too
     said: set[str] = set()
-    for m in messages or []:
+    # A job whose email draft was posted as its result (even after its line went up) keeps that one.
+    messages = [m for m in messages or [] if not (m.get("answer") and str(m.get("run_id") or "") in results)]
+    for m in messages:
         if m.get("answer") and m.get("run_id"):
             said.add(str(m["run_id"]))
             if str(m["run_id"]) in card_of:
