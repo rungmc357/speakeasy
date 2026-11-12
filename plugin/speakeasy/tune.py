@@ -62,10 +62,12 @@ class CallLog:
         self._lock = threading.Lock()
 
     def record(self, interaction_id: str, turns: list[dict[str, str]], tasks: list[dict[str, Any]],
-               device: str = "", client: dict[str, str] | None = None) -> None:
+               device: str = "", client: dict[str, str] | None = None, reason: str | None = None) -> None:
         if not turns and not tasks:
             return
         entry: dict[str, Any] = {"id": interaction_id, "ended": self.clock(), "device": device[:40]}
+        if reason:  # how it ended: user / provider / expired / error
+            entry["end_reason"] = reason[:16]
         if client:  # the app build that made the call (devices.parse_client); absent for older apps
             entry["client"] = {k: str(v)[:24] for k, v in client.items()}
         entry["turns"] = [{"role": t.get("role", ""), "kind": t.get("kind", "speech"),

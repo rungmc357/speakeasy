@@ -58,13 +58,18 @@ from .settings import DEFAULT_UPDATE_INTERVAL_S, valid_delivery_target
 from .prompt import builder as P
 from . import text as text_mod
 from .store import fold_tasks
-from .plain_errors import STREAM_ENDED_EARLY, TASK_START_FAILED, THREAD_WAIT_LOST
+from .plain_errors import STREAM_ENDED_EARLY, TASK_START_FAILED, THREAD_WAIT_LOST, VOICE_LOST
 from .text import (ID_RE, MAX_TRANSCRIPT, TERMINAL, clean_transcript, delivery_text, derive_tool_status,
                    interim_progress, live_images_in, notice_text, safe_user_text, short_title, home_title, split_result,
                    fallback_title,
                    thread_commentary, vetted_live_ref)
 
 logger = logging.getLogger(__name__)
+
+# The voice provider dropping a live call (call_drop): how many times per call the app is asked to
+# reconnect into the same conversation, and how long a dropped call is held for it to do so.
+MAX_AUTO_RESUMES = 2
+DROP_HOLD_S = 45.0
 
 
 # A greeting, a bare filler sound or how-are-you small talk on its own is never work ("hey", "yo
@@ -785,6 +790,14 @@ class Interaction:
     paused_at: float | None = None  # when it paused (Home's ``paused_call``, QA74 #20)
     # The app gave up on this call before it went live (a stalled connection retried elsewhere).
     abandoned: bool = False
+    # How the call ended, for agent.log and the call log: "user" (End), "provider" (the voice
+    # provider dropped it and it wasn't resumed), "expired" (paused too long), "error". None = open.
+    end_reason: str | None = None
+    # The provider dropped the live call (call_drop): when, and whether it is held open for the app
+    # to reconnect into. drop_count = automatic resumes this call (its Pause/Resume chain) has used.
+    dropped_at: float | None = None
+    drop_held: bool = False
+    drop_count: int = 0
     history: list[dict[str, str]] = dataclasses.field(default_factory=list)
     resumed_from: str | None = None
     device_id: str = ""
@@ -832,6 +845,8 @@ class Interaction:
             return CallState.RESUMED
         if self.paused:
             return CallState.ENDED if self.pause_bookkept else CallState.PAUSED
+        if self.drop_held:  # the provider dropped it; the app is reconnecting into it (call_drop)
+            return CallState.LIVE
         if self.call_closed or self.abandoned:
             return CallState.ENDED
         return CallState.CONNECTING if self.status == "connecting" else CallState.LIVE
@@ -864,6 +879,9 @@ class Interaction:
                 "call_state": self.call_state.value,
                 **({"pause_reason": self.pause_reason} if self.paused and self.pause_reason else {}),
                 "resumed_from": self.resumed_from,
+                # The provider dropped the call and it is held for the app to reconnect (call_drop).
+                **({"reconnecting": True} if self.drop_held and self.successor is None else {}),
+                **({"end_reason": self.end_reason} if self.end_reason else {}),
                 **self.attachments.snapshot(),  # screen, captures, attachments
                 "hold": self.hold,
             }
@@ -1025,6 +1043,9 @@ def publish_state(store: Any, interaction: Interaction, assistant_name: str = "H
             feed.publish("closed", {
                 "finalization": "complete" if snap["finalization"] == "confirmed" else "incomplete",
                 "error": snap.get("error"),
+                # user / provider / expired / error: an app that reconnects dropped calls only ends
+                # on "user"; older apps ignore it.
+                **({"reason": snap["end_reason"]} if snap.get("end_reason") else {}),
             })
 
 
@@ -1604,11 +1625,13 @@ class SidebandWorker:
                            key=lambda t: t["at"])
         return [{k: v for k, v in t.items() if k != "at"} for t in turns]
 
-    def call_closed(self) -> None:
+    def call_closed(self, hold: bool = False) -> None:
         """Once per call: persist the end time, keep recent turns, notify about work in flight.
 
         A paused call keeps its transcript (and listening mode's room text) for Resume and defers the
         "Still working" notices. An ended call drops its room text: it never outlives the call.
+        ``hold``: the provider dropped the call and it waits for the app to reconnect (call_drop): kept
+        like a paused call until it is resumed or the hold runs out (finish_held does the rest).
         """
         if self.rt.duck is not None:  # also when the transport dropped without a session.closed
             self.rt.duck.restore(self.interaction.interaction_id)
@@ -1624,22 +1647,108 @@ class SidebandWorker:
                 self.interaction.ended_at = time.time()
             self.interaction.talking_about = None
             self.interaction.history = (self.interaction.history + self.turns())[-400:]
-            paused = self.interaction.paused
+            paused = self.interaction.paused or hold
             history = list(self.interaction.history)
             if not paused:
                 self.interaction.room = ""
         try:
             if history:
                 self.store.set_meta("recent_voice", json.dumps(history[-30:]))
-            if not paused and self.rt.call_log is not None:
-                self.rt.call_log.record(self.interaction.interaction_id, history, self.call_tasks(),
-                                        self.interaction.device_id, client=self.interaction.client)
+            if not paused:
+                self.log_end(history)
             if not paused:
                 self.store.mark_call_ended()
                 self.still_working_notices()
         except Exception as exc:
             logger.warning("speakeasy: call-close bookkeeping failed: %s", type(exc).__name__)
         end_shared(self.rt, self.interaction, "paused" if paused else "ended")
+
+    def log_end(self, history: list[dict[str, str]] | None = None) -> None:
+        """One line per ended call in agent.log, and its reason in the call log."""
+        with self.interaction.lock:
+            reason = self.interaction.end_reason or "error"
+            self.interaction.end_reason = reason
+            if history is None:
+                history = list(self.interaction.history)
+            started = getattr(self, "connected_at", None)
+            seconds = int(time.monotonic() - started) if isinstance(started, (int, float)) and started else -1
+        logger.info("speakeasy: call.end id=%s reason=%s duration_s=%d resumes=%d", self.interaction.interaction_id,
+                    reason, seconds, self.interaction.drop_count)
+        if self.rt.call_log is not None:
+            self.rt.call_log.record(self.interaction.interaction_id, history, self.call_tasks(),
+                                    self.interaction.device_id, client=self.interaction.client, reason=reason)
+
+    # -- the provider dropped the call: hold it for the app to reconnect -----------------------------
+    def call_drop(self, reason: str) -> None:
+        """The voice provider's connection went away under a live call (no End, Pause or cap asked
+        for it). Up to MAX_AUTO_RESUMES times per call it is held open, its transcript and tasks kept,
+        and the app is told to reconnect (``reconnect_required``): its resume continues the same
+        conversation in a fresh voice session. Past the cap, or if nobody reconnects within
+        DROP_HOLD_S, it ends as dropped (reason "provider")."""
+        with self.interaction.lock:
+            used = self.interaction.drop_count
+            capped = used >= MAX_AUTO_RESUMES
+            self.interaction.dropped_at = time.time()
+            if capped:
+                self.interaction.finalization = "incomplete"
+                self.interaction.status = "error"
+                self.interaction.end_reason = reason
+                self.interaction.error = VOICE_LOST
+            else:
+                self.interaction.drop_held = True
+                self.interaction.status = "reconnecting"
+        if capped:
+            logger.warning("speakeasy: call.drop id=%s reason=%s resumed=false gap_ms=0 cap=%d",
+                           self.interaction.interaction_id, reason, MAX_AUTO_RESUMES)
+            self.call_closed()
+            return
+        logger.info("speakeasy: call.drop id=%s reason=%s held=true attempt=%d/%d", self.interaction.interaction_id,
+                    reason, used + 1, MAX_AUTO_RESUMES)
+        self.call_closed(hold=True)
+        self.interaction.feed.publish("reconnect_required", {
+            "interaction_id": self.interaction.interaction_id, "reason": reason,
+            "attempt": used + 1, "max": MAX_AUTO_RESUMES, "hold_s": DROP_HOLD_S})
+        self.publish()  # now, not after the call's handoffs settle: the app shows "Reconnecting…"
+        timer = threading.Timer(DROP_HOLD_S, self.drop_expired)
+        timer.daemon = True
+        timer.start()
+
+    def drop_expired(self) -> None:
+        """Nobody reconnected into a held drop in time: it ends as dropped."""
+        with self.interaction.lock:
+            if not self.interaction.drop_held or self.interaction.successor is not None:
+                return
+            gap = int((time.time() - (self.interaction.dropped_at or time.time())) * 1000)
+        logger.warning("speakeasy: call.drop id=%s reason=provider resumed=false gap_ms=%d",
+                       self.interaction.interaction_id, gap)
+        self.finish_held("provider", "incomplete", VOICE_LOST)
+
+    def finish_held(self, reason: str, finalization: str, error: str | None = None) -> bool:
+        """End a held drop for good (the hold ran out, or End was pressed while it waited): the
+        bookkeeping call_closed(hold=True) deferred. False when it was already resumed or ended."""
+        with self.interaction.lock:
+            if not self.interaction.drop_held or self.interaction.successor is not None:
+                return False
+            if self.interaction.paused:  # paused while it waited: Pause/Resume owns it now
+                self.interaction.drop_held = False
+                return False
+            self.interaction.drop_held = False
+            self.interaction.finalization = finalization
+            self.interaction.end_reason = reason
+            self.interaction.status = "error" if error else "closed"
+            if error:
+                self.interaction.error = error
+            self.interaction.room = ""
+            history = list(self.interaction.history)
+        try:
+            self.log_end(history)
+            self.store.mark_call_ended()
+            self.still_working_notices()
+        except Exception as exc:
+            logger.warning("speakeasy: dropped-call bookkeeping failed: %s", type(exc).__name__)
+        end_shared(self.rt, self.interaction, "ended")
+        self.publish()
+        return True
 
     def call_tasks(self) -> list[dict[str, Any]]:
         """This call's tasks for the call log: what was asked, how it ended, the spoken answer."""
@@ -1775,6 +1884,9 @@ class SidebandWorker:
             self.schedule_dispatch(delegation_id, context, marked)
         elif kind == "session.closed":
             self.close_choices()
+            with self.interaction.lock:
+                if not self.interaction.paused:
+                    self.interaction.end_reason = self.interaction.end_reason or "user"
             self.call_closed()
             with self.interaction.lock:
                 self.interaction.finalization = "confirmed"

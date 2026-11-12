@@ -2,6 +2,27 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.51 + iPhone build 77: faster calls, cooler phone
+
+- **Calls connect in about a second.** Your Hermes keeps a voice session ready, so a call goes live almost as soon as you tap. The phone also waits for a slow start instead of giving up and trying twice. *(plugin + iPhone build 77)*
+- **A dropped connection no longer ends the call.** If the voice service resets mid-call, the app shows Reconnecting… and the same call carries on, with the same tasks and voice. Hanging up still ends it at once. *(plugin + iPhone build 77)*
+- **Much less heat and battery on calls.** A call shown on Home uses about a third of the processor it did; the call clock no longer redraws Home every second. When the phone is hot or in Low Power Mode, the app eases off animation. Audio is untouched. *(iPhone build 77)*
+- **Large text fits.** Flow steps never break a word in half, and charts, status cards and flight cards stay inside their cards at the largest text sizes. *(iPhone build 77)*
+- **Plugin updates load cleanly.** Updating the plugin closes the old version's database connections first, and recovers by itself if the database can't be opened. *(plugin)*
+
+## Plugin 0.3.50 + iPhone build 76: decide from Home, faster updates
+
+- **Approve and Cancel work from the card again.** Tapping either one on an approval card no longer fails with "The preview changed". *(iPhone build 76)*
+- **Widgets you can decide from.** Approvals look like approvals. Decision cards show each option's details, its risk and why it's suggested, and answering one gives you 5 seconds to undo. Flight cards show readable times, the date and the status. Every card in a result with several is reachable, a decision never hides inside a Done card, and old data is marked as old. *(plugin + iPhone build 76)*
+- **Work shows up right away.** Ask for something, even on a call, and a Working card appears on Home at once. That same card then fills in with the result, and finished work always reaches Home. *(plugin + iPhone build 76)*
+- **Live updates instead of checking.** Home picks up changes from your Hermes the moment they happen. Sitting idle, it makes far fewer requests, so it stays connected and uses less battery. *(iPhone build 75.2 and later)*
+- **Calls hold together.** A dropped call picks up where it left off. A call you put on hold stays on hold after the app restarts, and Resume continues the same conversation. *(plugin + iPhone build 76)*
+- **Answer once, done everywhere.** An approval answered anywhere (phone, Mac or out loud) clears everywhere, including its notification. Replies stay with the message they answer. *(plugin + iPhone build 76)*
+- **"Show me" is quick.** Asking to see a list of tickets, a board or the status of some work answers in seconds with a list card, instead of starting a full job. *(plugin)*
+- **Job names come from your words.** No more "Voice task". *(plugin)*
+- **Tidier screens.** Message bubbles stay on screen on smaller iPhones at the largest text size; on iPhone Duo's outer screen, the keyboard no longer covers the Working card during a call; event tiles stay inside their card; dividers between chats; larger tap areas for the mic and the other small round buttons. *(iPhone build 76)*
+- **iPhone Duo.** Unfolded, the inner screen shows two pages side by side. *(iPhone build 75.1 and later)*
+
 ## Unreleased — Home's state for build 73 (plugin only, apps not yet using it)
 
 - **Home knows what's current.** Home's thread now marks the current exchange: your latest message, Todd's reply and the status line of the job it started. Send something new and the previous exchange becomes transcript only; the transcript itself stays complete and in order. *(plugin)*

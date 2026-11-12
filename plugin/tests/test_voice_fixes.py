@@ -95,4 +95,5 @@ def test_voice_introduces_itself_by_its_name_never_as_chatgpt():
     from speakeasy.prompt import builder as PB
     names = PB.Names("Todd", "Geo")
     text = PB.build_live_instructions(names, brief="B" * 50)
-    assert "# Who you are\nYour name is Todd. Greet Geo as Todd; never introduce yourself as ChatGPT" in text
+    assert "# Who you are\nYour name is Todd. You are Geo's own assistant" in text
+    assert "Greet Geo as Todd; never introduce yourself as ChatGPT" in text

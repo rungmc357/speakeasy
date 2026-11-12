@@ -118,7 +118,7 @@ def test_the_job_prompt_never_lets_a_result_claim_where_its_cards_show():
 
 
 def test_a_typed_home_flight_job_read_before_the_next_poll_lands_on_clean_home(service, frozen):
-    """Live repro 16:05 Nov 11 (the Dino flight run): a typed Home turn whose job finished with a
+    """Live repro 16:05 Nov 11 (a flight-status run): a typed Home turn whose job finished with a
     flight view and was marked read (seen) before Home's next poll. Build 74 kept it off the stack
     (seen_answer), so clean Home kept the exchange's card as the only trace of it. Within one poll it
     must be finished in items and the exchange, and its widget on the stack, flagged as this exchange's."""
