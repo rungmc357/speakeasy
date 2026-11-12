@@ -157,7 +157,7 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
     # SPK-407: a job Home's chat started posts its own finish line (a stored message with ``answer``).
     # It opens its card like SPK-314's line (``item_id``, while the card is on Home), and it is that
     # job's one line at the bottom: no made-up ``d:<run>`` line beside it.
-    card_of = {str(i["run_id"]): i["id"] for i in items if i.get("run_id") and i["id"] not in folded}
+    card_of = {str(i["run_id"]): i["id"] for i in items if i.get("run_id")}   # folded ones open too
     said: set[str] = set()
     for m in messages or []:
         if m.get("answer") and m.get("run_id"):
