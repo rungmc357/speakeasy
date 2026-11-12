@@ -313,6 +313,15 @@ struct ChartCard: View {
     @State private var showsValues = false
     @Environment(\.cardFit) private var fit
     @ScaledMetric(relativeTo: .caption) private var small: CGFloat = 11.5
+    /// Charts' own axis label size (caption 2), as it scales with the reader's text size.
+    @ScaledMetric(relativeTo: .caption2) private var axisScaled: CGFloat = 11
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// The plot's drawn width, so the x labels can thin out to what fits side by side.
+    @State private var plotWidth: CGFloat = 0
+
+    /// Axis labels follow the text size up to a point: past it they'd crowd a 150 pt plot into
+    /// overlapping numbers, and the readout line and "Show values" carry every value at full size.
+    private var axisSize: CGFloat { min(axisScaled, 16) }
 
     var body: some View {
         let facts = ChartFacts(card)
@@ -387,11 +396,22 @@ struct ChartCard: View {
         }
         .chartXSelection(value: $selected)
         // Axis labels stay distinct when cut (GOOG and GOOGL never both read "GO…").
+        // Only as many x labels as fit side by side (every other day, every third time…), never a
+        // run of labels drawn over each other; the y axis keeps a few well-spaced marks.
         .chartXAxis {
-            AxisMarks { value in
-                AxisValueLabel { if let s = value.as(String.self) { Text(short[s] ?? s) } }
+            AxisMarks(values: xLabels(facts, short: short)) { value in
+                AxisValueLabel {
+                    if let s = value.as(String.self) { Text(short[s] ?? s).font(.system(size: axisSize)) }
+                }
             }
         }
+        .chartYAxis {
+            AxisMarks(values: .automatic(desiredCount: typeSize.isAccessibilitySize ? 3 : 5)) { _ in
+                AxisGridLine()
+                AxisValueLabel().font(.system(size: axisSize))
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { plotWidth = $0 }
         .modifier(OneSeriesTint(on: JobLook.touch && !multi))
         .chartLegend(multi ? .visible : .hidden)
         .frame(height: fit == .compact ? 88 : 150)
@@ -411,6 +431,19 @@ struct ChartCard: View {
             .accessibilityIdentifier("chart-show-values")
             if showsValues { ChartValueTable(facts: facts) }
         }
+    }
+}
+
+extension ChartCard {
+    /// The x labels to draw: all of them when they fit, else every n-th. The y axis's labels take
+    /// a few characters' room on the trailing side.
+    func xLabels(_ facts: ChartFacts, short: [String: String]) -> [String] {
+        let labels = facts.rows.map(\.label)
+        guard plotWidth > 0 else { return labels }
+        let yRoom = axisSize * 0.62 * 4 + 8
+        let stride = ChartFacts.axisLabelStride(labels.map { short[$0] ?? $0 },
+                                                width: Double(plotWidth - yRoom), fontSize: Double(axisSize))
+        return labels.enumerated().filter { $0.offset % stride == 0 }.map(\.element)
     }
 }
 
