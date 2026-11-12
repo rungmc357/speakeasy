@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 
+import process_state
 import temp_homes
 from fakes import FakeHermesServer, FakeLiveWorker, FakeTransport, make_home, http  # noqa: F401
 from speakeasy import delivery as _delivery
@@ -64,6 +65,27 @@ def no_real_volume(monkeypatch):
 # runner keeps it. The environment default covers plugin copies imported under another package name
 # (test_live_reload), whose notifier class this guard never sees.
 os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
+
+# Hermes' entry-point bootstrap (first import of gateway.run, run_agent, hermes_cli.main …) switches
+# the process onto the install's committed dependency environment, which may be built for another
+# Python: the first test to import gateway.run would swap sys.path, PYTHONPATH and PATH for the rest
+# of the run (later ``import PIL`` resolved to a python3.14 tree inside a 3.11 run). Import it once
+# here with that activation off and the path/environment put back, so later imports are no-ops.
+process_state.import_hermes_bootstrap_inert()
+
+
+@pytest.fixture(autouse=True)
+def restore_process_state(request):
+    """Put ``sys.path``, the import hooks, ``os.environ`` and the cwd back after every test, so no
+    test can leak them into the next (Hermes modules and config loaders change them at import time).
+    A test that leaves another Python's site-packages on the path, or drops this one's, fails."""
+    state = process_state.ProcessState()
+    yield
+    problems = state.foreign_path_changes()
+    state.restore()
+    if problems:
+        pytest.fail(f"{request.node.nodeid} left sys.path pointing at another Python's packages "
+                    f"({'; '.join(problems)}); restore it in the test", pytrace=False)
 
 _REAL_NOTIFIER_INIT = _delivery.HermesSendNotifier.__init__
 _REAL_SEND_RUNNER = inspect.signature(_REAL_NOTIFIER_INIT).parameters["runner"].default
