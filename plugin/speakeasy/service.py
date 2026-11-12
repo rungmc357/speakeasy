@@ -465,6 +465,8 @@ class VoiceService(SecureInputMixin):
         self.rt.now_model = self.now_model
         from .home_chat import HomeChat
         self.home_chat = HomeChat(self)
+        # SPK-407: a job Home's chat started says in the thread when it's done (whichever HomeChat is current).
+        self.store.settle_listeners.append(lambda key, status: self.home_chat.note_settled(key, status))
         # The view fast path (view_fast.py): "show me build 75 tickets" answered by the coordinator's
         # fast model with two read-only tools, as a native list widget, never a full agent task.
         from . import view_fast
