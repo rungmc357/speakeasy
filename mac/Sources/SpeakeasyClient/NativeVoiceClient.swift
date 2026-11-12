@@ -5,6 +5,7 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 import SpeakeasyCore
+import os
 #if os(iOS)
 import UIKit
 #endif
@@ -112,6 +113,17 @@ public final class NativeVoiceClient: VoiceCallClient {
     private var workOnlyTask: Task<Void, Never>?
     /// Which `/voice/work/latest` answers may still touch the board (see `WorkPollGate`).
     private var workPoll = WorkPollGate()
+    /// The one `/voice/work/latest` request in flight (the board loop and every refresh share it),
+    /// with the list epoch it was sent under. A stalled server never piles up requests: on Nov 11
+    /// dozens hung ~56 s each before Home said it couldn't reach Hermes.
+    private var workFetch: (task: Task<(WorkInfo?, [TaskItem]), Error>, epoch: Int)?
+    /// A refresh asked for while one runs: one more after it, never one per ask.
+    private var tasksRefreshing = false
+    private var tasksRefreshAgain = false
+    /// How long the idle board waits between reads of `/voice/work/latest` (default 2 s, as before).
+    /// A host with its own change feed (the iPhone's history feed) makes this a slow backstop and
+    /// calls `refreshTasks()` when the feed says something moved.
+    public var workPollRest: @MainActor () -> TimeInterval = { 2 }
     private var ticker: Timer?
     private var levelTimer: Timer?
     /// Checks the call's mic really gets through (see MicCheck); runs even with the screen off.
@@ -135,12 +147,16 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     private static func freshMicCheck() -> MicCheck {
         #if os(iOS) || os(visionOS)
-        return MicCheck(firstSoundGrace: MicCheck.firstSoundWithinHandheld)
+        return MicCheck(firstSoundGrace: MicCheck.firstSoundWithinHandheld, canRestartAudio: true)
         #else
         return MicCheck()
         #endif
     }
     private var micTimer: Timer?
+    /// 74.1 (F4): when each connect step happened since the tap (logged on the device, and in the
+    /// call's mic-check note once the first transcript arrives).
+    private var connectTimeline: ConnectTimeline?
+    private static let connectLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "speakeasy", category: "call-connect")
     /// Set while a dead mic is being repaired (pause → immediate resume).
     private var micRepairPending = false
     private var endDeadline: DispatchWorkItem?
@@ -306,9 +322,11 @@ public final class NativeVoiceClient: VoiceCallClient {
         case .inputDelta, .outputDelta: micCheck.heard()
         default: break
         }
+        if case .inputDelta = event { markConnect(.firstTranscript) }
         // The call heard the user after listening mode was turned off: never answer over them.
         if case .inputDelta = event { roomCall?.noteHeardUser() }
         if old.connection != .live && new.connection == .live {
+            markConnect(.live)
             micCheck.connectionOpened()
             micRepairPending = false
             if new.micHealth != micCheck.health { dispatch(.micHealth(micCheck.health)) }
@@ -317,6 +335,38 @@ public final class NativeVoiceClient: VoiceCallClient {
         if !new.connection.isInCall && new.connection != .paused && micTimer != nil {
             micTimer?.invalidate(); micTimer = nil
         }
+        if (old.connection.isInCall || old.connection == .paused), !new.connection.isInCall, new.connection != .paused {
+            reportConnect(ended: true)
+            connectTimeline = nil
+        }
+    }
+
+    /// Marks a connect stage (first time only) and logs it on the device.
+    private func markConnect(_ stage: ConnectTimeline.Stage) {
+        guard var t = connectTimeline else { return }
+        let now = Date()
+        if t.mark(stage, at: now) {
+            let s = String(format: "+%.1fs", now.timeIntervalSince(t.tap))
+            Self.connectLog.notice("connect stage: \(stage.rawValue, privacy: .public) \(s, privacy: .public)")
+        }
+        connectTimeline = t
+        if stage == .firstTranscript { reportConnect(ended: false) }
+    }
+
+    private func noteConnect(_ event: String) {
+        guard connectTimeline != nil else { return }
+        connectTimeline?.note(event, at: Date())
+        Self.connectLog.notice("connect event: \(event, privacy: .public)")
+    }
+
+    /// The timeline's one summary line: on the device, and in the call's mic-check note (agent.log).
+    private func reportConnect(ended: Bool) {
+        guard var t = connectTimeline, t.due(ended: ended) else { return }
+        t.markReported()
+        connectTimeline = t
+        let line = t.summary()
+        Self.connectLog.notice("\(line, privacy: .public)")
+        reportMic(line)
     }
 
     private func startMicTimer() {
@@ -334,6 +384,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         let listening = state.mic == .live && earlyCapture == nil && !engine.isAudioHeld && !speaking
         engine.micProbe { [weak self] level, packets in
             guard let self, self.engine === engine else { return }
+            if (packets ?? 0) > 0 { self.markConnect(.firstMicPacket) }
             let fault = self.micCheck.sample(level: level, packetsSent: packets, listening: listening, now: Date())
             if self.model.state.micHealth != self.micCheck.health { self.dispatch(.micHealth(self.micCheck.health)) }
             if let fault { self.repairMic(fault) }
@@ -359,6 +410,21 @@ public final class NativeVoiceClient: VoiceCallClient {
             return
         }
         #endif
+        // 74.1 (F4(a)): no sound at the very start is first met by restarting the audio unit on this
+        // same connection (about a second); the connection is reopened (a new session, ~10 s) only
+        // if that can't run or doesn't bring the sound back.
+        if micCheck.repairStep(for: fault) == .restartAudio {
+            if let engine, engine.restartLocalAudio() {
+                micCheck.audioRestarted()
+                noteConnect("mic restarted in place")
+                reportMic("restarted the mic in place: \(fault.rawValue) (\(detail))")
+                if model.state.micHealth != micCheck.health { dispatch(.micHealth(micCheck.health)) }
+                return
+            }
+            micCheck.audioRestartFailed()
+            if micCheck.health == .broken { dispatch(.micHealth(.broken)); return }
+        }
+        noteConnect("reconnect: \(fault.rawValue)")
         micCheck.repairStarted()
         micRepairPending = true
         skipEarlyCapture = true
@@ -383,6 +449,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         guard case .connecting(let attempt) = model.state.phase else { return }
         let stage = connectStage
         reportMic("connect stalled (attempt \(attempt.attempt)) at: \(stage); \(micReportDetail())")
+        noteConnect("connect stalled at \(stage)")
         // A call from listening mode keeps what the user already said for the retried call
         // (which connects without the listener) instead of answering from the room over it.
         if roomCall != nil, let heard = earlyCapture?.heardSoFar, !cleanTranscript(heard).isEmpty {
@@ -666,6 +733,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.workExpanded = false
         model.captionExpanded = false
         workOnlyTask?.cancel()
+        connectTimeline = ConnectTimeline(tap: Date())
         dispatch(.startRequested)
         // A call from listening mode always opens unmuted: the words said next are the request.
         if startMuted && takeoffAt == nil { dispatch(.setMic(.muted)) }
@@ -768,6 +836,7 @@ public final class NativeVoiceClient: VoiceCallClient {
                 self.voiceProvider = admission.voiceProvider
                 self.codexStopRequested = false
                 self.dispatch(.sessionAdmitted(interactionID: admission.interactionID))
+                self.markConnect(.sessionCreated)
                 self.connectStage = "admitted; connecting audio"
                 let early = self.earlyCapture
                 if let relay = admission.relay {
@@ -847,7 +916,10 @@ public final class NativeVoiceClient: VoiceCallClient {
             guard let self, let transport, self.engine === transport else { return }
             self.channelClosed()
         }
-        transport.onChannelOpen = { [weak self] in self?.connectStage = "channel open; waiting for the call to start" }
+        transport.onChannelOpen = { [weak self] in
+            self?.connectStage = "channel open; waiting for the call to start"
+            self?.markConnect(.channelOpen)
+        }
         transport.onAudioFormatChanged = { [weak self] in self?.audioDevicesChanged() }
         transport.onConnectionFailed = { [weak self, weak transport] in
             guard let self, let transport, self.engine === transport,
@@ -1315,11 +1387,25 @@ public final class NativeVoiceClient: VoiceCallClient {
         }
     }
 
+    /// `GET /voice/work/latest`, at most one at a time: a caller while one is in flight shares its
+    /// answer (when it was sent under the current list epoch) or waits for it and then asks again.
+    private func latestWorkOnce(_ api: ServerClient) async throws -> (WorkInfo?, [TaskItem]) {
+        while let fetch = workFetch {
+            if fetch.epoch == workPoll.listEpoch { return try await fetch.task.value }
+            _ = try? await fetch.task.value   // sent before the list changed here: let it land, then ask anew
+            if workFetch?.task == fetch.task { workFetch = nil }
+        }
+        let task = Task { try await api.latestWork() }
+        workFetch = (task, workPoll.listEpoch)
+        defer { if workFetch?.task == task { workFetch = nil } }
+        return try await task.value
+    }
+
     /// Refetch tasks so the card shows the server's current draft (SSE also pushes it).
     private func refreshDraftSources() async {
         guard let api else { return }
         let ticket = workPoll.ticket()
-        if let (work, tasks) = try? await api.latestWork(), workPoll.accepts(ticket) {
+        if let (work, tasks) = try? await latestWorkOnce(api), workPoll.accepts(ticket) {
             if !tasks.isEmpty, tasks.map(\.id) == model.state.tasks.map(\.id) || model.state.workOnly || !model.state.connection.isOpen {
                 dispatch(.tasks(tasks))
             } else if !tasks.isEmpty {
@@ -1333,8 +1419,26 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// Re-read the tasks now (a question answered on another device, a session changed): the board,
     /// Live Activity and widgets follow the model, so they clear within the feed's ~1 s.
+    /// Asked again while a refresh runs: one more read after it (a burst of feed events is one or two
+    /// requests, never one each).
     public func refreshTasks() {
-        Task { [weak self] in await self?.refreshDraftSources() }
+        if tasksRefreshing { tasksRefreshAgain = true; return }
+        tasksRefreshing = true
+        Task { [weak self] in
+            repeat {
+                self?.tasksRefreshAgain = false
+                await self?.refreshDraftSources()
+            } while self?.tasksRefreshAgain == true
+            self?.tasksRefreshing = false
+        }
+    }
+
+    /// The app went to the background: the idle board stops reading `/voice/work/latest` (an answer
+    /// still on its way is dropped). Opening the board again (`showWork`) starts a fresh loop.
+    public func pauseWorkPoll() {
+        guard model.state.workOnly, workOnlyTask != nil else { return }
+        workOnlyTask?.cancel(); workOnlyTask = nil
+        workPoll.stop()
     }
 
     public func hideIfIdle() {
@@ -1442,8 +1546,9 @@ public final class NativeVoiceClient: VoiceCallClient {
             while !Task.isCancelled {
                 guard let ticket = self?.workPoll.ticket(generation: loop) else { return }
                 do {
-                    let (work, tasks) = try await api.latestWork()
-                    guard let self, !Task.isCancelled, self.model.state.workOnly else { return }
+                    guard let self else { return }
+                    let (work, tasks) = try await self.latestWorkOnce(api)
+                    guard !Task.isCancelled, self.model.state.workOnly else { return }
                     // Sent before a newer loop or before the user cleared tasks: may be older than the board.
                     guard self.workPoll.accepts(ticket) else { continue }
                     self.workPoll.succeeded(ticket)
@@ -1457,7 +1562,8 @@ public final class NativeVoiceClient: VoiceCallClient {
                         self.dispatch(.error(notice))
                     }
                 }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let rest = max(0.5, self?.workPollRest() ?? 2)
+                try? await Task.sleep(nanoseconds: UInt64(rest * 1_000_000_000))
             }
         }
     }

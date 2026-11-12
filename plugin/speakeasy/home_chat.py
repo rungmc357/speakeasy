@@ -784,6 +784,17 @@ class HomeChat:
                 (mid, client_id, role, text, at, json.dumps(model) if model else None,
                  json.dumps(voice) if voice else None, reply_to, json.dumps(files) if files else None,
                  json.dumps(quote) if quote else None, part))
+        # Profile switching: a Home message belongs to the profile it was typed on (a reply to the
+        # message it answers), so each profile's Home shows its own exchange.
+        try:
+            if role == "user":
+                view = self.svc.view() if hasattr(self.svc, "view") else None
+            else:
+                view = self.store.agent("msg:" + reply_to) if reply_to else None
+            if view:
+                self.store.set_agent("msg:" + mid, view)
+        except Exception:
+            logger.debug("speakeasy: Home message's profile not recorded", exc_info=True)
         return mid
 
     def _card_quote(self, run_id: str) -> dict | None:
@@ -1170,7 +1181,9 @@ class HomeChat:
                 self._inflight.pop(user_id, None)
                 if turn.ack is not None:
                     self.publish_soon()   # the request already returned: the answer is news
-        threading.Thread(target=work, name="home-turn", daemon=True).start()
+        import contextvars
+        # The turn's worker carries the request's context (which profile the app looks at).
+        threading.Thread(target=contextvars.copy_context().run, args=(work,), name="home-turn", daemon=True).start()
         self.publish_soon()   # every device shows the message while the coordinator thinks (off this thread)
         self._await_first_words(turn, ack_box, ack_ready, text, files, last)
         if not turn.done.is_set():

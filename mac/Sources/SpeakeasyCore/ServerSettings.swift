@@ -945,6 +945,8 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
     public var questionState: Bool = false
     /// Which Hermes profile a chat talks to (`GET /voice/agents`, AgentChoice.swift).
     public var agents: Bool = false
+    /// Build 75: switch which Hermes profile the app shows (`GET /voice/profiles`, `X-Speakeasy-Profile`).
+    public var profiles: Bool = false
     /// Typing "/" lists the user's Hermes skills (`GET /voice/skills`, SlashSkills.swift); a sent
     /// "/skill words" runs that skill.
     public var slashSkills: Bool = false
@@ -984,7 +986,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         case taskMessages = "task_messages", jobActivity = "job_activity", toolLog = "tool_log"
         case startJobs = "start_jobs", jobSubagents = "job_subagents", history
         case callNoLimit = "call_no_limit", modelChoice = "model_choice", schedules, codexLogin = "codex_login", transcribe, boards
-        case messageModes = "message_modes", questionState = "question_state", agents
+        case messageModes = "message_modes", questionState = "question_state", agents, profiles
         case slashSkills = "slash_skills", files, approvalRules = "approval_rules", openaiKey = "openai_key"
         case voiceNotes = "voice_notes", newVoiceNotes = "new_voice_notes"
         case now, homeChat = "home_chat", projects, homeStack = "home_stack"
@@ -1014,6 +1016,7 @@ public struct ServerCapabilities: Codable, Equatable, Sendable {
         homeStack = (try? c.decodeIfPresent(Bool.self, forKey: .homeStack)) ?? false
         boards = (try? c.decodeIfPresent(Bool.self, forKey: .boards)) ?? false
         agents = (try? c.decodeIfPresent(Bool.self, forKey: .agents)) ?? false
+        profiles = (try? c.decodeIfPresent(Bool.self, forKey: .profiles)) ?? false
         slashSkills = (try? c.decodeIfPresent(Bool.self, forKey: .slashSkills)) ?? false
         files = (try? c.decodeIfPresent(Bool.self, forKey: .files)) ?? false
         now = (try? c.decodeIfPresent(Bool.self, forKey: .now)) ?? false

@@ -68,6 +68,12 @@ from .plain_errors import CONFIG_LEFT_UNCHANGED, TYPED_SEND_FAILED, VOICE_START_
 from .text import ID_RE, MAX_CARDS, MAX_ROOM_CHARS, TERMINAL, notice_text, safe_room_text, split_result, vague_title
 
 logger = logging.getLogger(__name__)
+
+# Profile switching: which profile THIS request looks at, from ``X-Speakeasy-Profile`` (set in
+# ``authenticate``). None = the app didn't say (an older app: everything, as before); (None,) = the
+# own profile; ("name",) = another served profile. Per request thread, never stored.
+import contextvars as _contextvars
+_VIEW: _contextvars.ContextVar[tuple[str | None] | None] = _contextvars.ContextVar("speakeasy_view", default=None)
 # How long POST .../input-text waits for the call to take a typed turn before answering 504.
 INPUT_TEXT_WAIT_S = 15.0
 
@@ -155,6 +161,8 @@ CAPABILITIES["model_choice"] = True
 # GET /voice/agents, "agent" on POST /voice/work, settings agents.allowed, "agent" on session pages and
 # history rows: which Hermes profile a chat talks to (agents.py).
 CAPABILITIES["agents"] = True
+# Build 75: GET /voice/profiles and the X-Speakeasy-Profile header (switch which profile the app shows).
+CAPABILITIES["profiles"] = True
 # GET /voice/schedules (+ /{id}, preview, create, pause/resume/run, PATCH, DELETE): the Hermes scheduled
 # (cron) jobs of this profile, seen and managed from the apps through Hermes' own cron API (schedules.py).
 CAPABILITIES["schedules"] = True
@@ -436,6 +444,9 @@ class VoiceService(SecureInputMixin):
         if hasattr(self.hermes, "agent_lookup"):
             self.hermes.own_agent = self._own_agent()
             self.hermes.agent_lookup = self.store.agent_lookup
+            # Another profile is reached with ITS OWN key, read here from that profile's secrets
+            # (Hermes checks the key of the profile the /p/<name> URL names). Never sent to a phone.
+            self.hermes.agent_key = self._agent_key
         self.rt.session_db = self._db_for
         self.rt.dealt_with = lambda run_id: self.home_state.dealt_with(run_id=run_id)
         self.store.describe_model = self.describe_model
@@ -905,7 +916,118 @@ class VoiceService(SecureInputMixin):
         if presence:
             self.push.seen(device_id)
         self._projects_off[device_id] = str(headers.get(PROJECTS_HEADER) or "").strip().lower() == "off"
+        # Profile switching: the app names the profile it looks at (a NAME, never a key). Checked
+        # against the profiles this gateway serves; an unknown one is refused, never redirected.
+        raw = headers.get(AG.PROFILE_HEADER)
+        try:
+            view = AG.check_view(self.home, self.settings.get(), raw)
+        except ValueError:
+            _VIEW.set(None)
+            raise ServiceError(400, "That profile isn't on this Hermes any more.", reason="profile") from None
+        _VIEW.set((view,) if raw is not None else None)
         return device_id
+
+    # -- profile switching (agents.py "profile switching") ---------------------------------------------
+    def view(self) -> str | None:
+        """The other profile this request looks at (``X-Speakeasy-Profile``); None = Speakeasy's own
+        (or an app that doesn't switch)."""
+        got = _VIEW.get()
+        return got[0] if got else None
+
+    def _view_strict(self) -> bool:
+        """The app said which profile it looks at (a switching app): lists hold only that profile's."""
+        return _VIEW.get() is not None
+
+    def _agent_key(self, agent: str) -> str:
+        """Another served profile's own API key (Hermes' secret reader, in that profile's scope).
+        Only for profiles this gateway serves; never logged or returned by a route."""
+        if agent not in AG.switchable(self.home, self.settings.get()):
+            return ""
+        from .settings import hermes_secret
+        return hermes_secret(AG.agent_home(self.home, agent), "API_SERVER_KEY")
+
+    def profiles(self) -> dict[str, Any]:
+        """``GET /voice/profiles``: the profiles the app can switch to (agents.profiles)."""
+        return AG.profiles(self.home, self.settings.get(), self.view())
+
+    def _agent_of_key(self, key: str | None) -> str:
+        """Which profile a task (by idem key) ran on: Speakeasy's own unless recorded otherwise."""
+        own = self._own_agent()
+        if not key:
+            return own
+        found = self.store.agent("key:" + key)
+        if not found:
+            try:
+                found = self.store.agent("task:" + self.store.task_id_for(key))
+            except Exception:
+                found = None
+        if not found:
+            sid = self.store.session_for(key)
+            found = self.store.agent("session:" + sid) if sid else None
+        if not found:
+            iid = self.store.interaction_of(key)
+            found = self.store.agent("interaction:" + iid) if iid else None
+        return found or own
+
+    def _agent_of_run(self, run_id: str | None) -> str:
+        return self._agent_of_key(self.store.key_for_run(run_id) if run_id else None)
+
+    def _in_view(self, *, run_id: str | None = None, session_id: str | None = None,
+                 message_id: str | None = None) -> bool:
+        """Whether something belongs to the profile this request looks at."""
+        want = self.view() or self._own_agent()
+        if message_id:
+            tagged = self.store.agent("msg:" + message_id)
+            if tagged or not run_id:
+                return (tagged or self._own_agent()) == want
+        if run_id:
+            return self._agent_of_run(run_id) == want
+        if session_id:
+            return (self.store.agent("session:" + session_id) or self._own_agent()) == want
+        return want == self._own_agent()
+
+    def _filter_now(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Home and Work for one profile: the whole Home is built (so the widget stack's own
+        bookkeeping always sees everything), then cut to what belongs to the profile looked at."""
+        if not self._view_strict():
+            return body
+        out = dict(body)
+        keep = lambda i: self._in_view(run_id=i.get("run_id"), session_id=i.get("session_id"))  # noqa: E731
+        out["items"] = [i for i in body.get("items") or [] if keep(i)]
+        stack = body.get("stack")
+        if isinstance(stack, dict):
+            items = [i for i in stack.get("items") or [] if self._in_view(run_id=i.get("run_id"))]
+            out["stack"] = {**stack, "items": items, "count": len(items),
+                            "on_work": [i for i in stack.get("on_work") or [] if self._in_view(run_id=i.get("run_id"))]}
+        stream = body.get("stream")
+        if isinstance(stream, dict):
+            entries = [e for e in stream.get("entries") or []
+                       if self._in_view(run_id=e.get("run_id"),
+                                        message_id=e.get("id") if e.get("kind") == "message" else None)]
+            out["stream"] = {**stream, "entries": entries}
+            if "current" in stream:
+                # The current exchange is this profile's newest one, not another profile's.
+                from .home_state import current_exchange
+                users = [e for e in entries if e.get("kind") == "message" and e.get("role") == "user"]
+                extra: set[str] = set()
+                if users and getattr(self, "home_chat", None) is not None:
+                    try:
+                        extra = self.home_chat.runs_for(str(users[-1]["id"]))
+                    except Exception:
+                        extra = set()
+                try:
+                    out["stream"]["current"] = current_exchange(entries, float(body.get("as_of") or time.time()), extra)
+                except Exception:
+                    logger.debug("speakeasy: current exchange not recomputed for the profile", exc_info=True)
+        out["profile"] = self.view() or self._own_agent()
+        if self.view():
+            # Another profile: Speakeasy's call summary, the Hermes-wide background lines and the
+            # recommendations are the own profile's.
+            out["call_summary"] = None
+            out["background"] = {"running": 0, "items": []}
+            if isinstance(body.get("recommendations"), dict):
+                out["recommendations"] = {**body["recommendations"], "items": []}
+        return out
 
     def projects_off(self, device_id: str | None) -> bool:
         """This device's app holds Projects out (``X-Speakeasy-Projects: off`` on its latest request):
@@ -1025,6 +1147,9 @@ class VoiceService(SecureInputMixin):
                                       + ("\0room\0" + room if room else "")).encode()).hexdigest()
         interaction_id = "vi_" + secrets.token_hex(16)
         outcome, replay = self.store.reserve_session(request_id, fingerprint, interaction_id)
+        if outcome == "created" and self.view():
+            # Profile switching: the call's work runs on the profile the app looks at.
+            self.store.set_agent("interaction:" + interaction_id, self.view())
         if outcome == "conflict":
             raise ServiceError(409, "Idempotency-Key reused with a different SDP or room")
         if outcome == "pending":
@@ -2869,6 +2994,10 @@ class VoiceService(SecureInputMixin):
         """*link_to*: the chat session this job continues from a history page (store.history_links).
         *staged*: attachments claimed for this job (carried with its handoff). *choice*: the model /
         reasoning picked for it (models.parse_choice); a new chat (*new_chat*) keeps it as its own."""
+        linked_agent = self.store.agent("session:" + link_to) if link_to and choice is None else None
+        if linked_agent and linked_agent != self._own_agent():
+            # A chat that lives on another profile (profile switching): its linked task runs there too.
+            choice = {"agent": linked_agent}
         if choice is None and link_to:
             resolved, _ = self._next_choice(link_to)
             if resolved and (resolved.get("unavailable") or (resolved.get("model") and "/" not in resolved["model"])):
@@ -3318,6 +3447,10 @@ class VoiceService(SecureInputMixin):
         for key in chain:
             parent = self.store.session_for(key)
             found = found or (self.store.agent("session:" + parent) if parent else None)
+        if not found:
+            # Profile switching: work a call started runs on the profile the call was started on.
+            iid = self.store.interaction_of(idem) if hasattr(self.store, "interaction_of") else None
+            found = self.store.agent("interaction:" + iid) if iid else None
         return found if found and found != self._own_agent() else None
 
     def _db_for(self, session_id: str | None) -> Path:
@@ -3327,6 +3460,19 @@ class VoiceService(SecureInputMixin):
             return AG.state_db(self.home, agent)
         return self.rt.state_db
 
+    def _adopt_view_session(self, session_id: str) -> None:
+        """Profile switching: a conversation opened (or written to) while the app looks at another
+        profile is that profile's when it lives in that profile's state.db and not in Speakeasy's own:
+        recorded once, so its page reads from there and its next message runs there (with that
+        profile's key). A session Speakeasy already knows keeps its recorded profile."""
+        view = self.view()
+        if not view or not H.valid_session_id(session_id) or self.store.agent("session:" + session_id):
+            return
+        if self._sessions_at(self.rt.state_db).session_meta(session_id):
+            return
+        if self._sessions_at(AG.state_db(self.home, view)).session_meta(session_id):
+            self.store.set_agent("session:" + session_id, view)
+
     def agents(self) -> dict[str, Any]:
         """``GET /voice/agents``: the agent picker's list (agents.roster)."""
         return AG.roster(self.home, self.settings.get())
@@ -3334,7 +3480,10 @@ class VoiceService(SecureInputMixin):
     def _body_agent(self, body: dict[str, Any]) -> str | None:
         agent = body.get("agent")
         if agent is None or agent == "":
-            return None
+            # Nothing picked: new work goes to the profile the app is looking at (profile switching).
+            return self.view()
+        if isinstance(agent, str) and agent == self.view():
+            return agent   # the profile the app switched to (a served one, checked on the request)
         if not isinstance(agent, str) or agent not in AG.offered(self.home, self.settings.get()):
             raise ServiceError(400, "That agent isn't one you allowed on the Mac.", reason="agent")
         return None if agent == self._own_agent() else agent
@@ -3698,7 +3847,7 @@ class VoiceService(SecureInputMixin):
                 self.home_state.note_fetched(((body.get("stack") or {}).get("items") or []))
             except Exception:  # noqa: BLE001 - a log line never breaks Home
                 logger.debug("speakeasy: delivery timing failed", exc_info=True)
-        return body
+        return self._filter_now(body)
 
     def now_recent(self, query: dict[str, str]) -> dict[str, Any]:
         """``GET /voice/now/recent?tz=``: previous tasks for Home's Recent button."""
@@ -3839,8 +3988,11 @@ class VoiceService(SecureInputMixin):
         """``GET /voice/history?cursor=&q=&source=&limit=`` (and Earlier's ``kinds=``, ``exclude_now=``).
         *for_now*: Home's own read of the list (no ``on_now`` marks: those come from Home)."""
         self.sweep_questions()
-        args = tuple(sorted((k, str(v)) for k, v in (query or {}).items()))
+        args = tuple(sorted((k, str(v)) for k, v in (query or {}).items())) + (("\x00view", repr(_VIEW.get())),)
         stamp = self.sessions.fingerprint()
+        view = self.view()
+        if stamp is not None and view:
+            stamp = (stamp, view, H.fingerprint(AG.state_db(self.home, view)))
         if stamp is not None:
             for agent, ids in sorted(self._other_agent_sessions().items()):
                 stamp = (stamp, agent, H.fingerprint(AG.state_db(self.home, agent), sorted(ids)))
@@ -3876,6 +4028,15 @@ class VoiceService(SecureInputMixin):
                 row["project"] = {"id": p.id, "name": p.name}
 
     def _history_raw(self, query: dict[str, str], for_now: bool = False) -> dict[str, Any]:
+        if self._view_strict() and not for_now:
+            # Profile switching: Chats holds the conversations of the profile the app looks at.
+            view = self.view()
+            if view is None:
+                return self._history_one(query, self.rt.state_db, None, for_now)
+            page = self._history_one(query, AG.state_db(self.home, view), None, for_now)
+            info = AG.describe(self.home, view, self._own_agent())
+            page["sessions"] = [{**r, "agent": info} for r in page["sessions"]]
+            return page
         page = self._history_one(query, self.rt.state_db, None, for_now)
         others = self._other_agent_sessions()
         if not others:
@@ -3928,6 +4089,7 @@ class VoiceService(SecureInputMixin):
         approval/question cards and helpers) and messages sent from the app that are still on their way."""
         if not H.valid_session_id(session_id):
             raise ServiceError(404, "I couldn't find that conversation.")
+        self._adopt_view_session(session_id)
         linked = [s for s in (self.store.session_for(k) for k in self._continuations(session_id)) if s]
         stamp = self._sessions_for(session_id).fingerprint([session_id, *linked])
         return self._cached(("session", session_id, str((query or {}).get("before") or "")),
@@ -4087,6 +4249,7 @@ class VoiceService(SecureInputMixin):
                 "text", "client_id", "source", "attachments", "model", "reasoning", "answers", "mode"}:
             raise ServiceError(400, "Send the message as text.")
         mode = self._message_mode(body)
+        self._adopt_view_session(session_id)
         choice = self._body_choice(body)
         text, client_id = body.get("text"), body.get("client_id")
         if (body.get("source") or "typed") not in {"typed", "voice_message"}:

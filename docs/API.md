@@ -1596,6 +1596,24 @@ Speakeasy chat can talk to any profile the user allowed. Capability `agents`.
   steer and approvals go to the same profile.
 - History rows and session pages of a chat on another agent carry `agent: {id, name, description?}`;
   the chat is read from that profile's `state.db` and listed in the same feed by time.
+## Profiles (build 75, `capabilities.profiles`)
+
+Switch which Hermes profile the app shows. `GET /voice/profiles` →
+`{"profiles": [{"id", "name", "description"?, "model" (its own default, read only, or null), "own", "current"}], "current", "own"}`:
+every profile this gateway serves (a real config, not parked, not standalone; only the own one without
+multiplexing), Speakeasy's own first.
+
+An app that switches sends `X-Speakeasy-Profile: <id>` on every request (a NAME, never a key). Unknown or
+unserved → `400 {"reason": "profile"}`, never a fallback. With the header:
+- `GET /voice/history` lists that profile's own conversations (its state.db); a session opened or written to
+  there is recorded as that profile's, so its page and its next message use it.
+- `GET /voice/now` (and `/voice/home/stack`) keep only that profile's items, stream entries and stack, with
+  `stream.current` recomputed, and say `"profile": "<id>"`. Another profile's Home has no `call_summary`,
+  background lines or recommendations.
+- New work (`POST /voice/work` with no `agent`), Home messages and calls started then run on that profile.
+The plugin reaches another profile at `/p/<id>/` with that profile's own `API_SERVER_KEY`, read on the
+server (the own key when it has none of its own; Hermes checks it). Without the header everything is as before.
+
 ## Skills
 
 `capabilities.slash_skills` (plugin 0.3.37+). Typing `/` at the start of a message box offers the

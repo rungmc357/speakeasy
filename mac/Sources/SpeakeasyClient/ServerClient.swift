@@ -27,6 +27,11 @@ extension ClientIdentity {
     public static func tag(_ request: inout URLRequest, defaults: UserDefaults = .standard) {
         if let value = current { request.setValue(value, forHTTPHeaderField: headerName) }
         if defaults.bool(forKey: projectsHeldOutKey) { request.setValue("off", forHTTPHeaderField: projectsHeaderName) }
+        // Build 75: the profile the app shows (a NAME; the plugin reaches it with that profile's own
+        // key on the server). Set only by an app that switches; older plugins ignore it.
+        if let profile = defaults.string(forKey: ProfileRoster.currentKey), !profile.isEmpty {
+            request.setValue(profile, forHTTPHeaderField: ProfileRoster.headerName)
+        }
     }
 
     public static let projectsHeaderName = "X-Speakeasy-Projects"
@@ -493,6 +498,11 @@ public final class ServerClient: @unchecked Sendable {
     /// The agent picker's list, the saved allowlist and every profile that could be allowed.
     public func agents() async throws -> AgentRoster {
         AgentRoster(json: try await json(AgentRoster.path))
+    }
+
+    /// Build 75: the profiles this Hermes serves and which one the app shows (`GET /voice/profiles`).
+    public func profiles() async throws -> ProfileRoster {
+        ProfileRoster(json: try await json(ProfileRoster.path))
     }
 
     /// Settings › Agents: which Hermes profiles new chats may use.
