@@ -2,6 +2,11 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.52: Home uses a model you already have
+
+- **Home's quick reply model follows your own accounts.** On Auto it picks a fast model from a subscription you already have in Hermes: Codex (ChatGPT sign-in) first, then a direct Claude subscription. If you have neither, it uses your Hermes default model. It never borrows a model through OpenRouter, the Nous portal or another pay-per-use provider. *(plugin)*
+- **Your call voice is your assistant.** It never introduces itself as ChatGPT or OpenAI, and questions about you or which model does your work go to your Hermes, which has your context. A slow answer gets one "still on it", not a loop. *(plugin)*
+
 ## Plugin 0.3.51 + iPhone build 77: faster calls, cooler phone
 
 - **Calls connect in about a second.** Your Hermes keeps a voice session ready, so a call goes live almost as soon as you tap. The phone also waits for a slow start instead of giving up and trying twice. *(plugin + iPhone build 77)*
