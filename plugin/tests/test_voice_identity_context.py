@@ -27,8 +27,8 @@ def test_the_voice_is_the_users_assistant_never_chatgpt_even_with_no_brief():
         assert "never introduce yourself as ChatGPT, Codex, OpenAI or any model name" in block
         assert "never say you are made by OpenAI" in block
         # "what model are you": its own name, and the work model is a hand-off, not a guess.
-        assert "which model you are: you are Juniper" in block
-        assert "which model does their work, hand that off" in block
+        assert "Asked which model you are: you are Juniper" in block
+        assert "which model does their work is a hand-off" in block
         # The identity block closes the instructions' head: after the brief, before per-call extras.
         if brief:
             assert text.index(brief) < text.index("# Who you are")
@@ -37,9 +37,9 @@ def test_the_voice_is_the_users_assistant_never_chatgpt_even_with_no_brief():
 def test_personal_questions_go_to_hermes_and_a_slow_one_is_said_once():
     block = P.identity_reminder(P.Names("Juniper", "Rae"))
     assert "Asked what you know about Rae" in block and "hand it off" in block
-    assert "Never say you know nothing about them, have no memory, or have no context" in block
-    assert "Say at most once" in block and "never repeat \"I'm still checking\"" in block
-    assert "When the result arrives, give it right away" in block
+    assert "never say you have no memory or context" in block
+    assert "say at most once that you're on it" in block and "never repeat \"I'm still checking\"" in block
+    assert "Give the result as soon as it arrives" in block
     # Unnamed users read naturally.
     plain = P.identity_reminder(P.Names())
     assert "the user's own assistant" in plain and "{" not in plain
