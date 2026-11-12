@@ -915,6 +915,9 @@ class VoiceService(SecureInputMixin):
         self.codex_signin.close()  # a waiting sign-in's Codex child must not outlive the service
         if self._text_worker is not None:
             self._text_worker.stop()
+        # Last: the state store. A reload builds a new one on the same file, and a connection left open
+        # here kept stale -wal/-shm handles that failed every later open with "disk I/O error" (SPK-443).
+        self.store.close()
 
     # -- auth ---------------------------------------------------------------------------------
     def authenticate(self, headers: Any, presence: bool = True) -> str:
