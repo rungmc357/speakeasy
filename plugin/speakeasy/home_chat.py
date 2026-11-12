@@ -986,14 +986,14 @@ class HomeChat:
             logger.debug("speakeasy: Home's finish lines weren't delivered", exc_info=True)
 
     def _catch_up_done(self) -> None:
-        """After a restart: lines that came due while the plugin was down go up now (or are dropped as
-        stale); ones still in their grace get a timer again."""
+        """After a restart: lines still due get a timer again (at least a second out, so they go up
+        once the service around this HomeChat is built; the next Home read posts them too). Ones that
+        came due while the plugin was down go up then, or are dropped as stale."""
         try:
-            self.deliver_due()
             with self.store._lock:
                 row = self.store._db.execute("SELECT min(due) FROM home_done WHERE state='due'").fetchone()
             if row and row[0] is not None:
-                self._wake_in(float(row[0]) - self.clock())
+                self._wake_in(max(1.0, float(row[0]) - self.clock()))
         except Exception:
             logger.debug("speakeasy: Home's finish lines weren't caught up", exc_info=True)
 

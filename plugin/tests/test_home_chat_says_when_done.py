@@ -151,8 +151,9 @@ def test_a_line_due_while_the_plugin_was_down_goes_up_once_after_the_restart(ser
     later = time.time() + 601
     HC.HomeChat(service, clock=lambda: later)                  # the restart: its timer was lost
     HC.HomeChat(service, clock=lambda: later)
+    wait_for(lambda: _state(service, run_id) == "posted")      # each new HomeChat re-arms a timer
+    time.sleep(1.5)                                            # both timers have fired
     assert len(finish_lines(service, run_id)) == 1
-    assert _state(service, run_id) == "posted"
 
 
 def test_a_failed_job_says_it_stopped(server, service, hermes):
