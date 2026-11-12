@@ -14,6 +14,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -258,12 +259,17 @@ def _current_steps(result: Any, status: Any) -> Any:
     return {**result, "views": expire_steps(result["views"], status in TERMINAL, time.time())}
 
 
+_OPEN: "weakref.WeakSet[StateStore]" = weakref.WeakSet()
+
+
 class StateStore:
     def __init__(self, path: Path, hermes_home: Path | None = None):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.hermes_home = hermes_home  # Hermes' home (kept for callers; failure text no longer names a log path)
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._lock = threading.Lock()
+        self.closed = False
+        _OPEN.add(self)  # close_all() reaches it even if the service that opened it never finished
         # Called (key, status) after a task's status became terminal (the queued-message drain).
         self.settle_listeners: list[Any] = []
         # Called (key, follow_up_id, state) when a follow-up receipt settles (landed / not_read).
@@ -3003,5 +3009,24 @@ class StateStore:
         return self._draft_row(row) if row else None
 
     def close(self) -> None:
+        """Close the connection (idempotent). A reload must leave no connection behind: leftovers
+        from old code generations kept stale -wal/-shm handles open in the gateway process, and every
+        new connection to the same file then failed with "disk I/O error" (SPK-443)."""
         with self._lock:
-            self._db.close()
+            if self.closed:
+                return
+            self.closed = True
+            _OPEN.discard(self)
+            try:
+                self._db.close()
+            except sqlite3.Error:
+                logger.debug("speakeasy: closing the state store failed", exc_info=True)
+
+
+def close_all() -> int:
+    """Close every StateStore this copy of the code opened (a reload, before the next code loads).
+    Returns how many were still open."""
+    stores = list(_OPEN)
+    for store in stores:
+        store.close()
+    return len(stores)
