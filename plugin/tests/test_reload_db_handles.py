@@ -111,3 +111,20 @@ def test_other_build_failures_never_touch_the_database(plugin):
     assert _settle(r)[-1] == "failed"                     # not a disk I/O error: no recovery
     assert r.fresh_files == 0 and os.stat(r.db_path).st_ino == inode
     assert not list(r.state_dir.glob("recovered-*"))
+
+
+def test_closing_the_service_saves_activity_waiting_on_a_delayed_save(home):
+    """A delayed activity save would otherwise fire after the store closed and lose the steps."""
+    from speakeasy import activity as A
+    from speakeasy import store as S
+    st = S.StateStore(home / "speakeasy" / "act.sqlite3")
+    job = A.tracker(st, "k1")
+    job.state = {**job.state, "items": [{"id": "a1", "text": "Read the config", "status": "done"}]}
+    job.dirty, job.flushed_at = True, 10**12          # just saved: the next save waits on a timer
+    A._flush_locked(st, "k1", job, force=False, on_flush=None, now=10**12)
+    assert job.timer is not None
+    assert A.flush_all(st) == 1 and job.timer is None
+    st.close()
+    again = S.StateStore(home / "speakeasy" / "act.sqlite3")
+    assert again.activity_state("k1")["items"][0]["text"] == "Read the config"
+    again.close()
