@@ -49,6 +49,9 @@ BACKGROUND_ITEMS = 5
 LIVE_LINES = 8                  # Hermes conversations (not Speakeasy tasks) given a live line per build
 LINE_CHARS = 90
 TITLE_CHARS = 80
+# Names that say nothing about the job (store.PLACEHOLDER_TITLES and the old fallback): a finished
+# job with one of these is named from its result's headline instead.
+_PLACEHOLDER_NAMES = frozenset({"Voice task", "Quick answer", "A quick choice", "New task", "A task"})
 LATER_KEPT_S = 7 * 86400
 
 QUESTION, STOPPED, WORKING, WAITING, NEW_ANSWER, SEEN_ANSWER = (
@@ -361,7 +364,13 @@ class NowModel:
 
     def _title(self, work: dict[str, Any]) -> str:
         job = work.get("job") or {}
-        name = job.get("name") or work.get("title") or "A task"
+        # An untitled run is named from what it found (its headline), never "A task".
+        raw = work.get("result")
+        found = raw.get("headline") if isinstance(raw, dict) else None
+        found = found.strip() if isinstance(found, str) else ""
+        name = next((n for n in (job.get("name"), work.get("title"))
+                     if isinstance(n, str) and n.strip() and n not in _PLACEHOLDER_NAMES), None) or \
+            _clip(found, TITLE_CHARS) or job.get("name") or work.get("title") or "A task"
         full = None
         if job.get("id") and job.get("name"):
             try:
@@ -565,6 +574,16 @@ class NowModel:
                 if from_a_call(row) and self._last_call_id == row.get("interaction_id"):
                     item["call_id"] = f"call:{row['interaction_id']}"
                 item.update(kind=SEEN_ANSWER if seen else NEW_ANSWER, line=line, unread=not seen)
+                if question and not row.get("answered"):
+                    # Its answer asks you something it never got an answer to (the question moved on
+                    # in its chat, or was put down): the card carries the ask, so it never reads as
+                    # plain "Done". ``closed`` says why it isn't an open question card.
+                    item["asks"] = {**public_question(question, run_id, finished or now),
+                                    "closed": row.get("question_closed") or "not_open"}
+                drafts = [d for d in work.get("email_drafts") or [] if isinstance(d, dict)]
+                unsent = sum(1 for d in drafts if (d.get("status") or "pending") == "pending")
+                if unsent:
+                    item["unsent_drafts"] = unsent   # an email waiting on Send: "Ready to send", not "Done"
         elif status == RS.RunState.CANCELLED and self._in_chat(run_id):
             # Canceled from Home's chat: the job's card stays in the thread, closed and saying so,
             # like the reply above it ("Canceling the coffee shop search."). A card that vanished
@@ -577,6 +596,9 @@ class NowModel:
             return None  # cancelled outside the chat, rejected: nothing to look at
         item.setdefault("id", f"s:{session}" if session else f"t:{run_id or row['key']}")
         item.setdefault("unread", False)
+        # When its data is from (epoch s): the apps say "as of <time>" once that's older than the
+        # card's kind stays true for (a forecast, a score, a light's state).
+        item["as_of"] = finished if finished is not None else item["updated_at"]
         if self._in_chat(run_id):
             item["in_chat"] = True   # Home's chat started it: it lives in the thread beside its messages
         came = origin(finished, now, self._zone) if finished is not None and item["kind"] in {
@@ -1376,6 +1398,26 @@ def order(items: list[dict[str, Any]], first_seen: dict[str, float]) -> list[dic
     return sorted(items, key=key)
 
 
+_CHOICE_ASK = re.compile(r"(?i)^\s*(?:which|what|how|when|where|who|why)\b|\bor\b")
+
+
+# An option that declines rather than picks ("Hold off", "Not now", "Skip it", "No, leave it").
+_DECLINE = re.compile(r"(?i)^\s*(?:no\b|nope|don'?t|do not|not (?:now|yet)|hold off|skip|leave (?:it|them|as)|"
+                      r"wait|cancel|keep (?:it|them|as|waiting)|later|ignore|never ?mind|stop|pass)")
+
+
+def _only_one_way_to_say_yes(options: list[dict[str, Any]], recommended: int) -> bool:
+    """Every option but the recommended one declines, so allow / don't loses nothing. "Grab CINEPHILES /
+    Grab MUSHROOM / Hold off" has a second yes, which an approval's two buttons would hide."""
+    return all(n == recommended or _DECLINE.match(o.get("text") or "") for n, o in enumerate(options))
+
+
+def _yes_no(prompt: Any) -> bool:
+    """A question you answer yes or no ("Grab the remux?"), not a pick ("Which remix first?",
+    "Find the cause first, or build anyway?")."""
+    return isinstance(prompt, str) and prompt.strip().endswith("?") and not _CHOICE_ASK.search(prompt)
+
+
 def public_question(view: dict[str, Any], run_id: str | None, asked_at: float) -> dict[str, Any]:
     """A task's decision card as Home shows it: options carry an ``id`` (o1..o4) to answer with, an
     image (the card it points at), and the https link and up to three facts the task gave."""
@@ -1408,6 +1450,18 @@ def public_question(view: dict[str, Any], run_id: str | None, asked_at: float) -
         out["recommended"] = rec
         out["risk"] = options[rec].get("risk") or "high"
     out["approvable"] = bool(view.get("approvable"))
+    if out["approvable"] and "recommended" in out and not any_image and _yes_no(out["prompt"]) \
+            and _only_one_way_to_say_yes(options, out["recommended"]):
+        # An approvable yes/no ask (views.approvable: its recommended answer is low risk, reversible,
+        # spends nothing, speaks for no one) is drawn as an approval: "Needs your OK" with allow /
+        # don't. Allow answers with the recommended option (``approve``); don't answers "no".
+        # The options stay, so an app can still offer the others. A "which one?" ask stays a choice
+        # (allow/don't would hide what is being allowed), and so does an ask with a second way to say
+        # yes (its buttons would hide it); picture choices keep their tiles.
+        out["shape"] = "approval"
+        out["approval"] = {"choices": ["once", "deny"]}
+        out["approve"] = {"option_id": options[out["recommended"]]["id"],
+                          "text": options[out["recommended"]].get("text") or ""}
     exp = view.get("expires_in")
     if isinstance(exp, (int, float)) and not isinstance(exp, bool) and 60 <= exp <= 7 * 86400:
         out["expires_at"] = asked_at + float(exp)
