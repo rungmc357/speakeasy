@@ -134,8 +134,9 @@ def test_an_answer_opened_or_heard_on_the_call_before_the_line_lands_gets_none(s
     wait_for(lambda: _state(service, heard) == "due")
     # A voice call followed the job and read its answer out, then ended before the line came due
     # (calls.talking_about(spoke=True) records it in the call's spoken_tasks).
+    told = float(service.store.run_row(key)["settled_at"]) + 5
     ended = SimpleNamespace(lock=threading.Lock(), runs={"t_cafe": SimpleNamespace(idem_key=key)},
-                            interaction_id="vi_call_1", spoken_tasks={"t_cafe": now[0]}, call_closed=True)
+                            interaction_id="vi_call_1", spoken_tasks={"t_cafe": told}, call_closed=True)
     monkeypatch.setattr(service, "interactions", {"vi_call_1": ended})
     now[0] += 601
     assert chat.deliver_due() == []
@@ -157,6 +158,38 @@ def test_a_line_due_while_the_plugin_was_down_goes_up_once_after_the_restart(ser
     wait_for(lambda: _state(service, run_id) == "posted")      # each new HomeChat re-arms a timer
     time.sleep(1.5)                                            # both timers have fired
     assert len(finish_lines(service, run_id)) == 1
+
+
+def test_a_status_asked_on_a_call_while_it_ran_is_not_hearing_its_answer(server, service, hermes, monkeypatch):
+    """calls.answer_status ("how's it going?") also lands in spoken_tasks, before the job finished."""
+    chat = service.home_chat
+    now = [time.time()]
+    chat.clock = lambda: now[0]
+    chat.done_grace_s = 600
+    run_id, _ = start_held(server, service, hermes)
+    key = service.store.key_for_run(run_id)
+    asked = time.time()
+    time.sleep(1.2)
+    finish(service, hermes, run_id)
+    wait_for(lambda: _state(service, run_id) == "due")
+    ended = SimpleNamespace(lock=threading.Lock(), runs={"t_cafe": SimpleNamespace(idem_key=key)},
+                            interaction_id="vi_call_4", spoken_tasks={"t_cafe": asked}, call_closed=True)
+    monkeypatch.setattr(service, "interactions", {"vi_call_4": ended})
+    now[0] += 601
+    assert chat.deliver_due() == [run_id]
+    monkeypatch.undo()
+    assert len(finish_lines(service, run_id)) == 1
+
+
+def test_a_reply_to_the_line_after_its_card_left_home_quotes_the_job(server, service, hermes, monkeypatch):
+    service.home_chat.done_grace_s = 0
+    run_id, _ = start_held(server, service, hermes)
+    finish(service, hermes, run_id)
+    wait_for(lambda: finish_lines(service, run_id))
+    monkeypatch.setattr(service.now_model, "build", lambda **kw: {"items": []})   # the card is gone
+    quote = service.home_chat._quote(f"d:{run_id}")
+    title = service.store.title(service.store.key_for_run(run_id))
+    assert quote == {"id": f"r:{run_id}", "role": "card", "text": title or "A job", "run_id": run_id}
 
 
 def test_a_live_call_following_the_job_gets_longer_to_tell_it(server, service, hermes, monkeypatch):
