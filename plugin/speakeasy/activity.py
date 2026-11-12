@@ -801,6 +801,22 @@ def tracker(store: Any, key: str) -> JobActivity:
     return found
 
 
+def flush_all(store: Any) -> int:
+    """Save every task's unsaved activity now and cancel the delayed saves (the service is closing:
+    its store closes next, so a delayed save would find it closed and the steps would be lost)."""
+    saved = 0
+    with _LOCK:
+        for key, job in list(_trackers(store).items()):
+            if job.timer is not None:
+                job.timer.cancel()
+                job.timer = None
+            try:
+                saved += _flush_locked(store, key, job, force=True, on_flush=None, now=None)
+            except Exception:
+                pass  # a save that fails here was going to fail later too; closing goes on
+    return saved
+
+
 def observe(store: Any, key: str, event: dict[str, Any], on_flush: Any = None, now: float | None = None) -> bool:
     """Feed one run event to the task's activity. Saved at most once per FLUSH_EVERY_S (a terminal
     event saves at once); when held back, a timer saves it and calls ``on_flush`` (to publish).

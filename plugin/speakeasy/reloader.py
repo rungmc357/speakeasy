@@ -102,7 +102,7 @@ def _fd_path(fd: int) -> str | None:
             return None
         return raw.split(b"\0", 1)[0].decode(errors="replace") or None
     try:
-        return os.readlink(f"/proc/self/fd/{fd}")
+        return os.readlink(f"/dev/fd/{fd}")  # Linux: the file's path, " (deleted)" when it's gone
     except OSError:
         return None
 
@@ -114,7 +114,7 @@ def open_db_handles(db: Path) -> list[str]:
     for base in {str(db), os.path.realpath(db)}:
         names |= {base, base + "-wal", base + "-shm", base + "-journal"}
     try:
-        fds = [int(n) for n in os.listdir("/dev/fd" if sys.platform == "darwin" else "/proc/self/fd")]
+        fds = [int(n) for n in os.listdir("/dev/fd")]
     except (OSError, ValueError):
         return []
     out = []
