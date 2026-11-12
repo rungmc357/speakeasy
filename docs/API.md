@@ -57,6 +57,7 @@ used in the tests (timestamps and IDs will differ).
 | POST | `/voice/interactions/{id}/card-action` | device | Press a button on a task's card during a call |
 | POST | `/voice/interactions/{id}/input-text` | device | A turn typed on the call screen instead of spoken |
 | POST | `/voice/interactions/{id}/mic-check` | device | Log a mic repair (numbers only, no audio or words) |
+| POST | `/voice/telemetry/call-energy` | device | Log one call's energy record (numbers only) |
 | POST | `/voice/interactions/{id}/mic` | device | The call's mic went on or off (pauses the progress pulse) |
 | POST | `/voice/interactions/{id}/screen` | device | Turn screen sharing on or off for this call |
 | POST | `/voice/interactions/{id}/captures/{capture_id}` | device | Report on a capture request |
@@ -356,6 +357,17 @@ Nothing is recorded or published unless the voice took the turn.
 
 The app found the call's mic wasn't getting through and reopened the connection. Body
 `{"note": "..."}` (at most 400 characters of numbers and state, no audio or words). Logged only.
+
+## POST /voice/telemetry/call-energy
+
+The iPhone sends one record when each call ends, so heat on real phones shows in agent.log as one
+`call.energy ...` line (a call that reached `serious` or `critical` logs at WARNING). Numbers and short
+names only: `duration_s`, `cpu_s` (the app's CPU seconds over the call), `cpu_pct`, `layout_s`
+(seconds by `full`, `home`, `transcript`, `other`, `background`), `thermal_start`, `thermal_max`,
+`thermal` (up to 24 `{"state", "at_s"}` changes), `low_power`, `low_power_s`, `backoff_s` (seconds the
+app ran its hot / Low Power back-off), `orb_fps`, `app`, `device` (a model code such as `iPhone18,1`),
+`interaction_id`. Unknown fields or out-of-range values are `400`. `200` `{"logged": true}`; older
+plugins answer `404`, which the app ignores.
 
 ## POST /voice/interactions/{id}/mic
 

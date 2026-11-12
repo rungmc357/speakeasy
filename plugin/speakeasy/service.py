@@ -2189,6 +2189,15 @@ class VoiceService(SecureInputMixin):
         logger.warning("speakeasy: mic check on %s: %s", interaction_id[:10], re.sub(r"[^\w :.,()/;+-]", "", note))
         return {"interaction_id": interaction_id, "logged": True}
 
+    def call_energy(self, body: Any) -> dict[str, Any]:
+        """One call's energy record from the app when the call ends: one ``call.energy`` line in
+        agent.log (numbers and short names only; see call_energy.py). The call may already be gone."""
+        from . import call_energy as CE
+        try:
+            return CE.record(body)
+        except CE.CallEnergyError as exc:
+            raise ServiceError(400, str(exc)) from None
+
     def skip_tour(self, interaction_id: str) -> dict[str, Any]:
         """Skip button in the panel: tell the live call to drop the first-call tour."""
         interaction = self.interaction(interaction_id)
