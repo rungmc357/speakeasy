@@ -946,6 +946,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/routing":
                 self._reply(200, self.service.choose_routing(self._body()))
                 return
+            if path == "/voice/telemetry/call-energy":  # the app's one record per call (call_energy.py)
+                self._reply(200, self.service.call_energy(self._body()))
+                return
             seen = re.fullmatch(rf"/voice/tasks/{_ID}/seen", path)
             if seen:
                 self._reply(200, self.service.answer_seen(seen.group(1), self._body()))
