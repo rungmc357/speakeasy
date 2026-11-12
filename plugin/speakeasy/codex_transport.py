@@ -194,6 +194,9 @@ class CodexTransport:
         self.lock = threading.Lock()
         self.sequence = 0
         self.closed = False
+        # Speakeasy asked this session to stop (End, Pause, the cap, an abandoned connect). A
+        # `thread/realtime/closed` without it is the provider dropping the call (call_drop).
+        self.stop_requested = False
         self.started_at = time.monotonic()
         threading.Thread(target=self._reader, daemon=True, name="speakeasy-codex-reader").start()
 
@@ -241,6 +244,8 @@ class CodexTransport:
 
     def request(self, method: str, params: dict | None = None, timeout: float = 20) -> dict:
         waiter: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=1)
+        if method == "thread/realtime/stop":
+            self.stop_requested = True
         with self.lock:
             self.sequence += 1
             number = self.sequence
@@ -318,6 +323,7 @@ class CodexTransport:
                     self.closed = True
 
     def stop(self) -> None:
+        self.stop_requested = True
         if self.process.poll() is None:
             if self.thread_id:
                 try:
@@ -384,19 +390,29 @@ class CodexSidebandWorker(SidebandWorker):
                         await self.handle_event({"type": "session.output_transcript.delta", "delta": params["text"],
                                                  "start_ms": self.offset, "end_ms": self.offset})
                 elif method == "thread/realtime/closed":
-                    await self.handle_event({"type": "session.closed"})
+                    if self.transport.stop_requested or self.interaction.paused:
+                        await self.handle_event({"type": "session.closed"})
+                    # else: nobody asked for it: the provider dropped the call (call_drop, below)
                     break
                 elif method in {"thread/realtime/error", "transport/eof"}:
                     break
         finally:
+            # Nobody asked this session to stop and the call isn't paused, ended or abandoned: the
+            # realtime connection went away under the call (OpenAI resets it now and then). That is
+            # not a hang-up: the call is held for the app to reconnect into (call_drop).
+            dropped = (not self.transport.stop_requested and self.interaction.finalization == "open"
+                       and not self.interaction.paused and not self.interaction.abandoned)
             self.transport.stop()
-            if self.interaction.finalization != "confirmed":
+            if dropped:
+                self.call_drop("provider")
+            elif self.interaction.finalization != "confirmed":
                 with self.interaction.lock:
                     if self.interaction.paused:
                         self.interaction.finalization = "confirmed"
                     else:
                         self.interaction.finalization = "incomplete"
                         self.interaction.status = "error"
+                        self.interaction.end_reason = self.interaction.end_reason or "error"
                         self.interaction.error = "Voice transport ended without a confirmed close"
             self.call_closed()
             if self.dispatch_tasks:

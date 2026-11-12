@@ -1326,6 +1326,11 @@ class VoiceService(SecureInputMixin):
         with interaction.lock:
             if interaction.finalization == "confirmed":
                 return {"finalization": "confirmed"}
+            held = interaction.drop_held and interaction.successor is None
+        if held and hasattr(worker, "finish_held"):
+            # End pressed while a provider drop waits for the app to reconnect: the user ended it.
+            worker.finish_held("user", "confirmed")
+            return {"finalization": interaction.finalization}
         if hasattr(worker, "end_call"):  # relayed call (Grok): the plugin owns the voice socket
             worker.end_call("ended")
             for _ in range(40):
@@ -1431,6 +1436,10 @@ class VoiceService(SecureInputMixin):
         try:
             self.store.mark_call_ended()
             if worker is not None:
+                with interaction.lock:
+                    interaction.end_reason = interaction.end_reason or "expired"
+                if hasattr(worker, "log_end"):
+                    worker.log_end()
                 worker.still_working_notices()
         except Exception as exc:
             logger.warning("speakeasy: pause-expiry bookkeeping failed: %s", type(exc).__name__)
@@ -1476,6 +1485,9 @@ class VoiceService(SecureInputMixin):
             source.successor = interaction
             source.paused = False
             source.pause_reason = None
+            # A held drop (call_drop) resumed by the app: the same call goes on in a new voice session.
+            drop_held, source.drop_held = source.drop_held, False
+            dropped_at, drop_count = source.dropped_at, source.drop_count
             runs = dict(source.runs)
             # Listening mode's room text moves to the resumed call; the paused one no longer holds it.
             room, source.room = source.room, ""
@@ -1489,6 +1501,11 @@ class VoiceService(SecureInputMixin):
         interaction.resumed_from = source.interaction_id
         interaction.revision = source.revision
         interaction.latest_delegation_id = source.latest_delegation_id
+        interaction.drop_count = drop_count + (1 if drop_held else 0)
+        if drop_held:
+            gap = int((time.time() - (dropped_at or time.time())) * 1000)
+            logger.info("speakeasy: call.drop id=%s reason=provider resumed=true gap_ms=%d as=%s resumes=%d",
+                        source.interaction_id, gap, interaction.interaction_id, interaction.drop_count)
 
     # -- the workspace across calls --------------------------------------------------------------
     def carry_donors(self) -> list[Interaction]:
