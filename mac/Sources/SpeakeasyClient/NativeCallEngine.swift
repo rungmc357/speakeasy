@@ -231,6 +231,29 @@ public final class NativeCallEngine: NSObject, RTCPeerConnectionDelegate, RTCDat
         }
     }
 
+    /// The orb's levels and the mic probe from one stats report (call energy).
+    public func callStats(_ completion: @escaping (CallStatsSample) -> Void) {
+        guard let peer, !closed else { return }
+        peer.statistics { report in
+            var mic = 0.0, voice = 0.0
+            var level: Double?, packets: Int?
+            for stats in report.statistics.values where (stats.values["kind"] as? String) == "audio" {
+                let l = (stats.values["audioLevel"] as? NSNumber)?.doubleValue
+                switch stats.type {
+                case "media-source":
+                    if let l { mic = max(mic, l); level = max(level ?? 0, l) }
+                case "inbound-rtp":
+                    if let l { voice = max(voice, l) }
+                case "outbound-rtp":
+                    if let p = (stats.values["packetsSent"] as? NSNumber)?.intValue { packets = (packets ?? 0) + p }
+                default: break
+                }
+            }
+            let sample = CallStatsSample(mic: mic, voice: voice, micLevel: level, packetsSent: packets)
+            DispatchQueue.main.async { completion(sample) }
+        }
+    }
+
     public var sdpLineCount: Int? {
         peer?.localDescription?.sdp.components(separatedBy: .newlines).filter { !$0.isEmpty }.count
     }
