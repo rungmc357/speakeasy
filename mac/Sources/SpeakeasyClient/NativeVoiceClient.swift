@@ -155,6 +155,9 @@ public final class NativeVoiceClient: VoiceCallClient {
     private var connectionUsedEarlyCapture = false
     /// Where the current connection attempt is (for the stall report).
     private var connectStage = "starting"
+    /// When this connection attempt began: the stall watchdog lets a session request still in flight
+    /// run to CallReconnect.serverReplyWithin instead of abandoning it at connectStallAfter.
+    private var connectStartedAt = Date()
     private var connectWatchdog: DispatchWorkItem?
     /// A call that hasn't gone live by then is stuck; retry once, then say so.
     static let connectStallAfter: TimeInterval = CallReconnect.connectStallAfter
@@ -454,13 +457,13 @@ public final class NativeVoiceClient: VoiceCallClient {
         pause()
     }
 
-    private func armConnectWatchdog(_ api: ServerClient) {
+    private func armConnectWatchdog(_ api: ServerClient, after: TimeInterval = NativeVoiceClient.connectStallAfter) {
         connectWatchdog?.cancel()
         let item = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in self?.connectStalled(api) }
         }
         connectWatchdog = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.connectStallAfter, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + after, execute: item)
     }
 
     /// Still "connecting" long after it should be live. Before, it sat there showing "Listening"
@@ -468,6 +471,14 @@ public final class NativeVoiceClient: VoiceCallClient {
     private func connectStalled(_ api: ServerClient) {
         guard case .connecting(let attempt) = model.state.phase else { return }
         let stage = connectStage
+        // The server is still creating this session (its reply hasn't come): abandoning it now
+        // would only make the server start a second voice session and start the wait over.
+        if let more = CallReconnect.keepWaiting(stage: stage, waited: Date().timeIntervalSince(connectStartedAt)) {
+            noteConnect("still waiting for the server")
+            onStatus?("Connecting…")
+            armConnectWatchdog(api, after: more)
+            return
+        }
         reportMic("connect stalled (attempt \(attempt.attempt)) at: \(stage); \(micReportDetail())")
         noteConnect("connect stalled at \(stage)")
         // A call from listening mode keeps what the user already said for the retried call
@@ -799,6 +810,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         dispatch(.sharing(.declared(screenDeclaration())))
         refreshAttachmentSupport(api)
         connectStage = "starting"
+        connectStartedAt = Date()
         armConnectWatchdog(api)
         if skipEarlyCapture { stopEarlyCapture() } else { startEarlyCapture() }
         connectionUsedEarlyCapture = earlyCapture != nil
@@ -827,7 +839,7 @@ public final class NativeVoiceClient: VoiceCallClient {
                 engine.setMicEnabled(self?.model.state.localAudioEnabled ?? false)
                 self?.connectStage = "creating offer"
                 let sdp = try await engine.createOffer()
-                self?.connectStage = "waiting for the server"
+                self?.connectStage = CallReconnect.waitingForServer
                 guard let self, self.engine === engine, self.model.state.connection == .connecting else { engine.close(); return }
                 // Resumes declare again: the resumed call starts with sharing off.
                 let screen = self.model.state.sharing.declared

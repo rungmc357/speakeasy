@@ -100,6 +100,20 @@ public enum CallReconnect {
     public static func delay(attempt: Int) -> TimeInterval { [1.0, 2.5, 5.0][max(0, min(attempt - 1, 2))] }
     /// A connection attempt that hasn't gone live by then is stuck.
     public static let connectStallAfter: TimeInterval = 12
+    /// The session request itself may take longer than the stall watchdog on a slow Hermes (a cold
+    /// Codex start was 10-16 s on Nov 11): the attempt keeps waiting for the server's reply until
+    /// then (under the request's own 30 s timeout) instead of abandoning a session the server is
+    /// still creating and asking for a second one.
+    public static let serverReplyWithin: TimeInterval = 28
+    /// The connect stage while the session request is in flight (NativeVoiceClient.connectStage).
+    public static let waitingForServer = "waiting for the server"
+
+    /// When the stall watchdog fires: how much longer to keep waiting instead of retrying, or nil to
+    /// treat the attempt as stuck. Only an attempt still waiting for the server's reply keeps waiting.
+    public static func keepWaiting(stage: String, waited: TimeInterval) -> TimeInterval? {
+        guard stage == waitingForServer, waited < serverReplyWithin - 0.5 else { return nil }
+        return serverReplyWithin - waited
+    }
     /// Watchdog attempts per connection before the call fails.
     public static let connectAttempts = 2
     public static let gaveUp = "Lost the connection to your Hermes and couldn't get it back."
