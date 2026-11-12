@@ -54,6 +54,8 @@ from .hermes_api import HermesAPI, HermesError
 from .host import HermesHost
 
 RESTART_NEEDED = "Speakeasy was updated while your Hermes was running. Send /restart to your Hermes to finish the update."
+# "Don't" on a task's approvable decision drawn as an approval: said to the task in its conversation.
+DONT_APPROVE_TEXT = "No, don't do that."
 from .prompt import builder as P
 from .router import home_plan_call as router_home_plan_call, routing_model
 from .threads import THREAD_PLATFORMS
@@ -3942,8 +3944,11 @@ class VoiceService(SecureInputMixin):
         # task submitted and no answer recorded.
         if item is None:
             raise ServiceError(404, "That question has closed.")
-        question = item.get("question")
-        if item.get("kind") != "question" or (question if isinstance(question, dict) else {}).get("shape") == "approval":
+        raw_q = item.get("question")
+        question: dict[str, Any] = raw_q if isinstance(raw_q, dict) else {}
+        # A Hermes approval (a command waiting on your OK) is answered by /approval; a task's own
+        # approvable decision (now.public_question) is drawn as one and answered either way.
+        if item.get("kind") != "question" or (question.get("shape") == "approval" and not question.get("approvable")):
             raise ServiceError(404, "That question has closed.")
         text = N.option_text(item, body["option_id"]) if "option_id" in body else body.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > M.MAX_TEXT:
@@ -3976,6 +3981,20 @@ class VoiceService(SecureInputMixin):
         item = self.now_model.find(item_id)
         if item is None or (item.get("question") or {}).get("shape") != "approval":
             raise ServiceError(409, "That approval has closed.")
+        question = item["question"]
+        if question.get("approvable"):
+            # A task's approvable decision drawn as an approval: allow = its recommended answer,
+            # don't = "no" in the task's own conversation (one answer path: now_answer).
+            if body["choice"] not in {"once", "session", "deny"}:
+                raise ServiceError(400, "Send a choice of once, session or deny.")
+            approve = question.get("approve") or {}
+            if body["choice"] == "deny":
+                got = self.now_answer(item_id, {"text": DONT_APPROVE_TEXT})
+            elif approve.get("option_id"):
+                got = self.now_answer(item_id, {"option_id": approve["option_id"]})
+            else:
+                raise ServiceError(409, "That approval has closed.")
+            return {**got, "choice": "deny" if body["choice"] == "deny" else "once"}
         key = self.store.key_for_run(item["run_id"])
         session = (self.store.run_row(key) or {}).get("session_id") if key else None
         if not session:
