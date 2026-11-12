@@ -154,11 +154,21 @@ def build_stream(items: list[dict[str, Any]], asks: dict[str, str], answered: se
             entries.append({"id": posted["id"], "kind": "result", "at": posted["at"], "item_id": item["id"],
                             "run_id": item["run_id"], "card_id": entry["id"]})
         entries.append(entry)
+    # SPK-407: a job Home's chat started posts its own finish line (a stored message with ``answer``).
+    # It opens its card like SPK-314's line (``item_id``, while the card is on Home), and it is that
+    # job's one line at the bottom: no made-up ``d:<run>`` line beside it.
+    card_of = {str(i["run_id"]): i["id"] for i in items if i.get("run_id") and i["id"] not in folded}
+    said: set[str] = set()
+    for m in messages or []:
+        if m.get("answer") and m.get("run_id"):
+            said.add(str(m["run_id"]))
+            if str(m["run_id"]) in card_of:
+                m["item_id"] = card_of[str(m["run_id"])]
     entries.extend(messages or [])
     # A job whose result was already posted at the bottom (an email draft) needs no answer line too:
     # the result entry is what arrives at the bottom for it (b73 integration of email-card73 + SPK-314).
     entries.extend(a for a in _answer_lines(items, folded, messages or [])
-                   if str(a.get("run_id") or "") not in results)
+                   if str(a.get("run_id") or "") not in results and str(a.get("run_id") or "") not in said)
     # An ask (or the chat message and reply that started a job) sorts just before its card even
     # when they share a second.
     entries.sort(key=lambda e: (e["at"], 0 if e["kind"] in {"ask", "message"} else 1))
