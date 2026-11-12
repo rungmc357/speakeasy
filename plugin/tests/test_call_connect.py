@@ -142,6 +142,40 @@ def test_a_tap_uses_the_warm_spare_and_pays_only_the_realtime_start(home, caplog
     assert PrepTransport.made[-1].stopped  # closing the service stops the spare's app-server
 
 
+def test_a_spare_s_idle_time_never_counts_toward_the_call_length(tmp_path, monkeypatch):
+    """The 30-minute cap is measured from transport.started_at: a spare that waited 14 minutes
+    must not end the call 14 minutes early."""
+    from speakeasy import codex_transport as ct
+    clock = [1000.0]
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+
+    tr = ct.CodexTransport.__new__(ct.CodexTransport)
+    import queue as _q
+    tr.started_at, tr.thread_id, tr.timings = 1000.0, "thr", {}
+    tr.notifications = _q.Queue(maxsize=512)
+    clock[0] += 14 * 60
+    def request(method, params=None, timeout=20):
+        raise RuntimeError("stop here")
+    tr.request = request
+    tr.realtime_requested = False
+    tr.binary = tmp_path / "codex"
+    with pytest.raises(RuntimeError):
+        tr.start("v=0", "", [], "juniper")
+    assert tr.started_at == 1000.0 + 14 * 60
+
+
+def test_a_spare_s_idle_notices_are_cleared_but_realtime_events_kept():
+    import queue as _q
+    from speakeasy import codex_transport as ct
+    tr = ct.CodexTransport.__new__(ct.CodexTransport)
+    tr.notifications = _q.Queue(maxsize=512)
+    for m in ("thread/started", "mcpServer/startupStatus", "thread/realtime/error", "account/updated", "transport/eof"):
+        tr.notifications.put_nowait({"method": m})
+    tr._drop_idle_notifications()
+    left = [tr.notifications.get_nowait()["method"] for _ in range(tr.notifications.qsize())]
+    assert left == ["thread/realtime/error", "transport/eof"]
+
+
 def test_no_spare_means_a_cold_start_and_a_spare_for_next_time(home):
     svc = _svc(home, PrepTransport)
     try:

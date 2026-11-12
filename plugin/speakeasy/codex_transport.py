@@ -311,9 +311,26 @@ class CodexTransport:
         self.timings["thread"] = _ms(began)
         self.prepared_at = time.monotonic()
 
+    def _drop_idle_notifications(self) -> None:
+        """A spare that waited may have queued thread/account/MCP notices nobody reads (the call's
+        worker only reads thread/realtime/* and EOF): clear them so a long wait can't fill the queue."""
+        kept = []
+        while True:
+            try:
+                event = self.notifications.get_nowait()
+            except queue.Empty:
+                break
+            method = str(event.get("method") or "")
+            if method.startswith("thread/realtime/") or method == "transport/eof":
+                kept.append(event)
+        for event in kept:
+            self.notifications.put_nowait(event)
+
     def start(self, sdp: str, instructions: str, seed: list, voice: str) -> str:
         self.prepare()
         began = time.monotonic()
+        # The call's length (the max_call_s cap) runs from now, not from when a spare was spawned.
+        self.started_at = began
         initial = []
         for item in seed[-20:]:
             if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
@@ -334,6 +351,7 @@ class CodexTransport:
                                      "Do not claim a task was completed until the server supplies its result."}
         if initial:
             params["initialItems"] = initial
+        self._drop_idle_notifications()
         self.realtime_requested = True
         self.request("thread/realtime/start", params, timeout=35)
         deadline = time.monotonic() + 20
