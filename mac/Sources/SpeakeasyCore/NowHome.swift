@@ -18,6 +18,8 @@ public struct NowHome: Equatable, Sendable {
     public var call: NowCall?
     /// The "Your call · 6 min" card after a call ends, until it's cleared or rolls over.
     public var callSummary: NowCallSummary?
+    /// QA74 #20: the paused call the server can still resume (off a live call only).
+    public var pausedCall: NowPausedCall?
     /// SPK-208 (plugin 0.3.46+, capability `home_stream`): the same cards as one thread. Nil from an older plugin.
     public var stream: NowStream?
     /// The tracker pill's words at any volume ("3 need you · 5 running"), from the plugin; nil from an
@@ -64,6 +66,7 @@ public struct NowHome: Equatable, Sendable {
         notice = nonEmpty((json["notice"] as? [String: Any])?["text"])
         call = NowCall(json: json["call"])
         callSummary = NowCallSummary(json: json["call_summary"])
+        pausedCall = NowPausedCall(json: json["paused_call"])
         stream = NowStream(json: json["stream"])
         pill = nonEmpty(json["pill"])
         stack = HomeStack(json: json["stack"])
@@ -94,6 +97,27 @@ public struct NowCall: Equatable, Sendable {
         guard let o = json as? [String: Any], let id = nonEmpty(o["interaction_id"]) else { return nil }
         self.init(interactionID: id, startedAt: (o["started_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
                   focus: nonEmpty(o["focus"]), focusLabel: nonEmpty(o["focus_label"]))
+    }
+}
+
+/// QA74 #20: the call the server holds paused (and can still resume), so an app relaunched while it
+/// was paused can offer Resume again. Nil from an older plugin or when nothing is paused.
+public struct NowPausedCall: Equatable, Sendable {
+    public var interactionID: String
+    public var pausedAt: Date?
+    /// How the call paused: `.quiet(minutes:)` when it went quiet by itself, else `.user`.
+    public var reason: PauseReason
+    /// The device that paused it (nil when the plugin doesn't say).
+    public var deviceID: String?
+    public init(interactionID: String, pausedAt: Date? = nil, reason: PauseReason = .user, deviceID: String? = nil) {
+        self.interactionID = interactionID; self.pausedAt = pausedAt; self.reason = reason; self.deviceID = deviceID
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["interaction_id"]) else { return nil }
+        let minutes = (o["idle_paused_minutes"] as? NSNumber)?.intValue
+        let reason: PauseReason = nonEmpty(o["pause_reason"]) == "idle" && (minutes ?? 0) > 0 ? .quiet(minutes: minutes!) : .user
+        self.init(interactionID: id, pausedAt: (o["paused_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
+                  reason: reason, deviceID: nonEmpty(o["device_id"]))
     }
 }
 

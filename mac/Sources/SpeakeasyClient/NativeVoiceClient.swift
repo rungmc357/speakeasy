@@ -78,6 +78,26 @@ public final class NativeVoiceClient: VoiceCallClient {
     public var supportsPause: Bool { true }
     public var isPaused: Bool { model.state.connection == .paused }
 
+    /// QA74 #20: paused calls this app ended (End on the paused screen tells the server nothing, so
+    /// Home keeps naming them until they expire). Kept across launches; newest few only.
+    static let endedPausedKey = "speakeasy.endedPausedCalls"
+    var endedPausedIDs: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Self.endedPausedKey) ?? [] }
+        set { UserDefaults.standard.set(Array(newValue.suffix(8)), forKey: Self.endedPausedKey) }
+    }
+
+    /// QA74 #20: Home says the server still holds a paused call. When this app has no call of its
+    /// own (it was relaunched while paused), show that call paused again so Resume continues the same
+    /// conversation. `ownDevice`: the device id this app paired as; a call paused on another device
+    /// (the Mac) is left alone. Returns whether the call was taken back.
+    @discardableResult
+    public func restorePausedCall(_ paused: NowPausedCall, ownDevice: String?) -> Bool {
+        if let device = paused.deviceID, let ownDevice, device != ownDevice { return false }
+        guard !endedPausedIDs.contains(paused.interactionID), case .idle = model.state.phase else { return false }
+        dispatch(.serverHoldsPausedCall(id: paused.interactionID, reason: paused.reason))
+        return model.state.connection == .paused
+    }
+
     public var micControllable: Bool { model.state.connection == .live || model.state.connection == .connecting }
     public var micMuted: Bool { model.state.mic == .muted }
     public func setMicMuted(_ muted: Bool) {
@@ -588,6 +608,9 @@ public final class NativeVoiceClient: VoiceCallClient {
             surface.setNeedsResize()
         }
         if new.connection == .paused, old.connection != .paused { callPaused() }
+        if case .paused(let id?, _) = old.phase, case .ended = new.phase, !endedPausedIDs.contains(id) {
+            endedPausedIDs.append(id)   // QA74 #20: never offered again by Home
+        }
         if case .reconnecting(let attempt, let deadline, _) = new.phase, old.phase != new.phase { reconnectDropped(attempt, at: deadline) }
         if old.exchange != new.exchange { surface.setNeedsResize() }
         if new.connection == .live, old.connection != .live, roomCall != nil {

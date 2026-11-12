@@ -510,7 +510,7 @@ def test_an_old_clients_requests_still_get_the_old_shape(server, service, frozen
     status, body = http(server.base_url, "GET", "/voice/now", None, server.token)   # no tz, as old apps may
     assert status == 200
     assert OLD_NOW_KEYS <= set(body)
-    assert set(body) - OLD_NOW_KEYS <= {"stack", "recommendations"}   # only additive keys
+    assert set(body) - OLD_NOW_KEYS <= {"stack", "recommendations", "paused_call"}   # only additive keys
     assert {"entries", "needs_you", "folded"} <= set(body["stream"])
     (item,) = body["items"]
     assert item["kind"] == "new_answer" and item["id"].startswith(("s:", "t:"))
