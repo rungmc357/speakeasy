@@ -115,6 +115,25 @@ def is_auth_error(message: str) -> bool:
 
 
 _REJECTED: dict[str, tuple[float, str]] = {}
+
+
+# Bumped whenever a Codex copy's sign-in is seen to change (a call rejected it, or `codex login
+# status` flipped): a pre-warmed spare keyed on the old value is never used (codex_spare).
+_SIGNIN_EPOCH: dict[str, int] = {}
+_LAST_SIGNED_IN: dict[str, bool] = {}
+
+
+def signin_epoch(binary: Path | None) -> int:
+    return _SIGNIN_EPOCH.get(str(binary), 0)
+
+
+def _bump_signin(binary: Path | None) -> None:
+    _SIGNIN_EPOCH[str(binary)] = _SIGNIN_EPOCH.get(str(binary), 0) + 1
+
+
+def _ms(since: float) -> int:
+    return int((time.monotonic() - since) * 1000)
+
 # How long a call's sign-in rejection overrides `codex login status`. Speakeasy never looks at
 # Codex's own credential files, so it cannot see a fresh `codex login`; it trusts the status check
 # again after this long, or at once when a call succeeds.
@@ -127,6 +146,7 @@ def mark_signed_out(binary: Path | None, reason: str) -> None:
     if binary is not None:
         _REJECTED[str(binary)] = (time.monotonic(), reason)
         _LOGIN_CACHE.pop(str(binary), None)
+        _bump_signin(binary)
 
 
 def mark_signed_in(binary: Path | None) -> None:
@@ -171,6 +191,9 @@ def login_status(binary: Path | None, runner: Callable[..., Any] = subprocess.ru
         logger.warning("speakeasy: could not run codex login status (%s)", type(exc).__name__)
         result = (False, "Couldn't run Codex on your Hermes computer. Try again in a moment.")
     _LOGIN_CACHE[str(binary)] = (time.monotonic(), result)
+    if _LAST_SIGNED_IN.get(str(binary), result[0]) != result[0]:
+        _bump_signin(binary)  # signed in or out since the last check
+    _LAST_SIGNED_IN[str(binary)] = result[0]
     return result
 
 
@@ -184,18 +207,28 @@ class CodexTransport:
         workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.max_call_s = max_call_s
         self.binary = Path(binary)
+        # Milliseconds per start stage (spawn, initialize, thread, realtime): the call.connect line.
+        self.timings: dict[str, int] = {}
+        spawned = time.monotonic()
         self.process = popen(
             [str(binary), "app-server", "--stdio", "--enable", "realtime_conversation"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, bufsize=1, cwd=str(workdir), env=child_env())
         self.thread_id: str | None = None
+        self.prepared_at: float | None = None
+        self.realtime_requested = False
         self.notifications: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=512)
         self.pending: dict[int, "queue.Queue[dict[str, Any]]"] = {}
         self.lock = threading.Lock()
         self.sequence = 0
         self.closed = False
         self.started_at = time.monotonic()
+        self.timings["spawn"] = _ms(spawned)
         threading.Thread(target=self._reader, daemon=True, name="speakeasy-codex-reader").start()
+
+    def alive(self) -> bool:
+        """The app-server is still running and nothing closed it (a spare checked before use)."""
+        return not self.closed and self.process.poll() is None
 
     def _reader(self) -> None:
         try:
@@ -258,15 +291,29 @@ class CodexTransport:
             with self.lock:
                 self.pending.pop(number, None)
 
-    def start(self, sdp: str, instructions: str, seed: list, voice: str) -> str:
+    def prepare(self) -> None:
+        """Everything a call start needs before the phone's offer: `initialize` and a ready thread.
+        `thread/start` alone takes 0.5-10 s (it talks to OpenAI), so a spare does this ahead of the
+        tap (service.CodexSpare) and the tap pays only `thread/realtime/start`. Idempotent."""
+        if self.thread_id:
+            return
+        began = time.monotonic()
         self.request("initialize", {"clientInfo": {"name": "speakeasy", "version": "0.1"},
                                     "capabilities": {"experimentalApi": True}})
         self._write({"method": "initialized", "params": {}})
+        self.timings["initialize"] = _ms(began)
+        began = time.monotonic()
         thread = self.request("thread/start", {
             "cwd": str(Path.home()), "sandbox": "read-only", "approvalPolicy": "never", "ephemeral": True,
             "developerInstructions": "Voice transport only. Do not run tools, commands, or Codex tasks. "
                                      "All tasks are delegated by the Speakeasy server to Hermes."})
         self.thread_id = thread["thread"]["id"]
+        self.timings["thread"] = _ms(began)
+        self.prepared_at = time.monotonic()
+
+    def start(self, sdp: str, instructions: str, seed: list, voice: str) -> str:
+        self.prepare()
+        began = time.monotonic()
         initial = []
         for item in seed[-20:]:
             if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
@@ -287,6 +334,7 @@ class CodexTransport:
                                      "Do not claim a task was completed until the server supplies its result."}
         if initial:
             params["initialItems"] = initial
+        self.realtime_requested = True
         self.request("thread/realtime/start", params, timeout=35)
         deadline = time.monotonic() + 20
         answer, started, deferred = None, False, []
@@ -306,6 +354,7 @@ class CodexTransport:
                 else:
                     deferred.append(event)
                 if answer and started:
+                    self.timings["realtime"] = _ms(began)
                     mark_signed_in(self.binary)
                     logger.info("speakeasy: codex voice started with %s", self.binary)
                     return answer
@@ -319,7 +368,7 @@ class CodexTransport:
 
     def stop(self) -> None:
         if self.process.poll() is None:
-            if self.thread_id:
+            if self.thread_id and self.realtime_requested:  # an unused spare has no realtime to stop
                 try:
                     self.request("thread/realtime/stop", {"threadId": self.thread_id}, timeout=3)
                 except (RuntimeError, TimeoutError, OSError):
