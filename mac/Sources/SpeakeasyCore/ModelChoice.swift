@@ -218,10 +218,15 @@ public struct JobModelDefaults: Equatable, Sendable {
     public var model: String?
     public var reasoning: ReasoningLevel?
     public init(model: String? = nil, reasoning: ReasoningLevel? = nil) { self.model = model; self.reasoning = reasoning }
-    public init(settingsJSON: Any?) {
-        let jobs = (settingsJSON as? [String: Any])?["jobs"] as? [String: Any]
-        self.init(model: nonEmpty(jobs?["model"]),
-                  reasoning: (jobs?["reasoning"] as? String).flatMap(ReasoningLevel.init(rawValue:)))
+    /// The `GET`/`PATCH /voice/settings` reply. The server wraps it as `{"settings": {...}}`; a bare object
+    /// is accepted too, as `ServerSettings.decode` does. nil when there is no `jobs` section: that is an
+    /// unreadable reply, not "nothing saved" (SPK-404: reading it as nothing saved erased the pick).
+    public init?(settingsJSON: Any?) {
+        let reply = settingsJSON as? [String: Any]
+        let settings = (reply?["settings"] as? [String: Any]) ?? reply
+        guard let jobs = settings?["jobs"] as? [String: Any] else { return nil }
+        self.init(model: nonEmpty(jobs["model"]),
+                  reasoning: (jobs["reasoning"] as? String).flatMap(ReasoningLevel.init(rawValue:)))
     }
     /// PATCH /voice/settings body.
     public var patchBody: [String: Any] {

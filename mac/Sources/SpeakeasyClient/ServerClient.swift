@@ -532,8 +532,12 @@ public final class ServerClient: @unchecked Sendable {
         return rules
     }
 
+    /// Throws when the reply has no `jobs`, so a caller never saves over a pick it couldn't read.
     public func jobModelDefaults() async throws -> JobModelDefaults {
-        JobModelDefaults(settingsJSON: try await json("/voice/settings"))
+        guard let defaults = JobModelDefaults(settingsJSON: try await json("/voice/settings")) else {
+            throw HTTPError(status: 0, message: "Speakeasy couldn't read the saved model.")
+        }
+        return defaults
     }
 
     public func setJobModelDefaults(_ defaults: JobModelDefaults) async throws {

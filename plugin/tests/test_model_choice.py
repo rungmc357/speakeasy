@@ -224,6 +224,19 @@ def test_speakeasy_default_from_settings(server, service, hermes, catalog):
     assert call["model"] == "gpt-5.5" and call["model_options"]["reasoning"]["effort"] == "high"
 
 
+def test_settings_reply_wraps_the_job_default(server, service, catalog):
+    # SPK-404: the apps read the saved pick back from this exact shape (ModelChoiceTests
+    # testJobDefaultsReadTheWrappedSettingsReply); the reply stays wrapped in "settings".
+    status, saved = http(server.base_url, "PATCH", "/voice/settings",
+                         {"jobs": {"model": "anthropic/claude-opus-5-5", "reasoning": "low"}}, server.token)
+    assert status == 200, saved
+    assert "jobs" not in saved and saved["settings"]["jobs"]["model"] == "anthropic/claude-opus-5-5"
+    status, got = get(server, "/voice/settings")
+    assert status == 200 and "jobs" not in got
+    assert {k: got["settings"]["jobs"][k] for k in ("model", "reasoning")} == \
+        {"model": "anthropic/claude-opus-5-5", "reasoning": "low"}
+
+
 def test_catalog_never_blocks_a_task_start(server, service, hermes):
     # Cold catalog: the choice is taken as saved and the task starts without waiting on Hermes' list.
     service.settings.patch({"jobs": {"model": "openai-codex/gpt-5.5"}})
