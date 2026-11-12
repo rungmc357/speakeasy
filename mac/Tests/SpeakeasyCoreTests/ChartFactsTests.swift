@@ -120,33 +120,6 @@ final class ChartFactsTests: XCTestCase {
         XCTAssertEqual(ChartFacts.shortLabels(["AB", "CD"], max: 6), ["AB", "CD"])
     }
 
-    // MARK: Axis labels thin out instead of overlapping (SPK-433)
-
-    func testAxisLabelsAllShowWhenTheyFit() {
-        let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        XCTAssertEqual(ChartFacts.axisLabelStride(days, width: 300, fontSize: 11), 1)
-        XCTAssertEqual(ChartFacts.fittingAxisLabels(days, width: 300, fontSize: 11), days)
-    }
-
-    func testAxisLabelsThinOutAtTheLargestTextSize() {
-        // Four times on a phone-wide plot at a big axis size: they would run into one long number.
-        let times = ["9:42", "10:51", "10:54", "11:17"]
-        let shown = ChartFacts.fittingAxisLabels(times, width: 200, fontSize: 16)
-        XCTAssertLessThan(shown.count, times.count)
-        XCTAssertEqual(shown.first, "9:42", "the first label always shows")
-        // What's left really fits side by side: each label's width plus a gap, times the count.
-        XCTAssertLessThanOrEqual(Double(shown.count) * (5 * 16 * 0.62 + 8), 200)
-        // A week of days on the smallest phone at the largest size keeps every other one at least.
-        let days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        XCTAssertEqual(ChartFacts.fittingAxisLabels(days, width: 200, fontSize: 16), ["Mon", "Wed", "Fri", "Sun"])
-    }
-
-    func testAxisLabelStrideNeverDropsEverything() {
-        XCTAssertEqual(ChartFacts.fittingAxisLabels(["Only"], width: 10, fontSize: 40), ["Only"])
-        XCTAssertEqual(ChartFacts.fittingAxisLabels(["A long label", "Another"], width: 5, fontSize: 40), ["A long label"])
-        XCTAssertEqual(ChartFacts.axisLabelStride([], width: 100, fontSize: 11), 1)
-    }
-
     // MARK: Freshness: only what the card says
 
     private var nyc: Calendar { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "America/New_York")!; return c }

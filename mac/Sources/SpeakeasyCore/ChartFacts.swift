@@ -164,24 +164,6 @@ public struct ChartFacts: Equatable, Sendable {
         return zip(labels, lengths).map { cut($0, $1) }
     }
 
-    /// The x labels a plot `width` points wide can draw side by side at `fontSize` without touching:
-    /// every n-th label, always starting with the first (at the largest text sizes a week of times
-    /// otherwise runs together into one long number). All labels fit → all of them.
-    public static func fittingAxisLabels(_ labels: [String], width: Double, fontSize: Double) -> [String] {
-        let n = axisLabelStride(labels, width: width, fontSize: fontSize)
-        return labels.enumerated().filter { $0.offset % n == 0 }.map(\.element)
-    }
-
-    /// Draw every n-th x label (1 = all of them) so they fit side by side in `width` points.
-    public static func axisLabelStride(_ labels: [String], width: Double, fontSize: Double) -> Int {
-        guard labels.count > 1, width > 0, fontSize > 0 else { return 1 }
-        // Digits and letters average about 0.62 em in the system font; a 0.5 em gap keeps them apart.
-        let widest = Double(labels.map(\.count).max() ?? 1)
-        let each = widest * fontSize * 0.62 + fontSize * 0.5
-        let fit = Swift.max(1, Int(width / each))
-        return fit >= labels.count ? 1 : Int((Double(labels.count) / Double(fit)).rounded(.up))
-    }
-
     // MARK: - Freshness
 
     /// "Nasdaq · As of 3:42 PM · delayed". Only what the card says; a time on another day shows
