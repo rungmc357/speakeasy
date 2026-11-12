@@ -1,5 +1,12 @@
 import SwiftUI
 import SpeakeasyCore
+#if canImport(UIKit)
+import UIKit
+typealias PlatformFont = UIFont
+#elseif canImport(AppKit)
+import AppKit
+typealias PlatformFont = NSFont
+#endif
 
 // Visuals a task draws to explain a decision or a result: lanes (what ran when, where it broke),
 // before → after, a flow (where something goes) and a devices grid. Only the data sent is drawn:
@@ -121,41 +128,87 @@ struct BeforeAfterCard: View {
 
 struct FlowCard: View {
     let card: ViewCard
+    /// Step text follows the reader's text size (SPK-439), so the row-or-stack choice below does too.
+    @ScaledMetric(relativeTo: .caption) private var size: CGFloat = 11.5
+    @ScaledMetric(relativeTo: .caption) private var arrow: CGFloat = 9
+
     var body: some View {
         let nodes = Array(card["nodes"].array.prefix(5))
         CardBox {
             if let title = card["title"].string { CardHeader(icon: "arrow.triangle.branch", title: title) }
-            // Up to four steps sit in a row; five stack (each would be too narrow to read).
+            // SPK-439: up to four steps sit in a row only when every step's longest word fits its box
+            // on one line at the current text size; otherwise (and always for five) they stack, so a
+            // word is never broken ("Connecti / on"). The row reports its narrowest unbroken width as
+            // its ideal width, and ViewThatFits takes it only when the card is at least that wide.
             if nodes.count <= 4 {
-                HStack(spacing: 4) {
-                    ForEach(Array(nodes.enumerated()), id: \.offset) { i, node in
-                        if i > 0 { Image(systemName: "arrow.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
-                        box(node).frame(minWidth: 58, maxWidth: .infinity, maxHeight: .infinity)
-                    }
+                let need = Self.boxFloor(nodes, size: size)
+                ViewThatFits(in: .horizontal) {
+                    row(nodes, boxWidth: need)
+                    column(nodes)
                 }
-                .fixedSize(horizontal: false, vertical: true)
             } else {
-                VStack(spacing: 3) {
-                    ForEach(Array(nodes.enumerated()), id: \.offset) { i, node in
-                        if i > 0 { Image(systemName: "arrow.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary) }
-                        box(node).frame(maxWidth: .infinity)
-                    }
-                }
+                column(nodes)
             }
         }
+    }
+
+    private func row(_ nodes: [JSONValue], boxWidth: CGFloat) -> some View {
+        HStack(spacing: 4) {
+            ForEach(Array(nodes.enumerated()), id: \.offset) { i, node in
+                if i > 0 { Image(systemName: "arrow.right").font(.system(size: arrow, weight: .semibold)).foregroundStyle(.tertiary) }
+                box(node).frame(minWidth: boxWidth, idealWidth: boxWidth, maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("flow-row")
+    }
+
+    private func column(_ nodes: [JSONValue]) -> some View {
+        VStack(spacing: 3) {
+            ForEach(Array(nodes.enumerated()), id: \.offset) { i, node in
+                if i > 0 { Image(systemName: "arrow.down").font(.system(size: arrow, weight: .semibold)).foregroundStyle(.tertiary) }
+                box(node).frame(maxWidth: .infinity)
+            }
+        }
+        .accessibilityIdentifier("flow-column")
+    }
+
+    /// Horizontal padding inside a step's box.
+    static let inset: CGFloat = 6
+
+    /// The narrowest a step box can be in the row with no word broken: the widest single word of any
+    /// step's label (semibold) or detail, plus the box's padding. Every box gets the same floor, so
+    /// the row's boxes stay equal.
+    static func boxFloor(_ nodes: [JSONValue], size: CGFloat) -> CGFloat {
+        var widest: CGFloat = 0
+        for node in nodes {
+            widest = max(widest, longestWord(node["label"].string ?? "", size: size, bold: true))
+            widest = max(widest, longestWord(node["detail"].string ?? "", size: size, bold: false))
+        }
+        // +2: a little slack for rounding, so a word measured to just fit doesn't wrap its last letter.
+        return ceil(widest) + 2 + 2 * inset
+    }
+
+    /// The single-line width of the widest whitespace-separated word, in the system font SwiftUI's
+    /// `.system(size:weight:)` draws.
+    static func longestWord(_ text: String, size: CGFloat, bold: Bool) -> CGFloat {
+        let font = PlatformFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular)
+        return text.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+            .map { (String($0) as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 0
     }
 
     private func box(_ node: JSONValue) -> some View {
         let tone = node["tone"].string
         return VStack(spacing: 2) {
-            Text(node["label"].string ?? "").font(.system(size: 11.5, weight: .semibold)).multilineTextAlignment(.center)
+            Text(node["label"].string ?? "").font(.system(size: size, weight: .semibold)).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             if let d = node["detail"].string {
-                Text(d).font(.system(size: 11.5)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Text(d).font(.system(size: size)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, 6).padding(.vertical, 7)
+        .padding(.horizontal, Self.inset).padding(.vertical, 7)
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(tone == nil || tone == "neutral" ? Color.primary.opacity(0.07) : toneColor(tone).opacity(0.18)))
