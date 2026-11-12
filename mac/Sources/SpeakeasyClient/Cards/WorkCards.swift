@@ -34,6 +34,8 @@ struct CardPicture: View {
     @Environment(\.cardStyle) private var style
     @State private var image: PlatformPicture?
     @State private var open = false
+    /// The picture was asked for and nothing came back (QA 74 F12): the tile says so.
+    @State private var failed = false
 
     var body: some View {
         // A ZStack (not a Group) so the loader runs while nothing is drawn yet: an empty Group has
@@ -51,6 +53,16 @@ struct CardPicture: View {
                 #else
                 .sheet(isPresented: $open) { CardPictureViewer(image: image, label: label).frame(minWidth: 520, minHeight: 520) }
                 #endif
+            } else if failed {
+                RoundedRectangle(cornerRadius: corner, style: .continuous).fill(Color.primary.opacity(0.05))
+                    // The broken-picture glyph on each tile (one sentence per card, not per tile:
+                    // NowCard says "No pictures came with this" when none of them came).
+                    .overlay(Image(systemName: "photo.badge.exclamationmark").font(.title3).foregroundStyle(.secondary))
+                    .frame(width: stretch ? nil : (width ?? (height.map { $0 * 0.75 } ?? 160)), height: height ?? 64)
+                    .frame(maxWidth: stretch ? .infinity : nil)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Picture didn't load")
+                    .accessibilityIdentifier("card-picture-missing")
             } else if placeholder {
                 RoundedRectangle(cornerRadius: corner, style: .continuous).fill(Color.primary.opacity(0.06))
                     .frame(width: stretch ? nil : width, height: height)
@@ -101,8 +113,12 @@ struct CardPicture: View {
         } else if let url = value.url {
             data = try? await URLSession.shared.data(from: url).0
         }
-        guard let data, let picture = await PlatformPicture(data: data) else { return }
-        image = picture
+        guard !Task.isCancelled else { return }
+        guard let data, let picture = await PlatformPicture(data: data) else {
+            if !Task.isCancelled, value.double != nil || value.url != nil { failed = true }
+            return
+        }
+        image = picture; failed = false
     }
 }
 
