@@ -76,15 +76,15 @@ def test_a_home_job_that_finishes_says_so_once_in_the_thread(server, service, he
     service.home_chat.deliver_due(time.time() + 10_000)
     after = [r for r in assistant_rows(service, run_id) if r["id"] not in {b["id"] for b in before}]
     assert [r["id"] for r in after] == [line["id"]]
-    # It reaches the phone as the job's answer line: tied to its card (a tap opens the job), not a
-    # reply of any exchange, and only once at the bottom (no made-up d:<run> line beside it).
+    # It reaches the phone as the job's answer line (SPK-314's id and shape): tied to its card (a tap
+    # opens the job), not a reply of any exchange, and only once at the bottom.
     entries = stream(server)
-    mine = [e for e in entries if e["id"] == "m:" + line["id"]]
+    mine = [e for e in entries if e["id"] == f"d:{run_id}"]
     assert len(mine) == 1 and mine[0]["answer"] is True and mine[0]["run_id"] == run_id
+    assert mine[0]["text"] == line["text"] and mine[0]["role"] == "assistant"
     card = next(e for e in entries if e["kind"] == "card" and e["id"] == f"c:{run_id}")
     assert mine[0]["item_id"] == card["item_id"]
     assert mine[0]["reply_to"] == "m:" + user_id
-    assert not [e for e in entries if e["id"] == f"d:{run_id}"]
     assert entries.index(card) < entries.index(mine[0])
 
 
@@ -97,7 +97,9 @@ def test_a_newer_message_while_it_ran_still_gets_one_line_at_the_bottom(server, 
     wait_for(lambda: finish_lines(service, run_id))
     entries = stream(server)
     bottom = [e for e in entries if e.get("run_id") == run_id and e.get("answer")]
-    assert len(bottom) == 1 and bottom[0]["id"].startswith("m:ha_"), bottom   # SPK-314's d: line gives way
+    # One line: the stored one (the job's spoken words), in place of SPK-314's made-up one (its headline).
+    assert len(bottom) == 1 and bottom[0]["id"] == f"d:{run_id}", bottom
+    assert bottom[0]["text"].endswith("Second sentence here.")
     assert entries[-1]["id"] == bottom[0]["id"]
 
 
@@ -130,13 +132,14 @@ def test_an_answer_opened_or_heard_on_the_call_before_the_line_lands_gets_none(s
     heard, _ = start_held(server, service, hermes, "c_heard")
     key = finish(service, hermes, heard)
     wait_for(lambda: _state(service, heard) == "due")
-    # A live call that follows the job and whose voice read its answer out (now.call_state's shape).
-    call = SimpleNamespace(lock=threading.Lock(), runs={"t_cafe": SimpleNamespace(idem_key=key)},
-                           focus_task_id=None, talking_about=None, talking_at=0.0, interaction_id="vi_call",
-                           spoken_tasks={"t_cafe": now[0]})
-    monkeypatch.setattr(service.now_model, "live_call", lambda: call)
+    # A voice call followed the job and read its answer out, then ended before the line came due
+    # (calls.talking_about(spoke=True) records it in the call's spoken_tasks).
+    ended = SimpleNamespace(lock=threading.Lock(), runs={"t_cafe": SimpleNamespace(idem_key=key)},
+                            interaction_id="vi_call_1", spoken_tasks={"t_cafe": now[0]}, call_closed=True)
+    monkeypatch.setattr(service, "interactions", {"vi_call_1": ended})
     now[0] += 601
     assert chat.deliver_due() == []
+    monkeypatch.undo()
     assert not finish_lines(service, opened) and not finish_lines(service, heard)
     assert _state(service, opened) == _state(service, heard) == "skipped"
 
@@ -156,15 +159,52 @@ def test_a_line_due_while_the_plugin_was_down_goes_up_once_after_the_restart(ser
     assert len(finish_lines(service, run_id)) == 1
 
 
+def test_a_live_call_following_the_job_gets_longer_to_tell_it(server, service, hermes, monkeypatch):
+    chat = service.home_chat
+    now = [time.time()]
+    chat.clock = lambda: now[0]
+    chat.done_grace_s = 600
+    chat.done_call_grace_s = 900
+    run_id, _ = start_held(server, service, hermes)
+    key = finish(service, hermes, run_id)
+    wait_for(lambda: _state(service, run_id) == "due")
+    call = SimpleNamespace(lock=threading.Lock(), runs={"t_cafe": SimpleNamespace(idem_key=key)},
+                           focus_task_id=None, talking_about=None, talking_at=0.0, interaction_id="vi_call_2",
+                           spoken_tasks={})
+    monkeypatch.setattr(service.now_model, "live_call", lambda: call)   # the call follows it, hasn't told it
+    now[0] += 601
+    assert chat.deliver_due() == [] and _state(service, run_id) == "due"   # waits for the voice
+    now[0] += 400                                             # past settled_at + 900 s (settled_at is real time)
+    assert chat.deliver_due() == [run_id]                     # never told on the call: the line goes up
+    assert len(finish_lines(service, run_id)) == 1
+
+
 def test_a_failed_job_says_it_stopped(server, service, hermes):
+    """It fails at once: the run settles before the turn links its message to it (_if_settled)."""
     service.home_chat.done_grace_s = 0
     hermes.fail_with = "the provider refused the request"
     coordinator(service, ASK)
     status, body = post(server, {"text": "find me a quiet cafe near the river, early", "client_id": "c_fail"})
     assert status == 200 and body["run_id"]
     run_id = body["run_id"]
-    lines = wait_for(lambda: [r for r in assistant_rows(service, run_id) if r["text"].startswith("It stopped")])
-    assert len(lines) == 1 and lines[0]["text"].startswith("It stopped before finishing.")
+    lines = wait_for(lambda: [r for r in assistant_rows(service, run_id) if "stopped before finishing" in r["text"]])
+    assert len(lines) == 1
+    from speakeasy.home_words import short_title
+    title = service.store.title(service.store.key_for_run(run_id))
+    name = (short_title(title) or title) if title else None   # the card's own short title
+    assert lines[0]["text"].startswith(f"{name} stopped before finishing." if name else "It stopped before finishing.")
+
+
+def test_an_interrupted_line_is_corrected_in_place_when_the_real_result_lands(server, service, hermes):
+    service.home_chat.done_grace_s = 0
+    run_id, _ = start_held(server, service, hermes)
+    key = service.store.key_for_run(run_id)
+    service.store.settle(key, "interrupted", result=None)      # the startup sweep's guess
+    first = wait_for(lambda: finish_lines(service, run_id))
+    assert len(first) == 1 and "stopped before finishing. Speakeasy restarted" in first[0]["text"]
+    service.store.settle(key, "completed", result={"spoken": SPOKEN})   # Hermes' own final event
+    fixed = wait_for(lambda: [r for r in finish_lines(service, run_id) if "Riverside" in r["text"]])
+    assert [r["id"] for r in finish_lines(service, run_id)] == [first[0]["id"]] == [fixed[0]["id"]]
 
 
 def test_a_job_that_asks_says_its_question(server, service, hermes):
@@ -175,7 +215,22 @@ def test_a_job_that_asks_says_its_question(server, service, hermes):
         "spoken": "Two cafes fit.", "question": {"question": "Do you want outdoor seating?",
                                                  "options": [{"text": "Yes"}, {"text": "No"}]}})
     lines = wait_for(lambda: finish_lines(service, run_id))
-    assert [r["text"] for r in lines] == ["One question before it goes on: Do you want outdoor seating?"]
+    assert len(lines) == 1 and lines[0]["text"].endswith("has a question before it goes on: Do you want outdoor seating?")
+
+
+def test_a_call_continuing_a_home_job_posts_nothing_on_home(server, service, hermes):
+    """A call's spoken choice card on a Home job (record_finished_run(about=...)) is the call's: its
+    question is asked by the voice, not posted into Home's thread."""
+    service.home_chat.done_grace_s = 0
+    run_id, _ = start_held(server, service, hermes)
+    parent = finish(service, hermes, run_id)
+    wait_for(lambda: finish_lines(service, run_id))
+    service.store.record_finished_run("call_choice_1", "vi_call_3", "d_choice", "Pick a cafe",
+                                      {"spoken": "Which one?", "question": {"question": "Which cafe?"}}, about=parent)
+    time.sleep(0.3)
+    with service.store._lock:
+        rows = service.store._db.execute("SELECT run_id FROM home_done").fetchall()
+    assert [r[0] for r in rows] == [run_id]
 
 
 def test_a_stopped_job_or_one_started_elsewhere_gets_no_line(server, service, hermes):
@@ -210,7 +265,11 @@ def test_finish_line_words():
     assert HC.finish_line("completed", {"headline": "Three found"}) == "Three found"
     assert HC.finish_line("completed", {}, title="Cafe search") == "Cafe search is done."
     assert HC.finish_line("completed", {"spoken": "x"}, asking="Which day?") == "One question before it goes on: Which day?"
+    assert (HC.finish_line("completed", {}, title="Cafe search", asking="Which day?")
+            == "Cafe search has a question before it goes on: Which day?")
     assert HC.finish_line("failed", {}, reason="The disk was full.") == "It stopped before finishing. The disk was full."
+    assert (HC.finish_line("interrupted", {}, title="Cafe search", reason="Speakeasy restarted.")
+            == "Cafe search stopped before finishing. Speakeasy restarted.")
     from speakeasy.failures import NO_REASON
     assert HC.finish_line("failed", {}, reason=NO_REASON) == "It stopped before finishing."
     assert HC.finish_line("cancelled", {"spoken": "x"}) is None
