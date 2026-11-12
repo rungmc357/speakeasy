@@ -451,6 +451,9 @@ public enum VoiceEvent: Equatable, Sendable {
     /// The api refused to hold the call: stay live.
     case pauseFailed(String)
     case resumeRequested
+    /// QA74 #20: Home says the server still holds this call paused. An app with no call of its own
+    /// (a relaunch while paused) shows it paused again, so Resume continues the same conversation.
+    case serverHoldsPausedCall(id: String, reason: PauseReason)
     case tick
     case reset
     /// On-device listening while connecting started (true) or stopped (false).
@@ -559,6 +562,13 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         s.exchange.replyStarted = true   // next words start a fresh visible exchange
         s.lastInputAt = nil
         s.sharing.resumed()
+
+    case .serverHoldsPausedCall(let id, let reason):
+        // Only into a quiet app (idle, or just showing the board): never over a call it already has.
+        guard case .idle = s.phase else { break }
+        s.workOnly = false
+        s.phase = .paused(id: id, reason: reason)
+        s.speech = .idle
 
     case .tasks(let tasks):
         let before = s.tasks

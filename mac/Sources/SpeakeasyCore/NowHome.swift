@@ -18,6 +18,8 @@ public struct NowHome: Equatable, Sendable {
     public var call: NowCall?
     /// The "Your call · 6 min" card after a call ends, until it's cleared or rolls over.
     public var callSummary: NowCallSummary?
+    /// QA74 #20: the paused call the server can still resume (off a live call only).
+    public var pausedCall: NowPausedCall?
     /// SPK-208 (plugin 0.3.46+, capability `home_stream`): the same cards as one thread. Nil from an older plugin.
     public var stream: NowStream?
     /// The tracker pill's words at any volume ("3 need you · 5 running"), from the plugin; nil from an
@@ -64,6 +66,7 @@ public struct NowHome: Equatable, Sendable {
         notice = nonEmpty((json["notice"] as? [String: Any])?["text"])
         call = NowCall(json: json["call"])
         callSummary = NowCallSummary(json: json["call_summary"])
+        pausedCall = NowPausedCall(json: json["paused_call"])
         stream = NowStream(json: json["stream"])
         pill = nonEmpty(json["pill"])
         stack = HomeStack(json: json["stack"])
@@ -94,6 +97,27 @@ public struct NowCall: Equatable, Sendable {
         guard let o = json as? [String: Any], let id = nonEmpty(o["interaction_id"]) else { return nil }
         self.init(interactionID: id, startedAt: (o["started_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
                   focus: nonEmpty(o["focus"]), focusLabel: nonEmpty(o["focus_label"]))
+    }
+}
+
+/// QA74 #20: the call the server holds paused (and can still resume), so an app relaunched while it
+/// was paused can offer Resume again. Nil from an older plugin or when nothing is paused.
+public struct NowPausedCall: Equatable, Sendable {
+    public var interactionID: String
+    public var pausedAt: Date?
+    /// How the call paused: `.quiet(minutes:)` when it went quiet by itself, else `.user`.
+    public var reason: PauseReason
+    /// The device that paused it (nil when the plugin doesn't say).
+    public var deviceID: String?
+    public init(interactionID: String, pausedAt: Date? = nil, reason: PauseReason = .user, deviceID: String? = nil) {
+        self.interactionID = interactionID; self.pausedAt = pausedAt; self.reason = reason; self.deviceID = deviceID
+    }
+    public init?(json: Any?) {
+        guard let o = json as? [String: Any], let id = nonEmpty(o["interaction_id"]) else { return nil }
+        let minutes = (o["idle_paused_minutes"] as? NSNumber)?.intValue
+        let reason: PauseReason = nonEmpty(o["pause_reason"]) == "idle" && (minutes ?? 0) > 0 ? .quiet(minutes: minutes!) : .user
+        self.init(interactionID: id, pausedAt: (o["paused_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
+                  reason: reason, deviceID: nonEmpty(o["device_id"]))
     }
 }
 
@@ -234,7 +258,13 @@ public struct NowItem: Equatable, Sendable, Identifiable {
     public var stepKind: String?
     /// A running job's newest steps, oldest first, in plain words (`steps`; home-fixes-73).
     public var steps: [NowStep] = []
-
+    /// When its data is from (plugin widgets-decide `as_of`); the card says "as of <time>" once that's
+    /// older than its kind stays true for (`NowFreshness`).
+    public var asOf: Date?
+    /// A done answer that still asks something it never got an answer to (plugin `asks`).
+    public var asks: NowQuestion?
+    /// Emails it drafted that wait on Send (plugin `unsent_drafts`).
+    public var unsentDrafts = 0
     public init(id: String, kind: Kind, sessionID: String? = nil, runID: String? = nil, title: String, line: String,
                 sourceLabel: String? = nil, startedAt: Date? = nil, updatedAt: Date? = nil, finishedAt: Date? = nil,
                 unread: Bool = false, idleSeconds: Int? = nil, thumbs: [String] = [], provenance: Provenance? = nil,
@@ -273,6 +303,9 @@ public struct NowItem: Equatable, Sendable, Identifiable {
         onCurrentCall = o["on_current_call"] as? Bool ?? false
         sayOK = o["say_ok"] as? Bool ?? true
         lockLine = nonEmpty(o["lock_line"])
+        asOf = date("as_of")
+        asks = NowQuestion(json: o["asks"])
+        unsentDrafts = (o["unsent_drafts"] as? NSNumber)?.intValue ?? 0
         stepKind = kind == .working ? nonEmpty(o["step_kind"]) : nil
         steps = kind == .working ? (o["steps"] as? [Any] ?? []).prefix(12).compactMap(NowStep.init(json:)) : []
         pictures = (o["thumbs"] as? [Any] ?? []).compactMap(NowPicture.init(json:))
@@ -334,6 +367,33 @@ public struct NowPicture: Equatable, Sendable {
     }
 }
 
+/// How long a card's data stays true, by card kind (QA 74 F6): past it, the card says "As of <time>"
+/// so a 4-day-old forecast or a light's old state never reads as live.
+public enum NowFreshness {
+    public static func seconds(kind: String?) -> TimeInterval? {
+        switch kind ?? "" {
+        case "transit", "devices", "lights", "device": return 15 * 60
+        case "game", "games", "score", "metric", "markets", "stocks", "quote": return 60 * 60
+        case "weather", "forecast", "flight", "status": return 3 * 3600
+        case "package", "rows", "inbox", "list", "places", "day", "calendar_day", "agenda", "comparison": return 12 * 3600
+        case "": return nil
+        default: return 24 * 3600
+        }
+    }
+
+    /// "As of 3:14 PM" (today), "As of yesterday 9:40 PM", "As of Nov 3"; nil while still fresh.
+    public static func line(kind: String?, asOf: Date?, now: Date = Date(), calendar: Calendar = .current) -> String? {
+        guard let asOf, let limit = seconds(kind: kind), now.timeIntervalSince(asOf) > limit else { return nil }
+        let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone; f.locale = Locale(identifier: "en_US")
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: asOf), to: calendar.startOfDay(for: now)).day ?? 0
+        switch days {
+        case ...0: f.dateFormat = "h:mm a"; return "As of \(f.string(from: asOf))"
+        case 1: f.dateFormat = "h:mm a"; return "As of yesterday \(f.string(from: asOf))"
+        default: f.dateFormat = "MMM d"; return "As of \(f.string(from: asOf))"
+        }
+    }
+}
+
 public struct NowQuestion: Equatable, Sendable {
     public enum Shape: String, Sendable { case words, things, approval }
     public struct Option: Equatable, Sendable, Identifiable {
@@ -356,11 +416,32 @@ public struct NowQuestion: Equatable, Sendable {
     public var options: [Option]
     public var recommended: Int?
     public var approvalChoices: [String]
+    /// Why the recommended option (plugin: `why`); what it touches (`affects`).
+    public var why: String?
+    public var affects: String?
+    /// A task's own approvable ask drawn as an approval: the option Allow answers with (plugin
+    /// widgets-decide: `approve.option_id`). Nil for a Hermes command approval.
+    public var approveOptionID: String?
 
     public init(shape: Shape, prompt: String, context: String? = nil, options: [Option] = [], recommended: Int? = nil,
-                approvalChoices: [String] = []) {
+                approvalChoices: [String] = [], why: String? = nil, affects: String? = nil, approveOptionID: String? = nil) {
         self.shape = shape; self.prompt = prompt; self.context = context; self.options = options
         self.recommended = recommended; self.approvalChoices = approvalChoices
+        self.why = why; self.affects = affects; self.approveOptionID = approveOptionID
+    }
+
+    /// The recommended option, when there is one.
+    public var recommendedOption: Option? {
+        recommended.flatMap { $0 >= 0 && $0 < options.count ? options[$0] : nil }
+    }
+
+    /// Risky options (anything but low risk), named for a flag on the card.
+    public func riskFlag(_ option: Option) -> String? {
+        switch option.risk?.lowercased() {
+        case "high"?: return "High risk"
+        case "medium"?: return "Some risk"
+        default: return nil
+        }
     }
 
     public init?(json: Any?) {
@@ -374,7 +455,9 @@ public struct NowQuestion: Equatable, Sendable {
         }
         self.init(shape: shape, prompt: nonEmpty(o["prompt"]) ?? "", context: nonEmpty(o["context"]), options: options,
                   recommended: (o["recommended"] as? NSNumber)?.intValue,
-                  approvalChoices: ((o["approval"] as? [String: Any])?["choices"] as? [String]) ?? [])
+                  approvalChoices: ((o["approval"] as? [String: Any])?["choices"] as? [String]) ?? [],
+                  why: nonEmpty(o["why"]), affects: nonEmpty(o["affects"]),
+                  approveOptionID: nonEmpty((o["approve"] as? [String: Any])?["option_id"]))
     }
 
     /// Things to compare side by side (pictures, links, facts): the Compare sheet's rows.

@@ -76,6 +76,18 @@ final class NowHomeTests: XCTestCase {
         XCTAssertEqual(after.callSummary?.youSaid, "The wider desk")
     }
 
+    func testDecodesThePausedCallTheServerHolds() {
+        XCTAssertNil(NowHome(json: [:]).pausedCall, "older plugin: nothing paused")
+        XCTAssertNil(NowHome(json: ["paused_call": NSNull()]).pausedCall)
+        let quiet = NowHome(json: ["paused_call": ["interaction_id": "vi_p", "paused_at": 1_800_000_000,
+                                                   "pause_reason": "idle", "idle_paused_minutes": 4, "device_id": "dev_a"]])
+        XCTAssertEqual(quiet.pausedCall, NowPausedCall(interactionID: "vi_p", pausedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                                                       reason: .quiet(minutes: 4), deviceID: "dev_a"))
+        let user = NowPausedCall(json: ["interaction_id": "vi_u", "pause_reason": "cap"])
+        XCTAssertEqual(user?.reason, .user)
+        XCTAssertNil(user?.deviceID)
+    }
+
     func testCallSummaryUsesThePluginsLineAndNeverSaysTalkedItThrough() {
         let bare = NowCallSummary(json: ["id": "call:1", "ended_at": 1_800_000_000, "minutes": 1])!
         XCTAssertEqual(bare.summaryLine, "Short call, nothing started.")

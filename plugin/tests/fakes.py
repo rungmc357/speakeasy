@@ -82,7 +82,9 @@ class FakeHermes(BaseHTTPRequestHandler):
             self.state.agent_paths.append((self.agent, self.command, self.path))
 
     def _authed(self) -> bool:
-        if self.headers.get("Authorization") != f"Bearer {FAKE_API_KEY}":
+        # Like Hermes: a named profile's prefix takes THAT profile's key when the test gave it one.
+        want = (getattr(self.state, "profile_keys", None) or {}).get(getattr(self, "agent", ""), FAKE_API_KEY)
+        if self.headers.get("Authorization") != f"Bearer {want}":
             self._json(401, {"error": "unauthorized"})
             return False
         return True

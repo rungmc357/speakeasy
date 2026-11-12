@@ -149,6 +149,28 @@ final class CallPhaseTests: XCTestCase {
         XCTAssertEqual(s.connection, .connecting)
     }
 
+    // MARK: A paused call the server still holds (QA74 #20)
+
+    func testARelaunchedAppTakesBackTheCallTheServerHoldsPaused() {
+        var s = VoiceState()
+        s = reduce(s, .workOnlyOpened, now: t0)   // the phone's quiet Home: the board, no call
+        s = reduce(s, .serverHoldsPausedCall(id: "vi_paused", reason: .quiet(minutes: 4)), now: t0)
+        XCTAssertEqual(s.phase, .paused(id: "vi_paused", reason: .quiet(minutes: 4)))
+        XCTAssertEqual(s.connection, .paused)
+        XCTAssertFalse(s.workOnly)
+        s = reduce(s, .resumeRequested, now: t0)
+        guard case .connecting(let c) = s.phase else { return XCTFail("Resume didn't reconnect: \(s.phase)") }
+        XCTAssertEqual(c.resumeFrom, "vi_paused", "Resume continues the same conversation")
+    }
+
+    func testAServerPausedCallNeverReplacesACallTheAppHas() {
+        let s = live()
+        XCTAssertEqual(reduce(s, .serverHoldsPausedCall(id: "vi_other", reason: .user), now: t0).phase, .live(id: "vi_1"))
+        let ended = reduce(reduce(s, .endRequested, now: t0), .serverClosed(.complete, error: nil), now: t0)
+        XCTAssertEqual(reduce(ended, .serverHoldsPausedCall(id: "vi_other", reason: .user), now: t0).phase, ended.phase,
+                       "an app that just ended a call doesn't pick up another paused one")
+    }
+
     func testARefusedReconnectAfterADropNeverSaysThePausedCallWasReplaced() {
         XCTAssertNil(CallReconnect.resumeRefusedNotice(reconnect: 1), "nobody paused a dropped call")
         XCTAssertNil(CallReconnect.resumeRefusedNotice(reconnect: 3))

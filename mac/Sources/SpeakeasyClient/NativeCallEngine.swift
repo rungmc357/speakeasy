@@ -260,6 +260,35 @@ public final class NativeCallEngine: NSObject, RTCPeerConnectionDelegate, RTCDat
 
     public var isAudioHeld: Bool { audioHeld }
 
+    /// 74.1 (F4(a)): the mic gave nothing at the start of a call. Restart the device's audio unit on
+    /// THIS peer connection instead of reopening the call: stop WebRTC's voice unit, re-activate the
+    /// audio session the way the call uses it, and start the unit again. The connection, the server
+    /// session and the conversation are untouched. Returns false where the device can't (the Mac, or
+    /// the session wouldn't re-activate): the caller then reopens the connection as before.
+    @discardableResult
+    public func restartLocalAudio() -> Bool {
+        #if os(iOS) || os(visionOS)
+        guard !closed, peer != nil, !audioHeld else { return false }
+        let session = RTCAudioSession.sharedInstance()
+        // isAudioEnabled only drives the unit in manual mode: off, re-activate, on, then hand back.
+        session.useManualAudio = true
+        session.isAudioEnabled = false
+        session.lockForConfiguration()
+        var ok = true
+        do {
+            try session.setConfiguration(RTCAudioSessionConfiguration.webRTC(), active: true)
+        } catch {
+            ok = false
+        }
+        session.unlockForConfiguration()
+        session.isAudioEnabled = true
+        session.useManualAudio = false
+        return ok
+        #else
+        return false
+        #endif
+    }
+
     /// iPhone: WebRTC's audio session is one object for the whole app. A hold from an earlier call
     /// (or a listener) that was never released leaves it in manual mode with audio off, and every
     /// later call is deaf: 0 packets, no input route. Start each call from a clean state.
