@@ -117,12 +117,14 @@ def test_a_killed_runs_home_is_cleared_by_a_later_start_once_it_is_stale(tmp_pat
     temp = _temp(tmp_path)
     killed = _session(tmp_path, temp, KILLED_MID_RUN)
     assert killed.returncode == -9
-    [left] = _left(temp)
+    left = _left(temp)
+    assert len(left) == 2  # the test's home and the run's own offline Hermes home (offline_model)
 
     assert _session(tmp_path, temp, NOTHING).returncode == 0
-    assert _left(temp) == [left]  # fresh: it may be a run still going
+    assert _left(temp) == left  # fresh: it may be a run still going
 
-    os.utime(temp / left, (SEVEN_HOURS_AGO, SEVEN_HOURS_AGO))
+    for name in left:
+        os.utime(temp / name, (SEVEN_HOURS_AGO, SEVEN_HOURS_AGO))
     assert _session(tmp_path, temp, NOTHING).returncode == 0
     assert _left(temp) == []
 
