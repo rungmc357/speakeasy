@@ -89,10 +89,64 @@ def test_disk_io_error_from_stale_handles_is_recovered_with_a_new_file(plugin, c
     assert os.stat(db).st_ino != old_inode                 # a new file, so no stale state applies
     assert r.server.service.store.get_meta("spk443-probe") == "kept"
     assert r.fresh_files == 1
-    kept = list(r.state_dir.glob("recovered-*/state.sqlite3"))
+    kept = list((r.state_dir / "backups").glob("recovered-*/state.sqlite3"))
     assert len(kept) == 1                                  # the old file is kept aside
     assert any("disk I/O error" in rec.getMessage() and "new file" in rec.getMessage() for rec in caplog.records)
     leaked.close()
+
+
+def test_simulated_disk_io_error_build_recovers_once_and_keeps_rows(plugin, caplog):
+    """A build that raises "disk I/O error" (simulated) triggers the backup + new-file swap, the
+    build is retried exactly once, and every row survives."""
+    r, pkg, port, name, mod = plugin
+    store = r.server.service.store
+    for i in range(25):
+        store.set_meta(f"spk443-row-{i}", str(i))
+    inode = os.stat(r.db_path).st_ino
+    real = r._build
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real()
+    r._build = flaky
+    caplog.set_level("INFO")
+    _set_version(pkg, "1.4.0")
+    assert _settle(r)[-1] == "reloaded"
+    assert len(calls) == 2                                 # retried once
+    assert _health(port)["version"] == "1.4.0"
+    assert os.stat(r.db_path).st_ino != inode             # renamed over: a new inode
+    st = r.server.service.store
+    assert [st.get_meta(f"spk443-row-{i}") for i in range(25)] == [str(i) for i in range(25)]
+    assert r.fresh_files == 1 and len(list((r.state_dir / "backups").glob("recovered-*/state.sqlite3"))) == 1
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any("reload.db closed=" in m for m in msgs)
+    assert any("reload.db recovered" in m for m in msgs)
+    assert r.handles_left == 0 and _handles(r, mod) >= 1
+
+
+def test_recovery_never_swaps_when_the_backup_fails_integrity_check(plugin, monkeypatch):
+    r, pkg, port, name, mod = plugin
+    store = r.server.service.store
+    store.set_meta("spk443-keep", "yes")
+    inode = os.stat(r.db_path).st_ino
+    monkeypatch.setattr(mod, "_BACKUP", "print('*** in database main *** page 3 corrupt')\n")
+    real = r._build
+
+    def broken():
+        raise sqlite3.OperationalError("disk I/O error")
+    r._build = broken
+    _set_version(pkg, "1.5.0")
+    assert _settle(r)[-1] == "failed"
+    assert r.fresh_files == 0
+    assert os.stat(r.db_path).st_ino == inode             # original untouched
+    assert not (r.db_path.parent / (r.db_path.name + ".fresh")).exists()
+    r._build = real
+    check = sqlite3.connect(r.db_path)
+    assert check.execute("SELECT value FROM meta WHERE key='spk443-keep'").fetchone()[0] == "yes"
+    check.close()
 
 
 def test_other_build_failures_never_touch_the_database(plugin):
@@ -110,7 +164,7 @@ def test_other_build_failures_never_touch_the_database(plugin):
     _set_version(pkg, "1.3.0")
     assert _settle(r)[-1] == "failed"                     # not a disk I/O error: no recovery
     assert r.fresh_files == 0 and os.stat(r.db_path).st_ino == inode
-    assert not list(r.state_dir.glob("recovered-*"))
+    assert not list((r.state_dir / "backups").glob("recovered-*"))
 
 
 def test_closing_the_service_saves_activity_waiting_on_a_delayed_save(home):

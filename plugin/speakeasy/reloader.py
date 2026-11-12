@@ -165,6 +165,10 @@ class LiveReloader:
     def db_path(self) -> Path:
         return self.state_dir / DB_NAME
 
+    @property
+    def backups_dir(self) -> Path:
+        return self.state_dir / "backups"
+
     # -- database handles (SPK-443) ------------------------------------------------------------
     def _close_stores(self, modules: dict[str, ModuleType] | None = None) -> int:
         """Close every state store opened by one set of modules (default: what's loaded now), even
@@ -183,10 +187,11 @@ class LiveReloader:
     def _release(self, modules: dict[str, ModuleType] | None, why: str) -> int:
         """After a server stopped (or a build failed): close its stores, drop unreachable ones, and
         check no handle on the database is left. Returns how many are left (0 = clean)."""
-        self._close_stores(modules)
+        closed = self._close_stores(modules)
         gc.collect()  # a half-built service's store is only reachable from a dead cycle
         left = open_db_handles(self.db_path)
         self.handles_left = len(left)
+        logger.info("speakeasy: reload.db closed=%d left=%d (%s)", closed, len(left), why)
         if left:
             logger.error("speakeasy: %d database handle(s) still open after %s (should be none): %s",
                          len(left), why, ", ".join(sorted({Path(p).name for p in left})))
@@ -215,7 +220,7 @@ class LiveReloader:
                          done.returncode, (done.stdout.strip() or done.stderr.strip())[-300:])
             tmp.unlink(missing_ok=True)
             return False
-        keep = self.state_dir / f"recovered-{time.strftime('%Y%m%d-%H%M%S')}"
+        keep = self.backups_dir / f"recovered-{time.strftime('%Y%m%d-%H%M%S')}"
         try:
             keep.mkdir(parents=True, exist_ok=True)
             for suffix in ("", "-wal", "-shm"):
@@ -229,11 +234,11 @@ class LiveReloader:
             logger.error("speakeasy: database recovery failed while swapping files: %s", exc)
             tmp.unlink(missing_ok=True)
             return False
-        for old in sorted(self.state_dir.glob("recovered-*"))[:-KEEP_RECOVERED]:
+        for old in sorted(self.backups_dir.glob("recovered-*"))[:-KEEP_RECOVERED]:
             shutil.rmtree(old, ignore_errors=True)
         self.fresh_files += 1
-        logger.warning("speakeasy: the state database failed with \"disk I/O error\"; moved a checked backup "
-                       "into place as a new file (old files kept in %s)", keep.name)
+        logger.warning("speakeasy: reload.db recovered: the state database failed with \"disk I/O error\"; moved "
+                       "a checked backup into place as a new file (old files kept in backups/%s)", keep.name)
         return True
 
     def _build_safe(self) -> Any:
@@ -248,6 +253,7 @@ class LiveReloader:
             if not self._fresh_db():
                 raise
             importlib.invalidate_caches()
+            logger.warning("speakeasy: reload.db retrying the build once on the recovered database")
             return self._build()
 
     # -- modules -------------------------------------------------------------------------------
@@ -306,7 +312,7 @@ class LiveReloader:
                     self.server.stop()
                 finally:
                     self.server = None
-                    self._close_stores(self.modules)
+                    self._release(self.modules, "stopping the server")
 
     def _loop(self) -> None:
         while not self._stop.wait(self.check_s):
