@@ -127,6 +127,27 @@ final class ModelChoiceTests: XCTestCase {
                        JobModelDefaults(model: "a/b", reasoning: nil))
     }
 
+    /// SPK-404: the saved New work pick reads back from the reply the server really sends.
+    func testJobDefaultsReadTheWrappedSettingsReply() throws {
+        // `GET /voice/settings` = `{"settings": settings.get()}` (plugin `service.py` get_settings; the
+        // PATCH reply is the same shape). Pinned on the plugin side by test_model_choice.py
+        // test_settings_reply_wraps_the_job_default.
+        let reply = try JSONSerialization.jsonObject(with: Data("""
+        {"settings": {"voice": {"codex_path": ""}, "agents": {"allowed": []},
+          "jobs": {"model": "anthropic/claude-opus-5-5", "reasoning": "low", "fast_model": "", "fast_reasoning": "",
+                   "smart_model": "", "smart_reasoning": ""}}}
+        """.utf8))
+        XCTAssertEqual(JobModelDefaults(settingsJSON: reply),
+                       JobModelDefaults(model: "anthropic/claude-opus-5-5", reasoning: .low),
+                       "the pick must read back, or Profile shows the default and Reasoning saves over it")
+        XCTAssertEqual(JobModelDefaults(settingsJSON: ["settings": ["jobs": ["model": "", "reasoning": ""]]]),
+                       JobModelDefaults(), "nothing saved = Hermes' own")
+        // No `jobs` section is unreadable, never "nothing saved" (that read is what erased the pick).
+        XCTAssertNil(JobModelDefaults(settingsJSON: ["settings": ["voice": [:]]]) as JobModelDefaults?)
+        XCTAssertNil(JobModelDefaults(settingsJSON: ["ok": true]) as JobModelDefaults?)
+        XCTAssertNil(JobModelDefaults(settingsJSON: nil) as JobModelDefaults?)
+    }
+
     func testSessionPageAndTaskCarryTheModel() {
         let page = HistoryConversation(json: ["session": [
             "id": "s1", "title": "Garden", "source": "speakeasy", "send_via": "task", "entries": [], "jobs": [],
