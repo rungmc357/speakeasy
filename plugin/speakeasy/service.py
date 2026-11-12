@@ -917,6 +917,11 @@ class VoiceService(SecureInputMixin):
             self._text_worker.stop()
         # Last: the state store. A reload builds a new one on the same file, and a connection left open
         # here kept stale -wal/-shm handles that failed every later open with "disk I/O error" (SPK-443).
+        try:
+            from .activity import flush_all as activity_flush_all
+            activity_flush_all(self.store)
+        except Exception:
+            logger.debug("speakeasy: activity flush on close failed", exc_info=True)
         self.store.close()
 
     # -- auth ---------------------------------------------------------------------------------
