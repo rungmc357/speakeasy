@@ -98,6 +98,9 @@ public enum CallReconnect {
     public static let maxAttempts = 3
     /// Seconds before attempt 1, 2, 3.
     public static func delay(attempt: Int) -> TimeInterval { [1.0, 2.5, 5.0][max(0, min(attempt - 1, 2))] }
+    /// The plugin asked for the reconnect (`reconnect_required`): the old session is already gone
+    /// and the call is held, so there is nothing to wait out.
+    public static let serverAskedDelay: TimeInterval = 0.2
     /// A connection attempt that hasn't gone live by then is stuck.
     public static let connectStallAfter: TimeInterval = 12
     /// Watchdog attempts per connection before the call fails.
@@ -415,6 +418,9 @@ public enum VoiceEvent: Equatable, Sendable {
     case reconnectDue(attempt: Int)
     /// "Stop" on the reconnect banner.
     case reconnectCancelled
+    /// The plugin says the voice provider dropped this call and holds it for a resume (plugin
+    /// `reconnect_required`; `interactionID` = the call it holds). Not a hang-up: the call reconnects.
+    case reconnectRequired(interactionID: String?)
     case workOnlyOpened
     case sessionAdmitted(interactionID: String)
     case sessionStarted
@@ -519,6 +525,18 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
     case .reconnectCancelled:
         if case .reconnecting = s.phase { s.phase = .ended(.incomplete) }
         else if case .connecting(let c) = s.phase, c.reconnect > 0, c.admittedID == nil { s.phase = .ended(.incomplete) }
+
+    case .reconnectRequired(let held):
+        // The plugin holds the call after the provider dropped it: reconnect into it straight away
+        // (on any device: the server says it is resumable, nothing is guessed). The plugin caps
+        // these per call and ends the call itself past the cap.
+        switch s.phase {
+        case .live(let id?) where held == nil || held == id:
+            s.phase = .reconnecting(attempt: 1, deadline: now.addingTimeInterval(CallReconnect.serverAskedDelay),
+                                    resumeFrom: id)
+            s.speech = .idle
+        default: break   // paused, ending, already reconnecting or another call's: nothing to do
+        }
 
     case .workOnlyOpened:
         // Already showing the board (back to the foreground, a second open): keep it as it is,
