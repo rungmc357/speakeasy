@@ -259,4 +259,17 @@ final class CallPhaseTests: XCTestCase {
         s = reduce(s, .endTimedOut, now: t0)
         XCTAssertEqual(s.phase, .paused(id: "vi_1", reason: .user))
     }
+
+    /// Nov 11: a cold Codex start took 14 s; the 12 s watchdog abandoned the session the server was
+    /// still creating and asked for a second one. A request still in flight keeps waiting.
+    func testTheStallWatchdogKeepsWaitingForASessionTheServerIsStillCreating() {
+        XCTAssertEqual(CallReconnect.keepWaiting(stage: CallReconnect.waitingForServer, waited: 12)!,
+                       CallReconnect.serverReplyWithin - 12, accuracy: 0.001)
+        XCTAssertLessThan(CallReconnect.serverReplyWithin, 30, "under the request's own 30 s timeout")
+        XCTAssertNil(CallReconnect.keepWaiting(stage: CallReconnect.waitingForServer, waited: 27.8),
+                     "past the server's time: the attempt is stuck")
+        XCTAssertNil(CallReconnect.keepWaiting(stage: "answer applied; waiting for the call to start", waited: 12),
+                     "admitted but not live is a real stall: retry as before")
+        XCTAssertNil(CallReconnect.keepWaiting(stage: "creating offer", waited: 12))
+    }
 }
