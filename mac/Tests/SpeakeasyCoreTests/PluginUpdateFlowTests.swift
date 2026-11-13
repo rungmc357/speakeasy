@@ -107,4 +107,34 @@ final class PluginUpdateFlowTests: XCTestCase {
         let old = try JSONDecoder().decode(ServerCapabilities.self, from: Data(#"{"task_messages": true}"#.utf8))
         XCTAssertFalse(old.startJobs)
     }
+
+    // SPK-475: Home's line offers Update whenever a newer plugin is published; the tap must start a job
+    // then, except while one is under way.
+    func testUpdateTapStartsAfterNotNowOrADidntTakeButNotWhileUpdating() {
+        let fresh = PluginUpdateRecord()
+        XCTAssertEqual(PluginUpdateFlow.versionToStart(latest: "0.9.1", running: "0.9.0", record: fresh, inCall: false), "0.9.1")
+        // Closed with "Not now": the notice stays quiet, but an explicit tap still updates.
+        let closed = PluginUpdateFlow.dismiss(fresh, version: "0.9.1")
+        XCTAssertEqual(PluginUpdateFlow.phase(latest: "0.9.1", running: "0.9.0", record: closed, inCall: false), .none)
+        XCTAssertEqual(PluginUpdateFlow.versionToStart(latest: "0.9.1", running: "0.9.0", record: closed, inCall: false), "0.9.1")
+        // Under way: no second job.
+        var r = PluginUpdateFlow.started(fresh, version: "0.9.1", runID: "run_7", now: t0)
+        XCTAssertNil(PluginUpdateFlow.versionToStart(latest: "0.9.1", running: "0.9.0", record: r, inCall: false, now: t0.addingTimeInterval(5)))
+        // The job ended and the settle passed with Hermes still on 0.9.0: it didn't take, Update starts it again.
+        r = PluginUpdateFlow.observe(r, running: "0.9.0", jobSettled: true, now: t0.addingTimeInterval(10))
+        let later = t0.addingTimeInterval(10 + PluginUpdateFlow.settleSeconds + 1)
+        XCTAssertEqual(PluginUpdateFlow.phase(latest: "0.9.1", running: "0.9.0", record: r, inCall: false, now: later),
+                       .didntTake(version: "0.9.1", runID: "run_7"))
+        XCTAssertEqual(PluginUpdateFlow.versionToStart(latest: "0.9.1", running: "0.9.0", record: r, inCall: false, now: later), "0.9.1")
+        // A didn't-take for an older version starts the newest one.
+        XCTAssertEqual(PluginUpdateFlow.versionToStart(latest: "0.9.2", running: "0.9.0", record: r, inCall: false, now: later), "0.9.2")
+        // A job that never reported back doesn't hold the button forever.
+        let lost = PluginUpdateFlow.started(fresh, version: "0.9.1", runID: nil, now: t0)
+        XCTAssertNil(PluginUpdateFlow.versionToStart(latest: "0.9.1", running: "0.9.0", record: lost, inCall: false, now: t0.addingTimeInterval(60)))
+        XCTAssertEqual(PluginUpdateFlow.versionToStart(latest: "0.9.1", running: "0.9.0", record: lost, inCall: false,
+                                                       now: t0.addingTimeInterval(PluginUpdateFlow.staleStartSeconds + 1)), "0.9.1")
+        // Updated or nothing newer: nothing to start.
+        XCTAssertNil(PluginUpdateFlow.versionToStart(latest: "0.9.1", running: "0.9.1", record: r, inCall: false, now: later))
+        XCTAssertNil(PluginUpdateFlow.versionToStart(latest: "0.9.1", running: "0.9.1", record: fresh, inCall: false))
+    }
 }

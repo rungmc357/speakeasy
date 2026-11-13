@@ -183,7 +183,7 @@ def test_a_spoken_correction_rewrites_the_task_and_steers_it_now(server, service
     card = _card(service, run)
     assert "Man Pro" not in " ".join(str(card.get(k) or "") for k in ("title", "short_status", "detail", "now_line"))
     # Never a queued follow-up, and only one new run (the same task).
-    assert not any(n.startswith("Queued:") for n in _notes(worker))
+    assert not any(n.startswith("Lined up, not read yet:") for n in _notes(worker))
     assert not card.get("follow_ups")
     note = wait_for(lambda: [n for n in _notes(worker) if n.startswith("Corrected:")])[0]
     assert '"Mac Pro"' in note and "Never say the misheard words again" in note
@@ -253,7 +253,7 @@ def test_saying_it_again_is_confirmed_once_and_never_sent_again(server, service,
     note = wait_for(lambda: [n for n in _notes(worker) if n.startswith("Already corrected:")])[0]
     assert '"Mac Pro"' in note and "Man Pro" not in note
     assert len(hermes.steers) == steers
-    assert not any(n.startswith("Queued:") for n in _notes(worker))
+    assert not any(n.startswith("Lined up, not read yet:") for n in _notes(worker))
 
 
 def test_a_session_page_shows_only_the_words_of_a_correction():

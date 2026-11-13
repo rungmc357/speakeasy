@@ -216,6 +216,9 @@ def test_look_at_my_screen_waits_for_sharing_then_runs_with_it(open_call, hermes
     call.say("call_look", "Look at my screen")
     hold = waiting(call)
     assert hold["text"] == "Waiting for your screen" and abs(hold["since"] - time.time()) < 10
+    # The hint is published right after the hold, from the call's loop: on a loaded machine the hold
+    # can be read first, so wait for it instead of reading the events once.
+    wait_for(lambda: call.events("screen.hint"))
     assert call.events("screen.hint") == [{"reason": "screen_off"}]
     wait_for(lambda: P.screen_off_hint() in call.spoken())
     assert "Control-Option-S" in P.screen_off_hint()

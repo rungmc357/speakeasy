@@ -107,7 +107,7 @@ def test_a_compacted_child_session_counts(tmp_path):
 def test_accepted_is_only_queued_until_the_task_reads_it(server, service, hermes, home):
     worker, run, db = _running(server, service, hermes, home)
     assert _state(server) == ["queued"]
-    note = wait_for(lambda: [c for c in _notes(worker) if c.startswith("Queued:")])[0]
+    note = wait_for(lambda: [c for c in _notes(worker) if c.startswith("Lined up, not read yet:")])[0]
     assert "has not read it yet" in note
     assert not any(c.startswith("Delivered:") for c in _notes(worker))     # never claimed as passed on
     # The agent drains it at its next tool batch: Hermes writes it into the task's transcript.
@@ -157,7 +157,7 @@ def test_an_old_hermes_without_terminal_fields_proves_nothing(server, service, h
 
 def test_the_voice_rule_names_queued():
     rules = Path(P.__file__).with_name("rules.md").read_text()
-    assert '"Queued" means only lined up, not read yet' in rules
+    assert '"Lined up" means not read yet' in rules
 
 
 def test_a_follow_up_taken_just_as_the_run_ends_is_still_settled(server, service, hermes, home, monkeypatch):

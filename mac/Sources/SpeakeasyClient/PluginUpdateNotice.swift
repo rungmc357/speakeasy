@@ -39,6 +39,18 @@ public final class PluginUpdateNotice: ObservableObject {
                                lastCallEnded: lastCallEnded, now: now)
     }
 
+    /// The version an Update tap would start now; nil while an update is under way (SPK-475).
+    public var versionToStart: String? {
+        PluginUpdateFlow.versionToStart(latest: latest, running: running, record: record, inCall: inCall,
+                                        lastCallEnded: lastCallEnded, now: now)
+    }
+
+    /// An update this app started is running or switching over: the version it goes to.
+    public var updatingTo: String? {
+        if case .updating(let version, _) = phase, versionToStart == nil { return version }
+        return nil
+    }
+
     /// What to show right now: the "available" notice only off a call (it's a home-board thing).
     public var visiblePhase: PluginUpdatePhase {
         let p = phase
@@ -76,9 +88,11 @@ public final class PluginUpdateNotice: ObservableObject {
         save(PluginUpdateFlow.dismiss(record, version: version))
     }
 
-    /// Update: start the update request as a normal job on the user's Hermes.
+    /// Update: start the update request as a normal job on the user's Hermes. Also after a "Not now"
+    /// or an update that didn't take (SPK-475: Home's line offers Update then too); never while one
+    /// is under way.
     public func update(start: (String) async throws -> String?) async {
-        guard case .available(let version, _) = phase, !starting else { return }
+        guard let version = versionToStart, !starting else { return }
         starting = true; error = nil
         defer { starting = false }
         do {

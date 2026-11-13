@@ -2,6 +2,7 @@
 import AppKit
 #endif
 import AVFoundation
+import Combine
 import CoreGraphics
 import Foundation
 import SpeakeasyCore
@@ -155,6 +156,9 @@ public final class NativeVoiceClient: VoiceCallClient {
     private var connectionUsedEarlyCapture = false
     /// Where the current connection attempt is (for the stall report).
     private var connectStage = "starting"
+    /// When this connection attempt began: the stall watchdog lets a session request still in flight
+    /// run to CallReconnect.serverReplyWithin instead of abandoning it at connectStallAfter.
+    private var connectStartedAt = Date()
     private var connectWatchdog: DispatchWorkItem?
     /// A call that hasn't gone live by then is stuck; retry once, then say so.
     static let connectStallAfter: TimeInterval = CallReconnect.connectStallAfter
@@ -322,6 +326,11 @@ public final class NativeVoiceClient: VoiceCallClient {
     public var reconnectsDroppedCalls = false
 
     public func dispatch(_ event: VoiceEvent) {
+        // Call energy: the assistant's words arrive a few characters at a time (20-40 events a second
+        // while it speaks), and every dispatch re-published the whole call state to every view that
+        // watches it. They're joined and dispatched at most every `outputCoalesce`; any other event
+        // first lets the held words through, so the order of events never changes.
+        if case .outputDelta = event {} else { flushOutput() }
         if model.state.reconnectsDroppedCalls != reconnectsDroppedCalls { model.state.reconnectsDroppedCalls = reconnectsDroppedCalls }
         let before = model.state
         let after = reduce(before, event, now: Date())
@@ -333,6 +342,30 @@ public final class NativeVoiceClient: VoiceCallClient {
         applySideEffects(from: before, to: after)
         watchMic(event, from: before, to: after)
         scheduleUploadsIfNeeded()
+    }
+
+    /// The assistant's words held for one coalesced dispatch (call energy).
+    private var pendingOutput = ""
+    private var outputFlush: DispatchWorkItem?
+    static let outputCoalesce: TimeInterval = 0.1
+
+    private func bufferOutput(_ text: String) {
+        guard !text.isEmpty else { return }
+        pendingOutput += text
+        guard outputFlush == nil else { return }
+        let item = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.flushOutput() }
+        }
+        outputFlush = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.outputCoalesce, execute: item)
+    }
+
+    private func flushOutput() {
+        outputFlush?.cancel(); outputFlush = nil
+        guard !pendingOutput.isEmpty else { return }
+        let text = pendingOutput
+        pendingOutput = ""
+        dispatch(.outputDelta(text))
     }
 
     // MARK: Mic check
@@ -402,14 +435,25 @@ public final class NativeVoiceClient: VoiceCallClient {
         var speaking = false
         if case .speaking = state.speech { speaking = true }
         let listening = state.mic == .live && earlyCapture == nil && !engine.isAudioHeld && !speaking
-        engine.micProbe { [weak self] level, packets in
+        let use: (CallStatsSample) -> Void = { [weak self] sample in
             guard let self, self.engine === engine else { return }
+            let level = sample.micLevel, packets = sample.packetsSent
             if (packets ?? 0) > 0 { self.markConnect(.firstMicPacket) }
             let fault = self.micCheck.sample(level: level, packetsSent: packets, listening: listening, now: Date())
             if self.model.state.micHealth != self.micCheck.health { self.dispatch(.micHealth(self.micCheck.health)) }
             if let fault { self.repairMic(fault) }
         }
+        // Call energy: the orb's meter read the stats a moment ago on this connection; use that read.
+        if let last = lastStats, last.engine === engine, Date().timeIntervalSince(last.at) < Self.statsFreshFor {
+            use(last.sample)
+            return
+        }
+        engine.callStats { use($0) }
     }
+
+    /// The orb's last stats read (call energy): the mic check reuses it instead of a read of its own.
+    private var lastStats: (sample: CallStatsSample, at: Date, engine: AnyObject)?
+    static let statsFreshFor: TimeInterval = 0.3
 
     /// The mic isn't getting through: reopen the voice connection (conversation and tasks kept).
     /// This is what closing and reopening the app did, done for you within a few seconds.
@@ -454,13 +498,13 @@ public final class NativeVoiceClient: VoiceCallClient {
         pause()
     }
 
-    private func armConnectWatchdog(_ api: ServerClient) {
+    private func armConnectWatchdog(_ api: ServerClient, after: TimeInterval = NativeVoiceClient.connectStallAfter) {
         connectWatchdog?.cancel()
         let item = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in self?.connectStalled(api) }
         }
         connectWatchdog = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.connectStallAfter, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + after, execute: item)
     }
 
     /// Still "connecting" long after it should be live. Before, it sat there showing "Listening"
@@ -468,6 +512,14 @@ public final class NativeVoiceClient: VoiceCallClient {
     private func connectStalled(_ api: ServerClient) {
         guard case .connecting(let attempt) = model.state.phase else { return }
         let stage = connectStage
+        // The server is still creating this session (its reply hasn't come): abandoning it now
+        // would only make the server start a second voice session and start the wait over.
+        if let more = CallReconnect.keepWaiting(stage: stage, waited: Date().timeIntervalSince(connectStartedAt)) {
+            noteConnect("still waiting for the server")
+            onStatus?("Connecting…")
+            armConnectWatchdog(api, after: more)
+            return
+        }
         reportMic("connect stalled (attempt \(attempt.attempt)) at: \(stage); \(micReportDetail())")
         noteConnect("connect stalled at \(stage)")
         // A call from listening mode keeps what the user already said for the retried call
@@ -585,6 +637,7 @@ public final class NativeVoiceClient: VoiceCallClient {
     }
 
     private func applySideEffects(from old: VoiceState, to new: VoiceState) {
+        if old.connection.isInCall != new.connection.isInCall { EnergyGovernor.shared.setInCall(new.connection.isInCall) }
         if appliedMic != new.mic {
             appliedMic = new.mic
             // While the connecting listener still has the mic (you're finishing a sentence), the
@@ -669,25 +722,42 @@ public final class NativeVoiceClient: VoiceCallClient {
     private func stopTicker() {
         ticker?.invalidate(); ticker = nil
         levelTimer?.invalidate(); levelTimer = nil
+        lastStats = nil
         model.orbLevel = 0
     }
 
-    /// ~12 Hz: the orb follows the assistant's voice while it speaks, the mic while listening.
+    /// Whether the host draws the orb right now (the iPhone: false with the app in the background,
+    /// so the meter stops reading stats nobody sees; the mic check reads its own, 4 a second).
+    public var orbOnScreen: @MainActor () -> Bool = { true }
+    private var energyWatch: AnyCancellable?
+
+    /// 10 Hz (≈ 6.7 Hz when the phone is hot or in Low Power Mode, SPK-430): the orb follows the
+    /// assistant's voice while it speaks, the mic while listening. Each tick is one stats read,
+    /// which the mic check reuses (call energy; it was 12.5 + 4 reads a second).
     private func startLevelMeter() {
         guard levelTimer == nil else { return }
-        levelTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+        if energyWatch == nil {
+            energyWatch = EnergyGovernor.shared.$policy.map(\.levelInterval).removeDuplicates().dropFirst()
+                .sink { [weak self] _ in
+                    guard let self, self.levelTimer != nil else { return }
+                    self.levelTimer?.invalidate(); self.levelTimer = nil
+                    self.startLevelMeter()
+                }
+        }
+        let t = Timer(timeInterval: EnergyGovernor.shared.policy.levelInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let engine = self.engine, self.model.state.connection == .live,
-                      self.surface.isVisible else {
+                      self.surface.isVisible, self.orbOnScreen() else {
                     if self?.model.orbLevel != 0 { self?.model.orbLevel = 0 }
                     return
                 }
-                engine.audioLevels { [weak self] mic, voice in
+                engine.callStats { [weak self] sample in
                     guard let self else { return }
+                    self.lastStats = (sample, Date(), engine)
                     let speaking = self.model.presentation.mark == .speaking
                     let muted = self.model.state.mic == .muted
                     // Levels are linear; a square root makes quiet speech visible.
-                    let raw = speaking ? voice : (muted ? 0 : mic)
+                    let raw = speaking ? sample.voice : (muted ? 0 : sample.mic)
                     let target = min(1, sqrt(max(0, raw)) * 1.4)
                     let current = self.model.orbLevel
                     // Fast attack, slower release, so it moves with syllables without flicker.
@@ -696,6 +766,9 @@ public final class NativeVoiceClient: VoiceCallClient {
                 }
             }
         }
+        t.tolerance = 0.02
+        RunLoop.main.add(t, forMode: .default)
+        levelTimer = t
     }
 
     // MARK: Call lifecycle
@@ -799,6 +872,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         dispatch(.sharing(.declared(screenDeclaration())))
         refreshAttachmentSupport(api)
         connectStage = "starting"
+        connectStartedAt = Date()
         armConnectWatchdog(api)
         if skipEarlyCapture { stopEarlyCapture() } else { startEarlyCapture() }
         connectionUsedEarlyCapture = earlyCapture != nil
@@ -827,7 +901,7 @@ public final class NativeVoiceClient: VoiceCallClient {
                 engine.setMicEnabled(self?.model.state.localAudioEnabled ?? false)
                 self?.connectStage = "creating offer"
                 let sdp = try await engine.createOffer()
-                self?.connectStage = "waiting for the server"
+                self?.connectStage = CallReconnect.waitingForServer
                 guard let self, self.engine === engine, self.model.state.connection == .connecting else { engine.close(); return }
                 // Resumes declare again: the resumed call starts with sharing off.
                 let screen = self.model.state.sharing.declared
@@ -923,13 +997,17 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// Same callbacks for either transport.
     private func wire(_ transport: CallTransport) {
+        pendingOutput = ""; outputFlush?.cancel(); outputFlush = nil
         // A connection this call has dropped (a stalled or reconnected attempt, a paused call's)
         // can still deliver a last message or failure; only the current one speaks for the call.
         transport.onMessage = { [weak self, weak transport] data in
             guard let self, let transport, self.engine === transport else { return }
             for event in parseDataChannelMessage(data) {
                 if case .sessionClosed = event, self.voiceProvider == "codex" {
+                    self.flushOutput()
                     self.finishCodexCall()
+                } else if case .outputDelta(let text) = event {
+                    self.bufferOutput(text)
                 } else {
                     self.dispatch(event)
                 }

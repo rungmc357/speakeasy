@@ -302,17 +302,61 @@ def email_view(draft: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
+_REPLY_PREFIX = re.compile(r"^\s*(?:(?:re|fwd?|aw|sv)\s*:\s*)+", re.I)
+_WORD = re.compile(r"[^\W\d_]{2,}", re.U)
+
+
+def _subject_key(value: Any) -> str:
+    text = _REPLY_PREFIX.sub("", value if isinstance(value, str) else "")
+    return " ".join(text.split()).casefold()
+
+
+def _people_words(text: str) -> set[str]:
+    return {w.casefold() for w in _WORD.findall(text or "")}
+
+
+def _same_email(hand: dict[str, Any], draft: dict[str, Any]) -> bool:
+    """Whether a card the task drew by hand shows this saved draft: its subject (ignoring Re:/Fwd:)
+    and its recipient line must agree with the draft's. A hand card naming neither can't be told
+    apart from any other email, so it is kept rather than silently replaced."""
+    subject, to = hand.get("subject"), hand.get("to")
+    has_subject = isinstance(subject, str) and subject.strip() != ""
+    has_to = isinstance(to, str) and to.strip() != ""
+    if not (has_subject or has_to):
+        return False
+    if has_subject and _subject_key(subject) != _subject_key(draft.get("subject")):
+        return False
+    if has_to:
+        line = str(to).casefold()
+        addresses: list[str] = []
+        words: set[str] = set()
+        for raw in draft.get("to") or []:
+            item = str(raw)
+            match = re.search(r"<([^>]+)>", item)
+            address = (match.group(1) if match else item).strip().casefold()
+            addresses.append(address)
+            words |= _people_words(item[:match.start()] if match else "")
+            words |= _people_words(re.split(r"[@]", address)[0].replace(".", " ").replace("_", " "))
+        if not (any(a and a in line for a in addresses) or (_people_words(str(to)) & words)):
+            return False
+    return True
+
+
 def with_email_views(views: Any, drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A task's cards with its newest email draft as the email card. It takes the place of a draft
     card the task drew by hand for the same email (one card, not two), else goes last, so no other
-    card's index (which card buttons address) ever moves. Home shows it in place of the done card."""
+    card's index (which card buttons address) ever moves. A hand-drawn card for a different email
+    stays, so a job's second email is never swapped for its first. Home shows it in place of the
+    done card."""
     views = list(views) if isinstance(views, list) else []
     live = [d for d in drafts if d.get("status") != "superseded"]
     if not live:
         return views
-    card = email_view(live[-1])
+    draft = live[-1]
+    card = email_view(draft)
     hand = [i for i, v in enumerate(views)
-            if isinstance(v, dict) and v.get("kind") == "draft" and str(v.get("channel", "")).lower() == "email"]
+            if isinstance(v, dict) and v.get("kind") == "draft" and str(v.get("channel", "")).lower() == "email"
+            and _same_email(v, draft)]
     if hand:
         views[hand[0]] = card
         return views

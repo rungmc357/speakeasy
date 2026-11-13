@@ -10,6 +10,8 @@ import subprocess
 
 import pytest
 
+import offline_model
+import process_state
 import temp_homes
 from fakes import FakeHermesServer, FakeLiveWorker, FakeTransport, make_home, http  # noqa: F401
 from speakeasy import delivery as _delivery
@@ -48,6 +50,7 @@ def no_real_routing_model(monkeypatch):
     monkeypatch.setattr(router, "working_status", lambda request, timeout=10.0: None)
     monkeypatch.setattr(router, "plan_steps", lambda request, timeout=10.0: None)
     monkeypatch.setattr(router, "result_shape", lambda *args, **kwargs: None)
+    monkeypatch.setattr(router, "verdict_rewrite", lambda request, report, line, timeout=10.0: None)
 
 
 @pytest.fixture(autouse=True)
@@ -64,6 +67,42 @@ def no_real_volume(monkeypatch):
 # runner keeps it. The environment default covers plugin copies imported under another package name
 # (test_live_reload), whose notifier class this guard never sees.
 os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
+
+# Hermes' entry-point bootstrap (first import of gateway.run, run_agent, hermes_cli.main …) switches
+# the process onto the install's committed dependency environment, which may be built for another
+# Python: the first test to import gateway.run would swap sys.path, PYTHONPATH and PATH for the rest
+# of the run (later ``import PIL`` resolved to a python3.14 tree inside a 3.11 run). Import it once
+# here with that activation off and the path/environment put back, so later imports are no-ops.
+#
+# The run never reads the developer's Hermes home: it gets its own, offline, before the bootstrap
+# (which loads the home's .env) or any Hermes config reader runs.
+offline_model.pin_run_home()
+process_state.import_hermes_bootstrap_inert()
+# …and no test reaches a real model: Hermes' side-model calls fail at once for the whole run (also in
+# threads a test leaves behind), exactly as on a Hermes with no usable provider, which every plugin
+# caller already handles as "no side model". The calls are counted in the run's summary.
+offline_model.block_real_model_calls()
+
+
+def pytest_terminal_summary(terminalreporter):
+    calls = offline_model.REAL_MODEL_CALLS
+    if calls:
+        terminalreporter.write_line(f"speakeasy: {len(calls)} side-model call(s) were blocked "
+                                    "(tests never reach a real model)")
+
+
+@pytest.fixture(autouse=True)
+def restore_process_state(request):
+    """Put ``sys.path``, the import hooks, ``os.environ`` and the cwd back after every test, so no
+    test can leak them into the next (Hermes modules and config loaders change them at import time).
+    A test that leaves another Python's site-packages on the path, or drops this one's, fails."""
+    state = process_state.ProcessState()
+    yield
+    problems = state.foreign_path_changes()
+    state.restore()
+    if problems:
+        pytest.fail(f"{request.node.nodeid} left sys.path pointing at another Python's packages "
+                    f"({'; '.join(problems)}); restore it in the test", pytrace=False)
 
 _REAL_NOTIFIER_INIT = _delivery.HermesSendNotifier.__init__
 _REAL_SEND_RUNNER = inspect.signature(_REAL_NOTIFIER_INIT).parameters["runner"].default

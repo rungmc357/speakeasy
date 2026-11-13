@@ -313,6 +313,13 @@ struct ChartCard: View {
     @State private var showsValues = false
     @Environment(\.cardFit) private var fit
     @ScaledMetric(relativeTo: .caption) private var small: CGFloat = 11.5
+    /// Charts' own axis label size (caption 2), as it scales with the reader's text size.
+    @ScaledMetric(relativeTo: .caption2) private var axisScaled: CGFloat = 11
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// Axis labels follow the text size up to a point: past it they'd crowd a 150 pt plot into
+    /// overlapping numbers, and the readout line and "Show values" carry every value at full size.
+    private var axisSize: CGFloat { min(axisScaled, 16) }
 
     var body: some View {
         let facts = ChartFacts(card)
@@ -387,9 +394,20 @@ struct ChartCard: View {
         }
         .chartXSelection(value: $selected)
         // Axis labels stay distinct when cut (GOOG and GOOGL never both read "GO…").
+        // Only as many x labels as fit side by side: Charts drops the ones that would touch (at the
+        // largest text sizes a row of times otherwise runs together into one long number). The
+        // readout line and "Show values" still carry every value.
         .chartXAxis {
             AxisMarks { value in
-                AxisValueLabel { if let s = value.as(String.self) { Text(short[s] ?? s) } }
+                AxisValueLabel(collisionResolution: .greedy(minimumSpacing: 6)) {
+                    if let s = value.as(String.self) { Text(short[s] ?? s).font(.system(size: axisSize)) }
+                }
+            }
+        }
+        .chartYAxis {
+            AxisMarks(values: .automatic(desiredCount: typeSize.isAccessibilitySize ? 3 : 5)) { _ in
+                AxisGridLine()
+                AxisValueLabel().font(.system(size: axisSize))
             }
         }
         .modifier(OneSeriesTint(on: JobLook.touch && !multi))
