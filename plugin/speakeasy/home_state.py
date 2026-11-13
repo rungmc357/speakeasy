@@ -32,6 +32,8 @@ import threading
 import time
 from typing import Any, Callable
 
+from .confirms import pending
+
 logger = logging.getLogger(__name__)
 
 RESET_AFTER_S = 20 * 60          # Home resets to clean after this long without a message (North Star: "about 20 minutes")
@@ -67,6 +69,20 @@ def _subject_key(subject: Any) -> str:
 def _clip(text: Any, limit: int) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "\u2026"
+
+
+def approval_state(result_json: str | None) -> str | None:
+    """A job's approval card from its saved result: "pending:<ref>" until Post or Cancel (``ref`` is
+    the start of the card's digest, as in its stack id), "settled" after either, None when it has none."""
+    try:
+        result = json.loads(result_json) if result_json else {}
+    except ValueError:
+        return None
+    card = pending(result)
+    if card is not None:
+        return "pending:" + str(card.get("sha256") or "")[:12]
+    views = result.get("views") if isinstance(result, dict) else None
+    return "settled" if any(isinstance(v, dict) and v.get("kind") == "confirm" for v in views or []) else None
 
 
 # -- 1 + 2: the current exchange and the reset -----------------------------------------------------
@@ -152,6 +168,10 @@ def candidates(items: list[dict[str, Any]], eligible: Callable[[str], bool] | No
             asked = int(float(((item.get("question") or {}).get("asked_at")) or item.get("updated_at") or 0))
             ref = f"{run}:{asked}" if run else str(item["id"])
             out.append(_cand(item, DECISION, ref, run))
+        elif kind == "new_answer" and item.get("needs_you") and run:
+            # An approval card (Post / Cancel) nobody has tapped: a decision, drawn as its answer. One
+            # per card: a card asked again with new terms (same job) is a new decision.
+            out.append(_cand(item, DECISION, f"{run}:{item.get('_approval') or ''}", run))
         elif kind == "stopped":
             members = item.get("group") or [{"run_id": run, "session_id": item.get("session_id"),
                                               "title": item.get("title")}]
@@ -231,11 +251,12 @@ class HomeState:
 
     def _run_state(self, run_id: str) -> dict[str, Any]:
         with self.store._lock:
-            row = self.store._db.execute(
-                "SELECT idem_key, status, answered, question_closed FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            row = self.store._db.execute("SELECT idem_key, status, answered, question_closed, result_json,"
+                                         " coalesce(dismissed, 0) FROM runs WHERE run_id=?", (run_id,)).fetchone()
         if not row:
             return {}
-        return {"key": row[0], "status": str(row[1] or ""), "answered": row[2], "question_closed": row[3]}
+        return {"key": row[0], "status": str(row[1] or ""), "answered": row[2], "question_closed": row[3],
+                "approval": approval_state(row[4]), "dismissed": bool(row[5])}
 
     def _eligible(self, run_id: str) -> bool:
         """F1: the finished job brought back something to see or act on (``substantive``). A
@@ -332,9 +353,18 @@ class HomeState:
                     continue   # put off with Later: still waiting on you
                 run = self._run_state(row["run_id"]) if row["run_id"] else {}
                 if row["kind"] == DECISION:
+                    if run and row["run_id"] and not run["dismissed"] \
+                            and run["approval"] == f"pending:{row['id'].rsplit(':', 1)[-1]}":
+                        # This card, off Home's cards (cut by its caps) but still waiting: kept, up to a
+                        # result's span.
+                        if now - float(row["added_at"]) >= RESULT_KEPT_S:
+                            self._set(row["id"], state=EXPIRED, state_at=now)
+                        continue
                     if run and row["run_id"] and self._still_open(run, now):
                         continue
-                    self._set(row["id"], state=DONE if (not run or run.get("answered")) else SKIPPED, state_at=now)
+                    # Tapped (or replaced by a card asked again): done, never a "skipped question".
+                    done = not run or run.get("answered") or run["approval"] is not None
+                    self._set(row["id"], state=DONE if done else SKIPPED, state_at=now)
                 else:   # stopped: retried, followed up or cleared elsewhere
                     if run and run["status"] in {"failed", "interrupted", "canceled", "cancelled"} \
                             and not self._superseded(row["run_id"], items):
