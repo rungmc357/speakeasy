@@ -1,0 +1,36 @@
+# Spacing census (rule S2 of the spacing cleanup): reports new hand-typed spacing, corner and
+# font-size literals on a pull request's changed lines, and any file whose literal count rose.
+# REPORT ONLY for now: it never fails the PR. Switch CENSUS_MODE to "block" only after the
+# build-76 merge pass of older PRs (SPK-394) has landed on main; until then rebased PRs would
+# all fail on literals they merely moved.
+name: Spacing census
+
+on:
+  pull_request:
+    paths:
+      - "**.swift"
+      - "scripts/spacing_census.py"
+      - "scripts/test_spacing_census.py"
+      - ".github/workflows/spacing-census.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CENSUS_MODE: report
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Census self-test
+        run: python3 scripts/test_spacing_census.py
+      - name: New spacing, corner and font-size literals
+        run: |
+          python3 scripts/spacing_census.py check \
+            --base "origin/$BASE_REF" --head HEAD \
+            --mode "$CENSUS_MODE" --annotations --summary "$GITHUB_STEP_SUMMARY"
