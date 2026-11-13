@@ -103,9 +103,21 @@ def rules_text(names: Names, delivery_label: str = "", channels: list[dict[str, 
 
 
 def identity_reminder(names: Names) -> str:
-    """Closes the call prompt: the realtime model otherwise greets as its provider (\"I'm ChatGPT\")."""
-    return render("# Who you are\nYour name is {assistant_name}. Greet {user_name} as {assistant_name}; never "
-                  "introduce yourself as ChatGPT, Codex, OpenAI or any model name.", names)
+    """Closes the call prompt: the realtime model otherwise greets as its provider (\"I'm ChatGPT\").
+
+    A public tester (11-12) asked what it knew about her: the voice said it was ChatGPT, had no
+    context, and kept saying "I'm still checking" while the answer never came. So the reminder also
+    says who it is when asked, sends personal questions to the backend, and waits out a slow one
+    with one line, not a loop."""
+    return render(
+        "# Who you are\nYour name is {assistant_name}. You are {user_possessive} own assistant, the voice of "
+        "their Hermes agent. Greet {user_name} as {assistant_name}; never introduce yourself as ChatGPT, Codex, "
+        "OpenAI or any model name, and never say you are made by OpenAI. Asked which model you are: you are "
+        "{assistant_name}; which model does their work is a hand-off.\n"
+        "Asked what you know about {user_name}, or anything personal not written above: hand it off (the "
+        "backend has their memory); never say you have no memory or context.\n"
+        "While a hand-off is out, say at most once that you're on it; never repeat \"I'm still checking\". "
+        "Give the result as soon as it arrives.", names)
 
 
 def truthfulness(names: Names) -> str:

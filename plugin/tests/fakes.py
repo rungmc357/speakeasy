@@ -384,16 +384,20 @@ class FakeTransport:
         self.max_call_s = 60
         self.requests: list[tuple[str, dict]] = []
         self.started: tuple | None = None
+        self.stop_requested = False  # as CodexTransport: Speakeasy asked the session to stop
 
     def start(self, sdp: str, instructions: str, seed: list, voice: str) -> str:
         self.started = (sdp, instructions, seed, voice)
         return "v=0\r\nanswer\r\n"
 
     def request(self, method: str, params: dict | None = None, timeout: float = 20) -> dict:
+        if method == "thread/realtime/stop":
+            self.stop_requested = True
         self.requests.append((method, params or {}))
         return {}
 
     def stop(self) -> None:
+        self.stop_requested = True
         self.closed = True
 
 

@@ -72,22 +72,23 @@ FAILED_S = 24 * 3600          # Auto skips a model that failed in real use for t
 
 # Approved coordinator models, best first. Home's coordinator answers chat and decides "reply, start
 # a job, message a job"; it needs to be quick, good at plain conversation and reliable with tool
-# calls. Each entry is a model family: (preferred provider slug or None, model-id pattern). Auto picks
-# the first family the user already has connected in Hermes, and within a family only the NEWEST
-# version counts, from whichever provider serves it (the preferred provider first when it has that
-# version): an older family member is never picked while a newer one is connected. The Home model
-# chip overrides Auto. Measured on the real coordinator prompt (378 calls, invented asks graded
-# against a fixed answer key): Sonnet 5.5 routed 97-98% right at ~1.9 s, GPT-6.1 Terra 99% at ~2.0 s,
-# Haiku 5.5 93% at ~2.0 s, Haiku 4.5 85%. The prompt is slim, so the mid tier costs no latency. Never
-# the top tier (Opus) and never the small "Luna" tier: Opus is the work model's job, and small models
-# misroute follow-ups and corrections. Keep this list short and current; swap entries here.
+# calls. Each entry is a model family: (the provider slug that must serve it, model-id pattern).
+# Geo, 11-12: Auto picks only from a flat subscription the user already has in their Hermes, Codex
+# (ChatGPT sign-in) first, then a direct Claude subscription; never a model from an aggregator or a
+# metered provider (OpenRouter, Nous portal) "and eat their usage", even when it lists the same model.
+# So a family counts only from its own provider (a public tester who never uses Claude saw Home name
+# "Claude Sonnet 5.5" because any provider listing a claude-sonnet id used to match). Within a family
+# only the NEWEST version counts: an older member is never picked while a newer one is connected.
+# With none of these, Home uses the user's own Hermes default (``route``). The Home model chip
+# overrides Auto. Measured on the real coordinator prompt (378 calls, invented asks graded against a
+# fixed answer key): GPT-6.1 Terra 99% at ~2.0 s, Sonnet 5.5 97-98% at ~1.9 s, Haiku 5.5 93% at
+# ~2.0 s. Never the top tier (Opus) and never the small "Luna" tier: Opus is the work model's job,
+# and small models misroute follow-ups and corrections. Keep this list short and current.
 COORDINATOR_MODELS: list[tuple[str | None, str]] = [
-    ("anthropic", r"(^|/)claude-sonnet-\d"),   # most accurate routing, as quick as Haiku on this prompt
-    (None, r"(^|/)gpt-\d+(\.\d+)*-terra$"),     # OpenAI-only users: the mid tier, as accurate as Sonnet
-    ("anthropic", r"(^|/)claude-haiku-\d"),    # quick, good plain chat, dependable tool calls
-    (None, r"(^|/)gpt-\d+(\.\d+)*-mini$"),
-    (None, r"gemini-\d+(\.\d+)*-flash$"),
-    (None, r"grok-\d+(\.\d+)*-fast"),
+    ("openai-codex", r"(^|/)gpt-\d+(\.\d+)*-terra$"),   # ChatGPT sign-in: the mid tier, 99% on the key
+    ("anthropic", r"(^|/)claude-sonnet-\d"),             # direct Claude: most accurate Claude, quick
+    ("anthropic", r"(^|/)claude-haiku-\d"),              # direct Claude: quick, dependable tool calls
+    ("openai-codex", r"(^|/)gpt-\d+(\.\d+)*-mini$"),    # ChatGPT sign-in without Terra
 ]
 FAST_FAMILIES = 3             # "Fast replies" offers only these leading families (Sonnet, Terra, Haiku)
 FAST_OPTIONS = 3              # "Fast replies" rows besides Auto (one per connected family of those)
@@ -411,13 +412,13 @@ def _version(model: str) -> tuple[int, ...]:
 def approved(entries: dict[str, dict[str, Any]],
              families: list[tuple[str | None, str]] | None = None) -> list[str]:
     """The user's connected models that are approved coordinators, best first: COORDINATOR_MODELS
-    order, and per family only its newest version (an older one never appears while a newer one is
-    connected), the preferred provider first, then others serving that same version. Pure: reads
-    only *entries*."""
+    order, each family only from its own provider, and per family only its newest version (an older
+    one never appears while a newer one is connected). Pure: reads only *entries*."""
     out: list[str] = []
     for provider, pattern in (COORDINATOR_MODELS if families is None else families):
         rx = re.compile(pattern, re.I)
-        hits = [e for e in entries.values() if rx.search(str(e.get("model") or ""))]
+        hits = [e for e in entries.values() if rx.search(str(e.get("model") or ""))
+                and (provider is None or e.get("provider") == provider)]
         if not hits:
             continue
         top = max(_version(str(e["model"]))[:3] for e in hits)

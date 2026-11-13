@@ -220,12 +220,11 @@ def test_auto_prefers_the_newest_sonnet_then_the_newest_haiku_never_opus():
                     "anthropic/claude-haiku-4-5-20251001", "anthropic/claude-haiku-5-5", "openai-codex/gpt-5.4-mini")
     assert HC.pick_auto(have) == "anthropic/claude-sonnet-5-5"
     assert HC.approved(have) == ["anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5", "openai-codex/gpt-5.4-mini"]
-    # A newer version through another provider beats an older one from the preferred provider.
+    # Geo 11-12: never through an aggregator or metered provider, even a newer version.
     other = _entries("anthropic/claude-haiku-4-5", "openrouter/anthropic/claude-haiku-5.5")
-    assert HC.approved(other) == ["openrouter/anthropic/claude-haiku-5.5"]
-    # Same version from two providers: the preferred (direct) provider first.
+    assert HC.approved(other) == ["anthropic/claude-haiku-4-5"]
     both = _entries("openrouter/anthropic/claude-sonnet-5.5", "anthropic/claude-sonnet-5-5")
-    assert HC.approved(both) == ["anthropic/claude-sonnet-5-5", "openrouter/anthropic/claude-sonnet-5.5"]
+    assert HC.approved(both) == ["anthropic/claude-sonnet-5-5"]
     # A release date is a tiebreak, never a version: 4.5 dated stays older than 5.5.
     assert HC._version("claude-haiku-4-5-20251001") < HC._version("claude-haiku-5-5")
     assert not any("opus" in m for m in HC.approved(have))
@@ -240,8 +239,9 @@ def test_fast_replies_list_sonnet_terra_and_haiku_only_never_the_main_model(serv
     monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "claude-opus-5-5", "provider": "anthropic"}})
     status, body = http(server.base_url, "GET", "/voice/home/model", None, server.token)
     c = body["coordinator"]
-    assert status == 200 and c["source"] == "auto" and c["auto"]["id"] == "anthropic/claude-sonnet-5-5"
-    assert [o["id"] for o in c["options"]] == ["anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-terra",
+    # Geo 11-12: a ChatGPT sign-in (Codex) first, then a direct Claude subscription.
+    assert status == 200 and c["source"] == "auto" and c["auto"]["id"] == "openai-codex/gpt-6.1-terra"
+    assert [o["id"] for o in c["options"]] == ["openai-codex/gpt-6.1-terra", "anthropic/claude-sonnet-5-5",
                                                "anthropic/claude-haiku-5-5"]
     # The work model (the chip's hero) is the Hermes default; "More…" lists the rest, one row each.
     w = body["work"]
@@ -333,13 +333,14 @@ def test_no_fast_model_connected_uses_the_home_work_model(service, monkeypatch):
     assert catalog.fetched == 0
 
 
-def test_terra_comes_right_after_sonnet_and_luna_is_never_auto():
+def test_terra_comes_first_and_luna_is_never_auto():
     have = _entries("openai-codex/gpt-6.1-luna", "openai-codex/gpt-6.1-terra", "openai-codex/gpt-6.1",
                     "anthropic/claude-haiku-5-5")
     assert HC.pick_auto(have) == "openai-codex/gpt-6.1-terra"
     assert HC.pick_auto(_entries("openai-codex/gpt-6.1-luna", "openai-codex/gpt-6.1")) is None
     both = _entries("anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-terra", "anthropic/claude-haiku-5-5")
-    assert HC.approved(both)[:3] == ["anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-terra",
+    # Geo 11-12: a ChatGPT sign-in (Codex) first, then a direct Claude subscription.
+    assert HC.approved(both)[:3] == ["openai-codex/gpt-6.1-terra", "anthropic/claude-sonnet-5-5",
                                      "anthropic/claude-haiku-5-5"]
 
 
@@ -573,7 +574,7 @@ def test_a_listed_model_that_fails_falls_back_and_auto_skips_it(service, monkeyp
     chat = service.home_chat
     monkeypatch.setattr(chat, "_call", None)
     monkeypatch.setattr(service, "catalog", _Catalog(_entries("acme/big-model-3", "anthropic/claude-haiku-5-5",
-                                                              "openai-api/gpt-5-mini")))
+                                                              "openai-codex/gpt-5-mini")))
     monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "big-model-3", "provider": "acme"}})
     called: list[str] = []
 
@@ -593,7 +594,7 @@ def test_a_listed_model_that_fails_falls_back_and_auto_skips_it(service, monkeyp
     answer, served = chat._model_call([{"role": "user", "content": "hi"}])
     # Auto tries the next approved fast model before the main (often top-tier) model.
     assert answer == "Hi!" and called == ["claude-haiku-5-5", "gpt-5-mini"]
-    assert chat.route() == {"provider": "openai-api", "model": "gpt-5-mini", "source": "auto"}
+    assert chat.route() == {"provider": "openai-codex", "model": "gpt-5-mini", "source": "auto"}
     # With no other fast model left, the main model still answers.
     called.clear()
     # (Haiku failed above, so Auto skips it.)
@@ -722,3 +723,37 @@ def test_two_starts_in_a_row_never_post_the_same_canned_line(server, service, he
     said = wait_for(lambda: [e["text"] for e in stream(server) if e["kind"] == "message"
                              and e.get("role") == "assistant"][1:] or None)
     assert said[-1] != first and said[-1] in HC.ACKS
+
+
+def test_auto_never_takes_a_model_from_an_aggregator_or_metered_provider():
+    """A public tester (11-12) never used Claude, yet Home named "Claude Sonnet 5.5": any provider
+    listing a claude-sonnet id matched. Auto takes a family only from its own provider."""
+    agg = _entries("openrouter/anthropic/claude-sonnet-5.5", "openrouter/openai/gpt-6.1-terra",
+                   "nous/claude-haiku-5-5", "openrouter/google/gemini-3.5-flash", "acme/big-model-3")
+    assert HC.approved(agg) == []
+    assert HC.pick_auto(agg) is None
+    # No Anthropic at all, ChatGPT sign-in: Terra, else Codex's mini.
+    assert HC.pick_auto(_entries("openai-codex/gpt-6.1-terra", "openai-codex/gpt-5.4-mini")) == "openai-codex/gpt-6.1-terra"
+    assert HC.pick_auto(_entries("openai-codex/gpt-5.5", "openai-codex/gpt-5.4-mini")) == "openai-codex/gpt-5.4-mini"
+    # Direct Claude only: Sonnet.
+    assert HC.pick_auto(_entries("anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5")) == "anthropic/claude-sonnet-5-5"
+
+
+def test_aggregator_only_user_gets_their_own_hermes_default_and_a_failed_model_is_skipped(server, service, monkeypatch):
+    chat = service.home_chat
+    monkeypatch.setattr(service, "catalog", _Catalog(_entries(
+        "openrouter/anthropic/claude-sonnet-5.5", "openrouter/moonshotai/kimi-k3")))
+    monkeypatch.setattr(chat, "_config", lambda: {"model": {"default": "moonshotai/kimi-k3", "provider": "openrouter"}})
+    route = chat.route()
+    assert route["source"] in {"work", "main"} and "claude" not in route["model"], route
+    status, body = http(server.base_url, "GET", "/voice/home/model", None, server.token)
+    assert status == 200 and body["auto"] is None, body
+    assert "Claude" not in json.dumps(body["coordinator"]), body["coordinator"]
+    # Listed but not answering (home_model_failed): Auto moves on and never names it.
+    monkeypatch.setattr(service, "catalog", _Catalog(_entries(
+        "anthropic/claude-sonnet-5-5", "openai-codex/gpt-6.1-terra")))
+    assert chat.route()["model"] == "gpt-6.1-terra"
+    chat._mark_failed("openai-codex/gpt-6.1-terra")
+    assert chat.route()["model"] == "claude-sonnet-5-5"
+    status, body = http(server.base_url, "GET", "/voice/home/model", None, server.token)
+    assert body["auto"]["id"] == "anthropic/claude-sonnet-5-5", body

@@ -183,8 +183,10 @@ def test_away_and_recent_voice_go_before_any_room_line_then_oldest_lines():
 def test_a_resumed_room_call_keeps_the_resume_block_and_trims_room_lines():
     names = P.Names("Nova", "Sam")
     resume = P.resume_block([], names)
-    text = P.build_live_instructions(names, brief="B" * 3000, room=room_lines(200), resume=resume, max_chars=16_500)
-    assert len(text) <= 16_500 and text.endswith(resume) and "line 0199" in text and "line 0000" not in text
+    # A tight budget (the real one is MAX_INSTRUCTION_CHARS): the never-trimmed head plus room for a few lines.
+    budget = len(P.build_live_instructions(names, brief="B" * 3000, resume=resume)) + 1_500
+    text = P.build_live_instructions(names, brief="B" * 3000, room=room_lines(200), resume=resume, max_chars=budget)
+    assert len(text) <= budget and text.endswith(resume) and "line 0199" in text and "line 0000" not in text
 
 
 def test_without_room_the_instructions_are_unchanged():

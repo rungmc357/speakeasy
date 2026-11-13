@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from . import activity as activity_mod
+from . import sqlbudget
+from .sqlbudget import SlowStatement  # noqa: F401  (re-exported: callers catch it from here)
 from . import live_status
 from . import runstate as RS
 from .runstate import FINAL, RunState
@@ -267,6 +269,7 @@ class StateStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.hermes_home = hermes_home  # Hermes' home (kept for callers; failure text no longer names a log path)
         self._db = sqlite3.connect(path, check_same_thread=False)
+        sqlbudget.guard(self._db)   # queries inside a statement_budget are bounded (SPK-465)
         self._lock = threading.Lock()
         self.closed = False
         _OPEN.add(self)  # close_all() reaches it even if the service that opened it never finished
@@ -363,6 +366,11 @@ class StateStore:
             if "own_title" not in columns:  # the task's name from its words or the titler, never a thread title
                 self._db.execute("ALTER TABLE runs ADD COLUMN own_title TEXT")
             self._db.execute("CREATE INDEX IF NOT EXISTS runs_session ON runs(session_id)")
+            # Home's build looks tasks up by run id (each stack item, card action and result) and by
+            # the call they ran on (a task's parent on that call): without these every lookup read
+            # the whole runs table, once per card (SPK-465).
+            self._db.execute("CREATE INDEX IF NOT EXISTS runs_run_id ON runs(run_id)")
+            self._db.execute("CREATE INDEX IF NOT EXISTS runs_interaction ON runs(interaction_id)")
             # A message from a history page to a chat Speakeasy can't write into without the reply
             # going back to that chat (Discord, Telegram, ...): it runs as a Speakeasy task linked
             # to that conversation (history.py). source_session = the chat's Hermes session.
@@ -818,6 +826,12 @@ class StateStore:
         history reply built at an older revision is stale."""
         with self._lock:
             return self._db.total_changes
+
+    def statement_budget(self, label: str, per_statement: float | None = None, total: float | None = None,
+                         log: list[str] | None = None):
+        """Bound the queries this thread runs inside the block (sqlbudget.budget, SPK-465): a query that
+        runs away is stopped, raises SlowStatement and is named in the log. Other threads untouched."""
+        return sqlbudget.budget(label, per_statement, total, log)
 
     def session_marks(self) -> dict[str, dict[str, float | None]]:
         """{session id: {pinned, read_at}} for every conversation with a mark."""
