@@ -24,7 +24,7 @@ jobs:
       CENSUS_MODE: report
       BASE_REF: ${{ github.base_ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Census self-test
