@@ -340,6 +340,35 @@ def test_email_card_never_moves_another_cards_index():
     assert with_email_views([confirm], []) == [confirm]
 
 
+def test_a_hand_drawn_card_for_another_email_is_kept_beside_the_saved_draft():
+    """A job that saved one draft and drew a different email by hand shows both (SPK-459)."""
+    from speakeasy.emails import with_email_views
+    drafts = [{**normalize_draft(DRAFT), "draft_id": "ed_" + "c" * 24, "sha256": "f" * 64, "status": "pending"}]
+    other = {"kind": "draft", "channel": "email", "to": "me@example.com",
+             "subject": "Notes for the garden club meeting", "body": "Bring the seed list."}
+    out = with_email_views([other], drafts)
+    assert [v.get("subject") for v in out] == ["Notes for the garden club meeting", "Dinner on Friday"]
+    assert "draft_id" not in out[0] and out[1]["draft_id"] == drafts[0]["draft_id"]
+    # Same subject but a different person is another email too.
+    stranger = {"kind": "draft", "channel": "email", "to": "Sam Field", "subject": "Dinner on Friday"}
+    assert len(with_email_views([stranger], drafts)) == 2
+    # A card naming neither subject nor recipient is never silently swapped out.
+    bare = {"kind": "draft", "channel": "email", "body": "Hello"}
+    assert len(with_email_views([bare], drafts)) == 2
+
+
+def test_a_hand_drawn_card_for_the_same_email_is_replaced_once():
+    from speakeasy.emails import with_email_views
+    drafts = [{**normalize_draft(DRAFT), "draft_id": "ed_" + "d" * 24, "sha256": "a" * 64, "status": "pending"}]
+    for to, subject in (("Pat Doe", "Dinner on Friday"), ("pat@example.org", "Re: dinner on  friday"),
+                        ("Pat", None), (None, "Dinner on Friday")):
+        hand = {"kind": "draft", "channel": "email", **({"to": to} if to else {}),
+                **({"subject": subject} if subject else {})}
+        other = {"kind": "draft", "channel": "email", "to": "Lee", "subject": "Garden club"}
+        out = with_email_views([other, hand], drafts)
+        assert [v.get("draft_id") for v in out] == [None, drafts[0]["draft_id"]], (to, subject)
+
+
 def test_email_card_buttons_edit_then_send_bound_to_the_hash(server, service, hermes):
     task = _call_with_rich_draft(server, service, hermes)
     run, draft = task["run_id"], task["email_drafts"][0]
