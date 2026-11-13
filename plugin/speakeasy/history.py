@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from . import activity as A
+from . import sqlbudget
 
 logger = logging.getLogger(__name__)
 
@@ -551,7 +552,7 @@ def _open(state_db: Path) -> sqlite3.Connection | None:
     except sqlite3.Error:
         return None
     db.row_factory = sqlite3.Row
-    return db
+    return sqlbudget.guard(db)   # bounded while Home builds (SPK-465)
 
 
 def _columns(db: sqlite3.Connection, table: str) -> set[str]:

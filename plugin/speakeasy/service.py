@@ -4008,9 +4008,16 @@ class VoiceService(SecureInputMixin):
 
     def now(self, query: dict[str, str], *, delivered: bool = True) -> dict[str, Any]:
         """``GET /voice/now?tz=<IANA zone>``: Home's one ordered list (now.py)."""
-        self.sweep_questions()
+        from .store import SlowStatement
         tz = (query or {}).get("tz") or None
-        body = self.now_model.build(tz)
+        try:
+            # Bounded (SPK-465): a query that runs away is stopped and named in the log, and the app
+            # gets an answer it can retry instead of a request that never returns.
+            with self.store.statement_budget("Home's build"):
+                self.sweep_questions()
+                body = self.now_model.build(tz)
+        except SlowStatement:
+            raise ServiceError(503, "Home took too long to put together. Try again in a moment.") from None
         self._now_rev_sent = body["rev"]
         if delivered and getattr(self, "home_state", None) is not None:
             try:  # delivery timing: when a phone first gets a result after it lands on the stack
@@ -4026,7 +4033,8 @@ class VoiceService(SecureInputMixin):
     def _now_changed(self) -> None:
         """Publish ``now`` {rev} on the history feed when what Home shows changed."""
         try:
-            rev = self.now_model.build(peek=True)["rev"]
+            with self.store.statement_budget("Home's change check"):
+                rev = self.now_model.build(peek=True)["rev"]
         except Exception:
             logger.debug("speakeasy: Home's build failed", exc_info=True)
             return
