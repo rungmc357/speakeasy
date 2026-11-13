@@ -99,7 +99,7 @@ struct EntityTile: View {
                         Text(when).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
-                .padding([.horizontal, .top], 12)
+                .padding([.horizontal, .top], 12).cornerRadius(13)
             } else {
             ZStack(alignment: .bottomLeading) {
                 ArtifactPhoto(url: item["photo_url"].url, symbol: ArtifactLinks.symbol(entity, item: item), number: item["image"].double.map { Int($0) })
