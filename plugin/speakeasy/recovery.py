@@ -47,6 +47,14 @@ LOST_RESULT_NOTE = {"completed": "Work complete", "cancelled": "Work stopped",
                     "failed": "Didn't finish", "interrupted": "Didn't finish"}
 
 
+def _answer(output: str | None, image_roots: Callable[[], tuple[Path, ...]]) -> tuple[dict[str, Any] | None, list]:
+    """A recovered run's answer and its email drafts, split as the live path splits them
+    (calls.py): the drafts are stored as the job's drafts (its email card), never left inside
+    the stored answer."""
+    result = split_result(P.without_voice_header(output), image_roots()) if output and output.strip() else None
+    return result, (result or {}).pop("_email_drafts", None) or []
+
+
 def sweep(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]], live: dict[str, float],
           now: float | None = None, mono: float | None = None, *, hermes: Any = None) -> list[tuple[str, str]]:
     """Settle every unsettled thread task not being waited on now. Returns (key, outcome) pairs."""
@@ -70,8 +78,9 @@ def sweep(store: Any, state_db: Path, image_roots: Callable[[], tuple[Path, ...]
         # Checked moves from the status read above, the result written only when this sweep moved
         # the row: an answer that arrived meanwhile is never overwritten.
         if answer is not None:
-            result = split_result(P.without_voice_header(answer), image_roots())
-            if store.transition(key, "completed", expect={task["status"]}, orphaned=True, result=result):
+            result, drafts = _answer(answer, image_roots)
+            if store.transition(key, "completed", expect={task["status"]}, orphaned=True, result=result,
+                                drafts=drafts):
                 store.progress(key, "result", (result or {}).get("full") or "Done")
                 settled.append((key, "completed"))
         elif (not session_id and age > NO_SESSION_AFTER_S) or age > NO_ANSWER_AFTER_S:
@@ -123,8 +132,8 @@ def _settle_unconfirmed(store: Any, state_db: Path, image_roots: Callable[[], tu
                 final, output = known
                 if final in RS.LIVE:
                     continue  # positive liveness beats age or an earlier reply during a retry
-                result = split_result(P.without_voice_header(output), image_roots()) if output else None
-                if store.transition(key, final, expect={"ambiguous"}, orphaned=True,
+                result, drafts = _answer(output, image_roots)
+                if store.transition(key, final, expect={"ambiguous"}, orphaned=True, drafts=drafts,
                                     **({"result": result} if result else {})):
                     store.progress(key, "result", (result or {}).get("full") or {
                         "completed": "Work complete", "cancelled": "Work stopped",
@@ -138,8 +147,9 @@ def _settle_unconfirmed(store: Any, state_db: Path, image_roots: Callable[[], tu
         answer = (T.session_answer(state_db, session_id, since=task.get("created"))
                   if session_id and not task.get("superseded") else None)
         if answer is not None:
-            result = split_result(P.without_voice_header(answer), image_roots())
-            if store.transition(key, "completed", expect={"ambiguous"}, orphaned=True, result=result):
+            result, drafts = _answer(answer, image_roots)
+            if store.transition(key, "completed", expect={"ambiguous"}, orphaned=True, result=result,
+                                drafts=drafts):
                 store.progress(key, "result", (result or {}).get("full") or "Done")
                 settled.append((key, "completed"))
         elif task.get("superseded") or now - last > NO_ANSWER_AFTER_S:
@@ -191,8 +201,8 @@ def sweep_orphans(store: Any, hermes: Any, live: set[str], image_roots: Callable
         final = reply.get("status") if isinstance(reply, dict) else None
         if final in RS.TERMINAL:
             output = reply.get("output") if isinstance(reply.get("output"), str) else None
-            result = split_result(P.without_voice_header(output), image_roots()) if output else None
-            if store.transition(key, final, expect={status}, orphaned=True,
+            result, drafts = _answer(output, image_roots)
+            if store.transition(key, final, expect={status}, orphaned=True, drafts=drafts,
                                 **({"result": result} if result else {})):
                 store.progress(key, "result", (result or {}).get("full") or {
                     "completed": "Work complete", "cancelled": "Work stopped",
@@ -272,8 +282,8 @@ def settle_from_hermes(store: Any, key: str, expect: str, final: str, reply: dic
     """Settle *key* (checked: only from *expect*) with Hermes' own record of how its run ended: the
     answer for a completed run, the failure for a failed one. True when this write settled it."""
     output = reply.get("output") if isinstance(reply.get("output"), str) else None
-    result = split_result(P.without_voice_header(output), image_roots()) if output and output.strip() else None
-    extra: dict[str, Any] = {"result": result} if result else {}
+    result, drafts = _answer(output, image_roots)
+    extra: dict[str, Any] = {"result": result, "drafts": drafts} if result else {}
     if final == "failed":
         from . import failures
         error = reply.get("error") if isinstance(reply.get("error"), str) else None

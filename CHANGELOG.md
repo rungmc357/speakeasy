@@ -52,6 +52,8 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Every recipient, with their address.** The card shows To, Cc and Bcc with names and full addresses, and "Reply in thread: … · 4 messages" when it answers a thread. If the job couldn't find a person you named, the card says so, with Add. A company you name next to someone ("email Ben and his firm") is never a missing recipient: it shows beside their name when their address is at that firm. *(plugin + iPhone build 73)*
 - **Tap for the whole email.** All headers, the full body, the message it replies to, attachments. Change recipients, subject or body right there, then Send, Save draft or Discard. Send waits 5 seconds with Undo. *(plugin + iPhone build 73)*
 - **Nothing you said gets dropped.** Every person, company and detail you name goes into the draft, or the card says why not. *(plugin)*
+- **Only the email you saw goes out.** Send sends exactly the version on your screen. If the job changed the email after you opened it, nothing is sent and you're asked to look again. An older app that can't say which version you saw no longer offers Send under the card. *(plugin)*
+- **Drafts survive a restart.** A job that finished while Hermes was restarting still shows its email, ready to send. *(plugin)*
 
 ## Plugin 0.3.49 — Home's model chip, waiting jobs and replies
 

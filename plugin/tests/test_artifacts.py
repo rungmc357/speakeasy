@@ -160,12 +160,16 @@ def test_release_stages_as_status():
 
 def test_messaging_draft_gets_a_confirmed_send_and_never_sends_itself():
     answer = "Here's a reply to Sam Rivera about moving the review to Thursday."
-    card = _result(answer, [{"kind": "draft", "channel": "Email", "to": "Sam Rivera", "subject": "Thursday",
+    card = _result(answer, [{"kind": "draft", "channel": "SMS", "to": "Sam Rivera",
                              "body": "Hi Sam, could we move the review to Thursday?", "actions": [
                                  {"id": "send_now", "label": "Send now"}]}])["views"][0]
-    assert card["channel"] == "email"
+    assert card["channel"] == "sms"
     assert card["actions"] == [{"id": "send", "label": "Send", "style": "primary", "confirm": True}]
-    assert views.follow_up(card, "send") == "Send the email to Sam Rivera exactly as drafted on the card."
+    assert views.follow_up(card, "send") == "Send the message to Sam Rivera exactly as drafted on the card."
+    # An email the task drew by hand has no Send: email goes out only from its stored draft (SPK-363).
+    email = _result(answer, [{"kind": "draft", "channel": "Email", "to": "Sam Rivera", "subject": "Thursday",
+                              "body": "Hi Sam, could we move the review to Thursday?"}])["views"][0]
+    assert email["channel"] == "email" and email["actions"] == []
 
 
 @pytest.mark.parametrize("missing", ["channel", "to", "body"])
@@ -224,13 +228,13 @@ def test_send_on_a_draft_reaches_the_task_as_a_follow_up_and_nothing_else():
     from speakeasy.service import VoiceService
 
     sent = []
-    draft = _result("A reply to Sam Rivera.", [{"kind": "draft", "channel": "email", "to": "Sam Rivera",
+    draft = _result("A reply to Sam Rivera.", [{"kind": "draft", "channel": "sms", "to": "Sam Rivera",
                                                 "body": "Thursday works."}])["views"][0]
     fake = SimpleNamespace(store=SimpleNamespace(run_result=lambda run: ("key_1", {"views": [draft]}), drafts_for=lambda key: []),
                            task_message=lambda run, body: sent.append((run, body)))
     out = VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "send"})
     assert out == {"ok": True, "message": "Sent to the task."}
-    assert sent == [("run_abc123", {"text": "Send the email to Sam Rivera exactly as drafted on the card.",
+    assert sent == [("run_abc123", {"text": "Send the message to Sam Rivera exactly as drafted on the card.",
                                     "source": "typed"})]
     with pytest.raises(Exception):
         VoiceService.card_action(fake, "run_abc123", {"view": 0, "action": "delete_all"})
@@ -280,10 +284,12 @@ def test_an_offered_step_replaces_the_generic_fix_and_sends_its_own_words():
 
 
 def test_a_draft_ignores_offered_buttons():
-    draft = {"kind": "draft", "channel": "email", "to": "Sam Rivera", "body": "Thursday works.",
+    draft = {"kind": "draft", "channel": "sms", "to": "Sam Rivera", "body": "Thursday works.",
              "actions": [{"label": "Send now", "primary": True}]}
     [view] = views.shape([views.clean(draft)], "A reply to Sam Rivera.", "")
     assert [a["id"] for a in view["actions"]] == ["send"]
+    [email] = views.shape([views.clean({**draft, "channel": "email"})], "A reply to Sam Rivera.", "")
+    assert email["actions"] == []   # an offered "Send now" never comes back on an email either
 
 
 # -- timeline (P2), rows (P4), metric (P6), preview (P7) ---------------------------------------------------

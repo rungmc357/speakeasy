@@ -1249,7 +1249,11 @@ def _artifact_actions(view: dict[str, Any]) -> dict[str, Any]:
     if offered:
         view["actions"] = offered
     if view["kind"] == "draft":
-        view["actions"] = [{"id": "send", "label": "Send", "style": "primary", "confirm": True}]
+        # An email goes out only from its stored draft's card, bound to the hash shown (SPK-363):
+        # one the task drew by hand has no Send (the agent would send whatever it holds). `clean`
+        # has already lowercased the channel.
+        view["actions"] = [] if view.get("channel") == "email" else [
+            {"id": "send", "label": "Send", "style": "primary", "confirm": True}]
     elif view["kind"] == "compare":
         # Cut at a word ("Go with REI Co-op", never "Go with REI Co-op Rainie").
         label = _label("Go with " + view["options"][view["winner"]]["name"]) or "Go with this"
