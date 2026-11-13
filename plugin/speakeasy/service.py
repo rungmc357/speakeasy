@@ -228,7 +228,8 @@ CAPABILITIES["home_stack"] = True
 # POST /voice/projects/file, POST /voice/projects/offer/dismiss, PUT /voice/projects/selected (the
 # Home chip; GET /voice/projects carries ``selected``), ``project_id`` on POST /voice/work,
 # ``project`` on history rows and ``project`` / ``project_suggestion`` on Home's job cards. Off on a
-# Hermes without first-class projects.
+# Hermes without first-class projects, and held out of builds 73/74 unless SPEAKEASY_PROJECTS=1
+# (SPK-362, projects.held_out). status() asks again on every call.
 CAPABILITIES["projects"] = P_.available()
 
 
@@ -3077,6 +3078,8 @@ class VoiceService(SecureInputMixin):
         if not isinstance(chats, bool):
             raise ServiceError(400, "chat_replies must be true or false.")
         project_id = body.get("project_id")
+        if project_id is not None and not P_.available():
+            project_id = None   # SPK-362: a project page left open across the switch still starts the job, unfiled
         if project_id is not None:
             # SPK-254: a job started inside a project (or "for <project>, ..." at Home) is filed there,
             # and the project's standing notes go into its first brief.
@@ -4678,6 +4681,8 @@ class VoiceService(SecureInputMixin):
     # -- Projects (SPK-254, projects.py) -----------------------------------------------------------
     def _projects_call(self, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         if not P_.available():
+            if P_.held_out():
+                raise ServiceError(501, "Projects aren't in this version of Speakeasy yet.")
             raise ServiceError(501, f"This {self.agent_name} doesn't have projects yet. Update Hermes to use them.")
         try:
             return fn()
@@ -6022,7 +6027,8 @@ class VoiceService(SecureInputMixin):
             "version": __version__,
             # What this server supports from the UX contract; a missing flag means an older server.
             # Features the agent doesn't offer are off (agent_slot.capabilities).
-            "capabilities": agent_slot.capabilities(CAPABILITIES, self.agent),
+            # ``projects`` is asked now, the same way the projects routes ask (SPK-362's flag).
+            "capabilities": agent_slot.capabilities({**CAPABILITIES, "projects": P_.available()}, self.agent),
             # Which agent this server talks to (older apps ignore it; no field = Hermes).
             "agent": agent_slot.agent_info(self.agent, self.host),
         }

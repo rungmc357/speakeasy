@@ -12,6 +12,12 @@ from test_history import NOW, add_msg, add_session, get, make_db, never_routed, 
 pdb = pytest.importorskip("hermes_cli.projects_db")
 
 
+@pytest.fixture(autouse=True)
+def projects_on(monkeypatch):
+    """Projects is held out of builds 73/74 (SPK-362, test_projects_held_out.py); these tests turn it on."""
+    monkeypatch.setenv(P.ENABLE_ENV, "1")
+
+
 def put(server, path, body):
     return http(server.base_url, "PUT", path, body, server.token)
 
