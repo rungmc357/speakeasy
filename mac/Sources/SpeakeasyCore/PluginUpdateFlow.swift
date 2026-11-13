@@ -69,6 +69,28 @@ public enum PluginUpdateFlow {
         return .available(version: version, note: note)
     }
 
+    /// The version an explicit Update tap starts (SPK-475), or nil while one is already under way or
+    /// nothing newer is published. Unlike `phase`, a version closed with "Not now" or an update that
+    /// didn't take can be started again: the tap is the user asking for it (Home's line offers Update
+    /// whenever a newer plugin is published, so the tap must never be a silent no-op).
+    public static func versionToStart(latest: String?, running: String?, record: PluginUpdateRecord,
+                                      inCall: Bool, lastCallEnded: Date? = nil, now: Date = Date()) -> String? {
+        switch phase(latest: latest, running: running, record: record, inCall: inCall,
+                     lastCallEnded: lastCallEnded, now: now) {
+        case .available(let version, _): return version
+        case .updated: return nil
+        case .updating:
+            // A job that never reported back (not on the board, the app was away) doesn't hold the
+            // button forever.
+            guard let started = record.startedAt, now.timeIntervalSince(started) >= staleStartSeconds else { return nil }
+            return UpdateCheck.pluginUpdate(latestVersion: latest, runningVersion: running)
+        case .didntTake, .none: return UpdateCheck.pluginUpdate(latestVersion: latest, runningVersion: running)
+        }
+    }
+
+    /// After this long an update job that never settled no longer blocks a new Update tap.
+    public static let staleStartSeconds: TimeInterval = 15 * 60
+
     /// The user closed the notice (or "Update didn't take"): this version stays quiet.
     public static func dismiss(_ record: PluginUpdateRecord, version: String) -> PluginUpdateRecord {
         var r = record
