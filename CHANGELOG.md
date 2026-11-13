@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.54: steadier calls and cards
+
+- **Reconnecting starts even when the app learns of a drop late.** If the phone picks up a dropped voice connection on its next check instead of instantly, the call still rejoins the same conversation. *(plugin)*
+- **Calls only promise a card once it's on screen.** The voice says a card is coming until it's actually there, and doesn't announce one that never arrives. *(plugin)*
+- **One email, one card.** An email result is no longer drawn twice, and a second draft no longer replaces the first. *(plugin)*
+
 ## Plugin 0.3.53: Home always loads
 
 - **Home no longer hangs on a large history.** Two lookups behind Home read your whole task list every time; they now use indexes, so Home builds in a fraction of a second. If a lookup ever runs long, the plugin stops it, notes it in the log, and the app retries instead of showing "Can't reach your Hermes". *(plugin)*
