@@ -254,7 +254,9 @@ public final class NativeVoiceClient: VoiceCallClient {
         model.onSetAside = { [weak self] runID in self?.setAside(runID) }
         model.onDismissQuestion = { [weak self] runID in self?.dismissQuestion(runID) }
         model.onCardAction = { [weak self] taskID, card, action, done in
-            self?.runCardAction(taskID: taskID, card: card, action: action, done: done)
+            // `done` must run on every path: the email card waits on it (SPK-364).
+            guard let self else { done(false, "That didn't go through. Try again."); return }
+            self.runCardAction(taskID: taskID, card: card, action: action, done: done)
         }
         model.onRetry = { [weak self] taskID in self?.retryTask(taskID) }
         model.onFixProblem = { [weak self] fix in self?.fixProblem(fix) }
