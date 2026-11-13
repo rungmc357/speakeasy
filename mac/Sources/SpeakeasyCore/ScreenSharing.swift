@@ -604,9 +604,16 @@ public struct CallSharing: Equatable, Sendable {
 
 /// The reducer events one interaction snapshot carries: the snapshot itself, plus one
 /// `captureRequested` per open capture request, so a polling client serves captures exactly like
-/// one that gets `capture` events.
+/// one that gets `capture` events. A snapshot of a dropped call the plugin holds open
+/// (`status: "reconnecting"`) also carries `reconnectRequired`, so a client that learns of the drop
+/// by polling, or missed the `reconnect_required` event, starts the same recovery. The reducer
+/// only acts on it for the live call with that id, so a repeated snapshot is a no-op.
 public func interactionEvents(_ snapshot: InteractionSnapshot) -> [VoiceEvent] {
-    [.interaction(snapshot)] + snapshot.captures.map { .sharing(.captureRequested($0)) }
+    var events: [VoiceEvent] = [.interaction(snapshot)]
+    if snapshot.status == "reconnecting", snapshot.finalization == nil || snapshot.finalization == "open" {
+        events.append(.reconnectRequired(interactionID: snapshot.interactionID))
+    }
+    return events + snapshot.captures.map { .sharing(.captureRequested($0)) }
 }
 
 private func isBool(_ number: NSNumber) -> Bool { CFGetTypeID(number) == CFBooleanGetTypeID() }
