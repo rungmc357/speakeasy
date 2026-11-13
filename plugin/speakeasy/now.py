@@ -472,9 +472,7 @@ class NowModel:
         session = row.get("linked_source") or work.get("session_id") or row.get("session_id")
         finished = float(row["settled_at"]) if row.get("settled_at") else None
         started = float(row["created"] or work.get("started_at") or 0) or None
-        seen = bool(row["seen"]) or bool(work.get("seen")) or (
-            read_at is not None and finished is not None and read_at + 1 >= finished) or (
-            finished is not None and finished < getattr(self, "_baseline", 0) - BASELINE_GRACE_S) or delivered_elsewhere(row)
+        seen = answer_seen(row, work, read_at, finished, getattr(self, "_baseline", 0))
         item: dict[str, Any] = {"session_id": session, "run_id": run_id, "title": title, "source": "speakeasy",
                                 "started_at": started, "updated_at": float(row.get("updated") or started or now)}
         if finished is not None:
@@ -1601,6 +1599,16 @@ def call_line(things: list[str], answered: list[str], asking: list[str], decisio
 # Chat surfaces an answer is delivered to (a Discord thread, a Telegram chat): read there, not new here.
 OTHER_SURFACES = frozenset({"discord", "telegram", "slack", "whatsapp", "signal", "imessage", "bluebubbles", "sms",
                             "email", "matrix", "mattermost", "feishu", "dingtalk", "wecom", "weixin", "homeassistant"})
+
+
+def answer_seen(row: dict[str, Any], work: dict[str, Any], read_at: float | None, finished: float | None,
+                baseline: float) -> bool:
+    """The one rule for "the user already has this task's answer": opened in an app or heard on a call
+    (``runs.seen``), its conversation read after it finished, delivered on another surface, or from
+    before Home's baseline. Home's cards (seen vs new) and Home chat's finish line (home_chat) read it."""
+    return bool(row.get("seen")) or bool(work.get("seen")) or (
+        read_at is not None and finished is not None and read_at + 1 >= finished) or (
+        finished is not None and finished < baseline - BASELINE_GRACE_S) or delivered_elsewhere(row)
 
 
 def delivered_elsewhere(row: dict[str, Any]) -> bool:

@@ -117,6 +117,16 @@ ACK_TOKENS = 60
 ACK_TIMEOUT_S = 8.0
 INTERRUPTED_S = 3600          # a turn cut off by a restart this recent gets a line saying so
 PART_ACK, ANSWER = "ack", "answer"  # home_messages.part: the acknowledgement (above the capsule) / what follows it
+# SPK-407: a job Home's chat started says in the thread when it is done ("done": one per run, not part
+# of any exchange). It waits DONE_GRACE_S after the job settles: an answer opened or heard on a call by
+# then gets no line. While a live call follows the job the voice tells it, so the wait is longer.
+PART_DONE = "done"
+DONE_GRACE_S = 6.0
+DONE_CALL_GRACE_S = 45.0
+DONE_STALE_S = 3600           # a line still undelivered this long after it was due (the plugin was down) is dropped
+DONE_CHARS = 280
+DONE_SENTENCES = 2
+FINISHED = frozenset({"completed", "failed", "interrupted"})   # cancelled: you stopped it, and the reply said so
 
 _SMALL_TALK = re.compile(
     r"(?i)^\W*(?:yo+|hi+|hey+|hello|hiya|sup|what'?s up|good (?:morning|afternoon|evening|night)|"
@@ -542,6 +552,34 @@ _HISTORY_TOOL = {"start": "start_job called: job", "follow_up": "message_job cal
                  "cancel": "cancel_job called: job"}
 
 
+def finish_line(status: str | None, result: Any = None, summary: Any = None, *, title: Any = None,
+                reason: Any = None, asking: Any = None) -> str | None:
+    """SPK-407: what Home's thread says when a job it started settles, from the job's own result (no
+    model call). A sentence or two, never the whole card: the job's spoken line, else its summary, else
+    its headline; an open question asks it; a failed or interrupted job says it stopped and why.
+    None when there is nothing to say (cancelled: you stopped it). A stopped or asking job is named,
+    like its card's own line, so the words stand alone where the card isn't shown beside them."""
+    from .home_words import short_title
+    name = " ".join(str(title or "").split())
+    name = (short_title(name) or name) if name else ""
+    if status == "completed":
+        if isinstance(asking, str) and asking.strip():
+            lead = f"{name} has a question before it goes on" if name else "One question before it goes on"
+            return _clip(f"{lead}: {' '.join(asking.split())}", DONE_CHARS)
+        result = result if isinstance(result, dict) else {}
+        for text in (result.get("spoken"), summary, result.get("headline")):
+            said = " ".join(_sentences(" ".join(str(text or "").split()))[:DONE_SENTENCES])
+            if said:
+                return _clip(said, DONE_CHARS)
+        return _clip(f"{name} is done.", DONE_CHARS) if name else "Done."
+    if status in {"failed", "interrupted"}:
+        from .failures import NO_REASON
+        why = " ".join(str(reason or "").split())
+        lead = f"{name} stopped before finishing." if name else "It stopped before finishing."
+        return _clip(lead + (f" {why}" if why and why != NO_REASON else ""), DONE_CHARS)
+    return None
+
+
 def _sent_noun(files: Any) -> str:
     """"a video", "a picture", "2 files": what a message without words carried."""
     kinds = [f.get("kind") for f in files if isinstance(f, dict)] if isinstance(files, list) else []
@@ -728,7 +766,18 @@ class HomeChat:
             # links to it). One per run; its id and time never change once posted.
             self.store._db.execute("CREATE TABLE IF NOT EXISTS home_results (run_id TEXT PRIMARY KEY, "
                                    "message_id TEXT NOT NULL, at REAL NOT NULL)")
+            # SPK-407: one finish line per run a Home message started. ``state``: due -> posted | skipped
+            # (opened or heard first) | result (its email draft is its line) | none (nothing to say) |
+            # stale (not delivered in time). Keyed on the
+            # run, so a repeated final event or a restart never posts a second line.
+            self.store._db.execute("CREATE TABLE IF NOT EXISTS home_done (run_id TEXT PRIMARY KEY, idem_key TEXT NOT NULL, "
+                                   "reply_to TEXT, due REAL NOT NULL, state TEXT NOT NULL, status TEXT, "
+                                   "message_id TEXT, at REAL)")
+            self.store._db.execute("CREATE INDEX IF NOT EXISTS home_done_due ON home_done(state, due)")
+        self.done_grace_s = DONE_GRACE_S
+        self.done_call_grace_s = DONE_CALL_GRACE_S
         self._recover_interrupted()
+        self._catch_up_done()
 
     def _recover_interrupted(self) -> None:
         """A turn a restart cut off after its acknowledgement (the user's row was never linked: no
@@ -747,6 +796,224 @@ class HomeChat:
                 self._link(uid, None, "interrupted")
         except Exception:
             logger.debug("speakeasy: Home's interrupted turns weren't checked", exc_info=True)
+
+    # -- SPK-407: a job Home's chat started says when it's done -----------------------------------
+    def note_settled(self, key: str, status: str) -> None:
+        """``Store.settle_listeners``: a task moved to a final state. When a Home message started it (or
+        the job it continues), its finish line is due after a short grace. A second final event for the
+        same run (Hermes correcting an "interrupted" the sweep inferred) never adds a line: a line not
+        yet posted reads the run as it is then, and an "it stopped" line already posted is corrected."""
+        if status not in FINISHED:
+            return
+        try:
+            origin = self._origin(key)
+            if origin is None:
+                return
+            run_id, user_id = origin
+            grace = max(0.0, float(self.done_grace_s))   # a live call's longer wait is applied on delivery
+            with self.store._lock, self.store._db:
+                fresh = self.store._db.execute(
+                    "INSERT OR IGNORE INTO home_done (run_id, idem_key, reply_to, due, state) VALUES (?,?,?,?,'due')",
+                    (run_id, key, user_id, self.clock() + grace)).rowcount == 1
+            if not fresh:
+                self._correct_done(run_id, key)
+            elif grace <= 0:
+                self.deliver_due()
+            else:
+                self._wake_in(grace)
+        except Exception:
+            logger.debug("speakeasy: Home's finish line wasn't noted", exc_info=True)
+
+    def deliver_due(self, now: float | None = None) -> list[str]:
+        """Post every finish line whose grace is over (the timer, every Home read and a restart call
+        this). Each due row moves exactly once (compare-and-set on ``state``), in the same write as its
+        message. Returns the run ids posted."""
+        now = self.clock() if now is None else now
+        with self.store._lock:
+            rows = self.store._db.execute("SELECT run_id, idem_key, reply_to, due FROM home_done "
+                                          "WHERE state='due' AND due <= ?", (now,)).fetchall()
+        posted = []
+        for run_id, key, reply_to, due in rows:
+            try:
+                if self._deliver(run_id, key, reply_to, float(due), now):
+                    posted.append(run_id)
+            except Exception:
+                logger.debug("speakeasy: Home's finish line wasn't posted", exc_info=True)
+        if posted:
+            logger.info("speakeasy: Home said %d job(s) finished", len(posted))
+            self.publish_soon()
+        return posted
+
+    def _deliver(self, run_id: str, key: str, reply_to: str | None, due: float, now: float) -> bool:
+        status = self.store.run_status(key)
+        settled = (self.store.run_row(key) or {}).get("settled_at")
+        if (settled and self.done_grace_s > 0 and now < float(settled) + self.done_call_grace_s
+                and now - due <= DONE_STALE_S and self._call_follows(key)):
+            # The live call follows this job: its voice tells the answer, so the line waits longer.
+            later = float(settled) + self.done_call_grace_s
+            with self.store._lock, self.store._db:
+                self.store._db.execute("UPDATE home_done SET due=? WHERE run_id=? AND state='due'", (later, run_id))
+            self._wake_in(later - now)
+            return False
+        line = None
+        if now - due > DONE_STALE_S:
+            state = "stale"
+        elif self._answer_had(key):
+            state = "skipped"   # opened in an app or heard on a call before the line would land
+        elif status == "completed" and self.store.drafts_for(key):
+            state = "result"    # its email draft is posted at the bottom as its result (now._posted_results)
+        else:
+            line = self._finish_words(run_id, key, status)
+            state = "posted" if line else "none"
+        mid = "ha_" + secrets.token_hex(8) if line else None
+        at = float(settled) if settled else now
+        with self.store._lock, self.store._db:
+            moved = self.store._db.execute(
+                "UPDATE home_done SET state=?, status=?, message_id=?, at=? WHERE run_id=? AND state='due'",
+                (state, status, mid, at if line else None, run_id)).rowcount == 1
+            if moved and line:
+                self.store._db.execute(
+                    "INSERT INTO home_messages (id, role, text, at, run_id, reply_to, part) VALUES (?,?,?,?,?,?,?)",
+                    (mid, "assistant", line, at, run_id, reply_to, PART_DONE))
+        if moved and line and status == "interrupted":
+            self._correct_done(run_id, key)   # Hermes' real final event may have landed meanwhile
+        return bool(moved and line)
+
+    def _correct_done(self, run_id: str, key: str) -> None:
+        """A run settled again after its line went up: only "it stopped" (the sweep's guess before
+        Hermes' own final event) is rewritten, in place, so the thread never says it twice."""
+        with self.store._lock:
+            row = self.store._db.execute("SELECT state, status, message_id FROM home_done WHERE run_id=?",
+                                         (run_id,)).fetchone()
+        status = self.store.run_status(key)
+        if not row or row[0] != "posted" or row[1] != "interrupted" or status not in {"completed", "failed"}:
+            return
+        line = self._finish_words(run_id, key, status)
+        if not line:
+            return
+        with self.store._lock, self.store._db:
+            self.store._db.execute("UPDATE home_messages SET text=? WHERE id=?", (line, row[2]))
+            self.store._db.execute("UPDATE home_done SET status=? WHERE run_id=?", (status, run_id))
+        self.publish_soon()
+
+    def _finish_words(self, run_id: str, key: str, status: str | None) -> str | None:
+        work = self.store.work(idem_key=key) or {}
+        result = work.get("result") or {}
+        asking = None
+        if status == "completed" and result.get("question"):
+            try:
+                asking = self._asked(run_id) if self.store.question_state(key) == "open" else None
+            except Exception:
+                asking = None
+        reason = None
+        if status in {"failed", "interrupted"}:
+            from .failures import failure_reason
+            with self.store._lock:
+                got = self.store._db.execute("SELECT failure, failure_hint FROM runs WHERE idem_key=?", (key,)).fetchone()
+            reason = work.get("failure_reason") or failure_reason(status, *(got or (None, None)))
+        return finish_line(status, result, work.get("summary"), title=self.store.title(key), reason=reason,
+                           asking=asking)
+
+    def _answer_had(self, key: str) -> bool:
+        """now.answer_seen for this task, read now: the one notion of "you already have this answer".
+        Its ``seen`` input is only what really reached you: opened in an app (``now_opened``), heard on
+        a voice call (``runs.seen`` of a call's task, or the live call's spoken list). A typed chat's
+        own worker marks every answer it relays as spoken (calls.talking_about), so a Home job's
+        ``runs.seen`` is set the moment it finishes (live, Nov 11: 35 of 35) and says nothing here."""
+        from .now import answer_seen, from_a_call
+        with self.store._lock:
+            r = self.store._db.execute(
+                "SELECT coalesce(r.seen,0), r.continued, r.settled_at, r.session_id, h.source_session, r.interaction_id "
+                "FROM runs r LEFT JOIN history_links h ON h.idem_key = r.idem_key WHERE r.idem_key=?", (key,)).fetchone()
+        if r is None:
+            return False
+        try:
+            opened = float(self.store.get_meta(f"now_opened:{key}") or 0) > 0
+        except ValueError:
+            opened = False
+        heard = bool(r[0]) and from_a_call({"interaction_id": r[5]})
+        seen = opened or heard or self._heard_on_a_call(key, float(r[2]) if r[2] else None)
+        place = r[4] or r[3] or key
+        read_at = (self.store.session_marks().get(place) or {}).get("read_at")
+        try:
+            baseline = float(self.store.get_meta("now_baseline_at") or 0)
+        except ValueError:
+            baseline = 0.0
+        return answer_seen({"seen": seen, "continued": r[1]}, {}, read_at, float(r[2]) if r[2] else None, baseline)
+
+    def _calls(self) -> list[Any]:
+        """Every voice call this process knows, live or ended (typed chats' workers are not calls)."""
+        from .now import from_a_call
+        try:
+            with self.svc.lock:
+                found = list(self.svc.interactions.values())
+        except Exception:
+            return []
+        return [c for c in found if from_a_call({"interaction_id": getattr(c, "interaction_id", None)})]
+
+    def _heard_on_a_call(self, key: str, finished: float | None) -> bool:
+        """A call's voice read this task's answer out (its ``spoken_tasks``, what now.call_state reads),
+        on the live call or one that has ended since. Only once it finished: a status question asked
+        while it ran also lands in ``spoken_tasks`` (calls.answer_status) and is not its answer."""
+        since = (finished or 0) - 1
+        for call in self._calls():
+            try:
+                with call.lock:
+                    if any(r.idem_key == key and float(call.spoken_tasks.get(t) or 0) >= since > 0
+                           for t, r in call.runs.items()):
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _call_follows(self, key: str) -> bool:
+        """The live call follows this task: its voice tells the answer, so the line waits longer."""
+        try:
+            model = self.svc.now_model
+            call = model.live_call()
+            return call is not None and key in model.call_state(call, self.clock())["keys"]
+        except Exception:
+            return False
+
+    def _origin(self, key: str) -> tuple[str, str] | None:
+        """(run id, the Home message that started or last followed up it) for a task a Home message
+        started or followed up, else None. Only the task's own link counts: Home's follow-ups and
+        answers link their new run directly (``_link``), while a continuation made elsewhere (a
+        follow-up on a call, a message on the job's page, a call's spoken choice card) is not Home's."""
+        row = self.store.run_row(key)
+        run_id = (row or {}).get("run_id")
+        if not run_id:
+            return None
+        self._relink_held()
+        with self.store._lock:
+            hit = self.store._db.execute(
+                "SELECT id FROM (SELECT id, at FROM home_messages WHERE role='user' AND run_id=? "
+                "UNION ALL SELECT message_id AS id, at FROM home_jobs WHERE run_id=?) ORDER BY at DESC LIMIT 1",
+                (run_id, run_id)).fetchone()
+        return (run_id, hit[0]) if hit else None
+
+    def _wake_in(self, delay: float) -> None:
+        timer = threading.Timer(max(0.0, delay) + 0.05, self._deliver_quietly)
+        timer.daemon = True
+        timer.start()
+
+    def _deliver_quietly(self) -> None:
+        try:
+            self.deliver_due()
+        except Exception:
+            logger.debug("speakeasy: Home's finish lines weren't delivered", exc_info=True)
+
+    def _catch_up_done(self) -> None:
+        """After a restart: lines still due get a timer again (at least a second out, so they go up
+        once the service around this HomeChat is built; the next Home read posts them too). Ones that
+        came due while the plugin was down go up then, or are dropped as stale."""
+        try:
+            with self.store._lock:
+                row = self.store._db.execute("SELECT min(due) FROM home_done WHERE state='due'").fetchone()
+            if row and row[0] is not None:
+                self._wake_in(max(1.0, float(row[0]) - self.clock()))
+        except Exception:
+            logger.debug("speakeasy: Home's finish lines weren't caught up", exc_info=True)
 
     def pending(self, user_entry_id: str | None) -> bool:
         """The turn for this user message (``m:hu_...``) is still being worked out (its words are up,
@@ -813,14 +1080,16 @@ class HomeChat:
                 if line:
                     out["line"] = line[:300]
                 return out
-        row = None
+        # Not on Home any more (dismissed, cleared): the job itself, by its title. SPK-407: its finish
+        # line (``d:<run>``) stays in the thread after its card left, and a swipe-reply quotes it here.
         try:
-            row = self.store.run_row(run_id)
+            key = self.store.key_for_run(run_id) or (run_id if self.store.run_row(run_id) else None)
+            title = self.store.title(key) if key else None
         except Exception:
-            row = None
-        if not row:
+            key, title = None, None
+        if not key:
             return None
-        title = str(row.get("title") or "").strip() or "A job"
+        title = str(title or "").strip() or "A job"
         return {"id": "r:" + run_id, "role": "card", "text": title[:300], "run_id": run_id}
 
     def _quote(self, reply_to: Any) -> dict | None:
@@ -887,6 +1156,24 @@ class HomeChat:
         with self.store._lock, self.store._db:
             self.store._db.execute("INSERT INTO home_jobs (message_id, run_id, at) VALUES (?,?,?)",
                                    (mid, run_id, self.clock()))
+        self._if_settled(run_id)
+
+    def _if_settled(self, run_id: Any, since: float | None = None) -> None:
+        """SPK-407: a job that settled before its Home message was linked to it (it failed at once) was
+        no Home job yet when the settle listener ran; its finish line is noted now. *since*: only when
+        it settled at or after this time."""
+        if not isinstance(run_id, str) or not run_id:
+            return
+        try:
+            key = self.store.key_for_run(run_id)
+            status = self.store.run_status(key) if key else None
+            settled = (self.store.run_row(key) or {}).get("settled_at") if key else None
+        except Exception:
+            return
+        if since is not None and (not settled or float(settled) < since):
+            return
+        if key and status in FINISHED:
+            self.note_settled(key, status)
 
     def _chip_filed(self, chip: str | None, run_id: Any) -> None:
         """A job the Home chip filed (not the person's words): its card may ask once about another
@@ -903,6 +1190,14 @@ class HomeChat:
     def _link(self, mid: str, run_id: str | None, action: str) -> None:
         with self.store._lock, self.store._db:
             self.store._db.execute("UPDATE home_messages SET run_id=?, action=? WHERE id=?", (run_id, action, mid))
+        if mid.startswith("hu_") and action == "start":
+            self._if_settled(run_id)
+        elif mid.startswith("hu_") and action == "follow_up":
+            # A follow-up may name a job that finished long ago: only a run that settled after this
+            # message (a new run that failed at once) is noted.
+            with self.store._lock:
+                row = self.store._db.execute("SELECT at FROM home_messages WHERE id=?", (mid,)).fetchone()
+            self._if_settled(run_id, since=float(row[0]) - 1 if row else None)
 
     def _cleared(self) -> float:
         try:
@@ -914,6 +1209,10 @@ class HomeChat:
         """The messages Home shows: the last day's, after the last Clear, oldest first."""
         now = self.clock() if now is None else now
         self._relink_held()
+        try:
+            self.deliver_due()   # SPK-407: a finish line whose timer was lost goes up on the next read
+        except Exception:
+            logger.debug("speakeasy: Home's finish lines weren't delivered", exc_info=True)
         rows = self._rows("WHERE at >= ?", (max(now - SHOWN_S, self._cleared()),))
         for r in rows:
             if r["role"] == "user" and self.pending(r["id"]):
@@ -982,6 +1281,12 @@ class HomeChat:
             out["run_id"] = row["run_id"]
         if row.get("part") in (PART_ACK, ANSWER) and row["role"] == "assistant":
             out["part"] = row["part"]   # home-ack: above the status capsule (ack) or after it (answer)
+        if row.get("part") == PART_DONE and row["role"] == "assistant" and row.get("run_id"):
+            # SPK-407: a job's finish line. It is that job's SPK-314 answer line (the same id, so the
+            # made-up line it replaces updates in place; a swipe-reply quotes the job's card), drawn
+            # as one (stream.py adds its card's item_id: a tap opens the job), never part of an exchange.
+            out["id"] = "d:" + row["run_id"]
+            out["answer"] = True
         if row.get("reply_to") and row["role"] == "assistant":
             out["reply_to"] = "m:" + row["reply_to"]   # the user message it answers (never a later one)
         if row.get("client_id") and row["role"] == "user":
@@ -1042,7 +1347,8 @@ class HomeChat:
         if not mine:
             return None
         user = mine[0]
-        reply = self._rows("WHERE reply_to=?", (user["id"],), limit=1)
+        # The coordinator's reply, never the job's later finish line (SPK-407), which also points here.
+        reply = self._rows("WHERE reply_to=? AND (part IS NULL OR part != ?)", (user["id"], PART_DONE), limit=1)
         return self._reply(user, reply[0] if reply else None, replayed=True)
 
     def _reply(self, user: dict[str, Any], reply: dict[str, Any] | None, replayed: bool = False,
