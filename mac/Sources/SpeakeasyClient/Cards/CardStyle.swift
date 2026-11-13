@@ -292,18 +292,32 @@ public struct CardPillButton: View {
 /// The Clean layout grid: one spacing scale, one set of corners and glyph sizes for every Home
 /// surface (thread, cards, composer, Work, the model sheet, the call card), so an edge fixed in one
 /// place lines up everywhere. An 8-pt grid with 4-pt half steps; never an ad-hoc 38 or 18.
+///
+/// The written spacing rules (S1–S13) live on the spacing-cleanup issue: every padding, stack gap
+/// and Spacer minLength on iPhone is 0 or a step of `scale`; hairlines (0.5, 1), offsets, values
+/// times the Mac scale and fit code (DockFit, CallFit, WidgetLayout, tight typing) are exempt.
 public enum CleanGrid {
-    /// Spacing scale.
+    /// Spacing scale: 2, 4, 8, 12, 16, 20, 24, 32, 40, 48.
     public static let xxs: CGFloat = 2
     public static let xs: CGFloat = 4
     public static let s: CGFloat = 8
     public static let m: CGFloat = 12
     public static let l: CGFloat = 16
+    /// The half step between `l` and `xl`, for gaps that read too tight at 16 and too loose at 24.
+    public static let lPlus: CGFloat = 20
     public static let xl: CGFloat = 24
     public static let xxl: CGFloat = 32
+    /// Large section breaks: between page sections, above a hero, around an empty state.
+    public static let x3l: CGFloat = 40
+    public static let x4l: CGFloat = 48
+    /// Every step, smallest first. Spacing literals outside this list are what the census flags.
+    public static let scale: [CGFloat] = [xxs, xs, s, m, l, lPlus, xl, xxl, x3l, x4l]
 
     /// The page's side margin: thread, tracker pill, composer, Work and sheets all start here.
     public static let margin: CGFloat = 16
+    /// The page's side margin at regular width (iPad, Duo opened, Mac-sized windows): the one
+    /// named value for what pages write today as an inline `wide ? 28 : …`.
+    public static let wideMargin: CGFloat = 28
     /// A card's inner padding, all four sides (matches `CardStyle.clean.padding`).
     public static let cardPadding: CGFloat = 16
 
