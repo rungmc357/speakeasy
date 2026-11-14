@@ -25,6 +25,8 @@ Needs Xcode 16 or later and macOS 14+.
     swift build && .build/debug/Speakeasy --panel-smoke  # renders the call panel, checks layout and clicks
     scripts/package-app.sh                               # builds dist/Speakeasy.app (ad-hoc signed)
 
+`SPEAKEASY_PANEL_SMOKE_ONLY=look-at-this,ended` runs just those panel-smoke cases; an unknown name fails before the panel opens. Leave out `drag` when nobody is at the Mac: it waits for a real mouse-up.
+
 ## Before pushing
 
     scripts/scan-secrets.sh
