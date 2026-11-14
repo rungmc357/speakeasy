@@ -90,6 +90,28 @@ def test_transport_start_returns_answer_sdp_and_seeds_history(fake_codex, tmp_pa
     assert all("API_SERVER_KEY" not in e["env"] and "OPENAI_API_KEY" not in e["env"] for e in log)
     start = next(e for e in log if e["method"] == "thread/realtime/start")
     assert start["params"]["delegationAckFiller"] is False  # no "mm-hm" filler on handoffs
+    # Codex realtime V3 ignores `prompt` (SPK-452, live): the instructions must ride as the first
+    # developer initial item, then the carried conversation.
+    items = start["params"]["initialItems"]
+    assert items[0]["role"] == "developer" and items[0]["text"].startswith("rules here")
+    assert items[1:] == [{"role": "user", "text": "earlier"}]
+
+
+def test_initial_items_keep_the_instructions_and_the_newest_turns_under_codex_cap():
+    seed = [{"role": "user" if i % 2 else "assistant", "content": [{"type": "input_text", "text": f"turn {i} " + "x" * 1990}]}
+            for i in range(20)]
+    items = C.initial_items("rules " + "r" * 20_000, seed)
+    assert items[0]["role"] == "developer" and items[0]["text"].startswith("rules ")
+    assert sum(len(i["text"].encode()) for i in items) <= C.INITIAL_ITEMS_MAX_BYTES
+    assert items[-1]["text"].startswith("turn 19 ")  # the newest turn survives; older ones go first
+    assert [i["role"] for i in items[1:]] and all(i["role"] in {"user", "assistant"} for i in items[1:])
+
+
+def test_an_oversized_prompt_keeps_its_rules_and_the_who_you_are_block():
+    prompt = "RULES " + "r" * 30_000 + "\n\n# Who you are\nYour name is Juniper.\nNever say ChatGPT.\n\n# Away\n" + "a" * 5000
+    items = C.initial_items(prompt, [])
+    assert len(items) == 1 and len(items[0]["text"].encode()) <= C.INITIAL_ITEMS_MAX_BYTES
+    assert items[0]["text"].startswith("RULES ") and items[0]["text"].endswith("# Who you are\nYour name is Juniper.\nNever say ChatGPT.")
 
 
 def test_handoff_starts_hermes_task_and_result_is_appended(fake_codex, tmp_path, service, hermes):

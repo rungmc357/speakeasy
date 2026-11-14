@@ -23,6 +23,15 @@ PERSONAL = re.compile(
     r"draft|fix|build|deploy|install|delete|cancel|turn|make|open|save|remember|calendar|inbox)\b"
     r"|^\s*(?:please\s+)?(?:set|play|put|start|stop|pause)\b")
 
+# Never quick either: a question about the assistant itself ("what model are you", "who made you").
+# A web search can't answer it, and the routing model then describes ITSELF ("I'm <router model>"), a
+# false answer about which model does the user's work (SPK-452, seen on a live call).
+ABOUT_YOU = re.compile(
+    r"(?i)\b(?:who|what|which)\b[^.?!]*\b(?:are|were)\s+you\b|^\W*(?:are|were)\s+you\b"
+    r"|\byour(?:self|\s+(?:name|model|memory|creator|maker))\b"
+    r"|\b(?:made|built|created|trained|powers|runs)\s+you\b"
+    r"|\bmodel\b[^.?!]*\byou\b|\byou\b[^.?!]*\bmodel\b")
+
 # Without Jev, only something that is plainly a question gets a quick try.
 QUESTION = re.compile(r"(?i)^(?:(?:hey|so|ok|okay|um|uh|quick question)[,\s]+)*(?:who|what|when|where|which|how|is|are|was|"
                       r"were|does|do|did|can|will|has|have)\b")
@@ -41,7 +50,7 @@ def eligible(request: str, can_share: bool = False) -> bool:
     so a question about it ("what's this error?") is never one: a web search can't see it, and Hermes
     gets it with the capture instead. Calls that can't share (an iPhone, an older Mac) are as before."""
     text = (request or "").strip()
-    if not 2 <= len(text.split()) <= 25 or PERSONAL.search(text):
+    if not 2 <= len(text.split()) <= 25 or PERSONAL.search(text) or ABOUT_YOU.search(text):
         return False
     if can_share:
         from .router import refers_to_screen

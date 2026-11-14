@@ -13,6 +13,13 @@ def test_quick_eligible_only_for_public_questions():
     assert quick.eligible("Who won the hockey game last night")
     assert not quick.eligible("What's on my calendar Friday")
     assert not quick.eligible("Book a table for two at seven")
+    # Questions about the assistant itself: a web search can't answer them, and the routing model
+    # then names itself as "the model" (SPK-452, live call: "I'm <router model>").
+    for about_you in ("What model are you", "Which model are you running on", "Who are you", "Who made you",
+                      "What's your name", "Are you ChatGPT", "what AI model powers you"):
+        assert not quick.eligible(about_you), about_you
+    for public in ("What model year is the newest Civic", "Who is the CEO of Apple", "What time is it in Tokyo"):
+        assert quick.eligible(public), public
     assert not quick.eligible("Turn the porch light off")
     assert not quick.eligible("ok")
 
