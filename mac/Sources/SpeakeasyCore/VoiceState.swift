@@ -379,6 +379,8 @@ public struct VoiceState: Equatable, Sendable {
         // list fetched before the server had the clear bring it back (the server keeps it too).
         s.dismissedRunIDs = dismissedRunIDs
         s.dismissedReviews = dismissedReviews
+        // Pictures and files dropped with no call open wait for the next one.
+        s.sharing = sharing.carriedToNextCall()
         return s
     }
 
@@ -842,8 +844,10 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         }
         s.sharing.tick(now: now)
 
-    case .sharing(let event):
+    case .sharing(var event):
         let live = (s.connection == .live || s.connection == .connecting) && !s.pausing
+        // Dropped with no call open (after one ended, on the board): kept for the next call.
+        if case .added(var item) = event, !s.connection.isOpen { item.forNextCall = true; event = .added(item) }
         s.sharing.apply(event, now: now, admitted: s.interactionID, live: live)
 
     case .reset:
@@ -855,9 +859,9 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         if let error = s.lastError, VoiceState.isCallDropped(error) { s.lastError = nil }
     }
     // Paused: sharing is off and nothing is captured; pictures and files not sent yet wait for Resume.
-    // Ended: nothing of the call's sharing is kept.
+    // Ended: nothing of the call's sharing is kept (what was dropped with no call open waits).
     if s.connection == .paused { s.sharing.callClosed(paused: true) }
-    else if !s.connection.isOpen { s.sharing.callClosed(paused: false) }
+    else if !s.connection.isOpen { s.sharing.callClosed(paused: false, closing: state.connection.isOpen) }
     forgetClearedWork(&s)
     s.work = deriveWork(s, now: now)
     return s

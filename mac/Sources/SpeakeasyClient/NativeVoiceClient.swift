@@ -653,6 +653,10 @@ public final class NativeVoiceClient: VoiceCallClient {
         if let toggle = new.sharing.outgoing, toggle != old.sharing.outgoing { sendScreen(toggle) }
         for captureID in new.sharing.captures where !old.sharing.captures.contains(captureID) { serveCapture(captureID) }
         if old.sharing.attachments != new.sharing.attachments { forgetAttachments(notIn: new.sharing.attachments) }
+        // The board has no status line: a drop's line (taken, or why not) shows as a toast there.
+        if new.workOnly, let notice = new.sharing.notice, notice != old.sharing.notice {
+            model.showToast(notice.text, ok: notice.text == CallSharing.nextCallLine)
+        }
         if old.sharing.visibleAttachments.count != new.sharing.visibleAttachments.count || old.sharing.hold != new.sharing.hold {
             surface.setNeedsResize()
         }
@@ -1429,7 +1433,7 @@ public final class NativeVoiceClient: VoiceCallClient {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if self.model.state.connection.isOpen || !self.surface.isVisible { self.cancelAutoHide(); return }
-                if self.autoHide.shouldHide(now: Date(), hovering: self.model.hovering,
+                if self.autoHide.shouldHide(now: Date(), hovering: self.model.hovering || self.model.dropTargeted,
                                             needsAttention: panelNeedsAttention(self.model.state) || self.model.workExpanded) {
                     self.hideNow()
                 }
@@ -2137,10 +2141,11 @@ public final class NativeVoiceClient: VoiceCallClient {
     // MARK: Look at this: pictures and files
 
     /// Dropped or pasted pictures and files (already encoded, see `AttachmentEncoder`). They wait on
-    /// the panel and go with the next request; up to three at a time. Only during a call (paused
-    /// included: they're sent after Resume); refused when this Hermes can't take them.
+    /// the panel and go with the next request; up to three at a time. Any time the panel is up: during
+    /// a call (paused included: they're sent after Resume), or with none open, when they wait for the
+    /// next call. Refused when this Hermes can't take them.
     public func attach(_ items: [EncodedAttachment]) {
-        guard model.state.connection.isOpen, !model.state.workOnly, !items.isEmpty else { return }
+        guard !items.isEmpty else { return }
         guard attachmentSupport?.supported == true else {
             dispatch(.sharing(.notice(AttachmentSupport.refusalReason(attachmentSupport))))
             return
