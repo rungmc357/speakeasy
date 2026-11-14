@@ -1593,6 +1593,11 @@ class VoiceService(SecureInputMixin):
         with source.lock:
             if source.successor is not None:
                 raise ServiceError(409, "call was already resumed")
+            if not source.paused and source.end_reason == "user" and source.finalization != "open":
+                # SPK-458: hung up (End here or on another device) while a reconnect was pending. A
+                # hang-up always wins: the reconnect is refused with a reason the app ends on, so it
+                # never starts a fresh call in the ended one's place.
+                raise ServiceError(409, "call was ended", reason="ended")
             if not source.paused:
                 if source.abandoned or source.carried_by is not None:
                     raise ServiceError(409, "call is not paused")
