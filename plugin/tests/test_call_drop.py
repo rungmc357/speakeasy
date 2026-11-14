@@ -123,9 +123,32 @@ def test_end_while_reconnecting_ends_it_as_the_users(server, service, codex):
     assert status == 200 and body["finalization"] == "confirmed"
     assert not interaction.drop_held and interaction.end_reason == "user"
     assert events(interaction, "closed")[-1]["reason"] == "user"
-    status, _ = http(server.base_url, "POST", "/voice/sessions", {"sdp": SDP, "resume_from": interaction.interaction_id},
-                     server.token, {"Idempotency-Key": "req_drop_after_end"})
+    status, refused = http(server.base_url, "POST", "/voice/sessions", {"sdp": SDP, "resume_from": interaction.interaction_id},
+                           server.token, {"Idempotency-Key": "req_drop_after_end"})
     assert status == 409  # ended means ended
+    # SPK-458: with a reason the app ends on, instead of starting a fresh call in the ended one's place.
+    assert refused.get("reason") == "ended"
+
+
+def test_a_late_drop_report_after_a_hang_up_never_holds_the_call(server, service, codex, caplog):
+    """SPK-458, the other arrival order: End landed first, then the provider's drop is reported.
+    The hang-up wins: no hold, no reconnect_required, still ended as the user's."""
+    caplog.set_level(logging.INFO, logger="speakeasy")
+    interaction = live_call_with_a_task(server, service, codex, status="completed")
+    status, _ = http(server.base_url, "POST", f"/voice/interactions/{interaction.interaction_id}/end", {},
+                     server.token)
+    assert status == 200
+    codex[0].provider_reset()
+    wait_for(lambda: interaction.finalization == "confirmed", 5)
+    interaction.worker.call_drop("provider")  # a drop report that lost the race with End
+    assert not interaction.drop_held and interaction.status != "reconnecting"
+    assert events(interaction, "reconnect_required") == []
+    assert interaction.end_reason == "user" and interaction.finalization == "confirmed"
+    assert "ignored: the call already ended" in caplog.text
+    status, refused = http(server.base_url, "POST", "/voice/sessions",
+                           {"sdp": SDP, "resume_from": interaction.interaction_id},
+                           server.token, {"Idempotency-Key": "req_late_drop_resume"})
+    assert status == 409 and refused.get("reason") == "ended"
 
 
 def test_at_most_two_automatic_resumes_per_call(server, service, codex, caplog):

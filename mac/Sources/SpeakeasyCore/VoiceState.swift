@@ -101,6 +101,10 @@ public enum CallReconnect {
     /// The plugin asked for the reconnect (`reconnect_required`): the old session is already gone
     /// and the call is held, so there is nothing to wait out.
     public static let serverAskedDelay: TimeInterval = 0.2
+    /// The plugin's end reason for a call someone hung up (End on this or another device).
+    public static let hungUpReason = "user"
+    /// The plugin's refusal reason when a reconnect's resume finds the call was hung up.
+    public static let endedRefusal = "ended"
     /// A connection attempt that hasn't gone live by then is stuck.
     public static let connectStallAfter: TimeInterval = 12
     /// The session request itself may take longer than the stall watchdog on a slow Hermes (a cold
@@ -224,6 +228,10 @@ public struct VoiceState: Equatable, Sendable {
     /// Sessions the server admitted for attempts this call gave up on (a stalled connect): the
     /// client closes each one (`POST …/end {"abandon": true}`) and removes it from here.
     public var sessionsToClose: [String] = []
+    /// Calls the server holds for a reconnect (a provider drop) that the user hung up on: the
+    /// client tells the server each one was ended (`POST …/end`), so it ends as the user's hang-up
+    /// at once instead of waiting out the hold and logging a dropped call (SPK-458).
+    public var heldCallsToEnd: [String] = []
 
     public var connection: ConnectionPhase {
         get { phase.coarse }
@@ -375,6 +383,7 @@ public struct VoiceState: Equatable, Sendable {
         s.callShortcutHint = callShortcutHint
         s.reconnectsDroppedCalls = reconnectsDroppedCalls
         s.sessionsToClose = sessionsToClose
+        s.heldCallsToEnd = heldCallsToEnd
         // What the user cleared stays cleared: a new call or reopening the board must not let a
         // list fetched before the server had the clear bring it back (the server keeps it too).
         s.dismissedRunIDs = dismissedRunIDs
@@ -442,7 +451,9 @@ public enum VoiceEvent: Equatable, Sendable {
     case outputDelta(String)
     case delegationCreated
     case sessionClosed
-    case serverClosed(Finalization, error: String?)
+    /// The server ended the call. `reason` is the plugin's end reason (`user` = someone hung up,
+    /// `provider`, `expired`, …; nil from an older plugin).
+    case serverClosed(Finalization, error: String?, reason: String? = nil)
     case endRequested
     case endTimedOut
     case transportLost
@@ -549,7 +560,11 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
             s.phase = .reconnecting(attempt: 1, deadline: now.addingTimeInterval(CallReconnect.serverAskedDelay),
                                     resumeFrom: id)
             s.speech = .idle
-        default: break   // paused, ending, already reconnecting or another call's: nothing to do
+        case .ending(let id?, _) where held == nil || held == id:
+            // Hung up as the provider dropped it (SPK-458): the hang-up wins. The call never
+            // reconnects, and the server, which now holds it for a reconnect, is told it was ended.
+            if !s.heldCallsToEnd.contains(id) { s.heldCallsToEnd.append(id) }
+        default: break   // paused, ended, already reconnecting or another call's: nothing to do
         }
 
     case .workOnlyOpened:
@@ -723,11 +738,20 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         closed(&s, .complete)
         s.speech = .idle
 
-    case .serverClosed(let fin, let error):
+    case .serverClosed(let fin, let error, let reason):
         // The transport and server can each report the same intentional close. A late server
         // notification must stay quiet even after the first notification completed the pause.
         let pausing = s.pausing || isPaused(s.phase)
-        closed(&s, fin)
+        if reason == CallReconnect.hungUpReason, isRecovering(s.phase) {
+            // SPK-458: someone hung up while a reconnect was pending. A deliberate hang-up always
+            // wins, whichever arrived first: the call ends instead of coming back.
+            if case .connecting(let c) = s.phase, let admitted = c.admittedID, !s.heldCallsToEnd.contains(admitted) {
+                s.heldCallsToEnd.append(admitted)   // the attempt's own session is ended on the server too
+            }
+            s.phase = .ended(fin)
+        } else {
+            closed(&s, fin)
+        }
         if let error, !pausing { s.lastError = VoiceState.isCallDropped(error) ? VoiceState.callDropped : error }
         s.speech = .idle
 
@@ -735,6 +759,8 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
         switch s.phase {
         case .connecting(let c) where c.admittedID == nil:
             s.phase = .ended(.complete)   // nothing admitted, nothing billed
+            // A reconnect not admitted yet: the server still holds the dropped call; it ends too.
+            if c.reconnect > 0, let from = c.resumeFrom, !s.heldCallsToEnd.contains(from) { s.heldCallsToEnd.append(from) }
         case .connecting(let c):
             s.phase = .ending(id: c.admittedID, deadline: now.addingTimeInterval(VoiceState.endConfirmWithin))
         case .live(let id):
@@ -744,8 +770,10 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
             s.phase = .ending(id: id, deadline: now.addingTimeInterval(VoiceState.endConfirmWithin))
         case .paused:
             s.phase = .ended(.complete)   // voice session already closed; nothing billed
-        case .reconnecting:
+        case .reconnecting(_, _, let from):
             s.phase = .ended(.incomplete)   // the dropped session's usage was never confirmed
+            // The server may be holding the dropped call for this reconnect: it ends as a hang-up.
+            if let from, !s.heldCallsToEnd.contains(from) { s.heldCallsToEnd.append(from) }
         default: break
         }
 
@@ -864,6 +892,15 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
 }
 
 private func isPaused(_ phase: CallPhase) -> Bool { if case .paused = phase { return true }; return false }
+
+/// A dropped call being brought back: waiting for its next reconnect, or a reconnect attempt.
+private func isRecovering(_ phase: CallPhase) -> Bool {
+    switch phase {
+    case .reconnecting: return true
+    case .connecting(let c): return c.reconnect > 0
+    default: return false
+    }
+}
 
 /// The voice session closed. A pausing call that closes (cleanly or not) is paused, not ended: the
 /// api holds its transcript and tasks for Resume. A dropped call waiting to reconnect, a paused or

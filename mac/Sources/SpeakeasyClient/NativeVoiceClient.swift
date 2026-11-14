@@ -339,6 +339,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         postMicIfChanged()
         if after.connection != .connecting, connectWatchdog != nil { connectWatchdog?.cancel(); connectWatchdog = nil }
         closeAbandonedSessions()
+        endHeldCalls()
         applySideEffects(from: before, to: after)
         watchMic(event, from: before, to: after)
         scheduleUploadsIfNeeded()
@@ -560,6 +561,23 @@ public final class NativeVoiceClient: VoiceCallClient {
         for id in ids {
             reportMic("closing the stalled attempt's session")
             Task { try? await api.abandonSession(interactionID: id) }
+        }
+    }
+
+    /// Held calls already told they were hung up (a repeated polled snapshot can ask again).
+    private var heldCallsEnded: Set<String> = []
+
+    /// SPK-458: the user hung up a call the server holds for a reconnect. Tell the server, so it
+    /// ends now as the user's hang-up (and refuses any late resume) instead of waiting out the hold
+    /// and logging a dropped call. Best effort: an older plugin ends it when the hold runs out.
+    private func endHeldCalls() {
+        guard !model.state.heldCallsToEnd.isEmpty else { return }
+        let ids = model.state.heldCallsToEnd.filter { !heldCallsEnded.contains($0) }
+        model.state.heldCallsToEnd = []
+        guard let api, !previewMode else { return }
+        for id in ids {
+            heldCallsEnded.insert(id)
+            Task { try? await api.endHeldCall(interactionID: id) }
         }
     }
 
@@ -977,6 +995,15 @@ public final class NativeVoiceClient: VoiceCallClient {
                     self.dropRoomContext("Couldn't use what listening mode heard; carried on without it")
                     self.dispatch(.connectFallback(dropResume: false))
                     self.connect(api)
+                    return
+                }
+                // SPK-458: a reconnect refused because the call was hung up meanwhile (End on the
+                // server's side, another device): the hang-up wins, never a fresh call in its place.
+                if self.model.state.phase.reconnectAttempt > 0, let http = error as? ServerClient.HTTPError,
+                   http.status == 409, http.reason == CallReconnect.endedRefusal,
+                   self.model.state.connection == .connecting {
+                    call.close()
+                    self.dispatch(.serverClosed(.complete, error: nil, reason: CallReconnect.hungUpReason))
                     return
                 }
                 // The api no longer holds the paused call (restarted, or it was
