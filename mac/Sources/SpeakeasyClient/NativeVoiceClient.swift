@@ -1139,7 +1139,8 @@ public final class NativeVoiceClient: VoiceCallClient {
             try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             self.dispatch(.reconnectDue(attempt: attempt))
-            guard case .connecting(let c) = self.model.state.phase, c.reconnect == attempt, let api = self.api else { return }
+            guard case .connecting(let c) = self.model.state.phase, c.reconnect == attempt, let api = self.api,
+                  !self.previewMode else { return }   // a preview (demo, sample call) never dials out
             self.appliedMic = nil; self.appliedRemote = nil
             self.connect(api)
         }
