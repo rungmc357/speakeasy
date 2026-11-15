@@ -270,10 +270,11 @@ public struct AnswerGlance: View {
             switch card.kind {
             case "weather":
                 HStack(spacing: 5) {
-                    Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 16))
+                    Image(systemName: weatherSymbol(card.weatherIcon)).symbolRenderingMode(.multicolor).font(.system(size: 16))
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(ViewCard.degrees(card["temp"].double)).cardFont(17, weight: .medium, digits: true)
-                        if let c = card["condition"].string { Text(sentenceCase(c)).cardFont(11).foregroundStyle(.secondary).lineLimit(1) }
+                        Text(card.weatherHeadline).cardFont(17, weight: .medium, digits: true).lineLimit(1)
+                        let c = card.weatherCondition
+                        if !c.isEmpty { Text(sentenceCase(c)).cardFont(11).foregroundStyle(.secondary).lineLimit(1) }
                     }
                 }
             case "chart":

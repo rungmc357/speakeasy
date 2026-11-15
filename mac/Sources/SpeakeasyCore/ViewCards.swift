@@ -121,7 +121,9 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
             return parts.joined(separator: ", ")
         case "weather":
             let temp = self["temp"].double.map { "\(Int($0.rounded()))\(self["unit"].string ?? "°")" }
-            return [self["place"].string, temp, self["condition"].string].compactMap { $0 }.joined(separator: ", ")
+                ?? (weatherLeadDay == nil ? nil : weatherHeadline)
+            let condition = weatherCondition
+            return [self["place"].string, temp, condition.isEmpty ? nil : condition].compactMap { $0 }.joined(separator: ", ")
         case "game":
             let teams = self["teams"].array.map { [$0["abbr"].string ?? $0["name"].string, $0["score"].string].compactMap { $0 }.joined(separator: " ") }
             return ([self["league"].string] + teams + [self["detail"].string]).compactMap { $0 }.joined(separator: " · ")
@@ -200,16 +202,37 @@ public struct ViewCard: Equatable, Sendable, Identifiable {
     }
 
     /// A weather card's big number: the temperature now, or for a forecast with no "now" (tomorrow,
-    /// Monday) its high and low ("55° / 35°"), never a bare dash.
+    /// Monday) its high and low ("55° / 35°"), never a bare dash. A forecast of days only (a trip's
+    /// Kyoto week) leads with its first day.
     public var weatherHeadline: String {
         if let now = self["temp"].double { return Self.degrees(now) }
-        switch (self["high"].double, self["low"].double) {
+        let lead = weatherLeadDay ?? data
+        switch (lead["high"].double, lead["low"].double) {
         case let (high?, low?): return "\(Self.degrees(high)) / \(Self.degrees(low))"
         case let (high?, nil): return Self.degrees(high)
         case let (nil, low?): return Self.degrees(low)
         default: return Self.degrees(nil)
         }
     }
+
+    /// The first forecast day, when the card has nothing of its own to lead with (no temperature
+    /// now, no high or low): the big number, condition and symbol come from it.
+    public var weatherLeadDay: JSONValue? {
+        guard self["temp"].double == nil, self["high"].double == nil, self["low"].double == nil,
+              let first = self["days"].array.first, first["high"].double != nil || first["low"].double != nil
+        else { return nil }
+        return first
+    }
+
+    /// The condition line under the big number ("Tue · Rain likely" when it leads with a day).
+    public var weatherCondition: String {
+        if let own = self["condition"].string { return own }
+        guard let day = weatherLeadDay else { return "" }
+        return [day["label"].string, day["condition"].string].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// The card's symbol name (the plugin's icon word), falling back to its lead day's.
+    public var weatherIcon: String? { self["icon"].string ?? weatherLeadDay?["icon"].string }
 
     public static func degrees(_ value: Double?) -> String { value.map { "\(Int($0.rounded()))°" } ?? "–" }
 }
