@@ -29,6 +29,7 @@ def test_the_voice_is_the_users_assistant_never_chatgpt_even_with_no_brief():
         # "what model are you": its own name, and the work model is a hand-off, not a guess.
         assert "Asked which model you are: you are Juniper" in block
         assert "which model does their work is a hand-off" in block
+        assert "Never name or guess a model" in block  # live call: it said a made-up model before the result
         # The identity block closes the instructions' head: after the brief, before per-call extras.
         if brief:
             assert text.index(brief) < text.index("# Who you are")

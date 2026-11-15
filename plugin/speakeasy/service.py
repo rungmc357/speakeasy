@@ -70,6 +70,8 @@ from .plain_errors import CONFIG_LEFT_UNCHANGED, TYPED_SEND_FAILED, VOICE_START_
 from .text import ID_RE, MAX_CARDS, MAX_ROOM_CHARS, TERMINAL, notice_text, safe_room_text, split_result, vague_title
 
 logger = logging.getLogger(__name__)
+# A Codex call's instructions, under codex_transport.INITIAL_ITEMS_MAX_BYTES with room for the seed.
+CODEX_INSTRUCTION_CHARS = 24_000
 
 # Profile switching: which profile THIS request looks at, from ``X-Speakeasy-Profile`` (set in
 # ``authenticate``). None = the app didn't say (an older app: everything, as before); (None,) = the
@@ -1105,7 +1107,8 @@ class VoiceService(SecureInputMixin):
 
     # -- voice sessions -------------------------------------------------------------------------
     def instructions(self, *, away: list[dict[str, Any]], resume: str,
-                     tour: dict[str, str] | None = None, room: str = "", open_work: str = "") -> str:
+                     tour: dict[str, str] | None = None, room: str = "", open_work: str = "",
+                     max_chars: int = P.MAX_INSTRUCTION_CHARS) -> str:
         """The voice's instructions for a new or resumed call. ``room`` is listening mode's room
         text (the builder fences it and leaves recent voice out when it is there)."""
         s = self.settings.get()
@@ -1125,7 +1128,7 @@ class VoiceService(SecureInputMixin):
                                          delivery_label=label, channels=s["delivery"]["channels"],
                                          tour=P.tour_block(names, tour, label, s["delivery"]["channels"])
                                          if tour is not None else "", room=room, open_work=open_work,
-                                         vocabulary=vocabulary_mod.terms(self.home))
+                                         vocabulary=vocabulary_mod.terms(self.home), max_chars=max_chars)
 
     def create_session(self, body: dict[str, Any], request_id: str, device_id: str = "",
                        local: bool = False) -> dict[str, Any]:
@@ -1210,10 +1213,14 @@ class VoiceService(SecureInputMixin):
         stages.mark("carry")
         if room:
             logger.info("speakeasy: call has the room transcript from listening mode (%d words)", len(room.split()))
-        instructions = self.instructions(away=away, resume=resume, tour=tour, room=room, open_work=open_work)
+        provider = s["voice"]["provider"]
+        # Codex carries the instructions as an initial item with a hard size cap (codex_transport
+        # .initial_items): trim the optional blocks to fit there rather than cut the prompt's end.
+        budget = CODEX_INSTRUCTION_CHARS if provider == "codex" else P.MAX_INSTRUCTION_CHARS
+        instructions = self.instructions(away=away, resume=resume, tour=tour, room=room, open_work=open_work,
+                                         max_chars=budget)
         seed = P.resume_input(history)
         stages.mark("instructions")
-        provider = s["voice"]["provider"]
         voice = default_voice(s)
         transport = None
         try:
@@ -1593,6 +1600,11 @@ class VoiceService(SecureInputMixin):
         with source.lock:
             if source.successor is not None:
                 raise ServiceError(409, "call was already resumed")
+            if not source.paused and source.end_reason == "user" and source.finalization != "open":
+                # SPK-458: hung up (End here or on another device) while a reconnect was pending. A
+                # hang-up always wins: the reconnect is refused with a reason the app ends on, so it
+                # never starts a fresh call in the ended one's place.
+                raise ServiceError(409, "call was ended", reason="ended")
             if not source.paused:
                 if source.abandoned or source.carried_by is not None:
                     raise ServiceError(409, "call is not paused")

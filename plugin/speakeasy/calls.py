@@ -1685,18 +1685,30 @@ class SidebandWorker:
         and the app is told to reconnect (``reconnect_required``): its resume continues the same
         conversation in a fresh voice session. Past the cap, or if nobody reconnects within
         DROP_HOLD_S, it ends as dropped (reason "provider")."""
+        used, capped = 0, False
         with self.interaction.lock:
-            used = self.interaction.drop_count
-            capped = used >= MAX_AUTO_RESUMES
-            self.interaction.dropped_at = time.time()
-            if capped:
-                self.interaction.finalization = "incomplete"
-                self.interaction.status = "error"
-                self.interaction.end_reason = reason
-                self.interaction.error = VOICE_LOST
+            if self.interaction.finalization != "open" or self.interaction.paused or self.interaction.drop_held:
+                # SPK-458: a hang-up (or pause) recorded first wins over a late drop report: the call
+                # is never held for a reconnect, re-ended as dropped or told to reconnect.
+                hung_up = True
             else:
-                self.interaction.drop_held = True
-                self.interaction.status = "reconnecting"
+                hung_up = False
+                used = self.interaction.drop_count
+                capped = used >= MAX_AUTO_RESUMES
+                self.interaction.dropped_at = time.time()
+                if capped:
+                    self.interaction.finalization = "incomplete"
+                    self.interaction.status = "error"
+                    self.interaction.end_reason = reason
+                    self.interaction.error = VOICE_LOST
+                else:
+                    self.interaction.drop_held = True
+                    self.interaction.status = "reconnecting"
+        if hung_up:
+            logger.info("speakeasy: call.drop id=%s reason=%s ignored: the call already ended or paused",
+                        self.interaction.interaction_id, reason)
+            self.call_closed()
+            return
         if capped:
             logger.warning("speakeasy: call.drop id=%s reason=%s resumed=false gap_ms=0 cap=%d",
                            self.interaction.interaction_id, reason, MAX_AUTO_RESUMES)

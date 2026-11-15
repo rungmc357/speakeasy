@@ -153,10 +153,10 @@ struct QuestionCard: View {
             } else {
                 AnsweredMark()
             }
-            Text(card["question"].string ?? "").font(.system(size: 14, weight: .semibold))
+            Text(card["question"].string ?? "").cardFont(14, weight: .semibold)
                 .fixedSize(horizontal: false, vertical: true)
             if let context = decision?.context {
-                Text(context).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(context).cardFont(11.5).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if let decision, DecisionCompare.worthComparing(decision) {
                 HStack { Spacer(minLength: 0); CompareToggle(comparing: $comparing) }
@@ -196,7 +196,7 @@ struct QuestionCard: View {
             } else {
                 Text(answer != nil ? "Sent to the task." :
                         actions.onAnswer != nil ? Self.hint(min(options.count, 4)) : "Say your answer.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .cardFont(11).foregroundStyle(.secondary)
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: answer)
@@ -240,10 +240,10 @@ private struct OptionRow: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 NumberBadge(number: number, chosen: chosen)
-                Text(text).font(.system(size: 12.5, weight: chosen ? .semibold : .regular)).lineLimit(2)
+                Text(text).cardFont(12.5, weight: chosen ? .semibold : .regular).lineLimit(2)
                 Spacer(minLength: 4)
                 if recommended && !chosen && !dimmed {
-                    Text("Recommended").font(.system(size: 11, weight: .semibold))
+                    Text("Recommended").cardFont(11, weight: .semibold)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(Color.accentColor.opacity(0.14)))
                         .foregroundStyle(Color.accentColor)
@@ -294,7 +294,7 @@ private struct PictureOption: View {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     Text("\(number)")
-                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                        .cardFont(11.5, weight: .bold, design: .rounded)
                         .frame(width: 18, height: 18)
                         .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
                             .fill(chosen ? Color.accentColor : Color.black.opacity(0.55)))
@@ -308,12 +308,12 @@ private struct PictureOption: View {
                         : Color.primary.opacity(hover && enabled ? 0.25 : 0.08),
                     lineWidth: chosen ? 2 : 1))
                 HStack(spacing: 4) {
-                    Text(text).font(.system(size: 11.5, weight: chosen ? .semibold : .regular)).lineLimit(2)
+                    Text(text).cardFont(11.5, weight: chosen ? .semibold : .regular).lineLimit(2)
                     Spacer(minLength: 0)
                     if chosen { Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Color.accentColor) }
                 }
                 if recommended && !chosen && !dimmed {
-                    Text("Recommended").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.accentColor)
+                    Text("Recommended").cardFont(11, weight: .semibold).foregroundStyle(Color.accentColor)
                 }
             }
             .contentShape(Rectangle())

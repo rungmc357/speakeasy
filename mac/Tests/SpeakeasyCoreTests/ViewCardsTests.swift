@@ -74,4 +74,23 @@ final class ViewCardsTests: XCTestCase {
         XCTAssertEqual(ViewCard(kind: "weather", data: ["temp": 57, "high": 57.2, "low": 36]).weatherHighLow, "L 36°")
         XCTAssertEqual(ViewCard(kind: "weather", data: ["temp": 61.6, "high": 64, "low": 50]).weatherHighLow, "H 64°  L 50°")
     }
+
+    func testAForecastOfDaysOnlyLeadsWithItsFirstDay() {
+        // A packing answer's Kyoto forecast: days only, nothing "now" and no top-level high/low.
+        let card = ViewCard(kind: "weather", data: ["place": "Kyoto", "unit": "F", "days": [
+            ["label": "Tue", "high": 61.0, "low": 47.0, "rain": 75.0, "condition": "Rain likely", "icon": "rain"],
+            ["label": "Wed", "high": 70.0, "low": 52.0, "rain": 94.0, "condition": "Rain", "icon": "rain"],
+        ]])
+        XCTAssertEqual(card.weatherHeadline, "61° / 47°", "never a bare dash")
+        XCTAssertEqual(card.weatherCondition, "Tue · Rain likely")
+        XCTAssertEqual(card.weatherIcon, "rain")
+        XCTAssertEqual(card.summary, "Kyoto, 61° / 47°, Tue · Rain likely")
+        // A card with its own values keeps them; the first day doesn't override.
+        let now = ViewCard(kind: "weather", data: ["temp": 58, "condition": "cloudy", "icon": "cloud",
+                                                   "days": [["label": "Tue", "high": 61.0, "low": 47.0, "icon": "rain"]]])
+        XCTAssertEqual(now.weatherHeadline, "58°")
+        XCTAssertEqual(now.weatherCondition, "cloudy")
+        XCTAssertEqual(now.weatherIcon, "cloud")
+        XCTAssertEqual(ViewCard(kind: "weather", data: [:]).weatherCondition, "")
+    }
 }

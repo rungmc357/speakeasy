@@ -160,10 +160,10 @@ struct CardHeader: View {
         HStack(alignment: style.capsHeaders ? .firstTextBaseline : .center, spacing: 6) {
             if style.capsHeaders {
                 Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                Text(title.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.4).foregroundStyle(.secondary)
+                Text(title.uppercased()).cardFont(10.5, weight: .semibold).tracking(0.4).foregroundStyle(.secondary)
                     .lineLimit(lines).fixedSize(horizontal: false, vertical: lines > 1)
                 Spacer(minLength: 0)
-                if let trailing { Text(trailing).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1) }
+                if let trailing { Text(trailing).cardFont(11.5).foregroundStyle(.secondary).lineLimit(1) }
             } else {
                 CardTitleRow(icon: icon, title: sentenceCase(title), note: trailing, lines: lines)
             }
@@ -249,6 +249,43 @@ struct Sparkline: View {
         .chartXAxis(.hidden).chartYAxis(.hidden)
         .chartYScale(domain: lo...(hi == lo ? lo + 1 : hi))
         .frame(height: height)
+    }
+}
+
+/// A weather symbol at a fixed size (symbols keep fixed sizes; text grows). In dark mode it keeps SF
+/// Symbols' multicolor look. In light mode multicolor's cloud layer is fixed white and vanished on the
+/// light card (SPK-502: a cloudy day had no icon, rain was three stray drops), so the layers are
+/// painted: a soft gray cloud, a yellow sun or bolt, blue rain, light blue snow.
+public struct WeatherGlyph: View {
+    let icon: String?
+    let size: CGFloat
+    @Environment(\.colorScheme) private var scheme
+    public init(_ icon: String?, size: CGFloat) { self.icon = icon; self.size = size }
+    public var body: some View {
+        let image = Image(systemName: weatherSymbol(icon)).font(.system(size: size))
+        if scheme == .dark {
+            image.symbolRenderingMode(.multicolor)
+        } else {
+            let (first, second, third) = Self.lightLayers(icon)
+            image.symbolRenderingMode(.palette).foregroundStyle(first, second, third)
+        }
+    }
+
+    static let cloud = Color(white: 0.66)
+    static let sun = Color(red: 1.0, green: 0.76, blue: 0.05)
+    static let rain = Color(red: 0.16, green: 0.56, blue: 0.95)
+    static let snow = Color(red: 0.45, green: 0.72, blue: 0.95)
+
+    /// Palette layers in the symbol's own order (cloud first; then sun, drops or flakes; storm: rain, then bolt).
+    static func lightLayers(_ icon: String?) -> (Color, Color, Color) {
+        switch icon {
+        case "sun": return (sun, sun, sun)
+        case "cloud_sun": return (cloud, sun, sun)
+        case "drizzle", "rain", "heavy_rain": return (cloud, rain, rain)
+        case "sleet", "snow": return (cloud, snow, snow)
+        case "storm": return (cloud, rain, sun)
+        default: return (cloud, cloud, cloud)   // cloud, fog, unknown
+        }
     }
 }
 

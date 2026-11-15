@@ -197,6 +197,49 @@ def login_status(binary: Path | None, runner: Callable[..., Any] = subprocess.ru
     return result
 
 
+# Codex caps a realtime V3 start's initialItems at 8,192 *estimated* tokens in total (it refuses the
+# whole call above that). Measured on codex-cli 0.167.2: ~30,000 ASCII characters start, ~45,000 fail.
+# Budget in UTF-8 bytes, with headroom for its estimator.
+INITIAL_ITEMS_MAX_BYTES = 28_000
+SEED_ITEM_MAX_CHARS = 2000
+
+
+def initial_items(prompt: str, seed: list) -> list[dict[str, str]]:
+    """The call's instructions as the first developer item, then the carried conversation.
+
+    Codex realtime V3 (codex-cli 0.167.2, measured live for SPK-452) ignores `prompt` on
+    `thread/realtime/start`: the voice answered "I'm ChatGPT" and "only what you've shared in this
+    call" with the whole Speakeasy prompt sent there. A developer initial item is honoured, so the
+    instructions ride there (and still in `prompt`, for Codex builds that read it). The instructions
+    come first and are never dropped for the seed; the seed keeps its newest turns within the budget."""
+    def size(text: str) -> int:
+        return len(text.encode("utf-8"))
+
+    head = prompt
+    if size(head) > INITIAL_ITEMS_MAX_BYTES:
+        # Over the cap (the service already trims optional blocks for Codex, so this is a fallback):
+        # keep the start (the rules) and the "Who you are" block, which sits near the end.
+        who = re.search(r"# Who you are\n.*?(?=\n\n|\Z)", head, re.S)
+        keep = ("\n\n" + who.group(0)) if who else ""
+        cut = INITIAL_ITEMS_MAX_BYTES - size(keep)
+        head = head.encode("utf-8")[:cut].decode("utf-8", "ignore") + keep
+    room = INITIAL_ITEMS_MAX_BYTES - size(head)
+    turns: list[dict[str, str]] = []
+    for item in reversed(seed[-20:] if isinstance(seed, list) else []):
+        if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
+            continue
+        parts = item.get("content") or []
+        text = " ".join(part.get("text", "") for part in parts
+                        if isinstance(part, dict) and isinstance(part.get("text"), str))[:SEED_ITEM_MAX_CHARS]
+        if not text:
+            continue
+        if size(text) > room:
+            break
+        room -= size(text)
+        turns.append({"role": item["role"], "text": text})
+    return [{"role": "developer", "text": head}] + turns[::-1]
+
+
 class CodexTransport:
     """One `codex app-server` process speaking JSON-RPC lines on stdio."""
 
@@ -336,15 +379,8 @@ class CodexTransport:
         began = time.monotonic()
         # The call's length (the max_call_s cap) runs from now, not from when a spare was spawned.
         self.started_at = began
-        initial = []
-        for item in seed[-20:]:
-            if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
-                continue
-            parts = item.get("content") or []
-            text = " ".join(part.get("text", "") for part in parts
-                            if isinstance(part, dict) and isinstance(part.get("text"), str))
-            if text:
-                initial.append({"role": item["role"], "text": text[:2000]})
+        prompt = (instructions + "\nOnly the Speakeasy server may execute tasks via Hermes. "
+                                 "Do not claim a task was completed until the server supplies its result.")
         params: dict[str, Any] = {
             "threadId": self.thread_id, "version": "v3", "model": CODEX_MODEL, "voice": voice,
             "outputModality": "audio", "transport": {"type": "webrtc", "sdp": sdp},
@@ -352,10 +388,8 @@ class CodexTransport:
             # No canned "mm-hm" filler while a handoff starts: the voice's own short acknowledgement
             # is enough, and the filler repeats ("On it. Mm-hm. Mm-hm.").
             "delegationAckFiller": False,
-            "prompt": instructions + "\nOnly the Speakeasy server may execute tasks via Hermes. "
-                                     "Do not claim a task was completed until the server supplies its result."}
-        if initial:
-            params["initialItems"] = initial
+            "prompt": prompt,
+            "initialItems": initial_items(prompt, seed)}
         self._drop_idle_notifications()
         self.realtime_requested = True
         self.request("thread/realtime/start", params, timeout=35)
