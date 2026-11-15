@@ -17,13 +17,13 @@ struct TimelineCard: View {
     var body: some View {
         let days = card["days"].array
         VStack(alignment: .leading, spacing: 16) {
-            if let title = card["title"].string { Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
+            if let title = card["title"].string { Text(title).cardFont(13, weight: .semibold).foregroundStyle(.secondary) }
             ForEach(Array(days.prefix(fit == .compact ? 1 : 10).enumerated()), id: \.offset) { _, day in
                 TimelineDay(day: day, cap: fit == .compact ? 3 : 10)
             }
             if fit == .compact, days.count > 1 {
                 Text(days.dropFirst().compactMap { $0["label"].string }.joined(separator: " · "))
-                    .font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
+                    .cardFont(13).foregroundStyle(.secondary).lineLimit(1)
             }
         }
     }
@@ -36,11 +36,11 @@ struct TimelineDay: View {
         let items = day["items"].array
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text(day["label"].string ?? "").font(.system(size: 20, weight: .bold))
+                Text(day["label"].string ?? "").cardFont(20, weight: .bold)
                 Spacer(minLength: 4)
                 if let sleep = day["sleep"].string {
                     // Where they sleep that night: a quiet chip, never a row of its own.
-                    Label(sleep, systemImage: "bed.double.fill").font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Label(sleep, systemImage: "bed.double.fill").cardFont(12, weight: .semibold).lineLimit(1)
                         .padding(.horizontal, 9).padding(.vertical, 5)
                         .background(Capsule().fill(gold.opacity(0.16))).foregroundStyle(.primary)
                 }
@@ -68,15 +68,15 @@ struct TimelineRow: View {
             HStack(alignment: .top, spacing: 12) {
                 marker(state).frame(width: 18, height: 18).padding(.top, 2)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(item["what"].string ?? "").font(.system(size: 15.5, weight: .semibold))
+                    Text(item["what"].string ?? "").cardFont(15.5, weight: .semibold)
                         .foregroundStyle(state == "done" ? .secondary : .primary).lineLimit(2)
                     let sub = [item["where"].string, item["note"].string].compactMap { $0 }
-                    if !sub.isEmpty { Text(sub.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2) }
+                    if !sub.isEmpty { Text(sub.joined(separator: " · ")).cardFont(13).foregroundStyle(.secondary).lineLimit(2) }
                 }
                 Spacer(minLength: 8)
                 HStack(alignment: .firstTextBaseline, spacing: 5) {   // the link mark beside the time, not under it
-                    Text(EventTimes.clockTime(item["when"].string) ?? "").font(.system(size: 14, weight: .semibold)).foregroundStyle(gold)
-                        .monospacedDigit().lineLimit(1)
+                    Text(EventTimes.clockTime(item["when"].string) ?? "").cardFont(14, weight: .semibold, digits: true).foregroundStyle(gold)
+                        .lineLimit(1)
                     if place || item["url"].url != nil {
                         Image(systemName: place ? "mappin" : "arrow.up.right").font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.secondary)
@@ -139,7 +139,7 @@ struct RowsCard: View {
                     // A control, not a caption: the rest open in place.
                     Button { withAnimation(.snappy) { expanded = true } } label: {
                         HStack(spacing: 6) {
-                            Text("Show \(rest) more").font(.system(size: 13.5, weight: .semibold))
+                            Text("Show \(rest) more").cardFont(13.5, weight: .semibold)
                             Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
                         }
                         .foregroundStyle(gold).frame(maxWidth: .infinity, minHeight: 36)
@@ -148,7 +148,7 @@ struct RowsCard: View {
                     .buttonStyle(.plain).accessibilityIdentifier("rows-show-more")
                 } else {
                     // Rows the answer didn't send: say how many, quietly; there is nothing to open.
-                    Text("\(rest) more not shown").font(.system(size: 12.5)).foregroundStyle(.secondary)
+                    Text("\(rest) more not shown").cardFont(12.5).foregroundStyle(.secondary)
                 }
             }
         }
@@ -220,7 +220,7 @@ struct ActionRow: View {
                 let corner = (when?.count ?? 0) <= 9
                 // One text: the ref leads and a second line wraps back to the row's edge, never under
                 // the name alone in a hanging column ("FN-148  Onboarding: three / design directions").
-                let name = Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold))
+                let name = Text(item["name"].string ?? "").cardFont(15, weight: .semibold)
                 Group {
                     if let ref, inline {
                         Text("\(Text(ref).font(.system(size: 13, weight: .medium).monospacedDigit()).foregroundColor(.secondary))\u{2002}\(name)")
@@ -232,7 +232,7 @@ struct ActionRow: View {
                 let meta = [inline ? nil : ref, item["who"].string, corner ? nil : when].compactMap { $0 }.joined(separator: " · ")
                 let note = item["note"].string
                 let chip = item["state"].string.map { state in
-                    Text(state).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
+                    Text(state).cardFont(11.5, weight: .semibold).lineLimit(1)
                         .padding(.horizontal, 7).padding(.vertical, 2.5)
                         .foregroundStyle(tone == nil ? Color.primary : Self.tone(tone))
                         .background(Capsule().fill((tone == nil ? Color.primary : Self.tone(tone)).opacity(0.12)))
@@ -243,19 +243,19 @@ struct ActionRow: View {
                 if chip != nil || !meta.isEmpty {
                     HStack(spacing: 6) {
                         chip
-                        if !meta.isEmpty { Text(meta).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
+                        if !meta.isEmpty { Text(meta).cardFont(12.5).foregroundStyle(.secondary).lineLimit(1) }
                     }
                 }
                 if let note {
-                    Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2)
+                    Text(note).cardFont(12.5).foregroundStyle(.secondary).lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 6)
             let when = EventTimes.stamp(item["when"].string)
             VStack(alignment: .trailing, spacing: 3) {
-                if let amount = item["amount"].string { Text(amount).font(.system(size: 15, weight: .bold)).monospacedDigit() }
-                if let when, when.count <= 9 { Text(when).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1) }
+                if let amount = item["amount"].string { Text(amount).cardFont(15, weight: .bold, digits: true) }
+                if let when, when.count <= 9 { Text(when).cardFont(12).foregroundStyle(.secondary).lineLimit(1) }
             }
             .fixedSize()
             // On the name's first line (the 32 pt tile's centre is about where a 15 pt line sits).
@@ -285,16 +285,16 @@ struct MetricCard: View {
             AppHeader(parts: where_.isEmpty ? [label] : where_, source: card["source"].string)
             VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(card["value"].string ?? "").font(.system(size: fit == .compact ? 30 : 40, weight: .bold)).monospacedDigit()
+                Text(card["value"].string ?? "").cardFont(fit == .compact ? 30 : 40, weight: .bold, digits: true)
                     .lineLimit(1).minimumScaleFactor(0.6)
                 if let unit = MetricCard.unit(card["unit"].string, label: label) {
-                    Text(unit).font(.system(size: 15)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(unit).cardFont(15).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 if let delta = card["delta"].string {
                     let good = card["good"].bool
                     let color: Color = good == nil ? .secondary : (good! ? look.good : look.bad)
-                    Text(delta).font(.system(size: 14, weight: .bold)).monospacedDigit().foregroundStyle(color)
+                    Text(delta).cardFont(14, weight: .bold, digits: true).foregroundStyle(color)
                         .padding(.horizontal, 8).padding(.vertical, 3).background(Capsule().fill(color.opacity(0.13)))
                 }
             }
@@ -302,7 +302,7 @@ struct MetricCard: View {
             let sub = [where_.isEmpty || label.isEmpty ? nil : label, card["note"].string]
                 .compactMap { $0 }.joined(separator: " · ")
             if !sub.isEmpty {
-                Text(sub).font(.system(size: 13.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(sub).cardFont(13.5).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             }
             if points.count >= 2 {
@@ -314,10 +314,10 @@ struct MetricCard: View {
                     Spacer()
                     Text(points.last?["label"].string ?? "")
                 }
-                .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                .cardFont(11.5).foregroundStyle(.secondary)
             }
             let foot = [EventTimes.stamp(card["as_of"].string).map { "As of \($0)" }].compactMap { $0 }
-            if !foot.isEmpty && fit != .compact { Text(foot.joined(separator: " · ")).font(.system(size: 11.5)).foregroundStyle(.secondary) }
+            if !foot.isEmpty && fit != .compact { Text(foot.joined(separator: " · ")).cardFont(11.5).foregroundStyle(.secondary) }
         }
     }
 }
@@ -364,7 +364,7 @@ struct MetricLine: View {
                         .stroke(Color.secondary.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     if let label = thresholdLabel, showMarks {
                         // On the left, clear of the dashes (below them when the line is at the top).
-                        Text(label).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary).fixedSize()
+                        Text(label).cardFont(10.5, weight: .semibold).foregroundStyle(.secondary).fixedSize()
                             .position(x: 24, y: y > 18 ? y - 10 : y + 10)
                     }
                 }
@@ -377,7 +377,7 @@ struct MetricLine: View {
                         if let mark = pt["mark"].string, let v = pt["value"].double, i < values.count {
                             let c = at(i, v)
                             Circle().fill(gold).frame(width: 8, height: 8).position(c)
-                            Text(mark).font(.system(size: 10.5, weight: .semibold)).lineLimit(1).fixedSize()
+                            Text(mark).cardFont(10.5, weight: .semibold).lineLimit(1).fixedSize()
                                 .position(x: min(max(c.x, 36), w - 36), y: c.y - 13)
                         }
                     }
@@ -418,12 +418,12 @@ struct PreviewCard: View {
                         .accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(card["title"].string ?? "").font(.system(size: 19, weight: .bold)).lineLimit(3)
-                    if let creator = card["creator"].string { Text(creator).font(.system(size: 15)).lineLimit(1) }
+                    Text(card["title"].string ?? "").cardFont(19, weight: .bold).lineLimit(3)
+                    if let creator = card["creator"].string { Text(creator).cardFont(15).lineLimit(1) }
                     let sub = [doc ? card["app"].string : nil, card["sub"].string, card["year"].string].compactMap { $0 }
-                    if !sub.isEmpty { Text(sub.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1) }
+                    if !sub.isEmpty { Text(sub.joined(separator: " · ")).cardFont(13).foregroundStyle(.secondary).lineLimit(1) }
                     if doc, let edited = DocPreview.editedLine(editor: card["editor"].string, edited: card["edited"].string) {
-                        Text(edited).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
+                        Text(edited).cardFont(13).foregroundStyle(.secondary).lineLimit(1)
                     }
                     if music {
                         PillButton(title: "Play", icon: "play.fill", primary: true) { opener.play(item) }.fixedSize().padding(.top, 6)
@@ -435,12 +435,12 @@ struct PreviewCard: View {
             }
             if let summary = card["summary"].string, fit != .compact {
                 // A document reads by its first line (D3); the rest is in the doc.
-                Text(doc ? (DocPreview.firstLine(summary) ?? summary) : summary).font(.system(size: 14.5))
+                Text(doc ? (DocPreview.firstLine(summary) ?? summary) : summary).cardFont(14.5)
                     .lineLimit(doc ? 2 : nil).fixedSize(horizontal: false, vertical: true)
             }
             let flags = card["flags"].strings
             ForEach(Array(flags.prefix(fit == .compact ? 1 : 4).enumerated()), id: \.offset) { _, flag in
-                Label { Text(flag).font(.system(size: 13.5)) } icon: {
+                Label { Text(flag).cardFont(13.5) } icon: {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(gold)
                 }
                 .padding(10).frame(maxWidth: .infinity, alignment: .leading)
@@ -450,7 +450,7 @@ struct PreviewCard: View {
             if !list.isEmpty && fit != .compact {
                 VStack(alignment: .leading, spacing: 0) {
                     if let label = card["list_label"].string {
-                        Text(label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
+                        Text(label).cardFont(12.5, weight: .semibold).foregroundStyle(.secondary).padding(.bottom, 4)
                     }
                     // Six lines at most, each whole (two lines before a cut): nine one-line items cut
                     // mid-word ran the card off the screen. The rest are counted; the answer has them.
@@ -458,7 +458,7 @@ struct PreviewCard: View {
                     ForEach(Array(shown.enumerated()), id: \.offset) { i, line in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text("\(i + 1)").font(.system(size: 13).monospacedDigit()).foregroundStyle(.secondary).frame(width: 18, alignment: .trailing)
-                            Text(line).font(.system(size: 14.5)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                            Text(line).cardFont(14.5).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 0)
                         }
                         .padding(.vertical, 6)
@@ -470,7 +470,7 @@ struct PreviewCard: View {
                         .flatMap { Int((card["sub"].string ?? "")[$0].split(separator: " ")[0]) } ?? 0
                     let total = max(list.count, said)
                     if shown.count < total {
-                        Text("\(total - shown.count) more").font(.system(size: 12.5)).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, 6)
+                        Text("\(total - shown.count) more").cardFont(12.5).foregroundStyle(.secondary).padding(.leading, 28).padding(.top, 6)
                     }
                 }
             }

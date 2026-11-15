@@ -36,7 +36,7 @@ struct MoreRows: View {
     var body: some View {
         if total > shown {
             let n = total - shown
-            Text(noun.map { "\(n) more \(n == 1 ? $0.one : $0.many)" } ?? "\(n) more").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            Text(noun.map { "\(n) more \(n == 1 ? $0.one : $0.many)" } ?? "\(n) more").cardFont(11, weight: .medium).foregroundStyle(.secondary)
                 .accessibilityHidden(true)
         }
     }
@@ -56,9 +56,9 @@ struct CardLine: View {
                     Image(systemName: Self.icon(card.kind)).font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.secondary).frame(width: 22)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(Self.title(card)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                        Text(Self.title(card)).cardFont(13, weight: .semibold).lineLimit(1)
                         if let detail = Self.detail(card) {
-                            Text(detail).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                            Text(detail).cardFont(11.5).foregroundStyle(.secondary).lineLimit(1)
                         }
                     }
                     Spacer(minLength: 4)
