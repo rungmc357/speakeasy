@@ -16,26 +16,26 @@ struct QuoteCard: View {
                     CardImage(url: logo, size: 30, corner: 15)
                 } else {
                     Text(String((card["symbol"].string ?? "?").prefix(4)))
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .cardFont(11, weight: .bold, design: .rounded)
                         .frame(width: 34, height: 34)
                         .background(Circle().fill(Color.primary.opacity(0.08)))
                 }
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(card["name"].string ?? card["symbol"].string ?? "").font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(card["name"].string ?? card["symbol"].string ?? "").cardFont(13, weight: .semibold).lineLimit(1)
                     Text([card["symbol"].string, card["exchange"].string].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                        .cardFont(11.5).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 1) {
                     if let price = card["price"].double {
-                        Text(ViewCard.money(price, currency: currency)).font(.system(size: 17, weight: .semibold).monospacedDigit())
+                        Text(ViewCard.money(price, currency: currency)).cardFont(17, weight: .semibold, digits: true)
                     }
                     HStack(spacing: 3) {
                         Image(systemName: up ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill").font(.system(size: 7))
                         if let abs = card["change"].double { Text(ViewCard.signed(abs, money: true, currency: currency)) }
                         Text("(\(ViewCard.signed(change)))")
                     }
-                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .cardFont(11, weight: .medium, digits: true)
                     .foregroundStyle(up ? Color.green : Color.red)
                 }
             }
@@ -43,7 +43,7 @@ struct QuoteCard: View {
             // A slim widget: the price row and a short sparkline; the full card the taller chart and its time.
             if points.count > 2 { Sparkline(points: points, up: up, height: slim ? 30 : 56) }
             if !slim, let asOf = card["as_of"].string {
-                Text(asOf).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(asOf).cardFont(11).foregroundStyle(.secondary)
             }
         }
     }
@@ -64,19 +64,19 @@ struct WeatherCard: View {
         CardBox(tint: .blue) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(card["place"].string ?? "Weather").font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
-                    Text(card.weatherHeadline).font(.system(size: 38, weight: .light))
-                    Text(sentenceCase(card["condition"].string ?? "")).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    Text(card["place"].string ?? "Weather").cardFont(12.5, weight: .semibold).lineLimit(1)
+                    Text(card.weatherHeadline).cardFont(38, weight: .light)
+                    Text(sentenceCase(card["condition"].string ?? "")).cardFont(11.5).foregroundStyle(.secondary)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
                     Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 30))
                     if card["temp"].double != nil {
                         Text(card.weatherHighLow)
-                            .font(.system(size: 11, weight: .medium).monospacedDigit())
+                            .cardFont(11, weight: .medium, digits: true)
                     }
                     if let rain = card["rain"].double, rain > 0 {
-                        Label("\(Int(rain))%", systemImage: "drop.fill").font(.system(size: 10.5)).foregroundStyle(.blue)
+                        Label("\(Int(rain))%", systemImage: "drop.fill").cardFont(10.5).foregroundStyle(.blue)
                     }
                 }
             }
@@ -86,9 +86,9 @@ struct WeatherCard: View {
                 HStack(spacing: 0) {
                     ForEach(Array(hours.prefix(6).enumerated()), id: \.offset) { _, h in
                         VStack(spacing: 4) {
-                            Text(h["label"].string ?? "").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                            Text(h["label"].string ?? "").cardFont(11.5).foregroundStyle(.secondary)
                             Image(systemName: weatherSymbol(h["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 13))
-                            Text(ViewCard.degrees(h["temp"].double)).font(.system(size: 11, weight: .medium).monospacedDigit())
+                            Text(ViewCard.degrees(h["temp"].double)).cardFont(11, weight: .medium, digits: true)
                         }
                         .frame(maxWidth: .infinity)
                     }
@@ -103,7 +103,7 @@ struct WeatherCard: View {
                     ForEach(Array(days.prefix(7).enumerated()), id: \.offset) { _, d in
                         HStack(spacing: 8) {
                             // A day name stays one line ("Tuesday" used to wrap to "Tuesda / y" on Home).
-                            Text(d["label"].string ?? "").font(.system(size: 13)).lineLimit(1).minimumScaleFactor(0.7)
+                            Text(d["label"].string ?? "").cardFont(13).lineLimit(1).minimumScaleFactor(0.7)
                                 .frame(width: 58, alignment: .leading)
                             Image(systemName: weatherSymbol(d["icon"].string)).symbolRenderingMode(.multicolor)
                                 .font(.system(size: 16)).frame(width: 22)
@@ -111,17 +111,17 @@ struct WeatherCard: View {
                             // "take an umbrella Thursday" needs the number on the card.
                             Group {
                                 if let rain = d["rain"].double, rain >= 30 {
-                                    Text("\(Int(rain))%").font(.system(size: 11, weight: .semibold).monospacedDigit()).foregroundStyle(.blue)
+                                    Text("\(Int(rain))%").cardFont(11, weight: .semibold, digits: true).foregroundStyle(.blue)
                                 } else { Text("") }
                             }
                             .frame(width: 30, alignment: .leading)
                             // A day with no low shows no low (not a dash) and its bar is only its high,
                             // never a bar stretched down to the week's lowest temperature.
                             Text(d["low"].double == nil ? "" : ViewCard.degrees(d["low"].double))
-                                .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                                .cardFont(11, digits: true).foregroundStyle(.secondary)
                                 .frame(width: 30, alignment: .trailing)
                             TempBar(low: d["low"].double ?? d["high"].double ?? lo, high: d["high"].double ?? hi, min: lo, max: hi)
-                            Text(ViewCard.degrees(d["high"].double)).font(.system(size: 11, weight: .medium).monospacedDigit())
+                            Text(ViewCard.degrees(d["high"].double)).cardFont(11, weight: .medium, digits: true)
                                 .frame(width: 30, alignment: .leading)
                         }
                     }
@@ -153,9 +153,9 @@ struct WeatherGlanceCard: View {
         HStack(spacing: 8) {
             ForEach(Array(hours.enumerated()), id: \.offset) { _, h in
                 HStack(spacing: 4) {
-                    Text(h["label"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    Text(h["label"].string ?? "").cardFont(11).foregroundStyle(.secondary).lineLimit(1)
                     Image(systemName: weatherSymbol(h["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 11))
-                    Text(ViewCard.degrees(h["temp"].double)).font(.system(size: 11, weight: .medium).monospacedDigit())
+                    Text(ViewCard.degrees(h["temp"].double)).cardFont(11, weight: .medium, digits: true)
                 }
                 .fixedSize()
                 .frame(maxWidth: .infinity)
@@ -170,19 +170,19 @@ struct WeatherNow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 26))
-            Text(card.weatherHeadline).font(.system(size: 30, weight: .light)).lineLimit(1).fixedSize()
+            Text(card.weatherHeadline).cardFont(30, weight: .light).lineLimit(1).fixedSize()
             VStack(alignment: .leading, spacing: 1) {
-                Text(sentenceCase(card["condition"].string ?? "")).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
-                Text(card["place"].string ?? "Weather").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                Text(sentenceCase(card["condition"].string ?? "")).cardFont(12.5, weight: .semibold).lineLimit(1)
+                Text(card["place"].string ?? "Weather").cardFont(11).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 3) {
                 if card["temp"].double != nil {
                     Text(card.weatherHighLow)
-                        .font(.system(size: 11, weight: .medium).monospacedDigit()).lineLimit(1)
+                        .cardFont(11, weight: .medium, digits: true).lineLimit(1)
                 }
                 if let rain = card["rain"].double, rain > 0 {
-                    Label("\(Int(rain))%", systemImage: "drop.fill").font(.system(size: 10.5)).foregroundStyle(.blue)
+                    Label("\(Int(rain))%", systemImage: "drop.fill").cardFont(10.5).foregroundStyle(.blue)
                 }
             }
             .fixedSize()
@@ -214,15 +214,15 @@ struct TeamRow: View {
         HStack(spacing: 8) {
             if let logo = side["logo_url"].url { CardImage(url: logo, size: 26, corner: 4) }
             VStack(alignment: .leading, spacing: 0) {
-                Text(side["name"].string ?? side["abbr"].string ?? "").font(.system(size: 12.5, weight: side["winner"].bool == true ? .semibold : .regular))
+                Text(side["name"].string ?? side["abbr"].string ?? "").cardFont(12.5, weight: side["winner"].bool == true ? .semibold : .regular)
                     .lineLimit(1)
                 if let record = side["record"].string {
-                    Text(record).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(record).cardFont(11).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 0)
             if showScore, let score = side["score"].string {
-                Text(score).font(.system(size: 20, weight: side["winner"].bool == true ? .bold : .regular).monospacedDigit())
+                Text(score).cardFont(20, weight: side["winner"].bool == true ? .bold : .regular, digits: true)
                     .foregroundStyle(side["winner"].bool == false ? .secondary : .primary)
             }
         }
@@ -240,10 +240,10 @@ struct GameCard: View {
             CardHeaderRow {
                 CardHeader(icon: "sportscourt.fill", title: card["league"].string ?? "Game")
                 if status == "live" {
-                    Text("LIVE").font(.system(size: 11.5, weight: .bold)).foregroundStyle(.white)
+                    Text("LIVE").cardFont(11.5, weight: .bold).foregroundStyle(.white)
                         .padding(.horizontal, 5).padding(.vertical, 1.5).background(Capsule().fill(.red))
                 } else if status == "projected" {
-                    Text("PROJECTED").font(.system(size: 11.5, weight: .bold)).foregroundStyle(.secondary)
+                    Text("PROJECTED").cardFont(11.5, weight: .bold).foregroundStyle(.secondary)
                         .padding(.horizontal, 5).padding(.vertical, 1.5).background(Capsule().fill(.primary.opacity(0.08)))
                 }
             }
@@ -254,7 +254,7 @@ struct GameCard: View {
             if !slim {
                 Text([status == "scheduled" ? card["when"].string : card["detail"].string, card["venue"].string,
                       card["broadcast"].string].compactMap { $0 }.joined(separator: " · "))
-                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
+                    .cardFont(10.5).foregroundStyle(.secondary).lineLimit(2)
             }
         }
     }
@@ -274,15 +274,15 @@ struct GamesCard: View {
                         ForEach(Array(teams.enumerated()), id: \.offset) { _, side in
                             HStack(spacing: 6) {
                                 if let logo = side["logo_url"].url { CardImage(url: logo, size: 16, corner: 3) }
-                                Text(side["abbr"].string ?? side["name"].string ?? "").font(.system(size: 11.5,
-                                    weight: side["winner"].bool == true ? .semibold : .regular))
+                                Text(side["abbr"].string ?? side["name"].string ?? "").cardFont(11.5,
+                                    weight: side["winner"].bool == true ? .semibold : .regular)
                                 Spacer(minLength: 0)
-                                if scored, let s = side["score"].string { Text(s).font(.system(size: 11.5).monospacedDigit()) }
+                                if scored, let s = side["score"].string { Text(s).cardFont(11.5, digits: true) }
                             }
                         }
                     }
                     Text(g["status"].string == "final" ? "Final" : g["status"].string == "live" ? "Live" : (g["when"].string ?? ""))
-                        .font(.system(size: 11)).foregroundStyle(g["status"].string == "live" ? Color.red : Color.secondary)
+                        .cardFont(11).foregroundStyle(g["status"].string == "live" ? Color.red : Color.secondary)
                         .frame(width: 110, alignment: .trailing).lineLimit(2).multilineTextAlignment(.trailing)
                 }
             }
@@ -302,13 +302,13 @@ struct StandingsCard: View {
             // Compact (a Home widget, the call): the top of the table, then "N more".
             ForEach(Array(card["rows"].array.prefix(shown).enumerated()), id: \.offset) { i, row in
                 HStack(spacing: 8) {
-                    Text(row["rank"].string ?? "\(i + 1)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                    Text(row["rank"].string ?? "\(i + 1)").cardFont(11, digits: true).foregroundStyle(.secondary)
                         .frame(width: 18, alignment: .trailing)
                     if let logo = row["logo_url"].url { CardImage(url: logo, size: 16, corner: 3) }
-                    Text(row["name"].string ?? "").font(.system(size: 11.5)).lineLimit(1)
+                    Text(row["name"].string ?? "").cardFont(11.5).lineLimit(1)
                     Spacer(minLength: 0)
-                    Text(row["record"].string ?? "").font(.system(size: 11).monospacedDigit())
-                    if let note = row["note"].string { Text(note).font(.system(size: 11)).foregroundStyle(.secondary) }
+                    Text(row["record"].string ?? "").cardFont(11, digits: true)
+                    if let note = row["note"].string { Text(note).cardFont(11).foregroundStyle(.secondary) }
                 }
             }
             MoreRows(total: min(card["rows"].array.count, 12), shown: fit.rows(12) + (fit == .compact ? 1 : 0))
@@ -323,11 +323,11 @@ struct ClockCard: View {
             HStack(spacing: 10) {
                 ForEach(Array(card["zones"].array.prefix(3).enumerated()), id: \.offset) { _, z in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(z["place"].string ?? "").font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
-                        Text(z["time"].string ?? "").font(.system(size: 24, weight: .light).monospacedDigit())
+                        Text(z["place"].string ?? "").cardFont(11.5, weight: .semibold).lineLimit(1)
+                        Text(z["time"].string ?? "").cardFont(24, weight: .light, digits: true)
                             .minimumScaleFactor(0.7).lineLimit(1)
                         Text([z["day"].string, z["offset"].string, z["zone"].string].compactMap { $0 }.joined(separator: " · "))
-                            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                            .cardFont(11).foregroundStyle(.secondary).lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
@@ -345,15 +345,15 @@ struct CountdownCard: View {
             CardHeader(icon: card.kind == "timer" ? "timer" : "calendar.badge.clock", title: card["label"].string ?? (card.kind == "timer" ? "Timer" : "Countdown"))
             if card.kind == "timer", let ends = card["ends_at"].string.flatMap(parseISO) {
                 Text(timerInterval: Date()...max(ends, Date()), countsDown: true)
-                    .font(.system(size: 34, weight: .light).monospacedDigit())
+                    .cardFont(34, weight: .light, digits: true)
             } else if let days = card["days"].double {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("\(Int(days))").font(.system(size: 34, weight: .light).monospacedDigit())
-                    Text(Int(days) == 1 ? "day" : "days").font(.system(size: 13)).foregroundStyle(.secondary)
+                    Text("\(Int(days))").cardFont(34, weight: .light, digits: true)
+                    Text(Int(days) == 1 ? "day" : "days").cardFont(13).foregroundStyle(.secondary)
                 }
             }
             if let detail = card["detail"].string ?? card["date"].string {
-                Text(detail).font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(detail).cardFont(11).foregroundStyle(.secondary)
             }
         }
     }

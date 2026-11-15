@@ -41,4 +41,26 @@ final class CardStyleSourceTests: XCTestCase {
             XCTAssertFalse(line.contains("%"), "WorkCards.swift:\(n) draws a percent: \(line)")
         }
     }
+
+    /// SPK-498: card body text grows with the text size (`cardFont`, capped at the first accessibility
+    /// size). A fixed `.system(size:)` on a card's text kept status rows and prices at 13 pt while the
+    /// widget around them grew. Fixed sizes stay only on symbols, numbers in fixed-size badges, sizes
+    /// already scaled (`@ScaledMetric` values, the question card's own factor) and a number inlined
+    /// into another Text.
+    func testCardTextFollowsTheTextSize() throws {
+        let files = try FileManager.default.contentsOfDirectory(atPath: cards.path).filter { $0.hasSuffix(".swift") }
+        var fixed: [String] = []
+        for name in files {
+            for (n, line) in try code(name) {
+                guard let r = line.range(of: #"\.font\(\.system\(size: *[0-9]"#, options: .regularExpression) else { continue }
+                let before = line[..<r.lowerBound]
+                guard before.contains("Text(") || before.contains("Label(") || before.contains("Link(") else { continue }
+                if before.contains("Image(") || line.contains(".frame(width:") || line.contains(" * s") || line.contains("\\(Text(") { continue }
+                fixed.append("\(name):\(n): \(line.trimmingCharacters(in: .whitespaces))")
+            }
+        }
+        XCTAssertTrue(fixed.isEmpty, "card text at a fixed size (use cardFont):\n" + fixed.joined(separator: "\n"))
+        let type = try String(contentsOf: cards.appendingPathComponent("CardType.swift"), encoding: .utf8)
+        XCTAssertTrue(type.contains("public static let cap: DynamicTypeSize = .accessibility1"))
+    }
 }

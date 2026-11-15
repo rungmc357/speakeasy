@@ -160,10 +160,10 @@ struct CardHeader: View {
         HStack(alignment: style.capsHeaders ? .firstTextBaseline : .center, spacing: 6) {
             if style.capsHeaders {
                 Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-                Text(title.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.4).foregroundStyle(.secondary)
+                Text(title.uppercased()).cardFont(10.5, weight: .semibold).tracking(0.4).foregroundStyle(.secondary)
                     .lineLimit(lines).fixedSize(horizontal: false, vertical: lines > 1)
                 Spacer(minLength: 0)
-                if let trailing { Text(trailing).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1) }
+                if let trailing { Text(trailing).cardFont(11.5).foregroundStyle(.secondary).lineLimit(1) }
             } else {
                 CardTitleRow(icon: icon, title: sentenceCase(title), note: trailing, lines: lines)
             }

@@ -33,7 +33,7 @@ struct LanesCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(lanes.enumerated()), id: \.offset) { _, lane in
                     HStack(spacing: 8) {
-                        Text(lane["label"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(lane["label"].string ?? "").cardFont(11).foregroundStyle(.secondary)
                             .lineLimit(1).frame(width: 70, alignment: .leading)
                         LaneTrack(segments: Array(lane["segments"].array.prefix(8)))
                     }
@@ -45,14 +45,14 @@ struct LanesCard: View {
                             let labels = ticks.isEmpty ? [card["start_label"].string ?? "", card["end_label"].string ?? ""] : ticks
                             ForEach(Array(labels.enumerated()), id: \.offset) { i, t in
                                 if i > 0 { Spacer(minLength: 2) }
-                                Text(t).font(.system(size: 11.5).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
+                                Text(t).cardFont(11.5, digits: true).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                     }
                 }
             }
             if let note = card["note"].string {
-                Text(note).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(note).cardFont(11).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -104,7 +104,7 @@ struct BeforeAfterCard: View {
                 ZStack(alignment: .bottomLeading) {
                     CardPicture(value: v["image"], height: 96, corner: 8, label: "\(label) picture",
                                 fill: true, stretch: true, placeholder: true)
-                    Text(label).font(.system(size: 11.5, weight: .bold))
+                    Text(label).cardFont(11.5, weight: .bold)
                         .padding(.horizontal, 5).padding(.vertical, 2)
                         .background(Capsule().fill(Color.black.opacity(0.6))).foregroundStyle(.white).padding(4)
                         .allowsHitTesting(false)
@@ -113,11 +113,11 @@ struct BeforeAfterCard: View {
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             } else {
-                Text((v["label"].string ?? fallback).uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.5)
+                Text((v["label"].string ?? fallback).uppercased()).cardFont(10.5, weight: .semibold).tracking(0.5)
                     .foregroundStyle(.secondary)
             }
             if let text = v["text"].string {
-                Text(text).font(.system(size: 11.5)).fixedSize(horizontal: false, vertical: true)
+                Text(text).cardFont(11.5).fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(8)
@@ -231,9 +231,9 @@ struct DevicesCard: View {
         let tone = item["tone"].string
         let history = Array(item["history"].doubles.prefix(6))
         return VStack(spacing: 3) {
-            Text(item["name"].string ?? "").font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
+            Text(item["name"].string ?? "").cardFont(11.5, weight: .semibold).lineLimit(1)
             if let value = item["value"].string {
-                Text(value).font(.system(size: 12, weight: .semibold, design: .monospaced)).lineLimit(1).minimumScaleFactor(0.7)
+                Text(value).cardFont(12, weight: .semibold, design: .monospaced).lineLimit(1).minimumScaleFactor(0.7)
                     .foregroundStyle(tone == nil || tone == "neutral" ? Color.secondary : toneColor(tone))
             }
             if !history.isEmpty {
@@ -248,7 +248,7 @@ struct DevicesCard: View {
                 .frame(height: 12)
             }
             if let detail = item["detail"].string {
-                Text(detail).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.center)
+                Text(detail).cardFont(11.5).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.center)
             }
         }
         .padding(.horizontal, 6).padding(.vertical, 8)
@@ -272,8 +272,8 @@ public struct AnswerGlance: View {
                 HStack(spacing: 5) {
                     Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 16))
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(ViewCard.degrees(card["temp"].double)).font(.system(size: 17, weight: .medium).monospacedDigit())
-                        if let c = card["condition"].string { Text(sentenceCase(c)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1) }
+                        Text(ViewCard.degrees(card["temp"].double)).cardFont(17, weight: .medium, digits: true)
+                        if let c = card["condition"].string { Text(sentenceCase(c)).cardFont(11).foregroundStyle(.secondary).lineLimit(1) }
                     }
                 }
             case "chart":
@@ -282,8 +282,8 @@ public struct AnswerGlance: View {
                     // A ranking's glance is its first row in words (bars out of context would
                     // suggest an order the card doesn't claim).
                     VStack(alignment: .trailing, spacing: 0) {
-                        Text(top.label).font(.system(size: 11, weight: .semibold)).lineLimit(1)
-                        Text(facts.text(v)).font(.system(size: 14, weight: .semibold).monospacedDigit()).lineLimit(1)
+                        Text(top.label).cardFont(11, weight: .semibold).lineLimit(1)
+                        Text(facts.text(v)).cardFont(14, weight: .semibold, digits: true).lineLimit(1)
                     }
                     .fixedSize()
                 } else {
@@ -294,16 +294,16 @@ public struct AnswerGlance: View {
             case "quote":
                 VStack(alignment: .trailing, spacing: 0) {
                     Text(card["price"].double.map { ViewCard.money($0, currency: card["currency"].string) } ?? "")
-                        .font(.system(size: 14, weight: .semibold).monospacedDigit()).lineLimit(1)
+                        .cardFont(14, weight: .semibold, digits: true).lineLimit(1)
                     if let c = card["change_pct"].double {
-                        Text(ViewCard.signed(c)).font(.system(size: 11, weight: .medium).monospacedDigit())
+                        Text(ViewCard.signed(c)).cardFont(11, weight: .medium, digits: true)
                             .foregroundStyle(c >= 0 ? toneColor("good") : toneColor("bad"))
                     }
                 }
             case "comparison":
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.seal.fill").font(.system(size: 11)).foregroundStyle(toneColor("good"))
-                    Text(card["winner"].string ?? "").font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
+                    Text(card["winner"].string ?? "").cardFont(11.5, weight: .semibold).lineLimit(1)
                         .truncationMode(.tail).frame(maxWidth: 96, alignment: .leading)
                 }
             case "compare":
@@ -347,10 +347,10 @@ public struct AnswerGlance: View {
 
     private func value(_ v: String, _ label: String?, tone: String? = nil) -> some View {
         VStack(alignment: .trailing, spacing: 0) {
-            Text(v).font(.system(size: 16, weight: .semibold).monospacedDigit()).lineLimit(1).minimumScaleFactor(0.6)
+            Text(v).cardFont(16, weight: .semibold, digits: true).lineLimit(1).minimumScaleFactor(0.6)
                 .frame(maxWidth: 96, alignment: .trailing)
                 .foregroundStyle(tone.map { toneColor($0) } ?? Color.primary)
-            if let label { Text(label).font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 96, alignment: .trailing) }
+            if let label { Text(label).cardFont(11.5).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 96, alignment: .trailing) }
         }
     }
 }

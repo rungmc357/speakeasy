@@ -132,7 +132,7 @@ struct CardButton: View {
             HStack(spacing: 4) {
                 if busy { ProgressView().controlSize(.mini) }
                 else if let icon { Image(systemName: icon).font(.system(size: look.capsHeaders ? 10.5 : 13, weight: .semibold)) }
-                Text(title).font(.system(size: look.capsHeaders ? 11.5 : 15, weight: .semibold)).lineLimit(1)
+                Text(title).cardFont(look.capsHeaders ? 11.5 : 15, weight: .semibold).lineLimit(1)
                     .fixedSize(horizontal: natural, vertical: false)
             }
             .padding(.horizontal, look.capsHeaders ? 10 : 16).frame(height: look.capsHeaders ? 26 : 40)

@@ -267,7 +267,7 @@ public struct CardPillButton: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 if let icon { Image(systemName: icon).font(.system(size: compact ? 10.5 : 13, weight: .semibold)) }
-                Text(title).font(.system(size: compact ? 11.5 : 15, weight: .semibold)).lineLimit(1)
+                Text(title).cardFont(compact ? 11.5 : 15, weight: .semibold).lineLimit(1)
             }
             .padding(.horizontal, compact ? 10 : 16)
             .frame(minHeight: compact ? 26 : 40)
