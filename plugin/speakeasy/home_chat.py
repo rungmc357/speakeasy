@@ -429,9 +429,21 @@ def approved(entries: dict[str, dict[str, Any]],
     return out
 
 
-def pick_auto(entries: dict[str, dict[str, Any]]) -> str | None:
+def pick_auto(entries: dict[str, dict[str, Any]], prefer: str | None = None) -> str | None:
+    """Auto's coordinator. *prefer* is the provider of the user's Hermes default model: when that
+    provider has an approved model connected, it wins (a Claude user gets Sonnet, not Codex's Terra);
+    otherwise COORDINATOR_MODELS order decides (Codex first, then direct Claude)."""
     got = approved(entries)
+    if prefer:
+        mine = [m for m in got if (entries.get(m) or {}).get("provider") == prefer]
+        if mine:
+            return mine[0]
     return got[0] if got else None
+
+
+def _default_provider(cfg: dict[str, Any]) -> str | None:
+    main = cfg.get("model") if isinstance(cfg, dict) else None
+    return str(main.get("provider") or "") or None if isinstance(main, dict) else None
 
 
 _PROMPT = """You are {name}, the user's own AI assistant, chatting with them on the Home screen of the \
@@ -1606,12 +1618,16 @@ class HomeChat:
                 names.add(row(mid)["name"])
                 held.add(family(mid))
         more: list[str] = []
-        for mid in entries:   # "More…" in the picker: every other connected model, one row per name
+        # "More…" in the picker: every other connected model, one row per name per provider (the
+        # same model from OpenRouter and from Anthropic are two rows, SPK-508).
+        seen = {(row(m)["name"], row(m)["provider"]) for m in ids}
+        for mid in entries:
             if len(more) >= 60:
                 break
-            if mid not in ids and row(mid)["name"] not in names:
+            key = (row(mid)["name"], row(mid)["provider"])
+            if mid not in ids and key not in seen:
                 more.append(mid)
-                names.add(row(mid)["name"])
+                seen.add(key)
         # Newest first under More… too, so an old version sits below the current ones.
         more.sort(key=lambda m: (family(m), tuple(-n for n in version(m))))
         return {"model": row(picked["model"]) if picked["model"] else None, "source": picked["source"],
@@ -1881,7 +1897,8 @@ class HomeChat:
         block = aux.get(AUX_TASK)
         if isinstance(block, dict) and (str(block.get("provider") or "auto") != "auto" or block.get("model")):
             return {"task": AUX_TASK, "source": "configured"}
-        auto = pick_auto({k: v for k, v in (entries or {}).items() if k not in self._failed()})
+        auto = pick_auto({k: v for k, v in (entries or {}).items() if k not in self._failed()},
+                         prefer=_default_provider(cfg))
         if auto:
             provider, _, model = auto.partition("/")
             return {"provider": provider, "model": model, "source": "auto"}
@@ -1961,17 +1978,23 @@ class HomeChat:
 
         def row(mid: str) -> dict[str, Any]:
             e = entries.get(mid) or {}
+            slug = e.get("provider") or mid.partition("/")[0]
+            pname = e.get("provider_name") or slug
+            info = MD.provider_info(slug, pname) if "provider_label" not in e else e
             return {"id": mid, "name": e.get("name") or MD.friendly_name(mid.partition("/")[2] or mid),
-                    "provider_name": e.get("provider_name") or mid.partition("/")[0]}
+                    "provider": slug, "provider_name": pname, "provider_label": info["provider_label"],
+                    "metered": bool(info["metered"])}
         failed = self._failed()
-        auto = pick_auto({k: v for k, v in entries.items() if k not in failed})
+        auto = pick_auto({k: v for k, v in entries.items() if k not in failed},
+                         prefer=_default_provider(self._config()))
         note = None
         if current and current in failed:
             note = f"{row(current)['name']} didn't answer last time, so another model replied."
         rows: list[dict[str, Any]] = []
         for mid in options:
             r = row(mid)
-            if mid == current or r["name"] not in {x["name"] for x in rows}:   # one row per model, not per provider
+            # One row per model per provider: the same model from two providers stays two rows (SPK-508).
+            if mid == current or (r["name"], r["provider"]) not in {(x["name"], x["provider"]) for x in rows}:
                 rows.append(r)
         rows = rows[:FAST_OPTIONS] + [r for r in rows[FAST_OPTIONS:] if r["id"] == current]
         coordinator = {"model": row(current) if current else None, "source": route.get("source"),

@@ -748,13 +748,47 @@ public struct HomeModelStatus: Equatable, Sendable {
         public var id: String
         public var name: String
         public var providerName: String
-        public init(id: String, name: String, providerName: String = "") {
-            self.id = id; self.name = name; self.providerName = providerName
+        /// The provider id ("anthropic", "openrouter").
+        public var provider: String
+        /// "Claude subscription", "OpenRouter — pay per use" (SPK-508).
+        public var providerLabel: String
+        public var metered: Bool
+        public init(id: String, name: String, providerName: String = "", provider: String? = nil,
+                    providerLabel: String? = nil, metered: Bool? = nil) {
+            let slug = provider.flatMap { $0.isEmpty ? nil : $0 } ?? ProviderLabel.providerID(of: id)
+            let d = ProviderLabel.describe(id: slug, name: providerName.isEmpty ? slug : providerName)
+            self.id = id; self.name = name; self.providerName = providerName; self.provider = slug
+            self.providerLabel = providerLabel.flatMap { $0.isEmpty ? nil : $0 } ?? d.label
+            self.metered = metered ?? d.metered
         }
         init?(json: Any?) {
             guard let d = json as? [String: Any], let id = d["id"] as? String, !id.isEmpty else { return nil }
-            self.init(id: id, name: (d["name"] as? String) ?? id, providerName: (d["provider_name"] as? String) ?? "")
+            self.init(id: id, name: (d["name"] as? String) ?? id, providerName: (d["provider_name"] as? String) ?? "",
+                      provider: d["provider"] as? String, providerLabel: d["provider_label"] as? String,
+                      metered: d["metered"] as? Bool)
         }
+        /// "Claude Sonnet 5.5 · Claude subscription".
+        public var withProvider: String { ProviderLabel.line(name, providerLabel) }
+    }
+
+    /// Options grouped by provider, in first-seen order (SPK-508: a picker shows each provider as a
+    /// row that expands to its models; the same model from two providers sits under each).
+    public struct OptionGroup: Equatable, Sendable, Identifiable {
+        public var id: String
+        public var label: String
+        public var metered: Bool
+        public var options: [Option]
+    }
+    public static func groups(_ options: [Option]) -> [OptionGroup] {
+        var out: [OptionGroup] = []
+        for o in options {
+            if let i = out.firstIndex(where: { $0.id == o.provider }) {
+                if !out[i].options.contains(where: { $0.id == o.id }) { out[i].options.append(o) }
+            } else {
+                out.append(OptionGroup(id: o.provider, label: o.providerLabel, metered: o.metered, options: [o]))
+            }
+        }
+        return out
     }
     public var model: Option?
     public var source: String
@@ -804,20 +838,19 @@ public struct HomeModelStatus: Equatable, Sendable {
     /// How the picker names Auto: the fast model it picked, or — when none of the approved fast
     /// models is connected — the user's work model, which the coordinator then uses.
     public var autoLabel: String {
-        if let auto { return "Auto · \(auto.name)" }
-        return source == "work" ? "Auto · same as your work model" : "Auto"
+        if let auto { return "Auto — \(auto.withProvider)" }
+        return source == "work" ? "Auto — same as your work model" : "Auto"
     }
 }
 
 /// How Home's model picker presents a model: a provider glyph (an SF Symbol, never a brand logo)
 /// and one plain line about what it's good for. Read from the id and provider only.
 public extension HomeModelStatus.Option {
-    private var provider: String { (id.split(separator: "/").first.map(String.init) ?? "").lowercased() }
     private var lowered: String { (id + " " + name).lowercased() }
 
     /// The provider's glyph in the picker.
     var glyph: String {
-        let p = provider + " " + providerName.lowercased()
+        let p = provider.lowercased() + " " + providerName.lowercased()
         if lowered.contains("claude") || p.contains("anthropic") { return "asterisk" }
         if lowered.contains("gemini") || p.contains("google") { return "sparkle" }
         if lowered.contains("grok") || p.contains("xai") { return "bolt" }
@@ -832,7 +865,7 @@ public extension HomeModelStatus.Option {
     /// One plain line: what the model is good for, else who makes it.
     var blurb: String {
         let m = lowered
-        let p = provider + " " + providerName.lowercased()
+        let p = provider.lowercased() + " " + providerName.lowercased()
         if m.contains("opus") { return "Most capable. Best for long, hard jobs." }
         if m.contains("sonnet") { return "Fast and capable. Good for most jobs." }
         if m.contains("haiku") { return "Quickest. Best for light, simple jobs." }

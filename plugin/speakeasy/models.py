@@ -154,6 +154,31 @@ def clamp(level: str | None, supported: list[str]) -> str | None:
     return on[0] if on else None
 
 
+# -- providers ------------------------------------------------------------------------------------
+# What a provider is, in the words the pickers show beside every model (SPK-508, Geo 11-15: "it
+# doesn't tell you at all what provider you're using so you can accidentally use the wrong
+# provider"). ``metered``: every request is billed (an aggregator or a pay-as-you-go portal), as
+# opposed to a flat subscription the user already pays for. The same model id offered by two
+# providers stays two entries, each with its own provider, so the user picks the account.
+SUBSCRIPTION_LABELS = {"openai-codex": "ChatGPT sign-in", "anthropic": "Claude subscription"}
+METERED_PROVIDERS = {"openrouter", "nous", "ai-gateway", "kilocode", "requesty", "together", "fireworks"}
+
+
+def provider_info(slug: str, name: str | None = None, local: bool = False) -> dict[str, Any]:
+    """``{provider_label, metered, provider_kind}`` for a provider row: "ChatGPT sign-in", "Claude
+    subscription", "OpenRouter — pay per use", "Venice", a local server's own name. Kind is
+    ``subscription`` / ``metered`` / ``local`` / ``other``."""
+    slug = (slug or "").strip().lower()
+    name = (name or "").strip() or slug
+    if local:
+        return {"provider_label": name, "metered": False, "provider_kind": "local"}
+    if slug in SUBSCRIPTION_LABELS:
+        return {"provider_label": SUBSCRIPTION_LABELS[slug], "metered": False, "provider_kind": "subscription"}
+    if slug in METERED_PROVIDERS or slug.startswith("custom:"):
+        return {"provider_label": f"{name} — pay per use", "metered": True, "provider_kind": "metered"}
+    return {"provider_label": name, "metered": False, "provider_kind": "other"}
+
+
 # -- ids ------------------------------------------------------------------------------------------
 
 def make_id(provider: str, model: str) -> str:
@@ -226,6 +251,8 @@ class Catalog:
                 continue
             caps = row.get("capabilities") if isinstance(row.get("capabilities"), dict) else {}
             unavailable = set(row.get("unavailable_models") or [])
+            pname = str(row.get("name") or slug)
+            info = provider_info(slug, pname, local=bool(row.get("is_user_defined")))
             for model in row.get("models") or []:
                 if not isinstance(model, str) or not model or model in unavailable:
                     continue
@@ -233,7 +260,7 @@ class Catalog:
                 if len(mid) > MAX_ID:
                     continue
                 out[mid] = {"id": mid, "model": model, "provider": slug,
-                            "provider_name": str(row.get("name") or slug), "name": friendly_name(model),
+                            "provider_name": pname, **info, "name": friendly_name(model),
                             "reasoning_levels": reasoning_levels(slug, model, caps.get(model))}
         return out
 
@@ -325,8 +352,10 @@ def public(catalog: Catalog, settings: dict[str, Any], keep: set[str] | None = N
             if e["id"] == hermes_default:
                 e["hermes_default"] = True
             shown.append(e)
+        info = provider_info(slug, str(row.get("name") or slug), local=bool(row.get("is_user_defined")))
         providers.append({"id": slug, "name": str(row.get("name") or slug), "current": bool(row.get("is_current")),
-                          "local": bool(row.get("is_user_defined")), "models": shown,
+                          "local": bool(row.get("is_user_defined")), "label": info["provider_label"],
+                          "metered": info["metered"], "kind": info["provider_kind"], "models": shown,
                           "more": max(0, len(mine) - len(shown))})
     default_id = pre["default"]["model"] or really or hermes_default
     default: dict[str, Any] = {"model": default_id, "reasoning": pre["default"]["reasoning"] or catalog.hermes_reasoning,
@@ -477,6 +506,8 @@ def describe(record: dict[str, Any] | None, entries: dict[str, dict[str, Any]], 
         reasoning = clamp(hermes_reasoning, levels) if levels is not None else hermes_reasoning
     out = {"id": mid, "name": entry.get("name") or friendly_name(model), "provider": provider,
            "provider_name": entry.get("provider_name") or provider,
+           "provider_label": entry.get("provider_label") or provider_info(provider, entry.get("provider_name"))["provider_label"],
+           "metered": bool(entry.get("metered")) if entry else provider_info(provider)["metered"],
            "reasoning": reasoning, "reasoning_label": RUN_LABELS.get(reasoning or "", None),
            "source": record.get("source") or "hermes", "served": bool(served)}
     if record.get("preset"):
