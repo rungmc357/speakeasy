@@ -327,26 +327,36 @@ struct MacHomeModelMenu: View {
     let choose: (_ work: Bool, _ id: String?) -> Void
 
     var body: some View {
+        // SPK-508: models grouped by provider (one submenu each, named for what it is: "ChatGPT
+        // sign-in", "OpenRouter — pay per use"); the chosen model always names its provider.
         Menu {
             Section("Jobs from Home run on") {
-                ForEach(work.options) { option in
-                    let isDefault = option.id == work.defaultModel?.id
-                    Button((work.model?.id == option.id ? "✓ " : "") + option.name + (isDefault ? " · Default" : "")) {
-                        choose(true, isDefault ? nil : option.id)
+                ForEach(HomeModelStatus.groups(work.options + work.more)) { group in
+                    Menu(group.label) {
+                        ForEach(group.options) { option in
+                            let isDefault = option.id == work.defaultModel?.id
+                            Button((work.model?.id == option.id ? "✓ " : "") + option.name + (isDefault ? " · Default" : "")) {
+                                choose(true, isDefault ? nil : option.id)
+                            }
+                        }
                     }
                 }
             }
-            Menu("Chat replies: " + (status.chosen ? (status.model?.name ?? "Auto") : status.autoLabel)) {
+            Menu("Chat replies: " + (status.chosen ? (status.model?.withProvider ?? "Auto") : status.autoLabel)) {
                 Button((status.chosen ? "" : "✓ ") + (status.autoLabel)) { choose(false, nil) }
-                ForEach(status.options) { option in
-                    Button((status.chosen && status.model?.id == option.id ? "✓ " : "") + option.name) { choose(false, option.id) }
+                ForEach(HomeModelStatus.groups(status.options)) { group in
+                    Section(group.label) {
+                        ForEach(group.options) { option in
+                            Button((status.chosen && status.model?.id == option.id ? "✓ " : "") + option.name) { choose(false, option.id) }
+                        }
+                    }
                 }
             }
         } label: {
-            Label(work.model?.name ?? "Default model", systemImage: "sparkle").font(.system(size: 11.5, weight: .semibold))
+            Label(work.model?.withProvider ?? "Default model", systemImage: "sparkle").font(.system(size: 11.5, weight: .semibold))
         }
         .menuStyle(.borderlessButton).fixedSize()
-        .accessibilityLabel("Model for jobs, \(work.model?.name ?? "default")")
+        .accessibilityLabel("Model for jobs, \(work.model?.withProvider ?? "default")")
         .accessibilityIdentifier("mac-home-model")
         .padding(.horizontal, 6)
     }

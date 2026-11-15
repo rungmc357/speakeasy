@@ -52,31 +52,74 @@ public enum ReasoningLevel: String, CaseIterable, Sendable, Identifiable, Compar
     }
 }
 
+/// What a provider is, in the words every model picker shows beside a model (SPK-508, Geo: "it
+/// doesn't tell you at all what provider you're using so you can accidentally use the wrong
+/// provider"): "ChatGPT sign-in", "Claude subscription", "OpenRouter — pay per use", "Venice", a
+/// local server's own name. `metered`: every request is billed (an aggregator or pay-as-you-go
+/// portal). Newer plugins send `provider_label` / `metered`; for older ones the app derives the same
+/// words from the provider id (mirrors the plugin's `models.provider_info`).
+public enum ProviderLabel {
+    public static let subscriptions = ["openai-codex": "ChatGPT sign-in", "anthropic": "Claude subscription"]
+    public static let meteredIDs: Set<String> = ["openrouter", "nous", "ai-gateway", "kilocode", "requesty", "together", "fireworks"]
+    public static let payPerUse = "pay per use"
+
+    public static func describe(id: String, name: String, local: Bool = false) -> (label: String, metered: Bool) {
+        let slug = id.trimmingCharacters(in: .whitespaces).lowercased()
+        let name = name.isEmpty ? slug : name
+        if local { return (name, false) }
+        if let sub = subscriptions[slug] { return (sub, false) }
+        if meteredIDs.contains(slug) || slug.hasPrefix("custom:") { return ("\(name) — \(payPerUse)", true) }
+        return (name, false)
+    }
+
+    /// The provider half of a "provider/model" id.
+    public static func providerID(of modelID: String) -> String {
+        modelID.split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
+    }
+
+    /// "Claude Sonnet 5.5 · Claude subscription": a chosen model always names its provider.
+    public static func line(_ name: String, _ label: String) -> String {
+        label.isEmpty || label == name ? name : "\(name) · \(label)"
+    }
+}
+
 /// One model Hermes offers.
 public struct ModelOption: Equatable, Sendable, Identifiable, Hashable {
-    /// "provider/model": what a choice names.
+    /// "provider/model": what a choice names. The same model from two providers is two options.
     public var id: String
     public var name: String
     public var provider: String
     public var providerName: String
+    /// "Claude subscription", "OpenRouter — pay per use" (SPK-508).
+    public var providerLabel: String
+    /// Every request is billed by this provider.
+    public var metered: Bool
     /// Empty: it doesn't reason (no segmented control).
     public var levels: [ReasoningLevel]
     /// Speakeasy's default (or Hermes' when Speakeasy has none).
     public var isDefault: Bool
 
     public init(id: String, name: String, provider: String, providerName: String, levels: [ReasoningLevel],
-                isDefault: Bool = false) {
-        self.id = id; self.name = name; self.provider = provider; self.providerName = providerName
+                isDefault: Bool = false, providerLabel: String? = nil, metered: Bool? = nil, local: Bool = false) {
+        let slug = provider.isEmpty ? ProviderLabel.providerID(of: id) : provider
+        let derived = ProviderLabel.describe(id: slug, name: providerName, local: local)
+        self.id = id; self.name = name; self.provider = slug; self.providerName = providerName
+        self.providerLabel = providerLabel.flatMap { $0.isEmpty ? nil : $0 } ?? derived.label
+        self.metered = metered ?? derived.metered
         self.levels = levels; self.isDefault = isDefault
     }
 
-    init?(json: Any?, providerName fallback: String) {
+    init?(json: Any?, providerName fallback: String, local: Bool = false) {
         guard let o = json as? [String: Any], let id = nonEmpty(o["id"]) else { return nil }
         self.init(id: id, name: nonEmpty(o["name"]) ?? id, provider: nonEmpty(o["provider"]) ?? "",
                   providerName: nonEmpty(o["provider_name"]) ?? fallback,
                   levels: (o["reasoning_levels"] as? [String] ?? []).compactMap(ReasoningLevel.init(rawValue:)),
-                  isDefault: o["default"] as? Bool ?? false)
+                  isDefault: o["default"] as? Bool ?? false,
+                  providerLabel: nonEmpty(o["provider_label"]), metered: o["metered"] as? Bool, local: local)
     }
+
+    /// "Claude Sonnet 5.5 · Claude subscription".
+    public var withProvider: String { ProviderLabel.line(name, providerLabel) }
 }
 
 public struct ModelProvider: Equatable, Sendable, Identifiable {
@@ -84,9 +127,15 @@ public struct ModelProvider: Equatable, Sendable, Identifiable {
     public var name: String
     /// A model server the user runs themselves (Hermes `providers:` entries).
     public var local: Bool
+    /// "ChatGPT sign-in", "OpenRouter — pay per use" (SPK-508).
+    public var label: String
+    public var metered: Bool
     public var models: [ModelOption]
-    public init(id: String, name: String, local: Bool = false, models: [ModelOption]) {
+    public init(id: String, name: String, local: Bool = false, models: [ModelOption], label: String? = nil, metered: Bool? = nil) {
+        let derived = ProviderLabel.describe(id: id, name: name, local: local)
         self.id = id; self.name = name; self.local = local; self.models = models
+        self.label = label.flatMap { $0.isEmpty ? nil : $0 } ?? derived.label
+        self.metered = metered ?? derived.metered
     }
 }
 
@@ -135,8 +184,10 @@ public struct ModelCatalog: Equatable, Sendable {
         let providers: [ModelProvider] = (o["providers"] as? [Any] ?? []).compactMap { raw in
             guard let p = raw as? [String: Any], let id = nonEmpty(p["id"]) else { return nil }
             let name = nonEmpty(p["name"]) ?? id
-            let models = (p["models"] as? [Any] ?? []).compactMap { ModelOption(json: $0, providerName: name) }
-            return models.isEmpty ? nil : ModelProvider(id: id, name: name, local: p["local"] as? Bool ?? false, models: models)
+            let local = p["local"] as? Bool ?? false
+            let models = (p["models"] as? [Any] ?? []).compactMap { ModelOption(json: $0, providerName: name, local: local) }
+            return models.isEmpty ? nil : ModelProvider(id: id, name: name, local: local, models: models,
+                                                        label: nonEmpty(p["label"]), metered: p["metered"] as? Bool)
         }
         let def = o["default"] as? [String: Any]
         self.init(available: (o["available"] as? Bool ?? false) && !providers.isEmpty, providers: providers,
@@ -149,6 +200,11 @@ public struct ModelCatalog: Equatable, Sendable {
     public static let path = "/voice/models"
 
     public var allModels: [ModelOption] { providers.flatMap(\.models) }
+    /// The provider row a model sits under.
+    public func provider(of id: String?) -> ModelProvider? {
+        guard let id else { return nil }
+        return providers.first { $0.models.contains { $0.id == id } }
+    }
     public func option(_ id: String?) -> ModelOption? {
         guard let id else { return nil }
         return allModels.first { $0.id == id }
@@ -178,6 +234,9 @@ public struct ModelBadge: Equatable, Sendable {
     public var id: String
     public var name: String
     public var providerName: String
+    /// "Claude subscription", "OpenRouter — pay per use" (SPK-508).
+    public var providerLabel: String = ""
+    public var metered = false
     public var reasoning: ReasoningLevel?
     /// "voice", "task", "chat", "default" or "hermes": where the choice came from.
     public var source: String
@@ -189,6 +248,8 @@ public struct ModelBadge: Equatable, Sendable {
                 source: String = "hermes", served: Bool = false) {
         self.id = id; self.name = name; self.providerName = providerName; self.reasoning = reasoning
         self.source = source; self.served = served
+        let d = ProviderLabel.describe(id: ProviderLabel.providerID(of: id), name: providerName)
+        self.providerLabel = d.label; self.metered = d.metered
     }
 
     public init?(json: Any?) {
@@ -197,6 +258,8 @@ public struct ModelBadge: Equatable, Sendable {
                   reasoning: (o["reasoning"] as? String).flatMap(ReasoningLevel.init(rawValue:)),
                   source: nonEmpty(o["source"]) ?? "hermes", served: o["served"] as? Bool ?? false)
         unavailable = o["unavailable"] as? Bool ?? false
+        if let label = nonEmpty(o["provider_label"]) { providerLabel = label }
+        if let m = o["metered"] as? Bool { metered = m }
     }
 
     /// "GPT-5.5 · Medium".
@@ -247,6 +310,12 @@ extension ModelCatalog {
                  "reasoning_levels": ["none", "low", "medium", "high"]],
                 ["id": "anthropic/claude-haiku-5-5", "name": "Claude Haiku 5.5", "provider": "anthropic", "provider_name": "Anthropic",
                  "reasoning_levels": ["none", "low", "medium", "high"]],
+            ]],
+            ["id": "openrouter", "name": "OpenRouter", "models": [
+                ["id": "openrouter/anthropic/claude-sonnet-5", "name": "Claude Sonnet 5", "provider": "openrouter", "provider_name": "OpenRouter",
+                 "reasoning_levels": ["none", "low", "medium", "high"]],
+                ["id": "openrouter/acme/big-model-3", "name": "Big Model 3", "provider": "openrouter", "provider_name": "OpenRouter",
+                 "reasoning_levels": []],
             ]],
             ["id": "studio", "name": "Studio", "local": true, "models": [
                 ["id": "studio/qwen3.8-coder", "name": "Qwen3.8 Coder", "provider": "studio", "provider_name": "Studio",

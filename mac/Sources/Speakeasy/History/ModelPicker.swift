@@ -18,7 +18,11 @@ struct ModelChip: View {
                 HStack(spacing: 5) {
                     Image(systemName: "sparkle").font(.system(size: 9, weight: .bold))
                         .foregroundStyle(picker.followsDefault ? Color.secondary : Live.brassText)
-                    Text(picker.chipLabel).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    ViewThatFits(in: .horizontal) {
+                        Text(picker.chipLabelWithProvider)
+                        Text(picker.chipLabel)
+                    }
+                    .font(.system(size: 11, weight: .semibold)).lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down").font(.system(size: 7.5, weight: .bold)).foregroundStyle(.tertiary)
                 }
                 .foregroundStyle(picker.followsDefault ? Color.primary.opacity(0.62) : Live.brassText)
@@ -31,8 +35,8 @@ struct ModelChip: View {
             }
             .buttonStyle(.plain)
             .onHover { hover = $0 }
-            .help("Model and reasoning for this chat")
-            .accessibilityLabel("Model: \(picker.chipLabel)")
+            .help("Model and reasoning for this chat: \(picker.chipLabelWithProvider)")
+            .accessibilityLabel("Model: \(picker.chipLabelWithProvider)")
             .accessibilityIdentifier("model-chip")
             .popover(isPresented: $open, arrowEdge: .top) {
                 ModelPopover(store: store, state: picker) { open = false }
@@ -45,11 +49,18 @@ struct ModelPopover: View {
     @ObservedObject var store: HistoryStore
     @State var state: ModelPickerState
     var done: () -> Void
+    /// SPK-508: provider rows that are open; the one holding the selection starts open.
+    @State private var expanded: Set<String> = []
+    @State private var seeded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Model").font(.system(size: 13, weight: .semibold))
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Model").font(.system(size: 13, weight: .semibold))
+                    Text(state.selectionLine).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                        .accessibilityIdentifier("model-selected")
+                }
                 Spacer()
                 if !state.followsDefault {
                     Button("Use default") { store.useDefaultModel(); done() }
@@ -60,14 +71,33 @@ struct ModelPopover: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(state.catalog.providers) { provider in
+                        let open = expanded.contains(provider.id)
                         VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 5) {
-                                Text(provider.name.uppercased()).tracking(0.7)
-                                if provider.local { Text("· ON YOUR MACHINES").tracking(0.5) }
+                            Button {
+                                withAnimation(.snappy(duration: 0.18)) {
+                                    if open { expanded.remove(provider.id) } else { expanded.insert(provider.id) }
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                                        .rotationEffect(.degrees(open ? 90 : 0)).foregroundStyle(.tertiary).frame(width: 12)
+                                    Text(provider.label).font(.system(size: 12, weight: .semibold))
+                                    if provider.local { Text("On your machines").font(.system(size: 10.5)).foregroundStyle(.secondary) }
+                                    else if provider.label != provider.name {
+                                        Text(provider.name).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Text("\(provider.models.count)").font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                                }
+                                .foregroundStyle(provider.metered ? Live.brassText : Color.primary)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .contentShape(Rectangle())
                             }
-                            .font(.system(size: 9.5, weight: .bold)).foregroundStyle(.tertiary)
-                            .padding(.horizontal, 8).padding(.bottom, 2)
-                            ForEach(provider.models) { row($0) }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(provider.label), \(provider.models.count) models")
+                            .accessibilityValue(open ? "Expanded" : "Collapsed")
+                            .accessibilityIdentifier("model-provider-\(provider.id)")
+                            if open { ForEach(provider.models) { row($0) }.padding(.leading, 12) }
                         }
                     }
                 }
@@ -115,6 +145,12 @@ struct ModelPopover: View {
             .padding(14)
         }
         .frame(width: 320)
+        .onAppear {
+            guard !seeded else { return }
+            seeded = true
+            if let id = state.selectedProviderID { expanded.insert(id) }
+            else if let first = state.catalog.providers.first { expanded.insert(first.id) }
+        }
     }
 
     private func row(_ m: ModelOption) -> some View {
