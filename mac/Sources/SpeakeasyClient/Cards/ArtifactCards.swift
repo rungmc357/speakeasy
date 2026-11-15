@@ -45,7 +45,7 @@ struct ExploreSection: View {
             HStack(spacing: 8) {
                 Image(systemName: ArtifactLinks.symbol(entity)).font(.system(size: 12, weight: .semibold)).foregroundStyle(gold)
                     .frame(width: 26, height: 26).background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(gold.opacity(0.16)))
-                Text(section["label"].string ?? "").font(.system(size: 17, weight: .semibold))
+                Text(section["label"].string ?? "").cardFont(17, weight: .semibold)
                     .accessibilityIdentifier("explore-section-label")
                 Spacer(minLength: 4)
             }
@@ -93,10 +93,10 @@ struct EntityTile: View {
                 // No photo found: the name on the card's own surface, not a grey square standing in
                 // for a picture (reviewers read even a small glyph tile as a missing image).
                 HStack(alignment: .center, spacing: 10) {
-                    Text(item["name"].string ?? "").font(.system(size: 18, weight: .bold)).lineLimit(2)
+                    Text(item["name"].string ?? "").cardFont(18, weight: .bold).lineLimit(2)
                     Spacer(minLength: 0)
                     if let when = item["when"].string {
-                        Text(when).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).lineLimit(1)
+                        Text(when).cardFont(12, weight: .semibold).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
                 .padding([.horizontal, .top], 12)
@@ -105,12 +105,12 @@ struct EntityTile: View {
                 ArtifactPhoto(url: item["photo_url"].url, symbol: ArtifactLinks.symbol(entity, item: item), number: item["image"].double.map { Int($0) })
                     .frame(height: 138).frame(maxWidth: .infinity).clipped()
                 LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .center, endPoint: .bottom)
-                Text(item["name"].string ?? "").font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
+                Text(item["name"].string ?? "").cardFont(18, weight: .bold).foregroundStyle(.white)
                     .lineLimit(2).padding(12)
             }
             .overlay(alignment: .topLeading) {
                 if let when = item["when"].string {
-                    Text(when).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
+                    Text(when).cardFont(12, weight: .semibold).foregroundStyle(.white)
                         .padding(.horizontal, 9).padding(.vertical, 5)
                         .background(Capsule().fill(.ultraThinMaterial)).environment(\.colorScheme, .dark).padding(10)
                 }
@@ -125,9 +125,9 @@ struct EntityTile: View {
                 let shortSub = entity == "place" ? sub.map { $0.replacingOccurrences(of: #",\s*[^,·]+$"#, with: "", options: .regularExpression) } : sub
                 let first = [item["rating"].double.map { String(format: "★ %.1f", $0) }, shortSub, city, item["price"].string,
                              item["state"].string].compactMap { $0 }
-                if !first.isEmpty { Text(first.joined(separator: " · ")).font(.system(size: 14)).lineLimit(1) }
+                if !first.isEmpty { Text(first.joined(separator: " · ")).cardFont(14).lineLimit(1) }
                 let facts = item["facts"].strings
-                if !facts.isEmpty { Text(facts.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2) }
+                if !facts.isEmpty { Text(facts.joined(separator: " · ")).cardFont(13).foregroundStyle(.secondary).lineLimit(2) }
                 let actions = EntityActions.of(item, entity: entity)
                 if !actions.isEmpty {
                     // Every label when they fit; otherwise the first keeps its words and the rest
@@ -242,7 +242,7 @@ struct PillButton: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: icon).font(.system(size: 12, weight: .semibold))
-                if !iconOnly { Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1) }
+                if !iconOnly { Text(title).cardFont(14, weight: .semibold).lineLimit(1) }
             }
             .padding(.horizontal, iconOnly ? 0 : 14).frame(minWidth: 34).frame(height: 34)
             .foregroundStyle(primary ? look.onAction : look.quietInk)
@@ -265,7 +265,7 @@ struct CompareCard: View {
         let w = Int(card["winner"].double ?? 0)
         let others = options.enumerated().filter { $0.offset != w }.map(\.element)
         VStack(alignment: .leading, spacing: 12) {
-            if let title = card["title"].string { Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary) }
+            if let title = card["title"].string { Text(title).cardFont(13, weight: .semibold).foregroundStyle(.secondary) }
             if options.indices.contains(w) {
                 let pick = options[w]
                 VStack(alignment: .leading, spacing: 10) {
@@ -274,23 +274,23 @@ struct CompareCard: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     HStack(spacing: 8) {
-                        Label("MY PICK", systemImage: "star.fill").font(.system(size: 11, weight: .bold)).tracking(0.6)
+                        Label("MY PICK", systemImage: "star.fill").cardFont(11, weight: .bold).tracking(0.6)
                             .foregroundStyle(look.onAction).padding(.horizontal, 8).padding(.vertical, 4)
                             .background(Capsule().fill(gold))
-                        Text(card["why"].string ?? "").font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(2)
+                        Text(card["why"].string ?? "").cardFont(13).foregroundStyle(.secondary).lineLimit(2)
                     }
                     HStack(alignment: .firstTextBaseline) {
-                        Text(pick["name"].string ?? "").font(.system(size: 22, weight: .bold)).lineLimit(2)
+                        Text(pick["name"].string ?? "").cardFont(22, weight: .bold).lineLimit(2)
                         Spacer(minLength: 8)
-                        if let price = pick["price"].string { Text(price).font(.system(size: 22, weight: .bold)).foregroundStyle(gold) }
+                        if let price = pick["price"].string { Text(price).cardFont(22, weight: .bold).foregroundStyle(gold) }
                     }
                     let sub = [pick["sub"].string].compactMap { $0 } + pick["facts"].strings
-                    if !sub.isEmpty { Text(sub.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(.secondary) }
+                    if !sub.isEmpty { Text(sub.joined(separator: " · ")).cardFont(13).foregroundStyle(.secondary) }
                     if fit != .compact {
                         ForEach(card["reasons"].strings, id: \.self) { r in
-                            Label { Text(r).font(.system(size: 14)) } icon: { Image(systemName: "checkmark").foregroundStyle(gold) }
+                            Label { Text(r).cardFont(14) } icon: { Image(systemName: "checkmark").foregroundStyle(gold) }
                         }
-                        if let caveat = card["caveat"].string { Text(caveat).font(.system(size: 12.5)).foregroundStyle(.secondary) }
+                        if let caveat = card["caveat"].string { Text(caveat).cardFont(12.5).foregroundStyle(.secondary) }
                     }
                     if let url = pick["url"].url {
                         PillButton(title: "Open", icon: "arrow.up.right", primary: false) { openURL(url) }
@@ -306,10 +306,10 @@ struct CompareCard: View {
                     ForEach(Array(others.enumerated()), id: \.offset) { _, o in
                         Button { if let url = o["url"].url { openURL(url) } } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(o["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
-                                if let price = o["price"].string { Text(price).font(.system(size: 15, weight: .bold)) }
+                                Text(o["name"].string ?? "").cardFont(15, weight: .semibold).lineLimit(2)
+                                if let price = o["price"].string { Text(price).cardFont(15, weight: .bold) }
                                 if let why = o["why"].string ?? o["sub"].string {
-                                    Text(why).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(3)
+                                    Text(why).cardFont(12.5).foregroundStyle(.secondary).lineLimit(3)
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
@@ -320,7 +320,7 @@ struct CompareCard: View {
                 }
             } else if !others.isEmpty {
                 Text(others.compactMap { o in [o["name"].string, o["price"].string].compactMap { $0 }.joined(separator: " ") }.joined(separator: " · "))
-                    .font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
+                    .cardFont(13).foregroundStyle(.secondary).lineLimit(1)
             }
         }
     }
@@ -357,7 +357,7 @@ struct StatusTilesCard: View {
                 let shared = states.count == 1 && words.count == 1 && sorted.allSatisfy { $0["value"].string == nil } ? states.first : nil
                 if let shared, let word = words.first, !word.isEmpty {
                     Text(sorted.count == 2 ? "Both: \(word.lowercased())" : "All \(sorted.count): \(word.lowercased())")
-                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(StatusTile.color(shared)).padding(.top, -6)
+                        .cardFont(13, weight: .semibold).foregroundStyle(StatusTile.color(shared)).padding(.top, -6)
                 }
                 VStack(spacing: 0) {
                     ForEach(Array(sorted.prefix(cap).enumerated()), id: \.offset) { n, item in
@@ -372,7 +372,7 @@ struct StatusTilesCard: View {
                     let rest = sorted.dropFirst(cap)
                     let fine = rest.allSatisfy { ["ok", "on", "off", "info"].contains($0["state"].string ?? "") }
                     Text(fine ? "\(rest.count) more, all fine" : "\(rest.count) more")
-                        .font(.system(size: 12.5)).foregroundStyle(.secondary)
+                        .cardFont(12.5).foregroundStyle(.secondary)
                 }
             } else {
                 // Two to a row, equal heights; an odd last tile takes the whole row (three tiles left a hole).
@@ -431,25 +431,25 @@ struct StatusTile: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 7) {
                 Circle().fill(Self.color(for: item)).frame(width: 8, height: 8)
-                Text(item["name"].string ?? "").font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                Text(item["name"].string ?? "").cardFont(16, weight: .semibold).lineLimit(1)
                 if loud, item["value"].string != nil {
                     // "8h" alone said nothing about what went wrong: the word rides beside the name.
                     Spacer(minLength: 4)
-                    Text(Self.word(for: item)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Self.color(for: item))
+                    Text(Self.word(for: item)).cardFont(12.5, weight: .semibold).foregroundStyle(Self.color(for: item))
                         .lineLimit(1).fixedSize()
                 }
             }
-            if let role = item["role"].string { Text(role).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
+            if let role = item["role"].string { Text(role).cardFont(12.5).foregroundStyle(.secondary).lineLimit(1) }
             if let value = item["value"].string {
-                Text(value).font(.system(size: 26, weight: .bold)).lineLimit(1).minimumScaleFactor(0.6).padding(.top, 2)
-                if let unit = item["unit"].string { Text(unit).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(1) }
+                Text(value).cardFont(26, weight: .bold).lineLimit(1).minimumScaleFactor(0.6).padding(.top, 2)
+                if let unit = item["unit"].string { Text(unit).cardFont(12.5).foregroundStyle(.secondary).lineLimit(1) }
             } else {
-                Text(Self.word(for: item)).font(.system(size: 20, weight: .bold)).foregroundStyle(loud ? Self.color(for: item) : .primary).padding(.top, 2)
+                Text(Self.word(for: item)).cardFont(20, weight: .bold).foregroundStyle(loud ? Self.color(for: item) : .primary).padding(.top, 2)
             }
             let history = item["history"].doubles
             // A trend needs a handful of points; three drew a crude V that read as the opposite of the note.
             if history.count >= 5 { Spark(points: history, tint: loud ? Self.color(for: item) : gold).frame(height: 18) }
-            if let note = item["note"].string { Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2) }
+            if let note = item["note"].string { Text(note).cardFont(12.5).foregroundStyle(.secondary).lineLimit(2) }
         }
         .padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(loud ? Self.color(state).opacity(0.08) : look.well))
@@ -496,17 +496,17 @@ struct StatusRow: View {
             let figure = [item["value"].string, item["unit"].string].compactMap({ $0 }).joined(separator: " ").nonEmpty
             let long = (figure?.count ?? 0) > 12
             VStack(alignment: .leading, spacing: 2) {
-                Text(item["name"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(2)
+                Text(item["name"].string ?? "").cardFont(15, weight: .semibold).lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)   // a long job name wraps, never "Codex usage thresh…"
                 if let note = [item["note"].string ?? item["role"].string, long ? figure : nil].compactMap({ $0 }).joined(separator: " · ").nonEmpty {
-                    Text(note).font(.system(size: 12.5)).foregroundStyle(.secondary).lineLimit(2)
+                    Text(note).cardFont(12.5).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
             Spacer(minLength: 8)
             if let trailing = (long ? nil : figure)
                 ?? (sayState && state != "info" ? StatusTile.word(for: item) : nil) {   // "Info" said nothing
                 Text(trailing)
-                    .font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                    .cardFont(13, weight: .semibold, digits: true)
                     .foregroundStyle(loud ? StatusTile.color(for: item) : .secondary).lineLimit(1).fixedSize()
             }
         }
@@ -566,17 +566,17 @@ struct ArtifactDraftCard: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: Self.icon(channel)).font(.system(size: 13, weight: .semibold)).foregroundStyle(gold)
-                Text("\(Self.channelName(channel)) to \(card["to"].string ?? "")").font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                Text("\(Self.channelName(channel)) to \(card["to"].string ?? "")").cardFont(14, weight: .semibold).lineLimit(1)
                 Spacer(minLength: 4)
-                Text(card["revision"].double.map { "Draft \(Int($0))" } ?? "Draft").font(.system(size: 12, weight: .semibold)).foregroundStyle(gold)
+                Text(card["revision"].double.map { "Draft \(Int($0))" } ?? "Draft").cardFont(12, weight: .semibold).foregroundStyle(gold)
             }
-            if let from = card["send_as"].string { Text("From \(from)").font(.system(size: 12.5)).foregroundStyle(.secondary) }
-            if let subject = card["subject"].string { Text(subject).font(.system(size: 15, weight: .semibold)) }
-            Text(card["body"].string ?? "").font(.system(size: 14.5)).textSelection(.enabled)
+            if let from = card["send_as"].string { Text("From \(from)").cardFont(12.5).foregroundStyle(.secondary) }
+            if let subject = card["subject"].string { Text(subject).cardFont(15, weight: .semibold) }
+            Text(card["body"].string ?? "").cardFont(14.5).textSelection(.enabled)
                 .lineLimit(fit == .compact ? 3 : nil).fixedSize(horizontal: false, vertical: true)
                 .padding(12).frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(look.well))
-            if let changes = card["changes"].string { Text(changes).font(.system(size: 12.5)).foregroundStyle(.secondary) }
+            if let changes = card["changes"].string { Text(changes).cardFont(12.5).foregroundStyle(.secondary) }
         }
     }
 }
@@ -653,7 +653,7 @@ struct ArtifactOpenerHost<Content: View>: View {
 
     private func choice(_ title: String, _ go: @escaping () -> Void) -> some View {
         Button { pending = nil; go() } label: {
-            Text(title).font(.system(size: 16, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 44)
+            Text(title).cardFont(16, weight: .semibold).frame(maxWidth: .infinity).frame(height: 44)
                 .foregroundStyle(look.onAction).background(Capsule().fill(look.action))
         }
         .buttonStyle(.plain)

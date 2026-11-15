@@ -14,11 +14,11 @@ struct EventRow: View {
         HStack(alignment: .top, spacing: 8) {
             RoundedRectangle(cornerRadius: 2).fill(eventColor(event["color"].string)).frame(width: 3)
             VStack(alignment: .leading, spacing: 1) {
-                Text(event["title"].string ?? "").font(.system(size: 12, weight: .medium)).lineLimit(2)
+                Text(event["title"].string ?? "").cardFont(12, weight: .medium).lineLimit(2)
                 Text(event["all_day"].bool == true ? "All day"
                      : [EventTimes.span(start: event["start"].string, end: event["end"].string),
                         event["place"].string].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · "))
-                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                    .cardFont(10.5).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
         }
@@ -78,7 +78,7 @@ struct DayCard: View {
             CardHeader(icon: "calendar", title: card["title"].string ?? EventTimes.dayTitle(card["date"].string) ?? "Today",
                        trailing: style.capsHeaders || events.isEmpty ? nil : "\(card["events"].array.count) event\(card["events"].array.count == 1 ? "" : "s")")
             if events.isEmpty {
-                Text("Nothing scheduled.").font(.system(size: style.capsHeaders ? 12 : 15)).foregroundStyle(style.secondary)
+                Text("Nothing scheduled.").cardFont(style.capsHeaders ? 12 : 15).foregroundStyle(style.secondary)
             }
             // Overlapping events sit together in one well, under a line saying by how much.
             ForEach(groups(events, pairs), id: \.first) { group in
@@ -155,7 +155,7 @@ struct DayCard: View {
         if style.capsHeaders {
             HStack(spacing: 6) {
                 EventRow(event: e)
-                if next, let join = e["join_url"].url { Link("Join", destination: join).font(.system(size: 11.5, weight: .semibold)) }
+                if next, let join = e["join_url"].url { Link("Join", destination: join).cardFont(11.5, weight: .semibold) }
             }
         } else {
             // The time sits on the title's first baseline, not centred against a two-line title.
@@ -203,7 +203,7 @@ struct AgendaCard: View {
             let days = card["days"].array
             ForEach(Array(days.prefix(fit == .compact ? 1 : 7).enumerated()), id: \.offset) { i, day in
                 if i > 0 { Divider().opacity(0.4) }
-                Text(day["date"].string ?? "").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Text(day["date"].string ?? "").cardFont(11, weight: .semibold).foregroundStyle(.secondary)
                 ForEach(Array(day["events"].array.prefix(fit.rows(6)).enumerated()), id: \.offset) { _, e in EventRow(event: e) }
             }
             if fit == .compact { MoreRows(total: min(days.count, 7), shown: 1, noun: ("day", "days")) }
@@ -219,10 +219,10 @@ struct ReminderCard: View {
                 Image(systemName: card["done"].bool == true ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 18)).foregroundStyle(card["done"].bool == true ? Color.green : Color.orange)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(card["title"].string ?? "Reminder").font(.system(size: 13, weight: .medium))
+                    Text(card["title"].string ?? "Reminder").cardFont(13, weight: .medium)
                     Text([card["due"].string, card["list"].string].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                    if let notes = card["notes"].string { Text(notes).font(.system(size: 11)).foregroundStyle(.secondary) }
+                        .cardFont(11).foregroundStyle(.secondary)
+                    if let notes = card["notes"].string { Text(notes).cardFont(11).foregroundStyle(.secondary) }
                 }
             }
         }
@@ -265,9 +265,9 @@ struct PlaceCard: View {
             }
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(card["name"].string ?? "").font(.system(size: 13.5, weight: .semibold))
+                    Text(card["name"].string ?? "").cardFont(13.5, weight: .semibold)
                     Text([card["category"].string, card["price"].string, card["distance"].string].compactMap { $0 }
-                        .joined(separator: " · ")).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .joined(separator: " · ")).cardFont(11).foregroundStyle(.secondary)
                 }
                 Spacer()
                 openable(card["url"].url ?? mapsURL(card["name"].string, lat: card["lat"].double, lon: card["lon"].double))
@@ -282,9 +282,9 @@ struct PlaceCard: View {
                 }
                 if let hours = card["hours_today"].string { Text(hours).foregroundStyle(.secondary) }
             }
-            .font(.system(size: 11))
+            .cardFont(11)
             if let address = card["address"].string {
-                Text(address).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                Text(address).cardFont(11).foregroundStyle(.secondary).lineLimit(2)
             }
         }
     }
@@ -321,7 +321,7 @@ struct PlacesCard: View {
                 HStack(spacing: 10) {
                     if let photo = p["photo_url"].url { CardImage(url: photo, size: 40, corner: 8, fill: true).frame(width: 40) }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("\(i + 1). \(p["name"].string ?? "")").font(.system(size: 12, weight: .medium)).lineLimit(1)
+                        Text("\(i + 1). \(p["name"].string ?? "")").cardFont(12, weight: .medium).lineLimit(1)
                         HStack(spacing: 6) {
                             if let r = p["rating"].double { Text("★ " + String(format: "%.1f", r)).foregroundStyle(.orange) }
                             if let c = p["category"].string { Text(c) }
@@ -329,7 +329,7 @@ struct PlacesCard: View {
                             if let d = p["distance"].string { Text(d) }
                             if let open = p["open_now"].bool { Text(open ? "Open" : "Closed").foregroundStyle(open ? Color.green : Color.red) }
                         }
-                        .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                        .cardFont(10.5).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 0)
                     openable(p["url"].url ?? mapsURL(p["name"].string, lat: p["lat"].double, lon: p["lon"].double))
@@ -360,21 +360,21 @@ struct RouteCard: View {
                 Image(systemName: icon).font(.system(size: 14)).foregroundStyle(.secondary)
                 if let minutes = card["minutes"].double {
                     Text(minutes >= 60 ? "\(Int(minutes) / 60) hr \(Int(minutes) % 60) min" : "\(Int(minutes)) min")
-                        .font(.system(size: 22, weight: .semibold))
+                        .cardFont(22, weight: .semibold)
                 }
-                if let d = card["distance"].string { Text(d).font(.system(size: 12)).foregroundStyle(.secondary) }
+                if let d = card["distance"].string { Text(d).cardFont(12).foregroundStyle(.secondary) }
                 Spacer()
                 openable(mapsURL(card["destination"].string, lat: card["dest_lat"].double, lon: card["dest_lon"].double))
             }
-            Text("\(card["origin"].string ?? "Here") → \(card["destination"].string ?? "")").font(.system(size: 11.5)).lineLimit(2)
+            Text("\(card["origin"].string ?? "Here") → \(card["destination"].string ?? "")").cardFont(11.5).lineLimit(2)
             HStack(spacing: 10) {
                 if let leave = card["leave_by"].string { Label("Leave \(leave)", systemImage: "clock") }
                 if let arrive = card["arrive_by"].string { Label("Arrive \(arrive)", systemImage: "flag.checkered") }
                 if let traffic = card["traffic"].string { Text(traffic) }
             }
-            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+            .cardFont(10.5).foregroundStyle(.secondary)
             ForEach(Array(card["steps"].strings.prefix(fit == .compact ? 0 : 5).enumerated()), id: \.offset) { _, s in
-                Text("· " + s).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                Text("· " + s).cardFont(11.5).foregroundStyle(.secondary)
             }
         }
     }
@@ -396,23 +396,23 @@ struct TransitCard: View {
             CardHeaderRow {
                 CardHeader(icon: "tram.fill", title: card["station"].string ?? "Departures")
                 if let status = card["status"].string {
-                    Text(status).font(.system(size: 11.5, weight: .medium))
+                    Text(status).cardFont(11.5, weight: .medium)
                         .foregroundStyle(status.lowercased().contains("good") ? Color.green : Color.orange)
                 }
             }
             ForEach(Array(card["departures"].array.prefix(fit.rows(6)).enumerated()), id: \.offset) { _, d in
                 HStack(spacing: 10) {
-                    Text(d["line"].string ?? "").font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+                    Text(d["line"].string ?? "").cardFont(12, weight: .bold).foregroundStyle(.white)
                         .frame(width: 24, height: 24).background(Circle().fill(lineColor(d["color"].string)))
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(d["destination"].string ?? "").font(.system(size: 12)).lineLimit(1)
-                        if let note = d["note"].string { Text(note).font(.system(size: 11)).foregroundStyle(.orange).lineLimit(1) }
+                        Text(d["destination"].string ?? "").cardFont(12).lineLimit(1)
+                        if let note = d["note"].string { Text(note).cardFont(11).foregroundStyle(.orange).lineLimit(1) }
                     }
                     Spacer(minLength: 0)
                     if let m = d["minutes"].double {
-                        Text(m < 1 ? "Now" : "\(Int(m)) min").font(.system(size: 13, weight: .semibold).monospacedDigit())
+                        Text(m < 1 ? "Now" : "\(Int(m)) min").cardFont(13, weight: .semibold, digits: true)
                     } else if let t = d["time"].string {
-                        Text(t).font(.system(size: 12).monospacedDigit())
+                        Text(t).cardFont(12, digits: true)
                     }
                 }
             }
@@ -428,7 +428,7 @@ struct FlightCard: View {
         let status = card["status"].string ?? ""
         let late = status.lowercased().contains("delay") || status.lowercased().contains("cancel")
         let title = [card["airline"].string, card["number"].string].compactMap { $0 }.joined(separator: " ")
-        let statusText = Text(status).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(late ? Color.red : Color.green)
+        let statusText = Text(status).cardFont(11.5, weight: .semibold).foregroundStyle(late ? Color.red : Color.green)
         CardBox {
             // A slim widget: the route row only (its headline says the flight and its status).
             if !slim {
@@ -452,8 +452,8 @@ struct FlightCard: View {
             }
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(card["origin"].string ?? "").font(.system(size: 22, weight: .semibold))
-                    Text(card["departs"].string ?? "").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    Text(card["origin"].string ?? "").cardFont(22, weight: .semibold)
+                    Text(card["departs"].string ?? "").cardFont(11.5).foregroundStyle(.secondary)
                 }
                 Spacer()
                 VStack(spacing: 3) {
@@ -462,8 +462,8 @@ struct FlightCard: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text(card["destination"].string ?? "").font(.system(size: 22, weight: .semibold))
-                    Text(card["arrives"].string ?? "").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    Text(card["destination"].string ?? "").cardFont(22, weight: .semibold)
+                    Text(card["arrives"].string ?? "").cardFont(11.5).foregroundStyle(.secondary)
                 }
             }
             if !slim {
@@ -472,7 +472,7 @@ struct FlightCard: View {
                     if let g = card["gate"].string { Text("Gate \(g)") }
                     if let d = card["delay"].string { Text(d).foregroundStyle(.red) }
                 }
-                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .cardFont(11).foregroundStyle(.secondary)
             }
         }
     }
@@ -501,12 +501,12 @@ struct PackageCard: View {
                     CardHeader(icon: "shippingbox.fill", title: card["carrier"].string ?? "Package")
                     openable(card["url"].url)
                 }
-                if let item = card["item"].string { Text(item).font(.system(size: 12.5, weight: .medium)).lineLimit(1) }
+                if let item = card["item"].string { Text(item).cardFont(12.5, weight: .medium).lineLimit(1) }
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(card["status"].string ?? "").font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                Text(card["status"].string ?? "").cardFont(15, weight: .semibold).lineLimit(1)
                 Spacer(minLength: 4)
-                if let eta = card["eta"].string { Text(eta).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1) }
+                if let eta = card["eta"].string { Text(eta).cardFont(12, weight: .medium).foregroundStyle(.secondary).lineLimit(1) }
             }
             if let p = Self.progress(card) {
                 Bar(fraction: p, tint: .green, height: 5)
@@ -518,7 +518,7 @@ struct PackageCard: View {
                     Text(last["text"].string ?? "").lineLimit(1)
                     if let w = last["when"].string { Text("· " + w).foregroundStyle(.secondary).lineLimit(1) }
                 }
-                .font(.system(size: 11))
+                .cardFont(11)
             }
         }
     }
@@ -528,14 +528,14 @@ struct PackageCard: View {
                 CardHeader(icon: "shippingbox.fill", title: card["carrier"].string ?? "Package")
                 openable(card["url"].url)
             }
-            Text(card["item"].string ?? "").font(.system(size: 12.5, weight: .medium)).lineLimit(2)
+            Text(card["item"].string ?? "").cardFont(12.5, weight: .medium).lineLimit(2)
             HStack(spacing: 8) {
                 // The status, unless the timeline's latest scan below says it already (one line, once).
                 let latest = card["steps"].array.last(where: { $0["done"].bool != false })?["text"].string
                 if !TextEcho.repeats(latest, in: card["status"].string) {
-                    Text(card["status"].string ?? "").font(.system(size: 13, weight: .semibold))
+                    Text(card["status"].string ?? "").cardFont(13, weight: .semibold)
                 }
-                if let eta = card["eta"].string { Text(eta).font(.system(size: 11)).foregroundStyle(.secondary) }
+                if let eta = card["eta"].string { Text(eta).cardFont(11).foregroundStyle(.secondary) }
             }
             let steps = card["steps"].array
             ForEach(Array(steps.prefix(6).enumerated()), id: \.offset) { i, s in
@@ -546,8 +546,8 @@ struct PackageCard: View {
                     }
                     .padding(.top, 3)
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(s["text"].string ?? "").font(.system(size: 11)).lineLimit(2)
-                        if let w = s["when"].string { Text(w).font(.system(size: 11.5)).foregroundStyle(.secondary) }
+                        Text(s["text"].string ?? "").cardFont(11).lineLimit(2)
+                        if let w = s["when"].string { Text(w).cardFont(11.5).foregroundStyle(.secondary) }
                     }
                 }
             }
@@ -563,12 +563,12 @@ struct ContactCard: View {
                 if let photo = card["photo_url"].url {
                     CardImage(url: photo, size: 44, corner: 22, fill: true).frame(width: 44)
                 } else {
-                    Text(initials(card["name"].string)).font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+                    Text(initials(card["name"].string)).cardFont(15, weight: .semibold).foregroundStyle(.white)
                         .frame(width: 44, height: 44).background(Circle().fill(Color.gray.gradient))
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(card["name"].string ?? "").font(.system(size: 14, weight: .semibold))
-                    if let s = card["subtitle"].string { Text(s).font(.system(size: 11)).foregroundStyle(.secondary) }
+                    Text(card["name"].string ?? "").cardFont(14, weight: .semibold)
+                    if let s = card["subtitle"].string { Text(s).cardFont(11).foregroundStyle(.secondary) }
                 }
             }
             HStack(spacing: 8) {
@@ -579,9 +579,9 @@ struct ContactCard: View {
                     Link(destination: url) { Label(email, systemImage: "envelope.fill").lineLimit(1) }
                 }
             }
-            .font(.system(size: 11))
-            if let b = card["birthday"].string { Label("Birthday \(b)", systemImage: "gift").font(.system(size: 11)).foregroundStyle(.secondary) }
-            if let n = card["note"].string { Text(n).font(.system(size: 11)).foregroundStyle(.secondary) }
+            .cardFont(11)
+            if let b = card["birthday"].string { Label("Birthday \(b)", systemImage: "gift").cardFont(11).foregroundStyle(.secondary) }
+            if let n = card["note"].string { Text(n).cardFont(11).foregroundStyle(.secondary) }
         }
     }
 }
@@ -622,13 +622,13 @@ struct DraftCard: View {
         CardBox(tint: status == "sent" ? .green : nil) {
             CardHeaderRow {
                 CardHeader(icon: icon, title: (card["channel"].string ?? "Message") + " to " + (card["to"].string ?? ""))
-                Text(status == "sent" ? "Sent" : "Draft").font(.system(size: 11, weight: .semibold))
+                Text(status == "sent" ? "Sent" : "Draft").cardFont(11, weight: .semibold)
                     .foregroundStyle(status == "sent" ? Color.green : Color.orange)
                     .accessibilityIdentifier("draft-card-status")
             }
-            if let subject = card["subject"].string { Text(subject).font(.system(size: 12.5, weight: .semibold)) }
+            if let subject = card["subject"].string { Text(subject).cardFont(12.5, weight: .semibold) }
             // Compact: the first lines of the message; the whole text is in the full card.
-            Text(card["body"].string ?? "").font(.system(size: 12.5)).textSelection(.enabled)
+            Text(card["body"].string ?? "").cardFont(12.5).textSelection(.enabled)
                 .lineLimit(fit == .compact ? 3 : nil)
                 .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor.opacity(0.10)))
@@ -658,12 +658,12 @@ struct InboxCard: View {
                     Circle().fill(m["unread"].bool == true ? Color.accentColor : Color.clear).frame(width: 6, height: 6).padding(.top, 5)
                     VStack(alignment: .leading, spacing: 1) {
                         HStack {
-                            Text(m["from"].string ?? "").font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                            Text(m["from"].string ?? "").cardFont(12, weight: .semibold).lineLimit(1)
                             Spacer(minLength: 0)
-                            Text(m["when"].string ?? "").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(m["when"].string ?? "").cardFont(11).foregroundStyle(.secondary)
                         }
-                        if let s = m["subject"].string { Text(s).font(.system(size: 11.5)).lineLimit(1) }
-                        if let p = m["preview"].string { Text(p).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2) }
+                        if let s = m["subject"].string { Text(s).cardFont(11.5).lineLimit(1) }
+                        if let p = m["preview"].string { Text(p).cardFont(11).foregroundStyle(.secondary).lineLimit(2) }
                     }
                 }
             }

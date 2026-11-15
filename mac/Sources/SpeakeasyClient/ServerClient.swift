@@ -384,6 +384,12 @@ public final class ServerClient: @unchecked Sendable {
         _ = try await post("/voice/interactions/\(escape(interactionID))/end", [:])
     }
 
+    /// End a call the server holds for a reconnect after a provider drop: the user hung up while
+    /// it waited (SPK-458). The plugin ends it as the user's and refuses a later resume of it.
+    public func endHeldCall(interactionID: String) async throws {
+        _ = try await post("/voice/interactions/\(escape(interactionID))/end", [:])
+    }
+
     /// Close a session this device gave up on before it went live (a stalled connection attempt):
     /// the plugin stops its voice session so it isn't left open beside the retried one.
     public func abandonSession(interactionID: String) async throws {

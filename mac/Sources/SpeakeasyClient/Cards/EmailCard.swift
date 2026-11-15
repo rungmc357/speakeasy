@@ -81,19 +81,19 @@ struct EmailCard: View {
             recipients
             VStack(alignment: .leading, spacing: 4) {
                 if !fields.subject.isEmpty {
-                    Text(fields.subject).font(.system(size: 15, weight: .semibold)).foregroundStyle(look.ink)
+                    Text(fields.subject).cardFont(15, weight: .semibold).foregroundStyle(look.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let line = info.threadLine {
                     Label(line, systemImage: "arrowshape.turn.up.left")
-                        .font(.system(size: 12.5)).foregroundStyle(look.secondary)
+                        .cardFont(12.5).foregroundStyle(look.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("email-card-thread")
                 }
             }
             // The whole body, every line (Geo 11-09): seeing the email never takes a tap; a long one
             // simply makes the card taller and the chat scrolls. Edit opens the sheet to change it.
-            Text(fields.body).font(.system(size: 14.5)).foregroundStyle(look.ink)
+            Text(fields.body).cardFont(14.5).foregroundStyle(look.ink)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(12).frame(maxWidth: .infinity, alignment: .leading)
@@ -110,10 +110,10 @@ struct EmailCard: View {
                             .accessibilityIdentifier("email-card-add-unresolved")
                     }
                 }
-                .font(.system(size: 13))
+                .cardFont(13)
             }
             ForEach(Array(info.notes.enumerated()), id: \.offset) { _, note in
-                Text(note).font(.system(size: 12.5)).foregroundStyle(look.secondary)
+                Text(note).cardFont(12.5).foregroundStyle(look.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("email-card-note")
             }
@@ -142,9 +142,9 @@ struct EmailCard: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "envelope.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(look.emphasis)
-            Text(info.thread != nil ? "Reply" : "Email").font(.system(size: 13, weight: .semibold)).foregroundStyle(look.secondary)
+            Text(info.thread != nil ? "Reply" : "Email").cardFont(13, weight: .semibold).foregroundStyle(look.secondary)
             Spacer(minLength: 4)
-            Text(stateWord).font(.system(size: 12, weight: .semibold)).foregroundStyle(stateColor)
+            Text(stateWord).cardFont(12, weight: .semibold).foregroundStyle(stateColor)
                 .accessibilityIdentifier("email-card-state")
         }
     }
@@ -166,11 +166,11 @@ struct EmailCard: View {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let left = min(Int(EmailCardMemory.undoSeconds), max(1, Int(ceil(until.timeIntervalSince(context.date)))))
                     Text(verb == "send" ? "Sending in \(left) s" : "Discarding in \(left) s")
-                        .font(.system(size: 14, weight: .medium)).foregroundStyle(look.ink).monospacedDigit()
+                        .cardFont(14, weight: .medium).foregroundStyle(look.ink).monospacedDigit()
                 }
                 Spacer(minLength: 4)
                 Button("Undo") { memory.undo(info.draftID) }
-                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(look.emphasis).buttonStyle(.plain)
+                    .cardFont(14, weight: .semibold).foregroundStyle(look.emphasis).buttonStyle(.plain)
                     .frame(minHeight: 44).accessibilityIdentifier("email-card-undo")
             }
         case .asked?:
@@ -265,7 +265,7 @@ struct EmailRecipientsRow: View {
     @Environment(\.cardStyle) private var look
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label).font(.system(size: 12.5, weight: .medium)).foregroundStyle(look.faint)
+            Text(label).cardFont(12.5, weight: .medium).foregroundStyle(look.faint)
                 .frame(width: 34, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(Array(people.prefix(limit).enumerated()), id: \.offset) { _, p in
@@ -276,7 +276,7 @@ struct EmailRecipientsRow: View {
                     }
                 }
                 if people.count > limit {
-                    Text("+\(people.count - limit) more").font(.system(size: 12.5)).foregroundStyle(look.secondary)
+                    Text("+\(people.count - limit) more").cardFont(12.5).foregroundStyle(look.secondary)
                 }
             }
         }
@@ -288,11 +288,11 @@ struct EmailRecipientsRow: View {
             // "Pat Doe · Lark & Finch": the firm the ask named, only when the address is that firm's.
             (Text(p.name).foregroundStyle(look.ink)
                 + Text(p.org.map { " · \($0)" } ?? "").foregroundStyle(look.secondary))
-                .font(.system(size: 13.5, weight: .medium)).lineLimit(1)
+                .cardFont(13.5, weight: .medium).lineLimit(1)
         }
     }
     private func address(_ p: EmailCardInfo.Person) -> some View {
-        Text(p.address).font(.system(size: 12.5)).foregroundStyle(look.secondary).lineLimit(1).truncationMode(.middle)
+        Text(p.address).cardFont(12.5).foregroundStyle(look.secondary).lineLimit(1).truncationMode(.middle)
             .textSelection(.enabled)
     }
 }
@@ -306,7 +306,7 @@ struct EmailCardButton: View {
     @Environment(\.isEnabled) private var enabled
     var body: some View {
         Button(action: action) {
-            Text(title).font(.system(size: 14.5, weight: .semibold)).lineLimit(1)
+            Text(title).cardFont(14.5, weight: .semibold).lineLimit(1)
                 .padding(.horizontal, 16).frame(minHeight: 44).frame(maxWidth: .infinity)
                 .background(Capsule().fill(primary ? look.action : look.quietFill))
                 .foregroundStyle(primary ? look.onAction : destructive ? look.bad : look.quietInk)
@@ -366,33 +366,33 @@ struct EmailDetailSheet: View {
                             if !showCc { Button("Add Cc") { tapped = "cc"; showCc = true } }
                             if !showBcc { Button("Add Bcc") { tapped = "bcc"; showBcc = true } }
                         }
-                        .font(.system(size: 14, weight: .medium)).foregroundStyle(look.secondary).buttonStyle(.plain)
+                        .cardFont(14, weight: .medium).foregroundStyle(look.secondary).buttonStyle(.plain)
                         .frame(minHeight: 44)
                     }
                     ForEach(info.stillUnresolved(in: fields), id: \.self) { name in
                         Label("Couldn't find an address for \(name). Add it above.", systemImage: "person.crop.circle.badge.questionmark")
-                            .font(.system(size: 13)).foregroundStyle(look.ink)
+                            .cardFont(13).foregroundStyle(look.ink)
                     }
                     Divider()
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Subject").font(.system(size: 12.5, weight: .medium)).foregroundStyle(look.faint)
+                        Text("Subject").cardFont(12.5, weight: .medium).foregroundStyle(look.faint)
                         if editable {
-                            TextField("Subject", text: $fields.subject).font(.system(size: 16, weight: .semibold))
+                            TextField("Subject", text: $fields.subject).cardFont(16, weight: .semibold)
                                 .textFieldStyle(.plain).accessibilityIdentifier("email-sheet-subject")
                         } else {
-                            Text(fields.subject).font(.system(size: 16, weight: .semibold)).textSelection(.enabled)
+                            Text(fields.subject).cardFont(16, weight: .semibold).textSelection(.enabled)
                         }
                         if let line = info.threadLine {
-                            Text(line).font(.system(size: 12.5)).foregroundStyle(look.secondary)
+                            Text(line).cardFont(12.5).foregroundStyle(look.secondary)
                         }
                     }
                     if editable {
-                        TextEditor(text: $fields.body).font(.system(size: 15.5)).scrollContentBackground(.hidden)
+                        TextEditor(text: $fields.body).cardFont(15.5).scrollContentBackground(.hidden)
                             .frame(minHeight: 220).padding(8)
                             .background(RoundedRectangle(cornerRadius: look.wellRadius, style: .continuous).fill(look.well))
                             .accessibilityIdentifier("email-sheet-body")
                     } else {
-                        Text(fields.body).font(.system(size: 15.5)).textSelection(.enabled)
+                        Text(fields.body).cardFont(15.5).textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if let quoted = info.threadLast {
@@ -403,12 +403,12 @@ struct EmailDetailSheet: View {
                                     Text(["Replying to", quoted.from, quoted.when].compactMap { $0 }.joined(separator: " · "))
                                         .lineLimit(1)
                                 }
-                                .font(.system(size: 13, weight: .medium)).foregroundStyle(look.secondary)
+                                .cardFont(13, weight: .medium).foregroundStyle(look.secondary)
                                 .frame(minHeight: 44).contentShape(Rectangle())
                             }
                             .buttonStyle(.plain).accessibilityIdentifier("email-sheet-quote")
                             if quoteOpen {
-                                Text(quoted.text).font(.system(size: 14)).foregroundStyle(look.secondary).textSelection(.enabled)
+                                Text(quoted.text).cardFont(14).foregroundStyle(look.secondary).textSelection(.enabled)
                                     .padding(.leading, 12)
                                     .overlay(alignment: .leading) { Rectangle().fill(look.hairline).frame(width: 2) }
                             }
@@ -416,9 +416,9 @@ struct EmailDetailSheet: View {
                     }
                     if !info.attachments.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Attachments").font(.system(size: 12.5, weight: .medium)).foregroundStyle(look.faint)
+                            Text("Attachments").cardFont(12.5, weight: .medium).foregroundStyle(look.faint)
                             ForEach(info.attachments, id: \.self) { name in
-                                Label(name, systemImage: "paperclip").font(.system(size: 14)).foregroundStyle(look.ink)
+                                Label(name, systemImage: "paperclip").cardFont(14).foregroundStyle(look.ink)
                             }
                         }
                     }
@@ -426,7 +426,7 @@ struct EmailDetailSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(info.notes, id: \.self) { Text($0) }
                         }
-                        .font(.system(size: 13)).foregroundStyle(look.secondary)
+                        .cardFont(13).foregroundStyle(look.secondary)
                     }
                 }
                 .padding(20)
@@ -475,16 +475,16 @@ struct EmailPeopleEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.system(size: 12.5, weight: .medium)).foregroundStyle(look.faint)
+            Text(label).cardFont(12.5, weight: .medium).foregroundStyle(look.faint)
             ForEach(Array(people.enumerated()), id: \.offset) { index, p in
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 1) {
                         if !p.name.isEmpty {
                             (Text(p.name).foregroundStyle(look.ink)
                                 + Text(p.org.map { " · \($0)" } ?? "").foregroundStyle(look.secondary))
-                                .font(.system(size: 15, weight: .medium))
+                                .cardFont(15, weight: .medium)
                         }
-                        Text(p.address).font(.system(size: 13.5)).foregroundStyle(look.secondary).textSelection(.enabled)
+                        Text(p.address).cardFont(13.5).foregroundStyle(look.secondary).textSelection(.enabled)
                     }
                     Spacer(minLength: 4)
                     if editable {
@@ -500,7 +500,7 @@ struct EmailPeopleEditor: View {
             }
             if editable && !adding {
                 Button { adding = true; focused = true } label: {
-                    Label("Add", systemImage: "plus").font(.system(size: 14, weight: .medium)).foregroundStyle(look.secondary)
+                    Label("Add", systemImage: "plus").cardFont(14, weight: .medium).foregroundStyle(look.secondary)
                         .frame(minHeight: 36).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -510,7 +510,7 @@ struct EmailPeopleEditor: View {
             if editable && adding {
                 HStack(spacing: 8) {
                     TextField("Name <address> or address", text: $typed)
-                        .textFieldStyle(.plain).font(.system(size: 14.5))
+                        .textFieldStyle(.plain).cardFont(14.5)
                         #if os(iOS)
                         .textInputAutocapitalization(.never).keyboardType(.emailAddress).autocorrectionDisabled()
                         #endif
@@ -518,14 +518,14 @@ struct EmailPeopleEditor: View {
                         .onSubmit(add)
                         .accessibilityIdentifier("email-add-\(label.lowercased())")
                     if !typed.isEmpty {
-                        Button("Add", action: add).font(.system(size: 14, weight: .semibold)).foregroundStyle(look.emphasis)
+                        Button("Add", action: add).cardFont(14, weight: .semibold).foregroundStyle(look.emphasis)
                             .buttonStyle(.plain).frame(minHeight: 44)
                     }
                 }
                 .padding(.horizontal, 12).frame(minHeight: 44)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(invalid ? look.bad : look.hairline))
                 if invalid {
-                    Text("That needs an email address, like name@example.com.").font(.system(size: 12.5)).foregroundStyle(look.bad)
+                    Text("That needs an email address, like name@example.com.").cardFont(12.5).foregroundStyle(look.bad)
                 }
             }
         }

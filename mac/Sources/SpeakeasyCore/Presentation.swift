@@ -71,7 +71,7 @@ public func parseServerStreamEvent(_ event: SSEEvent) -> [VoiceEvent] {
     case "closed":
         let object = json as? [String: Any]
         let fin: Finalization = (object?["finalization"] as? String) == "complete" ? .complete : .incomplete
-        return [.serverClosed(fin, error: object?["error"] as? String)]
+        return [.serverClosed(fin, error: object?["error"] as? String, reason: nonEmpty(object?["reason"]))]
     case "reconnect_required":
         // The voice provider dropped the call; the plugin holds it for a resume.
         return [.reconnectRequired(interactionID: nonEmpty((json as? [String: Any])?["interaction_id"]))]

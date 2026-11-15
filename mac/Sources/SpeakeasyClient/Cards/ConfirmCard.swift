@@ -24,6 +24,10 @@ struct ConfirmCard: View {
         }
     }
     @Environment(\.widgetSlim) private var slim
+    /// Accessibility text sizes: a label goes above its value (SPK-478), so a total never breaks
+    /// inside the number and a label never hyphenates in its narrow column.
+    @Environment(\.dynamicTypeSize) private var typeSize
+    private var stacked: Bool { typeSize.isAccessibilitySize }
     /// A slim Home widget (SPK-358 pass 4): a pending checkout's item, total and who/where on one
     /// quiet line, so its Buy / Cancel buttons never fall under the composer; the full card (one tap)
     /// shows the breakdown.
@@ -178,10 +182,18 @@ struct ConfirmCard: View {
             }
             ForEach(Self.fields, id: \.0) { key, label in
                 if let value = details[key].string {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text(label).font(.caption).foregroundStyle(style.secondary).frame(width: 82, alignment: .leading)
-                        Text(AgentMarkdown.attributed(key == "payment_last4" ? "•••• \(value)" : value))
-                            .font(.callout).fixedSize(horizontal: false, vertical: true)
+                    let shown = Text(AgentMarkdown.attributed(key == "payment_last4" ? "•••• \(value)" : value))
+                        .font(.callout).fixedSize(horizontal: false, vertical: true)
+                    if stacked {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(label).font(.caption).foregroundStyle(style.secondary)
+                            shown
+                        }
+                    } else {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Text(label).font(.caption).foregroundStyle(style.secondary).frame(width: 82, alignment: .leading)
+                            shown
+                        }
                     }
                 }
             }
@@ -189,11 +201,22 @@ struct ConfirmCard: View {
         }
     }
     private func amount(_ label: String, key: String, prominent: Bool = false) -> some View {
-        HStack {
-            Text(label).foregroundStyle(prominent ? .primary : .secondary)
-            Spacer(minLength: 12)
-            Text((details["currency"].string == "USD" ? "$" : (details["currency"].string ?? "") + " ") + (details[key].string ?? "—"))
-                .monospacedDigit()
+        let value = Text((details["currency"].string == "USD" ? "$" : (details["currency"].string ?? "") + " ") + (details[key].string ?? "—"))
+            .monospacedDigit()
+        return Group {
+            if stacked {
+                // The number on its own line, never broken inside (it shrinks before it wraps).
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label).foregroundStyle(prominent ? .primary : .secondary)
+                    value.lineLimit(1).minimumScaleFactor(0.5)
+                }
+            } else {
+                HStack {
+                    Text(label).foregroundStyle(prominent ? .primary : .secondary)
+                    Spacer(minLength: 12)
+                    value
+                }
+            }
         }
         .font(prominent ? .title3.weight(.semibold) : .callout)
     }
