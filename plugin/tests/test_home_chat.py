@@ -240,7 +240,7 @@ def test_fast_replies_list_sonnet_terra_and_haiku_only_never_the_main_model(serv
     status, body = http(server.base_url, "GET", "/voice/home/model", None, server.token)
     c = body["coordinator"]
     # Geo 11-12: a ChatGPT sign-in (Codex) first, then a direct Claude subscription.
-    assert status == 200 and c["source"] == "auto" and c["auto"]["id"] == "openai-codex/gpt-6.1-terra"
+    assert status == 200 and c["source"] == "auto" and c["auto"]["id"] == "anthropic/claude-sonnet-5-5"   # a Claude-default user gets Sonnet (Geo 11-15)
     assert [o["id"] for o in c["options"]] == ["openai-codex/gpt-6.1-terra", "anthropic/claude-sonnet-5-5",
                                                "anthropic/claude-haiku-5-5"]
     # The work model (the chip's hero) is the Hermes default; "More…" lists the rest, one row each.

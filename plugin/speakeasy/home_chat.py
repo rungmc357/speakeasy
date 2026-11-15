@@ -429,9 +429,21 @@ def approved(entries: dict[str, dict[str, Any]],
     return out
 
 
-def pick_auto(entries: dict[str, dict[str, Any]]) -> str | None:
+def pick_auto(entries: dict[str, dict[str, Any]], prefer: str | None = None) -> str | None:
+    """Auto's coordinator. *prefer* is the provider of the user's Hermes default model: when that
+    provider has an approved model connected, it wins (a Claude user gets Sonnet, not Codex's Terra);
+    otherwise COORDINATOR_MODELS order decides (Codex first, then direct Claude)."""
     got = approved(entries)
+    if prefer:
+        mine = [m for m in got if (entries.get(m) or {}).get("provider") == prefer]
+        if mine:
+            return mine[0]
     return got[0] if got else None
+
+
+def _default_provider(cfg: dict[str, Any]) -> str | None:
+    main = cfg.get("model") if isinstance(cfg, dict) else None
+    return str(main.get("provider") or "") or None if isinstance(main, dict) else None
 
 
 _PROMPT = """You are {name}, the user's own AI assistant, chatting with them on the Home screen of the \
@@ -1881,7 +1893,8 @@ class HomeChat:
         block = aux.get(AUX_TASK)
         if isinstance(block, dict) and (str(block.get("provider") or "auto") != "auto" or block.get("model")):
             return {"task": AUX_TASK, "source": "configured"}
-        auto = pick_auto({k: v for k, v in (entries or {}).items() if k not in self._failed()})
+        auto = pick_auto({k: v for k, v in (entries or {}).items() if k not in self._failed()},
+                         prefer=_default_provider(cfg))
         if auto:
             provider, _, model = auto.partition("/")
             return {"provider": provider, "model": model, "source": "auto"}
@@ -1964,7 +1977,8 @@ class HomeChat:
             return {"id": mid, "name": e.get("name") or MD.friendly_name(mid.partition("/")[2] or mid),
                     "provider_name": e.get("provider_name") or mid.partition("/")[0]}
         failed = self._failed()
-        auto = pick_auto({k: v for k, v in entries.items() if k not in failed})
+        auto = pick_auto({k: v for k, v in entries.items() if k not in failed},
+                         prefer=_default_provider(self._config()))
         note = None
         if current and current in failed:
             note = f"{row(current)['name']} didn't answer last time, so another model replied."
