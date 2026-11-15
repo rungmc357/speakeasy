@@ -70,7 +70,7 @@ struct WeatherCard: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
-                    Image(systemName: weatherSymbol(card.weatherIcon)).symbolRenderingMode(.multicolor).font(.system(size: 30))
+                    WeatherGlyph(card.weatherIcon, size: 30)
                     if card["temp"].double != nil {
                         Text(card.weatherHighLow)
                             .cardFont(11, weight: .medium, digits: true)
@@ -87,7 +87,7 @@ struct WeatherCard: View {
                     ForEach(Array(hours.prefix(6).enumerated()), id: \.offset) { _, h in
                         VStack(spacing: 4) {
                             Text(h["label"].string ?? "").cardFont(11.5).foregroundStyle(.secondary)
-                            Image(systemName: weatherSymbol(h["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 13))
+                            WeatherGlyph(h["icon"].string, size: 13)
                             Text(ViewCard.degrees(h["temp"].double)).cardFont(11, weight: .medium, digits: true)
                         }
                         .frame(maxWidth: .infinity)
@@ -105,8 +105,7 @@ struct WeatherCard: View {
                             // A day name stays one line ("Tuesday" used to wrap to "Tuesda / y" on Home).
                             Text(d["label"].string ?? "").cardFont(13).lineLimit(1).minimumScaleFactor(0.7)
                                 .frame(width: 58, alignment: .leading)
-                            Image(systemName: weatherSymbol(d["icon"].string)).symbolRenderingMode(.multicolor)
-                                .font(.system(size: 16)).frame(width: 22)
+                            WeatherGlyph(d["icon"].string, size: 16).frame(width: 22)
                             // A real chance of rain (30% and up) under the icon's day, as the designs say it:
                             // "take an umbrella Thursday" needs the number on the card.
                             Group {
@@ -154,7 +153,7 @@ struct WeatherGlanceCard: View {
             ForEach(Array(hours.enumerated()), id: \.offset) { _, h in
                 HStack(spacing: 4) {
                     Text(h["label"].string ?? "").cardFont(11).foregroundStyle(.secondary).lineLimit(1)
-                    Image(systemName: weatherSymbol(h["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 11))
+                    WeatherGlyph(h["icon"].string, size: 11)
                     Text(ViewCard.degrees(h["temp"].double)).cardFont(11, weight: .medium, digits: true)
                 }
                 .fixedSize()
@@ -169,7 +168,7 @@ struct WeatherNow: View {
     let card: ViewCard
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            Image(systemName: weatherSymbol(card.weatherIcon)).symbolRenderingMode(.multicolor).font(.system(size: 26))
+            WeatherGlyph(card.weatherIcon, size: 26)
             Text(card.weatherHeadline).cardFont(30, weight: .light).lineLimit(1).fixedSize()
             VStack(alignment: .leading, spacing: 1) {
                 Text(sentenceCase(card.weatherCondition)).cardFont(12.5, weight: .semibold).lineLimit(1)

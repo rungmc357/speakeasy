@@ -252,6 +252,16 @@ struct Sparkline: View {
     }
 }
 
+/// A weather symbol at a fixed size (symbols keep fixed sizes; text grows).
+public struct WeatherGlyph: View {
+    let icon: String?
+    let size: CGFloat
+    public init(_ icon: String?, size: CGFloat) { self.icon = icon; self.size = size }
+    public var body: some View {
+        Image(systemName: weatherSymbol(icon)).symbolRenderingMode(.multicolor).font(.system(size: size))
+    }
+}
+
 func weatherSymbol(_ icon: String?) -> String {
     switch icon {
     case "sun": return "sun.max.fill"
