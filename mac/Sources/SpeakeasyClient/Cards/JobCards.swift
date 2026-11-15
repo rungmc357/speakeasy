@@ -270,7 +270,7 @@ public struct AnswerGlance: View {
             switch card.kind {
             case "weather":
                 HStack(spacing: 5) {
-                    Image(systemName: weatherSymbol(card.weatherIcon)).symbolRenderingMode(.multicolor).font(.system(size: 16))
+                    WeatherGlyph(card.weatherIcon, size: 16)
                     VStack(alignment: .leading, spacing: 0) {
                         Text(card.weatherHeadline).cardFont(17, weight: .medium, digits: true).lineLimit(1)
                         let c = card.weatherCondition

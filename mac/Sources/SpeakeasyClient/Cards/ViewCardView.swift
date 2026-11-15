@@ -252,6 +252,43 @@ struct Sparkline: View {
     }
 }
 
+/// A weather symbol at a fixed size (symbols keep fixed sizes; text grows). In dark mode it keeps SF
+/// Symbols' multicolor look. In light mode multicolor's cloud layer is fixed white and vanished on the
+/// light card (SPK-502: a cloudy day had no icon, rain was three stray drops), so the layers are
+/// painted: a soft gray cloud, a yellow sun or bolt, blue rain, light blue snow.
+public struct WeatherGlyph: View {
+    let icon: String?
+    let size: CGFloat
+    @Environment(\.colorScheme) private var scheme
+    public init(_ icon: String?, size: CGFloat) { self.icon = icon; self.size = size }
+    public var body: some View {
+        let image = Image(systemName: weatherSymbol(icon)).font(.system(size: size))
+        if scheme == .dark {
+            image.symbolRenderingMode(.multicolor)
+        } else {
+            let (first, second, third) = Self.lightLayers(icon)
+            image.symbolRenderingMode(.palette).foregroundStyle(first, second, third)
+        }
+    }
+
+    static let cloud = Color(white: 0.66)
+    static let sun = Color(red: 1.0, green: 0.76, blue: 0.05)
+    static let rain = Color(red: 0.16, green: 0.56, blue: 0.95)
+    static let snow = Color(red: 0.45, green: 0.72, blue: 0.95)
+
+    /// Palette layers in the symbol's own order (cloud first; then sun, drops or flakes; storm: rain, then bolt).
+    static func lightLayers(_ icon: String?) -> (Color, Color, Color) {
+        switch icon {
+        case "sun": return (sun, sun, sun)
+        case "cloud_sun": return (cloud, sun, sun)
+        case "drizzle", "rain", "heavy_rain": return (cloud, rain, rain)
+        case "sleet", "snow": return (cloud, snow, snow)
+        case "storm": return (cloud, rain, sun)
+        default: return (cloud, cloud, cloud)   // cloud, fog, unknown
+        }
+    }
+}
+
 func weatherSymbol(_ icon: String?) -> String {
     switch icon {
     case "sun": return "sun.max.fill"
