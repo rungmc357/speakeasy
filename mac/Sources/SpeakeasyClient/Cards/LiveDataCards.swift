@@ -66,11 +66,11 @@ struct WeatherCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(card["place"].string ?? "Weather").cardFont(12.5, weight: .semibold).lineLimit(1)
                     Text(card.weatherHeadline).cardFont(38, weight: .light)
-                    Text(sentenceCase(card["condition"].string ?? "")).cardFont(11.5).foregroundStyle(.secondary)
+                    Text(sentenceCase(card.weatherCondition)).cardFont(11.5).foregroundStyle(.secondary)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
-                    Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 30))
+                    Image(systemName: weatherSymbol(card.weatherIcon)).symbolRenderingMode(.multicolor).font(.system(size: 30))
                     if card["temp"].double != nil {
                         Text(card.weatherHighLow)
                             .cardFont(11, weight: .medium, digits: true)
@@ -169,10 +169,10 @@ struct WeatherNow: View {
     let card: ViewCard
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            Image(systemName: weatherSymbol(card["icon"].string)).symbolRenderingMode(.multicolor).font(.system(size: 26))
+            Image(systemName: weatherSymbol(card.weatherIcon)).symbolRenderingMode(.multicolor).font(.system(size: 26))
             Text(card.weatherHeadline).cardFont(30, weight: .light).lineLimit(1).fixedSize()
             VStack(alignment: .leading, spacing: 1) {
-                Text(sentenceCase(card["condition"].string ?? "")).cardFont(12.5, weight: .semibold).lineLimit(1)
+                Text(sentenceCase(card.weatherCondition)).cardFont(12.5, weight: .semibold).lineLimit(1)
                 Text(card["place"].string ?? "Weather").cardFont(11).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
