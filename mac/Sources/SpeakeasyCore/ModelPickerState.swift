@@ -27,7 +27,8 @@ public struct ModelPickerState: Equatable, Sendable {
         self.existingConversation = existingConversation
         if let nextModel {
             self.model = catalog.option(nextModel.id) ?? ModelOption(id: nextModel.id, name: nextModel.name,
-                provider: "", providerName: nextModel.providerName, levels: [])
+                provider: "", providerName: nextModel.providerName, levels: [],
+                providerLabel: nextModel.providerLabel, metered: nextModel.metered)
             self.reasoning = nextModel.reasoning
         } else if existingConversation && self.chatChoice == nil {
             self.model = nil; self.reasoning = nil
@@ -48,6 +49,21 @@ public struct ModelPickerState: Equatable, Sendable {
     public var followsDefault: Bool { authoritative.map { ["default", "hermes"].contains($0.source) } ?? (!existingConversation && chatChoice == nil) }
     /// The segmented control's levels (none: hidden, the model doesn't reason).
     public var levels: [ReasoningLevel] { model?.levels ?? [] }
+
+    /// SPK-508: the provider the chip's model runs on ("Claude subscription", "OpenRouter — pay per
+    /// use"); nil when the model is unknown.
+    public var chipProvider: String? {
+        if authoritative == nil && existingConversation && chatChoice == nil { return nil }
+        let label = authoritative.map { badge in catalog.option(badge.id)?.providerLabel ?? badge.providerLabel }
+            ?? catalog.effective(chatChoice).model?.providerLabel
+        return label?.isEmpty == false ? label : nil
+    }
+    /// "Claude Opus 5.5 · High · Claude subscription".
+    public var chipLabelWithProvider: String { chipProvider.map { "\(chipLabel) · \($0)" } ?? chipLabel }
+    /// The sheet header's line for the working selection: "Claude Sonnet 5.5 · Claude subscription".
+    public var selectionLine: String { model?.withProvider ?? "Default model" }
+    /// The provider row holding the working selection (it starts expanded).
+    public var selectedProviderID: String? { model.flatMap { catalog.provider(of: $0.id)?.id ?? $0.provider } }
 
     public mutating func select(_ option: ModelOption) {
         model = option

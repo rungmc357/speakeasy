@@ -1531,6 +1531,14 @@ Cached for ten minutes (`refresh=1` re-reads Hermes). Shape:
 featured (else first) six models plus any in use; `more` counts the rest. `available: false` (Hermes'
 list couldn't be read): hide the chip.
 
+Every provider row and every model (here, in `/voice/home/model`'s rows and in a task's `model`) says
+what the provider is (SPK-508): `label` on a row / `provider_label` on a model ("ChatGPT sign-in",
+"Claude subscription", "OpenRouter — pay per use", "Nous Portal — pay per use", "Venice", a local
+server's own name), `metered` (true = every request is billed: an aggregator or pay-as-you-go portal)
+and `kind` / `provider_kind` (`subscription`, `metered`, `local`, `other`). Pickers group models by
+provider and name the provider beside the chosen model. The same model from two providers is two
+entries (`anthropic/claude-sonnet-5-5`, `openrouter/anthropic/claude-sonnet-5-5`), never merged.
+
 When Speakeasy has no default of its own and Hermes actually served its latest new task (one that named
 no model) on a different model than config.yaml names (a profile override, a fallback provider),
 `default` names the served one and adds `"served": true, "configured": "<config.yaml's id>"`; only that
