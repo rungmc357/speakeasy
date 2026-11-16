@@ -3,6 +3,12 @@
 # Run before every push.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Every check below uses `git grep`, which matches nothing outside a repository (and only the outer
+# repository's files inside someone else's). Refuse to report "clean" for a tree it can't search.
+if [[ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$(pwd -P)" ]]; then
+  echo "scan-secrets: $(pwd -P) is not the top of a git repository, so nothing would be searched." >&2
+  echo "  For a plain snapshot (git archive), run: git init -q && git add -A  first." >&2; exit 2
+fi
 patterns=(
   'sk-[A-Za-z0-9_-]{20,}'            # OpenAI-style keys
   'sk-ant-[A-Za-z0-9_-]{20,}'        # Anthropic keys

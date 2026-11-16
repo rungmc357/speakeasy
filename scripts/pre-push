@@ -1,6 +1,27 @@
 #!/usr/bin/env bash
-# Blocks a push when the repo contains a personal term (list kept outside the repo) or a secret.
+# Blocks a push when a pushed commit contains a personal term (list kept outside the repo) or a secret.
 # Install: ln -sf ../../scripts/pre-push .git/hooks/pre-push
-set -euo pipefail
+#
+# Scans exactly the commits being pushed, not whatever happens to be checked out in the directory you
+# push from: pushing `<sha>:refs/heads/<branch>` from an old checkout used to scan the old files.
+set -uo pipefail
 root=$(git rev-parse --show-toplevel)
-exec "$root/scripts/scan-secrets.sh"
+status=0
+while read -r _lref lsha rref _rsha; do
+  [[ "$lsha" =~ ^0+$ ]] && continue                       # branch deletion: nothing to scan
+  t=$(mktemp -d "${TMPDIR:-/tmp}/speakeasy-prepush.XXXXXX")
+  git archive "$lsha" | tar -x -C "$t"
+  mkdir -p "$t/scripts"
+  for g in scan-secrets.sh check-real-calls.py; do
+    [[ -f "$t/scripts/$g" || ! -f "$root/scripts/$g" ]] || cp "$root/scripts/$g" "$t/scripts/$g"
+  done
+  # scan-secrets uses `git grep`, which finds nothing outside a repository: index the snapshot.
+  # Hooks inherit GIT_DIR/GIT_INDEX_FILE: drop them so init/add/grep touch only the snapshot.
+  if ! ( unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+         cd "$t" && git init -q && git add -A && bash scripts/scan-secrets.sh ); then
+    echo "pre-push: ${rref#refs/heads/} @ ${lsha:0:8} failed the scan" >&2
+    status=1
+  fi
+  rm -rf "$t"
+done
+exit $status

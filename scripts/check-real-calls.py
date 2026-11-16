@@ -130,6 +130,13 @@ def main():
         w = words(t)
         for i in range(len(w) - N + 1):
             grams.add(" ".join(w[i:i + N]))
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if top.returncode or Path(top.stdout.strip()).resolve() != Path.cwd().resolve():
+        # `git ls-files` lists nothing outside a repository: refuse rather than pass an unsearched tree.
+        print(f"check-real-calls: {Path.cwd()} is not the top of a git repository, so nothing would be "
+              "searched. For a plain snapshot (git archive), run: git init -q && git add -A  first.",
+              file=sys.stderr)
+        return 2
     files = subprocess.run(["git", "ls-files"], capture_output=True, text=True).stdout.split("\n")
     bad = 0
     for f in files:
