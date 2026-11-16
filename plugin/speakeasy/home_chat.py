@@ -309,9 +309,9 @@ def fallback_ack(asked: str, files: Any = None, avoid: str | None = None, job: s
                 else "Let me take a look at what you sent.")
     name = job_name(job) if job else ""
     if name and not chat:
-        line = f"Back on {name}."
-        if line != avoid and len(line) <= 90:
-            return line
+        for line in (f"Back on {name}.", f"Still on {name}."):
+            if line != avoid and len(line) <= 90:
+                return line
     if chat or small_talk(asked) or not asking(asked):
         return _pick(CHAT_ACKS, asked, avoid)
     return _pick(NEUTRAL_ACKS, asked, avoid)
@@ -1126,8 +1126,7 @@ class HomeChat:
             (1 - DECIDE_EMA) * self._decide_s + DECIDE_EMA * took)
 
     def _await_first_words(self, turn: _Turn, ack_box: dict[str, Any], ack_ready: threading.Event,
-                           text: str, files: list[dict], last: str | None, job: str | None = None,
-                           chat: bool = False) -> None:
+                           text: str, files: list[dict], last: str | None, chat: bool = False) -> None:
         """F5: until the turn has words, by the clock started on arrival: nothing before the early
         mark (an answer that quick comes alone); then the model's acknowledgement the moment it is
         ready; at the fallback mark a line without a model, unless the answer is under
@@ -1171,7 +1170,7 @@ class HomeChat:
                     turn.done.wait(0.02)
                 if turn.done.is_set() or turn.visible:
                     return
-        said = ack_box.get("text") or fallback_ack(text, files, avoid=last, job=job, chat=chatty())
+        said = ack_box.get("text") or fallback_ack(text, files, avoid=last, job=ack_box.get("job"), chat=chatty())
         with turn.lock:
             if not turn.visible:
                 turn.ack_row = self._add("assistant", said, self.clock(), reply_to=turn.user_id, part=PART_ACK,
@@ -1187,11 +1186,10 @@ class HomeChat:
         history = self.shown()[-HISTORY_TURNS:]
         quote = self._quote(body.get("reply_to"))
         last = next((m.get("text") for m in reversed(history) if m.get("role") == "assistant"), None)
-        # ack-context: the job a follow-up is about (a quoted card, else the job the user has selected).
+        # ack-context: the job a follow-up is about (a quoted card, else the job the user has selected;
+        # that title is read on the acknowledgement's thread, off the clock).
         focus = body.get("focus") if isinstance(body.get("focus"), str) else None
-        job = (quote.get("text") if quote and quote.get("role") == "card" else
-               (self._card_quote(focus) or {}).get("text") if focus else None)
-        ack_box: dict[str, Any] = {}
+        ack_box: dict[str, Any] = {"job": quote.get("text") if quote and quote.get("role") == "card" else None}
         ack_ready = threading.Event()
         if (text or ids) and self.deadline_s > 0:
             # The acknowledgement is written while the coordinator decides, so it is ready by the
@@ -1200,8 +1198,10 @@ class HomeChat:
             def write_ack() -> None:
                 t0 = time.monotonic()
                 try:
+                    if focus and not ack_box["job"]:
+                        ack_box["job"] = self._run_title(focus) or (self._card_quote(focus) or {}).get("text")
                     ack_box["text"], ack_box["model"], ack_box["kind"] = self._write_ack(
-                        text, last, history=history, quote=quote, job=job, files=bool(ids))
+                        text, last, history=history, quote=quote, job=ack_box["job"], files=bool(ids))
                 except Exception as exc:  # noqa: BLE001 - the fallback line is used
                     logger.info("speakeasy: Home's acknowledgement wasn't written (%s)", type(exc).__name__)
                 finally:
@@ -1217,7 +1217,7 @@ class HomeChat:
         user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files, quote=quote)
         turn = _Turn(user_id, arrived)
         self._inflight[user_id] = turn
-        chat = bool(text) and not ids and not job and (small_talk(text) or not asking(text))
+        chat = bool(text) and not ids and not ack_box["job"] and not focus and (small_talk(text) or not asking(text))
 
         def work() -> None:
             try:
@@ -1238,7 +1238,7 @@ class HomeChat:
         # The turn's worker carries the request's context (which profile the app looks at).
         threading.Thread(target=contextvars.copy_context().run, args=(work,), name="home-turn", daemon=True).start()
         self.publish_soon()   # every device shows the message while the coordinator thinks (off this thread)
-        self._await_first_words(turn, ack_box, ack_ready, text, files, last, job=job, chat=chat)
+        self._await_first_words(turn, ack_box, ack_ready, text, files, last, chat=chat)
         if not turn.done.is_set():
             # Not answered in time: the acknowledgement is up (the model's line if it was ready, else
             # one without a model), and the answer follows in this exchange.
@@ -1261,10 +1261,17 @@ class HomeChat:
         return turn.result
 
     def _run_title(self, run_id: Any) -> str:
+        """A job's title from the store row (one indexed read; never builds the Now model, which the
+        acknowledgement can't wait for). "" when unknown."""
         if not isinstance(run_id, str) or not run_id:
             return ""
-        quote = self._card_quote(run_id)
-        return quote.get("text", "") if quote else ""
+        try:
+            with self.store._lock:
+                row = self.store._db.execute("SELECT title FROM runs WHERE run_id=? OR idem_key=? LIMIT 1",
+                                             (run_id, run_id)).fetchone()
+        except Exception:
+            row = None
+        return str(row[0] or "").strip()[:300] if row else ""
 
     def ack_messages(self, asked: str, history: list[dict[str, Any]] | None = None, quote: dict | None = None,
                      job: str | None = None, files: bool = False) -> list[dict[str, str]]:

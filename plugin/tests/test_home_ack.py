@@ -342,6 +342,17 @@ def test_a_reply_to_a_card_gives_the_writer_the_card_and_a_job_named_fallback(se
     said = body["reply"]["text"]
     assert body["reply"]["part"] == "ack" and said.startswith("Back on ") and "submit" not in said.lower()
     gate.set()
+    wait_for(lambda: not now_body(server)["stream"]["current"]["pending"])
+    # The job the user has selected (no quote) names the line too, and the writer sees that job.
+    gate2 = threading.Event()
+    seen2, _ = capture(service, {"reply": "Asking now.", "action": "follow_up", "job": "j1",
+                                 "request": "Ask about the start date"}, gate=gate2, ack=RuntimeError("down"))
+    _, body = post(server, {"text": "ask them when they can start", "client_id": "c_card3", "focus": run_id})
+    said2 = body["reply"]["text"]
+    assert said2 == said.replace("Back on ", "Still on ") and "start" not in said2   # never the same line twice
+    assert "The job they have selected" in seen2[0][1][-1]["content"]
+    assert "[job: " in seen2[0][1][-1]["content"]            # earlier replies name their job
+    gate2.set()
 
 
 def test_the_ack_writer_starts_the_moment_the_message_arrives(server, service, hermes):
@@ -358,11 +369,11 @@ def test_a_quick_conversational_answer_gets_no_filler_line(server, service, herm
     the point a job's acknowledgement would have gone up."""
     gate = threading.Event()
     script(service, {"reply": "Ha, nine hours in Doha would break anyone.", "action": "none"}, gate=gate,
-           ack=RuntimeError("down"))
+           ack=RuntimeError("down"), deadline=1.0)
     t0 = time.monotonic()
-    threading.Timer(0.34, gate.set).start()   # between the fallback mark (0.29 s) and the chat mark (0.48 s)
+    threading.Timer(0.85, gate.set).start()   # between the fallback mark (0.72 s) and the chat mark (1.2 s)
     _, body = post(server, {"text": "honestly that layover was brutal", "client_id": "c_chat1"})
-    assert time.monotonic() - t0 > 0.4 * HC.ACK_FALLBACK_SHARE        # it came after a job's ack mark
+    assert time.monotonic() - t0 > 1.0 * HC.ACK_FALLBACK_SHARE        # it came after a job's ack mark
     assert body["reply"]["text"] == "Ha, nine hours in Doha would break anyone." and "part" not in body["reply"]
     assert [m["role"] for m in messages(server)] == ["user", "assistant"]
 
@@ -370,8 +381,8 @@ def test_a_quick_conversational_answer_gets_no_filler_line(server, service, herm
 def test_a_chat_tagged_question_waits_for_its_answer_too(server, service, hermes):
     gate = threading.Event()
     script(service, {"reply": "Yes, for that loop the pass pays for itself.", "action": "none"}, gate=gate,
-           ack="CHAT: Ooh, the Kyushu loop.", ack_delay=0.0)
-    threading.Timer(0.34, gate.set).start()
+           ack="CHAT: Ooh, the Kyushu loop.", ack_delay=0.0, deadline=1.0)
+    threading.Timer(0.85, gate.set).start()
     _, body = post(server, {"text": "is a rail pass worth it for the Kyushu loop", "client_id": "c_chat2"})
     assert "part" not in body["reply"] and body["reply"]["text"].startswith("Yes, for that loop")
 
