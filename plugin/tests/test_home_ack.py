@@ -6,6 +6,7 @@ repeating it. The coordinator and the acknowledgement writer are scripted. Inven
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 
@@ -118,7 +119,8 @@ def test_a_failed_ack_model_still_lands_a_line_from_the_ask_inside_the_deadline(
     _, body = post(server, {"text": "what's my flight info for the Lisbon trip", "client_id": "c_fail"})
     assert time.monotonic() - t0 < 0.9
     said = body["reply"]["text"]
-    assert body["reply"]["part"] == "ack" and "flight info for the Lisbon trip" in said and said.endswith(".")
+    # ack-context: a neutral beat, never the ask read back ("Let me look into your flight info...").
+    assert body["reply"]["part"] == "ack" and said in HC.NEUTRAL_ACKS and "Lisbon" not in said
     gate.set()
     wait_for(lambda: len([m for m in messages(server) if m["role"] == "assistant"]) == 2)
 
@@ -129,7 +131,7 @@ def test_a_slow_ack_model_is_not_waited_for(server, service, hermes):
     t0 = time.monotonic()
     _, body = post(server, {"text": "how is the patio quote going", "client_id": "c_slowack"})
     assert time.monotonic() - t0 < 0.9
-    assert body["reply"]["text"] != "Too late to matter." and "patio quote" in body["reply"]["text"]
+    assert body["reply"]["text"] != "Too late to matter." and body["reply"]["text"] in HC.NEUTRAL_ACKS
     gate.set()
 
 
@@ -201,23 +203,53 @@ def test_a_restart_mid_turn_keeps_the_ack_and_says_so(server, service, hermes):
     assert len(again._rows("WHERE reply_to=?", (uid,))) == 2
 
 
-def test_fallback_ack_is_specific_and_varies():
-    a = HC.fallback_ack("why is the build failing on the release branch")
-    assert a.startswith("Let me") and "why the build is failing" in a
-    b = HC.fallback_ack("can you check my flight info for japan")
-    assert "your flight info for japan" in b
-    c = HC.fallback_ack("what's the weather in Lisbon this weekend")
-    assert "weather in Lisbon this weekend" in c
-    assert len({a, b, c}) == 3
+def test_fallback_ack_never_reads_the_ask_back():
+    """ack-context: the line without a model is a neutral beat or names the job a follow-up is about;
+    it never rebuilds the user's words (the old topic templates mangled them)."""
+    assert HC.fallback_ack("why is the build failing on the release branch") in HC.NEUTRAL_ACKS
+    assert HC.fallback_ack("can you check my flight info for japan") in HC.NEUTRAL_ACKS
+    b = HC.fallback_ack("check my flight info for japan")
     assert HC.fallback_ack("check my flight info for japan", avoid=b) != b
-    assert HC.fallback_ack("", files=[{"kind": "picture"}]).startswith("Let me take a look at")
-    assert HC.fallback_ack("that's a fun idea honestly") == "Hmm, let me think about that."
-    assert HC.fallback_ack("swiping to dismiss suggestions on build 73 also tries to move you to another screen") == \
-        "Let me look into that."
-    assert HC.fallback_ack("can you draft a note to the invented landlord about the leak") == \
-        "I'll draft a note to the invented landlord about the leak."
-    assert HC.fallback_ack("show me the email here") == "I'll show you the email here."
-    assert "your flight info for japan" in HC.fallback_ack("what\u2019s my flight info for japan")
+    assert HC.fallback_ack("", files=[{"kind": "picture"}]) == "Let me take a look at the picture."
+    assert HC.fallback_ack("that's a fun idea honestly") in HC.CHAT_ACKS
+    assert HC.fallback_ack("thanks!") in HC.CHAT_ACKS
+    said = HC.fallback_ack("submit it", job="Opt out of the people-search sites")
+    assert said.startswith("Back on \u201cOpt out of the people-search") and said.endswith("\u201d.")
+    assert HC.fallback_ack("any update", job="Paint search") == "Back on the paint search."
+    assert HC.fallback_ack("ha nice", job="Paint search", chat=True) in HC.CHAT_ACKS
+    assert HC.fallback_ack("ok send it", job="A job") in HC.NEUTRAL_ACKS     # a placeholder title isn't a name
+
+
+INVENTED_ASKS = [
+    "will the new pillow actually help my neck",
+    "is a rail pass worth it for the Kyushu loop",
+    "a checked bag works",
+    "honestly that layover was brutal",
+    "swiping to dismiss the reminder also flips the page on build 9",
+    "can you draft a note to the invented landlord about the leak",
+    "why is the patio quote so high",
+    "what's my flight info for the Lisbon trip",
+    "I think the green one looks better",
+    "find me a rain jacket under $100",
+]
+
+
+def test_fallback_never_echoes_or_mangles_the_users_words():
+    for ask in INVENTED_ASKS:
+        for job in (None, "Fence repair estimate"):
+            line = HC.fallback_ack(ask, job=job)
+            words = [w for w in re.findall(r"[a-z$0-9']+", ask.lower())]
+            trigrams = {" ".join(words[i:i + 3]) for i in range(len(words) - 2)}
+            flat = " ".join(re.findall(r"[a-z$0-9']+", line.lower()))
+            assert not any(t in flat for t in trigrams), (ask, line)
+            assert "look into" not in line.lower() and "think about" not in line.lower(), (ask, line)
+            assert len(line.split()) <= 8, line
+
+
+def test_remarks_never_get_a_look_into_line():
+    for remark in ("honestly that layover was brutal", "I think the green one looks better", "lol", "fair enough",
+                   "that's a fun idea honestly", "ugh mondays"):
+        assert HC.fallback_ack(remark) in HC.CHAT_ACKS
 
 
 def test_after_ack_never_repeats_the_acknowledgement():
@@ -234,3 +266,155 @@ def test_clean_ack_rejects_read_backs_and_skip():
     assert HC.clean_ack("SKIP", "hi") is None and HC.clean_ack("Ha, fair point.", "hermes is great") == "Ha, fair point."
     assert HC.clean_ack("I'll dig into the swipe bug. It might be the gesture.", "swipe bug") == "I'll dig into the swipe bug."
     assert HC.clean_ack("Pulling up your Japan flight details", "flight?") == "Pulling up your Japan flight details."
+
+
+def test_clean_ack_strips_the_kind_tag():
+    assert HC.ack_tag("CHAT: Ha, layovers are the worst.") == ("CHAT", "Ha, layovers are the worst.")
+    assert HC.ack_tag("JOB - Looking for a rain jacket in budget.")[0] == "JOB"
+    assert HC.ack_tag("Looking now.") == (None, "Looking now.")
+    assert HC.clean_ack("JOB: Submitting the opt-out now.", "submit it") == "Submitting the opt-out now."
+    assert HC.clean_ack("CHAT: SKIP", "lol") is None
+
+
+# -- ack-context: the writer sees the conversation ------------------------------------------------
+
+def capture(service, answer, gate=None, ack="JOB: Back on the fence quote.", deadline=0.4):
+    """Like ``script`` but records what the acknowledgement writer was sent, and when."""
+    seen: list = []
+    calls = script(service, answer, gate=gate, ack=ack, deadline=deadline)
+    inner = service.home_chat._ack_call
+
+    def write(messages):
+        seen.append((time.monotonic(), messages))
+        return inner(messages)
+    service.home_chat._ack_call = write
+    return seen, calls
+
+
+def test_the_ack_writer_sees_the_last_messages_but_not_old_acks(server, service, hermes):
+    chat = service.home_chat
+    uid = chat._add("user", "make a packing list for the invented Bergen trip", chat.clock() - 30)
+    chat._add("assistant", "Let me look into that.", chat.clock() - 29, reply_to=uid, part="ack")
+    chat._add("assistant", "Here's the list. Carry-on only, or are you checking a bag?", chat.clock() - 20,
+              reply_to=uid, part="answer")
+    gate = threading.Event()
+    seen, _ = capture(service, {"reply": "Then the rain shell and boots both fit.", "action": "none"}, gate=gate,
+                      ack="CHAT: Good, a checked bag means the boots can come.")
+    _, body = post(server, {"text": "a checked bag works", "client_id": "c_ctx"})
+    content = seen[0][1][-1]["content"]
+    assert "packing list for the invented Bergen trip" in content and "checking a bag?" in content
+    assert "Let me look into that." not in content           # earlier filler acks are left out
+    assert content.rstrip().endswith("Newest message: a checked bag works")
+    assert "JOB" in seen[0][1][0]["content"] and "CHAT" in seen[0][1][0]["content"]
+    assert len(content) < 2500                               # small prompt: it races the clock
+    gate.set()
+    wait_for(lambda: not now_body(server)["stream"]["current"]["pending"])
+    texts = [m["text"] for m in messages(server) if m["role"] == "assistant"]
+    assert texts[-1] == "Then the rain shell and boots both fit."
+
+
+def test_the_ack_writer_keeps_only_the_last_six_messages():
+    from types import SimpleNamespace
+    chat = HC.HomeChat.__new__(HC.HomeChat)
+    chat.svc = SimpleNamespace(settings=SimpleNamespace(get=lambda: {"assistant_name": "Todd"}))
+    history = [{"role": "user" if i % 2 == 0 else "assistant", "text": f"invented line {i} " + "x" * 400}
+               for i in range(10)]
+    msgs = chat.ack_messages("and the other one?", history)
+    content = msgs[-1]["content"]
+    assert "invented line 3 " not in content and "invented line 4 " in content and "invented line 9 " in content
+    assert all(len(line) <= HC.ACK_LINE_CHARS + 10 for line in content.splitlines())
+    assert msgs[0]["content"].startswith("You are Todd")
+
+
+def test_a_reply_to_a_card_gives_the_writer_the_card_and_a_job_named_fallback(server, service, hermes):
+    script(service, {"reply": "Let me look for a fence quote.", "action": "start",
+                     "request": "Get a quote for the invented fence repair"})
+    first = post(server, {"text": "get a quote for the fence repair", "client_id": "c_card1"})[1]
+    run_id = first["run_id"]
+    assert run_id
+    title = HC.HomeChat._card_quote(service.home_chat, run_id)["text"]
+    gate = threading.Event()
+    seen, _ = capture(service, {"reply": "Sending it.", "action": "follow_up", "job": "j1",
+                                "request": "Submit the quote request"}, gate=gate, ack=RuntimeError("down"))
+    _, body = post(server, {"text": "submit it", "client_id": "c_card2", "reply_to": "r:" + run_id})
+    content = seen[0][1][-1]["content"]
+    assert f"replying to the job card \u201c{title}" in content
+    said = body["reply"]["text"]
+    assert body["reply"]["part"] == "ack" and said.startswith("Back on ") and "submit" not in said.lower()
+    gate.set()
+    wait_for(lambda: not now_body(server)["stream"]["current"]["pending"])
+    # The job the user has selected (no quote) names the line too, and the writer sees that job.
+    gate2 = threading.Event()
+    seen2, _ = capture(service, {"reply": "Asking now.", "action": "follow_up", "job": "j1",
+                                 "request": "Ask about the start date"}, gate=gate2, ack=RuntimeError("down"))
+    _, body = post(server, {"text": "ask them when they can start", "client_id": "c_card3", "focus": run_id})
+    said2 = body["reply"]["text"]
+    assert said2 == said.replace("Back on ", "Still on ") and "start" not in said2   # never the same line twice
+    assert "The job they have selected" in seen2[0][1][-1]["content"]
+    assert "[job: " in seen2[0][1][-1]["content"]            # earlier replies name their job
+    gate2.set()
+
+
+def test_the_ack_writer_starts_the_moment_the_message_arrives(server, service, hermes):
+    gate = threading.Event()
+    seen, _ = capture(service, {"reply": "Here.", "action": "none"}, gate=gate)
+    t0 = time.monotonic()
+    post(server, {"text": "how is the fence quote coming along", "client_id": "c_fast"})
+    assert seen and seen[0][0] - t0 < 0.15, seen[0][0] - t0
+    gate.set()
+
+
+def test_a_quick_conversational_answer_gets_no_filler_line(server, service, hermes):
+    """A remark answered by CHAT_SHARE of the deadline: the answer alone, even though it came after
+    the point a job's acknowledgement would have gone up."""
+    gate = threading.Event()
+    script(service, {"reply": "Ha, nine hours in Doha would break anyone.", "action": "none"}, gate=gate,
+           ack=RuntimeError("down"), deadline=1.0)
+    t0 = time.monotonic()
+    threading.Timer(0.85, gate.set).start()   # between the fallback mark (0.72 s) and the chat mark (1.2 s)
+    _, body = post(server, {"text": "honestly that layover was brutal", "client_id": "c_chat1"})
+    assert time.monotonic() - t0 > 1.0 * HC.ACK_FALLBACK_SHARE        # it came after a job's ack mark
+    assert body["reply"]["text"] == "Ha, nine hours in Doha would break anyone." and "part" not in body["reply"]
+    assert [m["role"] for m in messages(server)] == ["user", "assistant"]
+
+
+def test_a_chat_tagged_question_waits_for_its_answer_too(server, service, hermes):
+    gate = threading.Event()
+    script(service, {"reply": "Yes, for that loop the pass pays for itself.", "action": "none"}, gate=gate,
+           ack="CHAT: Ooh, the Kyushu loop.", ack_delay=0.0, deadline=1.0)
+    threading.Timer(0.85, gate.set).start()
+    _, body = post(server, {"text": "is a rail pass worth it for the Kyushu loop", "client_id": "c_chat2"})
+    assert "part" not in body["reply"] and body["reply"]["text"].startswith("Yes, for that loop")
+
+
+def test_a_slow_conversational_answer_gets_the_writers_beat_then_the_answer(server, service, hermes):
+    gate = threading.Event()
+    script(service, {"reply": "A firmer pillow usually helps within a week.", "action": "none"}, gate=gate,
+           ack="CHAT: Fingers crossed for your neck.")
+    t0 = time.monotonic()
+    _, body = post(server, {"text": "will the new pillow actually help my neck?", "client_id": "c_chat3"})
+    took = time.monotonic() - t0
+    assert 0.4 * HC.CHAT_SHARE - 0.05 <= took < 0.4 * HC.CHAT_SHARE + 0.4, took
+    assert body["reply"]["part"] == "ack" and body["reply"]["text"] == "Fingers crossed for your neck."
+    gate.set()
+    wait_for(lambda: not now_body(server)["stream"]["current"]["pending"])
+
+
+def test_a_slow_remark_with_no_model_line_gets_a_plain_beat(server, service, hermes):
+    gate = threading.Event()
+    script(service, {"reply": "Fair, it is a lot.", "action": "none"}, gate=gate, ack=RuntimeError("down"))
+    _, body = post(server, {"text": "ugh airports are the worst", "client_id": "c_chat4"})
+    assert body["reply"]["part"] == "ack" and body["reply"]["text"] in HC.CHAT_ACKS
+    gate.set()
+
+
+def test_a_job_tagged_line_still_goes_up_early(server, service, hermes):
+    gate = threading.Event()
+    script(service, {"reply": "Looking.", "action": "start", "request": "Find a rain jacket under $100"}, gate=gate,
+           ack="JOB: Hunting for a rain jacket in budget.", ack_delay=0.05)
+    t0 = time.monotonic()
+    _, body = post(server, {"text": "find me a rain jacket under $100", "client_id": "c_job"})
+    assert time.monotonic() - t0 < 0.4 * HC.ACK_FALLBACK_SHARE + 0.15
+    assert body["reply"]["text"] == "Hunting for a rain jacket in budget."
+    gate.set()
+    wait_for(lambda: hermes.calls)
