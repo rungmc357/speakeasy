@@ -66,6 +66,10 @@ struct ExploreSection: View {
             // Clipped to the card's content width (SPK-401): with clipping off, the peeking tile drew
             // over the card's padding out to the screen edge on Home. Tiles are 82% wide, so the
             // next one still peeks, inside the card.
+            // SPK-517: the clip sliced the peeking tile's words mid-letter ("Juw", "Soba"), which
+            // reads as broken text on an iPhone SE. The side where another tile peeks fades out
+            // instead, so the peek reads as "more this way"; a side with nothing beyond stays sharp.
+            .modifier(CarouselEdgeFade(enabled: items.count > 1))
             if items.count > 1 {
                 HStack(spacing: 5) {
                     ForEach(0..<items.count, id: \.self) { i in
@@ -76,6 +80,73 @@ struct ExploreSection: View {
                 .frame(maxWidth: .infinity).accessibilityHidden(true)
             }
         }
+    }
+}
+
+/// SPK-517: fades a carousel's edge where another tile peeks past it, so the clip never slices a
+/// word mid-letter. The fade spans the peek (the strip left over beside one 82% tile), so the tile
+/// in view stays fully sharp; an edge with nothing beyond it (the first tile's leading edge, the
+/// last tile's trailing edge) isn't faded.
+struct CarouselEdgeFade: ViewModifier {
+    let enabled: Bool
+    @State private var leading = false
+    @State private var trailing = true
+    @State private var width: CGFloat = 0
+
+    /// The width of the strip the next tile peeks through, at a carousel `width` wide.
+    static func peek(_ width: CGFloat) -> CGFloat {
+        max(0, width - min(width * 0.82, 340) - 12)
+    }
+
+    /// Which edges of a carousel `box` wide, scrolled to `offset` over `content`, cut through a
+    /// tile. A tile snapped flush to an edge isn't cut there, so that edge stays sharp: after a
+    /// swipe the tile in view sits flush at the leading edge and must not fade.
+    static func cut(offset: CGFloat, content: CGFloat, box: CGFloat) -> (leading: Bool, trailing: Bool) {
+        let slot = min(box * 0.82, 340), pitch = slot + 12
+        guard box > 0, content > box + 1 else { return (false, false) }
+        let count = Int(((content + 12) / pitch).rounded())
+        func cuts(_ x: CGFloat) -> Bool {
+            (0..<max(count, 1)).contains { i in
+                let start = CGFloat(i) * pitch
+                return start < x - 1 && start + slot > x + 1
+            }
+        }
+        return (cuts(offset), cuts(offset + box))
+    }
+
+    func body(content: Content) -> some View {
+        if !enabled {
+            content
+        } else if #available(iOS 18.0, macOS 15.0, visionOS 2.0, *) {
+            content
+                .onScrollGeometryChange(for: [CGFloat].self) { g in
+                    [g.contentOffset.x + g.contentInsets.leading, g.contentSize.width, g.containerSize.width]
+                } action: { _, v in
+                    let cut = Self.cut(offset: v[0], content: v[1], box: v[2])
+                    width = v[2]
+                    leading = cut.leading
+                    trailing = cut.trailing
+                }
+                .mask(mask)
+        } else {
+            content.mask(mask)
+        }
+    }
+
+    private var mask: some View {
+        GeometryReader { g in
+            let peek = Self.peek(width > 0 ? width : g.size.width)
+            let f = g.size.width > 0 ? min(0.45, peek / g.size.width) : 0
+            LinearGradient(stops: [
+                .init(color: .black.opacity(leading ? 0 : 1), location: 0),
+                .init(color: .black.opacity(leading ? 0.15 : 1), location: f * 0.45),
+                .init(color: .black, location: f),
+                .init(color: .black, location: 1 - f),
+                .init(color: .black.opacity(trailing ? 0.15 : 1), location: 1 - f * 0.45),
+                .init(color: .black.opacity(trailing ? 0 : 1), location: 1),
+            ], startPoint: .leading, endPoint: .trailing)
+        }
+        .allowsHitTesting(false)
     }
 }
 
