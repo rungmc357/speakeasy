@@ -159,6 +159,9 @@ CAPABILITIES["voice_notes"] = True
 CAPABILITIES["new_voice_notes"] = True
 # POST /voice/push + GET /voice/push/events/{id}: notifications while the app is closed (push.py).
 CAPABILITIES["push"] = True
+# Build 86: Home answers notify (kind "home", sealed with the Home entry to open), and the app says
+# when it leaves/returns (POST /voice/push/presence {"state": "away"|"here"}) so presence is exact.
+CAPABILITIES["push_home"] = True
 # GET /voice/models, model/reasoning on POST /voice/work + history messages, PUT /voice/history/{id}/model,
 # settings jobs.*, and "model" on tasks and session pages: which model works a chat (models.py).
 CAPABILITIES["model_choice"] = True
@@ -480,6 +483,7 @@ class VoiceService(SecureInputMixin):
         self.rt.now_model = self.now_model
         from .home_chat import HomeChat
         self.home_chat = HomeChat(self)
+        self.rt.home_origin = self.home_chat.home_origin   # a Home job's result notifies as Home's answer
         # The view fast path (view_fast.py): "show me build 75 tickets" answered by the coordinator's
         # fast model with two read-only tools, as a native list widget, never a full agent task.
         from . import view_fast
@@ -1068,6 +1072,9 @@ class VoiceService(SecureInputMixin):
 
     def push_event(self, device_id: str, event_id: str) -> dict[str, Any]:
         return self.push.event(device_id, event_id)
+
+    def push_presence(self, device_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        return self.push.presence(device_id, body)
 
     def pair(self, body: dict[str, Any], headers: Any = None) -> dict[str, Any]:
         code, name = body.get("code"), body.get("device_name", "Mac")

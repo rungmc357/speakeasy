@@ -39,7 +39,15 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("finished", "needs_you", "failed", "reply")
+KINDS = ("finished", "needs_you", "failed", "reply", "home")
+# ``home`` (build 86): Home answered something the user wrote there. The relay knows only the first
+# four kinds, so it travels as ``reply``; the phone tells them apart by the Home entry it carries.
+WIRE_KIND = {"home": "reply"}
+# A Home answer usually lands seconds after the message was sent, while the request that sent it
+# still counts as "the app is open" under ``presence_s``. For it, only a request this recent does
+# (the app polls every 1-5 s while an answer is on its way); an app in front shows no banner anyway.
+HOME_PRESENCE_S = 12.0
+HERE_STALE_S = 120.0   # an app that said "here" and then went silent this long (killed in front) is gone
 ENVIRONMENTS = ("sandbox", "production")
 DEFAULT_RELAY = "https://speakeasy-push.todd-562.workers.dev"
 USER_AGENT = "Speakeasy-Hermes-Plugin (+https://speakeasyvoice.ai)"
@@ -56,7 +64,7 @@ RELAY_FIELDS = ("device_token", "environment", "kind", "nonce", "collapse_id", "
 # without being able to read it; the phone's Notification Service Extension opens it. A relay that
 # doesn't know the field yet gets the old body (the extension then fetches the words as before).
 SEALED_MAX = 2400
-PREFIX = {"finished": "Done", "needs_you": "Needs you", "failed": "Didn't finish", "reply": "New reply"}
+PREFIX = {"finished": "Done", "needs_you": "Needs you", "failed": "Didn't finish", "reply": "New reply", "home": ""}
 
 
 def signature(secret: str, install_id: str, timestamp: str, body: bytes) -> str:
@@ -179,14 +187,25 @@ class RelayClient:
                 if status == 401 and data.get("reason") == "unknown_install" and attempt == 0:
                     self.forget_install()
                     continue
-                if status == 400 and "sealed" in payload and "exactly" in str(data.get("reason") or data.get("error") or ""):
+                if status == 400 and "sealed" in payload and self._refuses_sealed(data):
                     # A relay from before sealed text: send the plain wake-up, and stop trying.
                     self.sealed_refused = True
                     payload = {k: v for k, v in payload.items() if k != "sealed"}
+                    logger.info("speakeasy: notification relay predates sealed words; sending plain wake-ups")
                     continue
                 return {"ok": status == 200 and bool(data.get("ok")), "status": status,
-                        "reason": str(data.get("reason") or "")[:60], "invalid_token": bool(data.get("invalid_token"))}
+                        "reason": str(data.get("reason") or "")[:60], "invalid_token": bool(data.get("invalid_token")),
+                        # APNs' own answer, as the relay passed it on (200 = delivered to Apple).
+                        "apns": data.get("status") if status == 200 else None, "sealed": "sealed" in payload}
         return {"ok": False, "status": 401, "reason": "unknown_install", "invalid_token": False}
+
+    @staticmethod
+    def _refuses_sealed(data: dict[str, Any]) -> bool:
+        """The relay said the body has a field it doesn't know. It answers ``{reason: "invalid",
+        field: "exactly device_token, ..."}``: the words are in ``field``, not ``reason``. (Looking
+        only at ``reason`` missed it, so every sealed notification died at the relay from 11-07.)"""
+        said = " ".join(str(data.get(k) or "") for k in ("reason", "error", "field"))
+        return "exactly" in said or data.get("field") == "sealed"
 
 
 class PushNotifier:
@@ -203,10 +222,11 @@ class PushNotifier:
         self.clock = clock
         self._seen: dict[str, float] = {}
         self._streams: dict[str, int] = {}
+        self._state: dict[str, str] = {}   # device -> "away" | "here", as its app last said (build 86 on)
         self._events: dict[str, dict[str, Any]] = {}
         self._withdrawn: dict[str, float] = {}  # needs_you keys that closed (never woken for again)
         self._lock = threading.Lock()
-        self.queue: "queue.Queue[tuple[str, dict[str, str]]] | None" = None
+        self.queue: "queue.Queue[tuple[str, dict[str, Any], str]] | None" = None
         if background:
             self.queue = queue.Queue()
             threading.Thread(target=self._worker, daemon=True, name="speakeasy-push").start()
@@ -233,14 +253,59 @@ class PushNotifier:
                 self._streams.pop(device_id, None)
             self._seen[device_id] = self.clock()
 
-    def present(self, device_id: str) -> bool:
-        """The app is on this device right now: an open event stream, or a request in the last
-        ``presence_s`` seconds. A present app shows the change itself; no notification."""
+    def away(self, device_id: str) -> None:
+        """The app says it left the screen (``POST /voice/push/presence {"state": "away"}``, sent
+        as it goes to the background). Until it says it is back, nothing it does counts as open: a
+        backgrounded app still finishing a request, following jobs for its Live Activity, or holding
+        a stream iOS hasn't closed yet must not swallow the notification."""
         with self._lock:
+            self._state[device_id] = "away"
+            self._seen.pop(device_id, None)
+
+    def here(self, device_id: str) -> None:
+        """The app is in front again (``{"state": "here"}``)."""
+        with self._lock:
+            self._state[device_id] = "here"
+            self._seen[device_id] = self.clock()
+
+    def present(self, device_id: str, within: float | None = None) -> bool:
+        """The app is on this device right now. An app that reports where it is (``away``/``here``,
+        build 86 on) is believed: away is never present; here is, while it keeps talking to us (an
+        app in front polls at least every 30 s; one killed in front stops counting after
+        ``HERE_STALE_S``). An older app: an open event stream, or a request in the last
+        ``presence_s`` seconds (``within`` overrides it). A present app shows the change itself
+        (its banners are off in front anyway); no notification."""
+        with self._lock:
+            state = self._state.get(device_id)
+            last = self._seen.get(device_id)
+            if state == "away":
+                return False
+            if state == "here":
+                return last is not None and self.clock() - last < HERE_STALE_S
             if self._streams.get(device_id):
                 return True
-            last = self._seen.get(device_id)
-        return last is not None and self.clock() - last < float(self.config()["presence_s"])
+        window = float(self.config()["presence_s"]) if within is None else within
+        return last is not None and self.clock() - last < window
+
+    def presence(self, device_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        from .calls import ServiceError
+        state = body.get("state") if isinstance(body, dict) else None
+        if state == "away":
+            self.away(device_id)
+        elif state == "here":
+            self.here(device_id)
+        else:
+            raise ServiceError(400, "state must be away or here")
+        return {"ok": True, "state": state}
+
+    @staticmethod
+    def wants(push: dict[str, Any], kind: str) -> bool:
+        """The device asked for *kind*. An app from before ``home`` (its registration never named
+        it) gets Home answers when it wants replies: they are replies to something the user wrote."""
+        kinds = push.get("kinds", KINDS)
+        if kind == "home" and "home" not in kinds and "home" not in (push.get("known") or ()):
+            return "reply" in kinds
+        return kind in kinds
 
     # -- registration (POST /voice/push) -----------------------------------------------------
     def register(self, device_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -257,7 +322,14 @@ class PushNotifier:
             raise ServiceError(400, "environment must be sandbox or production")
         if not isinstance(kinds, list) or not all(k in KINDS for k in kinds):
             raise ServiceError(400, f"kinds must be a list of: {', '.join(KINDS)}")
-        if not self.devices.set_push(device_id, token.lower(), environment, sorted(set(kinds), key=KINDS.index)):
+        # ``known``: every kind the app can show a switch for (apps from build 86 on). A kind it knows
+        # and left out is off; one it doesn't know follows the old rule (``wants``).
+        known = body.get("known")
+        if known is not None and (not isinstance(known, list) or not all(isinstance(k, str) for k in known)):
+            raise ServiceError(400, "known must be a list of kinds")
+        known = sorted({k for k in known if k in KINDS}, key=KINDS.index) if known else None
+        if not self.devices.set_push(device_id, token.lower(), environment, sorted(set(kinds), key=KINDS.index),
+                                     **({"known": known} if known else {})):
             raise ServiceError(404, "device not found")
         return {"ok": True, "enabled": True, "kinds": sorted(set(kinds), key=KINDS.index),
                 "relay": self.config()["relay_url"], "available": bool(self.config()["enabled"]),
@@ -273,6 +345,8 @@ class PushNotifier:
         if not found or found["device_id"] != device_id or now - found["created_at"] > EVENT_TTL_S:
             raise ServiceError(404, "not found")
         out = {k: found[k] for k in ("kind", "title", "body", "run_id", "thread_id")}
+        if found.get("home"):
+            out["home"] = found["home"]
         if found.get("resolved"):
             # Answered or closed since it was sent: the extension shows that, never "Needs you".
             out.update({"resolved": True, "title": found["title"].replace(f"{PREFIX['needs_you']}: ", "", 1),
@@ -309,9 +383,15 @@ class PushNotifier:
 
     # -- the rules ---------------------------------------------------------------------------
     def notify(self, kind: str, *, key: str, title: str | None, body: str | None = None,
-               run_id: str | None = None, level: str = "personal") -> list[str]:
+               run_id: str | None = None, level: str = "personal", home: str | None = None,
+               fallback: tuple[str, str | None, str | None] | None = None) -> list[str]:
         """Wake every registered phone that wants ``kind`` and isn't open right now. ``key`` dedupes
-        (one notification per device per task event). Returns the device ids queued."""
+        (one notification per device per task event). Returns the device ids queued.
+
+        ``home`` (kind ``home``): the Home entry the answer is (``m:<id>`` or a job's ``c:<run>``);
+        ``title`` is then the assistant's name as is, never prefixed. ``fallback`` = (kind, title,
+        body): what a device that turned Home answers off but wants *that* kind gets instead (a job
+        started from Home still says Done to it). One notification per device either way."""
         if kind not in KINDS or not self.config()["enabled"]:
             return []
         with self._lock:
@@ -323,45 +403,71 @@ class PushNotifier:
         except Exception as exc:  # never break a task over a notification
             logger.warning("speakeasy: push targets unreadable: %s", type(exc).__name__)
             return []
-        task = clean_text(title, 80) or "Your task"
-        text = {"title": f"{PREFIX[kind]}: {task}", "body": clean_text(body, 180),
-                "kind": kind, "run_id": run_id or "", "thread_id": hashlib.sha256((run_id or key).encode()).hexdigest()[:16]}
         for device_id, push in targets.items():
-            if kind not in push.get("kinds", KINDS) or self.present(device_id):
+            use, use_title, use_body, entry = kind, title, body, home
+            if not self.wants(push, kind):
+                if not fallback or not self.wants(push, fallback[0]):
+                    continue
+                (use, use_title, use_body), entry = fallback, None
+            if (self.present(device_id, within=HOME_PRESENCE_S) if use == "home" else self.present(device_id)):
+                logger.info("speakeasy: push %s skipped (app open on the device)", use)
                 continue
-            if not self.claim(f"push:{device_id}:{kind}:{key}"):
+            # One claim per device and event, whichever kind it went as: a job's event claims under its
+            # own kind (as before Home answers), so its Home answer and its Done are never both sent.
+            if not self.claim(f"push:{device_id}:{fallback[0] if fallback else use}:{key}"):
                 continue
-            event_id = self._keep({"device_id": device_id, "key": key, **text})
-            payload = {"device_token": push["apns_token"], "environment": push.get("environment", "production"),
-                       "kind": kind, "nonce": secrets.token_urlsafe(18), "collapse_id": text["thread_id"],
-                       "event_id": event_id}
-            sealed = seal(push["seal_key"], {**{k: text[k] for k in ("title", "body", "kind", "run_id")},
-                                             "level": level}) if push.get("seal_key") else None
-            if sealed:
-                payload["sealed"] = sealed
-            if self.queue is not None:
-                self.queue.put((device_id, payload))
-            else:
-                self._send(device_id, payload)
+            self._queue(device_id, push, use, key, use_title, use_body, run_id, level, entry)
             sent.append(device_id)
         return sent
 
-    def _send(self, device_id: str, payload: dict[str, str]) -> dict[str, Any]:
+    def _queue(self, device_id: str, push: dict[str, Any], kind: str, key: str, title: str | None,
+               body: str | None, run_id: str | None, level: str, home: str | None) -> None:
+        wire = WIRE_KIND.get(kind, kind)
+        if kind == "home":
+            heading = clean_text(title, 80) or "Hermes"
+        else:
+            heading = f"{PREFIX[kind]}: {clean_text(title, 80) or 'Your task'}"
+        text = {"title": heading, "body": clean_text(body, 180), "kind": wire, "run_id": run_id or "",
+                "thread_id": hashlib.sha256((run_id or key).encode()).hexdigest()[:16]}
+        if home:
+            text["home"] = home   # the phone opens Home at this entry (apps from build 86)
+        event_id = self._keep({"device_id": device_id, "key": key, **text})
+        payload = {"device_token": push["apns_token"], "environment": push.get("environment", "production"),
+                   "kind": wire, "nonce": secrets.token_urlsafe(18), "collapse_id": text["thread_id"],
+                   "event_id": event_id}
+        words = {**{k: text[k] for k in ("title", "body", "kind", "run_id")}, "level": level}
+        if home:
+            words["home"] = home
+        sealed = seal(push["seal_key"], words) if push.get("seal_key") else None
+        if sealed:
+            payload["sealed"] = sealed
+        if self.queue is not None:
+            self.queue.put((device_id, payload, kind))
+        else:
+            self._send(device_id, payload, kind)
+
+    def _send(self, device_id: str, payload: dict[str, str], kind: str | None = None) -> dict[str, Any]:
         try:
             result = self.relay.notify(payload)
         except Exception as exc:
             result = {"ok": False, "status": 0, "reason": type(exc).__name__, "invalid_token": False}
+        label = kind or payload.get("kind")
         if result.get("invalid_token"):
             # APNs says this token is dead (app deleted, token rotated): forget it so we stop asking.
             self.devices.clear_push(device_id, only_token=payload["device_token"])
             logger.info("speakeasy: dropped a push token APNs no longer accepts (%s)", token_hash(payload["device_token"]))
         elif not result.get("ok"):
-            logger.info("speakeasy: notification not sent (%s %s)", result.get("status"), result.get("reason"))
+            logger.info("speakeasy: notification not sent (%s: relay %s %s, apns %s)", label, result.get("status"),
+                        result.get("reason"), result.get("apns"))
+        else:
+            # One line per send, never the token or the words: what went, and what Apple said.
+            logger.info("speakeasy: notification sent (%s: relay %s, apns %s, %s)", label, result.get("status"),
+                        result.get("apns"), "sealed" if result.get("sealed") else "plain")
         return result
 
     def _worker(self) -> None:
         assert self.queue is not None
         while True:
-            device_id, payload = self.queue.get()
-            self._send(device_id, payload)
+            device_id, payload, kind = self.queue.get()
+            self._send(device_id, payload, kind)
             self.queue.task_done()

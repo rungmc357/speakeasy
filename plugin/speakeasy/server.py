@@ -817,6 +817,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/voice/push":
                 self._reply(200, self.service.register_push(device_id, self._body()))
                 return
+            if path == "/voice/push/presence":  # the app went to the background / came back (push.py)
+                self._reply(200, self.service.push_presence(device_id, self._body()))
+                return
             if path == "/voice/sessions":
                 self._reply(201, self.service.create_session(self._body(MAX_SESSION_BODY),
                                                             self.headers.get("Idempotency-Key", ""),
