@@ -112,8 +112,18 @@ ACK_DEADLINE_S = 2.5
 ACK_EARLY_SHARE = 0.48        # 1.2 s of 2.5
 ACK_FALLBACK_SHARE = 0.72     # 1.8 s of 2.5
 ANSWER_GRACE_S = 0.5
+# ack-context: a conversational turn (small talk, a remark, a quick answer from the conversation)
+# posts no line in front of its answer while the answer can still come by CHAT_SHARE of the deadline
+# (3 s of 2.5); only then does a beat go up. A filler line before a two-sentence reply reads as
+# canned (Geo, 11-16).
+CHAT_SHARE = 1.2
 DECIDE_EMA = 0.3              # weight of the newest coordinator time in its running estimate
-ACK_TOKENS = 60
+ACK_TOKENS = 40
+# Measured from the Mac mini (ack-context, 11-16; invented asks, each racing a coordinator-sized call
+# as on a live turn, 72 calls): the acknowledgement call answered by 1.8 s 46% of the time, 2.5 s 67%,
+# 3 s 79%; Claude Haiku 5.5 was no quicker than Sonnet 5.5 and two racing calls barely helped (the
+# delay is shared). So it stays one call on the coordinator's model, started first on the turn,
+# with a small prompt; the fallback line covers the rest.
 ACK_TIMEOUT_S = 8.0
 INTERRUPTED_S = 3600          # a turn cut off by a restart this recent gets a line saying so
 PART_ACK, ANSWER = "ack", "answer"  # home_messages.part: the acknowledgement (above the capsule) / what follows it
@@ -235,21 +245,6 @@ def acknowledgement(reply: str, asked: str, start: bool = True) -> str:
     return " ".join(kept)
 
 
-_LEAD = re.compile(
-    r"(?i)^(?:(?:hey|hi|yo|ok(?:ay)?|so|um+|uh+|todd|hermes|please|pls|quick question)\b[\s,:!.-]*)*"
-    r"(?:(?:can|could|would|will) you(?: please)?|i (?:need|want) you to|i'?d like you to|help me|"
-    r"do you know|any idea|tell me|let me know|i wonder(?: if)?|"
-    r"what'?s|what is|what are|what|when'?s|when is|when|where'?s|where is|where|who'?s|who is|who|which|"
-    r"how'?s|how is|how do i|how do|how|is there|are there|any)\b[\s,]*")
-_SWAP = {"my": "your", "mine": "yours", "me": "you", "i": "you", "i'm": "you're", "im": "you're",
-         "myself": "yourself", "our": "your", "we": "you", "us": "you", "i've": "you've", "i'll": "you'll"}
-_TAIL = {"a", "an", "the", "and", "or", "of", "on", "in", "for", "to", "with", "at", "from", "about",
-         "by", "your", "is", "are", "that", "this", "it", "so", "but", "if", "just", "also", "also"}
-_FALLBACK = ("Let me look into {t}.", "Taking a look at {t} now.", "Give me a moment on {t}.")
-_FALLBACK_WHY = ("Let me look into why {t}.", "Let me find out why {t}.")
-TOPIC_WORDS = 8
-_WHY = re.compile(r"(?i)^(?:(?:hey|so|ok(?:ay)?|todd)[\s,]+)*(?:why|how come)\b[\s,]*")
-_AUX = {"is", "are", "does", "do", "did", "was", "were", "can't", "won't", "isn't", "doesn't", "didn't", "does"}
 _ASKING = re.compile(
     r"(?i)^(?:(?:hey|hi|yo|ok(?:ay)?|so|todd|hermes|please|pls)\b[\s,:!.-]*)*"
     r"(?:why|how|what|when|where|who|which|whose|is|are|was|were|do|does|did|can|could|would|will|should|"
@@ -264,72 +259,81 @@ def asking(text: str) -> bool:
     return "?" in t or bool(_ASKING.match(t))
 
 
-_DO = {"find", "check", "draft", "show", "look", "send", "book", "get", "make", "write", "summarize", "summarise",
-       "pull", "set", "remind", "add", "schedule", "cancel", "fix", "open", "search", "compare", "plan", "order",
-       "buy", "reply", "email", "text", "track", "research", "list", "read"}
+# ack-context (Geo, 11-16: "we're having a conversation. Like, acknowledge it in the context of like
+# what I'm saying and what we've just been talking about"). When no model line is ready in time the
+# fallback never reads the user's words back: topic templates built from the ask mangled them
+# (invented: "is the new pillow worth it" came out as "Taking a look at the new pillow worth it.").
+# It names the job a follow-up is about, or it is a short neutral beat; a remark never gets "let me
+# look into that".
+NEUTRAL_ACKS = ("On it.", "One moment.", "Sure, one sec.")
+CHAT_ACKS = ("One sec.", "Mm, one sec.")
 
 
-def _topic(text: str) -> tuple[str, bool]:
-    """The ask in a few words for a fallback acknowledgement: lead-ins and question words off,
-    "my" -> "your", at most TOPIC_WORDS words, never ending on a dangling word. (words, is_why)."""
-    first = re.split(r"(?<=[.!?])\s+|\n", " ".join((text or "").split()), maxsplit=1)[0]
-    first = first.strip(" .!?\"'\u201c\u201d")
-    why = bool(_WHY.match(first))
-    first = _WHY.sub("", first) if why else _LEAD.sub("", first)
-    words = [_SWAP.get(w.lower(), w) for w in re.findall(r"[\w$'\u2019./-]+", first)]
-    if why and len(words) > 2 and words[0].lower() in _AUX:
-        # "why is the build failing" -> "why the build is failing"
-        words = [words[1], words[0], *words[2:]] if len(words) == 3 else [*words[1:3], words[0], *words[3:]]
-    words = words[:TOPIC_WORDS]
-    while words and words[-1].lower().strip(".") in _TAIL:
-        words.pop()
-    return " ".join(words).strip(" ,;:-"), why
+def job_name(title: Any) -> str:
+    """A job's title as words in a sentence: "the paint search", or quoted when it is named by what
+    it does ("“Opt out of the broker sites”"). "" when there is no usable title."""
+    from .home_words import short_title
+    name = " ".join(str(title or "").split()).strip(" .\u201c\u201d\"")
+    name = (short_title(name) or name) if name else ""
+    if not name or name.lower() in ("a job", "job"):
+        return ""
+    words = name.split()
+    if re.match(r"(?i)(?:fix|find|make|build|add|update|write|draft|check|research|look|compare|plan|book|order|"
+                r"search|get|send|refactor|clean|move|rename|remove|delete|create|set|run|ship|review|read|"
+                r"summari[sz]e|edit|change|test|try|install|buy|call|email|reply|opt|submit|cancel|file|"
+                r"schedule|pay|sign|track|pack|request)\b", words[0]):
+        return f"\u201c{name}\u201d"
+    if len(words[0]) > 1 and words[0][1:].islower():   # "Paint search" -> "the paint search"; keeps "iOS"
+        name = name[0].lower() + name[1:]
+    return f"the {name}"
 
 
-def fallback_ack(asked: str, files: Any = None, avoid: str | None = None) -> str:
-    """The acknowledgement when no model wrote one in time: derived from the ask, never the same line
-    as *avoid* (the last thing Home said). Deterministic (the same ask gives the same line)."""
-    if not (asked or "").strip():
-        noun = _sent_noun(files)
-        return ("Let me take a look at what you sent." if noun == "something"
-                else f"Let me take a look at the {noun.split(' ', 1)[-1]}.")
-    if small_talk(asked):
-        return "One sec."
-    asked = asked.replace("\u2019", "'").replace("\u2018", "'")
-    if not asking(asked):
-        if len(asked.split()) < 8:
-            return "Hmm, let me think about that." if avoid != "Hmm, let me think about that." else "Let me think about that."
-        return "Let me look into that." if avoid != "Let me look into that." else "Looking into that now."
-    first = re.sub(r"(?i)^(?:(?:hey|hi|yo|ok(?:ay)?|so|todd|hermes|please|pls)\b[\s,:!.-]*)*"
-                   r"(?:(?:can|could|would|will) you(?: please)?\s+)?", "", asked.strip())
-    verb = (first.split() or [""])[0].lower()
-    if verb in _DO:
-        words = [_SWAP.get(w.lower(), w) for w in re.findall(r"[\w$'./-]+", re.split(r"[.,;:!?]", first)[0])][:TOPIC_WORDS + 2]
-        while len(words) > 1 and words[-1].lower() in _TAIL:
-            words.pop()
-        if len(words) >= 2:
-            words[0] = words[0].lower()
-            line = f"I'll {' '.join(words)}."
-            if line != avoid:
-                return line
-    topic, why = _topic(asked)
-    if len(topic.split()) < 2:
-        return pick_ack(asked, avoid=avoid)
-    lines = _FALLBACK_WHY if why else _FALLBACK
-    i = sum(map(ord, asked)) % len(lines)
+def _pick(lines: tuple[str, ...], key: str, avoid: str | None) -> str:
+    i = sum(map(ord, key or "")) % len(lines)
     for k in range(len(lines)):
-        line = lines[(i + k) % len(lines)].format(t=topic)
+        line = lines[(i + k) % len(lines)]
         if line != avoid:
             return line
-    return pick_ack(asked, avoid=avoid)
+    return lines[0]
+
+
+def fallback_ack(asked: str, files: Any = None, avoid: str | None = None, job: str | None = None,
+                 chat: bool = False) -> str:
+    """The acknowledgement when no model wrote one in time, never the same line as *avoid* (the last
+    thing Home said) and never built from the user's words. *job* is the title of the job a
+    follow-up is about (a quoted card, the selected job): "Back on the paint search." *chat* marks a
+    conversational turn (a remark, small talk): a plain beat. Deterministic for one ask."""
+    if not (asked or "").strip() and files:
+        noun = _sent_noun(files)
+        return (f"Let me take a look at the {noun.split(' ', 1)[-1]}." if noun != "something"
+                else "Let me take a look at what you sent.")
+    name = job_name(job) if job else ""
+    if name and not chat:
+        for line in (f"Back on {name}.", f"Still on {name}."):
+            if line != avoid and len(line) <= 90:
+                return line
+    if chat or small_talk(asked) or not asking(asked):
+        return _pick(CHAT_ACKS, asked, avoid)
+    return _pick(NEUTRAL_ACKS, asked, avoid)
+
+
+ACK_CHAT, ACK_JOB = "CHAT", "JOB"
+_ACK_TAG = re.compile(r"^\W*(CHAT|JOB)\b\W*", re.I)
+
+
+def ack_tag(raw: Any) -> tuple[str | None, str]:
+    """The ack writer's kind tag and the rest: ("CHAT", "Ha, fair.") / ("JOB", "...") / (None, raw)."""
+    text = " ".join(raw.split()) if isinstance(raw, str) else ""
+    m = _ACK_TAG.match(text)
+    return (m.group(1).upper(), text[m.end():]) if m else (None, text)
 
 
 def clean_ack(raw: Any, asked: str) -> str | None:
-    """A model-written acknowledgement, checked: one short sentence, no read-back, no SKIP. None when
-    it isn't usable (the fallback is used)."""
+    """A model-written acknowledgement, checked: one short sentence, no read-back, no SKIP, no kind
+    tag. None when it isn't usable (the fallback is used)."""
     if not isinstance(raw, str):
         return None
-    text = " ".join(raw.split()).strip(" \"'\u201c\u201d")
+    text = ack_tag(raw)[1].strip(" \"'\u201c\u201d")
     if not text or text.upper().startswith("SKIP"):
         return None
     text = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
@@ -369,15 +373,26 @@ def after_ack(reply: str, action: str, ack: str) -> str:
     return " ".join(out)
 
 
-_ACK_PROMPT = """You are {name}, the user's AI assistant on the Home screen of the Speakeasy app. The \
-user just sent the message below; a slower step is working out the full answer. Write the ONE short \
-sentence (at most 14 words) that tells them you're on it, naming what you're about to look at in a few \
-of your own words: "Let me check where the release build is at.", "I'll dig into why the swipe jumps \
-screens.", "Pulling up your Japan flight details." Never read their whole message back, never answer \
-it, never promise a result or a time, no emoji, no "Great question". Vary the opening. If the message \
-isn't asking for anything (a greeting, thanks, a remark or an opinion), write instead a natural \
-conversational beat of two to five words ("Ha, fair point.", "Hmm, let me think."), never a promise \
-to look into something."""
+# The acknowledgement writer sees the last few Home messages (ACK_HISTORY, each clipped to
+# ACK_LINE_CHARS) plus the card or message being replied to, so a follow-up ("submit it", "checked is
+# fine") gets a line about what was just said rather than "let me look into that". The first word
+# is a kind tag the plugin strips: CHAT turns (small talk, remarks, quick answers from the
+# conversation) get no line in front of an answer that comes within CHAT_SHARE of the deadline.
+ACK_HISTORY = 6
+ACK_LINE_CHARS = 220
+_ACK_PROMPT = """You are {name}, the user's assistant on the Home screen of the Speakeasy app. A slower \
+step is writing the real answer to the user's newest message; you write the ONE short line that shows \
+up first, so they know you heard them. Respond to what they just said in the context of the \
+conversation (and the card they're replying to, if any), the way a person would: after a packing list, \
+"a checked bag works" -> "Good, a checked bag means the boots can come."; "send it" on an opt-out card \
+-> "Submitting the opt-out now."; "find a rain jacket under $100" -> "Looking for a rain jacket in \
+budget." At most 14 words. Don't answer the question, don't promise results or a time, don't read \
+their message back, no emoji, no "Great question", never "let me look into that". Start your reply \
+with JOB if the message asks you to look something up or do something, or CHAT if it's conversation \
+you'd answer straight from what's been said (small talk, a remark, a feeling, an opinion, a quick \
+question about what you just discussed); for CHAT the line is a brief natural beat of two to eight \
+words that reacts without answering ("Ha, layovers really are the worst.", "Ooh, good question."). \
+Format: JOB: <line> or CHAT: <line>"""
 
 
 class _Turn:
@@ -1111,17 +1126,24 @@ class HomeChat:
             (1 - DECIDE_EMA) * self._decide_s + DECIDE_EMA * took)
 
     def _await_first_words(self, turn: _Turn, ack_box: dict[str, Any], ack_ready: threading.Event,
-                           text: str, files: list[dict], last: str | None) -> None:
+                           text: str, files: list[dict], last: str | None, chat: bool = False) -> None:
         """F5: until the turn has words, by the clock started on arrival: nothing before the early
         mark (an answer that quick comes alone); then the model's acknowledgement the moment it is
-        ready; at the fallback mark the line from the ask, unless the answer is under
-        ANSWER_GRACE_S away (then it comes alone, still inside the deadline)."""
+        ready; at the fallback mark a line without a model, unless the answer is under
+        ANSWER_GRACE_S away (then it comes alone, still inside the deadline). ack-context: a
+        conversational turn (the writer tagged it CHAT, or with no tag yet the message is small
+        talk or a remark) posts nothing while its answer can still come by the CHAT_SHARE mark."""
         deadline = max(0.0, self.deadline_s)
         early, hard = deadline * ACK_EARLY_SHARE, deadline * ACK_FALLBACK_SHARE
+        chat_mark = deadline * CHAT_SHARE
         grace = min(ANSWER_GRACE_S, deadline * 0.2)
 
         def until(mark: float) -> float:
             return max(0.0, turn.started + mark - time.monotonic())
+
+        def chatty() -> bool:
+            kind = ack_box.get("kind")
+            return kind == ACK_CHAT or (kind is None and chat)
         if turn.done.wait(until(early)):
             return
         while not turn.done.is_set() and not turn.visible and not ack_box.get("text") and until(hard) > 0:
@@ -1131,16 +1153,24 @@ class HomeChat:
                 ack_ready.wait(min(0.02, until(hard)))
         if turn.done.is_set() or turn.visible:
             return
-        due = self._answer_due_in(turn)
-        if due is not None and due <= grace:
-            # The answer is moments away: wait for it (at most the grace, still inside the deadline)
-            # instead of a line it would repeat in the same second.
-            stop = time.monotonic() + grace
-            while time.monotonic() < stop and not turn.done.is_set() and not turn.visible:
-                turn.done.wait(0.02)
+        if chatty():
+            # Conversation: the answer itself is the reply; a beat goes up only if it is slow. A late
+            # JOB tag from the writer ends the hold (its line goes up now).
+            while not turn.done.is_set() and not turn.visible and until(chat_mark) > 0 and chatty():
+                turn.done.wait(min(0.02, until(chat_mark)))
             if turn.done.is_set() or turn.visible:
                 return
-        said = ack_box.get("text") or fallback_ack(text, files, avoid=last)
+        else:
+            due = self._answer_due_in(turn)
+            if due is not None and due <= grace:
+                # The answer is moments away: wait for it (at most the grace, still inside the deadline)
+                # instead of a line it would repeat in the same second.
+                stop = time.monotonic() + grace
+                while time.monotonic() < stop and not turn.done.is_set() and not turn.visible:
+                    turn.done.wait(0.02)
+                if turn.done.is_set() or turn.visible:
+                    return
+        said = ack_box.get("text") or fallback_ack(text, files, avoid=last, job=ack_box.get("job"), chat=chatty())
         with turn.lock:
             if not turn.visible:
                 turn.ack_row = self._add("assistant", said, self.clock(), reply_to=turn.user_id, part=PART_ACK,
@@ -1154,30 +1184,40 @@ class HomeChat:
               device_id: str | None, voice: dict | None, job_text: str | None,
               arrived: float | None = None) -> dict[str, Any]:
         history = self.shown()[-HISTORY_TURNS:]
-        # The thread shows what was sent (the clip, the picture), not a placeholder: read what the
-        # staged items are before the job claims them. Words stay "" when there were none.
-        staged = getattr(self.svc, "staged", None)
-        files = staged.describe(device_id, ids) if ids and staged is not None else []
         quote = self._quote(body.get("reply_to"))
-        user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files, quote=quote)
         last = next((m.get("text") for m in reversed(history) if m.get("role") == "assistant"), None)
-        turn = _Turn(user_id, arrived)
-        self._inflight[user_id] = turn
-        ack_box: dict[str, Any] = {}
+        # ack-context: the job a follow-up is about (a quoted card, else the job the user has selected;
+        # that title is read on the acknowledgement's thread, off the clock).
+        focus = body.get("focus") if isinstance(body.get("focus"), str) else None
+        ack_box: dict[str, Any] = {"job": quote.get("text") if quote and quote.get("role") == "card" else None}
         ack_ready = threading.Event()
-        if text and not small_talk(text) and self.deadline_s > 0:
+        if (text or ids) and self.deadline_s > 0:
             # The acknowledgement is written while the coordinator decides, so it is ready by the
-            # deadline when the decision isn't (one ~60-token call, no tools).
+            # deadline when the decision isn't (one short call, no tools). It starts before anything
+            # else on this turn: it is the race against the clock.
             def write_ack() -> None:
+                t0 = time.monotonic()
                 try:
-                    ack_box["text"], ack_box["model"] = self._write_ack(text, last)
+                    if focus and not ack_box["job"]:
+                        ack_box["job"] = self._run_title(focus) or (self._card_quote(focus) or {}).get("text")
+                    ack_box["text"], ack_box["model"], ack_box["kind"] = self._write_ack(
+                        text, last, history=history, quote=quote, job=ack_box["job"], files=bool(ids))
                 except Exception as exc:  # noqa: BLE001 - the fallback line is used
                     logger.info("speakeasy: Home's acknowledgement wasn't written (%s)", type(exc).__name__)
                 finally:
+                    ack_box["took"] = time.monotonic() - t0
                     ack_ready.set()
             threading.Thread(target=write_ack, name="home-ack", daemon=True).start()
         else:
             ack_ready.set()
+        # The thread shows what was sent (the clip, the picture), not a placeholder: read what the
+        # staged items are before the job claims them. Words stay "" when there were none.
+        staged = getattr(self.svc, "staged", None)
+        files = staged.describe(device_id, ids) if ids and staged is not None else []
+        user_id = self._add("user", text, self.clock(), client_id=client_id, voice=voice, files=files, quote=quote)
+        turn = _Turn(user_id, arrived)
+        self._inflight[user_id] = turn
+        chat = bool(text) and not ids and not ack_box["job"] and not focus and (small_talk(text) or not asking(text))
 
         def work() -> None:
             try:
@@ -1198,12 +1238,14 @@ class HomeChat:
         # The turn's worker carries the request's context (which profile the app looks at).
         threading.Thread(target=contextvars.copy_context().run, args=(work,), name="home-turn", daemon=True).start()
         self.publish_soon()   # every device shows the message while the coordinator thinks (off this thread)
-        self._await_first_words(turn, ack_box, ack_ready, text, files, last)
+        self._await_first_words(turn, ack_box, ack_ready, text, files, last, chat=chat)
         if not turn.done.is_set():
             # Not answered in time: the acknowledgement is up (the model's line if it was ready, else
-            # one derived from the ask), and the answer follows in this exchange.
+            # one without a model), and the answer follows in this exchange.
             if turn.ack is not None:
-                logger.info("speakeasy: Home's first words in %.1fs (%s)", turn.first_words_s or 0, turn.first_kind)
+                took = ack_box.get("took")
+                logger.info("speakeasy: Home's first words in %.1fs (%s; ack writer %s)", turn.first_words_s or 0,
+                            turn.first_kind, f"{took:.1f}s" if took is not None else "still writing")
                 self.publish_soon()
                 if not turn.done.is_set():
                     user = self._rows("WHERE id=?", (user_id,), limit=1)[0]
@@ -1218,19 +1260,80 @@ class HomeChat:
             raise self._error(504, "Home's reply is taking too long. It will show up when it's ready.")
         return turn.result
 
-    def _write_ack(self, asked: str, last: str | None) -> tuple[str | None, dict | None]:
-        """The fast model's one-sentence acknowledgement for this ask (None when it wrote SKIP or
-        something unusable)."""
+    def _run_title(self, run_id: Any) -> str:
+        """A job's title from the store row (one indexed read; never builds the Now model, which the
+        acknowledgement can't wait for). "" when unknown."""
+        if not isinstance(run_id, str) or not run_id:
+            return ""
+        try:
+            with self.store._lock:
+                row = self.store._db.execute("SELECT title FROM runs WHERE run_id=? OR idem_key=? LIMIT 1",
+                                             (run_id, run_id)).fetchone()
+        except Exception:
+            row = None
+        return str(row[0] or "").strip()[:300] if row else ""
+
+    def ack_messages(self, asked: str, history: list[dict[str, Any]] | None = None, quote: dict | None = None,
+                     job: str | None = None, files: bool = False) -> list[dict[str, str]]:
+        """What the acknowledgement writer sees: its prompt, then one message holding the last few Home
+        messages (clipped), the card or message being replied to (with the card's result when there
+        is one), and the newest message. Earlier acknowledgements are left out: they are filler the
+        writer would copy."""
         name = (self.svc.settings.get() or {}).get("assistant_name") or "Hermes"
-        messages = [{"role": "system", "content": _ACK_PROMPT.format(name=name)},
-                    {"role": "user", "content": asked[:1200]}]
+        rows = [r for r in (history or []) if r.get("part") != PART_ACK][-ACK_HISTORY:]
+        lines: list[str] = []
+        newest_run = next((r.get("run_id") for r in reversed(rows) if r.get("role") != "user" and r.get("run_id")),
+                          None)
+        for r in rows:
+            user = r.get("role") == "user"
+            words = r.get("text") or (sent_words(r.get("files")) if user else "")
+            if not words:
+                continue
+            line = f"{'User' if user else 'You'}: {_clip(words, ACK_LINE_CHARS)}"
+            q = r.get("quote") if user else None
+            if isinstance(q, dict) and q.get("text"):
+                line += f" (replying to {'the job card' if q.get('role') == 'card' else 'a message'}: " \
+                        f"\u201c{_clip(q['text'], 100)}\u201d)"
+            if not user and r.get("run_id"):
+                title = self._run_title(r["run_id"])
+                if title:
+                    line += f" [job: {_clip(title, 100)}]"
+            lines.append(line)
+        if newest_run and not (quote and quote.get("run_id")):
+            result = self._answer(newest_run)
+            if result:
+                lines.append(f"(That job's result: {_clip(result, ACK_LINE_CHARS)})")
+        parts = [("Conversation so far, oldest first:\n" + "\n".join(lines)) if lines else "(No earlier messages.)"]
+        if quote and quote.get("role") == "card":
+            card = f"They are replying to the job card \u201c{_clip(quote.get('text'), 120)}\u201d"
+            result = self._answer(quote["run_id"]) if quote.get("run_id") else ""
+            parts.append(card + (f" (its result: {_clip(result, ACK_LINE_CHARS)})." if result else "."))
+        elif quote and quote.get("text"):
+            who = "your" if quote.get("role") == "assistant" else "their own"
+            parts.append(f"They are replying to {who} message: \u201c{_clip(quote['text'], ACK_LINE_CHARS)}\u201d.")
+        elif job:
+            parts.append(f"The job they have selected: \u201c{_clip(job, 120)}\u201d.")
+        newest = asked.strip() if asked and asked.strip() else ""
+        if files:
+            newest = (newest + " " if newest else "") + "(with a picture or file attached)"
+        parts.append("Newest message: " + _clip(newest or "(no words)", 1200))
+        return [{"role": "system", "content": _ACK_PROMPT.format(name=name)},
+                {"role": "user", "content": "\n\n".join(parts)}]
+
+    def _write_ack(self, asked: str, last: str | None, history: list[dict[str, Any]] | None = None,
+                   quote: dict | None = None, job: str | None = None,
+                   files: bool = False) -> tuple[str | None, dict | None, str | None]:
+        """The fast model's one-line acknowledgement for this message in its conversation, its model
+        badge and its kind (ACK_CHAT / ACK_JOB / None). The line is None when it wrote SKIP or
+        something unusable; the kind still counts."""
+        messages = self.ack_messages(asked, history, quote, job, files)
         if self._ack_call is not None:
             got = self._ack_call(messages)
             raw, model = (got if isinstance(got, tuple) else (got, None))
         else:
             call_llm, extract = host_mod.aux_client()
             if extract is None:
-                return None, None
+                return None, None, None
             from .router import _profile_scope
             route = self.route()
             kwargs: dict[str, Any] = dict(messages=messages, temperature=0.7, max_tokens=ACK_TOKENS,
@@ -1241,10 +1344,12 @@ class HomeChat:
                 else:
                     response = call_llm(provider=route["provider"], model=route["model"], **kwargs)
             raw, model = self._answer_of(response, extract), self._served(response, route)
-        said = clean_ack(raw if isinstance(raw, str) else None, asked)
+        raw = raw if isinstance(raw, str) else None
+        kind = ack_tag(raw)[0]
+        said = clean_ack(raw, asked)
         if said and said == last:
             said = None
-        return said, model
+        return said, model, kind
 
     def _post_reply(self, turn: _Turn | None, said: str, action: str, model: dict | None,
                     user_id: str) -> str | None:
