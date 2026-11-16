@@ -978,6 +978,35 @@ class HomeChat:
             rows += self.store._db.execute("SELECT run_id FROM home_jobs WHERE message_id=?", (mid,)).fetchall()
         return {r[0] for r in rows if r[0]}
 
+    def home_origin(self, run_id: str) -> str | None:
+        """The Home message (``hu_...``) a run answers: the user's message that started or followed
+        it up, or the one it was an extra ask of. None for a job not started from Home."""
+        with self.store._lock:
+            row = self.store._db.execute(
+                "SELECT id FROM home_messages WHERE run_id=? AND role='user' ORDER BY at DESC LIMIT 1",
+                (run_id,)).fetchone()
+            row = row or self.store._db.execute(
+                "SELECT message_id FROM home_jobs WHERE run_id=? ORDER BY at DESC LIMIT 1", (run_id,)).fetchone()
+        return row[0] if row else None
+
+    def _notify_answer(self, user_id: str, reply_row: str | None) -> None:
+        """Push Home's answer to what the user wrote (build 86, Geo 11-16: "if it's responding to me
+        in something I wrote in home, I should get a notification if I'm not on the app"). Only the
+        answer itself: never an acknowledgement, a status tick or something nobody asked for, and
+        only when the phone isn't open (push.py). Never raises into the turn."""
+        notifier = getattr(self.svc, "push", None)
+        if notifier is None or not reply_row:
+            return
+        try:
+            row = self._rows("WHERE id=?", (reply_row,), limit=1)
+            text = row[0]["text"] if row else ""
+            if not text.strip():
+                return
+            name = (self.svc.settings.get() or {}).get("assistant_name") or "Hermes"
+            notifier.notify("home", key=f"home:{user_id}", title=name, body=text, home="m:" + reply_row)
+        except Exception as exc:  # noqa: BLE001 - a notification never breaks the reply
+            logger.warning("speakeasy: Home answer push failed: %s", type(exc).__name__)
+
     def started_runs(self) -> set[str]:
         """Runs a Home message started or followed up: their card needs no "you asked" bubble (the
         message already shows)."""
@@ -1423,6 +1452,10 @@ class HomeChat:
         if decided["reply"]:
             turn.decided.set()
             reply_row = self._post_reply(turn, decided["reply"], decided["action"], model, user_id)
+            if decided["action"] in {"none", "cancel"}:
+                # The reply IS the answer (no job follows to answer later): a closed phone hears it.
+                # A job's reply is only its acknowledgement; the job's own result notifies (calls.push).
+                self._notify_answer(user_id, reply_row)
         started = None
         run_id = None
         action = decided["action"]

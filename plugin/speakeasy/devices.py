@@ -186,7 +186,7 @@ class DeviceStore:
     # ``push``: {apns_token, environment, kinds, updated_at}. The APNs token only lets the relay
     # address a notification to this app on this phone; it is no credential for this Hermes.
     def set_push(self, device_id: str, apns_token: str, environment: str, kinds: list[str],
-                 now: float | None = None) -> bool:
+                 now: float | None = None, known: list[str] | None = None) -> bool:
         with self._lock:
             data = self._load()
             device = data["devices"].get(device_id)
@@ -194,6 +194,8 @@ class DeviceStore:
                 return False
             device["push"] = {"apns_token": apns_token, "environment": environment, "kinds": list(kinds),
                               "updated_at": time.time() if now is None else now}
+            if known:
+                device["push"]["known"] = list(known)   # the kinds the app has a switch for (push.wants)
             # One phone, one push target: a re-paired phone's old record (same app on the same phone,
             # so the same APNs token) stops getting notifications, sealed with a key it threw away.
             for other_id, other in data["devices"].items():

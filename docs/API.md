@@ -108,6 +108,7 @@ used in the tests (timestamps and IDs will differ).
 | GET | `/voice/endpoints` | device | Every address of this Hermes (tailnet, Cloudflare) + the address note |
 | POST | `/voice/prove` | none | Proves this is the paired Hermes before the app sends its token to a new address |
 | POST | `/voice/push` | device | Turn notifications on (APNs token, environment, kinds) or off for this device |
+| POST | `/voice/push/presence` | device | The app left the screen (`{"state": "away"}`) or came back (`"here"`) |
 | GET | `/voice/push/events/{id}` | device | The real text of one notification (read by the phone's notification extension) |
 
 ## GET /health
@@ -2225,8 +2226,12 @@ phone's Notification Service Extension ──GET /voice/push/events/{id} (device
 ### POST /voice/push
 
 ```json
-{"apns_token": "<hex>", "environment": "sandbox" | "production", "kinds": ["finished", "needs_you", "failed", "reply"]}
+{"apns_token": "<hex>", "environment": "sandbox" | "production", "kinds": ["finished", "needs_you", "failed", "reply", "home"],
+ "known": ["finished", "needs_you", "failed", "reply", "home"]}
 ```
+
+`known` (optional, apps from build 86): every kind the app shows a switch for. A kind in `known` but
+not in `kinds` is off. An app that doesn't send `known` gets `home` whenever it wants `reply`.
 
 → `200 {"ok": true, "enabled": true, "kinds": [...], "relay": "https://speakeasy-push.todd-562.workers.dev", "available": true, "seal_key": "<base64url, 32 bytes>"}`.
 `seal_key` (also in the pairing reply) is this device's own key for **sealed words**: each
@@ -2242,9 +2247,13 @@ device drops it. `400` for a token that isn't hex, an unknown environment or kin
 
 ### When Hermes notifies
 
-Only when the app is **not** open on that device: no live `/events` stream from it and no request
-from it in the last `push.presence_s` seconds (default 45). The extension's own fetch doesn't count.
-Each event notifies a device once.
+Only when the app is **not** open on that device. An app that reports where it is
+(`POST /voice/push/presence`, `capabilities.push_home`) is believed: after `"away"` nothing it does
+counts as open (a request finishing in the background, a Live Activity's follow, a stream iOS hasn't
+closed); after `"here"` it is open while it keeps making requests (2 minutes of silence = gone). An
+app that doesn't report: no live `/events` stream from it and no request from it in the last
+`push.presence_s` seconds (default 45; 12 for `home`, whose answer lands seconds after the message's
+own request). The extension's own fetch doesn't count. Each event notifies a device once.
 
 | kind | when | title |
 |---|---|---|
@@ -2252,12 +2261,18 @@ Each event notifies a device once.
 | `needs_you` | an approval is waiting, a result asks a question, or an email draft is ready | `Needs you: <task>` |
 | `failed` | a task failed | `Failed: <task>` |
 | `reply` | an answer landed in a Hermes conversation the task was sent to | `New reply: <task>` |
+| `home` | Home answered something the user wrote in Home: the coordinator's answer (never its acknowledgement or a status line), or the result/question of a job a Home message started | the assistant's name |
+
+`home` travels to the relay as `reply`; its sealed words and its event carry `home`, the Home entry
+to open (`m:<message id>` for a chat answer, `c:<run id>` for a job). A Home job's result notifies as
+`home` **instead of** its `finished`/`needs_you`/`reply`; a phone that turned `home` off gets that kind.
+The body is the first 180 characters of the answer.
 
 A user stopping a task, and a conversation turn still going elsewhere, notify nothing.
 
 ### GET /voice/push/events/{id}
 
-`200 {"kind", "title", "body", "run_id", "thread_id"}` for the device the notification went to;
+`200 {"kind", "title", "body", "run_id", "thread_id", "home"?}` for the device the notification went to;
 `404` for any other device, an unknown id, or after 6 hours (kept in memory only). Not a sign the app is open.
 
 ### The relay
@@ -2267,7 +2282,9 @@ A user stopping a task, and a conversation turn still going elsewhere, notify no
 `POST /v1/notify`: `X-Speakeasy-Install`, `X-Speakeasy-Timestamp`, and
 `X-Speakeasy-Signature = hex HMAC-SHA256(secret, "v1\n<install>\n<timestamp>\n<sha256 hex of body>")`.
 The relay refuses any body field beyond the six above, replays (nonce), timestamps off by more than
-5 minutes, and rate-limits per install and per device token. Its reply `{ok, status, reason, invalid_token}`:
+5 minutes, and rate-limits per install and per device token. A relay from before sealed words refuses `sealed` with `400 {reason: "invalid", field: "exactly ..."}`;
+the plugin then sends plain wake-ups (and logs it once). Every send logs one line: kind, relay status,
+APNs status, sealed/plain (never the token or the words). Its reply `{ok, status, reason, invalid_token}`:
 `invalid_token: true` (APNs said the token is dead) makes the plugin forget that token.
 
 Settings: `push: {enabled: true, relay_url: "https://speakeasy-push.todd-562.workers.dev", presence_s: 45}`

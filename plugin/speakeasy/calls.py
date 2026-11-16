@@ -560,6 +560,9 @@ class Runtime:
     discard_files: Callable[[list[str]], int] | None = None
     # Phone notifications while the app is closed (push.PushNotifier); None = never.
     push: Any = None
+    # run id -> the Home message it answers (home_chat.HomeChat.home_origin), or None for a job not
+    # started from something the user wrote in Home. None = no Home chat.
+    home_origin: Callable[[str], str | None] | None = None
     # Home's model (now.NowModel): a handoff's Working card is held there until its task exists.
     now_model: Any = None
     # The model/reasoning a run starts with (task_id, idem key, session id, request) -> Hermes'
@@ -1828,15 +1831,35 @@ class SidebandWorker:
         logger.info("speakeasy: call paused at its length cap (resumable)")
         return True
 
-    def push(self, kind: str, key: str, title: str | None, body: str | None = None, run_id: str | None = None) -> None:
-        """Wake a closed phone (push.py decides which, if any). Never raises into the task path."""
+    def push(self, kind: str, key: str, title: str | None, body: str | None = None, run_id: str | None = None,
+             home: bool = False) -> None:
+        """Wake a closed phone (push.py decides which, if any). Never raises into the task path.
+
+        ``home``: the job answers something the user wrote in Home (build 86): it notifies as a Home
+        answer (the assistant's name over the answer, a tap opens Home at the job), and a phone that
+        turned Home answers off still gets this kind. One notification per phone either way."""
         notifier = getattr(self.rt, "push", None)
         if notifier is None:
             return
         try:
-            notifier.notify(kind, key=key, title=title, body=body, run_id=run_id)
+            if home and run_id:
+                notifier.notify("home", key=key, title=self.names.assistant_name or "Hermes", body=body,
+                                run_id=run_id, home=f"c:{run_id}", fallback=(kind, title, body))
+            else:
+                notifier.notify(kind, key=key, title=title, body=body, run_id=run_id)
         except Exception as exc:
             logger.warning("speakeasy: push failed: %s", type(exc).__name__)
+
+    def from_home(self, run_id: str | None) -> bool:
+        """This run was started (or followed up) from a message the user wrote in Home."""
+        origin = getattr(self.rt, "home_origin", None)
+        if not run_id or origin is None:
+            return False
+        try:
+            return bool(origin(run_id))
+        except Exception:
+            logger.debug("speakeasy: Home origin lookup failed", exc_info=True)
+            return False
 
     def push_result(self, backend: Any, idem: str, status: str, result: dict[str, Any] | None, reason: str | None,
                     drafts: list[dict[str, Any]], event: dict[str, Any]) -> None:
@@ -1846,18 +1869,22 @@ class SidebandWorker:
         run = backend.run_id or idem
         if status == "failed":
             self.push("failed", f"run:{run}", title, reason or "It stopped before finishing.", backend.run_id)
-        elif status != "completed" or event.get("still_going"):
             return
-        elif result and result.get("question"):
+        if status != "completed" or event.get("still_going"):
+            return
+        # Its answer (or its question) comes back into Home for something the user wrote there.
+        home = self.from_home(backend.run_id)
+        if result and result.get("question"):
             question = result["question"].get("question") if isinstance(result["question"], dict) else None
-            self.push("needs_you", f"question:{run}", title, question or result.get("spoken"), backend.run_id)
+            self.push("needs_you", f"question:{run}", title, question or result.get("spoken"), backend.run_id, home=home)
         elif drafts:
             subject = drafts[0].get("subject")
             self.push("needs_you", f"draft:{drafts[0].get('draft_id')}", title,
-                      f"Email draft ready: {subject}" if subject else "An email draft is ready to check.", backend.run_id)
+                      f"Email draft ready: {subject}" if subject else "An email draft is ready to check.", backend.run_id,
+                      home=home)
         else:
             self.push("reply" if event.get("continued") else "finished", f"run:{run}", title,
-                      (result or {}).get("spoken") or "Done.", backend.run_id)
+                      (result or {}).get("spoken") or "Done.", backend.run_id, home=home)
 
     # -- provider events --------------------------------------------------------------------
     async def handle_event(self, event: dict[str, Any]) -> None:
