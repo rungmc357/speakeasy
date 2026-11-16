@@ -31,6 +31,26 @@ LABELS = {"send": "Send", "book": "Book", "invite": "Send invite", "post": "Post
           "deploy": "Deploy", "home": "Confirm", "subscription": "Confirm", "delete_share": "Share"}
 
 
+# A typed message that only says "approve" (SPK-522). It never approves a held card (the card's own
+# button does, outside a live call), so the page answers it at once instead of handing the agent a
+# word that can't count, which made the task send the same card again and again.
+TYPED_APPROVAL_RE = re.compile(
+    r"^\s*(?:/\s*)?(?:(?:yes|ok(?:ay)?|i)[,\s]+)?(?:approve[ds]?|confirm(?:ed|s)?)(?:\s+(?:it|this|that))?\s*[.!]*\s*$",
+    re.I)
+
+
+def typed_approval(text: Any) -> bool:
+    return isinstance(text, str) and bool(TYPED_APPROVAL_RE.match(text))
+
+
+def approve_label(view: dict) -> str:
+    """The card's Approve button words ("Post", "Buy for $X")."""
+    for action in view.get("actions") or []:
+        if isinstance(action, dict) and action.get("id") == "approve" and isinstance(action.get("label"), str):
+            return action["label"]
+    return "Approve"
+
+
 def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 

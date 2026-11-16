@@ -37,6 +37,7 @@ from . import history as H
 from . import usage as U
 from . import context_use as CU
 from . import messages as M
+from . import confirms as C_
 from . import models as MD
 from . import skills as SK
 from .brief import BriefInvalid, BriefManager
@@ -4401,7 +4402,10 @@ class VoiceService(SecureInputMixin):
         title = H.shown_title(sid, meta.get("title"), link) or (meta.get("title") or "").strip() or (link.name if link else None)
         first_user = next((e["text"] for e in page["entries"] if e["kind"] == "user"), None)
         needs_you = (any(j.get("status") in RS.ASKING for j in jobs)
-                     or bool(open_keys))
+                     or bool(open_keys)
+                     # SPK-522: an approval card waiting on its Post / Send / Buy button.
+                     or any(isinstance(v, dict) and v.get("kind") == "confirm" and v.get("state", "pending") == "pending"
+                            for j in jobs for v in (j.get("result") or {}).get("views") or []))
         return {"session": {
             "id": sid, "title": H.tidy_title(title) if title else (
                 H.tidy_title(H.preview_text(first_user, 60)) if first_user else "Untitled conversation"),
@@ -4490,6 +4494,13 @@ class VoiceService(SecureInputMixin):
         if answers is not None and (not isinstance(answers, str) or not ID_RE.fullmatch(answers)):
             raise ServiceError(400, "answers must be a task's run id.")
 
+        if not answers and not ids and C_.typed_approval(text):
+            label = self._pending_confirm_label(meta["id"])
+            if label is not None:
+                # SPK-522: a typed "Approve" can't stand in for the card's exact-preview approval.
+                # Say so here, at once, instead of sending the task a word it must refuse.
+                raise ServiceError(409, f"A typed approval doesn't count for this. Tap {label} on the "
+                                        "approval card in this chat.", reason="approve_on_card")
         if mode == "queue" and not answers:
             held = self._queued_reply(client_id) if client_id else None
             if held is not None:
@@ -4516,6 +4527,17 @@ class VoiceService(SecureInputMixin):
         return got
 
     _VOICE_SAID_KEEP = 60
+
+    def _pending_confirm_label(self, session_id: str) -> str | None:
+        """The Approve words of an approval card still waiting in this conversation (its own tasks and
+        a chat's linked ones), or None."""
+        keys = [k for k, _, _ in self.store.keys_for_session(session_id)[:8]] + self._continuations(session_id)[-8:]
+        for key in dict.fromkeys(keys):
+            work = self.store.work(idem_key=key) or {}
+            for view in (work.get("result") or {}).get("views") or []:
+                if isinstance(view, dict) and view.get("kind") == "confirm" and view.get("state", "pending") == "pending":
+                    return C_.approve_label(view)
+        return None
 
     def _typed_requests(self, keys: list[str]) -> set[str]:
         """said_key of what each of these tasks was asked, for the ones started from text in the app
