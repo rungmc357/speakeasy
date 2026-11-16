@@ -241,3 +241,34 @@ def test_a_voice_message_from_home_starts_a_new_job_and_shows_on_home(server, se
     # Only short hashes are kept, never the words.
     sid = service.store.session_for(key)
     assert sid and "cedar" not in (service.store.get_meta("voice_clips:" + sid) or "")
+
+
+def test_a_new_chats_voice_note_runs_on_the_model_picked_for_that_chat(server, service, hermes, heard):
+    """New chat (SPK-523): stop sends the recording like Home's, and New chat's model pick rides along
+    as headers, the same fields typed words carry on POST /voice/work."""
+    seen, words = heard
+    service.catalog.raw()
+    caps = http(server.base_url, "GET", "/voice/status", token=server.token)[1]["capabilities"]
+    assert caps["new_voice_notes"] is True and caps["new_voice_note_choice"] is True
+    status, body = send(server, "/voice/work/voice-message", Client_Id="vm-newchat", Duration="4",
+                        Model="openai-codex/gpt-6.1-sol", Reasoning="xhigh")
+    assert status in (200, 202) and body["delivered_as"] == "new_run", body
+    assert body["session_id"], body
+    call = wait_for(lambda: hermes.calls)[-1]
+    assert call["provider"] == "openai-codex" and call["model"] == "gpt-6.1-sol"
+    assert call["model_options"] == {"reasoning": {"enabled": True, "effort": "xhigh"}}
+    assert f'"{words["text"]}"' in _said(call)
+    sid = service.store.session_for(service.store.key_for_run(body["run_id"]))
+    assert service.store.model_choice("session:" + sid)["model"] == "openai-codex/gpt-6.1-sol"
+
+
+def test_a_new_chat_pick_on_a_voice_note_to_an_existing_task_is_ignored(server, service, hermes, heard):
+    """The picks only mean something for a chat that doesn't exist yet: a task keeps its own model."""
+    status, job = http(server.base_url, "POST", "/voice/work", {"text": "Find a quiet cafe near the river"},
+                       server.token)
+    assert status == 202, job
+    wait_for(lambda: service.store.work(job["run_id"])["status"] == "completed")
+    status, body = send(server, f"/voice/work/{job['run_id']}/voice-message", Client_Id="vm-keep", Duration="3",
+                        Model="openai-codex/gpt-6.1-sol", Project="p_nothing")
+    assert status == 200, body
+    assert hermes.calls[-1].get("model") != "gpt-6.1-sol"

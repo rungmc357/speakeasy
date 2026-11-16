@@ -333,6 +333,28 @@ final class VoiceNoteFlowTests: XCTestCase {
         XCTAssertEqual(reply.deliveredAs, .newRun)
     }
 
+    /// New chat's mic (SPK-523): the recording starts the chat on New chat's picks, like typed words.
+    func testANewChatVoiceNoteCarriesNewChatsPicks() {
+        var note = VoiceNoteRequest(target: .newJob, audio: Data([1]), clientID: "vm-new", duration: 3)
+        note.choice = ModelChoice(model: "openai-codex/gpt-6.1-sol", reasoning: .xhigh)
+        note.projectID = "p_garden"
+        XCTAssertEqual(note.headers["X-Speakeasy-Model"], "openai-codex/gpt-6.1-sol")
+        XCTAssertEqual(note.headers["X-Speakeasy-Reasoning"], "xhigh")
+        XCTAssertEqual(note.headers["X-Speakeasy-Project"], "p_garden")
+        XCTAssertNil(note.headers["X-Speakeasy-Agent"])
+        // Another agent runs on its own model: no model pick goes with it.
+        note.agent = "codex"
+        XCTAssertEqual(note.headers["X-Speakeasy-Agent"], "codex")
+        XCTAssertNil(note.headers["X-Speakeasy-Model"])
+        XCTAssertNil(note.headers["X-Speakeasy-Reasoning"])
+        // An existing chat keeps its own model: the picks never ride on its route.
+        var session = VoiceNoteRequest(target: .session("api_shelf"), audio: Data([1]), duration: 3)
+        session.choice = ModelChoice(model: "openai-codex/gpt-6.1-sol"); session.projectID = "p_garden"; session.agent = "codex"
+        XCTAssertNil(session.headers["X-Speakeasy-Model"])
+        XCTAssertNil(session.headers["X-Speakeasy-Project"])
+        XCTAssertNil(session.headers["X-Speakeasy-Agent"])
+    }
+
     func testReplyAndPageEntries() throws {
         let reply = VoiceNoteReply(json: ["ok": true, "via": "session_job", "run_id": "r1", "delivered_as": "steer",
                                           "voice": ["transcript": " Order the cedar boards ", "duration": 4.0]])

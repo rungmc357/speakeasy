@@ -157,6 +157,9 @@ CAPABILITIES["voice_notes"] = True
 # POST /voice/work/voice-message: a voice note that starts a NEW job and chat (Home's composer, no call),
 # the way POST /voice/work starts one from typed words.
 CAPABILITIES["new_voice_notes"] = True
+# SPK-523: that new-chat voice note also carries New chat's picks (X-Speakeasy-Model, -Reasoning,
+# -Agent, -Project), the same fields typed words carry on POST /voice/work.
+CAPABILITIES["new_voice_note_choice"] = True
 # POST /voice/push + GET /voice/push/events/{id}: notifications while the app is closed (push.py).
 CAPABILITIES["push"] = True
 # Build 86: Home answers notify (kind "home", sealed with the Home entry to open), and the app says
@@ -5089,7 +5092,9 @@ class VoiceService(SecureInputMixin):
         if client_id:
             fields["client_id"] = client_id
         for header, name in (("X-Speakeasy-Mode", "mode"), ("X-Speakeasy-Answers", "answers"),
-                             ("X-Speakeasy-Reply-To", "reply_to")):
+                             ("X-Speakeasy-Reply-To", "reply_to"), ("X-Speakeasy-Model", "model"),
+                             ("X-Speakeasy-Reasoning", "reasoning"), ("X-Speakeasy-Agent", "agent"),
+                             ("X-Speakeasy-Project", "project_id")):
             value = (headers.get(header) or "").strip()
             if value:
                 fields[name] = value
@@ -5110,6 +5115,10 @@ class VoiceService(SecureInputMixin):
         fields = dict(upload["fields"])
         if target == "new":
             return self._voice_message_new(fields, upload, data, device_id)
+        # A new chat's picks (SPK-523) mean nothing to an existing chat or task: that chat keeps its own.
+        for key in ("model", "reasoning", "agent", "project_id"):
+            if target != "home" or key == "project_id":
+                fields.pop(key, None)
         if target == "home":
             return self._voice_message_home(fields, upload, data, device_id)
         if target == "session":
