@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from fakes import http, wait_for
 from speakeasy import home_chat as HC
 from test_home_chat import coordinator, post, stream
+from test_push import relay  # noqa: F401  (fixture: the fake push relay)
 
 SPOKEN = "Riverside Beans opens at 6 and stays quiet until nine. Second sentence here. A third one."
 ASK = {"reply": "Let me find you a quiet cafe.", "action": "start",
@@ -322,3 +323,33 @@ def _state(service, run_id):
     with service.store._lock:
         row = service.store._db.execute("SELECT state FROM home_done WHERE run_id=?", (run_id,)).fetchone()
     return row[0] if row else None
+
+
+# -- SPK-520 x SPK-407: one notification per finished Home job, finish line or not ------------------
+
+def test_a_finished_home_job_notifies_once_with_its_finish_line_in_the_thread(server, service, hermes, relay):
+    """SPK-520 sends a Home job's result to a closed phone as Home's answer (calls.push_result). The
+    finish line SPK-407 posts is that same answer in the thread: it must never push a second time,
+    not when it goes up, not on a repeated final event, a second listener call or a restart."""
+    from test_home_push import _open, away_phone
+    service.settings.patch({"assistant_name": "Juniper"})
+    seal = away_phone(server, service)
+    service.home_chat.done_grace_s = 0
+    run_id, _ = start_held(server, service, hermes, client_id="c_push")
+    time.sleep(0.3)
+    assert relay.notifies == []                            # the turn's reply only announced the job
+    key = finish(service, hermes, run_id)
+    lines = wait_for(lambda: finish_lines(service, run_id))
+    assert len(lines) == 1                                 # the finish row is there...
+    (payload, _), = wait_for(lambda: relay.notifies)
+    opened = _open(seal, payload["sealed"])
+    assert opened["title"] == "Juniper" and opened["home"] == f"c:{run_id}" and opened["run_id"] == run_id
+    # ...and stays the only push: repeated final event, a second listener call, a restart, a Home read.
+    service.store.settle(key, "completed", result={"spoken": "Something else."})
+    service.home_chat.note_settled(key, "completed")
+    service.home_chat = HC.HomeChat(service)
+    service.home_chat.deliver_due(time.time() + 10_000)
+    stream(server)
+    time.sleep(0.5)
+    assert len(finish_lines(service, run_id)) == 1
+    assert len(relay.notifies) == 1, [p for p, _ in relay.notifies]
