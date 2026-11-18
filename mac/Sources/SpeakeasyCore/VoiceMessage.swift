@@ -183,6 +183,11 @@ public struct VoiceNoteRequest: Equatable, Sendable {
     public var answers: String?
     /// Staged attachment ids that go with the recording.
     public var attachments: [String]
+    /// New chat's picks (`newJob` only, servers with `new_voice_note_choice`, SPK-523): the same model,
+    /// agent and project typed words carry on `POST /voice/work`. Another agent runs on its own model.
+    public var choice: ModelChoice?
+    public var agent: String?
+    public var projectID: String?
     public var replyTo: String? = nil
 
     public init(target: Target, audio: Data, mimeType: String = "audio/mp4", clientID: String = UUID().uuidString,
@@ -207,6 +212,15 @@ public struct VoiceNoteRequest: Equatable, Sendable {
         if let answers, !answers.isEmpty, case .session = target { out["X-Speakeasy-Answers"] = answers }
         if let replyTo, case .home = target { out["X-Speakeasy-Reply-To"] = replyTo }
         if !attachments.isEmpty { out["X-Speakeasy-Attachments"] = attachments.joined(separator: ",") }
+        if target == .newJob {
+            if let agent, !agent.isEmpty {
+                out["X-Speakeasy-Agent"] = agent
+            } else if let choice {
+                if let model = choice.model { out["X-Speakeasy-Model"] = model }
+                if let reasoning = choice.reasoning { out["X-Speakeasy-Reasoning"] = reasoning.rawValue }
+            }
+            if let projectID, !projectID.isEmpty { out["X-Speakeasy-Project"] = projectID }
+        }
         return out
     }
 }

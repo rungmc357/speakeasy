@@ -1402,8 +1402,11 @@ sending device's client id, to play the clip it kept) and `voice_duration`.
 
 `POST /voice/work/voice-message` (no run id; servers with `capabilities.new_voice_notes`): the
 recording starts a NEW job and chat, the way `POST /voice/work` does for typed words (Home's composer,
-no call). Same headers (`X-Speakeasy-Mode` and `-Answers` are ignored); reply: the `POST /voice/work`
-reply plus `voice: {transcript, duration}`.
+no call; also New chat's mic). Same headers (`X-Speakeasy-Mode` and `-Answers` are ignored); reply: the
+`POST /voice/work` reply plus `voice: {transcript, duration}`. Servers with
+`capabilities.new_voice_note_choice` also take New chat's picks as `X-Speakeasy-Model`, `-Reasoning`,
+`-Agent` and `-Project` (the `model`, `reasoning`, `agent` and `project_id` fields of `POST /voice/work`,
+checked the same way); the routes for an existing chat or task ignore them.
 
 ### POST /voice/history/{session_id}/message
 
