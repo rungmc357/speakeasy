@@ -67,8 +67,11 @@ def test_an_old_placeholder_title_is_never_returned(server, service, hermes):
     body = post(server, {"text": "find me a quiet cafe near the river", "client_id": "c_cafe_old"})[1]
     wait_for(lambda: [t for t in tasks(server) if t.get("run_id") == body["run_id"]])
     key = service.store.key_for_run(body["run_id"])
-    service.store._db.execute("UPDATE runs SET title='Voice task', own_title=NULL WHERE idem_key=?", (key,))
-    service.store._db.commit()
+    # Under the store's lock, like every store write: Home's publish thread reads this connection
+    # under a statement budget (its progress handler needs the GIL while SQLite holds the
+    # connection), so an unlocked write here could deadlock both threads (11-16: 51 h at 43%).
+    with service.store._lock, service.store._db:
+        service.store._db.execute("UPDATE runs SET title='Voice task', own_title=NULL WHERE idem_key=?", (key,))
     routes = _routes(server)
     assert "Voice task" not in routes
     assert service.store.shown_title(key) == "Find me a quiet cafe near the river"
