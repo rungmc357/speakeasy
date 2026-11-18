@@ -128,8 +128,8 @@ def draft_context(raw: Any) -> dict[str, Any]:
         kept = {n: o for n, o in ((_line(k, 120), _line(v, 120)) for k, v in list(orgs.items())[:10]) if n and o}
         if kept:
             out["orgs"] = kept
-    if raw.get("edited") is True:
-        out["edited"] = True
+    # "edited" is never read from the task's block: only the person's own edit on the card sets it
+    # (apply_edit), and an edited chain lets an older card hash stand in for the newest draft.
     return out
 
 

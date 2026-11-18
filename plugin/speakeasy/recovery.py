@@ -273,7 +273,10 @@ def settle_from_hermes(store: Any, key: str, expect: str, final: str, reply: dic
     answer for a completed run, the failure for a failed one. True when this write settled it."""
     output = reply.get("output") if isinstance(reply.get("output"), str) else None
     result = split_result(P.without_voice_header(output), image_roots()) if output and output.strip() else None
-    extra: dict[str, Any] = {"result": result} if result else {}
+    # The answer's email drafts are stored in the same checked write, as the task's own settle does:
+    # a job recovered after a restart keeps its card's Send for the exact draft.
+    drafts = (result or {}).pop("_email_drafts", None) or []
+    extra: dict[str, Any] = {"result": result, "drafts": drafts} if result else {}
     if final == "failed":
         from . import failures
         error = reply.get("error") if isinstance(reply.get("error"), str) else None

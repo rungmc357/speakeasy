@@ -437,3 +437,24 @@ def test_card_edit_is_refused_after_the_task_revised_the_draft(server, service, 
     status, _ = http(server.base_url, "POST", f"/voice/work/{run}/card-action", {"view": 0, "action": "edit", "value": {
         "sha256": draft["sha256"], "after": "send", "body": "Mine"}}, server.token)
     assert status == 409 and len(hermes.calls) == before
+
+
+def test_the_tasks_own_edited_flag_is_ignored():
+    """SPK-363: only the person's own edit on the card marks a draft edited, never the task's block."""
+    _, drafts = extract_email_drafts(answer_with({**DRAFT, "edited": True, "notes": ["Kept it short"]}))
+    assert drafts and "edited" not in drafts[0].get("context", {})
+    assert drafts[0]["context"] == {"notes": ["Kept it short"]}
+
+
+def test_a_task_revision_claiming_edited_cannot_ride_an_old_card_hash(server, service, hermes):
+    """SPK-363: a task revision that says it was "edited" is still a revision the person never saw:
+    an edit+send from the card's older hash is refused and nothing is sent."""
+    task = _call_with_rich_draft(server, service, hermes)
+    run, draft = task["run_id"], task["email_drafts"][0]
+    key = service.store.draft(draft["draft_id"])["_key"]
+    _, revised = extract_email_drafts(answer_with({**DRAFT, "body": "A revision by the task", "edited": True}))
+    service.store.add_draft(key, None, revised[0])
+    before = len(hermes.calls)
+    status, _ = http(server.base_url, "POST", f"/voice/work/{run}/card-action", {"view": 0, "action": "edit", "value": {
+        "sha256": draft["sha256"], "after": "send", "body": "Mine"}}, server.token)
+    assert status == 409 and len(hermes.calls) == before

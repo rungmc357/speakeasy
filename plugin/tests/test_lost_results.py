@@ -182,3 +182,25 @@ def test_a_followed_run_hermes_forgot_becomes_unconfirmed_once_quiet(tmp_path):
     hermes = Hermes(forgotten={"run_fresh", "run_quiet"})
     done, forgotten = recovery.finished_followed(store, hermes, {"fresh": "run_fresh", "quiet": "run_quiet"}, {})
     assert done == [] and forgotten == ["quiet"]
+
+
+def test_a_recovered_job_keeps_its_email_draft_across_a_restart(tmp_path):
+    """SPK-363: a job settled from Hermes' own record (the task's worker gone, e.g. after a restart)
+    keeps the email draft its answer carried: the card still offers Send for the exact draft."""
+    import json
+    from speakeasy.emails import draft_sha256
+    draft = {"from": "me@example.com", "to": ["Pat Doe <pat@example.org>"], "cc": [], "bcc": [],
+             "subject": "Dinner on Friday", "body": "Hi Pat,\n\nAre we still on for Friday at 7?"}
+    output = (f"Here is the draft.\n```email-draft\n{json.dumps(draft)}\n```\n"
+              "DONE: Email drafted\nSPOKEN: I drafted the email to Pat.")
+    store = StateStore(tmp_path / "s.sqlite3")
+    _open(store, "k", "run_k")
+    assert recovery.settle_from_hermes(store, "k", "working", "completed", {"status": "completed", "output": output})
+    reopened = StateStore(tmp_path / "s.sqlite3")             # the plugin starts again
+    drafts = reopened.drafts_for("k")
+    assert len(drafts) == 1 and drafts[0]["status"] == "pending" and drafts[0]["body"].startswith("Hi Pat,")
+    assert drafts[0]["sha256"] == draft_sha256(drafts[0])
+    work = reopened.work(idem_key="k")
+    assert "email-draft" not in work["result"]["full"]
+    assert any(v.get("kind") == "draft" and v.get("sha256") == drafts[0]["sha256"]
+               for v in work["result"].get("views") or [])
