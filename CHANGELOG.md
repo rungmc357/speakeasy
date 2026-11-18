@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.57: Home that follows the conversation, and notifications that arrive
+
+- **Home's first line follows the conversation.** The quick acknowledgement now sees your last few Home messages and the card you're answering, so it responds to what you just said; it never repeats your words back, and when you're just talking and the answer is moments away, there's no filler line at all. *(plugin)*
+- **Home answers notify you when the app is closed.** The answer to something you wrote in Home arrives as a notification (once, in place of a separate Done), and notifications are delivered again: the plugin now falls back correctly when the relay refuses a sealed message, and the app no longer counts as open while it checks in from the background. *(plugin)*
+- **Email drafts survive recovery.** A job recovered after a restart keeps its email drafts. *(plugin)*
+- **Approvals read as needing you.** A chat with an approval card waiting shows as needing you, and a typed Approve that can't count is answered at once. *(plugin)*
+- **New chat voice notes keep your picks.** A voice note that starts a new chat uses New chat's model, agent and project. *(plugin)*
+
 ## Plugin 0.3.56: every model says whose account it runs on
 
 - **Models name their provider.** Every model the app is offered carries its provider and a plain label ("Claude subscription", "ChatGPT sign-in", "OpenRouter: pay per use"), so the app's pickers can group models by provider and you never pick the wrong account by accident. *(plugin)*
