@@ -126,3 +126,36 @@ def test_home_cards_and_history_show_no_project(server, service, hermes, state, 
     item = card()
     assert "project" not in item and "project_suggestion" not in item
     assert not any("project" in r for r in service.history({})["sessions"])    # GET /voice/history
+
+
+def test_acceptance_a_hermes_with_project_filed_jobs_shows_and_files_nothing(server, service, hermes, state,
+                                                                           monkeypatch):
+    """The ticket's acceptance, over HTTP from a client that sends no off header (the Mac, an older
+    phone): a Hermes that already has jobs filed into a project and a chip chosen while Projects was on.
+    /voice/status says projects: false, Home's cards carry no project or "Lantern?" chip, the project
+    routes (and their "Make a project for X?" offer) answer 501, and no new Home job is filed, neither
+    by the chosen chip nor by "for Lantern, ..." in the person's own words."""
+    from test_home_chat import coordinator, post
+    pid = chosen_before(service, monkeypatch, "Lantern", "Walnut only.")
+    monkeypatch.setenv(FLAG, "1")
+    old = service.start_job({"text": "Fix the Lantern build", "project_id": pid})["run_id"]
+    wait_for(lambda: service.store.run_status(service.store.key_for_run(old)) == "completed", WAIT_S)
+    assert any(p == pid for _, _, p in links(service))     # a job really is filed into the project
+    monkeypatch.delenv(FLAG)
+    service.forget_history_cache()
+    before = links(service)
+
+    status, body = get(server, "/voice/status")
+    assert status == 200 and body["capabilities"]["projects"] is False
+    assert get(server, "/voice/projects") == (501, {"error": HELD_OUT})
+    _, now = get(server, "/voice/now")
+    for item in now.get("items") or []:
+        assert "project" not in item and "project_suggestion" not in item, item
+
+    coordinator(service, {"reply": "On it.", "action": "start", "request": "Check the Lantern lamp wiring"},
+                {"reply": "Sure.", "action": "start", "request": "Order more Lantern wicks"})
+    assert post(server, {"text": "check the Lantern lamp wiring", "client_id": "c_acc1"})[0] == 200
+    assert post(server, {"text": "for Lantern, order more wicks", "client_id": "c_acc2"})[0] == 200
+    for words in ("lamp wiring", "wicks"):
+        assert "Walnut only." not in str(hermes_call(hermes, words)["input"])
+    assert links(service) == before                        # nothing new filed anywhere
