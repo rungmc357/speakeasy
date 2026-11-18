@@ -257,6 +257,13 @@ private struct MacPostedResult: View {
     @State private var bump = 0
     /// Why the card's last button didn't go (SPK-364): the card is back on Draft, and this says so.
     @State private var refused: String?
+    @ObservedObject private var memory = EmailCardMemory.shared
+
+    /// The line leaves with the next tap (its Undo window included) or once Hermes's status moves.
+    private var refusalStands: Bool {
+        guard let info = card.flatMap({ EmailCardInfo($0) }) else { return true }
+        return info.refusalStands(memory.phase[info.draftID])
+    }
 
     var body: some View {
         Group {
@@ -268,7 +275,7 @@ private struct MacPostedResult: View {
                         .cardSurface(style)
                         .frame(maxWidth: 520, alignment: .leading)
                         .accessibilityIdentifier("mac-now-result")
-                    if let refused {
+                    if let refused, refusalStands {
                         Text(refused).font(.callout).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("mac-now-result-refused")
@@ -277,6 +284,8 @@ private struct MacPostedResult: View {
             }
         }
         .task(id: "\(item.updatedAt?.timeIntervalSince1970 ?? 0)|\(bump)") { await load() }
+        // Dropped, not only hidden: an Undo of the retry must not bring the old line back.
+        .onChange(of: refusalStands) { _, stands in if !stands { refused = nil } }
     }
 
     private func load() async {
