@@ -55,9 +55,9 @@ public extension EnvironmentValues {
         phase[draftID] = .asked(verb)
         Task { @MainActor [weak self] in
             let ok = await post()
-            // A newer tap on this draft owns the phase now.
-            guard let self, self.phase[draftID] == .asked(verb) else { return }
-            self.phase[draftID] = EmailCardPhase.answered(verb, ok: ok)
+            guard let self else { return }
+            let settled = EmailCardPhase.settled(self.phase[draftID], verb, ok: ok)
+            if settled != self.phase[draftID] { self.phase[draftID] = settled }
         }
     }
 

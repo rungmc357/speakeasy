@@ -176,6 +176,12 @@ public enum EmailCardPhase: Equatable, Sendable {
         ok && verb != "save" ? .asked(verb) : nil
     }
 
+    /// The draft's phase once the POST for `verb` answers. A newer tap on the draft owns the phase
+    /// by then: a late answer leaves its Undo window or its ask alone.
+    public static func settled(_ current: EmailCardPhase?, _ verb: String, ok: Bool) -> EmailCardPhase? {
+        current == .asked(verb) ? answered(verb, ok: ok) : current
+    }
+
     public func shown(_ status: EmailCardInfo.Status) -> EmailCardPhase? {
         if case .asked = self, status != .pending { return nil }
         return self
@@ -202,6 +208,11 @@ public extension EmailCardInfo {
         case .superseded: return "Replaced"
         }
     }
+
+    /// Whether a host's line saying the card's last button didn't go still belongs under it: only
+    /// while the card is back on Draft with its buttons. A new tap (its Undo window, its POST) or
+    /// a status Hermes moved makes that line stale.
+    func refusalStands(_ phase: EmailCardPhase?) -> Bool { status == .pending && phase == nil }
 }
 
 public extension WorkInfo {

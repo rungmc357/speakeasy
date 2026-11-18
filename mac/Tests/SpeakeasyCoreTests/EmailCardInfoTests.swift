@@ -112,6 +112,37 @@ final class EmailCardInfoTests: XCTestCase {
         XCTAssertEqual(try word("pending", .asked("save")), "Saving to Drafts…")
         XCTAssertEqual(try word("pending", .waiting("send", until: .distantFuture)), "Draft")
         XCTAssertEqual(try word("pending", nil, editedHere: true), "Draft · edited")
+        XCTAssertEqual(try word("pending", .asked("discard")), "Discarded")
+        XCTAssertEqual(try word("revising", .asked("send")), "Revising…")
+        XCTAssertEqual(try word("superseded", .asked("save")), "Replaced")
+    }
+
+    /// SPK-364: a host's "that didn't go through" line stands only over a Draft with its buttons.
+    /// The next tap (its Undo window, its POST) and a status Hermes moved both end it.
+    func testARefusalLineStandsOnlyOverADraftWithItsButtons() throws {
+        func stands(_ status: String, _ phase: EmailCardPhase?) throws -> Bool {
+            try XCTUnwrap(EmailCardInfo(card(["status": status]))).refusalStands(phase)
+        }
+        XCTAssertTrue(try stands("pending", nil))
+        XCTAssertFalse(try stands("pending", .waiting("send", until: .distantFuture)), "a retry in its Undo window")
+        XCTAssertFalse(try stands("pending", .asked("send")))
+        XCTAssertFalse(try stands("approved", nil), "a Send that timed out here but reached Hermes")
+        XCTAssertFalse(try stands("sent", nil), "sent from another device")
+        XCTAssertFalse(try stands("failed", nil))
+        XCTAssertFalse(try stands("denied", nil))
+        XCTAssertFalse(try stands("superseded", nil))
+    }
+
+    /// SPK-364: a POST that answers late never takes the phase from a newer tap on the same draft.
+    func testALateAnswerLeavesANewerTapAlone() {
+        XCTAssertNil(EmailCardPhase.settled(.asked("send"), "send", ok: false))
+        XCTAssertEqual(EmailCardPhase.settled(.asked("send"), "send", ok: true), .asked("send"))
+        XCTAssertNil(EmailCardPhase.settled(.asked("save"), "save", ok: true))
+        let undo = EmailCardPhase.waiting("send", until: .distantFuture)
+        XCTAssertEqual(EmailCardPhase.settled(undo, "save", ok: false), undo)
+        XCTAssertEqual(EmailCardPhase.settled(undo, "send", ok: false), undo)
+        XCTAssertEqual(EmailCardPhase.settled(.asked("discard"), "save", ok: true), .asked("discard"))
+        XCTAssertNil(EmailCardPhase.settled(nil, "send", ok: true))
     }
 
     /// SPK-364: what stays once Hermes answers the card's POST. A refused or unreached ask gives the
