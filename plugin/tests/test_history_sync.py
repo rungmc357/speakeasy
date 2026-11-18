@@ -184,7 +184,8 @@ def test_a_linked_chat_whose_task_was_cleared_still_continues_its_session(server
     key = service.store.key_for_run(first["run_id"])
     linked = wait_for(lambda: service.store.session_for(key))
     wait_for(lambda: service.store.work(first["run_id"])["status"] == "completed")
-    service.store._db.execute("UPDATE runs SET status='cancelled' WHERE idem_key=?", (key,))
+    with service.store._lock, service.store._db:   # the server's threads share this connection
+        service.store._db.execute("UPDATE runs SET status='cancelled' WHERE idem_key=?", (key,))
     before = len(hermes.calls)
     status, again = post(server, "/voice/history/t1/message", {"text": "And the basil?"})
     assert status == 200 and again["via"] == "linked", again
