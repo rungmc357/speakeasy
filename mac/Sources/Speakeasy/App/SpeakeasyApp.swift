@@ -1134,7 +1134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let snap = args.firstIndex(of: "--snapshot"), snap + 1 < args.count {
             let url = URL(fileURLWithPath: args[snap + 1])
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            // A slow or busy machine can still be mid-transition at 1.5 s: `--snapshot-delay <s>` waits longer.
+            let delay = args.firstIndex(of: "--snapshot-delay").flatMap { $0 + 1 < args.count ? Double(args[$0 + 1]) : nil } ?? 1.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 do { try preview.panel.snapshot(to: url); print("snapshot \(url.path)"); exit(0) }
                 catch { print("snapshot failed: \(error)"); exit(1) }
             }

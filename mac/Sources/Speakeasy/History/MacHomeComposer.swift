@@ -441,8 +441,8 @@ struct MacHomeComposerBar: View {
                 .onSubmit { model.send() }
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .frame(minHeight: 40)
-                .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(HistoryLook.field))
-                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .background(RoundedRectangle(cornerRadius: 20, style: .circular).fill(HistoryLook.field))
+                .overlay(RoundedRectangle(cornerRadius: 20, style: .circular)
                     .strokeBorder(focused ? Live.brass.opacity(0.5) : Live.hairline, lineWidth: focused ? 1 : 0.5))
                 .accessibilityIdentifier("mac-home-composer")
             if model.voiceNotesSupported && empty {
@@ -486,8 +486,8 @@ struct MacHomeComposerBar: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .frame(minHeight: 40)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Live.red.opacity(0.06)))
-        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Live.red.opacity(0.35), lineWidth: 0.75))
+        .background(RoundedRectangle(cornerRadius: 20, style: .circular).fill(Live.red.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .circular).strokeBorder(Live.red.opacity(0.35), lineWidth: 0.75))
         .accessibilityIdentifier("mac-home-recording")
     }
 
@@ -553,9 +553,9 @@ private struct MacSuggestionChip: View {
             Text(text).font(.callout).foregroundStyle(Color.primary.opacity(0.85))
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Capsule().fill(Color.primary.opacity(hover ? 0.09 : 0.05)))
-                .overlay(Capsule().strokeBorder(Live.hairline))
-                .contentShape(Capsule())
+                .background(Capsule(style: .circular).fill(Color.primary.opacity(hover ? 0.09 : 0.05)))
+                .overlay(Capsule(style: .circular).strokeBorder(Live.hairline))
+                .contentShape(Capsule(style: .circular))
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }

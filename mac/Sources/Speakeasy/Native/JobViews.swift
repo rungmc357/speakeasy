@@ -346,25 +346,49 @@ struct DecisionFooter: View {
                 TileButton(title: "Approve: \(rec.text)", primary: true) { model.approve(job) }
                     .lineLimit(1)
             }
-            HStack(spacing: 5) {
-                Text("Pick").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
-                ForEach(Array(decision.options.prefix(4).enumerated()), id: \.offset) { i, o in
-                    Button { model.pick(i + 1, in: job) } label: {
-                        HStack(spacing: 4) {
-                            NumberBadge(number: i + 1)
-                            Text(o.text).font(.system(size: 11.5, weight: .medium)).lineLimit(1).truncationMode(.tail)
-                        }
-                        .padding(.horizontal, 6).frame(height: 26).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(i == decision.recommended ? JobStyle.blue.opacity(0.22) : Color.primary.opacity(0.07)))
-                        .contentShape(Rectangle())
+            // One row while every choice fits whole; otherwise one choice per line, so two options
+            // that start alike ("Keep both…", "Keep the…") are never cut to the same few letters.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 5) {
+                    pickLabel
+                    ForEach(Array(options.enumerated()), id: \.offset) { i, o in
+                        choice(i, o, wraps: false)
                     }
-                    .buttonStyle(.plain)
-                    .help(o.text)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    pickLabel
+                    ForEach(Array(options.enumerated()), id: \.offset) { i, o in
+                        choice(i, o, wraps: true)
+                    }
                 }
             }
         }
         .padding(.top, 4)
         .overlay(alignment: .top) { Divider().opacity(0.5).offset(y: -4) }
+    }
+
+    private var options: [DecisionOption] { Array(decision.options.prefix(4)) }
+
+    private var pickLabel: some View {
+        Text("Pick").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
+    }
+
+    private func choice(_ i: Int, _ o: DecisionOption, wraps: Bool) -> some View {
+        Button { model.pick(i + 1, in: job) } label: {
+            HStack(spacing: 4) {
+                NumberBadge(number: i + 1)
+                Text(o.text).font(.system(size: 11.5, weight: .medium))
+                    .lineLimit(wraps ? 2 : 1)
+                    .fixedSize(horizontal: !wraps, vertical: wraps)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(.horizontal, 6).padding(.vertical, wraps ? 5 : 0)
+            .frame(minHeight: 26).frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(i == decision.recommended ? JobStyle.blue.opacity(0.22) : Color.primary.opacity(0.07)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(o.text)
     }
 }

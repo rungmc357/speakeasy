@@ -262,6 +262,15 @@ public struct WeatherGlyph: View {
     @Environment(\.colorScheme) private var scheme
     public init(_ icon: String?, size: CGFloat) { self.icon = icon; self.size = size }
     public var body: some View {
+        // One box height for every symbol: a sun is taller than a cloud, so rows and hour columns
+        // sized to the glyph came out uneven (sunny days further apart, cloudy hours shifted).
+        glyph.frame(height: Self.boxHeight(size))
+    }
+
+    /// Tall enough for the tallest weather symbol (sun.max) at this point size.
+    public static func boxHeight(_ size: CGFloat) -> CGFloat { (size * 1.25).rounded(.up) }
+
+    @ViewBuilder private var glyph: some View {
         let image = Image(systemName: weatherSymbol(icon)).font(.system(size: size))
         if scheme == .dark {
             image.symbolRenderingMode(.multicolor)

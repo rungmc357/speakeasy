@@ -107,6 +107,17 @@ enum PanelSmoke {
         let withShort = docHeight()
         record("status: live Work document height long=\(Int(withLong)) short=\(Int(withShort))")
         check(withLong - withShort >= one - 1, "status: live Work panel lays out the extra status lines")
+        // SPK-537: a clickable status carries its chevron inside the text, so a short one stays on one line
+        // and a long one never strands the chevron after its first line.
+        let chevron = height(StatusText(text: "1 running · 1 new answer", tone: .plain, clickable: true, maxLines: 2)
+            .frame(width: 150, alignment: .leading))
+        record("status: clickable short status height=\(Int(chevron))pt (one line \(Int(one))pt)")
+        check(chevron <= one + 1 && chevron >= one - 1, "status: a short clickable status fits one line with its chevron")
+        // SPK-537: a sun and a cloud take the same row height, so forecast rows stay evenly spaced.
+        let sun = NSHostingView(rootView: WeatherGlyph("sun", size: 16)).fittingSize.height
+        let cloud = NSHostingView(rootView: WeatherGlyph("cloud", size: 16)).fittingSize.height
+        record("weather: glyph height sun=\(sun) cloud=\(cloud)")
+        check(abs(sun - cloud) < 0.5, "weather: sun and cloud rows are the same height")
     }
 
     // MARK: 3. Transcript scrolls, holds while reading, follows at bottom

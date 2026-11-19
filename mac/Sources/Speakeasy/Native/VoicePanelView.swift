@@ -53,18 +53,19 @@ struct StatusText: View {
 
     private var lines: Int? { wraps ? nil : maxLines }
 
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 3) {
-            base
-            if clickable {
-                Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
+    var body: some View { base }
+
+    /// The chevron rides inside the text, so a status that wraps carries it at the end of its last
+    /// line instead of stranding it after the first ("Checking UA › / 123 status").
+    private var words: Text {
+        let words = Text(text).font(.system(size: 11.5, weight: tone == .attention ? .semibold : .regular))
+        guard clickable else { return words }
+        return words + Text("\u{00A0}").font(.system(size: 11.5)) + Text(Image(systemName: "chevron.right"))
+            .font(.system(size: 8.5, weight: .semibold)).foregroundStyle(.secondary)
     }
 
     @ViewBuilder private var base: some View {
-        let label = Text(text).font(.system(size: 11.5, weight: tone == .attention ? .semibold : .regular))
+        let label = words
             .lineLimit(lines).truncationMode(.tail)
             .fixedSize(horizontal: false, vertical: wraps || maxLines > 1)
         switch tone {
@@ -113,9 +114,10 @@ struct CapsulePartBackground: View {
     var body: some View {
         switch part {
         case .whole:
+            // A true circle: a Capsule in a square frame drew its hairline with flat facets.
             ZStack {
-                Capsule().fill(fill)
-                Capsule().strokeBorder(stroke, lineWidth: 0.75)
+                Circle().fill(fill)
+                Circle().strokeBorder(stroke, lineWidth: 0.75)
             }
         case .leading, .trailing:
             ZStack {
@@ -743,7 +745,9 @@ struct VoicePanelView: View {
         // "Screen Recording is off · Set up" on the status line: tapping it opens Settings › General › Screen.
         let setUp = model.shareNotice.map { $0.action == .openScreenSettings && $0.text == model.headerStatus } ?? false
         let statusTaps = setUp || p.statusClickable || model.showsSlim
-        return HStack(spacing: 8) {
+        // 6 pt between the controls (the orb keeps 8 via its padding) leaves the status line room for
+        // one line such as "1 running · 1 new answer ›" instead of wrapping by a few points.
+        return HStack(spacing: 6) {
             // The orb: clicking it folds the panel into it (the call keeps running).
             Button(action: { if model.state.connection.isOpen && !model.state.workOnly { model.onToggleSlim() } }) {
                 // The same orb as the folded panel: one colour language for the whole call.
@@ -754,7 +758,7 @@ struct VoicePanelView: View {
             .buttonStyle(.plain)
             .disabled(!(model.state.connection.isOpen && !model.state.workOnly))
             .help(model.state.connection.isOpen ? "Fold into the orb (the call keeps running)" : "")
-            .padding(.trailing, 2)
+            .padding(.trailing, 4)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.voicePhase == .hearing ? "Hearing you" : p.primary).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                     .minimumScaleFactor(0.85)
