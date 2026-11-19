@@ -383,6 +383,15 @@ public struct CallSharing: Equatable, Sendable {
         attachments.filter { $0.phase == .local && !$0.removing && $0.deferredFor != interactionID }
     }
 
+    /// Whether `id` is on its way to `interactionID` right now. An upload's answer counts only then:
+    /// a call that closed leaves its uploads running, and by the time one answers the file may wait
+    /// again or already be going to the next call. `.uploaded` and `.uploadDeferred` name their call
+    /// and are checked as they're applied; `.refused` names none, so the client asks this before it
+    /// reports an upload that failed.
+    public func isUploading(_ id: String, to interactionID: String) -> Bool {
+        attachments.contains { $0.id == id && $0.phase == .uploading && $0.interactionID == interactionID }
+    }
+
     // MARK: Events
 
     /// `admitted`: the interaction id when the plugin has admitted the call; `live`: the call is

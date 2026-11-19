@@ -2264,17 +2264,22 @@ public final class NativeVoiceClient: VoiceCallClient {
                     // never again to this one (CallSharing.uploadable).
                     self?.dispatch(.sharing(.uploadDeferred(item.id, interactionID: interactionID)))
                 } catch let error as ServerClient.HTTPError {
+                    // A failure counts only while the item is still this upload's: a call that closed
+                    // leaves its uploads running, and the next call may be uploading the same file
+                    // by the time one of them fails (`.refused` names no call).
+                    guard let self, self.model.state.sharing.isUploading(item.id, to: interactionID) else { return }
                     let reason = error.reason ?? (error.status == 413 ? "too_large" : error.status == 415 ? "unsupported" : nil)
                     if bytes.videoDuration != nil {
-                        self?.model.attachmentFailures.insert(item.id)
-                        self?.dispatch(.sharing(.uploadDeferred(item.id, interactionID: interactionID)))
-                        self?.dispatch(.sharing(.notice(reason ?? "failed")))
-                    } else { self?.dispatch(.sharing(.refused(item.id, reason: reason))) }
+                        self.model.attachmentFailures.insert(item.id)
+                        self.dispatch(.sharing(.uploadDeferred(item.id, interactionID: interactionID)))
+                        self.dispatch(.sharing(.notice(reason ?? "failed")))
+                    } else { self.dispatch(.sharing(.refused(item.id, reason: reason))) }
                 } catch {
+                    guard let self, self.model.state.sharing.isUploading(item.id, to: interactionID) else { return }
                     if bytes.videoDuration != nil {
-                        self?.model.attachmentFailures.insert(item.id)
-                        self?.dispatch(.sharing(.uploadDeferred(item.id, interactionID: interactionID)))
-                    } else { self?.dispatch(.sharing(.refused(item.id, reason: nil))) }
+                        self.model.attachmentFailures.insert(item.id)
+                        self.dispatch(.sharing(.uploadDeferred(item.id, interactionID: interactionID)))
+                    } else { self.dispatch(.sharing(.refused(item.id, reason: nil))) }
                 }
             }
         }

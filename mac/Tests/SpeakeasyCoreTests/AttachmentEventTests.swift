@@ -34,10 +34,11 @@ final class AttachmentEventTests: XCTestCase {
 
     /// An upload to `interactionID` that failed outright (no answer, or an HTTP error that isn't
     /// "this call isn't taking uploads"), as the client reports it
-    /// (`NativeVoiceClient.uploadWaitingAttachments`).
+    /// (`NativeVoiceClient.uploadWaitingAttachments`): only while the item is still that upload's.
     private func uploadFailed(_ id: String, reason: String?, to interactionID: String, from state: VoiceState,
                               at now: Date) -> VoiceState {
-        run([.sharing(.refused(id, reason: reason))], from: state, at: now)
+        guard state.sharing.isUploading(id, to: interactionID) else { return state }
+        return run([.sharing(.refused(id, reason: reason))], from: state, at: now)
     }
 
     // MARK: Events from the plugin
@@ -548,13 +549,19 @@ final class AttachmentEventTests: XCTestCase {
             var s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_1"),
                          .sharing(.uploading("p1", interactionID: "vi_1"))], from: waiting, at: t0 + 1)
             XCTAssertEqual(s.sharing.attachments.map(\.phase), [.uploading])
+            XCTAssertTrue(s.sharing.isUploading("p1", to: "vi_1"))
+            XCTAssertTrue(run([.sharing(.removing("p1"))], from: s).sharing.isUploading("p1", to: "vi_1"),
+                          "the ✕ mid-upload: its answer still takes it back off")
             s = run(close, from: s, at: t0 + 2)
             XCTAssertEqual(s.sharing.attachments.map(\.phase), [.local])
             XCTAssertEqual(s.sharing.attachments.map(\.interactionID), [nil])
+            XCTAssertFalse(s.sharing.isUploading("p1", to: "vi_1"), "waiting again: no longer that call's upload")
             s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_2"),
                      .sharing(.uploading("p1", interactionID: "vi_2"))], from: s, at: t0 + 3)
             XCTAssertEqual(s.sharing.attachments.map(\.phase), [.uploading])
             XCTAssertEqual(s.sharing.attachments.map(\.interactionID), ["vi_2"])
+            XCTAssertTrue(s.sharing.isUploading("p1", to: "vi_2"))
+            XCTAssertFalse(s.sharing.isUploading("p1", to: "vi_1"), "the new call's upload, not the closed call's")
             return s
         }
         let closes: [(String, [VoiceEvent])] = [
