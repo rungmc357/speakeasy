@@ -47,9 +47,12 @@ enum NowMacShots {
                     let idle = VoicePanelModel()
                     try await shot(MacNowPopover(now: now, voice: idle, open: { _ in }, more: {}),
                                    size: NSSize(width: 360, height: 560), path: "\(dir)/popover-offcall-\(appearance).png")
-                    try await shot(MacNowCallControls(voice: voice, openHome: {}, floating: true)
-                                    .clipShape(RoundedRectangle(cornerRadius: 14)),
-                                   size: NSSize(width: 320, height: 56), path: "\(dir)/callbar-\(appearance).png")
+                    // The view the floating panel hosts. The picture keeps its alpha, so a strip the bar
+                    // leaves unfilled is see-through in it and easy to miss; the check reads it instead.
+                    let bar = try await shot(MacNowVoiceSurface(voice: voice),
+                                             size: NSSize(width: 320, height: 56), path: "\(dir)/callbar-\(appearance).png")
+                    precondition([0, bar.pixelsHigh - 1].allSatisfy { (bar.colorAt(x: bar.pixelsWide / 2, y: $0)?.alphaComponent ?? 0) > 0.5 },
+                                 "The call bar's fill must reach its top and bottom edges")
                     try await shot(HistoryRootView(store: store, voice: voice),
                                    size: NSSize(width: 720, height: 640), path: "\(dir)/home-narrow-\(appearance).png")
                     try await shot(HistoryRootView(store: store, voice: voice),
@@ -116,7 +119,8 @@ enum NowMacShots {
         return home
     }
 
-    private static func shot<V: View>(_ root: V, size: NSSize, path: String) async throws {
+    @discardableResult
+    private static func shot<V: View>(_ root: V, size: NSSize, path: String) async throws -> NSBitmapImageRep {
         let view = NSHostingView(rootView: root)
         view.sizingOptions = []
         let w = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -132,5 +136,6 @@ enum NowMacShots {
         try data.write(to: URL(fileURLWithPath: path))
         w.orderOut(nil)
         print("shot: \(path)")
+        return image
     }
 }

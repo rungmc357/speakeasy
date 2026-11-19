@@ -63,6 +63,8 @@ struct MacNowCallControls: View {
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, floating ? 12 : 14).padding(.vertical, floating ? 8 : 14)
+        // The floating bar takes its full size before its fill, or the fill is only as tall as the row.
+        .frame(width: floating ? MacNowLayout.callBarSize.width : nil, height: floating ? MacNowLayout.callBarSize.height : nil)
         .background(floating ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(HistoryLook.window))
         .background(JobLook.brass.opacity(floating ? 0.08 : 0))
         .help(openHome == nil ? "" : "Open Speakeasy")
@@ -77,7 +79,6 @@ struct MacNowVoiceSurface: View {
     var body: some View {
         if presentation.enabled && voice.state.connection.isOpen && !voice.state.workOnly {
             MacNowCallControls(voice: voice, openHome: presentation.openHome, floating: true)
-                .frame(width: MacNowLayout.callBarSize.width, height: MacNowLayout.callBarSize.height)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
         } else {
             VoicePanelView(model: voice)
