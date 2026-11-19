@@ -1,0 +1,138 @@
+{
+ "session": {
+  "id": "qa_question",
+  "title": "QA test: decision card in a chat thread",
+  "source": "speakeasy",
+  "source_label": "Speakeasy",
+  "state": "needs_you",
+  "send_via": "task",
+  "entries": [
+   {
+    "kind": "user",
+    "id": "u1",
+    "at": 1795116851.540459,
+    "text": "[SPEAKEASY QA TEST] Ask me which colour to use."
+   },
+   {
+    "kind": "assistant",
+    "id": "a1",
+    "at": 1795116911.540459,
+    "text": "Which colour should the sample be? I'd go with blue."
+   }
+  ],
+  "has_more": false,
+  "before": null,
+  "jobs": [
+   {
+    "run_id": "run_qa_question",
+    "status": "completed",
+    "stale": false,
+    "updated": 1795116911.540459,
+    "events": [],
+    "short_status": "Done",
+    "detail": "Test content",
+    "source_run_id": "run_qa_question",
+    "updated_at": 1795116911.540459,
+    "status_source": "authored",
+    "result": {
+     "spoken": "Which colour should the sample be? I'd go with blue.",
+     "full": "Which colour should the sample be? I'd go with blue.",
+     "label": "Pick the sample colour",
+     "views": [
+      {
+       "kind": "question",
+       "question": "QA test: which colour should the sample be?",
+       "recommended": 0,
+       "context": "Test question, nothing depends on it.",
+       "why": "Blue is the control value.",
+       "affects": "Nothing",
+       "options": [
+        {
+         "text": "Blue",
+         "detail": "Control value",
+         "risk": "low",
+         "reversible": true
+        },
+        {
+         "text": "Green",
+         "detail": "Alternate value",
+         "risk": "low",
+         "reversible": true
+        }
+       ],
+       "as_of": 1795116911.540459
+      }
+     ]
+    },
+    "title": "Pick the sample colour",
+    "summary": "Pick the sample colour",
+    "dismissed": false,
+    "email_drafts": [],
+    "plan": [],
+    "job": {
+     "id": "qa_job",
+     "name": "Pick the sample colour"
+    },
+    "request": "[SPEAKEASY QA TEST] Ask me which colour to use.",
+    "session_id": "qa_question",
+    "model": {
+     "id": "anthropic/claude-fable-5-2",
+     "name": "Claude Fable 5.2",
+     "provider": "anthropic",
+     "provider_name": "Anthropic",
+     "provider_label": "Claude subscription",
+     "metered": false,
+     "reasoning": null,
+     "reasoning_label": null,
+     "source": "existing",
+     "served": false
+    },
+    "question_state": "open",
+    "answered": false,
+    "seen": false,
+    "started_with": "[SPEAKEASY QA TEST] Ask me which colour to use.",
+    "started_at": 1795116851.540459,
+    "finished_at": 1795116911.540459,
+    "step_index": null,
+    "step_count": null,
+    "eta_seconds": null,
+    "failure_reason": null,
+    "activity": [],
+    "activity_total": 0,
+    "touched": [],
+    "question_open": true,
+    "set_aside": false
+   }
+  ],
+  "approvals": [],
+  "model": {
+   "id": "anthropic/claude-fable-5-2",
+   "name": "Claude Fable 5.2",
+   "provider": "anthropic",
+   "provider_name": "Anthropic",
+   "provider_label": "Claude subscription",
+   "metered": false,
+   "reasoning": null,
+   "reasoning_label": null,
+   "source": "existing",
+   "served": false
+  },
+  "next_model": {
+   "id": "anthropic/claude-opus-5-5",
+   "name": "Claude Opus 5.5",
+   "provider": "anthropic",
+   "provider_name": "Anthropic",
+   "provider_label": "Claude subscription",
+   "metered": false,
+   "reasoning": null,
+   "reasoning_label": null,
+   "source": "existing",
+   "served": false,
+   "unavailable": false
+  },
+  "model_session_id": "qa_question",
+  "model_choice": null,
+  "queued": [],
+  "steered": []
+ }
+}
