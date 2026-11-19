@@ -21,7 +21,7 @@ The end-to-end check also writes the JSON contract fixtures the Mac tests read
 Needs Xcode 16 or later and macOS 14+.
 
     cd mac
-    swift test                                           # logic and API contract tests
+    swift test                                           # logic and API contract tests; SpeakeasyAppTests links the app and draws its views in windows it never shows
     swift build && .build/debug/Speakeasy --panel-smoke  # renders the call panel, checks layout and clicks
     scripts/package-app.sh                               # builds dist/Speakeasy.app (ad-hoc signed)
 
