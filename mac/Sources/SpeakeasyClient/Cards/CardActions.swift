@@ -148,7 +148,7 @@ struct CardButton: View {
     private var fg: Color {
         switch style {
         case .primary: return look.onAction
-        case .destructive: return look.capsHeaders ? Color(red: 1, green: 0.62, blue: 0.58) : look.bad
+        case .destructive: return look.capsHeaders ? JobStyle.stopInk : look.bad
         case .secondary: return look.quietInk
         }
     }

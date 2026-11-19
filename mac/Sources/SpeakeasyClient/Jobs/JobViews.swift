@@ -134,6 +134,9 @@ public enum JobStyle {
     public static let tileAmber = BrandPalette.amber
     public static let amberInk = Color.adaptive(dark: Color(red: 0.23, green: 0.15, blue: 0.02), light: Color(hex: 0xfff8ec))
     public static let stopRed = BrandPalette.red
+    /// Text on a `stopRed` wash: pale pink on the dark panel, deep red on light cards (where pale
+    /// pink on a pink wash can't be read). Every Stop / destructive label on a stopRed fill uses it.
+    public static let stopInk = Color.adaptive(dark: Color(red: 1, green: 0.7, blue: 0.66), light: Color(hex: 0x7a1610))
     #if os(macOS)
     public static let nowBlue = JobLook.brass
     #else
@@ -1313,7 +1316,7 @@ public struct LiveSteps: View {
                         if task.canStop, let run = info.runID, !JobLook.touch, !hostNow {
                             Button { model.onStopTask(run) } label: {
                                 Text("Stop").font(.system(size: 11.5 * s, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 26)
-                                    .foregroundStyle(Color(red: 1, green: 0.7, blue: 0.66))
+                                    .foregroundStyle(JobStyle.stopInk)
                                     .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(JobStyle.stopRed.opacity(0.28)))
                                     .contentShape(Rectangle())
                             }

@@ -421,6 +421,17 @@ enum PanelSmoke {
             do { try c.panel.snapshot(to: URL(fileURLWithPath: dir + "/\(name).png")); record("snapshot \(dir)/\(name).png") }
             catch { fail("snapshot failed: \(error)") }
         }
+        // SPK-538: both looks of a state, so light-mode contrast is in the review set (step names
+        // and the Stop label once drew white / pale pink on light cards).
+        func snapBothLooks(_ name: String) async {
+            for (look, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+                NSApp.appearance = NSAppearance(named: appearance)
+                await settle(0.4)
+                snap("\(name)-\(look)")
+            }
+            NSApp.appearance = nil
+            await settle(0.2)
+        }
         let savedSeen = c.model.seenAnswers
         // Orb states. The header orb of the open panel must draw the same state as the folded orb.
         let expected: [(String, OrbState, Bool)] = [("orb-idle", .idle, false), ("orb-talking", .talking, false),
@@ -463,6 +474,7 @@ enum PanelSmoke {
             await settle(0.9)
             onScreen(name)
             snap(name)
+            if name == "job-receipts" { await snapBothLooks(name) }
         }
         if PreviewFixtures.showJobFixture("job-receipts", on: c) {
             let info = c.model.state.tasks.first { $0.id == "site" }?.info
@@ -576,6 +588,7 @@ enum PanelSmoke {
             check(c.focusedTaskID == job.newest.id, "\(name): the job's newest task is in focus")
             onScreen(name)
             snap(name)
+            if name == "job-nightly-after" { await snapBothLooks(name) }
         }
         // New answers: their own section between Needs you and Running; opening one reads it.
         if PreviewFixtures.showJobFixture("jobs-answers", on: c) {
