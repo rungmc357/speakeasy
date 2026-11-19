@@ -106,6 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let i = args.firstIndex(of: "--privacy-shots"), i + 1 < args.count {
             WhoHearsWhatSnapshot.run(dir: args[i + 1]); return
         }
+        if let i = args.firstIndex(of: "--onboarding-window-smoke"), i + 1 < args.count {
+            DispatchQueue.main.async { OnboardingWindowSmoke.run(dir: args[i + 1]) }; return
+        }
         if let i = args.firstIndex(of: "--onboarding-snapshot"), i + 1 < args.count {
             OnboardingSnapshot.render(to: args[i + 1], step: i + 2 < args.count && !args[i + 2].hasPrefix("--") ? args[i + 2] : nil); return
         }
