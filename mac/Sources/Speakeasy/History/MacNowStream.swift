@@ -76,11 +76,12 @@ struct MacNowThread: View {
             }
         }.accessibilityIdentifier("mac-now-chat-files")
     }
+    /// Your message (SPK-536): whole, always at its full height (never clipped mid-word); a very
+    /// long one shows a preview ending in "…" on a whole word, and a click shows the rest.
     private func ask(_ text: String) -> some View {
         HStack {
             Spacer(minLength: 32)
-            Text(text).font(.callout).padding(12)
-                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            MacSentBubble(text: text)
         }.accessibilityIdentifier("mac-now-ask")
     }
     /// The coordinator's reply in Home's chat: plain text on the left. No model under it (N13):
@@ -88,6 +89,7 @@ struct MacNowThread: View {
     private func reply(_ text: String, _ attribution: ReplyAttribution?) -> some View {
         HStack {
             Text(AgentMarkdown.attributed(text)).font(.callout).textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(12)
             .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             Spacer(minLength: 32)
@@ -104,6 +106,7 @@ struct MacNowThread: View {
                     Label(item.title, systemImage: item.kind == .stopped ? "exclamationmark.circle" : "checkmark.circle")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Text(AgentMarkdown.attributed(text)).font(.callout).multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(12)
                 .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -283,5 +286,34 @@ private struct MacPostedResult: View {
             try? await Task.sleep(for: .milliseconds(400))
             bump += 1   // the server settled the new draft: draw it
         }
+    }
+}
+
+/// Your sent message in Home's thread (SPK-536). Always laid out at its full height, so a long
+/// message never stops mid-word; past `LongMessage.collapseOver` characters it shows a preview
+/// that ends on a whole word with "…" plus "Show more", and a click on the bubble opens the rest.
+struct MacSentBubble: View {
+    let text: String
+    @State private var open = false
+
+    var body: some View {
+        let preview = LongMessage.preview(text)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(open ? text : (preview ?? text)).font(.callout)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if preview != nil {
+                Button(open ? "Show less" : "Show more") {
+                    withAnimation(.easeInOut(duration: 0.2)) { open.toggle() }
+                }
+                .buttonStyle(.link).font(.callout)
+                .accessibilityIdentifier("mac-now-ask-more")
+            }
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .onTapGesture { if preview != nil && !open { withAnimation(.easeInOut(duration: 0.2)) { open = true } } }
     }
 }
