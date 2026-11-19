@@ -9,9 +9,32 @@ final class MacNowLayoutTests: XCTestCase {
     }
 
     func testNarrowHomeLeavesRoomForTheConversation() {
-        XCTAssertEqual(MacNowLayout.nowWidth(windowWidth: 720), 316.8, accuracy: 0.01)
+        // SPK-535: never under 340 (the window minimum is 760), so the composer fits beside the conversation.
+        XCTAssertEqual(MacNowLayout.nowWidth(windowWidth: MacNowLayout.windowMinimum.width), 340, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(MacNowLayout.windowMinimum.width - MacNowLayout.nowWidth(windowWidth: MacNowLayout.windowMinimum.width), 400)
+        XCTAssertEqual(MacNowLayout.nowWidth(windowWidth: 900), 396, accuracy: 0.01)
         XCTAssertLessThan(MacNowLayout.nowWidth(windowWidth: 720), 360)
         XCTAssertEqual(MacNowLayout.nowWidth(windowWidth: 1400), 420)
+    }
+
+    /// SPK-535: under 1,000 wide, an empty "Pick a session" pane no longer takes half the window.
+    func testNarrowHomeFillsTheWindowOnlyWhenNothingIsOpenOnTheRight() {
+        XCTAssertTrue(MacNowLayout.homeFillsWindow(sidebar: false, nowSupported: true, detailOpen: false))
+        XCTAssertFalse(MacNowLayout.homeFillsWindow(sidebar: false, nowSupported: true, detailOpen: true))
+        XCTAssertFalse(MacNowLayout.homeFillsWindow(sidebar: true, nowSupported: true, detailOpen: false))
+        XCTAssertFalse(MacNowLayout.homeFillsWindow(sidebar: true, nowSupported: false, detailOpen: false))
+    }
+
+    /// SPK-535: a window saved at 620 × 400 by an older build comes back at the minimum, and the
+    /// narrow top row starts after the window's close, minimise and zoom buttons.
+    func testSavedWindowSmallerThanTheMinimumIsGrown() {
+        let fit = MacNowLayout.clampedWindowSize(width: 620, height: 400)
+        XCTAssertEqual(fit.width, 760)
+        XCTAssertEqual(fit.height, 480)
+        let big = MacNowLayout.clampedWindowSize(width: 1200, height: 800)
+        XCTAssertEqual(big.width, 1200)
+        XCTAssertEqual(big.height, 800)
+        XCTAssertGreaterThanOrEqual(MacNowLayout.trafficLightInset, 72)
     }
 
     func testFloatingBarRequiresOpenCallAndHomeNotFrontmost() {

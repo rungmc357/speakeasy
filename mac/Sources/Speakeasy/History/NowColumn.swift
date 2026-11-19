@@ -142,6 +142,8 @@ struct MacNowColumn: View {
     @ObservedObject var now: MacNowModel
     @ObservedObject var store: HistoryStore
     var voice: VoicePanelModel? = nil
+    /// Narrow window (no sidebar): the Earlier toggle's popover state; nil when the sidebar shows.
+    var earlier: Binding<Bool>? = nil
     @ObservedObject var composer = MacHomeComposerModel.shared
     @State private var recentOpen = false
     @State private var workOpen = false
@@ -149,15 +151,10 @@ struct MacNowColumn: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if now.home?.stream != nil {
-                NowWorkStrip(items: now.visible, background: now.home?.background ?? [], onOpen: { item in
-                    if item.kind == .question { focusID = nil; focusID = item.id }
-                    else if let sid = item.sessionID { store.open(sid) }
-                }, onBackground: { store.open($0.sessionID) }, onBoard: { workOpen = true }, pill: now.home?.pill)
-                    .padding(.horizontal, 18).padding(.top, 12)
-            }
+            topRow
             ScrollViewReader { proxy in
             ScrollView {
+                VStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
                     // No counting header (build 69): only "can't reach", or (SPK-198) a small, quiet
                     // "All caught up." with a few things to try that fill the composer.
@@ -186,6 +183,8 @@ struct MacNowColumn: View {
                 }
                     Button("Recent") { recentOpen = true }
                         .buttonStyle(.link).accessibilityIdentifier("mac-now-recent")
+                }
+                // SPK-535: the gutter belongs to the whole thread, not only the Recent link.
                 .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 18)
             }
             .defaultScrollAnchor(now.home?.stream != nil ? .bottom : .top)
@@ -209,6 +208,39 @@ struct MacNowColumn: View {
             Button("Close") { now.responseError = nil }
         } message: { Text(now.responseError ?? "Try again.") }
         .accessibilityIdentifier("mac-now")
+    }
+
+    /// Home's top row: in a narrow window, Earlier then the work pill, after the window buttons;
+    /// with the sidebar showing, only the pill. One row, so the two can never overlap.
+    @ViewBuilder private var topRow: some View {
+        let strip = now.home?.stream != nil
+        if earlier != nil || strip {
+            HStack(alignment: .top, spacing: 10) {
+                if let earlier {
+                    Button { earlier.wrappedValue.toggle() } label: {
+                        Label("Earlier", systemImage: "sidebar.left").fixedSize()
+                    }
+                    .buttonStyle(.borderless)
+                    .frame(minHeight: 36)
+                    .accessibilityIdentifier("mac-now-earlier")
+                    .popover(isPresented: earlier, arrowEdge: .bottom) {
+                        HistorySidebar(store: store).frame(width: 288, height: 560)
+                            .background(HistoryLook.sidebar)
+                    }
+                }
+                if strip {
+                    NowWorkStrip(items: now.visible, background: now.home?.background ?? [], onOpen: { item in
+                        if item.kind == .question { focusID = nil; focusID = item.id }
+                        else if let sid = item.sessionID { store.open(sid) }
+                    }, onBackground: { store.open($0.sessionID) }, onBoard: { workOpen = true }, pill: now.home?.pill)
+                } else {
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(.leading, earlier != nil ? MacNowLayout.trafficLightInset : 18)
+            .padding(.trailing, 18)
+            .padding(.top, earlier != nil ? 6 : 12)
+        }
     }
 
     private func isOpen(_ item: NowItem) -> Bool {

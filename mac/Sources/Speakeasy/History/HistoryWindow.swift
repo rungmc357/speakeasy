@@ -35,13 +35,20 @@ final class HistoryWindowController: NSObject, NSWindowDelegate {
             a.bestMatch(from: [.darkAqua, .aqua]) == .aqua ? NSColor(calibratedRed: 0.984, green: 0.973, blue: 0.949, alpha: 1)
                 : NSColor(calibratedRed: 0.118, green: 0.110, blue: 0.102, alpha: 1)
         }
-        w.minSize = NSSize(width: 720, height: 480)
+        w.contentMinSize = NSSize(width: MacNowLayout.windowMinimum.width, height: MacNowLayout.windowMinimum.height)
         w.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: HistoryRootView(store: store, voice: voice))
         host.sizingOptions = []   // the window keeps its size; the lists scroll inside it
         w.contentView = host
         w.center()
         w.setFrameAutosaveName("SpeakeasyHistory")
+        // SPK-535: a frame saved smaller than the minimum (an older build allowed it) comes back
+        // as is; grow it so Home's column and composer fit.
+        let content = w.contentRect(forFrameRect: w.frame).size
+        let fit = MacNowLayout.clampedWindowSize(width: content.width, height: content.height)
+        if fit.width != content.width || fit.height != content.height {
+            w.setContentSize(NSSize(width: fit.width, height: fit.height))
+        }
         w.delegate = self
         return w
     }
@@ -509,9 +516,9 @@ enum HistoryShots {
             NSApp.appearance = NSAppearance(named: look == "light" ? .aqua : .darkAqua)
         }
         c.show()
-        // HISTORY_WIDTH (e.g. 720, the window's minimum) shoots every page at a narrower window.
+        // HISTORY_WIDTH (e.g. 760, the window's minimum) shoots every page at a narrower window.
         let width = ProcessInfo.processInfo.environment["HISTORY_WIDTH"].flatMap(Double.init) ?? 1040
-        c.window?.setContentSize(NSSize(width: max(720, width), height: 720))
+        c.window?.setContentSize(NSSize(width: max(MacNowLayout.windowMinimum.width, width), height: 720))
         c.window?.center()
         let only = ProcessInfo.processInfo.environment["HISTORY_SHOT"]
         if let look = ProcessInfo.processInfo.environment["HISTORY_APPEARANCE"] {
