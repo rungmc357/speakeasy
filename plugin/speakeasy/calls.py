@@ -28,7 +28,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
-from . import channels, continuity, failures, liveness, recap, router, threads
+from . import channels, confirms, continuity, failures, liveness, recap, router, threads
 from . import runstate as RS
 from . import messages as messages_mod
 from .devices import client_label
@@ -1863,7 +1863,7 @@ class SidebandWorker:
 
     def push_result(self, backend: Any, idem: str, status: str, result: dict[str, Any] | None, reason: str | None,
                     drafts: list[dict[str, Any]], event: dict[str, Any]) -> None:
-        """A task ended: Done / Needs you (a question or an email draft) / Failed / New reply (an
+        """A task ended: Done / Needs you (a question, an approval card or an email draft) / Failed / New reply (an
         answer in a Hermes conversation). Stopped by the user, or still going elsewhere: nothing."""
         title = self.store.shown_title(idem)
         run = backend.run_id or idem
@@ -1877,6 +1877,12 @@ class SidebandWorker:
         if result and result.get("question"):
             question = result["question"].get("question") if isinstance(result["question"], dict) else None
             self.push("needs_you", f"question:{run}", title, question or result.get("spoken"), backend.run_id, home=home)
+        elif (card := confirms.pending(result)) is not None:
+            body = f"Waiting for you to tap {confirms.approve_label(card)}."
+            if home and title:
+                # A Home answer is titled with the assistant's name, so its words say which job.
+                body = f"{title}: waiting for you to tap {confirms.approve_label(card)}."
+            self.push("needs_you", f"confirm:{run}", title, body, backend.run_id, home=home)
         elif drafts:
             subject = drafts[0].get("subject")
             self.push("needs_you", f"draft:{drafts[0].get('draft_id')}", title,

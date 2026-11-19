@@ -1,12 +1,15 @@
 """Card-route dispatch. No action starts before the durable exact-preview claim."""
 from __future__ import annotations
 import json
+import logging
 import re
 import threading
 from typing import Any
 
 from . import confirms as C
 from .text import split_result
+
+logger = logging.getLogger(__name__)
 
 
 def _update(service: Any, run_id: str, index: int, expected: str, changes: dict) -> None:
@@ -46,6 +49,22 @@ def _update(service: Any, run_id: str, index: int, expected: str, changes: dict)
     service.publish_all(key)
 
 
+def _resolved(service: Any, run_id: str, key: str) -> None:
+    """Post or Cancel was claimed on a card: like a closed question or an answered approval (QA74 #15),
+    every device hears ``decision_resolved`` (the phones clear its notification by run id) and the
+    card's Needs you push (calls.push_result, ``confirm:<run>``) is withdrawn. Never raises into the tap."""
+    try:
+        events = getattr(service, "history_events", None)
+        if events is not None:
+            events.publish("decision_resolved", {"run_id": run_id, "session_id": service.store.session_for(key)})
+        notifier = getattr(service, "push", None)
+        if notifier is not None and hasattr(notifier, "withdraw"):
+            for name in {run_id, key} - {None}:
+                notifier.withdraw(f"confirm:{name}")
+    except Exception:
+        logger.debug("speakeasy: telling the apps an approval card closed failed", exc_info=True)
+
+
 def decide(service: Any, run_id: str, index: int, expected: str, action: str, *, source: str = "tap", interaction: Any = None) -> dict:
     if action == "edit":
         if source != "tap":
@@ -71,6 +90,11 @@ def decide(service: Any, run_id: str, index: int, expected: str, action: str, *,
             key, view, dispatch = C.claim(service.store, run_id, index, expected, action, source="voice", live_call=True)
     else:
         key, view, dispatch = C.claim(service.store, run_id, index, expected, action, source=source)
+    if view["state"] == "cancelled":
+        # SPK-357: whoever cancelled was looking at the card and nothing more will arrive, so Home doesn't
+        # bring the job back as a new result.
+        service.store.mark_seen(key)
+    _resolved(service, run_id, key)
     service.publish_all(key)
     if not dispatch:
         return {"ok": True, "message": "Cancelled. The cart was left unchanged." if view["state"] == "cancelled" and view["type"] == "checkout"

@@ -2,6 +2,10 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Unreleased: approvals wait on Home
+
+- **An approval card waits for you on Home.** When a job ends with a card to approve (Post, Send, Buy…), it stays on Home until you tap Post or Cancel, including on a call after the voice has told you about it. Before, hearing it on a call took it off Home, so the voice said "open that card" with nothing on screen. When the preview is too long to approve by voice, the voice now says it's waiting on Home and which button to tap, and the phone gets "Needs you" instead of "Done"; that notification clears once you tap. *(plugin)*
+
 ## Plugin 0.3.58: Home tells you when it's done
 
 - **Home says when a job finishes.** When a job you started from Home is done, Home says so in the chat, in its own words, once. *(plugin)*
