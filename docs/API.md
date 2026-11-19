@@ -1124,7 +1124,8 @@ Item = {"id": "q:<run_id>" | "s:<session_id>" | "t:<run_id>", "kind", "tier", "s
   of the same conversation), and hearing it on a call, opening it, the 4 AM rollover, the 12-hour rule
   and Clear don't take it off Home; it is never folded into another card or into "Earlier today". It
   leaves when Post or Cancel is tapped, or when dismissed like any card. `counts.needs_you` includes
-  it; `counts.finished_unread` doesn't.
+  it; `counts.finished_unread` doesn't. Post or Cancel (tapped or spoken) publishes `decision_resolved`
+  with its `run_id` and withdraws its Needs you notification, like a closed question.
 - On a call (`call` is set; capability `now_focus`): `call.focus` is the item id of the card the voice
   is talking about (Vision Pro's own focus wins; it lapses 10 min after the voice last spoke of it),
   `call.focus_label` "Talking about this". A question asked on this call (or the one being talked
@@ -1219,7 +1220,9 @@ Rec = {"id": "rec:…", "text", "prompt", "generic": false, "why",
   card's sha256>`: it stays while that card is pending (3 days at most, then `expired`) and leaves as
   `done` on Post or Cancel, or when its job is dismissed. A card the service asks again with new
   terms, or a draft you edit, is a new decision. After Post, an unopened job's outcome enters as a
-  `result` with `follows`; after Cancel the job counts as read, so nothing comes back. `result_id` is
+  `result` with `follows`; after Cancel the job counts as read, so nothing comes back, except during
+  the live call the job belongs to: that call's own answers stay in the stack as `result`s, heard or
+  not (SPK-376), and a cancelled one is no exception. `result_id` is
   the job's posted email result, else its SPK-314 answer line, else null (the card itself is the result).
   `in_current`: the current exchange already shows this job in place. `follows`: the stack item this
   result came from (the question answered, the result replied to).
@@ -2275,7 +2278,7 @@ own request). The extension's own fetch doesn't count. Each event notifies a dev
 | kind | when | title |
 |---|---|---|
 | `finished` | a task completed | `Done: <task>` |
-| `needs_you` | an approval is waiting, a result asks a question, a result holds an approval card ("Waiting for you to tap Post."), or an email draft is ready | `Needs you: <task>` |
+| `needs_you` | an approval is waiting, a result asks a question, a result holds an approval card ("Waiting for you to tap Post."; as a `home` answer, "<task>: waiting for you to tap Post."), or an email draft is ready | `Needs you: <task>` |
 | `failed` | a task failed | `Failed: <task>` |
 | `reply` | an answer landed in a Hermes conversation the task was sent to | `New reply: <task>` |
 | `home` | Home answered something the user wrote in Home: the coordinator's answer (never its acknowledgement or a status line), or the result/question of a job a Home message started | the assistant's name |

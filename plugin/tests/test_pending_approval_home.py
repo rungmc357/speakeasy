@@ -10,15 +10,18 @@ import asyncio
 import time
 import types
 
+from fakes import http
 from speakeasy import confirm_actions as A
 from speakeasy import confirm_voice as V
 from speakeasy import confirms as C
 from speakeasy.calls import SidebandWorker
+from speakeasy.push import RelayClient
 from test_b73_home_state import NOON, frozen  # noqa: F401
 from test_confirm_actions import voice_worker
 from test_history import post, state  # noqa: F401
 from test_now import NY, task
 from test_now_call import live_call, on_call
+from test_push import FakeRelay, register
 
 LONG_BODY = "Bug: the approval card is missing from Home on a call. " * 85   # about 4,700 characters
 
@@ -102,6 +105,26 @@ def test_cancel_on_the_card_takes_it_off_home_and_nothing_comes_back(server, ser
     assert service.home_state.row(decision["id"])["state"] == "done"
     # The card they just cancelled doesn't come straight back as a "Ready to post" result.
     assert body["stack"]["items"] == [] and body["counts"]["finished_unread"] == 0
+
+
+def test_cancel_during_its_own_call_leaves_the_job_among_that_calls_answers(server, service, state):
+    """On the live call the job belongs to, SPK-376 keeps the call's own answers in the stack, heard or
+    not. A cancelled approval is one of them: the decision closes and nothing waits on you, and the job
+    stays listed as that call's result (SPK-376's rule, left as it is)."""
+    store = service.store
+    call = live_call(service, started=time.time() - 600)
+    view = _filed(store, "k_oncall", "File 5 bugs on Linear")
+    on_call(call, "d_k_oncall", "k_oncall")
+    _voice_offers(call, store, "d_k_oncall")
+    [decision] = _decisions(_home(service))
+    status, reply = post(server, "/voice/work/run_k_oncall/card-action",
+                         {"view": 0, "action": "cancel", "value": view["sha256"]})
+    assert status == 200 and reply["message"] == "Cancelled."
+    body = _home(service)
+    assert service.home_state.row(decision["id"])["state"] == "done"
+    assert not _card(body, "run_k_oncall").get("needs_you") and body["counts"]["needs_you"] == 0
+    assert [(s["kind"], s["needs_you"], s.get("follows")) for s in body["stack"]["items"]] == \
+        [("result", False, decision["id"])]
 
 
 def test_after_post_an_unopened_jobs_outcome_follows_the_decision(service, state):
@@ -260,4 +283,45 @@ def test_a_finished_job_holding_an_approval_wakes_the_phone_as_needs_you(service
     # A job a Home message started notifies as Home's answer (build 86), approval card or not.
     worker.rt = types.SimpleNamespace(home_origin=lambda run_id: run_id == "run_k_push")
     worker.push_result(backend, "k_push", "completed", {"spoken": "Ready.", "views": [view]}, None, [], {})
-    assert sent[-1] == ("needs_you", "confirm:run_k_push", "Waiting for you to tap Post.") and as_home[-1] is True
+    # Its title is the assistant's name, so its words say which job.
+    assert sent[-1] == ("needs_you", "confirm:run_k_push", "File 5 bugs on Linear: waiting for you to tap Post.")
+    assert as_home[-1] is True
+
+
+def _resolved(service, seq):
+    return [e[2]["run_id"] for e in service.history_events.since(seq) or [] if e[1] == "decision_resolved"]
+
+
+def test_post_or_cancel_clears_the_cards_needs_you_notification(server, service, state, home, monkeypatch):
+    """Like a closed question (QA74 #15): every device hears decision_resolved, the notification's text
+    says it was handled, and no later wake goes out for it."""
+    relay = FakeRelay()
+    service.push.relay = RelayClient(home, lambda: "https://relay.example", post=relay)
+    register(server)
+    monkeypatch.setattr(service.push, "present", lambda d: False)
+    store = service.store
+
+    def notified(key, title):
+        view = _filed(store, key, title, interaction="vi_typed")
+        service.push.notify("needs_you", key=f"confirm:run_{key}", title=title, body="Waiting for you to tap Post.",
+                            run_id=f"run_{key}")
+        return view, relay.notifies[-1][0]["event_id"], service.history_events.seq
+
+    def handled(event_id):
+        status, text = http(server.base_url, "GET", f"/voice/push/events/{event_id}", token=server.token)
+        return status == 200 and text.get("resolved") is True and text["body"] == "Already handled."
+
+    view, event_id, seq = notified("k_no", "Post the release notes")
+    assert len(relay.notifies) == 1 and not handled(event_id)
+    status, _ = post(server, "/voice/work/run_k_no/card-action", {"view": 0, "action": "cancel", "value": view["sha256"]})
+    assert status == 200
+    assert set(_resolved(service, seq)) == {"run_k_no"} and handled(event_id)
+    service.push.notify("needs_you", key="confirm:run_k_no", title="Post the release notes", run_id="run_k_no")
+    assert len(relay.notifies) == 1   # no second wake for a card already settled
+
+    # Post closes it the same way (the action itself is never started here).
+    view, event_id, seq = notified("k_yes", "File 5 bugs on Linear")
+    monkeypatch.setattr(service.agent, "start_run", lambda *args, **kwargs: "run_exec")
+    monkeypatch.setattr(A, "follow", lambda *args: None)
+    assert A.decide(service, "run_k_yes", 0, view["sha256"], "approve")["ok"] is True
+    assert set(_resolved(service, seq)) == {"run_k_yes"} and handled(event_id)

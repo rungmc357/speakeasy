@@ -2,7 +2,7 @@
 import asyncio
 import time
 from . import router
-from .confirms import Conflict
+from .confirms import Conflict, approve_label
 
 
 async def answer(worker, delegation_id, revision, request, marked=None):
@@ -94,7 +94,7 @@ async def present(worker, delegation_id, task, index, view, *, changed=False):
         # Say where the card is and which button: "open that card" is no use to someone who sees none.
         await worker.append("session.commentary.append", delegation_id,
                             "That one is too long to approve by voice. It's waiting on Home in the app: "
-                            f"tap {view['actions'][0]['label']} on the card when you've read it.")
+                            f"tap {approve_label(view)} on the card when you've read it.")
         return
     prefix = "The preview changed. " if changed else "Before I do that: "
     await worker.append("session.commentary.append", delegation_id, prefix + preview + ". Approve this preview?")

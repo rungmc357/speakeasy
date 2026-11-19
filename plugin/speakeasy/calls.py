@@ -1878,8 +1878,11 @@ class SidebandWorker:
             question = result["question"].get("question") if isinstance(result["question"], dict) else None
             self.push("needs_you", f"question:{run}", title, question or result.get("spoken"), backend.run_id, home=home)
         elif (card := confirms.pending(result)) is not None:
-            self.push("needs_you", f"confirm:{run}", title, f"Waiting for you to tap {card['actions'][0]['label']}.",
-                      backend.run_id, home=home)
+            body = f"Waiting for you to tap {confirms.approve_label(card)}."
+            if home and title:
+                # A Home answer is titled with the assistant's name, so its words say which job.
+                body = f"{title}: waiting for you to tap {confirms.approve_label(card)}."
+            self.push("needs_you", f"confirm:{run}", title, body, backend.run_id, home=home)
         elif drafts:
             subject = drafts[0].get("subject")
             self.push("needs_you", f"draft:{drafts[0].get('draft_id')}", title,
