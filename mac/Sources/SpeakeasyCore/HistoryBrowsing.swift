@@ -321,11 +321,14 @@ public struct HistoryWaiting: Equatable, Sendable, Identifiable {
     public var runID: String?
     /// A task's question: the task that asked (its buttons and "Reply…" answer that task, ✕ dismisses it).
     public var questionRunID: String?
+    /// A task's question as the task wrote it (SPK-540): what it's about, why, what it touches, each
+    /// option's detail and risk, and the recommended one. `choices` are its options' titles.
+    public var decision: Decision?
 
     public init(id: String, kind: Kind, text: String, command: String? = nil, choices: [String],
-                runID: String? = nil, questionRunID: String? = nil) {
+                runID: String? = nil, questionRunID: String? = nil, decision: Decision? = nil) {
         self.id = id; self.kind = kind; self.text = text; self.command = command; self.choices = choices
-        self.runID = runID; self.questionRunID = questionRunID
+        self.runID = runID; self.questionRunID = questionRunID; self.decision = decision
     }
 }
 
@@ -333,6 +336,9 @@ public struct HistoryWaiting: Equatable, Sendable, Identifiable {
 public struct HistoryThread: Equatable, Sendable {
     public var messages: [HistoryThreadMessage]
     public var waiting: [HistoryWaiting]
+    /// The approval cards its tasks sent (post, send, buy…), each under the reply that sent it
+    /// (SPK-540). They are drawn in place, pending or settled, never in the `waiting` strip.
+    public var confirms: SessionConfirms.Placement
     public var helpers: [JobSubagent]
     public var toolCallCount: Int
 
@@ -380,12 +386,14 @@ public struct HistoryThread: Equatable, Sendable {
         for job in c.waitingQuestions {
             guard let d = job.decision else { continue }
             waiting.append(HistoryWaiting(id: "job-\(job.runID ?? d.question)", kind: .question, text: d.question,
-                                          choices: d.options.map(\.text), questionRunID: job.runID))
+                                          choices: d.options.map(\.text), questionRunID: job.runID, decision: d))
         }
         var seen = Set<String>()
         self.helpers = c.jobs.flatMap(\.subagents).filter { seen.insert($0.id).inserted }
         self.messages = outbox.merged(into: out, session: c.id)
         self.waiting = waiting
+        // Every assistant entry is a message with the same id, so a card's anchor is a row on the page.
+        self.confirms = SessionConfirms.place(rows: c.entries, jobs: c.jobs)
         self.toolCallCount = out.reduce(0) { $0 + $1.tools.count }
     }
 }

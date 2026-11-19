@@ -16,6 +16,9 @@ protocol HistoryBackend: AnyObject {
     /// Servers with `agents`: the agent picker's list.
     func agents() async throws -> AgentRoster
     func answerApproval(sessionID: String, runID: String, choice: String) async throws
+    /// A button on an approval card a task sent (SPK-540): the run's card-action route, with the
+    /// button's own value (the preview's fingerprint). `view`: the card's index in the task's views.
+    func cardAction(runID: String, view: Int, action: CardAction) async throws
     /// ✕ on a decision card: close (or, `undo`, reopen) one task's question everywhere; tells the agent nothing.
     func dismissQuestion(runID: String, undo: Bool) async throws
     /// Servers with `model_choice`: the catalog, Use for this chat, Make default.
@@ -66,6 +69,10 @@ final class LiveHistoryBackend: HistoryBackend {
     func answerApproval(sessionID: String, runID: String, choice: String) async throws {
         try await api.answerSessionApproval(sessionID: sessionID, runID: runID, choice: choice)
     }
+    func cardAction(runID: String, view: Int, action: CardAction) async throws {
+        let value: Any? = { if case .null = action.value { return nil }; return action.value.foundation }()
+        _ = try await api.cardAction(interactionID: nil, runID: runID, view: view, action: action.id, value: value)
+    }
     func dismissQuestion(runID: String, undo: Bool) async throws { try await api.dismissQuestion(runID: runID, undo: undo) }
     func models() async throws -> ModelCatalog { try await api.models() }
     func skills() async throws -> [SlashSkill] { try await api.slashSkills() }
@@ -110,6 +117,10 @@ final class HistoryStore: ObservableObject {
     @Published private(set) var startingChat = false
     @Published private(set) var answering: Set<String> = []
     @Published private(set) var answerError: String?
+    /// Approval cards in the thread (SPK-540), by card id: a button's request in flight, and what
+    /// the server said when one didn't go through.
+    @Published private(set) var cardBusy: Set<String> = []
+    @Published private(set) var cardErrors: [String: String] = [:]
     /// "Reply…" on a decision card: the composer answers that task's question (its run id, its words).
     @Published private(set) var replyingTo: HistoryWaiting?
     /// Picks and ✕ dismisses not yet confirmed by the server: the app's one pending-pick store, shared
@@ -346,7 +357,7 @@ final class HistoryStore: ObservableObject {
         guard target != .session(sessionID) else { return }
         cancelVoice()
         target = .session(sessionID)
-        newChatError = nil; answerError = nil
+        newChatError = nil; answerError = nil; cardErrors = [:]
         load(sessionID)
         poll()
     }
@@ -684,6 +695,28 @@ final class HistoryStore: ObservableObject {
             self?.answering.remove(waiting.id)
             self?.load(sessionID)
         }
+    }
+
+    /// A click on an approval card's own button (Post, Send, Buy for $X, Cancel): the exact-preview
+    /// approval for its run. The page reloads and the card shows its outcome where it sits; a
+    /// refusal ("The preview changed…") stays under the card.
+    func runCardAction(_ action: CardAction, on item: SessionConfirms.Item) {
+        guard let sessionID = target?.sessionID, let backend, !cardBusy.contains(item.id) else { return }
+        cardBusy.insert(item.id); cardErrors[item.id] = nil
+        Task { [weak self] in
+            do { try await backend.cardAction(runID: item.runID, view: item.card.viewIndex, action: action) }
+            catch { self?.cardErrors[item.id] = Self.cardMessage(error) }
+            self?.cardBusy.remove(item.id)
+            self?.load(sessionID)
+        }
+    }
+
+    /// What to say under a card whose button didn't go through: the server's own sentence for a
+    /// refusal (409), plain words for anything else (the route's other errors are written for logs).
+    static func cardMessage(_ error: Error) -> String {
+        if let refusal = error as? ServerClient.HTTPError, refusal.status == 409 { return refusal.message }
+        if error is URLError { return "Couldn't reach your Hermes. Check the connection and try again." }
+        return "That didn't go through. Try again."
     }
 
     /// "Reply…": the composer answers this question; focus moves there.

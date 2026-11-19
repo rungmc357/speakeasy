@@ -109,6 +109,23 @@ final class DemoHistoryBackend: HistoryBackend {
         return HistoryMessageReply(via: .task, runID: "run_demo")
     }
 
+    /// Card buttons pressed, as the route would get them; and (checks) the refusal to answer with.
+    var cardActions: [(runID: String, view: Int, action: String, value: String?)] = []
+    var cardRefusal: String?
+    /// As the server settles a claimed approval card: approved or cancelled, its buttons gone.
+    func cardAction(runID: String, view: Int, action: CardAction) async throws {
+        cardActions.append((runID, view, action.id, action.value.string))
+        if let cardRefusal { throw ServerClient.HTTPError(status: 409, message: cardRefusal) }
+        for (id, c) in conversations {
+            guard let job = c.jobs.firstIndex(where: { $0.runID == runID }),
+                  let at = c.jobs[job].views.firstIndex(where: { $0.viewIndex == view }),
+                  var raw = c.jobs[job].views[at].data.foundation as? [String: Any] else { continue }
+            raw["state"] = action.id == "approve" ? "approved" : "cancelled"
+            raw["actions"] = [Any]()
+            conversations[id]?.jobs[job].result?.views[at] = ViewCard(kind: "confirm", number: view + 1, data: raw)
+        }
+    }
+
     var models = ModelCatalog.sample
     var sessionModels: [SessionModelRequest] = []
     var modelAliases: [String: String] = [:]
@@ -537,7 +554,8 @@ enum HistoryShots {
                     backend.conversations[conversation.id] = conversation
                     let thread = HistoryThread(conversation)
                     let views = conversation.jobs.flatMap { $0.views.map { "\($0.kind)" } }
-                    print("history json \(conversation.id): state=\(conversation.state) jobs=\(conversation.jobs.count) views=\(views) approvals=\(conversation.approvals.count) waitingQuestions=\(conversation.waitingQuestions.count) thread.waiting=\(thread.waiting.map { "\($0.kind)" })")
+                    let cards = Array(thread.confirms.after.values.joined()) + thread.confirms.tail
+                    print("history json \(conversation.id): state=\(conversation.state) jobs=\(conversation.jobs.count) views=\(views) thread.confirms=\(cards.map { $0.buttons.map(\.label) }) thread.waiting=\(thread.waiting.map { "\($0.kind)" })")
                     store.open(conversation.id)
                     try? await Task.sleep(nanoseconds: 1_500_000_000)
                     let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
@@ -545,6 +563,10 @@ enum HistoryShots {
                     catch { print("history shot FAILED \(name): \(error)") }
                 }
                 exit(0)
+            }
+            if only == "thread-cards" {
+                do { try await ThreadCardsCheck.run(c, backend: backend, dir: dir); exit(0) }
+                catch { print("thread-cards check FAILED: \(error.localizedDescription)"); exit(1) }
             }
             if only == "15-work" {
                 do {

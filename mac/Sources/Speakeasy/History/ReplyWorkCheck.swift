@@ -56,17 +56,17 @@ enum ReplyWorkCheck {
     }
     private static func failure(_ message: String) -> NSError { NSError(domain: "ReplyWorkCheck", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     // SwiftUI accessibility proxies expose selectors without declaring NSAccessibilityProtocol.
-    private static func string(_ node: NSObject, _ key: String) -> String? {
+    static func string(_ node: NSObject, _ key: String) -> String? {
         guard node.responds(to: NSSelectorFromString(key)) else { return nil }
         return node.value(forKey: key) as? String
     }
-    private static func press(_ node: NSObject) -> Bool {
+    static func press(_ node: NSObject) -> Bool {
         let selector = NSSelectorFromString("accessibilityPerformPress")
         guard node.responds(to: selector), let implementation = node.method(for: selector) else { return false }
         typealias Action = @convention(c) (AnyObject, Selector) -> Bool
         return unsafeBitCast(implementation, to: Action.self)(node, selector)
     }
-    private static func descendants(_ root: Any, depth: Int = 0) -> [NSObject] {
+    static func descendants(_ root: Any, depth: Int = 0) -> [NSObject] {
         guard depth < 40, let node = root as? NSObject else { return [] }
         let children = node.responds(to: NSSelectorFromString("accessibilityChildren"))
             ? (node.value(forKey: "accessibilityChildren") as? [Any] ?? []) : []

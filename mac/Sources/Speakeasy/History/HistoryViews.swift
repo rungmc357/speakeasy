@@ -679,10 +679,13 @@ struct HistorySessionView: View {
                                 workCard(ReplyWorkLayout.fallback(job), job: job)
                                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                             }
+                            // SPK-540: approval cards the tasks sent, under the reply that sent each one.
+                            ForEach(thread.confirms.after[m.id] ?? []) { HistoryConfirmCard(item: $0, store: store) }
                         }
                         ForEach(workThread.tail) { work in
                             workCard(work, job: ReplyWorkLayout.job(for: work, in: c))
                         }
+                        ForEach(thread.confirms.tail) { HistoryConfirmCard(item: $0, store: store) }
                         ForEach(layout.pinned, id: \.lineID) { job in
                             workCard(ReplyWorkLayout.fallback(job), job: job).transition(.opacity)
                         }
@@ -1493,7 +1496,11 @@ struct HistoryWaitingCard: View {
                     .padding(.horizontal, 8).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Live.well))
             }
-            if !waiting.choices.isEmpty {
+            if let decision = waiting.decision {
+                // SPK-540: the decision as the task wrote it (what it's about, what it touches, each
+                // option's detail and risk, the recommended one and why); a click answers as before.
+                DecisionDetails(decision: decision, enabled: !busy) { store.answer(waiting, choice: $0.text) }
+            } else if !waiting.choices.isEmpty {
                 WrapLayout(spacing: 6) {
                     ForEach(Array(waiting.choices.enumerated()), id: \.offset) { i, c in
                         HistoryPillButton(title: Self.label(c, kind: waiting.kind, task: waiting.runID != nil), primary: waiting.kind == .approval && i == 0) {
