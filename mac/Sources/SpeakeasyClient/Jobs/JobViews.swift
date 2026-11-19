@@ -181,9 +181,12 @@ public struct TileButton: View {
     var primary = false
     /// A recommended answer can run to two lines ("Ship it and install it tonight").
     var lines = 1
+    /// Grow to the row's height, so a two-line pick and the one-line button beside it stand equally tall
+    /// (the row must be `.fixedSize(horizontal: false, vertical: true)`).
+    var fillsRow = false
     var action: () -> Void
-    public init(title: String, primary: Bool = false, lines: Int = 1, action: @escaping () -> Void) {
-        self.title = title; self.primary = primary; self.lines = lines; self.action = action
+    public init(title: String, primary: Bool = false, lines: Int = 1, fillsRow: Bool = false, action: @escaping () -> Void) {
+        self.title = title; self.primary = primary; self.lines = lines; self.fillsRow = fillsRow; self.action = action
     }
     @State private var hover = false
     public var body: some View {
@@ -191,6 +194,7 @@ public struct TileButton: View {
             Text(title).font(.system(size: 11.5 * s, weight: .semibold)).lineLimit(lines)
                 .multilineTextAlignment(.center).padding(.horizontal, 10)
                 .frame(maxWidth: .infinity).frame(minHeight: (JobLook.touch ? 28 : 26) * s)
+                .frame(maxHeight: fillsRow ? .infinity : nil)
                 .foregroundStyle(primary ? JobStyle.onBlue : Color.primary)
                 .background(RoundedRectangle(cornerRadius: JobLook.touch ? 100 : 8, style: .continuous)
                     .fill(primary ? JobStyle.blue.opacity(hover ? 1 : 0.92) : Color.primary.opacity(hover ? 0.16 : 0.10)))
@@ -622,19 +626,21 @@ public struct JobTile: View {
                 }
                 HStack(spacing: 6) {
                     if let pick = buttons.pick {
-                        TileButton(title: pick, primary: true, lines: 2) { model.approve(job) }
+                        TileButton(title: pick, primary: true, lines: 2, fillsRow: true) { model.approve(job) }
                             .help("Answer: \(pick)")
                             .layoutPriority(1)
                             .accessibilityIdentifier("tile-pick")
                     }
                     if let more = buttons.more {
                         // Beside the pick it's the quieter way in, sized to its words.
-                        TileButton(title: more) { model.onOpenJob(job.id) }
+                        TileButton(title: more, fillsRow: true) { model.onOpenJob(job.id) }
                             .fixedSize(horizontal: buttons.pick != nil, vertical: false)
                             .accessibilityIdentifier("tile-more-options")
                     }
                     if model.setAsideTarget(job) != nil { NotNeededButton { model.setAside(job) } }
                 }
+                // Both buttons stand as tall as the taller one (a pick that wraps to two lines).
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 3)
             }
         case .needsYou(.approve):

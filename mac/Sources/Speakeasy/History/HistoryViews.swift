@@ -1732,8 +1732,8 @@ struct HistoryComposer: View {
                     .onSubmit { store.send() }
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .frame(minHeight: 40)
-                    .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(reviewing ? Live.brass.opacity(0.08) : HistoryLook.field))
-                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .background(RoundedRectangle(cornerRadius: 20, style: .circular).fill(reviewing ? Live.brass.opacity(0.08) : HistoryLook.field))
+                    .overlay(RoundedRectangle(cornerRadius: 20, style: .circular)
                         .strokeBorder(reviewing ? Live.brass.opacity(0.5) : focused ? Live.brass.opacity(0.5) : Live.hairline,
                                       lineWidth: focused || reviewing ? 1 : 0.5))
                     .accessibilityIdentifier("history-composer")
