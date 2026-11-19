@@ -1476,6 +1476,9 @@ public final class NativeVoiceClient: VoiceCallClient {
 
     /// Pairing changed or settings reloaded.
     public func update(config: AppConfig) {
+        // Pictures and files waiting for the next call were dropped for the Hermes paired until now:
+        // another one never gets them (their bytes go with them, see `forgetAttachments`).
+        for event in model.state.sharing.pairingChanged(from: self.config, to: config) { dispatch(.sharing(event)) }
         self.config = config
         api = ServerClient(config: config)
     }

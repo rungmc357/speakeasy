@@ -874,8 +874,11 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
 
     case .sharing(var event):
         let live = (s.connection == .live || s.connection == .connecting) && !s.pausing
-        // Dropped with no call open (after one ended, on the board): kept for the next call.
-        if case .added(var item) = event, !s.connection.isOpen { item.forNextCall = true; event = .added(item) }
+        // Dropped with no call open (after one ended, on the board) or while one hangs up, which
+        // can't take it any more: kept for the next call.
+        var noCall = !s.connection.isOpen
+        if case .ending = s.phase { noCall = true }
+        if noCall, case .added(var item) = event { item.forNextCall = true; event = .added(item) }
         s.sharing.apply(event, now: now, admitted: s.interactionID, live: live)
 
     case .reset:

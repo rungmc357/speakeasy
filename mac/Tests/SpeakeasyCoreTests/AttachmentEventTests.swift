@@ -548,6 +548,38 @@ final class AttachmentEventTests: XCTestCase {
         XCTAssertEqual(s.sharing.uploadable(to: "vi_2").map(\.id), ["p1"], "and goes with the next call")
     }
 
+    func testFilesWaitingForTheNextCallNeverGoToAnotherHermes() {
+        let home = AppConfig(serverURL: URL(string: "https://home.example.ts.net"), deviceToken: "tok_home")
+        let office = AppConfig(serverURL: URL(string: "https://office.example.ts.net"), deviceToken: "tok_office")
+        let waiting = run([.sharing(.added(picture("p1"))), .sharing(.added(picture("p2")))])
+        XCTAssertEqual(waiting.sharing.pairingChanged(from: home, to: home), [], "settings reloaded, same Hermes: they still wait")
+
+        // Re-paired, unpaired, or the same address with another device token: all a different pairing.
+        let unpaired = AppConfig(serverURL: home.serverURL, deviceToken: nil)
+        let repaired = AppConfig(serverURL: home.serverURL, deviceToken: "tok_other")
+        for other in [office, unpaired, repaired] {
+            let events = waiting.sharing.pairingChanged(from: home, to: other)
+            var s = run(events.map { .sharing($0) }, from: waiting, at: t0 + 1)
+            XCTAssertEqual(s.sharing.attachments, [], "off the panel, so the client lets go of their bytes")
+            XCTAssertEqual(present(s).secondary, "Pairing changed · add it again")
+            s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_9")], from: s, at: t0 + 2)
+            XCTAssertEqual(s.sharing.uploadable(to: "vi_9"), [], "the next call, on the other Hermes, has nothing to upload")
+        }
+
+        // One already uploaded to a call on the old Hermes that no request took would wait again: gone too.
+        var s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_1"),
+                     .sharing(.uploading("p1", interactionID: "vi_1")),
+                     .sharing(.uploaded("p1", serverID: "att_1", interactionID: "vi_1")), .endRequested], from: waiting, at: t0 + 1)
+        s = run(s.sharing.pairingChanged(from: home, to: office).map { .sharing($0) } + [.serverClosed(.complete, error: nil)],
+                from: s, at: t0 + 2)
+        XCTAssertEqual(s.sharing.attachments, [])
+
+        // A drop during a call is that call's: it ends with the call, nothing to say.
+        let inCall = run([.sharing(.added(picture("p3")))], from: ready())
+        XCTAssertEqual(inCall.sharing.pairingChanged(from: home, to: office), [])
+        XCTAssertEqual(VoiceState().sharing.pairingChanged(from: home, to: office), [], "nothing waited: no line")
+    }
+
     func testADropWhileHangingUpWaitsForTheNextCall() {
         var s = run([.endRequested, .sharing(.added(picture("p1")))], from: ready())
         XCTAssertEqual(s.connection, .ending)
