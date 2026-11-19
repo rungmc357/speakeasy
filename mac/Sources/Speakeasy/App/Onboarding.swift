@@ -258,7 +258,11 @@ struct OnboardingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // SwiftUI works out a view's minimum height at its narrowest width. Without a minimum
+        // width, every wrapping line (the subtitle, the footnote) is measured one character
+        // wide, so the ready step claimed about 3,000 pt and grew the window off the screen
+        // (SPK-534). The window never gets narrower than this anyway.
+        .frame(minWidth: Self.size.width, maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -472,7 +476,7 @@ private struct ReadyStep: View {
             // the header and buttons can be taller than a laptop screen (SPK-534).
             .scrollContentBackground(.hidden)
             .padding(.horizontal, -20)
-            .frame(minHeight: 120)
+            .frame(minHeight: 120, idealHeight: 300, maxHeight: .infinity)
             if let problem = app.callShortcutProblem { Text(problem).font(.callout).foregroundStyle(.orange) }
             if let error = flow.saveError {
                 Text(error).font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)

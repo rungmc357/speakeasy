@@ -44,6 +44,21 @@ enum OnboardingWindowSmoke {
             flow.assistantName = "Juniper"
             flow.loadDefaults()
 
+            // The content itself must not ask for a screen-tall window either: any host that sizes
+            // from the SwiftUI view (the welcome shots, a future hosting change) would grow with it.
+            // Measured after the form has loaded its rows, in a window sized the default way.
+            let probe = NSHostingView(rootView: OnboardingView(flow: flow).environmentObject(app))
+            probe.frame = NSRect(origin: .zero, size: OnboardingView.size)
+            let probeWindow = NSWindow(contentRect: probe.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            probeWindow.contentView = probe
+            probeWindow.orderFrontRegardless()
+            for _ in 0..<6 { probe.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.2)) }
+            let grown = probe.frame.height
+            print("probe: fitting \(Int(probe.fittingSize.height)), intrinsic \(Int(probe.intrinsicContentSize.height)), hosted \(Int(grown))")
+            check(grown <= OnboardingView.maxSize.height,
+                  "\(dark ? "dark" : "light"): the ready step's own height \(Int(grown)) is within the design maximum \(Int(OnboardingView.maxSize.height))")
+            probeWindow.orderOut(nil)
+
             let window = OnboardingWindowController.makeWindow(flow: flow)
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             window.makeKeyAndOrderFront(nil)

@@ -8,8 +8,11 @@ enum WelcomeShots {
     static func run(dir: String) {
         do { try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true) }
         catch { print(error); exit(1) }
-        keyboardCheck(dir: dir)
-        var count = 2 // The privacy sheets captured during interaction checks.
+        // The key-event check needs a real, focused desktop session; a locked or remote one can't
+        // deliver arrows to the window, so let screenshot-only runs skip it explicitly.
+        if ProcessInfo.processInfo.environment["SPEAKEASY_WELCOME_SKIP_KEYS"] == "1" { print("SKIP: keyboard check (SPEAKEASY_WELCOME_SKIP_KEYS)") }
+        else { keyboardCheck(dir: dir) }
+        var count = ProcessInfo.processInfo.environment["SPEAKEASY_WELCOME_SKIP_KEYS"] == "1" ? 0 : 2 // The privacy sheets captured during interaction checks.
         for dark in [false, true] {
             for large in [false, true] {
                 let size = NSSize(width: large ? 800 : 540, height: large ? 720 : 480)
