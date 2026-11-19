@@ -27,6 +27,16 @@ enum WelcomeShots {
                 capture(OnboardingView(flow: flow).environmentObject(flow.app), size: size,
                         dark: dark, path: "\(dir)/\(name)-new.png")
                 count += 1
+                // Already paired, onboarding not done: the window opens straight on "You're
+                // ready to talk" (SPK-534). Window fit is checked by --onboarding-window-smoke.
+                let ready = OnboardingFlow(app: AppModel.shared)
+                ready.factsOverride = OnboardingFacts(paired: true, voiceReady: true)
+                ready.welcome = WelcomeJourney(paired: true)
+                ready.step = OnboardingPlan.first(ready.facts)
+                precondition(ready.step == .ready)
+                capture(OnboardingView(flow: ready).environmentObject(ready.app), size: size,
+                        dark: dark, path: "\(dir)/\(name)-paired-ready.png")
+                count += 1
             }
             capture(HowItWorksDemo(onTryIt: {}), size: NSSize(width: 520, height: 600), dark: dark,
                     path: "\(dir)/\(dark ? "dark" : "light")-demo.png")

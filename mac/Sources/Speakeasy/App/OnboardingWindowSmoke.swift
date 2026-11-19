@@ -69,8 +69,19 @@ enum OnboardingWindowSmoke {
                 check(visible.contains(r), "\(look): \(label) is on the screen")
             }
 
-            if let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                view.cacheDisplay(in: view.bounds, to: rep)
+            if let view = window.contentView, let content = view.bitmapImageRepForCachingDisplay(in: view.bounds),
+               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: content)
+                // The cached content has no window background; paint it underneath so dark reads as dark.
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+                window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    NSColor.windowBackgroundColor.setFill()
+                    NSRect(origin: .zero, size: view.bounds.size).fill()
+                }
+                content.draw(in: NSRect(origin: .zero, size: view.bounds.size), from: .zero, operation: .sourceOver,
+                             fraction: 1, respectFlipped: true, hints: nil)
+                NSGraphicsContext.restoreGraphicsState()
                 let path = "\(dir)/ready-window-\(look).png"
                 try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
                 print("window shot \(path)")
