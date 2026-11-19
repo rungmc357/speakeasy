@@ -1,0 +1,137 @@
+{
+ "session": {
+  "id": "qa_confirm",
+  "title": "QA test: approval card in a chat thread",
+  "source": "speakeasy",
+  "source_label": "Speakeasy",
+  "state": "needs_you",
+  "send_via": "task",
+  "entries": [
+   {
+    "kind": "user",
+    "id": "u1",
+    "at": 1795116851.540459,
+    "text": "[SPEAKEASY QA TEST] Draft a test note for #qa-sandbox and hold it for my OK."
+   },
+   {
+    "kind": "assistant",
+    "id": "a1",
+    "at": 1795116911.540459,
+    "text": "The test note is ready. Nothing is posted until you approve it on the card."
+   }
+  ],
+  "has_more": false,
+  "before": null,
+  "jobs": [
+   {
+    "run_id": "run_qa_confirm",
+    "status": "completed",
+    "stale": false,
+    "updated": 1795116911.540459,
+    "events": [],
+    "short_status": "Done",
+    "detail": "Test content",
+    "source_run_id": "run_qa_confirm",
+    "updated_at": 1795116911.540459,
+    "status_source": "authored",
+    "result": {
+     "spoken": "The test note is ready. Nothing is posted until you approve it on the card.",
+     "full": "The test note is ready. Nothing is posted until you approve it on the card.",
+     "label": "Post test note to qa-sandbox",
+     "views": [
+      {
+       "kind": "confirm",
+       "type": "post",
+       "title": "Post the test note to #qa-sandbox?",
+       "details": {
+        "account": "qa-sandbox (test)",
+        "body": "QA test note. Nothing here is real and nothing should be posted."
+       },
+       "sha256": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+       "state": "pending",
+       "actions": [
+        {
+         "id": "approve",
+         "label": "Post",
+         "style": "primary",
+         "value": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        },
+        {
+         "id": "cancel",
+         "label": "Cancel",
+         "style": "secondary",
+         "value": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a"
+        }
+       ],
+       "as_of": 1795116911.540459
+      }
+     ]
+    },
+    "title": "Post test note to qa-sandbox",
+    "summary": "Post test note to qa-sandbox",
+    "dismissed": false,
+    "email_drafts": [],
+    "plan": [],
+    "job": {
+     "id": "qa_job",
+     "name": "Post test note to qa-sandbox"
+    },
+    "request": "[SPEAKEASY QA TEST] Draft a test note for #qa-sandbox and hold it for my OK.",
+    "session_id": "qa_confirm",
+    "model": {
+     "id": "anthropic/claude-fable-5-2",
+     "name": "Claude Fable 5.2",
+     "provider": "anthropic",
+     "provider_name": "Anthropic",
+     "provider_label": "Claude subscription",
+     "metered": false,
+     "reasoning": null,
+     "reasoning_label": null,
+     "source": "existing",
+     "served": false
+    },
+    "seen": false,
+    "started_with": "[SPEAKEASY QA TEST] Draft a test note for #qa-sandbox and hold it for my OK.",
+    "started_at": 1795116851.540459,
+    "finished_at": 1795116911.540459,
+    "step_index": null,
+    "step_count": null,
+    "eta_seconds": null,
+    "failure_reason": null,
+    "activity": [],
+    "activity_total": 0,
+    "touched": []
+   }
+  ],
+  "approvals": [],
+  "model": {
+   "id": "anthropic/claude-fable-5-2",
+   "name": "Claude Fable 5.2",
+   "provider": "anthropic",
+   "provider_name": "Anthropic",
+   "provider_label": "Claude subscription",
+   "metered": false,
+   "reasoning": null,
+   "reasoning_label": null,
+   "source": "existing",
+   "served": false
+  },
+  "next_model": {
+   "id": "anthropic/claude-opus-5-5",
+   "name": "Claude Opus 5.5",
+   "provider": "anthropic",
+   "provider_name": "Anthropic",
+   "provider_label": "Claude subscription",
+   "metered": false,
+   "reasoning": null,
+   "reasoning_label": null,
+   "source": "existing",
+   "served": false,
+   "unavailable": false
+  },
+  "model_session_id": "qa_confirm",
+  "model_choice": null,
+  "queued": [],
+  "steered": []
+ }
+}

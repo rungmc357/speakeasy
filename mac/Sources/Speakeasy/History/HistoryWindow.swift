@@ -527,6 +527,25 @@ enum HistoryShots {
                 catch { print("history shot FAILED \(name): \(error)") }
             }
             try? await Task.sleep(nanoseconds: 600_000_000)
+            // HISTORY_JSON=a.json,b.json: open each saved `/voice/history/{id}` answer on the session
+            // page and shoot it, to see what a thread's own data draws without a server (SPK-540).
+            if let list = ProcessInfo.processInfo.environment["HISTORY_JSON"] {
+                for path in list.split(separator: ",").map(String.init) {
+                    guard let data = FileManager.default.contents(atPath: path),
+                          let json = try? JSONSerialization.jsonObject(with: data),
+                          let conversation = HistoryConversation(json: json) else { print("history json FAILED \(path)"); continue }
+                    backend.conversations[conversation.id] = conversation
+                    let thread = HistoryThread(conversation)
+                    let views = conversation.jobs.flatMap { $0.views.map { "\($0.kind)" } }
+                    print("history json \(conversation.id): state=\(conversation.state) jobs=\(conversation.jobs.count) views=\(views) approvals=\(conversation.approvals.count) waitingQuestions=\(conversation.waitingQuestions.count) thread.waiting=\(thread.waiting.map { "\($0.kind)" })")
+                    store.open(conversation.id)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+                    do { try snapshot(c, to: "\(dir)/\(name).png"); print("history shot \(name)") }
+                    catch { print("history shot FAILED \(name): \(error)") }
+                }
+                exit(0)
+            }
             if only == "15-work" {
                 do {
                     try await ReplyWorkCheck.run(c, backend: backend, dir: dir)
