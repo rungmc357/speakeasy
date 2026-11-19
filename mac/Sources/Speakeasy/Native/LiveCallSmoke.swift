@@ -23,6 +23,7 @@ enum LiveCallSmoke {
         let engine = NativeCallEngine()
         var heard = ""
         var gotReply = false
+        var lastDelta: Date?
         var events: [String] = []
         engine.onMessage = { data in
             if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -33,7 +34,7 @@ enum LiveCallSmoke {
             }
             for event in parseDataChannelMessage(data) {
                 switch event {
-                case .outputDelta(let text): heard += text
+                case .outputDelta(let text): heard += text; lastDelta = Date()
                 default: break
                 }
             }
@@ -76,13 +77,27 @@ enum LiveCallSmoke {
                    let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
                     for event in list { sent = engine.send(json: event) && sent }
                 } else {
-                    sent = engine.send(json: ["type": "response.item.create",
-                                              "item": ["type": "message", "role": "user",
-                                                       "content": [["type": "input_text", "text": prompt]]]])
+                    switch SmokeTypedTurn.plan(voiceProvider: admission.voiceProvider, prompt: prompt) {
+                    case .dataChannel(let line):
+                        sent = engine.send(json: SmokeTypedTurn.itemCreate(line))
+                    case .serverRoute(let text):
+                        // Codex voice refuses a typed item on the data channel; type it the way the
+                        // call screen's composer does. The server can take a moment after the channel
+                        // opens to call the call connected, so a "not connected yet" is retried.
+                        print("typing through the server (\(admission.voiceProvider) voice)")
+                        sent = try await typeThroughServer(api: api, interactionID: admission.interactionID, text: text)
+                    case .invalid(let reason):
+                        throw SmokeError(reason)
+                    }
                 }
                 print("text sent=\(sent)")
                 let replyBy = Date().addingTimeInterval(45)
-                while !gotReply && Date() < replyBy { try await Task.sleep(nanoseconds: 200_000_000) }
+                while !gotReply && Date() < replyBy {
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                    // GPT-Live (Codex voice) streams the reply as caption deltas and may send none of
+                    // the "done" events above: a caption that has stopped growing is the reply.
+                    if SmokeTypedTurn.replySettled(heard: heard, lastDelta: lastDelta, now: Date()) { gotReply = true }
+                }
                 let words = heard.split(separator: " ").count
                 print("reply received=\(gotReply) words=\(words) after=\(String(format: "%.1f", Date().timeIntervalSince(started)))s")
                 if !heard.isEmpty { print("reply text: \(heard.prefix(300))") }
@@ -100,6 +115,22 @@ enum LiveCallSmoke {
                 engine.close()
                 print("live-call-smoke failed: \(error.localizedDescription)")
                 exit(1)
+            }
+        }
+    }
+
+    /// One typed turn through `POST /voice/interactions/{id}/input-text`, retrying only while the
+    /// server says the call isn't connected yet (409), for up to ten seconds.
+    static func typeThroughServer(api: ServerClient, interactionID: String, text: String) async throws -> Bool {
+        let giveUp = Date().addingTimeInterval(10)
+        while true {
+            do {
+                return try await api.inputText(interactionID: interactionID, text: text)
+            } catch let error as ServerClient.HTTPError where error.status == 409 && Date() < giveUp {
+                try await Task.sleep(nanoseconds: 500_000_000)
+            } catch let error as ServerClient.HTTPError where error.status == 404 {
+                throw SmokeError("the Speakeasy plugin on this Hermes has no typed-turn route; update it, "
+                                 + "or pass SPEAKEASY_SMOKE_SAY to speak the line instead")
             }
         }
     }
