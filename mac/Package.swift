@@ -33,6 +33,7 @@ let package = Package(
             .product(name: "Sparkle", package: "Sparkle"),
         ]),
         .testTarget(name: "SpeakeasyCoreTests", dependencies: ["SpeakeasyCore"], resources: [.copy("Contract")]),
+        .testTarget(name: "SpeakeasyClientTests", dependencies: ["SpeakeasyCore", "SpeakeasyClient"]),
     ],
     swiftLanguageModes: [.v5]
 )
