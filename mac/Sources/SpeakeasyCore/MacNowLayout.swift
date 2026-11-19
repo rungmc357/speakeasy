@@ -6,8 +6,28 @@ public enum MacNowLayout {
         !nowSupported || width >= 1000
     }
 
+    /// SPK-535: never under 340, so the composer (attach, field, mic, call) fits with its
+    /// placeholder on one line beside an open conversation.
     public static func nowWidth(windowWidth: Double) -> Double {
-        min(420, max(280, windowWidth * 0.44))
+        min(420, max(340, windowWidth * 0.44))
+    }
+
+    /// SPK-535: under 1,000 wide with nothing open on the right (no session, New chat, Scheduled,
+    /// Board or Files), Home takes the whole window instead of sharing it with an empty
+    /// "Pick a session" pane.
+    public static func homeFillsWindow(sidebar: Bool, nowSupported: Bool, detailOpen: Bool) -> Bool {
+        nowSupported && !sidebar && !detailOpen
+    }
+
+    /// SPK-535: the narrow window's top row (Earlier and the work pill) starts after the window's
+    /// close, minimise and zoom buttons, so neither sits under them.
+    public static let trafficLightInset: Double = 78
+
+    /// The Home window's smallest content size. A frame saved by an older build (or restored from
+    /// another display) can come back smaller than the window allows; clamp it before showing.
+    public static let windowMinimum = (width: 760.0, height: 480.0)
+    public static func clampedWindowSize(width: Double, height: Double) -> (width: Double, height: Double) {
+        (max(width, windowMinimum.width), max(height, windowMinimum.height))
     }
 
     public static func floats(nowSupported: Bool, callOpen: Bool, homeFrontmost: Bool) -> Bool {

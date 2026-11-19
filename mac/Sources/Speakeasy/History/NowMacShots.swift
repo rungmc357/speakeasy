@@ -26,6 +26,11 @@ enum NowMacShots {
                 store.recorder = SilentRecorder()
                 store.start()
                 store.open("s_flaky")
+                let homeOnly = HistoryStore()
+                homeOnly.backend = DemoHistoryBackend()
+                homeOnly.supported = true
+                homeOnly.nowSupported = true
+                homeOnly.recorder = SilentRecorder()
                 let panel = VoicePanelController(model: voice)
                 MacNowPresentation.shared.enabled = true
                 MacNowPresentation.shared.homeFrontmost = false
@@ -51,7 +56,10 @@ enum NowMacShots {
                                     .clipShape(RoundedRectangle(cornerRadius: 14)),
                                    size: NSSize(width: 320, height: 56), path: "\(dir)/callbar-\(appearance).png")
                     try await shot(HistoryRootView(store: store, voice: voice),
-                                   size: NSSize(width: 720, height: 640), path: "\(dir)/home-narrow-\(appearance).png")
+                                   size: NSSize(width: 760, height: 640), path: "\(dir)/home-narrow-\(appearance).png")
+                    // SPK-535: nothing open on the right, so Home takes the whole narrow window.
+                    try await shot(HistoryRootView(store: homeOnly, voice: voice),
+                                   size: NSSize(width: 760, height: 560), path: "\(dir)/home-narrow-only-\(appearance).png")
                     try await shot(HistoryRootView(store: store, voice: voice),
                                    size: NSSize(width: 1400, height: 700), path: "\(dir)/home-wide-\(appearance).png")
                     // SPK-198: off a call, Home's composer with the round call button.
@@ -75,16 +83,16 @@ enum NowMacShots {
                                    size: NSSize(width: 1400, height: 700), path: "\(dir)/home-empty-\(appearance).png")
                     composer.fill(HomeSuggestions.today()[0])
                     try await shot(HistoryRootView(store: store, voice: idleVoice),
-                                   size: NSSize(width: 720, height: 640), path: "\(dir)/home-typing-\(appearance).png")
+                                   size: NSSize(width: 760, height: 640), path: "\(dir)/home-typing-\(appearance).png")
                     composer.send()
                     precondition(now.visible.first?.kind == .working, "A sent message must show as a working card")
                     precondition(composer.draft.isEmpty, "Sending must empty the box")
                     try await shot(HistoryRootView(store: store, voice: idleVoice),
-                                   size: NSSize(width: 720, height: 640), path: "\(dir)/home-sent-\(appearance).png")
+                                   size: NSSize(width: 760, height: 640), path: "\(dir)/home-sent-\(appearance).png")
                     #if DEBUG
                     composer.previewRecording(seconds: 7, level: 0.6)
                     try await shot(HistoryRootView(store: store, voice: idleVoice),
-                                   size: NSSize(width: 720, height: 640), path: "\(dir)/home-memo-\(appearance).png")
+                                   size: NSSize(width: 760, height: 640), path: "\(dir)/home-memo-\(appearance).png")
                     composer.cancelRecording()
                     #endif
                     for p in now.pending { now.dropPending(p.id) }
@@ -92,7 +100,7 @@ enum NowMacShots {
                     await now.refresh()
                 }
                 store.stop(); now.stop(); panel.hide()
-                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; Home composer send; 20 screenshots")
+                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; Home composer send; 22 screenshots")
                 NSApp.terminate(nil)
             } catch {
                 print("NOW_MAC_SMOKE FAILED: \(error)")

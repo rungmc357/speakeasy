@@ -117,21 +117,15 @@ struct HistoryRootView: View {
         GeometryReader { geo in
             // Home (SPK-124 phase 4b): sidebar · Now · conversation; under 1,000 wide, Now · conversation.
             let wide = MacNowLayout.showsSidebar(width: geo.size.width, nowSupported: store.nowSupported)
+            // SPK-535: the narrow window's Earlier toggle lives in Home's own top row, beside the
+            // work pill and clear of the window buttons, never drawn over them or the first card.
             columns(sidebar: wide, width: geo.size.width)
-                .overlay(alignment: .topLeading) {
-                    if !wide {
-                        Button { earlierOpen.toggle() } label: {
-                            Label("Earlier", systemImage: "sidebar.left")
-                        }
-                        .buttonStyle(.borderless).padding(.leading, 84).padding(.top, 9)
-                        .accessibilityIdentifier("mac-now-earlier")
-                        .popover(isPresented: $earlierOpen, arrowEdge: .bottom) {
-                            HistorySidebar(store: store).frame(width: 288, height: 560)
-                                .background(HistoryLook.sidebar)
-                        }
-                    }
-                }
         }
+    }
+
+    /// Something is open in the right-hand pane (otherwise it only says "Pick a session").
+    private var detailOpen: Bool {
+        store.target != nil || store.showingSchedules || store.showingBoard || store.showingFiles
     }
 
     private var divider: some View {
@@ -146,15 +140,20 @@ struct HistoryRootView: View {
                     .background(HistoryLook.sidebar)
                 divider
             }
+            let fills = MacNowLayout.homeFillsWindow(sidebar: sidebar, nowSupported: store.nowSupported, detailOpen: detailOpen)
             if store.nowSupported {
-                MacNowColumn(now: MacNowModel.shared, store: store, voice: voice)
-                    .frame(width: sidebar ? 420 : MacNowLayout.nowWidth(windowWidth: width))
+                MacNowColumn(now: MacNowModel.shared, store: store, voice: voice,
+                             earlier: sidebar ? nil : $earlierOpen)
+                    .frame(width: fills ? nil : sidebar ? 420 : MacNowLayout.nowWidth(windowWidth: width))
+                    .frame(maxWidth: fills ? .infinity : nil)
                     .background(HistoryLook.sidebar.opacity(0.5))
-                divider
+                if !fills { divider }
             }
-            HistoryDetailPane(store: store)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(HistoryLook.window)
+            if !fills {
+                HistoryDetailPane(store: store)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(HistoryLook.window)
+            }
         }
         .ignoresSafeArea(.container, edges: .top)   // under the transparent title bar
         .foregroundStyle(.primary)
