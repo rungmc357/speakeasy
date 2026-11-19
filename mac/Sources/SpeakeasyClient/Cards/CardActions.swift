@@ -179,7 +179,9 @@ public struct ActionableCard: View {
                     if let action = card.actions.first(where: { $0.id == id }) { model.runCardAction(taskID: taskID, card: card, action: action) }
                 } : nil)
                 .environment(\.cardSend, model.capabilities?.cardActions == true ? { action in
-                    model.runCardAction(taskID: taskID, card: card, action: action)
+                    await withCheckedContinuation { took in
+                        model.runCardAction(taskID: taskID, card: card, action: action) { took.resume(returning: $0) }
+                    }
                 } : nil)
             if card.kind == "confirm", model.capabilities?.cardActions == true {
                 ConfirmActionBar(taskID: taskID, card: card, model: model)
