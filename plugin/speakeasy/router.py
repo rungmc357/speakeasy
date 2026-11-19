@@ -1416,11 +1416,13 @@ def decide(request: str, tasks: list[OpenTask], marked_task_id: Any = None, topi
 def _keep_apart(decision: Decision, tasks: list[OpenTask]) -> Decision:
     """A follow-up to a task about another build or release ("push forty-one" onto release 42's task)
     becomes its own new task, and the decision's source says so ("kept_apart"). The task's whole request
-    is read, "(following up: ...)" included: after one follow-up its build is often only named there."""
+    is read, "(following up: ...)" included: after one follow-up its build is often only named there.
+    A correction stays ("no, I meant forty-three"): the running job should switch."""
     about = {t.task_id: t.request for t in tasks}
 
     def other(p: Part) -> bool:
-        return p.kind == "follow_up" and recap.names_other_number(about.get(p.task_id or "", ""), p.request)
+        return (p.kind == "follow_up" and not corrects(p.request)
+                and recap.names_other_number(about.get(p.task_id or "", ""), p.request))
 
     if not any(other(p) for p in decision.parts):
         return decision
@@ -1834,11 +1836,47 @@ _CORRECTION_VERB = re.compile(
     r"(?i)^(?:please\s+)?(?:turn|switch|set|make|dim|brighten|open|close|play|pause|stop|start|send|book|"
     r"check|find|look|get|put|move|add|remove|cancel|use|go|do|keep|leave|change|show|tell|text|email|call)\b")
 _LEADING_JUNK = re.compile(r"(?i)^(?:(?:or|our|and|but|so|um+|uh+|er+|oh|the)\s+)+")
+# Said first, these correct only when a correction or the fix alone follows ("sorry, forty-three", "make that
+# forty-three"); "sorry to bother you, push forty-one" is manners. Only `corrects` reads them: "sorry" opens
+# too many sentences for `correction` to rewrite a request on it.
+_SOFT_LEAD = re.compile(r"(?i)^\W*(?:sorry|make\s+that)\b[\s,.;:!-]+(?!to\b)(?P<rest>\S.*)$")
+_FIX_WORDS = 5  # a fix is a few words; more is a sentence of its own
 
 
 def correction(request: str) -> tuple[str, str] | None:
     """("phrase", "guest room") for "Our guest room, sorry"; ("replace", "turn them on") for "no, turn
     them on"; None when it isn't a correction. A bare "no" is an answer, never a correction."""
+    found = _correction(request)
+    if found is None or found[0] == "replace":
+        return found
+    phrase = found[1]
+    if is_fragment(phrase) or not re.search(r"[a-z]{3,}", phrase.lower()):
+        return None
+    if all(re.sub(r"[^a-z]", "", w) in _FRAGMENT_WORDS | {"er", "erm", "be", ""} for w in phrase.lower().split()):
+        return None
+    return found
+
+
+def corrects(request: str) -> bool:
+    """Whether the words put right what was just asked instead of asking for something else, so they stay
+    with its task (SPK-172). What `correction` reads, also when the fix is too little to rewrite a request
+    with ("no, 43"), and "sorry" or "make that" said first when a correction or only the fix follows
+    ("sorry, forty-three"). A polite opener before a request is not one ("no problem, go ahead with
+    forty-one", "sorry to bother you, push forty-one", "sorry, one more thing: push forty-one")."""
+    text = " ".join((request or "").split())
+    if _correction(text) is not None:
+        return True
+    soft = _SOFT_LEAD.match(text)
+    if not soft:
+        return False
+    rest = soft.group("rest")
+    only_the_fix = not (re.search(r"[,;:]\s", rest) or _CORRECTION_VERB.match(rest) or len(rest.split()) > _FIX_WORDS)
+    return only_the_fix or corrects(rest)
+
+
+def _correction(request: str) -> tuple[str, str] | None:
+    """`correction` before it asks whether a phrase says enough to rewrite a request with: ("phrase", "43")
+    for "no, 43". One reading of the correction words for both `correction` and `corrects`."""
     text = " ".join((request or "").split())
     if not text or len(text.split()) > 12:
         return None
@@ -1860,9 +1898,7 @@ def correction(request: str) -> tuple[str, str] | None:
     # "living room... guest room": what came before the break is the slip, the rest is the fix.
     rest = re.split(r"\s*(?:\.{2,}|…|—|--)\s*", rest)[-1]
     phrase = _LEADING_JUNK.sub("", rest).strip(" ,.;:!-")
-    if not phrase or len(phrase.split()) > 5 or is_fragment(phrase) or not re.search(r"[a-z]{3,}", phrase.lower()):
-        return None
-    if all(re.sub(r"[^a-z]", "", w) in _FRAGMENT_WORDS | {"er", "erm", "be", ""} for w in phrase.lower().split()):
+    if not phrase or len(phrase.split()) > _FIX_WORDS:
         return None
     return "phrase", phrase
 

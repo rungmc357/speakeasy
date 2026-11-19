@@ -79,6 +79,21 @@ def dropped(worker, delegation_id):
     return run.error if run is not None and run.status == "rejected" else None
 
 
+class BrokenSetup(Exception):
+    """A step a test needs before the part it tests did not happen."""
+
+
+@contextlib.contextmanager
+def setting_up():
+    """The steps before the part under test. wait_for signals a timeout with AssertionError, the one
+    exception the strict xfails accept: a hang or a wrong starting point here is a broken test, never
+    their expected failure."""
+    try:
+        yield
+    except AssertionError as failed:
+        raise BrokenSetup(str(failed) or "a setup step failed") from failed
+
+
 # -- 1. merged asks ----------------------------------------------------------------------------
 
 @pytest.mark.parametrize("parts", [
@@ -166,14 +181,15 @@ def test_saying_they_are_two_different_jobs_gives_the_publish_its_own_task(home,
 
     svc, worker = start(home, route)
     try:
-        say(worker, "call_r42", ASK_42)
-        wait_for(lambda: finished(worker, "call_r42"), timeout=10)
-        say(worker, "call_go", PUSH_IT, reply="Adding that to release forty-two.")
-        wait_for(lambda: finished(worker, "call_go"), timeout=10)
-        assert asks(svc, worker)["call_go"] == f"{PUSH_IT} (following up: {ASK_42})"  # glued: the starting point
-        before = len(hermes.calls)
-        say(worker, "call_two", TWO_JOBS, reply="Separating them now.")
-        wait_for(lambda: len(hermes.calls) > before or hermes.steers or dropped(worker, "call_two"), timeout=10)
+        with setting_up():
+            say(worker, "call_r42", ASK_42)
+            wait_for(lambda: finished(worker, "call_r42"), timeout=10)
+            say(worker, "call_go", PUSH_IT, reply="Adding that to release forty-two.")
+            wait_for(lambda: finished(worker, "call_go"), timeout=10)
+            assert asks(svc, worker)["call_go"] == f"{PUSH_IT} (following up: {ASK_42})"  # glued: the starting point
+            before = len(hermes.calls)
+            say(worker, "call_two", TWO_JOBS, reply="Separating them now.")
+            wait_for(lambda: len(hermes.calls) > before or hermes.steers or dropped(worker, "call_two"), timeout=10)
         with contextlib.suppress(AssertionError):
             wait_for(lambda: PUSH_IT in asks(svc, worker).values(), timeout=5)
         assert PUSH_IT in asks(svc, worker).values(), asks(svc, worker)
@@ -390,7 +406,7 @@ CORRECTIONS = [
 ]
 
 # A task the routing model is never asked about: the fragment rule picks the newest task first.
-PICKED_BEFORE_THE_MODEL = {"and thirteen?": "fragment"}
+PICKED_BEFORE_THE_MODEL = {"and thirteen?": "fragment", "or rather forty-three": "fragment"}
 
 
 def _source(how, words):
@@ -415,7 +431,7 @@ def test_a_request_naming_the_same_release_or_none_still_joins_the_task(how, tas
 @pytest.mark.parametrize("task, words", CORRECTIONS)
 def test_a_correction_stays_on_the_task_it_corrects(how, task, words):
     d = PICKS[how](words, [router.OpenTask("call_r42", task, "running", "", 40.0)])
-    assert (d.parts, d.source) == ([router.Part("follow_up", words, "call_r42")], how), d
+    assert (d.parts, d.source) == ([router.Part("follow_up", words, "call_r42")], _source(how, words)), d
 
 
 @pytest.mark.parametrize("how", PICKS)
@@ -540,12 +556,13 @@ def test_a_question_said_right_after_the_publish_is_not_lost_inside_it(home, her
 
     svc, worker = start(home, route)
     try:
-        say(worker, "call_r41", ASK_41_PUBLIC)
-        wait_for(lambda: finished(worker, "call_r41"), timeout=10)
-        say(worker, "call_go41", GO_41)
-        wait_for(lambda: len(hermes.calls) == 2, timeout=10)
-        say(worker, "call_err", ASK_ERROR)
-        wait_for(lambda: "call_err" in worker.interaction.runs, timeout=10)
+        with setting_up():
+            say(worker, "call_r41", ASK_41_PUBLIC)
+            wait_for(lambda: finished(worker, "call_r41"), timeout=10)
+            say(worker, "call_go41", GO_41)
+            wait_for(lambda: len(hermes.calls) == 2, timeout=10)
+            say(worker, "call_err", ASK_ERROR)
+            wait_for(lambda: "call_err" in worker.interaction.runs, timeout=10)
         time.sleep(2.0)
         got = (dropped(worker, "call_err"), asks(svc, worker)["call_go41"])
         assert got == (None, f"{GO_41} (following up: {ASK_41_PUBLIC})"), got
