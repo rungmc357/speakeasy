@@ -244,13 +244,20 @@ def test_a_short_approval_is_still_offered_by_voice():
 def test_a_finished_job_holding_an_approval_wakes_the_phone_as_needs_you(service):
     store = service.store
     view = _filed(store, "k_push", "File 5 bugs on Linear", interaction="vi_typed")
-    sent = []
+    sent, as_home = [], []
     worker = SidebandWorker.__new__(SidebandWorker)
     worker.store = store
-    worker.push = lambda kind, key, title, body=None, run_id=None: sent.append((kind, key, body))
+    worker.rt = types.SimpleNamespace()   # not started from Home
+    worker.push = lambda kind, key, title, body=None, run_id=None, home=False: (
+        sent.append((kind, key, body)), as_home.append(home))
     backend = types.SimpleNamespace(run_id="run_k_push")
     worker.push_result(backend, "k_push", "completed", {"spoken": "Ready.", "views": [view]}, None, [], {})
     worker.push_result(backend, "k_push", "completed", {"spoken": "Ready.", "views": [{**view, "state": "approved"}]},
                        None, [], {})
     assert sent == [("needs_you", "confirm:run_k_push", "Waiting for you to tap Post."),
                     ("finished", "run:run_k_push", "Ready.")]
+    assert as_home == [False, False]
+    # A job a Home message started notifies as Home's answer (build 86), approval card or not.
+    worker.rt = types.SimpleNamespace(home_origin=lambda run_id: run_id == "run_k_push")
+    worker.push_result(backend, "k_push", "completed", {"spoken": "Ready.", "views": [view]}, None, [], {})
+    assert sent[-1] == ("needs_you", "confirm:run_k_push", "Waiting for you to tap Post.") and as_home[-1] is True
