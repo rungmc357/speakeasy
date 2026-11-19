@@ -481,7 +481,7 @@ struct StepPathPicture: View {
                     node(state).frame(width: 18)
                     HStack(alignment: .firstTextBaseline) {
                         Text(step).font(.system(size: 13, weight: state == 2 ? .semibold : .regular))
-                            .foregroundStyle(state == 0 ? Color.primary.opacity(0.45) : .white)
+                            .foregroundStyle(state == 0 ? Color.primary.opacity(0.45) : Color.primary)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 6)
                         if state == 1, let t = times.indices.contains(i) ? times[i] : nil, !t.isEmpty {
