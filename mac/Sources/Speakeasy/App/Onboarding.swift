@@ -178,20 +178,44 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     func show() {
         if window == nil {
             if flow.welcome.route == .setup { Task { await flow.start() } }
-            let hosting = NSHostingController(rootView: OnboardingView(flow: flow).environmentObject(flow.app))
-            let w = NSWindow(contentViewController: hosting)
-            w.title = "Welcome to Speakeasy"
-            w.styleMask = [.titled, .closable, .resizable]
-            w.setContentSize(OnboardingView.size)
-            w.contentMinSize = OnboardingView.size
-            w.contentMaxSize = NSSize(width: 800, height: 720)
-            w.isReleasedWhenClosed = false
+            let w = Self.makeWindow(flow: flow)
             w.delegate = self
-            w.center()
             window = w
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// The setup window (also built by `--onboarding-window-smoke`). The window owns its size:
+    /// the hosting controller must not size the window from the SwiftUI content, because a
+    /// step's ideal height can be far taller than the screen (the ready step's settings form
+    /// once opened the window 3,276 pt tall with Done and Start a call off the screen). Each
+    /// step fits the window and scrolls inside it instead, and the window never starts taller
+    /// than the screen it opens on.
+    static func makeWindow(flow: OnboardingFlow, screen: NSScreen? = NSScreen.main) -> NSWindow {
+        let hosting = NSHostingController(rootView: OnboardingView(flow: flow).environmentObject(flow.app))
+        hosting.sizingOptions = []
+        let w = NSWindow(contentViewController: hosting)
+        w.title = "Welcome to Speakeasy"
+        w.styleMask = [.titled, .closable, .resizable]
+        let fit = fittedContentSizes(for: screen.map { w.contentRect(forFrameRect: $0.visibleFrame).size })
+        w.contentMinSize = fit.min
+        w.contentMaxSize = fit.max
+        w.setContentSize(fit.initial)
+        w.isReleasedWhenClosed = false
+        w.center()
+        return w
+    }
+
+    /// Initial, minimum and maximum content sizes, never taller or wider than `available`
+    /// (the screen's visible area in content-size terms).
+    static func fittedContentSizes(for available: NSSize?) -> (initial: NSSize, min: NSSize, max: NSSize) {
+        var initial = OnboardingView.size, minimum = OnboardingView.size, maximum = OnboardingView.maxSize
+        if let available, available.width > 0, available.height > 0 {
+            func clamp(_ s: NSSize) -> NSSize { NSSize(width: Swift.min(s.width, available.width), height: Swift.min(s.height, available.height)) }
+            initial = clamp(initial); minimum = clamp(minimum); maximum = clamp(maximum)
+        }
+        return (initial, minimum, maximum)
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -204,6 +228,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
 struct OnboardingView: View {
     static let size = NSSize(width: 540, height: 480)
+    static let maxSize = NSSize(width: 800, height: 720)
     @ObservedObject var flow: OnboardingFlow
     @EnvironmentObject var app: AppModel
 
@@ -233,7 +258,11 @@ struct OnboardingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // SwiftUI works out a view's minimum height at its narrowest width. Without a minimum
+        // width, every wrapping line (the subtitle, the footnote) is measured one character
+        // wide, so the ready step claimed about 3,000 pt and grew the window off the screen
+        // (SPK-534). The window never gets narrower than this anyway.
+        .frame(minWidth: Self.size.width, maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -443,14 +472,15 @@ private struct ReadyStep: View {
                 }
             }
             .formStyle(.grouped)
-            .scrollDisabled(true)
+            // The form scrolls inside the window rather than growing it: its full height plus
+            // the header and buttons can be taller than a laptop screen (SPK-534).
             .scrollContentBackground(.hidden)
             .padding(.horizontal, -20)
+            .frame(minHeight: 120, idealHeight: 300, maxHeight: .infinity)
             if let problem = app.callShortcutProblem { Text(problem).font(.callout).foregroundStyle(.orange) }
             if let error = flow.saveError {
                 Text(error).font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 0)
             Text("You can change any of this later in Settings. Your first call starts with a one-minute tour; say \u{201C}skip\u{201D} to jump straight in.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {

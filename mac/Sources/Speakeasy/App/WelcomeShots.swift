@@ -8,8 +8,11 @@ enum WelcomeShots {
     static func run(dir: String) {
         do { try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true) }
         catch { print(error); exit(1) }
-        keyboardCheck(dir: dir)
-        var count = 2 // The privacy sheets captured during interaction checks.
+        // The key-event check needs a real, focused desktop session; a locked or remote one can't
+        // deliver arrows to the window, so let screenshot-only runs skip it explicitly.
+        if ProcessInfo.processInfo.environment["SPEAKEASY_WELCOME_SKIP_KEYS"] == "1" { print("SKIP: keyboard check (SPEAKEASY_WELCOME_SKIP_KEYS)") }
+        else { keyboardCheck(dir: dir) }
+        var count = ProcessInfo.processInfo.environment["SPEAKEASY_WELCOME_SKIP_KEYS"] == "1" ? 0 : 2 // The privacy sheets captured during interaction checks.
         for dark in [false, true] {
             for large in [false, true] {
                 let size = NSSize(width: large ? 800 : 540, height: large ? 720 : 480)
@@ -26,6 +29,16 @@ enum WelcomeShots {
                 flow.welcome.route = .newcomer
                 capture(OnboardingView(flow: flow).environmentObject(flow.app), size: size,
                         dark: dark, path: "\(dir)/\(name)-new.png")
+                count += 1
+                // Already paired, onboarding not done: the window opens straight on "You're
+                // ready to talk" (SPK-534). Window fit is checked by --onboarding-window-smoke.
+                let ready = OnboardingFlow(app: AppModel.shared)
+                ready.factsOverride = OnboardingFacts(paired: true, voiceReady: true)
+                ready.welcome = WelcomeJourney(paired: true)
+                ready.step = OnboardingPlan.first(ready.facts)
+                precondition(ready.step == .ready)
+                capture(OnboardingView(flow: ready).environmentObject(ready.app), size: size,
+                        dark: dark, path: "\(dir)/\(name)-paired-ready.png")
                 count += 1
             }
             capture(HowItWorksDemo(onTryIt: {}), size: NSSize(width: 520, height: 600), dark: dark,
