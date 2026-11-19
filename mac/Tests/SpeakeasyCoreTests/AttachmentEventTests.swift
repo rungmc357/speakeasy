@@ -484,9 +484,81 @@ final class AttachmentEventTests: XCTestCase {
         s = run([.sharing(.uploading("p1", interactionID: "vi_2")),
                  .sharing(.uploaded("p1", serverID: "att_1", interactionID: "vi_2"))], from: s, at: t0 + 7)
         XCTAssertEqual(s.sharing.attachments.first?.phase, .pending)
-        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, false, "that call's now")
+        // A request takes it: it went with that call, and nothing of it is left when the call ends.
+        s = reduce(s, .interaction(snapshot(["attachments": [["id": "att_1", "kind": "picture", "state": "sending"]]], id: "vi_2")),
+                   now: t0 + 7.5)
+        XCTAssertEqual(s.sharing.attachments.first?.phase, .sending)
         s = run([.endRequested, .serverClosed(.complete, error: nil)], from: s, at: t0 + 8)
-        XCTAssertEqual(s.sharing.attachments, [], "uploaded to a call that ended: gone with it, as before")
+        XCTAssertEqual(s.sharing.attachments, [], "sent with a request: gone with the call, as before")
+    }
+
+    func testNextCallFilesComeBackWhenThatCallClosesBeforeARequestUsesThem() {
+        // Dropped with no call open, then uploaded as the next call was admitted (still connecting):
+        // p1 landed, p2 is on its way.
+        func admitted(then events: [VoiceEvent]) -> VoiceState {
+            let waiting = run([.sharing(.added(picture("p1"))), .sharing(.added(picture("p2")))])
+            let s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_1"),
+                         .sharing(.uploading("p1", interactionID: "vi_1")), .sharing(.uploading("p2", interactionID: "vi_1")),
+                         .sharing(.uploaded("p1", serverID: "att_1", interactionID: "vi_1"))], from: waiting, at: t0 + 1)
+            XCTAssertEqual(s.sharing.attachments.map(\.phase), [.pending, .uploading])
+            return run(events, from: s, at: t0 + 2)
+        }
+        let closes: [(String, [VoiceEvent])] = [
+            ("the connect failed", [.failed("Couldn't connect")]),
+            ("the connection dropped", [.transportLost]),
+            ("hung up while connecting", [.endRequested, .serverClosed(.complete, error: nil)]),
+            ("hung up with nothing asked", [.sessionStarted, .endRequested, .serverClosed(.complete, error: nil)]),
+            ("turned away by the call, which then dropped", [.sharing(.uploadDeferred("p2", interactionID: "vi_1")), .transportLost]),
+        ]
+        for (what, events) in closes {
+            var s = admitted(then: events)
+            XCTAssertFalse(s.connection.isOpen, what)
+            XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1", "p2"], "\(what): no request used them, they still wait")
+            XCTAssertEqual(s.sharing.attachments.map(\.phase), [.local, .local], what)
+            XCTAssertEqual(s.sharing.attachments.map(\.serverID), [nil, nil], "\(what): the plugin's copies went with that call")
+            // A late answer from that call's upload (it landed; it failed) changes nothing.
+            s = run([.sharing(.uploaded("p2", serverID: "att_2", interactionID: "vi_1")), .sharing(.refused("p2", reason: nil))],
+                    from: s, at: t0 + 3)
+            XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1", "p2"], what)
+            XCTAssertEqual(s.sharing.attachments.map(\.phase), [.local, .local], what)
+            // The next call takes them.
+            s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_2")], from: s, at: t0 + 4)
+            XCTAssertEqual(s.sharing.uploadable(to: "vi_2").map(\.id), ["p1", "p2"], what)
+        }
+        // A call replaced outright gives them back the same way: nothing stays "uploaded" to the old one.
+        let replaced = admitted(then: []).sharing.carriedToNextCall()
+        XCTAssertEqual(replaced.attachments.map(\.id), ["p1", "p2"])
+        XCTAssertEqual(replaced.attachments.map(\.phase), [.local, .local])
+        XCTAssertEqual(replaced.uploadable(to: "vi_2").map(\.id), ["p1", "p2"])
+    }
+
+    func testADropAfterAFailedCallKeepsTheErrorLine() {
+        let failed = run([.startRequested, .failed("Couldn't reach your Hermes")])
+        XCTAssertEqual(present(failed).secondary, "Couldn't reach your Hermes")
+        var s = run([.sharing(.added(picture("p1")))], from: failed, at: t0 + 5)
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1"], "the drop is kept all the same")
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, true)
+        XCTAssertEqual(present(s).secondary, "Couldn't reach your Hermes", "why the call failed stays on the status line")
+        XCTAssertEqual(present(s).tone, .error)
+        // A refused drop doesn't take the line either.
+        s = run([.sharing(.notice("unsupported"))], from: s, at: t0 + 6)
+        XCTAssertEqual(present(s).secondary, "Couldn't reach your Hermes")
+        XCTAssertEqual(present(s).tone, .error)
+        s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_2")], from: s, at: t0 + 7)
+        XCTAssertEqual(s.sharing.uploadable(to: "vi_2").map(\.id), ["p1"], "and goes with the next call")
+    }
+
+    func testADropWhileHangingUpWaitsForTheNextCall() {
+        var s = run([.endRequested, .sharing(.added(picture("p1")))], from: ready())
+        XCTAssertEqual(s.connection, .ending)
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, true, "this call can't take it any more")
+        s = run([.serverClosed(.complete, error: nil)], from: s, at: t0 + 1)
+        XCTAssertEqual(s.connection, .ended(.complete))
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1"], "not lost when the hang-up lands")
+        // Pausing closes the session too, but that call stays open: the drop is the call's, sent after Resume.
+        let pausing = run([.pauseRequested, .sharing(.added(picture("p2")))], from: ready())
+        XCTAssertEqual(pausing.connection, .ending)
+        XCTAssertEqual(pausing.sharing.attachments.first?.forNextCall, false)
     }
 
     func testADropOnTheBoardSurvivesClosingItAndKeepsTheCap() {
