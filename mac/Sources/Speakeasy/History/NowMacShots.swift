@@ -47,6 +47,7 @@ enum NowMacShots {
                 MacNowPresentation.shared.callStartedAt = Date().addingTimeInterval(-185)
                 for appearance in ["light", "dark"] {
                     NSApp.appearance = NSAppearance(named: appearance == "light" ? .aqua : .darkAqua)
+                    try await followCheck(now: now, store: store, shot: "\(dir)/home-follow-\(appearance).png")
                     try await shot(MacNowPopover(now: now, voice: voice, open: { _ in }, more: {}),
                                    size: NSSize(width: 360, height: 560), path: "\(dir)/popover-\(appearance).png")
                     let idle = VoicePanelModel()
@@ -100,13 +101,124 @@ enum NowMacShots {
                     await now.refresh()
                 }
                 store.stop(); now.stop(); panel.hide()
-                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; Home composer send; 22 screenshots")
+                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; Home composer send; thread follows a send (SPK-533); 24 screenshots")
                 NSApp.terminate(nil)
             } catch {
                 print("NOW_MAC_SMOKE FAILED: \(error)")
                 exit(1)
             }
         }
+    }
+
+    /// SPK-533: Home's thread, longer than its window, follows a sent message and what arrives under
+    /// it while you're at the bottom; scrolled up, it stays put until you send.
+    private static func followCheck(now: MacNowModel, store: HistoryStore, shot path: String) async throws {
+        let composer = MacHomeComposerModel.shared
+        let wasDemo = composer.demo
+        composer.demo = true
+        defer { composer.demo = wasDemo }
+        // Like a real launch: Home's list isn't fetched yet when the window first lays out.
+        let full = now.demo
+        now.demo = NowHome(rev: 1, asOf: Date(), sentence: "", counts: NowHome.Counts(), items: [], backgroundRunning: 0)
+        await now.refresh()
+        let view = NSHostingView(rootView: MacNowColumn(now: now, store: store).background(HistoryLook.window))
+        view.sizingOptions = []
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 380), styleMask: [.borderless],
+                         backing: .buffered, defer: false)
+        w.isReleasedWhenClosed = false
+        w.contentView = view
+        kept.append(w)
+        w.makeKeyAndOrderFront(nil)
+        func settle() async throws {
+            for _ in 0..<8 { view.layoutSubtreeIfNeeded(); try await Task.sleep(nanoseconds: 120_000_000) }
+        }
+        func thread() throws -> NSScrollView {
+            var found: [NSScrollView] = []
+            func walk(_ v: NSView) { if let s = v as? NSScrollView { found.append(s) }; v.subviews.forEach(walk) }
+            walk(view)
+            guard let s = found.max(by: { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) })
+            else { throw CocoaError(.featureUnsupported) }
+            return s
+        }
+        /// Points of thread below the visible bottom.
+        func below() -> CGFloat {
+            guard let s = try? thread(), let doc = s.documentView else { return 0 }
+            let clip = s.contentView.bounds
+            return doc.isFlipped ? doc.frame.height - clip.maxY : clip.minY
+        }
+        /// A real scroll-wheel gesture, the way a person scrolls (lines; positive = up).
+        func wheel(_ lines: Int32) throws {
+            let s = try thread()
+            for _ in 0..<12 {
+                guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0),
+                      let e = NSEvent(cgEvent: cg) else { throw CocoaError(.featureUnsupported) }
+                s.scrollWheel(with: e)
+            }
+        }
+        try await settle()
+        now.demo = full
+        await now.refresh()
+        try await settle()
+        try wheel(-300)   // the person scrolls to the newest message
+        try await settle()
+        let s0 = try thread()
+        precondition((s0.documentView?.frame.height ?? 0) > s0.contentView.bounds.height + 100,
+                     "SPK-533 check needs a thread longer than the window")
+        precondition(below() < 4, "Scrolled to the newest message")
+        // 1. Send at the bottom: the sent message and its working card come into view.
+        composer.fill("Find a quieter desk lamp under $60")
+        composer.send()
+        try await settle()
+        precondition(below() < 4, "SPK-533: a sent message must be visible, \(below()) pt below")
+        // 2. The next Home refresh carries your words and the reply (no send): still following.
+        let long = String(repeating: "It should fit a narrow desk, take a warm bulb and not hum. ", count: 10)
+        try await append([("user", long), ("assistant", "Three lamps under $60 fit that. The quietest uses a plain LED and has a dimmer.")], now: now)
+        try await settle()
+        precondition(below() < 4, "SPK-533: what arrives after a send must stay in view, \(below()) pt below")
+        if let image = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: image)
+            try image.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+            print("shot: \(path)")
+        }
+        // 3. Scrolled up to read: something new arrives, the thread stays where you put it.
+        try wheel(30)
+        try await settle()
+        let up = below()
+        precondition(up > 100, "Scrolling up must move off the bottom")
+        try await append([("assistant", "A job finished while you read: the lamp comparison is ready.")], now: now)
+        try await settle()
+        precondition(below() > up, "SPK-533: scrolled up, new rows must not pull the thread down")
+        // 4. Sending again brings the newest message back.
+        composer.fill("And one for the bedroom")
+        composer.send()
+        try await settle()
+        precondition(below() < 4, "SPK-533: sending from a scrolled-up thread must show the new message")
+        // 5. Scrolled up, then back down by hand: a reply arriving is followed again.
+        try wheel(30)
+        try await settle()
+        try wheel(-300)
+        try await settle()
+        precondition(below() < 4, "Scrolling back down must reach the bottom")
+        try await append([("assistant", "The bedroom lamp is ordered for Friday.")], now: now)
+        try await settle()
+        precondition(below() < 4, "SPK-533: back at the bottom, a new reply must stay in view, \(below()) pt below")
+        for p in now.pending { now.dropPending(p.id) }
+        now.demo = snapshotHome()
+        await now.refresh()
+        w.orderOut(nil)
+        print("NOW_MAC_FOLLOW PASS: sent message, arriving reply, scrolled-up hold, send re-follows, back-at-bottom follows")
+    }
+
+    /// A Home refresh that adds chat messages at the bottom of the thread.
+    private static func append(_ messages: [(String, String)], now: MacNowModel) async throws {
+        guard var home = now.demo, var stream = home.stream else { throw CocoaError(.featureUnsupported) }
+        for (role, text) in messages {
+            stream.entries.append(NowStream.Entry(id: "spk533-\(stream.entries.count)", kind: .message, at: Date(), text: text,
+                                                  role: role == "user" ? .user : .assistant))
+        }
+        home.stream = stream
+        now.demo = home
+        await now.refresh()
     }
 
     private static func snapshotHome() -> NowHome {

@@ -17,6 +17,8 @@ final class MacHomeComposerModel: ObservableObject {
     /// Bumped to put the cursor in the field (a "Try asking" chip filled it).
     @Published private(set) var focusToken = 0
     @Published private(set) var sending = false
+    /// Counts sends (typed or voice) so Home's thread can bring the newest message into view (SPK-533).
+    @Published private(set) var sentCount = 0
     /// Why the last send didn't go (the words are back in the field; a voice message can be retried).
     @Published var notice: String?
     @Published private(set) var failedClip: Clip?
@@ -163,6 +165,7 @@ final class MacHomeComposerModel: ObservableObject {
         let title = String((clean.isEmpty ? "Review attached media" : clean).prefix(80))
         notice = nil
         draft = ""
+        sentCount += 1
         if homeChat && !demo {
             sendToChat(clean, attachments: attachments, clientID: clientID)
             return
@@ -255,6 +258,7 @@ final class MacHomeComposerModel: ObservableObject {
         VoiceClipStore.save(clip.id, audio: clip.audio,
                             meta: .init(duration: clip.duration, levels: VoiceClipStore.bars(clip.levels)))
         now.addPending(id: clip.id, title: "Voice message")
+        sentCount += 1
         if demo { return }
         sending = true
         Task { [weak self] in

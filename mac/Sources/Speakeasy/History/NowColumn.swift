@@ -148,12 +148,17 @@ struct MacNowColumn: View {
     @State private var recentOpen = false
     @State private var workOpen = false
     @State private var focusID: String?
+    /// SPK-533: Home's chat follows its newest message unless you've scrolled up to read.
+    @State private var follow = ThreadFollow()
+    @State private var scrollingUntil = Date.distantPast
 
     var body: some View {
         VStack(spacing: 0) {
             topRow
             ScrollViewReader { proxy in
             ScrollView {
+                // SPK-533: measured, with an end marker under the padding, so the thread can follow.
+                VStack(spacing: 0) {
                 VStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
                     // No counting header (build 69): only "can't reach", or (SPK-198) a small, quiet
@@ -168,7 +173,7 @@ struct MacNowColumn: View {
                     }
                     if let stream = now.home?.stream {
                         MacNowThread(stream: stream, now: now, store: store,
-                                     onJump: { id in withAnimation { proxy.scrollTo(id, anchor: .center) } })
+                                     onJump: { id in scroll(proxy, to: id, anchor: .center) })
                     } else {
                         ForEach(now.visible) { item in
                             MacNowCard(item: item, now: now, selected: isOpen(item), focused: now.home?.call?.focus == item.id) {
@@ -186,10 +191,31 @@ struct MacNowColumn: View {
                 }
                 // SPK-535: the gutter belongs to the whole thread, not only the Recent link.
                 .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 18)
+                    Color.clear.frame(height: 1).id(Self.endID)
+                }
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: NowThreadFrameKey.self, value: g.frame(in: .named(Self.scrollSpace)))
+                })
             }
+            .coordinateSpace(name: Self.scrollSpace)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: NowViewportHeightKey.self, value: g.size.height)
+            })
             .defaultScrollAnchor(now.home?.stream != nil ? .bottom : .top)
             .onChange(of: focusID) { _, id in
-                if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+                if let id { scroll(proxy, to: id, anchor: .center) }
+            }
+            .onPreferenceChange(NowThreadFrameKey.self) { frame in
+                followLayout(proxy, content: frame, viewport: viewportHeight)
+            }
+            .onPreferenceChange(NowViewportHeightKey.self) { height in
+                viewportHeight = height
+                followLayout(proxy, content: contentFrame, viewport: height)
+            }
+            .onChange(of: composer.sentCount) { _, _ in
+                // A send always brings the newest message (and then its reply) into view.
+                guard now.home?.stream != nil, follow.sent() == .scrollToEnd else { return }
+                scroll(proxy, to: Self.endID, anchor: .bottom)
             }
             }
             .overlay {
@@ -241,6 +267,28 @@ struct MacNowColumn: View {
             .padding(.trailing, 18)
             .padding(.top, earlier != nil ? 6 : 12)
         }
+    }
+
+    static let endID = "mac-now-end"
+    static let scrollSpace = "mac-now-scroll"
+    @State private var viewportHeight: CGFloat = 0
+    @State private var contentFrame: CGRect = .zero
+
+    /// SPK-533: on every layout, keep following the newest message while you're at the bottom (a sent
+    /// message, the working card and the reply arrive below the fold otherwise).
+    private func followLayout(_ proxy: ScrollViewProxy, content frame: CGRect, viewport: CGFloat) {
+        contentFrame = frame
+        guard now.home?.stream != nil, viewport > 0, frame.height > 0 else { return }
+        let action = follow.report(content: frame.height, viewport: viewport, distance: frame.maxY - viewport,
+                                   programmatic: Date() < scrollingUntil)
+        if action == .scrollToEnd {
+            DispatchQueue.main.async { proxy.scrollTo(Self.endID, anchor: .bottom) }
+        }
+    }
+
+    private func scroll(_ proxy: ScrollViewProxy, to id: String, anchor: UnitPoint) {
+        scrollingUntil = Date().addingTimeInterval(0.6)
+        withAnimation { proxy.scrollTo(id, anchor: anchor) }
     }
 
     private func isOpen(_ item: NowItem) -> Bool {
@@ -357,4 +405,14 @@ struct MacNowCard: View {
         let mins = Int(Date().timeIntervalSince(d) / 60)
         return mins < 1 ? "now" : mins < 60 ? "\(mins) min ago" : "\(mins / 60) hr ago"
     }
+}
+
+private struct NowThreadFrameKey: PreferenceKey {
+    static let defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+
+private struct NowViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
