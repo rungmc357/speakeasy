@@ -700,7 +700,7 @@ final class HistoryStore: ObservableObject {
     /// A click on an approval card's own button (Post, Send, Buy for $X, Cancel): the exact-preview
     /// approval for its run. The page reloads and the card shows its outcome where it sits; a
     /// refusal ("The preview changed…") stays under the card.
-    func runCardAction(_ action: CardAction, on item: SessionConfirms.Item) {
+    func runCardAction(_ action: CardAction, on item: ThreadConfirms.Item) {
         guard let sessionID = target?.sessionID, let backend, !cardBusy.contains(item.id) else { return }
         cardBusy.insert(item.id); cardErrors[item.id] = nil
         Task { [weak self] in

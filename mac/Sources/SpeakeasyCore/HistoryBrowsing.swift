@@ -338,7 +338,7 @@ public struct HistoryThread: Equatable, Sendable {
     public var waiting: [HistoryWaiting]
     /// The approval cards its tasks sent (post, send, buy…), each under the reply that sent it
     /// (SPK-540). They are drawn in place, pending or settled, never in the `waiting` strip.
-    public var confirms: SessionConfirms.Placement
+    public var confirms: ThreadConfirms.Placement
     public var helpers: [JobSubagent]
     public var toolCallCount: Int
 
@@ -393,7 +393,7 @@ public struct HistoryThread: Equatable, Sendable {
         self.messages = outbox.merged(into: out, session: c.id)
         self.waiting = waiting
         // Every assistant entry is a message with the same id, so a card's anchor is a row on the page.
-        self.confirms = SessionConfirms.place(rows: c.entries, jobs: c.jobs)
+        self.confirms = ThreadConfirms.place(rows: c.entries, jobs: c.jobs)
         self.toolCallCount = out.reduce(0) { $0 + $1.tools.count }
     }
 }

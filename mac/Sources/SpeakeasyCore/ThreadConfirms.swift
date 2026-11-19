@@ -10,7 +10,10 @@ import Foundation
 /// end of the chat. One the thread can't place (its reply is on an earlier page, or was only the
 /// card) goes at the end, above the composer. A card the task sent again unchanged (same preview
 /// fingerprint) shows once: the newest copy, so one tap approves exactly one preview.
-public enum SessionConfirms {
+///
+/// The iPhone's `SessionConfirms` is the same rule in its own repo; it is to adopt this one. The
+/// name differs so the two never meet as one ambiguous name in the iPhone's tests.
+public enum ThreadConfirms {
     public struct Item: Identifiable, Equatable, Sendable {
         /// Stable per task run and card position.
         public var id: String
@@ -31,11 +34,11 @@ public enum SessionConfirms {
     public struct Placement: Equatable, Sendable {
         public var after: [String: [Item]] = [:]
         public var tail: [Item] = []
-        public var isEmpty: Bool { after.isEmpty && tail.isEmpty }
         public init() {}
     }
 
-    /// Late tolerance: a reply is written a moment before its run settles.
+    /// Late tolerance: a reply is written a moment before its run settles. A later reply that lands
+    /// inside it (an approval carried out within the window) takes the card with it.
     public static let slack: TimeInterval = 90
 
     /// The approval cards in `jobs`, oldest task first, with unchanged re-sends folded to the newest.
@@ -83,7 +86,4 @@ public enum SessionConfirms {
             return end.map { at <= $0 } ?? true
         }?.id
     }
-
-    /// A pending approval still waits on the user (the tail of a chat that has one is never quiet).
-    public static func pending(_ item: Item) -> Bool { item.isPending }
 }

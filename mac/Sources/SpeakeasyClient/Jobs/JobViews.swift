@@ -1134,7 +1134,7 @@ struct DecisionOptionRow: View {
     /// Under the title, past the number badge.
     private var indent: CGFloat { JobLook.touch ? 32 : 26 }
 
-    private var pills: [(String, JobStyle.Pill)] {
+    var pills: [(String, JobStyle.Pill)] {
         var out = option.tags.map { ($0.text, JobStyle.pill(tone: $0.tone)) }
         let said = option.tags.map { $0.text.lowercased() }.joined(separator: " ")
         if let risk = option.risk, !said.contains("risk") {

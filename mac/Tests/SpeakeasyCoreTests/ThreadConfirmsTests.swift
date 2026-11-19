@@ -3,7 +3,7 @@ import XCTest
 
 /// SPK-522, SPK-540: an approval card a task sent in a chat thread is drawn in that thread, under the
 /// reply that sent it, once per preview, with live buttons only while it waits. Invented content only.
-final class SessionConfirmsTests: XCTestCase {
+final class ThreadConfirmsTests: XCTestCase {
     private let t0 = Date(timeIntervalSince1970: 1_800_000_000)
     private func at(_ minutes: Double) -> Date { t0.addingTimeInterval(minutes * 60) }
 
@@ -28,7 +28,7 @@ final class SessionConfirmsTests: XCTestCase {
     }
 
     func testTheCardSitsUnderTheReplyThatSentIt() {
-        let p = SessionConfirms.place(rows: rows, jobs: [job("r1", from: 0, to: 1.2, views: [card()])])
+        let p = ThreadConfirms.place(rows: rows, jobs: [job("r1", from: 0, to: 1.2, views: [card()])])
         XCTAssertEqual(p.after.keys.sorted(), ["a1"])
         XCTAssertEqual(p.after["a1"]?.map(\.runID), ["r1"])
         XCTAssertTrue(p.tail.isEmpty)
@@ -43,22 +43,22 @@ final class SessionConfirmsTests: XCTestCase {
     func testTheSameCardSentAgainShowsOnceUnderTheNewestReply() {
         // The server lists newest first.
         let jobs = [job("r2", from: 3, to: 4.1, views: [card()]), job("r1", from: 0, to: 1.2, views: [card()])]
-        let p = SessionConfirms.place(rows: rows, jobs: jobs)
+        let p = ThreadConfirms.place(rows: rows, jobs: jobs)
         XCTAssertNil(p.after["a1"])
         XCTAssertEqual(p.after["a2"]?.map(\.runID), ["r2"])
         XCTAssertTrue(p.tail.isEmpty)
-        XCTAssertEqual(SessionConfirms.items(jobs).count, 1)
+        XCTAssertEqual(ThreadConfirms.items(jobs).count, 1)
     }
 
     func testAChangedPreviewIsItsOwnCard() {
         let jobs = [job("r2", from: 3, to: 4.1, views: [card(sha: "new")]), job("r1", from: 0, to: 1.2, views: [card(sha: "old")])]
-        let p = SessionConfirms.place(rows: rows, jobs: jobs)
+        let p = ThreadConfirms.place(rows: rows, jobs: jobs)
         XCTAssertEqual(p.after["a1"]?.map(\.runID), ["r1"])
         XCTAssertEqual(p.after["a2"]?.map(\.runID), ["r2"])
     }
 
     func testACardWhoseReplyIsntOnThePageGoesAtTheEnd() {
-        let p = SessionConfirms.place(rows: rows, jobs: [job("r9", from: 10, to: 11, views: [card()]),
+        let p = ThreadConfirms.place(rows: rows, jobs: [job("r9", from: 10, to: 11, views: [card()]),
                                                          job("r8", from: nil, to: nil, views: [card(sha: "x")])])
         XCTAssertTrue(p.after.isEmpty)
         XCTAssertEqual(Set(p.tail.map(\.runID)), ["r8", "r9"])
@@ -67,7 +67,7 @@ final class SessionConfirmsTests: XCTestCase {
     func testASettledCardKeepsItsPlaceWithNoLiveButtons() {
         // The server empties a settled card's buttons; an answer that still lists them offers none either.
         for (state, listed) in [("done", false), ("done", true), ("cancelled", true), ("approved", true), ("unverified", true)] {
-            let p = SessionConfirms.place(rows: rows, jobs: [job("r1", from: 0, to: 1.2, views: [card(state: state, buttons: listed)])])
+            let p = ThreadConfirms.place(rows: rows, jobs: [job("r1", from: 0, to: 1.2, views: [card(state: state, buttons: listed)])])
             let items = p.after["a1"] ?? []
             XCTAssertEqual(items.map(\.card.kind), ["confirm"], "\(state): the card stays where it was sent")
             XCTAssertEqual(items.first?.card["state"].string, state, "\(state): its outcome is what it shows")
@@ -78,9 +78,37 @@ final class SessionConfirmsTests: XCTestCase {
 
     func testOnlyApprovalCardsArePlaced() {
         let weather: [String: Any] = ["kind": "weather", "place": "Lakeside", "now": ["temp": 61, "condition": "Sunny"]]
-        let p = SessionConfirms.place(rows: rows, jobs: [job("r1", from: 0, to: 1.2, views: [weather, card()])])
+        let p = ThreadConfirms.place(rows: rows, jobs: [job("r1", from: 0, to: 1.2, views: [weather, card()])])
         XCTAssertEqual(p.after["a1"]?.map(\.id), ["confirm-r1-2"])
         XCTAssertEqual(p.after["a1"]?.first?.card.viewIndex, 1, "the card-action route addresses it by its place in the task's views")
+    }
+
+    func testTheButtonAddressesTheServersIndexNotTheAppsList() {
+        // A kind this app doesn't draw is dropped from its list; the server still counts it.
+        let unknown: [String: Any] = ["kind": "hologram", "title": "Not drawn here"]
+        let work = job("r1", from: 0, to: 1.2, views: [unknown, card()])
+        XCTAssertEqual(work.views.map(\.kind), ["confirm"])
+        let item = ThreadConfirms.place(rows: rows, jobs: [work]).after["a1"]?.first
+        XCTAssertEqual(item?.card.viewIndex, 1)
+        XCTAssertEqual(item?.id, "confirm-r1-2")
+    }
+
+    func testACardWhoseReplyWasFoldedIntoItsWorkGoesAtTheEnd() throws {
+        // The page draws the folded thread: a reply followed by tool calls becomes part of the work
+        // card, so it is not a row a card could sit under.
+        let c = try XCTUnwrap(HistoryConversation(json: ["session": [
+            "id": "s1", "title": "Shed ticket", "source": "speakeasy", "state": "needs_you",
+            "entries": [["id": "u1", "kind": "user", "at": at(0).timeIntervalSince1970, "text": "Ask on the shed ticket"],
+                        ["id": "a1", "kind": "assistant", "at": at(0.5).timeIntervalSince1970, "text": "Looking up the ticket."],
+                        ["id": "t1", "kind": "tools", "at": at(0.7).timeIntervalSince1970, "items": [
+                            ["id": "read", "kind": "read", "text": "Read the shed ticket", "tool": "read_file", "status": "done"]]]],
+            "jobs": [["run_id": "r1", "status": "completed", "started_at": at(0).timeIntervalSince1970,
+                      "finished_at": at(1.2).timeIntervalSince1970, "result": ["views": [card()]]]]]]))
+        XCTAssertEqual(HistoryThread(c).confirms.after["a1"]?.map(\.id), ["confirm-r1-1"], "unfolded, the reply is a row")
+        let folded = HistoryThread(ReplyWorkThread(entries: c.entries).conversation(c))
+        XCTAssertEqual(folded.messages.map(\.id), ["u1"])
+        XCTAssertEqual(folded.confirms.after, [:])
+        XCTAssertEqual(folded.confirms.tail.map(\.id), ["confirm-r1-1"])
     }
 
     func testTheThreadPlacesCardsAmongItsOwnMessages() throws {

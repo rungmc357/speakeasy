@@ -78,8 +78,9 @@ enum ThreadCardsCheck {
                       && labels("history-confirm-error").isEmpty,
                   "\(sent), error \(labels("history-confirm-error"))")
         try check("testASettledCardShowsItsOutcomeNotButtons",
-                  nodes("history-confirm").count == 1 && nodes("history-confirm-approve").isEmpty && nodes("history-confirm-cancel").isEmpty,
-                  "cards \(nodes("history-confirm").count), approve \(labels("history-confirm-approve")), cancel \(labels("history-confirm-cancel"))")
+                  nodes("history-confirm").count == 1 && nodes("history-confirm-approve").isEmpty && nodes("history-confirm-cancel").isEmpty
+                      && labels("confirm-card").contains("Approved") && !labels("confirm-card").contains("Ready for your approval"),
+                  "cards \(nodes("history-confirm").count), approve \(labels("history-confirm-approve")), cancel \(labels("history-confirm-cancel")), card says \(labels("confirm-card"))")
         try HistoryShots.snapshot(controller, to: dir + "/thread-card-approved.png")
 
         let decision = try conversation(id: "cards-check-decision", title: "QA test: decision card in a chat thread", t0: t0,
@@ -105,8 +106,8 @@ enum ThreadCardsCheck {
         try check("testADecisionShowsEveryOptionAndTheRecommendedOne",
                   said == ["Option 1: Blue, recommended", "Option 2: Green"],
                   "options \(said)")
-        try check("testADecisionOptionReadsItsDetailAndTheWhy",
-                  details == ["Control value. Blue is the control value.", "Alternate value"],
+        try check("testADecisionOptionReadsItsDetailWhyAndRisk",
+                  details == ["Control value. Blue is the control value. Low risk. Reversible", "Alternate value. Low risk. Reversible"],
                   "details \(details)")
         try HistoryShots.snapshot(controller, to: dir + "/thread-decision.png")
         guard let green = options().last, ReplyWorkCheck.press(green) else { throw failure("Option press not handled") }

@@ -26,12 +26,13 @@ public struct DecisionDetails: View {
             }
             VStack(spacing: 6) {
                 ForEach(Array(decision.options.enumerated()), id: \.offset) { i, option in
-                    let recommended = i == decision.recommended
-                    DecisionOptionRow(number: i + 1, option: option, recommended: recommended,
-                                      why: recommended ? decision.why : nil,
-                                      chosen: false, dimmed: false, enabled: enabled) { onPick(option) }
-                        // The row's label is its number and title: VoiceOver gets the rest as its value.
-                        .accessibilityValue([option.detail, recommended ? decision.why : nil].compactMap { $0 }.joined(separator: ". "))
+                    let why = i == decision.recommended ? decision.why : nil
+                    let row = DecisionOptionRow(number: i + 1, option: option, recommended: i == decision.recommended, why: why,
+                                                chosen: false, dimmed: false, enabled: enabled) { onPick(option) }
+                    // The row's label is its number and title: VoiceOver gets the rest as its value
+                    // (the detail, the why, then the risk and undo pills as they read on screen).
+                    row.accessibilityValue(([option.detail, why].compactMap { $0 } + row.pills.map(\.0))
+                        .map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 }.joined(separator: ". "))
                 }
             }
         }
