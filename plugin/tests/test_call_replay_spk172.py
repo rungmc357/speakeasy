@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import sys
 import time
 
 import pytest
@@ -180,6 +181,21 @@ def test_saying_they_are_two_different_jobs_gives_the_publish_its_own_task(home,
         svc.close()
 
 
+@pytest.mark.parametrize("replay", ["test_saying_they_are_two_different_jobs_gives_the_publish_its_own_task",
+                                    "test_a_question_said_right_after_the_publish_is_not_lost_inside_it"])
+def test_a_broken_setup_is_not_the_failure_a_strict_xfail_expects(replay, request, monkeypatch):
+    """wait_for signals a timeout with AssertionError, the one exception the strict xfails accept. Here
+    the first task of the replay never finishes: the test must break, not report its expected failure."""
+    this, real_wait = sys.modules[__name__], wait_for
+    monkeypatch.setattr(this, "finished", lambda worker, delegation_id: False)
+    monkeypatch.setattr(this, "wait_for", lambda predicate, timeout=10.0: real_wait(predicate, timeout=min(timeout, 0.3)))
+    test = getattr(this, replay)
+    wants = test.__code__.co_varnames[:test.__code__.co_argcount]
+    with pytest.raises(Exception) as broke:
+        test(*(monkeypatch if name == "monkeypatch" else request.getfixturevalue(name) for name in wants))
+    assert not isinstance(broke.value, AssertionError), broke.value
+
+
 # -- 2. wrong build ----------------------------------------------------------------------------
 # Every way an existing task gets picked: the routing model's follow_up_task_id, the task id the
 # voice marked, and the focused task when the routing model gives no answer.
@@ -197,6 +213,7 @@ def _via_focus(words, tasks):
 
 
 PICKS = {"model": _via_model, "marked": _via_mark, "focus": _via_focus}
+RELEASE_12 = "What's happening with release 12?"
 FOLLOWED_UP_42 = f"push it to public now (following up: {ASK_42})"  # a follow-up run's request (calls.follow_up)
 
 # Must get its own task: the request names another build than the one the task is about.
@@ -231,6 +248,37 @@ OTHER_NUMBER = [
     # The new task does not carry release 42's context ("that fix"): out of this round (see the plan).
     (ASK_42, "backport that fix to release forty-one"),
     (FOLLOWED_UP_42, "what about forty-one"),
+    # A polite opener is not a correction: the request after it still names another release.
+    (ASK_42, "No problem, go ahead with forty-one"),
+    (ASK_42, "No worries, push forty-one to public"),
+    (ASK_42, "No rush, roll back to forty-one"),
+    (ASK_42, "no rush, push forty-one tomorrow"),
+    (ASK_42, "Sorry to bother you, push forty-one"),
+    (ASK_42, "Sorry to bug you, push forty-one now"),
+    (ASK_42, "sorry to bother, what about forty-one"),
+    (ASK_42, "Sorry, one more thing: push forty-one to public"),
+    (ASK_42, "Sorry, go ahead with forty-one"),
+    # A number next door is still another build when no month is said with it.
+    (RELEASE_12, "push 14 now"),
+    (RELEASE_12, "push fourteen now"),
+    (ASK_42, "forty-one may be ready to go"),
+    # "Build", "issue" and "release" still name a numbered thing when no count of things follows.
+    ("What's happening with build 20?", "push 22 now"),
+    ("Is issue 30 fixed?", "what about issue 32"),
+    ("Is build 68 more stable now?", "push 67 to public"),
+    ("the 41 build is stuck", "push 42 now"),
+    ("check the build 68 logs", "push 67 now"),
+    ("Push release 42 to testers", "what about 41"),
+    ("Release 42 has issues, what's going on?", "push forty-one to public"),
+    # Known wrong refusals, kept (each needs a rule that would attach the sentence named with it):
+    # a day said before "May" ("forty-one may be ready to go" would attach),
+    (RELEASE_12, "push it on 14 May"),
+    # a year next to a four-digit build ("is it fixed in 2025" would attach),
+    ("Check build 2024", "is it in 2025"),
+    # an ordinal said with a space ("push the forty first" would attach),
+    ("What's happening with release 22?", "ship it on the twenty first"),
+    # and a command after "actually" ("actually, go ahead with forty-one" would attach).
+    ("rerun build forty-two", "actually make it forty-three"),
 ]
 
 # Must stay on the task: the request names the task's own build, no build, or a number that counts,
@@ -295,6 +343,29 @@ SAME_TASK = [
     # task that never names its build with a word like "release" is about no build.
     (ASK_42, "Push forty-one, not forty-two"),
     ("Is forty-two going out today?", "go ahead with forty-one"),
+    # A date is not a build, however close its day is to the task's number.
+    (RELEASE_12, "push it on May 14"),
+    (RELEASE_12, "push it on May fourteen"),
+    (RELEASE_12, "move the launch to Nov 13"),
+    (RELEASE_12, "push it on 14 June"),
+    ("What's happening with release 22?", "ship it on May twenty first"),
+    # "Build", "issue" and "release" are also things to do: said first with a count of things after them,
+    # they name no build, and neither does a number before "release blockers".
+    ("Build 20 landing pages for the campaign", "make it 22"),
+    ("Issue 30 refunds to customers", "make it 32"),
+    ("Release 15 seats for the workshop", "make it 14"),
+    ("Build 12 more slides for the deck", "make it 14"),
+    ("make it 14 (following up: Release 15 seats for the workshop)", "13 is enough"),
+    ("fix the 12 release blockers", "just do 10 of them"),
+    ("build 3 more slides", "make it 4"),
+    ("issue 2 refunds", "make it 3"),
+    ("release 5 seats", "make it 6"),
+    # Known wrong attaches, kept: a build said first with a plural-looking word after its number reads as
+    # a count of things, and a request after "actually" or "sorry" that is no command router.correction
+    # knows is taken for the fix.
+    ("Release 42 looks stuck, check it", "push forty-one to public"),
+    (ASK_42, "Actually, push forty-one to public"),
+    (ASK_42, "Sorry, push forty-one"),
 ]
 
 # Corrections: the running job should switch, so the words stay on it.
@@ -303,6 +374,19 @@ CORRECTIONS = [
     ("rerun build forty-two", "sorry, forty-three"),
     (ASK_42, "no, switch it to forty-one"),
     ("deliver to apartment 5", "sorry, apartment 6"),
+    # Every word router.correction reads as a correction is one here too.
+    ("rerun build forty-two", "actually, I meant forty-three"),
+    ("rerun build forty-two", "nah, forty-three"),
+    ("rerun build forty-two", "scratch that, forty-three"),
+    ("rerun build forty-two", "or rather forty-three"),
+    ("rerun build forty-two", "rather, forty-three"),
+    # And the ones that already stayed still do: digits, "sorry" first or last, "make that".
+    ("rerun build forty-two", "no, 43"),
+    ("rerun build forty-two", "sorry, 43"),
+    ("rerun build forty-two", "forty-three, sorry"),
+    ("rerun build forty-two", "make that forty-three"),
+    ("rerun build forty-two", "Sorry, no, forty-three"),
+    ("rerun build forty-two", "sorry, I meant build forty-three"),
 ]
 
 # A task the routing model is never asked about: the fragment rule picks the newest task first.
