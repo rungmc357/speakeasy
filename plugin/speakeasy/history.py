@@ -135,7 +135,20 @@ _HIDDEN_RES = (
     (re.compile(r"^\s*\[IMPORTANT: \d+ background process results arrived"), "A background job finished"),
     (re.compile(r"(?m)^\s*\[INTERNAL NOTIFICATION\b"), None),
     (re.compile(r"^\s*\[Cron delivery", re.I), None),
+    # Speakeasy's own hand-off after a card was answered (SPK-541): the run it starts carries the
+    # approved preview's JSON for the model (confirms.execution_message, prompt.builder.draft_*), so
+    # Hermes stores it as a user turn. The person tapped a button; they never typed this. The card
+    # itself shows the decision, so the turn is one quiet step in the reply's work.
+    (re.compile(r"^\s*The user approved exactly this preview \(approval [0-9a-f]{16,}\)\. Do only this action\."),
+     "Approved on the card"),
+    (re.compile(r"^\s*[^\n]{1,60}? approved exactly this email draft by pressing Send on the email card\. "),
+     "Approved on the card"),
+    (re.compile(r"^\s*[^\n]{1,60}? pressed Save draft on the email card\. Do NOT send it\."), "Saved as a draft from the card"),
+    (re.compile(r"^\s*[^\n]{1,60}? denied the email draft on the card\. Do not send it\."), "Declined on the card"),
 )
+# Changes asked for on an email card before approving it: only the person's own words show.
+_DRAFT_REVISE = re.compile(r"^\s*[^\n]{1,60}? asked for changes to the email draft before approving it: (.*?)"
+                           r"\nRewrite the draft accordingly \(update the saved draft too", re.S)
 # A background-process report Hermes appended after the person's own words in one row (SPK-244):
 # "…words\n[IMPORTANT: Background process proc_1 completed normally (exit code 0).\nStarted by
 # subagent …\nCommand: …\nOutput:\n…]" (tools/process_registry_notifications.py), when the gateway
@@ -705,6 +718,9 @@ def _user_words(content: str, cut: list[str] | None = None) -> tuple[str, str]:
             return "hidden", step or ""
     if not text.strip():
         return "hidden", ""
+    revise = _DRAFT_REVISE.match(text)
+    if revise:
+        return ("user", revise.group(1).strip()) if revise.group(1).strip() else ("hidden", "")
     card = _KANBAN_TASK.match(text.lstrip())
     if card:
         return "note", kanban_heading(card.group(1))
