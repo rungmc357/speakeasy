@@ -79,10 +79,143 @@ def _tokens(text: str) -> list[str]:
     return re.findall(r"[A-Za-z0-9][A-Za-z0-9'.-]*", text or "")
 
 
+_UNITS = "one two three four five six seven eight nine".split()
+_TEENS = "ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
+_TENS = "twenty thirty forty fifty sixty seventy eighty ninety".split()
+_SPELLED = re.compile(r"(?i)\b(?:(" + "|".join(_TENS) + r")(?:[-\s]+(" + "|".join(_UNITS) + r"))?"
+                      r"|(" + "|".join(_UNITS[1:] + _TEENS) + r"))\b")
+_NUMBER_WORDS = set(_UNITS + _TEENS + _TENS) | {"zero", "hundred", "thousand", "point"}
+_ORDINAL_AFTER = re.compile(r"(?i)-(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)\b")
+
+# Words that name one build or one ticket when a number is said right next to them ("release 42", "#12").
+_NAMING = {"build": "build", "release": "build", "version": "build", "v": "build", "rc": "build",
+          "issue": "ticket", "ticket": "ticket", "pr": "ticket", "bug": "ticket", "#": "ticket"}
+# After a bare number these make it an amount of time or money, not a build ("forty minutes").
+_AMOUNT = {"second", "seconds", "sec", "secs", "minute", "minutes", "min", "mins", "hour", "hours", "hr", "hrs",
+           "day", "days", "week", "weeks", "month", "months", "year", "years", "am", "pm", "o'clock",
+           "percent", "%", "dollars", "bucks", "euros", "pounds", "k"}
+# A number said with a month is a day of it ("May 14", "14 June"), never a build.
+_MONTHS = set("""january february march april may june july august september october november december
+jan feb mar apr jun jul aug sep sept oct nov dec""".split())
+# "Build", "release" and "issue" are also things to do ("Build 20 landing pages", "Issue 30 refunds").
+_ALSO_VERBS = {"build", "release", "issue"}
+_SENTENCE = re.compile(r"[.!?:;]\s+|\(")
+_NEAR = 3  # people name the build next door ("sixty-seven" on sixty-eight's task); a count rarely lands this close
+
+
+def _token(m: re.Match[str] | None) -> str:
+    return m.group(1).lower() if m else ""
+
+
+def _touches_number(*neighbours: str) -> bool:
+    """A number or number word is said right next to it: part of a time, a decimal or a longer number."""
+    return any(w[:1].isdigit() or w in _NUMBER_WORDS for w in neighbours)
+
+
+def digits(text: str, named_only: bool = False) -> str:
+    """Spelled numbers said on their own as digits, the way the voice may write what it heard ("forty-one",
+    "forty one", "twelve"). Words touching another number stay words, so an ordinal, a decimal, a time or a
+    hundreds number never becomes a different number ("twenty-first", "two point three", "four thirty",
+    "one twenty-three"); a lone "one" stays a word too. ``named_only``: only after a naming word
+    ("release forty-two")."""
+    text = text or ""
+
+    def number(m: re.Match[str]) -> str:
+        before = _token(re.search(r"([\w#.']+)[ \t-]+$", text[:m.start()]))
+        after = _token(re.match(r"[ \t-]+([\w.']+)", text[m.end():]))
+        if (_touches_number(before, after) or _ORDINAL_AFTER.match(text, m.end())
+                or (named_only and before not in _NAMING)):
+            return m.group(0)
+        tens, unit, small = (g.lower() if g else g for g in m.groups())
+        if small:
+            return str((_UNITS + _TEENS).index(small) + 1)
+        return str(20 + 10 * _TENS.index(tens) + (_UNITS.index(unit) + 1 if unit else 0))
+    return _SPELLED.sub(number, text)
+
+
+def _said(text: str) -> list[str]:
+    """Words and numbers as said: "4:15", "2.3", "41st" and "3pm" stay one token each."""
+    return re.findall(r"[#$€£%]|\d+(?:[.:,]\d+)*[a-z]*|[a-z]+(?:'[a-z]+)*", digits(text).lower())
+
+
+def _is_number(token: str) -> bool:
+    return bool(re.fullmatch(r"\d+(?:\.\d+)*", token))
+
+
+def _plural(word: str) -> bool:
+    return len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")) and word not in _FILLER
+
+
+def _counts(after: list[str]) -> bool:
+    """The words after a number make it a count of things: a plural, alone or after one word describing it
+    ("30 refunds", "3 more slides", "20 landing pages"; not "42 to testers" or "42 has issues")."""
+    first, second = (after + ["", ""])[:2]
+    return _plural(first) or (_plural(second) and (first == "more" or not (first in _FILLER or first.endswith("s"))))
+
+
+def keyed(text: str, task: bool = True) -> dict[str, set[str]]:
+    """The numbers a text names with a naming word, by family ("build" or "ticket"): "release forty-two",
+    "#12", "v2", a list after the word ("PR 12 and 13"). A plural after a number counts things ("the last
+    three builds"). ``task`` reads a task's request, where the number may also come first, with two or more
+    digits ("the 41 build"), and where a count of things names nothing: after a sentence's first word, when
+    that is something to do ("Build 20 landing pages", "Issue 30 refunds"), or before a word that describes
+    things ("the 12 release blockers"). Unsure means not named: the task then takes its follow-ups."""
+    found: dict[str, set[str]] = {}
+    for sentence in _SENTENCE.split(text or ""):
+        words = _said(sentence)
+        for i, word in enumerate(words):
+            prev, after = words[i - 1] if i else "", words[i + 1:i + 3]
+            family = _NAMING.get(prev)
+            if family and task and i == 1 and prev in _ALSO_VERBS and _counts(after):
+                continue
+            if (family is None and task and word.isdigit() and len(word) >= 2 and after and after[0] in _NAMING
+                    and not _plural(after[1] if len(after) > 1 else "")):
+                family = _NAMING[after[0]]
+            if family is None or not _is_number(word):
+                continue
+            found.setdefault(family, set()).add(word)
+            j = i + 1
+            while j < len(words) and (_is_number(words[j]) or words[j] in {"and", "or"}):
+                if _is_number(words[j]):
+                    found[family].add(words[j])
+                j += 1
+    return found
+
+
+def names_other_number(task_request: str, follow_up: str) -> bool:
+    """Whether a follow-up names a different one of the build or ticket its task is about, so it must be
+    its own task. Only a task that names its build or ticket with a word can refuse ("release 42"); the
+    follow-up then refuses when it doesn't say that number and either names another with a word of the
+    same family ("release 41") or says a bare number a few away with the same digits ("push 41 now").
+    A date is not such a number ("push it on May 14"). Corrections are the caller's to exempt
+    (router.corrects: "no, I meant 43" stays, the running job should switch)."""
+    task = keyed(task_request)
+    if not task:
+        return False
+    words = _said(follow_up)
+    named = {n for numbers in task.values() for n in numbers}
+    if named & set(words):
+        return False
+    other = keyed(follow_up, task=False)
+    if any(other.get(family) for family in task):
+        return True
+    named_after = {n for numbers in other.values() for n in numbers}
+    for i, m in enumerate(words):
+        prev = words[i - 1] if i else ""
+        nxt = words[i + 1] if i + 1 < len(words) else ""
+        if (not m.isdigit() or len(m) < 2 or m in named_after or prev in {"$", "€", "£", "#"} or nxt in _AMOUNT
+                or _touches_number(prev, nxt) or prev in _MONTHS or nxt in _MONTHS - {"may"}):
+            continue
+        if any(n.isdigit() and len(n) == len(m) and 0 < abs(int(m) - int(n)) <= _NEAR for n in named):
+            return True
+    return False
+
+
 def subject(text: str, recap_words: bool = True) -> set[str]:
-    """What the ask is about: its content words (stemmed), without filler or status words."""
+    """What the ask is about: its content words (stemmed), without filler or status words. A number
+    spelled after a naming word is a number ("build sixty-eight"); a spelled count stays a word."""
     out = set()
-    for raw in _tokens(text):
+    for raw in _tokens(digits(text, named_only=True)):
         for piece in re.split(r"[.-]", raw):
             if not piece:
                 continue
