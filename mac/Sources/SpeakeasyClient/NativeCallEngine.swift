@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
-#if os(visionOS)
+import SpeakeasyCore
+#if canImport(LiveKitWebRTC)
 import LiveKitWebRTC
 #else
 import WebRTC
@@ -33,9 +34,29 @@ public final class NativeCallEngine: NSObject, RTCPeerConnectionDelegate, RTCDat
     /// headset in call mode, so WebRTC's audio device opens at the final rate.
     private lazy var factory: RTCPeerConnectionFactory = {
         _ = NativeCallEngine.sslReady
+        #if canImport(LiveKitWebRTC)
+        // LiveKit's AVAudioEngine device: the only audio device that can duck other apps' audio by voice
+        // activity (the default one ignores the ducking settings). It leaves the audio session to us.
+        let factory = RTCPeerConnectionFactory(audioDeviceModuleType: .audioEngine, bypassVoiceProcessing: false,
+                                               encoderFactory: RTCDefaultVideoEncoderFactory(),
+                                               decoderFactory: RTCDefaultVideoDecoderFactory(),
+                                               audioProcessingModule: nil)
+        let device = factory.audioDeviceModule
+        device.observer = audioSession
+        let otherAudio = CallOtherAudioPolicy.forThisDevice
+        device.isAdvancedDuckingEnabled = otherAudio.advancedDucking
+        device.duckingLevel = RTCAudioDuckingLevel(otherAudio.duckingLevel)
+        return factory
+        #else
         return RTCPeerConnectionFactory(encoderFactory: RTCDefaultVideoEncoderFactory(),
                                         decoderFactory: RTCDefaultVideoDecoderFactory())
+        #endif
     }()
+
+    #if canImport(LiveKitWebRTC)
+    private let audioSession = CallAudioSession()
+    private var device: RTCAudioDeviceModule { factory.audioDeviceModule }
+    #endif
 
     #if os(macOS)
     private let routeWarmer = AudioRouteWarmer()
@@ -262,87 +283,93 @@ public final class NativeCallEngine: NSObject, RTCPeerConnectionDelegate, RTCDat
     /// mic, so the two never fight over it; `releaseAudio()` hands the mic over. No-op on the Mac,
     /// where both can share the input.
     public func holdAudio() {
-        #if os(iOS) || os(visionOS)
-        let session = RTCAudioSession.sharedInstance()
-        session.useManualAudio = true
-        session.isAudioEnabled = false
+        #if canImport(LiveKitWebRTC)
+        // The call's own audio device: WebRTC's later starts are kept, and run on release.
+        device.setEngineAvailability(.off)
         audioHeld = true
         #endif
     }
 
     /// Let the call's audio start (call after the on-device listener has stopped).
     public func releaseAudio() {
-        #if os(iOS) || os(visionOS)
+        #if canImport(LiveKitWebRTC)
         guard audioHeld else { return }
         audioHeld = false
-        let session = RTCAudioSession.sharedInstance()
-        session.isAudioEnabled = true
-        session.useManualAudio = false
+        device.setEngineAvailability(.on)
         #endif
     }
 
     public var isAudioHeld: Bool { audioHeld }
 
-    /// 74.1 (F4(a)): the mic gave nothing at the start of a call. Restart the device's audio unit on
-    /// THIS peer connection instead of reopening the call: stop WebRTC's voice unit, re-activate the
-    /// audio session the way the call uses it, and start the unit again. The connection, the server
-    /// session and the conversation are untouched. Returns false where the device can't (the Mac, or
-    /// the session wouldn't re-activate): the caller then reopens the connection as before.
+    /// 74.1 (F4(a)): the mic gave nothing at the start of a call. Restart the device's audio on THIS
+    /// peer connection instead of reopening the call: stop the audio engine, then start it again with
+    /// the session's configuration reapplied. The session stays active across the two (see
+    /// `CallAudioSession.keepingSession`). The connection, the server session and the conversation are
+    /// untouched. Returns false where the device can't (the Mac, or the engine wouldn't start again):
+    /// the caller then reopens the connection as before.
     @discardableResult
     public func restartLocalAudio() -> Bool {
-        #if os(iOS) || os(visionOS)
+        #if canImport(LiveKitWebRTC)
         guard !closed, peer != nil, !audioHeld else { return false }
-        let session = RTCAudioSession.sharedInstance()
-        // isAudioEnabled only drives the unit in manual mode: off, re-activate, on, then hand back.
-        session.useManualAudio = true
-        session.isAudioEnabled = false
-        session.lockForConfiguration()
-        var ok = true
-        do {
-            try session.setConfiguration(RTCAudioSessionConfiguration.webRTC(), active: true)
-        } catch {
-            ok = false
+        let restarted = audioSession.keepingSession {
+            device.setEngineAvailability(.off)
+            return device.setEngineAvailability(.on) == 0
         }
-        session.unlockForConfiguration()
-        session.isAudioEnabled = true
-        session.useManualAudio = false
-        return ok
+        return restarted && audioSession.isActive
         #else
         return false
         #endif
     }
 
-    /// iPhone: WebRTC's audio session is one object for the whole app. A hold from an earlier call
-    /// (or a listener) that was never released leaves it in manual mode with audio off, and every
-    /// later call is deaf: 0 packets, no input route. Start each call from a clean state.
-    public static func resetSharedAudio() {
-        #if os(iOS) || os(visionOS)
-        let session = RTCAudioSession.sharedInstance()
-        if session.useManualAudio || !session.isAudioEnabled {
-            session.isAudioEnabled = true
-            session.useManualAudio = false
-        }
-        #endif
-    }
-
     /// The audio session as WebRTC sees it (for the mic report).
     public static func sharedAudioSummary() -> String {
-        #if os(iOS) || os(visionOS)
+        #if canImport(LiveKitWebRTC)
         let s = RTCAudioSession.sharedInstance()
         let category = s.category.replacingOccurrences(of: "AVAudioSessionCategory", with: "")
         let mode = s.mode.replacingOccurrences(of: "AVAudioSessionMode", with: "")
         return "session \(s.isActive ? "active" : "inactive") \(category)/\(mode)"
-            + (s.useManualAudio ? " manual" : "") + (s.isAudioEnabled ? "" : " audio-off")
+            + (s.categoryOptions.contains(.mixWithOthers) ? " mixes" : "")
         #else
         return ""
         #endif
     }
     private var audioHeld = false
 
+    #if canImport(LiveKitWebRTC)
+    /// What the call's audio device reports (the mic report reads it).
+    public struct DeviceAudio: Equatable, Sendable {
+        /// False while held for the on-device listener.
+        public var available: Bool
+        public var advancedDucking: Bool
+        public var duckingLevel: CallOtherAudioPolicy.DuckingLevel
+
+        public init(available: Bool, advancedDucking: Bool, duckingLevel: CallOtherAudioPolicy.DuckingLevel) {
+            self.available = available; self.advancedDucking = advancedDucking; self.duckingLevel = duckingLevel
+        }
+
+        public var summary: String {
+            "device \(available ? "on" : "held"), ducking \(advancedDucking ? "on voice" : "fixed") \(duckingLevel)"
+        }
+    }
+
+    public var deviceAudio: DeviceAudio {
+        let availability = device.engineAvailability
+        return DeviceAudio(available: availability.isInputAvailable.boolValue && availability.isOutputAvailable.boolValue,
+                           advancedDucking: device.isAdvancedDuckingEnabled,
+                           duckingLevel: CallOtherAudioPolicy.DuckingLevel(device.duckingLevel))
+    }
+    #endif
+
     public func close() {
-        releaseAudio()
+        audioHeld = false
         guard !closed else { return }
         closed = true
+        #if canImport(LiveKitWebRTC)
+        // Stop the audio engine while this engine (the device's delegate, held weakly) is alive to hand the
+        // session back, so other apps' audio returns to full volume the moment the call ends.
+        if peer != nil { device.setEngineAvailability(.off) }
+        audioSession.give()
+        #endif
         localTrack?.isEnabled = false
         channel?.delegate = nil
         channel?.close()
@@ -394,3 +421,112 @@ public final class NativeCallEngine: NSObject, RTCPeerConnectionDelegate, RTCDat
         DispatchQueue.main.async { [weak self] in self?.onMessage?(data) }
     }
 }
+
+#if canImport(LiveKitWebRTC)
+/// The call's audio session. LiveKit's AVAudioEngine device never configures or activates the session:
+/// it asks before its engine is enabled and reports when it has been disabled. This is the classic
+/// device's configure / unconfigure, done through `RTCAudioSession` so the counted activation stays one
+/// shared view with `EarlyCapture` and `RoomListener`. Callbacks arrive on WebRTC's worker thread.
+final class CallAudioSession: NSObject, RTCAudioDeviceModuleDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var activated = false
+    private var keeping = false
+
+    var isActive: Bool { lock.withLock { activated } }
+
+    /// Runs an engine stop and start without handing the session back in between. Giving it back
+    /// mid-call tells other apps the call is over, and a locked phone can refuse to take it again.
+    func keepingSession(_ restart: () -> Bool) -> Bool {
+        lock.withLock { keeping = true }
+        defer { lock.withLock { keeping = false } }
+        return restart()
+    }
+
+    /// Configure the session the way the call uses it (`RTCAudioSessionConfiguration.webRTC()`, set by
+    /// the app), activating it once. False makes the device roll back instead of starting deaf.
+    private func take() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let session = RTCAudioSession.sharedInstance()
+        session.lockForConfiguration()
+        defer { session.unlockForConfiguration() }
+        do {
+            if activated {
+                try session.setConfiguration(RTCAudioSessionConfiguration.webRTC())
+            } else {
+                try session.setConfiguration(RTCAudioSessionConfiguration.webRTC(), active: true)
+                activated = true
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// The one balanced deactivation. `RTCAudioSession` deactivates with notify-others, so an app
+    /// whose audio was lowered or stopped is told it can carry on.
+    func give() {
+        lock.lock(); defer { lock.unlock() }
+        guard activated else { return }
+        activated = false
+        let session = RTCAudioSession.sharedInstance()
+        session.lockForConfiguration()
+        defer { session.unlockForConfiguration() }
+        do {
+            try session.setActive(false)
+        } catch {
+            NSLog("Speakeasy call: couldn't hand the audio session back (%@)", error.localizedDescription)
+        }
+    }
+
+    func audioDeviceModule(_: RTCAudioDeviceModule, willEnableEngine _: AVAudioEngine, isPlayoutEnabled _: Bool,
+                           isRecordingEnabled _: Bool, isVoiceProcessingEnabled _: Bool) -> Int {
+        take() ? 0 : -1
+    }
+
+    func audioDeviceModule(_: RTCAudioDeviceModule, didDisableEngine _: AVAudioEngine, isPlayoutEnabled: Bool,
+                           isRecordingEnabled: Bool) -> Int {
+        if !isPlayoutEnabled, !isRecordingEnabled, !lock.withLock({ keeping }) { give() }
+        return 0
+    }
+
+    func audioDeviceModule(_: RTCAudioDeviceModule, didReceiveSpeechActivityEvent _: LKRTCSpeechActivityEvent) {}
+    func audioDeviceModuleDidUpdateDevices(_: RTCAudioDeviceModule) {}
+    func audioDeviceModule(_: RTCAudioDeviceModule, didCreateEngine _: AVAudioEngine) -> Int { 0 }
+    func audioDeviceModule(_: RTCAudioDeviceModule, willStartEngine _: AVAudioEngine, isPlayoutEnabled _: Bool,
+                           isRecordingEnabled _: Bool) -> Int { 0 }
+    func audioDeviceModule(_: RTCAudioDeviceModule, didStopEngine _: AVAudioEngine, isPlayoutEnabled _: Bool,
+                           isRecordingEnabled _: Bool) -> Int { 0 }
+    func audioDeviceModule(_: RTCAudioDeviceModule, willReleaseEngine _: AVAudioEngine) -> Int { 0 }
+    func audioDeviceModule(_: RTCAudioDeviceModule, engine _: AVAudioEngine, configureInputFromSource _: AVAudioNode?,
+                           toDestination _: AVAudioNode, format _: AVAudioFormat, context _: [AnyHashable: Any]) -> Int { 0 }
+    func audioDeviceModule(_: RTCAudioDeviceModule, engine _: AVAudioEngine, configureOutputFromSource _: AVAudioNode,
+                           toDestination _: AVAudioNode?, format _: AVAudioFormat, context _: [AnyHashable: Any]) -> Int { 0 }
+}
+
+extension RTCAudioEngineAvailability {
+    static let on = RTCAudioEngineAvailability(isInputAvailable: true, isOutputAvailable: true)
+    static let off = RTCAudioEngineAvailability(isInputAvailable: false, isOutputAvailable: false)
+}
+
+extension RTCAudioDuckingLevel {
+    init(_ level: CallOtherAudioPolicy.DuckingLevel) {
+        switch level {
+        case .default: self = .default
+        case .min: self = .min
+        case .mid: self = .mid
+        case .max: self = .max
+        }
+    }
+}
+
+extension CallOtherAudioPolicy.DuckingLevel {
+    init(_ level: RTCAudioDuckingLevel) {
+        switch level {
+        case .min: self = .min
+        case .mid: self = .mid
+        case .max: self = .max
+        default: self = .default
+        }
+    }
+}
+#endif
