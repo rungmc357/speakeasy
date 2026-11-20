@@ -302,17 +302,20 @@ public final class NativeCallEngine: NSObject, RTCPeerConnectionDelegate, RTCDat
     public var isAudioHeld: Bool { audioHeld }
 
     /// 74.1 (F4(a)): the mic gave nothing at the start of a call. Restart the device's audio on THIS
-    /// peer connection instead of reopening the call: stop the audio engine (the session is handed
-    /// back), then start it again (the session is configured and activated the way the call uses it).
-    /// The connection, the server session and the conversation are untouched. Returns false where the
-    /// device can't (the Mac, or the session wouldn't re-activate): the caller then reopens the
-    /// connection as before.
+    /// peer connection instead of reopening the call: stop the audio engine, then start it again with
+    /// the session's configuration reapplied. The session stays active across the two (see
+    /// `CallAudioSession.keepingSession`). The connection, the server session and the conversation are
+    /// untouched. Returns false where the device can't (the Mac, or the engine wouldn't start again):
+    /// the caller then reopens the connection as before.
     @discardableResult
     public func restartLocalAudio() -> Bool {
         #if canImport(LiveKitWebRTC)
         guard !closed, peer != nil, !audioHeld else { return false }
-        device.setEngineAvailability(.off)
-        return device.setEngineAvailability(.on) == 0 && audioSession.isActive
+        let restarted = audioSession.keepingSession {
+            device.setEngineAvailability(.off)
+            return device.setEngineAvailability(.on) == 0
+        }
+        return restarted && audioSession.isActive
         #else
         return false
         #endif
@@ -427,8 +430,17 @@ public final class NativeCallEngine: NSObject, RTCPeerConnectionDelegate, RTCDat
 final class CallAudioSession: NSObject, RTCAudioDeviceModuleDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var activated = false
+    private var keeping = false
 
     var isActive: Bool { lock.withLock { activated } }
+
+    /// Runs an engine stop and start without handing the session back in between. Giving it back
+    /// mid-call tells other apps the call is over, and a locked phone can refuse to take it again.
+    func keepingSession(_ restart: () -> Bool) -> Bool {
+        lock.withLock { keeping = true }
+        defer { lock.withLock { keeping = false } }
+        return restart()
+    }
 
     /// Configure the session the way the call uses it (`RTCAudioSessionConfiguration.webRTC()`, set by
     /// the app), activating it once. False makes the device roll back instead of starting deaf.
@@ -459,7 +471,11 @@ final class CallAudioSession: NSObject, RTCAudioDeviceModuleDelegate, @unchecked
         let session = RTCAudioSession.sharedInstance()
         session.lockForConfiguration()
         defer { session.unlockForConfiguration() }
-        try? session.setActive(false)
+        do {
+            try session.setActive(false)
+        } catch {
+            NSLog("Speakeasy call: couldn't hand the audio session back (%@)", error.localizedDescription)
+        }
     }
 
     func audioDeviceModule(_: RTCAudioDeviceModule, willEnableEngine _: AVAudioEngine, isPlayoutEnabled _: Bool,
@@ -469,7 +485,7 @@ final class CallAudioSession: NSObject, RTCAudioDeviceModuleDelegate, @unchecked
 
     func audioDeviceModule(_: RTCAudioDeviceModule, didDisableEngine _: AVAudioEngine, isPlayoutEnabled: Bool,
                            isRecordingEnabled: Bool) -> Int {
-        if !isPlayoutEnabled, !isRecordingEnabled { give() }
+        if !isPlayoutEnabled, !isRecordingEnabled, !lock.withLock({ keeping }) { give() }
         return 0
     }
 
