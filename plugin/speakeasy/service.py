@@ -1254,8 +1254,8 @@ class VoiceService(SecureInputMixin):
                 key = self.openai_key()
                 if not key:
                     raise ServiceError(409, f"voice.provider is openai but {OPENAI_KEY_NAME} is not set in this Hermes profile")
-                from .openai_live import negotiate, session_payload
-                result = (self._openai_negotiate or negotiate)(key, session_payload(instructions, voice, sdp, seed))
+                from .openai_live import negotiate, start_session
+                result = start_session(self._openai_negotiate or negotiate, key, instructions, voice, sdp, seed)
                 live_id = (result.get("session") or {}).get("id")
                 answer = (result.get("transport") or {}).get("sdp")
         except ServiceError:

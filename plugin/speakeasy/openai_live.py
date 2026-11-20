@@ -1,4 +1,4 @@
-"""Optional voice provider: an OpenAI API key (Platform ``gpt-live-1`` over WebRTC).
+"""Optional voice provider: an OpenAI API key (Platform ``gpt-live-1.1``, else ``gpt-live-1``, over WebRTC).
 
 The key is read through Hermes' secret readers as ``SPEAKEASY_OPENAI_API_KEY`` (or ``OPENAI_API_KEY``,
 see ``settings.openai_api_key``); it never goes into settings, logs, or any route response.
@@ -20,8 +20,32 @@ from .plain_errors import VOICE_LOST, VOICE_UNREACHABLE
 logger = logging.getLogger(__name__)
 
 OPENAI_BASE = "https://api.openai.com"
-OPENAI_MODEL = "gpt-live-1"
+# gpt-live-1.1 (better accents, fewer stalls; same $0.05/min and the same events as gpt-live-1, checked
+# live 11-20). An account it isn't rolled out to yet is refused at session creation: that call, and the
+# rest of this process, use gpt-live-1.
+OPENAI_MODEL = "gpt-live-1.1"
+OPENAI_FALLBACK_MODEL = "gpt-live-1"
+MODEL_REFUSED = "openai_model_refused"
 MAX_BODY = 128 * 1024
+_refused: set[str] = set()
+
+
+def reset_model_memory() -> None:
+    _refused.clear()
+
+
+def _model_refused(exc: urllib.error.HTTPError) -> bool:
+    """A 4xx whose error names the model (unknown model / no access), not the key, SDP or quota."""
+    if exc.code not in (400, 403, 404):
+        return False
+    try:
+        error = (json.loads(exc.read(16 * 1024) or b"{}") or {}).get("error") or {}
+    except (ValueError, OSError, AttributeError):
+        return False
+    if not isinstance(error, dict):
+        return False
+    text = " ".join(str(error.get(k) or "") for k in ("code", "param", "message")).lower()
+    return "model" in text
 
 
 def negotiate(key: str, payload: dict[str, Any], base: str = OPENAI_BASE,
@@ -34,7 +58,8 @@ def negotiate(key: str, payload: dict[str, Any], base: str = OPENAI_BASE,
             raw = response.read(MAX_BODY + 1)
     except urllib.error.HTTPError as exc:
         raise ServiceError(exc.code if 400 <= exc.code < 500 else 502,
-                          f"GPT-Live session creation failed ({exc.code})") from None
+                          f"GPT-Live session creation failed ({exc.code})",
+                          reason=MODEL_REFUSED if _model_refused(exc) else None) from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         logger.warning("speakeasy: GPT-Live unreachable (%s)", type(exc).__name__)
         raise ServiceError(502, VOICE_UNREACHABLE) from None
@@ -47,14 +72,30 @@ def negotiate(key: str, payload: dict[str, Any], base: str = OPENAI_BASE,
     return data if isinstance(data, dict) else {}
 
 
-def session_payload(instructions: str, voice: str, sdp: str, seed: list[dict[str, Any]]) -> dict[str, Any]:
+def session_payload(instructions: str, voice: str, sdp: str, seed: list[dict[str, Any]],
+                    model: str = OPENAI_MODEL) -> dict[str, Any]:
     session: dict[str, Any] = {
-        "model": OPENAI_MODEL, "audio": {"output": {"voice": voice}}, "instructions": instructions,
+        "model": model, "audio": {"output": {"voice": voice}}, "instructions": instructions,
         "delegation": {"type": "client"}, "store": False,
     }
     if seed:
         session["input"] = seed
     return {"session": session, "transport": {"type": "webrtc", "sdp": sdp}}
+
+
+def start_session(negotiate_fn: Callable[[str, dict[str, Any]], dict[str, Any]], key: str, instructions: str,
+                  voice: str, sdp: str, seed: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create the call's session on gpt-live-1.1, or on gpt-live-1 when this account refuses 1.1 (the
+    refusal is remembered, so later calls don't try again until the plugin restarts)."""
+    if OPENAI_MODEL not in _refused:
+        try:
+            return negotiate_fn(key, session_payload(instructions, voice, sdp, seed, OPENAI_MODEL))
+        except ServiceError as exc:
+            if exc.reason != MODEL_REFUSED:
+                raise
+            _refused.add(OPENAI_MODEL)
+            logger.info("speakeasy: %s refused for this key; using %s", OPENAI_MODEL, OPENAI_FALLBACK_MODEL)
+    return negotiate_fn(key, session_payload(instructions, voice, sdp, seed, OPENAI_FALLBACK_MODEL))
 
 
 class OpenAISidebandWorker(SidebandWorker):
