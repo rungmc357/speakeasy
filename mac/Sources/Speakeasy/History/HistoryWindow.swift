@@ -534,6 +534,18 @@ enum HistoryShots {
                 catch { print("history shot FAILED \(name): \(error)") }
             }
             try? await Task.sleep(nanoseconds: 600_000_000)
+            // HISTORY_REPLAY=<file>: one thread page exactly as the plugin's history endpoint returned
+            // it (`{"session": …}`), shot as "replay" (e.g. an invented approval round, SPK-541).
+            if let path = ProcessInfo.processInfo.environment["HISTORY_REPLAY"] {
+                guard let data = FileManager.default.contents(atPath: path),
+                      let json = try? JSONSerialization.jsonObject(with: data),
+                      let replay = HistoryConversation(json: json) else {
+                    print("history shot FAILED replay: unreadable \(path)"); exit(1)
+                }
+                backend.conversations[replay.id] = replay
+                await shot("replay") { store.openSections = []; store.open(replay.id) }
+                exit(0)
+            }
             if only == "15-work" {
                 do {
                     try await ReplyWorkCheck.run(c, backend: backend, dir: dir)
