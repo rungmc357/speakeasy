@@ -40,8 +40,8 @@ HANDOFFS = [
 
 
 @pytest.mark.parametrize("raw,step", HANDOFFS)
-def test_card_handoff_is_hidden_with_a_quiet_step(raw, step):
-    assert H.user_words(raw) == ("hidden", step)
+def test_card_handoff_is_a_quiet_automatic_note(raw, step):
+    assert H.user_words(raw) == ("note", step)
 
 
 def test_revise_shows_only_the_persons_own_words():
@@ -66,11 +66,15 @@ def test_approval_round_page_never_shows_the_handoff_as_a_user_message(service):
     add_msg(path, sid, "user", P.draft_approved_message(NAMES, DRAFT), at=NOW - 40)
     add_msg(path, sid, "assistant", "Sent the email.", at=NOW - 30)
     page = H.session_messages(path, sid)
-    users = [e["text"] for e in page["entries"] if e["kind"] == "user"]
-    assert users == ["Tell Rowan the blue paint arrives Tuesday"]
+    shown = [(e["kind"], e.get("text")) for e in page["entries"]]
+    # Every reply stays a reply (no work step after it to fold it away), split by a quiet note.
+    assert shown == [("user", "Tell Rowan the blue paint arrives Tuesday"),
+                     ("assistant", "Here's the note, ready to send."), ("note", "Approved on the card"),
+                     ("assistant", "Sent the note to Rowan."), ("note", "Approved on the card"),
+                     ("assistant", "Sent the email.")]
     for e in page["entries"]:
         blob = json.dumps(e)
         for bad in ("approved exactly", VIEW["sha256"], "rowan@example.com", "speakeasy-receipt", "Do only this action"):
             assert bad not in blob, (bad, e)
     row = next(s for s in H.list_sessions(path)["sessions"] if s["id"] == sid)
-    assert "approved exactly" not in row["preview"] and "approved exactly" not in (row["title"] or "")
+    assert row["preview"] == "Sent the email." and "approved" not in (row["title"] or "").lower()
