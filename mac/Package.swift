@@ -14,8 +14,9 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/stasel/WebRTC.git", exact: "153.0.0"),
-        // Vision Pro: the same WebRTC, built by LiveKit (stasel ships no visionOS slice). Class names
-        // carry an LK prefix; SpeakeasyClient/WebRTCNames.swift maps them back.
+        // iPhone, iPad and Vision Pro: the same WebRTC, built by LiveKit. Its AVAudioEngine audio device
+        // lets a call duck other apps' audio only while someone speaks (stasel has no such control, and no
+        // visionOS slice). Class names carry an LK prefix; SpeakeasyClient/WebRTCNames.swift maps them back.
         .package(url: "https://github.com/livekit/webrtc-xcframework.git", exact: "150.7871.03"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
     ],
@@ -23,8 +24,8 @@ let package = Package(
         .target(name: "SpeakeasyCore"),
         .target(name: "SpeakeasyClient", dependencies: [
             "SpeakeasyCore",
-            .product(name: "WebRTC", package: "WebRTC", condition: .when(platforms: [.macOS, .iOS])),
-            .product(name: "LiveKitWebRTC", package: "webrtc-xcframework", condition: .when(platforms: [.visionOS])),
+            .product(name: "WebRTC", package: "WebRTC", condition: .when(platforms: [.macOS])),
+            .product(name: "LiveKitWebRTC", package: "webrtc-xcframework", condition: .when(platforms: [.iOS, .visionOS])),
         ]),
         .executableTarget(name: "Speakeasy", dependencies: [
             "SpeakeasyCore",
