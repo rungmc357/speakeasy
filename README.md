@@ -43,7 +43,7 @@ no chat app is needed.
 | | How it signs in | Model | Who pays |
 |---|---|---|---|
 | **Codex OAuth** (default) | Your ChatGPT account, through `codex login` on the Hermes machine (Codex CLI 0.150.0+) | `gpt-live-1-codex`, via `codex app-server` | Your ChatGPT plan, no API key |
-| **OpenAI API** | An OpenAI API key (`hermes voice setup --api-key`, stored in the Hermes profile as `SPEAKEASY_OPENAI_API_KEY`) | `gpt-live-1`, via the Realtime API over WebRTC | Per-minute API usage on that key |
+| **OpenAI API** | An OpenAI API key (`hermes voice setup --api-key`, stored in the Hermes profile as `SPEAKEASY_OPENAI_API_KEY`) | `gpt-live-1.1` (falls back to `gpt-live-1`), over WebRTC | Per-minute API usage on that key |
 | **Grok voice** (beta, off by default) | Your xAI sign-in in Hermes (`hermes auth add xai-oauth`) or `XAI_API_KEY` | `grok-voice-latest`, relayed through the plugin | Your xAI plan or key |
 
 Either way the key or sign-in stays on the Hermes machine, never on your device. Switch any time in

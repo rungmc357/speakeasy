@@ -13,7 +13,7 @@ Speakeasy lets someone talk to their own Hermes agent by voice from a Mac. Two p
 - Default: **ChatGPT sign-in (Codex)**. The server runs `codex app-server --stdio --enable
   realtime_conversation` for each call; the voice model is `gpt-live-1-codex`. No API key. Uses the
   user's own `codex login`.
-- Optional: an **OpenAI API key** (Platform `gpt-live-1` over WebRTC). Stored only through Hermes'
+- Optional: an **OpenAI API key** (Platform `gpt-live-1.1`, falling back to `gpt-live-1`, over WebRTC). Stored only through Hermes'
   own secret storage (the profile `.env`, key `SPEAKEASY_OPENAI_API_KEY`), never in the repo, never
   sent to the app.
 - `voice.provider` setting: `codex` (default) | `openai`.
