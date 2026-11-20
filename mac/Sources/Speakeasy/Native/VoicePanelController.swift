@@ -14,9 +14,10 @@ final class VoicePanel: NSPanel {
     var onKey: ((UInt16, String) -> Bool)?
     /// False while the panel is folded into the orb: no edge resizing.
     var allowsResize: (() -> Bool)?
-    /// True while arrow keys or ⌘V would do something (a review card's images; a call that takes
-    /// pictures and files): a click then makes the panel key so they reach it. Otherwise the panel
-    /// stays non-key on click and never takes typing away from other apps.
+    /// True while arrow keys or ⌘V would do something (a review card's images; a panel that takes
+    /// pictures and files, in a call or not): a click then makes the panel key so they reach it (⌘V
+    /// only ever reaches the key window). Otherwise the panel stays non-key on click and never takes
+    /// typing away from other apps.
     var wantsKeysOnClick: (() -> Bool)?
     /// ⌘V (or Edit › Paste): true when the panel took the pasteboard's pictures or files.
     var onPaste: (() -> Bool)?
@@ -38,8 +39,9 @@ final class VoicePanel: NSPanel {
     override func cancelOperation(_ sender: Any?) { onEscape?() }
     override func animationResizeTime(_ newFrame: NSRect) -> TimeInterval { 0.18 }
 
-    /// ⌘V while the panel is key (a click during a call makes it key): pictures and files go with
-    /// the next request. Other key equivalents, and arrow keys (`sendEvent`), are untouched.
+    /// ⌘V while the panel is key (a click makes it key whenever it takes pictures and files): they
+    /// go with the next request, or the next call. Other key equivalents, and arrow keys
+    /// (`sendEvent`), are untouched.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.type == .keyDown, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
            event.charactersIgnoringModifiers?.lowercased() == "v", !(firstResponder is NSText), onPaste?() == true {
@@ -245,7 +247,7 @@ final class ResizeHandleView: NSView {
 
 /// The panel's content: SwiftUI, with resize handles laid over the right edge,
 /// bottom edge and bottom-right corner. Also the drop destination for pictures and files dragged
-/// onto the panel during a call (the SwiftUI content registers no drag types, so drags reach here).
+/// onto the panel, in a call or not (the SwiftUI content registers no drag types, so drags reach here).
 final class PanelContainerView: NSView {
     let right = ResizeHandleView(kind: .right)
     let bottom = ResizeHandleView(kind: .bottom)
@@ -267,8 +269,8 @@ final class PanelContainerView: NSView {
 
     // MARK: Drops ("Look at this")
 
-    /// `.copy` while a call takes attachments and the drag carries something attachable; nothing
-    /// otherwise (outside a call a drop never starts one).
+    /// `.copy` while the panel takes attachments and the drag carries something attachable; nothing
+    /// otherwise. With no call open a drop never starts one: it waits for the next call.
     private func dropOperation(_ info: NSDraggingInfo) -> NSDragOperation {
         guard let model = dropModel, PanelAttachments.accepting(model),
               PanelAttachments.hasAttachable(info.draggingPasteboard) else {
@@ -392,7 +394,7 @@ final class VoicePanelController {
         }
         panel.onMoved = { [weak self] in self?.panelDidMove() }
         panel.onArrow = { [weak model] delta in model?.stepOpenReview(by: delta) ?? false }
-        // Arrow keys for a review card's images and the board, and ⌘V during a call that takes pictures and files.
+        // Arrow keys for a review card's images and the board, and ⌘V whenever the panel takes pictures and files.
         panel.wantsKeysOnClick = { [weak model] in
             guard let model else { return false }
             return model.steppableReview != nil || model.showsBoard || model.selectedJobID != nil

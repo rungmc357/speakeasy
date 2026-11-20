@@ -22,12 +22,22 @@ enum PanelSmoke {
         let savedOrb = client.model.slim
         client.model.slim = false
         Task { @MainActor in
+            // SPEAKEASY_PANEL_SMOKE_ONLY=drop-anytime runs just the no-call drop check (the full run's
+            // drag checks press into selectable text and can wait for a real mouse-up unattended).
+            if ProcessInfo.processInfo.environment["SPEAKEASY_PANEL_SMOKE_ONLY"] == "drop-anytime" {
+                await dropAnytime(client, dir: snapshotDir)
+                client.model.slim = savedOrb
+                print("panel-smoke " + (ok ? "ok" : "FAILED"))
+                log.forEach { print("  " + $0) }
+                exit(ok ? 0 : 1)
+            }
             await workScroll(client)
             await workStatusWraps(client)
             await transcriptScroll(client)
             await drag(client)
             await endedPanel(client)
             await lookAtThis(client, dir: snapshotDir)
+            await dropAnytime(client, dir: snapshotDir)
             if let dir = snapshotDir { await snapshots(client, dir: dir) }
             client.model.slim = savedOrb
             print("panel-smoke " + (ok ? "ok" : "FAILED"))
@@ -1441,6 +1451,148 @@ enum PanelSmoke {
         await settle(0.3)
     }
 
+    // MARK: Drops with no call open
+
+    /// The panel takes a dropped file with no call open (after one ended, on the board): the real
+    /// drop destination answers `.copy` and lights the ring, the file waits on the pending row for
+    /// the next call ("Goes with your next call"), the cap and the refusals hold, a new call picks it
+    /// up for upload, and a drop during a live call is unchanged. Synthetic drag info over a private
+    /// pasteboard; preview mode, so nothing is uploaded.
+    static func dropAnytime(_ c: NativeVoiceClient, dir: String?) async {
+        let m = c.model, window = c.panel.window
+        guard let (ended, _) = PreviewFixtures.state("ended"), let (live, _) = PreviewFixtures.state("listening") else {
+            fail("drop-anytime: no ended/listening fixture"); return
+        }
+        guard let container = window.contentView as? PanelContainerView else { fail("drop-anytime: no drop destination"); return }
+        let savedSupport = c.attachmentSupport, savedSlim = m.slim
+        m.slim = false
+        c.panel.resetPlacement()
+        setEnhancedAccessibility(true)
+        defer { c.attachmentSupport = savedSupport; m.slim = savedSlim; m.dropTargeted = false; setEnhancedAccessibility(false) }
+        func snap(_ name: String) {
+            guard let dir else { return }
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            do { try c.panel.snapshot(to: URL(fileURLWithPath: "\(dir)/\(name).png")); record("snapshot \(dir)/\(name).png") }
+            catch { fail("snapshot failed: \(error)") }
+        }
+        func clear() async {
+            for item in m.pendingAttachments { m.onRemoveAttachment(item.id) }
+            await settle(0.2)
+        }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("speakeasy-drop-smoke-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let subfolder = folder.appendingPathComponent("Project", isDirectory: true)
+        try? FileManager.default.createDirectory(at: subfolder, withIntermediateDirectories: true)
+        let notes = folder.appendingPathComponent("Q3 notes.pdf"), picture = folder.appendingPathComponent("mockup.png")
+        let brief = folder.appendingPathComponent("brief.txt")
+        try? Data("%PDF-1.4\n% drop smoke\n".utf8).write(to: notes)
+        try? Data("Launch brief\n".utf8).write(to: brief)
+        try? PreviewFixtures.sampleDesign(variant: 1)?.write(to: picture)
+        let board = NSPasteboard(name: NSPasteboard.Name("speakeasy.drop-smoke.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        func drag(_ objects: [NSPasteboardWriting]) -> SmokeDragInfo {
+            board.clearContents()
+            board.writeObjects(objects)
+            return SmokeDragInfo(pasteboard: board, window: window)
+        }
+        /// Enter, drop, end: what the destination answered and whether it took the drop.
+        func drop(_ info: SmokeDragInfo) async -> (NSDragOperation, Bool) {
+            let op = container.draggingEntered(info)
+            _ = container.draggingUpdated(info)
+            let took = container.prepareForDragOperation(info) && container.performDragOperation(info)
+            container.draggingEnded(info)
+            await settle(0.8)
+            return (op, took)
+        }
+
+        // A Hermes that can't take pictures: no drop, no ring (unchanged).
+        c.attachmentSupport = nil
+        c.showPreview(ended, workExpanded: false)
+        await settle(0.4)
+        check(container.draggingEntered(drag([notes as NSURL])) == [] && !m.dropTargeted,
+              "drop-anytime: a Hermes that can't take files gets no drop")
+        container.draggingExited(nil)
+
+        // No call open (it ended): the drop is taken and waits for the next call.
+        c.attachmentSupport = AttachmentSupport(images: true, vision: "native")
+        c.showPreview(ended, workExpanded: false)
+        await settle(0.4)
+        let info = drag([notes as NSURL])
+        let entered = container.draggingEntered(info)
+        let ringOn = m.dropTargeted
+        await settle(0.3)
+        snap("drop-anytime-ring")
+        record("drop-anytime: connection=\(m.state.connection) isOpen=\(m.state.connection.isOpen) draggingEntered=\(entered.rawValue) ring=\(ringOn)")
+        check(!m.state.connection.isOpen && entered == .copy && ringOn,
+              "drop-anytime: with no call open a file drag gets .copy and lights the ring")
+        let took = container.prepareForDragOperation(info) && container.performDragOperation(info)
+        container.draggingEnded(info)
+        await settle(1.0)
+        let held = m.state.sharing.attachments
+        record("drop-anytime: held \(held.map { "\($0.name) phase=\($0.phase) forNextCall=\($0.forNextCall)" }) status=\"\(present(m.state).secondary)\"")
+        check(took && m.pendingAttachments.map(\.name) == ["Q3 notes.pdf"] && held.allSatisfy(\.forNextCall),
+              "drop-anytime: the dropped file lands on the pending row, held for the next call")
+        check(!m.dropTargeted, "drop-anytime: the ring goes when the drag ends")
+        check(m.shareNotice?.text == CallSharing.nextCallLine && present(m.state).secondary == CallSharing.nextCallLine,
+              "drop-anytime: the status line says \(CallSharing.nextCallLine)")
+        check(axElement(c, "1 attachment for your next request") != nil, "drop-anytime: the pending row is drawn with no call")
+        snap("drop-anytime-held")
+
+        // ⌘V follows the same rule: the panel takes keys on a click and the paste gate is open.
+        check(PanelAttachments.accepting(m) && (window as? VoicePanel)?.wantsKeysOnClick?() == true,
+              "drop-anytime: with no call ⌘V is offered too (same gate as a drop)")
+
+        // Refusals hold with no call: a folder and a web link are refused, the row keeps its one.
+        _ = await drop(drag([subfolder as NSURL]))
+        let folderLine = m.shareNotice?.text
+        check(m.pendingAttachments.count == 1 && folderLine != nil && folderLine != CallSharing.nextCallLine,
+              "drop-anytime: a folder is still refused (\(folderLine ?? "no line"))")
+        _ = await drop(drag([URL(string: "https://example.com/report")! as NSURL]))
+        check(m.pendingAttachments.count == 1 && m.shareNotice?.text == "Only pictures and files",
+              "drop-anytime: a web link is still refused (Only pictures and files)")
+        // The cap holds: two more fill it, a fourth is refused.
+        _ = await drop(drag([picture as NSURL, brief as NSURL]))
+        await settle(0.6)
+        let before = m.pendingAttachments.count
+        board.clearContents()
+        board.setData(PreviewFixtures.sampleImage(), forType: .png)
+        let (capOp, _) = await drop(SmokeDragInfo(pasteboard: board, window: window))
+        record("drop-anytime: pending \(before) -> \(m.pendingAttachments.count) (\(m.pendingAttachments.map(\.name))), line \"\(m.shareNotice?.text ?? "-")\"")
+        check(capOp == .copy && before == 3 && m.pendingAttachments.count == 3 && m.shareNotice?.text == "Up to 3 at a time",
+              "drop-anytime: the cap holds with no call (Up to 3 at a time)")
+
+        // The next call takes them: they survive the call's start and are what it uploads on admission.
+        let ids = m.state.sharing.visibleAttachments.map(\.id)
+        c.dispatch(.startRequested)
+        let carried = m.state.sharing.visibleAttachments.map(\.id)
+        c.dispatch(.sessionAdmitted(interactionID: "vi_next"))
+        let uploadable = m.state.sharing.uploadable(to: "vi_next").map(\.id)
+        record("drop-anytime: next call connection=\(m.state.connection) carried \(carried.count)/\(ids.count) uploadable \(uploadable.count)")
+        check(ids.count == 3 && carried == ids && uploadable == ids, "drop-anytime: the next call carries them and uploads them on admission")
+        await clear()
+
+        // The board (no call, no header): taken too, the row at its top and the line as a toast.
+        var boardState = ended.fresh()
+        boardState.workOnly = true
+        c.showPreview(boardState, workExpanded: true)
+        await settle(0.5)
+        let (boardOp, boardTook) = await drop(drag([notes as NSURL]))
+        record("drop-anytime: board op=\(boardOp.rawValue) pending=\(m.pendingAttachments.map(\.name)) toast=\"\(m.toast?.text ?? "-")\"")
+        check(boardOp == .copy && boardTook && m.pendingAttachments.count == 1 && m.toast?.text == CallSharing.nextCallLine,
+              "drop-anytime: the board takes a drop and says Goes with your next call")
+        snap("drop-anytime-board")
+        await clear()
+
+        // A live call: unchanged, the drop belongs to this call (no next-call line).
+        c.showPreview(live, workExpanded: false)
+        await settle(0.4)
+        let (liveOp, liveTook) = await drop(drag([notes as NSURL]))
+        let liveItems = m.state.sharing.attachments
+        check(liveOp == .copy && liveTook && liveItems.count == 1 && liveItems.allSatisfy { !$0.forNextCall }
+              && m.shareNotice == nil, "drop-anytime: during a live call a drop is the call's, as before")
+        await clear()
+    }
+
     /// Every control in the header sits inside the panel, and `status` fits its column in at most two
     /// lines without truncation.
     static func headerFits(_ c: NativeVoiceClient, status: String, label: String) async {
@@ -1594,4 +1746,30 @@ enum PanelSmoke {
     static func check(_ condition: Bool, _ label: String) {
         if condition { log.append("PASS " + label) } else { fail(label) }
     }
+}
+
+/// A drag as the panel's drop destination sees it: a pasteboard over the panel, copy allowed. Only
+/// what `PanelContainerView` reads is meaningful.
+final class SmokeDragInfo: NSObject, NSDraggingInfo {
+    let draggingPasteboard: NSPasteboard
+    let draggingDestinationWindow: NSWindow?
+    init(pasteboard: NSPasteboard, window: NSWindow?) {
+        draggingPasteboard = pasteboard
+        draggingDestinationWindow = window
+    }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggingLocation: NSPoint { NSPoint(x: 40, y: 40) }
+    var draggedImageLocation: NSPoint { draggingLocation }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    var draggingFormation: NSDraggingFormation = .none
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
+                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
 }

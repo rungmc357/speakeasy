@@ -250,9 +250,13 @@ public func present(_ s: VoiceState) -> PillPresentation {
         secondary = quietPauseLine(minutes); tone = .plain
     }
     // A refused drop or the Screen Recording hint shows for a few seconds; an approval still wins.
-    if s.connection.isInCall, let notice = s.sharing.notice, notice.isFresh(at: now), tone != .attention {
+    // With no call open a drop says where it went (a paused call keeps its Resume line, a failed one
+    // why it failed: the drop is kept all the same and shows on the panel).
+    var failed = false
+    if case .failed = s.connection { failed = true }
+    if s.connection != .paused, !failed, let notice = s.sharing.notice, notice.isFresh(at: now), tone != .attention {
         secondary = notice.text
-        tone = .warning
+        tone = notice.text == CallSharing.nextCallLine ? .success : .warning
     }
 
     let inCall = s.connection == .live || s.connection == .connecting

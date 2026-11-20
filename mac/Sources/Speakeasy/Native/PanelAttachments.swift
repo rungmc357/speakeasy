@@ -22,10 +22,11 @@ enum PanelAttachments {
         [.fileURL] + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) } + imageTypes + [.URL]
     }
 
-    /// The panel takes pictures and files now: a call is open (a paused one too: they go after
-    /// Resume), it isn't the work-only view, and this Hermes reads pictures.
+    /// The panel takes pictures and files whenever it's up and this Hermes reads pictures: during a
+    /// call (a paused one too: they go after Resume), or with none open (after one ended, on the
+    /// board), when they wait on the panel and go with the next call.
     static func accepting(_ model: VoicePanelModel) -> Bool {
-        model.attachmentsSupported && model.state.connection.isOpen && !model.state.workOnly
+        model.attachmentsSupported
     }
 
     private static let fileOptions: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
