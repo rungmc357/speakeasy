@@ -19,7 +19,11 @@ final class CallOtherAudioTests: XCTestCase {
         XCTAssertEqual(policy.sessionOptions, [.defaultToSpeaker, .bluetoothHFP, .bluetoothA2DP])
     }
 
-    func testOnlyVisionOSDiffersFromTheIPhoneCall() {
+    func testThisDeviceUsesItsPlatformsPolicy() {
+        #if os(visionOS)
+        XCTAssertEqual(CallOtherAudioPolicy.forThisDevice, .interruptsOthers)
+        #else
         XCTAssertEqual(CallOtherAudioPolicy.forThisDevice, .iPhoneCall)
+        #endif
     }
 }
