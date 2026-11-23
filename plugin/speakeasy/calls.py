@@ -2253,12 +2253,18 @@ class SidebandWorker:
                    "are fresh. Do it again for any device that isn't in the asked state yet, and say plainly what "
                    "you find.)")
         try:
-            with contextlib.suppress(Exception):
-                await asyncio.to_thread(home.snapshot, True)  # what the house is really doing now
-            try:
-                reply = await asyncio.to_thread(home.respond, recheck, list(self.home_notes), None, True)
-            except TypeError:  # a test double without the newer argument
-                reply = await asyncio.to_thread(home.respond, recheck, list(self.home_notes), None)
+            reply = None
+            if self.home_scope is not None and hasattr(home, "recheck"):
+                # SPK-554: a room-wide on/off just done: re-read that room's devices fresh, name what is
+                # still on and switch it, never repeat the earlier claim. One dispute path: this first.
+                reply = await asyncio.to_thread(home.recheck, words, self.home_scope)
+            if reply is None:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(home.snapshot, True)  # what the house is really doing now
+                try:
+                    reply = await asyncio.to_thread(home.respond, recheck, list(self.home_notes), None, True)
+                except TypeError:  # a test double without the newer argument
+                    reply = await asyncio.to_thread(home.respond, recheck, list(self.home_notes), None)
         except Exception as exc:  # the fast path must never break a request
             logger.warning("speakeasy: home re-check failed, using Hermes (%s)", type(exc).__name__)
             return False
@@ -2293,6 +2299,8 @@ class SidebandWorker:
         self.handoff_at.pop(delegation_id, None)
         self.home_notes = (self.home_notes + [f'They said "{words}" about "{original}" -> {reply.spoken}'])[
             -home_control_mod.MAX_NOTES:]
+        if getattr(reply, "scope", None) is not None:
+            self.home_scope = reply.scope  # a second "still on" re-checks the same room again
         self.replied_task = task_id
         self.publish()
         await self.append("session.commentary.append", delegation_id, reply.spoken)
