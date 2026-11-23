@@ -87,6 +87,8 @@ ABSORB_WINDOW_S = 15.0 # a handoff of words already folded into an earlier task 
 ECHO_WINDOW_S = 8.0    # a second handoff this soon that only repeats the last request's words is dropped
 DUPLICATE_WINDOW_S = 15.0  # the very same words handed off again this soon start nothing new
 CORRECTION_WINDOW_S = 30.0  # "guest room, sorry" this soon after a request replaces it
+DISPUTE_WINDOW_S = 120.0  # SPK-555: "no it's not" this soon after an answer re-checks that task
+DISPUTABLE_STATES = frozenset({"completed", "failed"})  # an answer that can be disputed
 ACK_GRACE_S = 5.0      # the voice said "on it": a task must exist (or start) within this long
 # The card's step for an approval answered from the call (the panel's buttons record the same words).
 APPROVED_MILESTONE = {"once": "Approved", "session": "Approved for the rest of this task", "deny": "Approval denied"}
@@ -1548,6 +1550,7 @@ class SidebandWorker:
     @replied_task.setter
     def replied_task(self, task_id: str | None) -> None:
         self._replied_task = task_id
+        self._replied_at = time.monotonic()
         if task_id:
             self.talking_about(task_id, spoke=True)
 
@@ -2195,6 +2198,103 @@ class SidebandWorker:
         await self._supersede(old_id)
         logger.info("speakeasy: a correction replaced the request just before it")
         return fixed
+
+    def dispute_target(self, words: str, marked: Any = None) -> str | None:
+        """SPK-555: the task "no it's not" / "that didn't work" disputes: the one whose answer the voice
+        just spoke (finished, within DISPUTE_WINDOW_S), when the words name nothing new. None otherwise."""
+        task_id = self.replied_task
+        if not task_id or (marked and marked != task_id) or self.home_question is not None:
+            return None
+        if time.monotonic() - float(getattr(self, "_replied_at", 0.0) or 0.0) > DISPUTE_WINDOW_S:
+            return None
+        with self.interaction.lock:
+            run = self.interaction.runs.get(task_id)
+            status, key = (run.status, run.idem_key) if run else (None, None)
+        if not key or status not in DISPUTABLE_STATES:
+            return None
+        try:
+            work = self.store.work(idem_key=key) or {}
+            about = " ".join(filter(None, [self.store.request_text(key) or "", str(work.get("title") or ""),
+                                           str((work.get("result") or {}).get("spoken") or "")]))
+        except Exception:  # noqa: BLE001 - a lookup failure only means no dispute is recognised
+            return None
+        return task_id if router.disputes(words, about) else None
+
+    async def _dispute(self, delegation_id: str, revision: int, context: str, words: str, marked: Any) -> bool:
+        """SPK-555: a protest that the last answer is wrong ("no it's not", "it's still open, I can see
+        it") goes back to that task as a re-check: home control looks again at fresh device states and
+        updates the same card; any other task gets it as a follow-up. Never the correction rewriter,
+        never a new task or card. False when the words aren't a dispute of a just-answered task."""
+        target = await asyncio.to_thread(self.dispute_target, words, marked)
+        if target is None:
+            return False
+        logger.info("speakeasy: the user disputed the last answer; re-checking that task")
+        if target in self.home_tasks and await self.home_recheck(delegation_id, target, words):
+            return True
+        await self.follow_up(delegation_id, revision, context, router.Part("follow_up", words, target))
+        return True
+
+    async def home_recheck(self, delegation_id: str, task_id: str, words: str) -> bool:
+        """Do a home-control task again after "no it's not": fresh device states, the original request
+        plus what they said, and the result written onto the same task (its card keeps its title).
+        False when home control can't take it (Hermes gets it as a follow-up instead)."""
+        home = self.rt.home
+        with self.interaction.lock:
+            run = self.interaction.runs.get(task_id)
+            key = run.idem_key if run else None
+        if home is None or not getattr(home, "enabled", False) or not key:
+            return False
+        original = self.store.request_text(key) or ""
+        if not original:
+            return False
+        recheck = (f"{original}\n(I said it was done; they say it isn't: \"{words}\". The device states above "
+                   "are fresh. Do it again for any device that isn't in the asked state yet, and say plainly what "
+                   "you find.)")
+        try:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(home.snapshot, True)  # what the house is really doing now
+            try:
+                reply = await asyncio.to_thread(home.respond, recheck, list(self.home_notes), None, True)
+            except TypeError:  # a test double without the newer argument
+                reply = await asyncio.to_thread(home.respond, recheck, list(self.home_notes), None)
+        except Exception as exc:  # the fast path must never break a request
+            logger.warning("speakeasy: home re-check failed, using Hermes (%s)", type(exc).__name__)
+            return False
+        if reply is None or getattr(reply, "ask", False):
+            return False
+        self.handoff_card_done(delegation_id)
+        cards: list[dict[str, Any]] = []
+        if reply.ok and getattr(reply, "touched", ()) and hasattr(home, "device_views"):
+            with contextlib.suppress(Exception):
+                cards = await asyncio.to_thread(home.device_views, reply.touched)
+        try:
+            self.store.progress(key, "milestone", f"You said: {notice_text(words, 200)}")
+            result = split_result(reply.spoken, ()) or {}
+            if cards:
+                result["views"] = cards
+            elif reply.ok:
+                old = (self.store.work(idem_key=key) or {}).get("result") or {}
+                if old.get("views"):
+                    result["views"] = old["views"]
+            # The task keeps its state and title; only its answer is the newer one (no second settle).
+            self.store.set_result(key, result or None)
+            self.store.progress(key, "result", reply.spoken)
+            if reply.ok:
+                self.store.mark_seen(key)
+        except Exception:
+            logger.warning("speakeasy: could not record the home re-check")
+        with self.interaction.lock:
+            self.interaction.latest_delegation_id = task_id
+        # The handoff ends here: it was a re-check of the task above, not a task of its own.
+        drops = self.__dict__.setdefault("drops", [])
+        drops[:] = drops[-9:] + [("Re-checked the previous request", time.monotonic(), "", "")]
+        self.handoff_at.pop(delegation_id, None)
+        self.home_notes = (self.home_notes + [f'They said "{words}" about "{original}" -> {reply.spoken}'])[
+            -home_control_mod.MAX_NOTES:]
+        self.replied_task = task_id
+        self.publish()
+        await self.append("session.commentary.append", delegation_id, reply.spoken)
+        return True
 
     async def _supersede(self, task_id: str) -> None:
         """A corrected request replaces this one: stop it if it is still working."""
@@ -3652,6 +3752,8 @@ class SidebandWorker:
         if await self._fence_by_voice(delegation_id, revision, last_request, marked):
             return
         forced = delegation_id in getattr(self, "force_work", set())
+        if not forced and await self._dispute(delegation_id, revision, context, last_request, marked):
+            return  # SPK-555: "no it's not" right after an answer re-checks that task, never a new one
         if not marked and not forced and await self._talk_not_work(delegation_id, revision, last_request, context):
             return
         offer = next((l[len("Assistant: "):] for l in reversed(context.splitlines()) if l.startswith("Assistant: ")), "")

@@ -1019,11 +1019,15 @@ class StateStore:
     def _set_title_locked(self, key: str, title: str | None, summary: str | None, thread: bool) -> None:
         if title:
             title = fix_product_names(title)
+            before = self._db.execute("SELECT title FROM runs WHERE idem_key=?", (key,)).fetchone()
             self._db.execute("UPDATE runs SET title=? WHERE idem_key=?", (title, key))
             name = None if thread else job_name(title)
             if name:
                 self._db.execute("UPDATE runs SET own_title=? WHERE idem_key=?", (title, key))
                 self._db.execute("UPDATE jobs SET name=?, updated=? WHERE from_key=?", (name, time.time(), key))
+                old = before[0] if before else None
+                if old and old != title:
+                    self._rename_stack_locked(key, old, title, name, {n for n in (job_name(old),) if n})
         if summary:
             self._db.execute("UPDATE runs SET summary=? WHERE idem_key=?", (summary, key))
 
@@ -2582,7 +2586,24 @@ class StateStore:
                 marks = ",".join("?" * len(stand_ins))
                 self._db.execute(f"UPDATE jobs SET name=?, updated=? WHERE from_key=? AND name IN ({marks})",
                                  (name, time.time(), key, *stand_ins))
+                self._rename_stack_locked(key, row[0], title, name, stand_ins)
         return True
+
+    def _rename_stack_locked(self, key: str, old: str | None, title: str, name: str, stand_ins: set[str]) -> None:
+        """SPK-555: Home's widget stack keeps a copy of a card's title (``home_stack``, home_state.py),
+        so a renamed stand-in renames the open stack rows that still carry the stand-in too. A row
+        titled any other way keeps its title. Call with the lock held."""
+        try:
+            rows = self._db.execute(
+                "SELECT s.id, s.title FROM home_stack s JOIN runs r ON r.run_id = s.run_id "
+                "WHERE r.idem_key=? AND s.state='open'", (key,)).fetchall()
+        except sqlite3.OperationalError:
+            return  # no stack table yet (HomeState creates it)
+        for sid, shown in rows:
+            if shown and old and shown == old:
+                self._db.execute("UPDATE home_stack SET title=? WHERE id=?", (title[:120], sid))
+            elif shown in stand_ins:
+                self._db.execute("UPDATE home_stack SET title=? WHERE id=?", (name, sid))
 
     # -- live view ("what it's looking at") -------------------------------------------------
     def set_live_image(self, key: str, kind: str, ref: str, name: str, source: str) -> bool:
