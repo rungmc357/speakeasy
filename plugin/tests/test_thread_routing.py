@@ -150,7 +150,8 @@ def test_pick_conversation_maps_the_ref_and_trusts_a_model_no(tmp_path):
     cands = continuity.conversations_with_context(db, "continue the thread routing work on speakeasy")
     chats = [router.Chat(f"c{i + 1}", c.conv.where) for i, c in enumerate(cands)]
     ref = next(ch.ref for ch, c in zip(chats, cands) if c.conv.session_id == "s_trip")
-    picked = CallWorker.pick_conversation("x", router.Decision([], conversation=ref, source="model"), cands, chats)
+    picked = CallWorker.pick_conversation("any cheaper hotel in Lisbon?",
+                                          router.Decision([], conversation=ref, source="model"), cands, chats)
     assert picked.session_id == "s_trip"
     # the model said no conversation: a keyword match must not override it
     assert CallWorker.pick_conversation("continue the thread routing work on speakeasy",
