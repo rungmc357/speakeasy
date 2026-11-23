@@ -5426,7 +5426,14 @@ class SidebandWorker:
         if not decision.conversation:
             return None
         index = next((i for i, c in enumerate(chats) if c.ref == decision.conversation), None)
-        return candidates[index].conv if index is not None else None
+        if index is None:
+            return None
+        if not continuity.refers_to(request, candidates[index]):
+            # SPK-560: the model's pick alone never posts into a messaging thread; the ask has to
+            # name that chat or share its subject. Otherwise it is new work.
+            logger.info("speakeasy: routing picked a chat the request doesn't refer to; starting new work")
+            return None
+        return candidates[index].conv
 
     def note_outcome(self, delegation_id: str, kind: str) -> None:
         """Where a typed message handed to ``follow_up`` went (SPK-80), said by the branch that took it:

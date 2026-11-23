@@ -511,6 +511,46 @@ def _snippets(db: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+# Words that say nothing about what a chat is about: question scaffolding, everyday verbs, and
+# time words ("this weekend" must not pull an ask into a "Weekend grocery list" chat).
+_VAGUE = set("""how what when where who whom why which much many some any all more most were been being
+want need like know think see look find make take give put send said say saying use used doing done
+really very still again already yet even only well good great okay one two too off back last next
+today tonight tomorrow yesterday morning afternoon evening night day days week weeks weekend month
+year time later soon earlier recently monday tuesday wednesday thursday friday saturday sunday
+there here something anything everything someone anyone bought buy got going gonna leave left
+am pm us im oh hi ok no yes as if ve ll re""".split())
+
+
+def _topic_words(text: str) -> set[str]:
+    # Short subject words count too ("my PRs" against a "PR work" chat); plural -s is folded.
+    out = set()
+    for w in re.findall(r"[a-z0-9]+", (text or "").lower()):
+        if len(w) < 2 or w in _STOP or w in _VAGUE or w.isdigit():
+            continue
+        out.add(w[:-1] if w.endswith("s") and not w.endswith("ss") and len(w) >= 3 else w)
+    return out
+
+
+def refers_to(request: str, cand: Candidate) -> bool:
+    """SPK-560: the ask clearly refers to this chat: it shares a real subject word with the chat's
+    name, title, the user's recent lines there, or the last spoken request sent into it. Recency,
+    stopwords and time words never count. Without this, continuing the chat (posting into its
+    thread) is never allowed, whatever the routing model picked."""
+    asked = _topic_words(request or "")
+    if not asked:
+        return False
+    conv = cand.conv
+    topic = conv.name.split(" / ")[-1] if conv.name else ""
+    named = _topic_words(" ".join((conv.title, topic, _clean_line(cand.voice_request))))
+    if asked & named:
+        return True
+    # Only its recent talk to go on: one shared word is too thin ("tickets" in a packing list is not
+    # the show's tickets), so the subject must overlap on at least two words.
+    talk = _topic_words(" ".join(_clean_line(t) for t in cand.snippets))
+    return len(asked & talk) >= 2
+
+
 def best_by_content(request: str, candidates: list[Candidate]) -> Conversation | None:
     """No routing model: continue the chat whose recent talk clearly matches, only with a
     continuation cue ("the thread where we...", "continue the ...") and a clear winner."""
