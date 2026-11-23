@@ -2170,7 +2170,8 @@ class SidebandWorker:
         if getattr(self, "last_handoff_at", float("-inf")) >= turn_at - 2.0 and not drops:
             return  # a handoff came for this turn: it is a task (or was answered on the spot)
         if drops:
-            if any(d[0] in {"Just a greeting", "Just a reaction", "Just talking", "Didn't catch it"} for d in drops):
+            if any(d[0] in {"Just a greeting", "Just a reaction", "Just talking", "Didn't catch it",
+                                   "Talking to someone else"} for d in drops):
                 await self.append("session.thinking.append", None, P.nothing_started_note(self.names))
             return
         context = self.context(1 << 62)
@@ -3732,6 +3733,34 @@ class SidebandWorker:
         if spoken:
             await self.append("session.commentary.append", delegation_id, spoken)
 
+    def voice_asked_again(self, delegation_id: str) -> bool:
+        """SPK-556: the voice's own reply to the turn this handoff came from says it didn't catch it
+        ("Didn't catch that one. Run it back for me?"). Spoken text and work must agree: that handoff
+        is a guess, never a task. Only the reply to this handoff's own turn counts (the assistant's
+        words after the user's last words before the handoff, up to their next words), so a "say it
+        again" to a later scrap never cancels an earlier, clear request."""
+        at = self.handoff_at.get(delegation_id)
+        if at is None:
+            return False
+        fragments = list(self.fragments)
+        turn = next((i for i in range(len(fragments) - 1, -1, -1)
+                     if fragments[i]["speaker"] == "user" and fragments[i]["at"] <= at), None)
+        if turn is None:
+            return False
+        said = []
+        for f in fragments[turn + 1:]:
+            if f["speaker"] == "user":
+                break
+            said.append(f["text"])
+        return router.asks_to_repeat("".join(said))
+
+    async def _drop_asked_again(self, delegation_id: str, revision: int) -> bool:
+        if not self.voice_asked_again(delegation_id):
+            return False
+        logger.info("speakeasy: the voice asked to hear it again in the same turn; no task started")
+        await self._drop(delegation_id, revision, "Didn't catch it", None)
+        return True
+
     async def _handoff_failed(self, delegation_id: str, revision: int, exc: Exception) -> None:
         with self.interaction.lock:
             backend = self.interaction.runs.get(delegation_id)
@@ -3810,6 +3839,16 @@ class SidebandWorker:
             return
         offer = next((l[len("Assistant: "):] for l in reversed(context.splitlines()) if l.startswith("Assistant: ")), "")
         offered = offer.rstrip().endswith("?")
+        if not marked and not forced:
+            if await self._drop_asked_again(delegation_id, revision):
+                return
+            if not offered and router.side_talk(last_request, self.names.assistant_name):
+                # "Grab me a coffee, Sam.": said to someone in the room, with nothing that makes it an
+                # errand. Never a long job that guesses (SPK-556); the voice may ask once if it was for it.
+                logger.info("speakeasy: a short line to someone else in the room; no task started")
+                await self._drop(delegation_id, revision, "Talking to someone else", None)
+                await self.append("session.thinking.append", delegation_id, P.side_talk_note(self.names))
+                return
         if (not marked and not forced and not offered and router.is_fragment(last_request)
                 and not self.waiting_on_user() and self.home_question is None):
             # "that", "there it is": a scrap with nothing to act on, and no question waiting for it.
@@ -3937,6 +3976,12 @@ class SidebandWorker:
             if settled != before_settle:
                 context = _with_request(context, last_request)
             self._note_started(delegation_id, last_request)
+            if delegation_id not in getattr(self, "force_work", set()) and await self._drop_asked_again(
+                    delegation_id, revision):
+                # The voice's reply to this turn (it lands while settling) said it didn't catch it.
+                if cand_task is not None:
+                    cand_task.cancel()
+                return
             if (router.trails_off(last_request) and router.meta_kind(last_request) is None
                     and delegation_id != getattr(self, "confirmed_thought", None)):
                 # "...because he": the thought stopped mid-sentence. Never send a fragment: ask.
@@ -3994,6 +4039,9 @@ class SidebandWorker:
                  for i, c in enumerate(candidates)]
         self.route_timings[delegation_id] = decision.latency_ms
         part = decision.parts[0]
+        if (not marked and part.kind != "follow_up" and delegation_id not in getattr(self, "force_work", set())
+                and await self._drop_asked_again(delegation_id, revision)):
+            return  # the voice's "say it again?" landed while routing: still nothing starts
         if focus is not None:
             went = "to the focused task" if part.task_id == focus.task_id else "elsewhere"
             logger.info("speakeasy: focused request routed %s (%s)", went, decision.source)
