@@ -351,10 +351,13 @@ class CodexTransport:
         self._write({"method": "initialized", "params": {}})
         self.timings["initialize"] = _ms(began)
         began = time.monotonic()
+        # A tap waits 20 s at most; a background spare warm-up sets a longer thread_timeout (on the
+        # Mac mini thread/start took up to 34 s on Nov 23, waiting on a busy fseventsd).
         thread = self.request("thread/start", {
             "cwd": str(Path.home()), "sandbox": "read-only", "approvalPolicy": "never", "ephemeral": True,
             "developerInstructions": "Voice transport only. Do not run tools, commands, or Codex tasks. "
-                                     "All tasks are delegated by the Speakeasy server to Hermes."})
+                                     "All tasks are delegated by the Speakeasy server to Hermes."},
+            timeout=float(getattr(self, "thread_timeout", 20)))
         self.thread_id = thread["thread"]["id"]
         self.timings["thread"] = _ms(began)
         self.prepared_at = time.monotonic()

@@ -1374,6 +1374,10 @@ class VoiceService(SecureInputMixin):
             self.codex_spare.warm(key)  # the next tap's spare, in the background
         if stages is not None:
             stages.note("spare", "hit" if spare else "miss")
+            # Why a miss missed (none / warming / failed:TimeoutError / too-old …) and a hit's age:
+            # a slow connect explains itself in the one line.
+            for name, value in ((getattr(self.codex_spare, "last_take", None) or {}) if self.codex_spare else {}).items():
+                stages.note("spare." + name, value)
             stages.mark("prepare")
             stages.add(getattr(transport, "timings", None) if not spare else None, prefix="voice.")
         return transport, spare
