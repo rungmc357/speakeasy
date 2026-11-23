@@ -1195,7 +1195,8 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(409, "identical session admission is still pending")
         if replay is not None:
             with self.lock:
-                live = replay.get("interaction_id") in self.interactions
+                replayed = self.interactions.get(replay.get("interaction_id"))
+            live = replayed is not None and replayed.end_reason != "client_gave_up"  # SPK-557: closed for good
             if not live:
                 raise ServiceError(409, "session replay unavailable after server restart; create a new offer")
             return replay
@@ -1591,6 +1592,43 @@ class VoiceService(SecureInputMixin):
             logger.info("speakeasy: closing an abandoned call's session failed: %s", type(exc).__name__)
         logger.info("speakeasy: the app abandoned a call that never went live; its session was closed")
         return {"interaction_id": interaction_id, "abandoned": True}
+
+    def client_gave_up(self, interaction_id: str) -> bool:
+        """SPK-557: the app hung up on POST /voice/sessions before it got the reply (a slow connect
+        outlasted its request timeout), so nobody will join this call. Close its voice session now
+        and end it as ``client_gave_up``: never held, dropped or resumed as a provider drop, and the
+        call watch doesn't count it as one. False when there was nothing to cancel."""
+        with self.lock:
+            interaction = self.interactions.get(interaction_id)
+        if interaction is None:
+            return False
+        with interaction.lock:
+            if (interaction.call_state not in (CallState.CONNECTING, CallState.LIVE) or interaction.paused
+                    or interaction.drop_held or interaction.end_reason or interaction.runs):
+                return False  # already over, or someone is clearly on it
+            interaction.abandoned = True
+            interaction.end_reason = "client_gave_up"
+        self.note_call_event()   # the app's retry is seconds away; the plugin must still be warm
+        worker = interaction.worker
+        try:
+            if hasattr(worker, "end_call"):
+                worker.end_call("abandoned")
+            elif worker is not None:
+                worker.stop_transport()
+        except Exception as exc:
+            logger.info("speakeasy: closing a gave-up call's session failed: %s", type(exc).__name__)
+        try:
+            if worker is not None:
+                worker.call_closed()  # once per call: logs call.end reason=client_gave_up
+        except Exception as exc:
+            logger.info("speakeasy: closing a gave-up call failed: %s", type(exc).__name__)
+        with interaction.lock:
+            if interaction.finalization == "open":
+                interaction.finalization = "incomplete"
+            interaction.status = "closed"
+        logger.info("speakeasy: call.client_gave_up id=%s: the app hung up before the session reply; "
+                    "its voice session was closed", interaction_id)
+        return True
 
     def pause_expired(self, interaction: Interaction) -> None:
         with interaction.lock:

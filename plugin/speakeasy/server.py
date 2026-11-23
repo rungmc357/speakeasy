@@ -9,6 +9,7 @@ import ipaddress
 import json
 import logging
 import re
+import select
 import socket
 import threading
 import time
@@ -177,8 +178,14 @@ class Handler(BaseHTTPRequestHandler):
         logger.debug("speakeasy http: " + fmt, *args)
 
     # -- plumbing ---------------------------------------------------------------------------
-    def _reply(self, status: int, body: dict[str, Any]) -> None:
+    def _reply(self, status: int, body: dict[str, Any], *, check_peer: bool = False) -> bool:
+        """Send a JSON reply; False when the client had already hung up and never got it.
+        ``check_peer``: first look whether the client closed its end while the reply was being made
+        (a write into a half-closed socket usually "succeeds", so the failed write alone can miss it)."""
         raw = scrub_bytes(json.dumps(body, separators=(",", ":")).encode())
+        if check_peer and self._peer_gone():
+            self._hung_up()
+            return False
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
@@ -187,12 +194,30 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(raw)
         except (BrokenPipeError, ConnectionResetError):
-            # The app gave up waiting (its request timeout) before the reply was ready: say how long it
-            # took, once, instead of a traceback (these were the 16:25-16:33 history "failures").
-            took = time.monotonic() - getattr(self, "_started_at", time.monotonic())
-            logger.info("speakeasy: %s %s: the client hung up before the reply (%.1f s)", self.command,
-                        self.route, took)
-            self.close_connection = True
+            self._hung_up()
+            return False
+        return True
+
+    def _hung_up(self) -> None:
+        # The app gave up waiting (its request timeout) before the reply was ready: say how long it
+        # took, once, instead of a traceback (these were the 16:25-16:33 history "failures").
+        took = time.monotonic() - getattr(self, "_started_at", time.monotonic())
+        logger.info("speakeasy: %s %s: the client hung up before the reply (%.1f s)", self.command,
+                    self.route, took)
+        self.close_connection = True
+
+    def _peer_gone(self) -> bool:
+        """The client closed its end of this connection (EOF waiting, nothing more to read)."""
+        try:
+            sock = self.connection
+            readable, _, _ = select.select([sock], [], [], 0)
+            if not readable:
+                return False
+            return sock.recv(1, socket.MSG_PEEK) == b""
+        except (ConnectionResetError, BrokenPipeError):
+            return True
+        except (OSError, ValueError):  # not a plain socket (or no peek): can't tell, assume it's there
+            return False
 
     def _body(self, limit: int = MAX_BODY) -> dict[str, Any]:
         try:
@@ -821,10 +846,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.push_presence(device_id, self._body()))
                 return
             if path == "/voice/sessions":
-                self._reply(201, self.service.create_session(self._body(MAX_SESSION_BODY),
-                                                            self.headers.get("Idempotency-Key", ""),
-                                                            device_id, local=same_machine(self.client_address[0],
-                                                                                          self.headers)))
+                session = self.service.create_session(self._body(MAX_SESSION_BODY),
+                                                      self.headers.get("Idempotency-Key", ""),
+                                                      device_id, local=same_machine(self.client_address[0],
+                                                                                    self.headers))
+                if not self._reply(201, session, check_peer=True):
+                    # SPK-557: the phone gave up before it got the answer, so nobody will join this
+                    # call: close its voice session now instead of letting the provider drop it.
+                    self.service.client_gave_up(session.get("interaction_id", ""))
                 return
             card = re.fullmatch(rf"/voice/interactions/{_ID}/card-action", path)
             if card:
