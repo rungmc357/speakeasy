@@ -195,10 +195,137 @@ def test_a_dead_or_old_spare_is_never_used():
     made[0].closed = True                 # the app-server died while it waited
     assert spare.take("k") is None and made[0].stopped
     spare.warm("k")
-    now[0] += 61                          # too old: a long-idle thread or sign-in may be stale
+    now[0] += 181                         # past the hard age: a long-idle thread or sign-in may be stale
     assert spare.take("k") is None and made[1].stopped
+    assert spare.last_take == {"why": "too-old"}
     spare.warm("k")
+    now[0] += 61                          # past the refresh age only: still used (its replacement is warming)
     assert spare.take("k") is made[2]
+    assert spare.last_take == {"age": "61s"}
+
+
+# -- Nov 23: a failed warm-up was never retried, so 4 of 6 taps started cold (7-15 s) ---------------
+
+class SlowStart(PrepTransport):
+    """thread/start times out for the first *fails* warm-ups (a busy fseventsd on the mini)."""
+    fails = 0
+
+    def prepare(self) -> None:
+        if SlowStart.fails > 0:
+            SlowStart.fails -= 1
+            raise TimeoutError("Codex request timed out")
+        super().prepare()
+
+
+def test_a_failed_warm_up_tries_again_until_a_spare_is_ready(caplog):
+    SlowStart.fails = 2
+    spare = CodexSpare(lambda key: SlowStart(), retry_s=(.05, .05, .05))
+    try:
+        with caplog.at_level(logging.INFO, logger="speakeasy.codex_spare"):
+            spare.warm("k")
+            wait_for(lambda: spare.spare is not None, timeout=5)
+        assert spare.stats["failed"] == 2 and spare.stats["warmed"] == 1
+        assert spare.failures == 0 and spare.last_failure == ""
+        assert any("warm-up failed (TimeoutError); trying again in" in r.getMessage() for r in caplog.records)
+        assert spare.take("k") is PrepTransport.made[-1]
+    finally:
+        spare.close()
+
+
+def test_a_tap_after_a_failed_warm_up_says_why_it_missed(home, caplog):
+    SlowStart.fails = 1
+    svc = _svc(home, SlowStart)
+    svc.codex_spare.retry_s = (60.0,)     # the retry is not due before the tap
+    try:
+        svc.warm_codex(wait=True)
+        assert svc.codex_spare.spare is None and svc.codex_spare.last_failure == "TimeoutError"
+        with caplog.at_level(logging.INFO, logger="speakeasy.connect_stages"):
+            svc.create_session({"sdp": SDP}, "req_after_fail", device_id="dev_a")
+        line = next(r.getMessage() for r in caplog.records if "call.connect stages" in r.getMessage())
+        assert "spare=miss spare.why=failed:TimeoutError" in line, line
+    finally:
+        svc.close()
+
+
+def test_a_hit_logs_the_spare_s_age(home, caplog):
+    svc = _svc(home, PrepTransport)
+    try:
+        svc.warm_codex(wait=True)
+        with caplog.at_level(logging.INFO, logger="speakeasy.connect_stages"):
+            svc.create_session({"sdp": SDP}, "req_hit_age", device_id="dev_a")
+        line = next(r.getMessage() for r in caplog.records if "call.connect stages" in r.getMessage())
+        assert "spare=hit spare.age=0s" in line, line
+    finally:
+        svc.close()
+
+
+def test_an_aging_spare_stays_usable_until_its_replacement_is_ready():
+    """The old refresh dropped the spare and then warmed a new one: a tap in those 5-20 s started
+    cold or waited. Now the replacement warms first and only then takes the old one's place."""
+    gate = threading.Event()
+    now = [0.0]
+    made: list[PrepTransport] = []
+
+    def make(key):
+        made.append(PrepTransport(prepare_gate=gate if made else None))
+        return made[-1]
+    spare = CodexSpare(make, max_age_s=60, clock=lambda: now[0])
+    try:
+        spare.warm("k", wait=True)
+        first = made[0]
+        now[0] += 61
+        spare._refresh("k")                   # what the timer does
+        wait_for(lambda: len(made) == 2, timeout=5)
+        assert spare.spare is first and not first.stopped   # the old one still serves a tap
+        gate.set()
+        wait_for(lambda: spare.spare is made[1], timeout=5)
+        wait_for(lambda: first.stopped, timeout=5)
+        assert spare.take("k") is made[1]
+    finally:
+        gate.set()
+        spare.close()
+
+
+def test_a_background_warm_up_waits_longer_for_thread_start_than_a_tap():
+    made: list[PrepTransport] = []
+    spare = CodexSpare(lambda key: made.append(PrepTransport()) or made[-1], background=False)
+    spare.warm("k")
+    assert made[0].thread_timeout == 60.0
+
+    from speakeasy import codex_transport as ct
+    tr = ct.CodexTransport.__new__(ct.CodexTransport)
+    seen = {}
+    def request(method, params=None, timeout=20):
+        seen[method] = timeout
+        return {"thread": {"id": "thr"}} if method == "thread/start" else {}
+    tr.request, tr._write, tr.thread_id, tr.timings = request, lambda e: None, None, {}
+    tr.prepare()
+    assert seen["thread/start"] == 20     # a tap's own start keeps the short wait
+    tr2 = ct.CodexTransport.__new__(ct.CodexTransport)
+    tr2.request, tr2._write, tr2.thread_id, tr2.timings = request, lambda e: None, None, {}
+    tr2.thread_timeout = 60.0
+    tr2.prepare()
+    assert seen["thread/start"] == 60.0
+
+
+def test_codex_version_runs_once_per_copy_not_once_per_tap(tmp_path, monkeypatch):
+    """`codex --version` ran on every tap (a fresh cache per call): 30-170 ms of each connect."""
+    from speakeasy import service as SV
+    from speakeasy import settings as S
+    calls = []
+
+    def version(binary, runner=None):
+        calls.append(str(binary))
+        return (0, 167, 2)
+    monkeypatch.setattr(S, "codex_version", version)
+    SV._CODEX_VERSIONS.clear()
+    binary = tmp_path / "codex"
+    binary.write_text("#!/bin/sh\n")
+    for _ in range(5):
+        assert SV._cached_codex_version(binary) == (0, 167, 2)
+    assert len(calls) == 1
+    binary.write_text("#!/bin/sh\n# updated\n")   # an update is seen at once
+    assert SV._cached_codex_version(binary) == (0, 167, 2) and len(calls) == 2
 
 
 def test_a_signin_or_codex_change_drops_the_spare_and_there_is_only_ever_one():
