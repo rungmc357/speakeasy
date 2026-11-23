@@ -1312,6 +1312,8 @@ class SidebandWorker:
         self.set_aside_tasks: set[str] = set()
         self.home_notes: list[str] = []
         self.home_tasks: set[str] = set()        # task ids that were instant home commands
+        # The last room-wide on/off (home_control.Scope), so "no, they're not" re-checks that room.
+        self.home_scope: Any = None
         # Choices the voice offered out loud, shown as question cards (task id -> question asked).
         self.choice_tasks: dict[str, str] = {}
         self.choice_answered: set[str] = set()
@@ -4299,10 +4301,16 @@ class SidebandWorker:
             answering = (pending[0], pending[1])
         try:
             following = bool(self.home_notes) and self.replied_task in self.home_tasks
-            try:
-                reply = await asyncio.to_thread(home.respond, request, list(self.home_notes), answering, following)
-            except TypeError:  # a test double without the newer argument
-                reply = await asyncio.to_thread(home.respond, request, list(self.home_notes), answering)
+            reply = None
+            if following and not answering and self.home_scope is not None and hasattr(home, "recheck"):
+                # "No, they're not": re-read the room fresh and fix what's still on; never re-plan it
+                # from the same claim (it once said "they're off" three times with a light on).
+                reply = await asyncio.to_thread(home.recheck, request, self.home_scope)
+            if reply is None:
+                try:
+                    reply = await asyncio.to_thread(home.respond, request, list(self.home_notes), answering, following)
+                except TypeError:  # a test double without the newer argument
+                    reply = await asyncio.to_thread(home.respond, request, list(self.home_notes), answering)
         except Exception as exc:  # the fast path must never break a request
             logger.warning("speakeasy: home control failed, using Hermes (%s)", type(exc).__name__)
             return False
@@ -4354,6 +4362,7 @@ class SidebandWorker:
             # "make 'em dimmer" right after: the planner knows which lights were meant.
             self.home_tasks.add(delegation_id)
             self.home_notes = (self.home_notes + [f'Just now: "{request}" -> {reply.spoken}'])[-home_control_mod.MAX_NOTES:]
+            self.home_scope = getattr(reply, "scope", None)
         self.replied_task = delegation_id
         self.publish()
         await self.append("session.commentary.append", delegation_id, reply.spoken)

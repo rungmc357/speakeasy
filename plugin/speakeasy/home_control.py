@@ -123,7 +123,7 @@ class HomeAssistantClient:
     def __repr__(self) -> str:  # never expose the token
         return "HomeAssistantClient(<configured>)"
 
-    def _request(self, method: str, path: str, body: Any = None) -> Any:
+    def _request(self, method: str, path: str, body: Any = None, text: bool = False) -> Any:
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(self._url + "/api/" + path, data=data, method=method, headers={
             "Authorization": "Bearer " + self._token, "Content-Type": "application/json"})
@@ -136,6 +136,8 @@ class HomeAssistantClient:
             reason = getattr(exc, "reason", exc)
             timed_out = isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError) or "timed out" in str(reason)
             raise HomeAssistantError("timeout" if timed_out else "unreachable", sent=timed_out and method == "POST") from None
+        if text:
+            return raw.decode("utf-8", "replace")
         try:
             return json.loads(raw or b"null")
         except ValueError:
@@ -152,6 +154,24 @@ class HomeAssistantClient:
     def call_service(self, domain: str, service: str, data: dict[str, Any]) -> Any:
         return self._request("POST", f"services/{domain}/{service}", data)
 
+    def areas(self) -> dict[str, str]:
+        """entity_id -> Home Assistant area name, for the kinds home control may touch. One template
+        render (the REST API has no area endpoint); entities without an area are left out."""
+        kinds = ", ".join(f"'{d}'" for d in DOMAINS)
+        template = ("{% for s in states if s.domain in [" + kinds + "] %}{% set a = area_name(s.entity_id) %}"
+                    "{% if a %}{{ s.entity_id }}\t{{ a }}\n{% endif %}{% endfor %}")
+        raw = self._request("POST", "template", {"template": template}, text=True)
+        return parse_areas(raw)
+
+
+def parse_areas(raw: Any) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in str(raw or "").splitlines():
+        eid, _, area = line.partition("\t")
+        if re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", eid.strip()) and area.strip():
+            out[eid.strip()] = area.strip()[:60]
+    return out
+
 
 @dataclasses.dataclass(frozen=True)
 class Device:
@@ -159,6 +179,7 @@ class Device:
     name: str
     state: str
     attrs: dict[str, Any]
+    area: str = ""  # Home Assistant area ("Upstairs Den"), when known
 
     @property
     def domain(self) -> str:
@@ -175,7 +196,20 @@ class Device:
             extra = f" | brightness {round(int(a['brightness']) / 2.55)}%"
         elif self.domain == "cover" and a.get("current_position") is not None:
             extra = f" | position {a.get('current_position')}"
-        return f"{self.entity_id} | {self.name} | {self.state}{extra}"
+        name = self.name
+        if self.area and self.area.lower() not in name.lower():
+            name = f"{name} (area {self.area})"
+        return f"{self.entity_id} | {name} | {self.state}{extra}"
+
+    def words(self) -> set[str]:
+        """Every word naming this device: friendly name, entity id and area ("den" for
+        "Upstairs Den Main Lights" or light.upstairs_den_main), plurals folded to singular."""
+        return _words(f"{self.name} {self.entity_id.split('.', 1)[-1]} {self.area}")
+
+
+def _words(text: str) -> set[str]:
+    hay = set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+    return hay | {h[:-1] for h in hay if len(h) > 3 and h.endswith("s") and not h.endswith("ss")}
 
 
 def offerable(state: dict[str, Any]) -> bool:
@@ -190,10 +224,11 @@ def offerable(state: dict[str, Any]) -> bool:
     return str(state.get("state")) != "unavailable" or domain == "scene"
 
 
-def device_from_state(state: dict[str, Any]) -> Device:
+def device_from_state(state: dict[str, Any], areas: dict[str, str] | None = None) -> Device:
     attrs = state.get("attributes") or {}
     name = str(attrs.get("friendly_name") or state["entity_id"]).strip()[:80]
-    return Device(state["entity_id"], name, str(state.get("state")), dict(attrs))
+    return Device(state["entity_id"], name, str(state.get("state")), dict(attrs),
+                  (areas or {}).get(state["entity_id"], ""))
 
 
 def default_selection(states: list[dict[str, Any]]) -> list[str]:
@@ -261,6 +296,19 @@ class Reply:
     spoken: str
     ask: bool = False  # spoken is a question for the user; no device moved
     touched: tuple[str, ...] = dataclasses.field(default=(), compare=False)  # entity ids it moved (the card's device buttons)
+    # What a room-wide on/off covered, so "no, they're not" can re-check it (None for anything else).
+    scope: "Scope | None" = dataclasses.field(default=None, compare=False)
+
+
+@dataclasses.dataclass(frozen=True)
+class Scope:
+    """A room-wide on/off just done: the kind, the state asked for, the room words heard and every
+    device it covered. Kept by the call so a dispute re-checks the whole room against fresh states."""
+    domain: str
+    want: str  # "on" or "off"
+    groups: tuple[tuple[str, ...], ...]  # the room words heard, per room ("den and kitchen" = two)
+    entity_ids: tuple[str, ...]
+    at: float = dataclasses.field(default_factory=time.monotonic, compare=False)
 
 
 TOGGLEABLE = {"light", "switch", "fan"}  # what a card's on/off button may flip
@@ -469,6 +517,103 @@ def _num(value: Any, lo: float, hi: float) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and lo <= value <= hi
 
 
+# -- a room, said the way the user says it ---------------------------------------------------------
+# "Turn off my den lights" means every chosen light whose name, entity id or Home Assistant area
+# carries "den" ("Upstairs Den Main Lights" too). Planners match the room to the start of a name and
+# miss the rest, so the room is re-read here and the plan widened to all of it.
+
+ROOM_STOP = GENERIC | set(KIND_WORDS) | {"turn", "switch", "shut", "off", "on", "out", "please", "can", "you",
+                                         "could", "would", "kill", "flip", "put", "every", "everything", "also",
+                                         "just", "now", "too", "hey", "and", "for", "me", "our", "your", "up",
+                                         "down", "set", "get", "go", "lamp", "bulb", "bulbs", "switches"}
+PLURAL_KINDS = {"lights": "light", "lamps": "light", "bulbs": "light", "fans": "fan", "switches": "switch",
+                "plugs": "switch"}
+KIND_LABEL = {"light": "lights", "fan": "fans", "switch": "switches"}
+VERIFY_TRIES = 3     # post-call re-reads while Home Assistant catches up with a state change
+VERIFY_WAIT_S = 0.4
+DISPUTE_WINDOW_S = 300  # "no, they're not" this long after a room command re-checks the room
+
+
+def _singular(w: str) -> str:
+    return w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w
+
+
+def room_groups(request: str, domain: str, devices: list[Device]) -> tuple[tuple[str, ...], ...] | None:
+    """The rooms (or other naming words) a plural on/off request names for one kind, in the user's
+    order: "den and kitchen lights" -> (("den",), ("kitchen",)). None when it isn't clearly that: no
+    plural kind word, an exclusion, or a part naming nothing on the list (left to the planner)."""
+    text = (request or "").lower()
+    if EXCEPT.search(text):
+        return None
+    said = re.findall(r"[a-z0-9']+", text)
+    if not any(PLURAL_KINDS.get(w) == domain for w in said) and not ({"all", "every", "everything"} & set(said)):
+        return None
+    vocab: set[str] = set().union(*[d.words() for d in devices if d.domain == domain]) if devices else set()
+    groups: list[tuple[str, ...]] = []
+    for part in re.split(r",|;|&|\band\b|\bplus\b", text):
+        raw = re.findall(r"[a-z0-9']+", part)
+        words = [_singular(w.removesuffix("'s")) for w in raw]
+        named = tuple(dict.fromkeys(w for w in words if w in vocab and w not in ROOM_STOP and len(w) >= 2))
+        if "lamp" in words:
+            named += ("lamp",)  # "den lamps" = the den's lamps, not its ceiling lights
+        if named:
+            groups.append(named)
+        elif any(w in vocab and w not in ROOM_STOP for w in words):
+            return None
+    return tuple(groups) or None
+
+
+def in_room(device: Device, groups: tuple[tuple[str, ...], ...]) -> bool:
+    words = device.words()
+    return any(set(g) <= words for g in groups)
+
+
+def widen(plan: Plan, request: str, devices: list[Device]) -> tuple[Plan, Scope | None]:
+    """A plain room-wide on/off plan, widened to every chosen device of that kind in the room(s).
+    Anything else (values, several kinds, a planner reading the room differently) is left as it is."""
+    calls = plan.calls
+    if not calls or any(c.data or c.service not in ("turn_on", "turn_off") for c in calls):
+        return plan, None
+    if len({c.domain for c in calls}) != 1 or len({c.service for c in calls}) != 1:
+        return plan, None
+    domain, service = calls[0].domain, calls[0].service
+    if domain not in TOGGLEABLE:
+        return plan, None
+    groups = room_groups(request, domain, devices)
+    if not groups:
+        return plan, None
+    room = [d.entity_id for d in devices if d.domain == domain and in_room(d, groups)]
+    planned = list(dict.fromkeys(i for c in calls for i in c.entity_ids))
+    if not set(planned) <= set(room):
+        return plan, None  # the planner read the room differently: trust it, don't guess
+    ids = tuple(planned + [i for i in room if i not in planned])
+    scope = Scope(domain, "off" if service == "turn_off" else "on", groups, ids)
+    return Plan((Call(domain, service, ids, {}),), plan.say), scope
+
+
+def _names(devices: list[Device]) -> str:
+    names = [d.name for d in devices]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _be(devices: list[Device]) -> str:
+    return "is" if len(devices) == 1 and not re.search(r"(?i)[^s]s$", devices[0].name) else "are"
+
+
+def _room_label(scope: Scope) -> str:
+    rooms = [" ".join(w for w in g if w != "lamp") for g in scope.groups]
+    rooms = [r for r in rooms if r]
+    kind = "lamps" if all("lamp" in g for g in scope.groups) else KIND_LABEL.get(scope.domain, "devices")
+    label = " and ".join(rooms)
+    return (label[:1].upper() + label[1:] + " " + kind) if label else kind[:1].upper() + kind[1:]
+
+
+DISPUTE = re.compile(
+    r"(?i)\b(?:(?:they|it|those|these|that|she)(?:'re|'s| are| is)\s+(?:not|still)\b|still\s+(?:on|off|lit)\b|"
+    r"(?:didn't|did not|doesn't|does not)\s+(?:work|do anything)\b|did nothing\b|not\s+(?:off|on)\b|"
+    r"(?:aren't|isn't|ain't)\s+(?:off|on)\b|nothing\s+(?:changed|happened)\b|^\W*(?:no|nope|nah)\W*$)")
+
+
 # -- the controller ----------------------------------------------------------------------------------
 
 @dataclasses.dataclass
@@ -476,6 +621,10 @@ class Snapshot:
     at: float
     states: list[dict[str, Any]]
     unit: str
+    areas: dict[str, str] = dataclasses.field(default_factory=dict)  # entity_id -> area name
+
+
+AREAS_CACHE_S = 300.0  # areas rarely change; re-read them at most every few minutes
 
 
 class HomeControl:
@@ -489,6 +638,7 @@ class HomeControl:
         self._client_factory = client_factory
         self._lock = threading.Lock()
         self._snap: Snapshot | None = None
+        self._areas: tuple[float, dict[str, str]] | None = None
 
     # settings
     def _cfg(self) -> dict[str, Any]:
@@ -516,10 +666,27 @@ class HomeControl:
             unit = "F" if "F" in temp.upper() else "C"
         except HomeAssistantError:
             pass
-        snap = Snapshot(time.monotonic(), states, unit)
+        snap = Snapshot(time.monotonic(), states, unit, self._read_areas(client))
         with self._lock:
             self._snap = snap
         return snap
+
+    def _read_areas(self, client: Any) -> dict[str, str]:
+        """Home Assistant areas, cached for a few minutes. Optional: an older client, a token that
+        can't render templates or any error just means names and entity ids alone pick the room."""
+        with self._lock:
+            if self._areas and time.monotonic() - self._areas[0] < AREAS_CACHE_S:
+                return self._areas[1]
+        areas: dict[str, str] = {}
+        if hasattr(client, "areas"):
+            try:
+                got = client.areas()
+                areas = got if isinstance(got, dict) else {}
+            except Exception as exc:
+                logger.info("speakeasy: home areas unavailable (%s)", type(exc).__name__)
+        with self._lock:
+            self._areas = (time.monotonic(), areas)
+        return areas
 
     def detect(self) -> dict[str, Any]:
         """Is Home Assistant set up in Hermes and answering? Never raises; never returns the token."""
@@ -553,7 +720,8 @@ class HomeControl:
     def chosen(self, snap: Snapshot) -> list[Device]:
         chosen = self._cfg().get("entities")
         selected = set(chosen if chosen is not None else default_selection(snap.states))
-        return [device_from_state(s) for s in snap.states if s.get("entity_id") in selected and offerable(s)][:MAX_DEVICES]
+        return [device_from_state(s, snap.areas) for s in snap.states
+                if s.get("entity_id") in selected and offerable(s)][:MAX_DEVICES]
 
     # the call path
     def wants(self, request: str, devices: list[Device], following: bool = False) -> bool:
@@ -615,10 +783,109 @@ class HomeControl:
         if breaks_exclusion(plan, request.split("\n(I asked:")[0], {d.entity_id: d for d in devices}):
             logger.info("speakeasy: home plan touched an excluded device; using Hermes")
             return None
+        scope = None
+        if not answering:
+            plan, scope = widen(plan, request, devices)
         reply = self.run(plan)
+        if reply.ok and scope is not None:
+            reply = self._confirm_room(scope, reply)
         logger.info("speakeasy: home control %s in %d ms (%d calls)", "done" if reply.ok else "failed",
                     int((time.monotonic() - started) * 1000), len(plan.calls))
         return reply
+
+    # rooms: say what the whole room is now, and re-check it when the user says it isn't
+    def _room_now(self, scope: Scope) -> tuple[list[Device], list[Device]]:
+        """(every chosen device of the scope's kind in its room, as Home Assistant reads it right now;
+        offerable devices in that room that aren't on the user's list). Raises HomeAssistantError."""
+        snap = self.snapshot(fresh=True)
+        chosen = self.chosen(snap)
+        picked = {d.entity_id for d in chosen}
+        room = [d for d in chosen if d.domain == scope.domain
+                and (d.entity_id in scope.entity_ids or in_room(d, scope.groups))]
+        others = [device_from_state(s, snap.areas) for s in snap.states
+                  if offerable(s) and s.get("entity_id") not in picked]
+        others = [d for d in others if d.domain == scope.domain and in_room(d, scope.groups)]
+        return room, others
+
+    def _settled(self, scope: Scope) -> tuple[list[Device], list[Device], list[Device]]:
+        """Re-read the room until every device reads the state asked for (Home Assistant can lag a
+        service call by a moment): (room, still wrong, not on the list)."""
+        room: list[Device] = []
+        wrong: list[Device] = []
+        others: list[Device] = []
+        for attempt in range(VERIFY_TRIES):
+            if attempt:
+                time.sleep(VERIFY_WAIT_S)
+            room, others = self._room_now(scope)
+            wrong = [d for d in room if d.state != scope.want]
+            if not wrong:
+                break
+        return room, wrong, others
+
+    def _confirm_room(self, scope: Scope, reply: Reply) -> Reply:
+        """The spoken line for a room-wide on/off, from the room's state after the calls: every
+        device in it, not just the ones the planner named."""
+        try:
+            room, wrong, _ = self._settled(scope)
+        except HomeAssistantError:
+            return reply  # can't re-read: Home Assistant did accept every call
+        if not room:
+            return reply
+        if not wrong:
+            spoken = f"{_room_label(scope)} are {scope.want}."
+        else:
+            right = [d for d in room if d not in wrong]
+            still = f"{_names(wrong)} {_be(wrong)} still {wrong[0].state}"
+            spoken = (f"{_names(right)} {_be(right)} {scope.want}, but {still}." if right
+                      else f"I sent that, but {still}.")
+        return dataclasses.replace(reply, spoken=spoken[:300], scope=scope)
+
+    def recheck(self, request: str, scope: Scope | None) -> Reply | None:
+        """The user disputes a room command just done ("no, they're not"): re-read the room fresh,
+        name what is still in the wrong state and fix it, or say by name what Home Assistant reads.
+        Never repeats the earlier claim. None = not a dispute about that room (planned as usual)."""
+        text = (request or "").strip()
+        if (scope is None or not self.enabled or not text or len(text.split()) > 12
+                or time.monotonic() - scope.at > DISPUTE_WINDOW_S or not DISPUTE.search(text)):
+            return None
+        try:
+            room, others = self._room_now(scope)
+        except HomeAssistantError as exc:
+            logger.info("speakeasy: home re-check unavailable (%s); using Hermes", exc.kind)
+            return None
+        # Naming a different device or room ("no, the kitchen ones") is a new request, not a dispute.
+        said = _words(text) - ROOM_STOP - {w for g in scope.groups for w in g}
+        vocab = set().union(*[d.words() for d in self.chosen(self.snapshot())]) - ROOM_STOP
+        if said & vocab or not room:
+            return None
+        wrong = [d for d in room if d.state != scope.want]
+        not_listed = [d for d in others if d.state != scope.want]
+        aside = (f" {_names(not_listed)} {_be(not_listed)} {not_listed[0].state} too, but "
+                 f"{'it is' if len(not_listed) == 1 else 'they are'} not on the list I can control.") if not_listed else ""
+        if not wrong:
+            each = "" if len(room) == 1 else ("both " if len(room) == 2 else "all ")
+            verb = "reads" if len(room) == 1 else "read"
+            return Reply(True, (f"I just checked: {_names(room)} {each}{verb} {scope.want} in Home Assistant."
+                                + aside)[:300], scope=dataclasses.replace(scope, at=time.monotonic()))
+        service = "turn_off" if scope.want == "off" else "turn_on"
+        moved = self.run(Plan((Call(scope.domain, service, tuple(d.entity_id for d in wrong), {}),), ""))
+        if not moved.ok:
+            return Reply(False, f"{_names(wrong)} {_be(wrong)} still {wrong[0].state}. {moved.spoken}")
+        try:
+            _, still, _ = self._settled(scope)
+        except HomeAssistantError:
+            still = []
+        fixed = [d for d in wrong if d.entity_id not in {s.entity_id for s in still}]
+        parts = []
+        if fixed:
+            many = _be(fixed) == "are"
+            parts.append(f"You're right, {_names(fixed)} {'were' if many else 'was'} still {wrong[0].state}. "
+                         f"{'They are' if many else 'It is'} {scope.want} now.")
+        if still:
+            parts.append(f"I sent it again, but {_names(still)} still {'read' if _be(still) == 'are' else 'reads'} "
+                         f"{still[0].state} in Home Assistant.")
+        return Reply(True, (" ".join(parts) + aside)[:300], touched=tuple(d.entity_id for d in wrong),
+                     scope=dataclasses.replace(scope, at=time.monotonic()))
 
     def run(self, plan: Plan) -> Reply:
         if not plan.calls:

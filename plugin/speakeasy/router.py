@@ -1804,6 +1804,13 @@ _CORRECTION_VERB = re.compile(
     r"(?i)^(?:please\s+)?(?:turn|switch|set|make|dim|brighten|open|close|play|pause|stop|start|send|book|"
     r"check|find|look|get|put|move|add|remove|cancel|use|go|do|keep|leave|change|show|tell|text|email|call)\b")
 _LEADING_JUNK = re.compile(r"(?i)^(?:(?:or|our|and|but|so|um+|uh+|er+|oh|the)\s+)+")
+# "No, they're not" / "no, it's still on" / "no, that didn't work": a denial that the last thing
+# happened, not new words for it. Spliced in as a correction it became "Turn off my den lights
+# (correction: they're not, ...)" and the same claim came back (SPK-554).
+_DENIAL = re.compile(
+    r"(?i)^(?:(?:they|it|those|these|that|this|she|he)(?:'re|'s|\s+are|\s+is|\s+was|\s+were)\s+(?:not|still)\b|"
+    r"(?:they|it|those|that|this)\s+(?:didn't|did\s+not|doesn't|does\s+not|aren't|isn't|wasn't|weren't)\b|"
+    r"(?:still|not)\s+(?:on|off)\b|(?:didn't|did\s+not|doesn't|does\s+not)\s+work\b|nothing\s+(?:changed|happened)\b)")
 
 
 def correction(request: str) -> tuple[str, str] | None:
@@ -1824,6 +1831,8 @@ def correction(request: str) -> tuple[str, str] | None:
     rest = rest.strip(" ,.;:!-")
     if re.match(r"(?i)^(?:thanks|thank\s+you|worries|problem|way|need|wait|rush|it'?s\s+fine|that'?s\s+fine)\b", rest):
         return None  # "no thanks", "no worries": an answer, not a correction
+    if _DENIAL.match(rest):
+        return None  # "no, they're not": says the last thing didn't happen; it names no new words
     if _CORRECTION_VERB.match(rest):
         # "No, turn them on": a whole new command (only after "no"/"I mean", never a polite "sorry").
         return ("replace", rest) if by_lead and re.match(r"(?i)^\W*(?:no|nope|nah|i\s+mean)", text) else None
