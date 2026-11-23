@@ -328,15 +328,24 @@ class FakeHermesServer:
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeHermes)
         self.httpd.daemon_threads = True
         self.httpd.state = self  # type: ignore[attr-defined]
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.closed = False
+        threading.Thread(target=self.httpd.serve_forever, daemon=True, name="fake-hermes").start()
+        FakeHermesServer.live.append(self)
+
+    live: "list[FakeHermesServer]" = []  # every server not yet closed (conftest closes leftovers)
 
     @property
     def base(self) -> str:
         return f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
     def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
         self.httpd.shutdown()
         self.httpd.server_close()
+        if self in FakeHermesServer.live:
+            FakeHermesServer.live.remove(self)
 
 
 def model_options_payload() -> dict[str, Any]:
@@ -404,20 +413,47 @@ class FakeTransport:
 class FakeLiveWorker(SidebandWorker):
     """Live-call worker whose provider is the test: it records everything sent to the call."""
 
+    live: "list[FakeLiveWorker]" = []  # every started worker whose loop still runs (conftest stops leftovers)
+
     def __init__(self, rt: Any, interaction: Any):
         super().__init__(rt, interaction)
         self.sent: list[tuple[str, str | None, str]] = []
         self.ready = threading.Event()
         self.connected = True
+        self.thread: threading.Thread | None = None
 
     def start(self) -> None:
         def runner() -> None:
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
+            loop = self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             self.ready.set()
-            self.loop.run_forever()
-        threading.Thread(target=runner, daemon=True).start()
+            try:
+                loop.run_forever()
+            finally:
+                # The loop's default executor (run_in_executor) holds threads of its own: end them too,
+                # or every call a test opened leaves four idle "asyncio_N" threads for the whole run.
+                try:
+                    loop.run_until_complete(loop.shutdown_default_executor())
+                except Exception:
+                    pass
+                loop.close()
+        self.thread = threading.Thread(target=runner, daemon=True, name="fake-live-worker")
+        self.thread.start()
+        FakeLiveWorker.live.append(self)
         self.ready.wait(5)
+
+    def stop_loop(self, timeout: float = 5.0) -> None:
+        """End this worker's event loop and its thread (the provider call is gone; idempotent)."""
+        loop = getattr(self, "loop", None)
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass
+        if self.thread is not None and self.thread is not threading.current_thread():
+            self.thread.join(timeout)
+        if self in FakeLiveWorker.live:
+            FakeLiveWorker.live.remove(self)
 
     async def _send(self, kind: str, delegation_id: str | None, content: str) -> None:
         self.sent.append((kind, delegation_id, content))

@@ -13,6 +13,7 @@ import pytest
 import offline_model
 import process_state
 import temp_homes
+import thread_hygiene
 from fakes import FakeHermesServer, FakeLiveWorker, FakeTransport, make_home, http  # noqa: F401
 from speakeasy import delivery as _delivery
 from speakeasy import duck as _duck
@@ -82,6 +83,30 @@ process_state.import_hermes_bootstrap_inert()
 # threads a test leaves behind), exactly as on a Hermes with no usable provider, which every plugin
 # caller already handles as "no side model". The calls are counted in the run's summary.
 offline_model.block_real_model_calls()
+
+
+# Background helpers a test leaves running are stopped after it, and a test file that still leaves
+# many threads behind fails (SPK-565: a serial run reached about 3,400 live threads and hung).
+thread_hygiene.track()
+
+
+@pytest.fixture(autouse=True)
+def stop_leftover_threads():
+    """After each test (and after its own fixtures closed what they opened), stop any fake call worker,
+    fake Hermes, tunnel watcher or notice sender the test left running."""
+    yield
+    thread_hygiene.stop_leftovers()
+
+
+@pytest.fixture(autouse=True, scope="module")
+def no_thread_growth_per_file(request):
+    """Fail the file whose tests leave more than a handful of background threads alive."""
+    guard = thread_hygiene.FileGuard()
+    yield
+    thread_hygiene.stop_leftovers()
+    problem = guard.problem(request.node.nodeid)
+    if problem:
+        pytest.fail(problem, pytrace=False)
 
 
 def pytest_terminal_summary(terminalreporter):
@@ -219,6 +244,8 @@ def service(home):
     b.workers = workers  # type: ignore[attr-defined]
     yield b
     b.close()
+    for worker in workers:
+        worker.stop_loop()
 
 
 @pytest.fixture
@@ -231,5 +258,6 @@ def server(service):
     assert status == 201
     srv.token = paired["token"]  # type: ignore[attr-defined]
     yield srv
+    srv.tunnel.stop()
     srv.httpd.shutdown()
     srv.httpd.server_close()
