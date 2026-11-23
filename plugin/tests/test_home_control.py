@@ -31,7 +31,8 @@ STATES = [
 
 class FakeHA:
     def __init__(self, states=STATES, unit="°C", fail=None):
-        self._states, self.unit, self.fail = states, unit, fail
+        # Its own copy: on/off calls change states the way Home Assistant does.
+        self._states, self.unit, self.fail = [dict(s) for s in states], unit, fail
         self.calls: list[tuple[str, str, dict]] = []
 
     def __call__(self, url, token):  # client factory
@@ -50,6 +51,10 @@ class FakeHA:
         if self.fail:
             raise H.HomeAssistantError(self.fail)
         self.calls.append((domain, service, data))
+        if service in ("turn_on", "turn_off") and domain in ("light", "switch", "fan"):
+            for s in self._states:
+                if s["entity_id"] in data.get("entity_id", ()):
+                    s["state"] = "on" if service == "turn_on" else "off"
         return []
 
 
