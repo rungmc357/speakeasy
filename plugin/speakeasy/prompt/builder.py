@@ -1922,6 +1922,13 @@ GREETING_SPOKEN = "That was just a hello, so nothing's started. Go ahead, I'm li
 GREETING_TYPED = "Hey! What would you like me to do?"
 
 
+def side_talk_note(names: "Names") -> str:
+    """SPK-556: a short line that sounded aimed at someone else in the room started nothing."""
+    return (f"Nothing was started: that sounded like {names.user} talking to someone else in the room, not to you. "
+            "Don't act on it or guess what they meant. If you told them you were on it, say in a few words that you "
+            "haven't started anything; if it might have been for you, ask one short question about what they want.")
+
+
 def nothing_started_note(names: "Names") -> str:
     return (f"Correction: nothing was started for what {names.user} just said. If you told them you were on it, say "
             "plainly, in a few words, that you haven't started it yet, and ask them to say what they want done.")

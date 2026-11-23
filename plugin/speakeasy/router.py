@@ -1795,6 +1795,55 @@ def is_fragment(request: str) -> bool:
     return 0 < len(words) <= 4 and all(w in _FRAGMENT_WORDS for w in words)
 
 
+# -- the voice asked them to say it again (SPK-556) -------------------------------------------------
+_ASKS_TO_REPEAT = re.compile(
+    r"(?i)\b(?:(?:didn'?t|did\s+not|couldn'?t|could\s+not)\s+(?:quite\s+)?(?:catch|hear|get|make\s+out)\s+(?:that|it|what\s+you)"
+    r"|i\s+missed\s+(?:that|it|what\s+you)|missed\s+that"
+    r"|(?:say|run)\s+(?:that|it)\s+(?:again|back)|(?:could|can|would)\s+you\s+(?:please\s+)?(?:repeat|say\s+(?:that|it)\s+again)"
+    r"|repeat\s+that|come\s+again\s*\?|sorry,?\s+what\s+was\s+that|one\s+more\s+time\s*\?)")
+
+
+def asks_to_repeat(said: str) -> bool:
+    """The voice's own words say it didn't catch the user and wants it again ("Didn't catch that one.
+    Run it back for me?"): a hand-off in that same turn is a guess, never a task."""
+    return bool(_ASKS_TO_REPEAT.search(" ".join((said or "").split())))
+
+
+# -- side-talk: a short line to someone else in the room (SPK-556) --------------------------------
+# "Grab me a coffee, Sam." A name said to someone, an in-the-room verb, and nothing that makes it
+# an errand (no app, place or time). Started as work, one guessed for 13 minutes.
+_ROOM_VERBS = frozenset("grab pass hand bring get come hold give take fetch toss throw put help wait look "
+                        "watch move hang sit stop".split())
+_NOT_A_NAME = frozenset("okay ok please yes yeah yep no nope hey hi so well now thanks thank alright actually also "
+                        "and but sorry right sure oh um uh hmm listen wait look".split())
+_ERRAND_WORDS = re.compile(
+    r"(?i)\b(?:to|from|at|by|on|for|until|before|after|tomorrow|tonight|today|morning|afternoon|evening|"
+    r"o'?clock|am|pm|minutes?|hours?|text|email|message|call|order|book|remind|calendar|uber|lyft|ride|"
+    r"online|amazon|app)\b|\d")
+_VOCATIVE_TAIL = re.compile(r"^(?P<body>.+?),\s*(?P<name>[A-Z][a-z]+)\W*$")
+_VOCATIVE_LEAD = re.compile(r"^\W*(?:hey\s+)?(?P<name>[A-Z][a-z]+),\s*(?P<body>.+?)\W*$")
+
+
+def side_talk(request: str, assistant_name: str = "") -> bool:
+    """Short, names someone who isn't the assistant, and asks them for something in the room with no
+    clear errand (``Grab me a coffee, Sam``). Clear asks ("Text Sam that I'm running late", "Order
+    me a coffee from the corner place, Sam") are never side-talk."""
+    text = " ".join((request or "").split())
+    if not text or len(text.split()) > 8:
+        return False
+    match = _VOCATIVE_TAIL.match(text) or _VOCATIVE_LEAD.match(text)
+    if not match:
+        return False
+    name = match.group("name")
+    if name.lower() in _NOT_A_NAME or (assistant_name and name.lower() == assistant_name.lower()):
+        return False
+    body = match.group("body")
+    words = re.findall(r"[a-z']+", body.lower())
+    if not words or words[0] not in _ROOM_VERBS:
+        return False
+    return not _ERRAND_WORDS.search(body)
+
+
 # -- corrections: "living room... guest room, sorry", "no, turn them on" -------------------------
 _CORRECTION_LEAD = re.compile(
     r"(?i)^\W*(?:(?:um+|uh+|er+|oh|wait)\W+)*(?:no|nope|nah|not\s+that|i\s+mean(?:t)?|or\s+rather|rather"
