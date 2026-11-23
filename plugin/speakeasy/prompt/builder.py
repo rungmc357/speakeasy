@@ -1277,8 +1277,9 @@ def status_answer(name: str, status: str | None, steps: list[str], age_s: float,
                  "\"the task\", and never read out a command, a file path or a tool name. ")
     live_now = status not in {"completed", "failed", "interrupted", "cancelled"}
     screen = (f"{CARD_NOT_UP}. " if card_up is False and live_now else "")
-    why = (f"Why it's waiting: {notice_text(waiting, 300)} Say that reason and the rough wait in plain words; "
-           "never answer with a one-word status. " if waiting and live_now else "")
+    why = (f"Why it's waiting: {notice_text(waiting, 300)} Say the gist and the rough wait in plain "
+           "words about the work itself (\"it's still measuring the beds; another minute\"), never the machinery (a step "
+           "finishing, catching up, picking it up, queues); never answer with a one-word status. " if waiting and live_now else "")
     return (opener + screen + why + specifics + " ".join(job + [facts]))[:2000]
 
 
@@ -1671,8 +1672,11 @@ def follow_up_queued_note(earlier: str, doing: str | None = None, eta_s: float |
     live step, ``eta_s``: roughly how long until that step ends (calls.step_wait), so the voice can say
     why it waits and for how long instead of a bare "Queued."."""
     return (f"Lined up, not read yet: what they just said is waiting for the task already working on: {earlier}. "
-            f"Hermes took it, but the task has not read it yet. {waiting_reason(doing, eta_s)} Acknowledge it in "
-            "a few words that give that reason and the wait. Never answer with a one-word status, and do not say the task has it, is on it or that it's done. If a later note says it "
+            f"Hermes took it, but the task has not read it yet. {waiting_reason(doing, eta_s)} That is for you, "
+            "not to read out: acknowledge it in a few plain words about the outcome and, if known, the rough wait "
+            "(\"I'll work that in, about a minute\"). Never describe the machinery (no step finishing, catching up, "
+            "picking it up, queues, a task reading it) and never name the task's title. Never answer with a one-word "
+            "status, and do not say the task has it, is on it or that it's done. If a later note says it "
             "was read, you may say so if they ask.")
 
 

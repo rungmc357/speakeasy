@@ -104,6 +104,13 @@ final class MicControlTests: XCTestCase {
         XCTAssertEqual(cleanTranscript("Use arr[0] now"), "Use arr[0] now", "only word-like tags are hidden")
         let prose = "Brackets [are not closed because this text is far too long to be a tag]"
         XCTAssertEqual(cleanTranscript(prose), prose, "long bracketed prose is real speech and is kept")
+        // SPK-561: a tag whose "[" never arrived, and sounds written as stage directions.
+        XCTAssertEqual(cleanTranscript("cough] Thanks, glad it helps."), "Thanks, glad it helps.")
+        XCTAssertEqual(cleanTranscript("Sure. clears throat] The plan works."), "Sure. The plan works.")
+        XCTAssertEqual(cleanTranscript("(laughs) Fair point. *sighs* Okay."), "Fair point. Okay.")
+        XCTAssertEqual(cleanTranscript("The demo (the second one) went well."), "The demo (the second one) went well.")
+        XCTAssertEqual(cleanTranscript("Use arr[0] and item] here"), "Use arr[0] and item] here",
+                       "a ] after a [ is not a tag's tail")
     }
 
     func testReducerHidesTagsAndTagOnlyInputKeepsExchange() {

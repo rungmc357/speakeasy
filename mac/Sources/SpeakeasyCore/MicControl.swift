@@ -165,10 +165,24 @@ public struct MuteKeyGesture: Equatable, Sendable {
 /// `[cough]`, `[laughs]` while keeping every real word. An unclosed trailing
 /// `[…` (a tag still streaming in) is hidden until it closes or grows too long
 /// to be a tag. Whitespace left behind is collapsed; no other text changes.
+private let nonSpeechSounds = #"(?:clears? (?:his |her |my )?throat|throat clear(?:ing)?|coughs?|coughing|laugh(?:s|ing|ter)?|chuckles?|chuckling|giggles?|sighs?|sighing|sniffs?|sneezes?|gasps?|inhales?|exhales?|breath(?:es|ing)?|clicks? tongue|hums?|humming|yawns?|music|silence|pause|static|noise)"#
+private let stageDirectionPattern = #"(?:\(\s*"# + nonSpeechSounds + #"\s*\)|\*\s*"# + nonSpeechSounds + #"\s*\*)"#
+
 public func cleanTranscript(_ text: String) -> String {
-    guard text.contains("[") else { return text }
+    guard text.contains("[") || text.contains("]") || text.contains("(") || text.contains("*") else { return text }
     var out = text.replacingOccurrences(of: #"\[[A-Za-z][A-Za-z '_-]{0,39}\]"#, with: " ", options: .regularExpression)
     out = out.replacingOccurrences(of: #"\[(?:[A-Za-z][A-Za-z '_-]{0,39})?$"#, with: "", options: .regularExpression)
+    // A tag whose "[" never arrived ("coff] Thanks."), and sounds written as stage directions
+    // ("(laughs)", "*coughs*"; known non-speech words only). Mirrors the plugin (SPK-561).
+    if out.contains("]") {  // only a "]" with no "[" before it is a tag's tail
+        let cut = out.firstIndex(of: "[") ?? out.endIndex
+        let head = String(out[..<cut]).replacingOccurrences(
+            of: #"(?:^|(?<=\s))[A-Za-z][A-Za-z'_-]{0,20}(?: [A-Za-z'_-]{1,20})?\](?=\s|$|[,.!?;:])"#,
+            with: " ", options: .regularExpression)
+        out = head + String(out[cut...])
+    }
+    out = out.replacingOccurrences(of: stageDirectionPattern, with: " ", options: [.regularExpression, .caseInsensitive])
+    if out == text && !text.contains("[") { return text }
     out = out.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
     out = out.replacingOccurrences(of: #" +([,.!?;:])"#, with: "$1", options: .regularExpression)
     return out.trimmingCharacters(in: .whitespaces)

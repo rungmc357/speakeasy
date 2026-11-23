@@ -25,6 +25,15 @@ AUTHORED_PRECEDENCE_S = 20.0
 # Provider non-speech annotations such as "[clear throat]", "[cough]", "[laughs]".
 NON_SPEECH_TAG_RE = re.compile(r"\[[A-Za-z][A-Za-z '_-]{0,39}\]")
 UNCLOSED_TAG_RE = re.compile(r"\[(?:[A-Za-z][A-Za-z '_-]{0,39})?$")
+# The tail of a tag whose "[" never reached the transcript (SPK-561: a reply began "coff] Thanks."):
+# a word or two right before a "]" that nothing opened, at the start or after a space.
+ORPHAN_TAG_RE = re.compile(r"(?:^|(?<=\s))[A-Za-z][A-Za-z'_-]{0,20}(?: [A-Za-z'_-]{1,20})?\](?=\s|$|[,.!?;:])")
+# The same sounds written as stage directions: "(laughs)", "*coughs*". Only known non-speech words,
+# so a real aside in parentheses is kept.
+_SOUNDS = (r"(?:clears? (?:his |her |my )?throat|throat clear(?:ing)?|coughs?|coughing|laugh(?:s|ing|ter)?|"
+           r"chuckles?|chuckling|giggles?|sighs?|sighing|sniffs?|sneezes?|gasps?|inhales?|exhales?|"
+           r"breath(?:es|ing)?|clicks? tongue|hums?|humming|yawns?|music|silence|pause|static|noise)")
+STAGE_DIRECTION_RE = re.compile(r"(?i)(?:\(\s*" + _SOUNDS + r"\s*\)|\*\s*" + _SOUNDS + r"\s*\*)")
 
 SENSITIVE_TEXT_RE = re.compile(
     r"(?i)(?:authorization\s*:|bearer\s+|api[_ -]?key\s*[=:]|password\s*[=:]|"
@@ -47,10 +56,17 @@ URL_RE = re.compile(r"https?://[^\s,'\"<>]+", re.IGNORECASE)
 
 def clean_transcript(text: str) -> str:
     """Drop bracketed non-speech tags; keep every real word (mirrors the app)."""
-    if "[" not in text:
+    if "[" not in text and "]" not in text and "(" not in text and "*" not in text:
         return text
     out = NON_SPEECH_TAG_RE.sub(" ", text)
     out = UNCLOSED_TAG_RE.sub("", out)
+    if "]" in out:  # only a "]" with no "[" before it is a tag's tail ("[a long aside]" is speech)
+        cut = out.find("[")
+        head, tail = (out, "") if cut < 0 else (out[:cut], out[cut:])
+        out = ORPHAN_TAG_RE.sub(" ", head) + tail
+    out = STAGE_DIRECTION_RE.sub(" ", out)
+    if out == text and "[" not in text:
+        return text  # nothing to drop: unchanged, as before
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r" +([,.!?;:])", r"\1", out)
     return out.strip()
