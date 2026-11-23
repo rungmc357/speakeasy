@@ -1680,6 +1680,15 @@ def follow_up_queued_note(earlier: str, doing: str | None = None, eta_s: float |
             "was read, you may say so if they ask.")
 
 
+def earlier_reply_block(said: str) -> str:
+    """Home answered something before this job started (SPK-563): the job checks it, and its answer
+    says so plainly when it differs, instead of a second bubble that silently says the opposite."""
+    return ("Before this job started, Home already replied to the user: \"" + notice_text(said, 400) + "\" "
+            "That reply was written in seconds, without looking anything up. If what you find differs from it, "
+            "open your answer by saying so plainly in one sentence (\"Correction: it is open, and it's already "
+            "on one of your machines.\"), then answer. If it matches, don't mention it.")
+
+
 def follow_up_landed_note(earlier: str, words: str) -> str:
     return (f"Delivered: the task working on {earlier} has now read what they added (\"{notice_text(words, 160)}\"). "
             "Say nothing unless they ask about it.")

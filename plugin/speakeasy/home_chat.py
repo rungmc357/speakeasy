@@ -255,6 +255,69 @@ def acknowledgement(reply: str, asked: str, start: bool = True) -> str:
     return " ".join(kept)
 
 
+# SPK-563: a job's reply is an acknowledgement, never an answer to what the job is about to look up.
+# A typed "can I run <model> locally?" got an instant "it's only available through a hosted API" and,
+# 2.5 minutes later, the job's "it's open and already on one of your machines": two opposite answers.
+# A sentence in a job's reply that talks about the job's own subject without promising the work is a
+# guess stated as fact, and goes; a sentence about something else (the answer to another part of the
+# message) stays.
+_DEFER_STOP = _ACK_STOP | {"can", "could", "would", "should", "does", "did", "are", "was", "were", "has", "have",
+                           "had", "not", "isn't", "aren't", "don't", "doesn't", "there", "their", "they", "them",
+                           "here", "just", "really", "also", "still", "only", "like", "well", "one", "run",
+                           "running", "use", "using", "know", "think", "sure", "yeah", "yes", "okay"}
+
+
+def _subject_words(text: str) -> set[str]:
+    return {w for w in _ack_words(text) if w not in _DEFER_STOP}
+
+
+# A sentence states a fact only with a verb of being, having or ability (or an "only"/"no" verdict);
+# "Looking for a dentist.", "Hunting for a rain jacket in budget." and "Also on it: a bike shop." name
+# the work and state nothing.
+_STATES = re.compile(
+    r"(?i)\b(?:is|are|was|were|isn'?t|aren'?t|wasn'?t|weren'?t|it'?s|that'?s|there'?s|they'?re|has|have|hasn'?t|"
+    r"haven'?t|had|can|can'?t|cannot|could|couldn'?t|won'?t|doesn'?t|don'?t|does|do|did|didn'?t|only|never|always|"
+    r"requires?|needs?|costs?|runs?|works?|supports?|available|unavailable|open|closed|no)\b")
+_WORK_LEAD = re.compile(r"(?i)^\W*(?:(?:also|and|ok(?:ay)?|sure|so|now)\W+)*[a-z]+ing\b")
+
+
+def guesses_about(sentence: str, request: str) -> bool:
+    """*sentence* states something about the job's own subject (shares its words) instead of only
+    saying the work is happening or asking something back."""
+    if (not sentence or sentence.rstrip().endswith("?") or _ackish(sentence) or _PROMISE.match(sentence)
+            or _WORK_LEAD.match(sentence) or not _STATES.search(sentence)):
+        return False
+    topic = _subject_words(request)
+    said = _subject_words(sentence)
+    if not topic or not said:
+        return False
+    shared = said & topic
+    return len(shared) >= 2 or (len(shared) == 1 and (len(topic) <= 2 or len(said) <= 3))
+
+
+def defer_to_job(reply: str, request: str, avoid: str | None = None) -> tuple[str, bool]:
+    """A job's reply with every guess about the job's own subject taken out (SPK-563). Returns the
+    reply and whether anything went; a reply left with nothing is a natural acknowledgement."""
+    sentences = _sentences(reply)
+    kept = [x for x in sentences if not guesses_about(x, request)]
+    if len(kept) == len(sentences):
+        return reply, False
+    if not any(_ackish(x) or _PROMISE.match(x) for x in kept):
+        kept.insert(0, pick_ack(request, avoid=avoid))
+    return " ".join(kept), True
+
+
+_PROMISE = re.compile(r"(?i)^\W*(?:let me|i'?ll|i will|i'?m going to)\b")
+
+
+def answers_beyond_ack(line: str | None) -> bool:
+    """A posted line says something besides "I'm on it" (an answer to another part, a remark)."""
+    return any(not _ackish(x) for x in _sentences(line or ""))
+
+
+EARLIER_LINE_CHARS = 400
+
+
 _ASKING = re.compile(
     r"(?i)^(?:(?:hey|hi|yo|ok(?:ay)?|so|todd|hermes|please|pls)\b[\s,:!.-]*)*"
     r"(?:why|how|what|when|where|who|which|whose|is|are|was|were|do|does|did|can|could|would|will|should|"
@@ -343,12 +406,15 @@ def clean_ack(raw: Any, asked: str) -> str | None:
     tag. None when it isn't usable (the fallback is used)."""
     if not isinstance(raw, str):
         return None
-    text = ack_tag(raw)[1].strip(" \"'\u201c\u201d")
+    kind, text = ack_tag(raw)
+    text = text.strip(" \"'\u201c\u201d")
     if not text or text.upper().startswith("SKIP"):
         return None
     text = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
     if len(text) > 140 or len(text.split()) < 2 or parrots(text, asked) or _MECHANICS.search(text):
         return None
+    if kind != "CHAT" and guesses_about(text, asked):
+        return None  # the first line on a lookup is never its answer (SPK-563)
     if not re.search(r"[.!?]$", text):
         text += "."
     return us_units_first(text)
@@ -506,6 +572,12 @@ dentist and find a birthday gift" is two jobs). Never merge unrelated asks into 
 drop one: each ask is either answered in your reply or gets its own job. When you start a job and \
 the same message also asks something you can answer yourself, answer it in that job's reply too \
 ("Let me find you one. And a soft-boiled egg takes about 6 minutes.").
+- When you start a job, its reply never answers or guesses at what that job will find out: no "it's \
+only available through an API", "that runs fine locally", "it's probably closed" about the thing the job \
+checks. Say you're looking and leave the answer to the job ("Let me check what it takes and what's \
+already on your machines."). If you'd answer it with confidence from general knowledge alone and \
+nothing about the user, their machines or anything that changes matters, answer in plain text without \
+a job instead.
 
 Rules:
 - Plain prose only: no code blocks, tables, box drawing or mock-ups of cards in your reply.
@@ -547,7 +619,8 @@ _REPLY = {"type": "string", "description": "One short, natural sentence that sho
           "I'll make it shorter.\"), never a bare \"On it.\" and never the ask read back in full."}
 _START_REPLY = {"type": "string", "description": "One short, warm, natural sentence that names the topic (\"Let me "
                 "take a look at where the release is at.\"), never a bare \"On it.\" and never the whole ask read "
-                "back, plus the answer to any other part of the message you can answer yourself."}
+                "back, plus the answer to any other part of the message you can answer yourself. Never an answer "
+                "or a guess about what this job will look up: the job answers that."}
 _JOB = {"type": "string", "description": "The job's id from the list (j1, j2, ...)."}
 TOOLS = [
     {"type": "function", "function": {
@@ -1744,6 +1817,13 @@ class HomeChat:
             said = decided["reply"]
             if clipped(said) or (said == last and said in ACKS):
                 decided = {**decided, "reply": pick_ack(decided.get("request") or text, avoid=last)}
+            else:
+                # SPK-563: no guess about what the job is about to look up; it answers that.
+                topic = " ".join([decided.get("request") or text or "", *(decided.get("extra") or [])])
+                deferred, cut = defer_to_job(said, topic, avoid=last)
+                if cut:
+                    logger.info("speakeasy: Home's job reply guessed at the job's answer; kept the acknowledgement")
+                    decided = {**decided, "reply": deferred}
         answering = None   # the idem key of the question this message answers
         if decided["action"] == "follow_up":
             answering = self._asking(decided["run_id"])
@@ -1803,9 +1883,13 @@ class HomeChat:
                     job_body["attachments"] = ids
                 if client_id:
                     job_body["client_id"] = ("hj" + client_id)[:128]
+                # What Home already said in this turn, when it said more than "I'm on it": the job checks
+                # it and says so plainly when its answer differs (SPK-563).
+                earlier = " ".join(x for x in (turn.ack, decided.get("reply")) if x and answers_beyond_ack(x))
                 # Named from what the user typed, unless that message holds more than this one job.
                 started = self._start(job_body, device_id, text or job_text or "",
-                                      named_by=None if decided.get("extra") else (text or job_text or ""))
+                                      named_by=None if decided.get("extra") else (text or job_text or ""),
+                                      earlier=earlier[:EARLIER_LINE_CHARS] or None)
                 run_id = started.get("run_id")
                 self._chip_filed(chip, run_id)
             elif action == "follow_up":
@@ -1892,7 +1976,7 @@ class HomeChat:
         return self._reply(user, reply, started=started)
 
     def _start(self, job_body: dict[str, Any], device_id: str | None, asked: str,
-               named_by: str | None = None) -> dict[str, Any]:
+               named_by: str | None = None, earlier: str | None = None) -> dict[str, Any]:
         """Start one Home job. Who waits behind another job (the rule, see calls.fence_blocker): only
         work that would edit files in a project another running job is editing. When what the user
         typed isn't an edit (a question, a lookup, a proposal, plans or research: fence.is_edit_request
@@ -1908,9 +1992,12 @@ class HomeChat:
             names = inspect.signature(self.svc.start_job).parameters
         except (TypeError, ValueError):
             names = {}
+        said = {"earlier": earlier} if earlier and "earlier" in names else {}
         if takes and "asked" in names and named_by is not None and named_by.strip():
             # The job's name comes from what the user typed, never a generic stand-in.
-            return self.svc.start_job(job_body, device_id, never_wait=never_wait, asked=named_by)
+            return self.svc.start_job(job_body, device_id, never_wait=never_wait, asked=named_by, **said)
+        if takes and said:
+            return self.svc.start_job(job_body, device_id, never_wait=never_wait, **said)
         if takes:
             return self.svc.start_job(job_body, device_id, never_wait=never_wait)
         return self.svc.start_job(job_body, device_id)   # a stand-in service without the keyword

@@ -5655,8 +5655,12 @@ class SidebandWorker:
                          deliver_to: str | None = None, ack: str | None = None,
                          ack_place: str | None = None, named: bool = False, parent: str | None = None,
                          continues: str = "", words: str | None = None, note: str = "",
-                         resume: bool = False, idem: str | None = None, asked: str | None = None) -> None:
+                         resume: bool = False, idem: str | None = None, asked: str | None = None,
+                         earlier: str | None = None) -> None:
         """*parent*: the task this one answers or follows up (its idem key), which names it.
+
+        *earlier*: what Home already replied before this job started (SPK-563); the job checks it and
+        says so plainly when its own answer differs.
 
         *resume* (with its stored *idem*): a task that was held behind another task on the same
         project when the plugin reloaded or Hermes restarted (SPK-296). Its row already exists: it
@@ -5776,6 +5780,8 @@ class SidebandWorker:
                                          typed=self.VOICELESS, on_screen=on_screen,
                                          others=[] if self.VOICELESS else self.call_so_far(task_id), skill=skill,
                                          names_hint=P.task_vocabulary_line(self.names, self.vocabulary()))
+        if earlier:
+            prompt = prompt.rstrip() + "\n\n" + P.earlier_reply_block(earlier)
         self.store.set_meta("turn_context:" + session_id, context[-MAX_TRANSCRIPT:])
         project_auto = getattr(self.store, "project_auto", None)  # SPK-254: Home's project chip
         if project_auto is not None and not self.VOICELESS:
