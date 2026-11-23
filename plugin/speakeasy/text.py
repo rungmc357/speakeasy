@@ -869,7 +869,7 @@ _TITLE_SOFT_TAIL = {"please", "now", "right", "um", "uh", "like", "too", "actual
 _TITLE_ASIDE = re.compile(r"(?i)^(?:for|on|about|regarding|with|in|during|if|when|because|since|while|although|"
                           r"like|i guess|i think|i mean|i don'?t know)\b")
 # Notes the call adds to a request: what the user was looking at, what it follows up.
-_TITLE_NOTE = re.compile(r"\s*\((?:[^():]{0,40}\bis looking at|following up)\s*:", re.I)
+_TITLE_NOTE = re.compile(r"\s*\((?:[^():]{0,40}\bis looking at|following up|correction)\s*:", re.I)
 # Words that point at something said before ("do both", "fix that", "ship it").
 _TITLE_REFERENT = {"it", "that", "this", "them", "those", "these", "both", "others", "other", "one", "ones",
                    "there", "same", "again", "what", "her", "him", "they"}
