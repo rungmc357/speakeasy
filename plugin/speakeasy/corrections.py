@@ -61,7 +61,7 @@ class Fix:
     noted: bool = False   # `right` couldn't be pulled out cleanly: the request is kept as asked plus a note
 
 
-# Spoken filler around (or inside) a replacement: "man. My house, like the heating stuff", "bro, eco mode".
+# Spoken filler around (or inside) a replacement: "man. My flat, like the cooling stuff", "bro, eco mode".
 _FILLER_WORDS = r"(?:man|bro|dude|mate|buddy|like|um+|uh+|er+|erm|so|you\s+know|i\s+mean)"
 _PUNCT = r"\s,.;:!?\u2014-"
 _FILLER_HEAD = re.compile(rf"(?i)^[{_PUNCT}]*{_FILLER_WORDS}\b[{_PUNCT}]*")
@@ -86,7 +86,7 @@ def _strip_filler(text: str) -> str:
 def clean_replacement(right: str | None) -> str | None:
     """The replacement as one clean phrase, filler around it stripped ("man, Eco Mode" -> "Eco Mode",
     "like, my, my Eco Mode" -> "my Eco Mode"); None when what's left is more than one phrase ("My
-    house, like the heating stuff"): splicing that in would put a half-sentence in the request."""
+    flat, like the cooling stuff"): splicing that in would put a half-sentence in the request."""
     t = _strip_filler(right or "")
     if not t or _CLAUSE_BREAK.search(t) or _FILLER_ANY.search(t):
         return None
@@ -95,7 +95,7 @@ def clean_replacement(right: str | None) -> str | None:
 
 def meaning(right: str | None) -> str:
     """What a rambling replacement meant, for a note: filler dropped, its clauses kept
-    ("man. My house, like the heating stuff" -> "my house, the heating stuff")."""
+    ("man. My flat, like the cooling stuff" -> "my flat, the cooling stuff")."""
     clauses = []
     for part in _CLAUSE_BREAK.split(str(right or "")):
         part = _strip_filler(_FILLER_ANY.sub(" ", part))
@@ -262,7 +262,7 @@ def detect(words: str, request: str | None, *, typed: bool = False, vocabulary: 
         if right is not None:
             clean = clean_replacement(right)
             if clean is None:
-                # More than one phrase ("man. My house, like the heating stuff"): never spliced in. The
+                # More than one phrase ("man. My flat, like the cooling stuff"): never spliced in. The
                 # request stays as asked, with a clean note of what they meant.
                 meant = meaning(right)
                 if (not meant or len(meant.split()) > MAX_PHRASE_WORDS or _COMMAND.match(meant)
