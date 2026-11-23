@@ -245,6 +245,30 @@ CAPABILITIES["projects"] = P_.available()
 _SHORTCUT_RE = re.compile(r"^[^\x00-\x1f<>{}]{1,24}$")
 
 
+_CODEX_VERSIONS: dict[tuple, tuple[float, Any]] = {}
+_CODEX_VERSION_TTL_S = 600.0
+
+
+def _cached_codex_version(binary: Path) -> Any:
+    """S.codex_version, cached per copy of Codex (its resolved path, size and change time) for 10
+    min, so a tap doesn't run `codex --version` (30-170 ms). An update changes the key at once."""
+    try:
+        st = Path(binary).resolve().stat()
+        key = (id(S.codex_version), str(binary), st.st_mtime_ns, st.st_size)
+    except (OSError, RuntimeError, TypeError):
+        return S.codex_version(binary)
+    now = time.monotonic()
+    hit = _CODEX_VERSIONS.get(key)
+    if hit is not None and now - hit[0] < _CODEX_VERSION_TTL_S:
+        return hit[1]
+    version = S.codex_version(binary)
+    if version is not None:
+        if len(_CODEX_VERSIONS) > 64:
+            _CODEX_VERSIONS.clear()
+        _CODEX_VERSIONS[key] = (now, version)
+    return version
+
+
 def _install_codex_quietly() -> bool:
     """Install or update Codex the way `hermes voice setup --yes` does, with its output in the log."""
     import functools
@@ -5884,10 +5908,11 @@ class VoiceService(SecureInputMixin):
         every other copy on the machine checked, and the first one signed in with ChatGPT is saved
         as ``voice.codex_path`` so calls use it. The user is asked to sign in only when none is."""
         from .codex_login import discover, sign_in_kind
-        import functools
         configured = self.settings.get()["voice"]["codex_path"]
         status_fn = self._codex_status_fn()
-        version_fn = functools.lru_cache(maxsize=32)(S.codex_version)
+        # Cached across taps (it was a fresh cache per call: `codex --version` ran on every tap,
+        # 30-170 ms of the connect on the mini).
+        version_fn = _cached_codex_version
         candidates = self._codex_candidates() if self._codex_candidates else S.codex_candidates()
         default = find_codex(configured) if configured else find_codex("", version_fn=version_fn,
                                                                          candidates=candidates)

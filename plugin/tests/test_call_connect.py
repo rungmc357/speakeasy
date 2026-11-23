@@ -308,6 +308,26 @@ def test_a_background_warm_up_waits_longer_for_thread_start_than_a_tap():
     assert seen["thread/start"] == 60.0
 
 
+def test_codex_version_runs_once_per_copy_not_once_per_tap(tmp_path, monkeypatch):
+    """`codex --version` ran on every tap (a fresh cache per call): 30-170 ms of each connect."""
+    from speakeasy import service as SV
+    from speakeasy import settings as S
+    calls = []
+
+    def version(binary, runner=None):
+        calls.append(str(binary))
+        return (0, 167, 2)
+    monkeypatch.setattr(S, "codex_version", version)
+    SV._CODEX_VERSIONS.clear()
+    binary = tmp_path / "codex"
+    binary.write_text("#!/bin/sh\n")
+    for _ in range(5):
+        assert SV._cached_codex_version(binary) == (0, 167, 2)
+    assert len(calls) == 1
+    binary.write_text("#!/bin/sh\n# updated\n")   # an update is seen at once
+    assert SV._cached_codex_version(binary) == (0, 167, 2) and len(calls) == 2
+
+
 def test_a_signin_or_codex_change_drops_the_spare_and_there_is_only_ever_one():
     made: list[PrepTransport] = []
     spare = CodexSpare(lambda key: made.append(PrepTransport()) or made[-1], background=False)
