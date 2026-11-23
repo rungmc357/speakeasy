@@ -35,8 +35,9 @@ CONFIRM_RULE = (
 )
 
 PROMPT_DIR = Path(__file__).parent
-# ~12,000 tokens at ~4 chars/token.
-MAX_INSTRUCTION_CHARS = 49_000
+# ~12,500 tokens at ~4 chars/token (+1000 for SPK-561's plain-outcomes rule, so a full listening room
+# still fits beside the largest brief).
+MAX_INSTRUCTION_CHARS = 50_000
 MAX_BRIEF_CHARS = 10_000
 RESULT_BACKGROUND_CHARS = 1900  # live-call appends over 2,000 characters are dropped
 

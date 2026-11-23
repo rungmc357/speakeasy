@@ -141,14 +141,23 @@ def test_updates_are_capped_across_the_call_and_need_a_changed_card(service):
     _run_with_clock(go)
     said = spoken(worker)
     assert 1 <= len(said) <= 180 // calls.PROGRESS_EVERY_S + 1
-    # The card hasn't changed since the last update: quiet even once the cap allows it.
+    # Each task is spaced (SPK-562), so its newest card may not have been said yet: once the spacing
+    # allows, that card is said once; after that the card hasn't changed, so the task stays quiet
+    # however long the cap has allowed it.
+    worker.sent.clear()
+
+    def catch_up(clock):
+        for i, task in enumerate((a, b)):
+            clock[0] = a.started + 999 + i * calls.PROGRESS_EVERY_S
+            asyncio.run(worker.maybe_speak_progress(task, "x"))
+    _run_with_clock(catch_up)
+    assert a.told and b.told and spoken(worker) and all("number 180" in line for line in spoken(worker))  # the newest card
     worker.sent.clear()
 
     def later(clock):
-        clock[0] = a.started + 999
-        for task in (a, b):
-            if task.told:  # said its card already, and the card is the same
-                assert asyncio.run(worker.maybe_speak_progress(task, "x")) is False
+        for i, task in enumerate((a, b)):
+            clock[0] = a.started + 9999 + i * calls.PROGRESS_EVERY_S
+            assert asyncio.run(worker.maybe_speak_progress(task, "x")) is False
     _run_with_clock(later)
     assert spoken(worker) == []
 
