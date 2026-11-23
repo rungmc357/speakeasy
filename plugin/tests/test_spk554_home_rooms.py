@@ -122,12 +122,12 @@ def test_a_plan_with_values_or_an_exclusion_is_left_alone():
 
 
 def test_two_rooms_widen_each():
-    states = DEN + [st("light.kitchen_island", "Kitchen Island Pendants", "on")]
+    states = DEN + [st("light.kitchen_counter", "Kitchen Counter Strip", "on")]
     ha = LiveHA(states)
     reply = control(ha, {"calls": [{"service": "light.turn_off", "entity_id": ["light.den_den", "light.kitchen"]}],
                          "say": "Done."}).respond("turn off the den and kitchen lights")
     assert set(_ids(ha)[0]) == {"light.den_den", "light.kitchen", "light.den_floor_lamp", "light.upstairs_den_main",
-                                "light.kitchen_island"}
+                                "light.kitchen_counter"}
     assert reply.spoken == "Den and kitchen lights are off."
 
 
