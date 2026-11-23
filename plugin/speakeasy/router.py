@@ -1819,6 +1819,8 @@ def correction(request: str) -> tuple[str, str] | None:
     text = " ".join((request or "").split())
     if not text or len(text.split()) > 12:
         return None
+    if disputes(text):
+        return None  # SPK-555: "no, they're not" disputes what was done; it corrects no words
     lead, tail = _CORRECTION_LEAD.match(text), _CORRECTION_TAIL.match(text)
     if lead:
         rest, by_lead = lead.group("rest"), True
@@ -1844,6 +1846,56 @@ def correction(request: str) -> tuple[str, str] | None:
     if all(re.sub(r"[^a-z]", "", w) in _FRAGMENT_WORDS | {"er", "erm", "be", ""} for w in phrase.lower().split()):
         return None
     return "phrase", phrase
+
+
+# -- disputes: "no it's not", "that didn't work", "it's still open, I can see it" ------------------
+# Said right after a task answered, these dispute its outcome. They are not a correction of the words
+# (correction() would splice "they're not" into the request) and not a new ask: the task re-checks.
+_DISPUTE_SUBJ = r"(?:it|they|that|this|those|these|he|she|the\s+\w+(?:\s+\w+)?)"
+_DISPUTE_ADV = r"(?:literally|actually|really|definitely|clearly|totally|so)"
+_DISPUTE = re.compile(
+    r"(?i)(?:"
+    # "No it's not", "no, they aren't", "nope it isn't", "no they're really not off"
+    rf"^\W*(?:(?:um+|uh+|oh|well|wait|but)\W+)*(?:no|nope|nah)\b\W*{_DISPUTE_SUBJ}"
+    rf"\s*(?:'s|'re|\s+is|\s+are|\s+was|\s+were)?(?:\s+{_DISPUTE_ADV})*\s*(?:not|n't|isn't|aren't|wasn't|weren't|still)\b"
+    # "That didn't work", "it didn't close", "you didn't do it"
+    r"|\b(?:it|that|this|they|you)\s+(?:did\s*n'?t|does\s*n'?t|do\s*n'?t|has\s*n'?t|have\s*n'?t|wo\s*n'?t|never)"
+    r"(?:\s+(?:actually|really|even))?\s+(?:work|happen|go\s+through|do\s+(?:it|anything|that|a\s+thing)|change|turn|close"
+    r"|open|lock|unlock|shut|move|respond|stop|start|go\s+(?:off|on))\w*\b"
+    r"|\bnothing\s+(?:happened|changed|moved|worked)\b"
+    # "It's still open", "they're still on", "they're not off", "it isn't closed"
+    rf"|\b{_DISPUTE_SUBJ}\s*(?:'s|'re|\s+is|\s+are)(?:\s+{_DISPUTE_ADV})*\s+(?:still\s+(?:not\s+)?|not\s+)"
+    r"(?:on|off|open|closed|shut|locked|unlocked|running|playing|going|there|done|working|fixed|set|lit|dark|up|down)\b"
+    rf"|\b{_DISPUTE_SUBJ}\s*(?:isn't|aren't|is\s+not|are\s+not)\s+(?:on|off|open|closed|shut|locked|unlocked|done|working|fixed)\b"
+    r"|\bthat(?:'s|\s+is)\s+(?:not\s+(?:true|right|it)|wrong)\b"
+    r")")
+# Words a dispute may use besides the task's own words; anything else names a new subject.
+_DISPUTE_WORDS = _FRAGMENT_WORDS | set("""no nope nah not isn't aren't wasn't weren't didn't doesn't don't hasn't haven't
+won't never nothing still literally actually really definitely clearly totally even again yet see saw can look looks
+looking seem seems happened happen work worked working done did do does change changed moved go went through on off open
+opened closed close shut locked unlocked lock unlock lit dark up down running playing going there fixed set respond true
+wrong they're it's that's you're i'm what why how all any anything dude man bro seriously come please hello hey right
+sure pretty sorry told tell said say saying just already thing""".split())
+
+
+def disputes(request: str, about: str = "") -> bool:
+    """"No it's not" / "that didn't work" / "it's still open, I can see it": a short protest that the
+    last thing done didn't happen, naming nothing new. ``about``: the disputed task's request and
+    answer; their words don't count as a new subject ("the garage is still open" after a garage task).
+    A new command ("no, turn them on") or a new subject ("the kitchen's still on too") is not one."""
+    text = " ".join((request or "").replace("\u2019", "'").split())
+    about = (about or "").replace("\u2019", "'")
+    if not text or len(text.split()) > 14 or not _DISPUTE.search(text):
+        return False
+    lead = _CORRECTION_LEAD.match(text)
+    if lead and _CORRECTION_VERB.match(lead.group("rest")):
+        return False  # "no, turn them on": a new instruction
+    if re.search(r"(?i)\b(?:too|also|as\s+well|instead|and\s+(?:the|my)|but\s+(?:the|my))\b", text):
+        return False  # "...and the kitchen's still on too": more than the last thing
+    known = _DISPUTE_WORDS | set(re.findall(r"[a-z']+", (about or "").lower()))
+    words = [w.strip("'") for w in re.findall(r"[a-z']+", text.lower())]
+    new = [w for w in words if len(w) >= 3 and w not in known and w.rstrip("s") not in known]
+    return not new
 
 
 def apply_correction(original: str, phrase: str) -> str:

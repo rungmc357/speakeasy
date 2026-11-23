@@ -227,6 +227,10 @@ def test_on_a_call_the_room_is_covered_and_a_dispute_re_checks_it(home, hermes):
         assert len(_planner.prompts) == 1  # the dispute was re-checked, not re-planned
         assert hermes.calls == []
         assert not any("They're off" in str(x) for x in worker.sent)
+        with svc.store._lock:  # SPK-555: the dispute re-checked that task; it started no new one
+            started = [r[0] for r in svc.store._db.execute(
+                "SELECT delegation_id FROM runs WHERE status != 'rejected'").fetchall()]
+        assert "call_den_2" not in started
     finally:
         svc.close()
 
