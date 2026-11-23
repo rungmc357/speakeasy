@@ -31,9 +31,10 @@ def test_stand_in_titles_are_offered_and_renames_stick(server, service, hermes):
     assert [t for t in tasks(server) if t.get("task_id") == "call_t"][0]["title"] == "book train boston"
 
     # The job the task first named took the new title too.
-    (job_name,) = service.store._db.execute(
-        "SELECT name FROM jobs WHERE from_key=(SELECT idem_key FROM runs WHERE delegation_id='call_t')"
-    ).fetchone()
+    with service.store._lock:   # the server's threads share this connection (see test_job_names_never_generic)
+        (job_name,) = service.store._db.execute(
+            "SELECT name FROM jobs WHERE from_key=(SELECT idem_key FROM runs WHERE delegation_id='call_t')"
+        ).fetchone()
     assert job_name == "book train boston"
 
 
@@ -45,14 +46,16 @@ def test_rename_keeps_a_job_name_that_is_not_the_stand_in(server, service, herme
                          for t in tasks(server)))
     key = service.store.key_for_task("call_j")
     job = [t for t in tasks(server) if t.get("task_id") == "call_j"][0]["job"]
-    service.store._db.execute("INSERT OR REPLACE INTO jobs (job_id,name,from_key,updated) VALUES (?,?,?,?)",
-                              (job["id"], "Boston weekend", key, 1.0))
+    with service.store._lock, service.store._db:
+        service.store._db.execute("INSERT OR REPLACE INTO jobs (job_id,name,from_key,updated) VALUES (?,?,?,?)",
+                                  (job["id"], "Boston weekend", key, 1.0))
 
     status, renamed = http(server.base_url, "POST", "/voice/titles",
                            {"task_id": "call_j", "title": "book train boston"}, server.token)
     assert status == 200 and renamed["renamed"] is True
     assert service.store.title(key) == "book train boston"
-    (name,) = service.store._db.execute("SELECT name FROM jobs WHERE from_key=?", (key,)).fetchone()
+    with service.store._lock:
+        (name,) = service.store._db.execute("SELECT name FROM jobs WHERE from_key=?", (key,)).fetchone()
     assert name == "Boston weekend"
 
 

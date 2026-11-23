@@ -2,6 +2,11 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.58: Home tells you when it's done
+
+- **Home says when a job finishes.** When a job you started from Home is done, Home says so in the chat, in its own words, once. *(plugin)*
+- **Projects stay out until they're ready.** The Projects screens are held behind a server switch; starting new work from a project page still works. *(plugin)*
+
 ## Plugin 0.3.57: Home that follows the conversation, and notifications that arrive
 
 - **Home's first line follows the conversation.** The quick acknowledgement now sees your last few Home messages and the card you're answering, so it responds to what you just said; it never repeats your words back, and when you're just talking and the answer is moments away, there's no filler line at all. *(plugin)*
