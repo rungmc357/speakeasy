@@ -177,6 +177,17 @@ def _words(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9']+", (text or "").lower()))
 
 
+def _told_elsewhere(turn: str, requests: "list[str]") -> bool:
+    """A user turn that is (part of) another request already started (SPK-558): its words are that
+    task's, so the titler naming a different task never reads them."""
+    said = _words(turn)
+    if not said:
+        return False
+    if len(said.split()) < 3:
+        return any(said == _words(r) for r in requests)  # "yes", "the lamp": only when it was the whole ask
+    return any(said in _words(r) or _words(r) in said for r in requests if _words(r))
+
+
 def _with_request(context: str, request: str) -> str:
     """The transcript with its last user turn(s) put as the request that actually goes (a correction
     applied, or words said just after the handoff), so the task reads one clean request."""
@@ -1508,12 +1519,36 @@ class SidebandWorker:
             except Exception:
                 parent_request = None
         try:
-            recent = [t for t in self.turns()[-7:] if t.get("text") and t["text"].strip() != request.strip()][-6:]
+            recent = [t for t in self.turns()[-7:] if t.get("text") and t["text"].strip() != request.strip()]
+            if not parent_key and not parent:
+                # SPK-558: a new task is named from its own words. The words of other requests this
+                # call already started (a split-then-merged ask seconds before, say) are another
+                # task's name: read here they named "What's on my calendar tomorrow?" after the
+                # train asked about just before. Assistant turns and other talk stay for "that".
+                others = self._other_requests(request)
+                recent = [t for t in recent if t.get("role") != "user" or not _told_elsewhere(t["text"], others)]
+            recent = recent[-6:]
         except Exception:
             recent = []
         names = self.names
         return text_mod.title_input(request, parent=parent, parent_request=parent_request, recent=recent,
                                     names=(names.user_name, names.assistant_name))
+
+    def _other_requests(self, request: str) -> list[str]:
+        """The words of every other request this call already started (SPK-558), for the titler to
+        leave out: each one is its own task's name, never the next hand-off's."""
+        mine = _words(request)
+        out = {s[3] for s in getattr(self, "started", []) if len(s) > 3 and s[0] and s[0] != mine}
+        try:
+            with self.interaction.lock:
+                keys = [r.idem_key for r in self.interaction.runs.values() if r.status != "rejected"]
+            for key in keys:
+                said = self.store.request_text(key) or ""
+                if said and _words(said) != mine:
+                    out.add(said)
+        except Exception:
+            pass
+        return [o for o in out if _words(o)]
 
     def retitle(self, idem: str, request: str | None, earlier: str | None = None) -> None:
         """Rename a task for what it has become: the titler sees the first ask and the newest one,
