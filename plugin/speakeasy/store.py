@@ -1922,10 +1922,12 @@ class StateStore:
             return []
         return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
 
-    def correct_request(self, key: str, request: str, wrong: str | None, right: str | None) -> str | None:
+    def correct_request(self, key: str, request: str, wrong: str | None, right: str | None,
+                        noted: bool = False) -> str | None:
         """A correction rewrites what the task was asked (its request and, where it holds the misheard
         words, its title) and clears the status lines written around those words. Returns the new
-        title when it changed."""
+        title when it changed. ``noted``: the request kept its words plus a correction note, and the
+        title only loses the misheard words (never takes the raw correction)."""
         from . import corrections as corrections_mod
         now = time.time()
         title = self.title(key)
@@ -1952,9 +1954,9 @@ class StateStore:
         if callable(forget):
             forget(key)  # its last line was written from the misheard request
         new_title = None
-        if title and wrong and right:
-            fixed = corrections_mod.rewrite(title, wrong, right)
-            if fixed != title:
+        if title and wrong and (right or noted):
+            fixed = corrections_mod.corrected_title(title, corrections_mod.Fix(wrong, right, request, noted))
+            if fixed and fixed != title:
                 self.set_title(key, fixed)
                 new_title = fixed
         self.progress(key, "milestone", f"You corrected it: {right}" if right else "You corrected a misheard word")

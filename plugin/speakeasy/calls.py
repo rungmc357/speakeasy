@@ -5327,10 +5327,15 @@ class SidebandWorker:
             target.card_said = target.recap_said = ""
             for kind in [k for k, note in self.quiet_notes.items() if corrections_mod.mentions(note, wrongs)]:
                 self.quiet_notes.pop(kind, None)
-        new_title = await asyncio.to_thread(self.store.correct_request, key, fix.request, fix.wrong, fix.right)
-        logger.info("speakeasy: a correction rewrote a task's request%s", " and title" if new_title else "")
+        new_title = await asyncio.to_thread(self.store.correct_request, key, fix.request, fix.wrong, fix.right,
+                                            fix.noted)
+        logger.info("speakeasy: a correction %s a task's request%s", "noted on" if fix.noted else "rewrote",
+                    " and title" if new_title else "")
         if new_title:
             self.title_session(key)
+        if fix.noted:
+            # Never spliced: the title model names it again from the corrected meaning (the note).
+            self.retitle(key, fix.request)
         words = text_mod.request_notes(part.request)[0]
         steer = P.correction_steer_text(self.names, fix.wrong, fix.right, fix.request, words, typed=typed)
         delivered = False

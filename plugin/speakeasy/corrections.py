@@ -58,6 +58,84 @@ class Fix:
     wrong: str | None     # the words as the task had them (None: the task already has `right`)
     right: str | None     # what was meant (None: only "X was a mishearing")
     request: str          # the task's request with the fix applied
+    noted: bool = False   # `right` couldn't be pulled out cleanly: the request is kept as asked plus a note
+
+
+# Spoken filler around (or inside) a replacement: "man. My house, like the heating stuff", "bro, eco mode".
+_FILLER_WORDS = r"(?:man|bro|dude|mate|buddy|like|um+|uh+|er+|erm|so|you\s+know|i\s+mean)"
+_PUNCT = r"\s,.;:!?\u2014-"
+_FILLER_HEAD = re.compile(rf"(?i)^[{_PUNCT}]*{_FILLER_WORDS}\b[{_PUNCT}]*")
+_FILLER_END = re.compile(rf"(?i)[{_PUNCT}]*\b(?:man|bro|dude|mate|buddy|like|um+|uh+|er+|erm|you\s+know)[{_PUNCT}]*$")
+_FILLER_ANY = re.compile(rf"(?i)(?<![A-Za-z0-9']){_FILLER_WORDS}(?![A-Za-z0-9'])")
+_STUTTER = re.compile(r"(?i)\b(\w+)(?:[\s,]+\1\b)+")
+_CLAUSE_BREAK = re.compile(r"[.,;!?\u2014]|\s-+\s")
+_NOTE_LEAD = {"my", "the", "our", "a", "an", "his", "her", "their", "your"}
+_DANGLING = {"on", "in", "at", "for", "to", "of", "the", "a", "an", "my", "and", "with", "from"}
+
+
+def _strip_filler(text: str) -> str:
+    t = " ".join(str(text or "").split())
+    while True:
+        cut = _FILLER_END.sub("", _FILLER_HEAD.sub("", t)).strip()
+        if cut == t:
+            break
+        t = cut
+    return _STUTTER.sub(r"\1", t).strip(" ,.;:!?-\u2014\"'")
+
+
+def clean_replacement(right: str | None) -> str | None:
+    """The replacement as one clean phrase, filler around it stripped ("man, Eco Mode" -> "Eco Mode",
+    "like, my, my Eco Mode" -> "my Eco Mode"); None when what's left is more than one phrase ("My
+    house, like the heating stuff"): splicing that in would put a half-sentence in the request."""
+    t = _strip_filler(right or "")
+    if not t or _CLAUSE_BREAK.search(t) or _FILLER_ANY.search(t):
+        return None
+    return t
+
+
+def meaning(right: str | None) -> str:
+    """What a rambling replacement meant, for a note: filler dropped, its clauses kept
+    ("man. My house, like the heating stuff" -> "my house, the heating stuff")."""
+    clauses = []
+    for part in _CLAUSE_BREAK.split(str(right or "")):
+        part = _strip_filler(_FILLER_ANY.sub(" ", part))
+        if part and norm(part):
+            clauses.append(part)
+    out = ", ".join(clauses)
+    first = out.split(" ", 1)[0] if out else ""
+    if first.lower() in _NOTE_LEAD and first[:1].isupper():
+        out = first.lower() + out[len(first):]
+    return out
+
+
+def correction_note(wrong: str, right: str) -> str:
+    return f"(Correction: they meant {right}, not {wrong})"
+
+
+def noted_request(request: str, wrong: str, right: str) -> str:
+    """The request as asked plus a clean correction note after what was said (before the call's notes)."""
+    from .text import request_notes
+    said, notes = request_notes(request)
+    return " ".join(p for p in (said.rstrip(), correction_note(wrong, right), notes) if p)
+
+
+def corrected_title(title: str | None, fix: "Fix") -> str | None:
+    """The task's title after `fix`: the clean replacement in place of the misheard words, or (for a
+    noted fix) the title with the misheard words dropped. Never the raw correction text. None when
+    nothing changes or nothing sensible would be left."""
+    if not title or not fix.wrong:
+        return None
+    if not fix.noted:
+        fixed = rewrite(title, fix.wrong, fix.right) if fix.right else title
+        return fixed if fixed != title else None
+    pattern = re.compile(r"(?i)(?<![A-Za-z0-9])" + re.escape(fix.wrong) + r"(?![A-Za-z0-9])")
+    if not pattern.search(title):
+        return None
+    words = pattern.sub(" ", title).split()
+    while words and words[-1].lower().strip(",.;:") in _DANGLING:
+        words.pop()
+    out = re.sub(r"\s+([,.;:])", r"\1", " ".join(words)).strip(" ,.;:-")
+    return out if len(_content(out)) >= 2 else None
 
 
 def norm(text: str | None) -> str:
@@ -182,6 +260,19 @@ def detect(words: str, request: str | None, *, typed: bool = False, vocabulary: 
     def fixed(wrong: str, right: str | None) -> Fix | None:
         right = _clean(right or "") or None
         if right is not None:
+            clean = clean_replacement(right)
+            if clean is None:
+                # More than one phrase ("man. My house, like the heating stuff"): never spliced in. The
+                # request stays as asked, with a clean note of what they meant.
+                meant = meaning(right)
+                if (not meant or len(meant.split()) > MAX_PHRASE_WORDS or _COMMAND.match(meant)
+                        or not _content(meant)):
+                    return None
+                meant = snap(meant, vocab)
+                if correction_note(wrong, meant) in request:
+                    return Fix(None, meant, request)  # said again: already noted
+                return Fix(wrong, meant, noted_request(request, wrong, meant), noted=True)
+            right = clean
             if len(right.split()) > MAX_PHRASE_WORDS or _COMMAND.match(right) or not _content(right):
                 return None
             right = snap(right, vocab)
