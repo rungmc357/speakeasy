@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import sys
@@ -423,20 +424,16 @@ class FakeLiveWorker(SidebandWorker):
         self.thread: threading.Thread | None = None
 
     def start(self) -> None:
+        # The loop's blocking helpers (run_in_executor) run on an executor this fake owns, so stop_loop()
+        # ends those threads too: otherwise every call a test opened left idle "asyncio_N" threads.
+        self.executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix="fake-live-io")
+
         def runner() -> None:
             loop = self.loop = asyncio.new_event_loop()
+            loop.set_default_executor(self.executor)
             asyncio.set_event_loop(loop)
             self.ready.set()
-            try:
-                loop.run_forever()
-            finally:
-                # The loop's default executor (run_in_executor) holds threads of its own: end them too,
-                # or every call a test opened leaves four idle "asyncio_N" threads for the whole run.
-                try:
-                    loop.run_until_complete(loop.shutdown_default_executor())
-                except Exception:
-                    pass
-                loop.close()
+            loop.run_forever()
         self.thread = threading.Thread(target=runner, daemon=True, name="fake-live-worker")
         self.thread.start()
         FakeLiveWorker.live.append(self)
@@ -452,6 +449,9 @@ class FakeLiveWorker(SidebandWorker):
                 pass
         if self.thread is not None and self.thread is not threading.current_thread():
             self.thread.join(timeout)
+        executor = getattr(self, "executor", None)
+        if executor is not None:
+            executor.shutdown(wait=False)
         if self in FakeLiveWorker.live:
             FakeLiveWorker.live.remove(self)
 
