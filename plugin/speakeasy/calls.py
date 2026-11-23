@@ -374,6 +374,13 @@ PULSE_MAX_WORDS = 22
 # is said again only after the back-off (stale_wait). No line is said twice on a task: the last
 # PULSE_SAID_KEEP lines (BackendRun.pulse_said) are compared word for word.
 PULSE_SAID_KEEP = 20
+# One task's unprompted lines (pulse or its own STATUS) are at least TASK_PULSE_EVERY_S apart (or the
+# user's interval when longer), however often its card changes: a 3-minute job used to get a line per
+# card change, ~50 s apart ("pulling it up" ... "digging" ... "still on it"), which sounds like a stuck
+# loop (SPK-562). Card changes in between update the screen silently. A heads-up still speaks at once,
+# and a line that only restates an earlier one on the task in other words (same subject, no new
+# finding) is not said at all.
+TASK_PULSE_EVERY_S = 150.0
 RECAP_MIN_WORDS = 4
 THREAD_WORKING = "Working in the thread"  # store.thread_progress's card line
 _OPENER_LEAD = re.compile(r"(?i)^(?:(?:quick update|since the last update|so far|meanwhile|right now|continuing)\s*[:,]\s*)+")
@@ -406,6 +413,31 @@ def cap_words(line: str, limit: int = PULSE_MAX_WORDS) -> str:
 def _said_key(line: str) -> str:
     """Words to compare spoken lines by: "Meanwhile, X" and "Quick update: X" are the same news as X."""
     return " ".join(re.sub(r"[^\w\s]", " ", _OPENER_LEAD.sub("", line.strip()).lower()).split())
+
+
+# Words that say a task is busy, not what it found: "still digging for the schedule" says no more
+# than "pulling up the schedule".
+_BUSY_WORDS = set("""still now again just yep yes okay ok right meanwhile continuing working work looking look
+checking check digging dig pulling pull searching search going through reading read getting get finding
+find trying try waiting wait keep keeping more some that this the for into from with and but on it its
+it's i'm i am we're we are up over at of to in a an is are was be being been there here about almost
+nearly done soon minute minutes second seconds""".split())
+
+
+def _news_words(line: str) -> set[str]:
+    """What a spoken line is about, minus the busy words."""
+    return {w for w in _said_key(line).split() if len(w) > 2 and w not in _BUSY_WORDS}
+
+
+def restates(line: str, earlier: list[str]) -> bool:
+    """*line* says nothing an earlier line on the task didn't: every word of news in it was already
+    said (a busy line with no news at all counts as a restatement once anything was said)."""
+    if not earlier:
+        return False
+    news = _news_words(line)
+    if not news:
+        return True
+    return any(news <= _news_words(old) for old in earlier)
 
 
 _I_WORD = re.compile(r"^I(?:\b|['\u2019])")
@@ -2772,6 +2804,10 @@ class SidebandWorker:
         if not text or _said_key(text) in said:
             return None
         with self.interaction.lock:
+            earlier = [t for _, t in backend.pulse_said]
+        if restates(text, earlier):
+            return None  # the same news in other words ("still digging for the schedule"): silence
+        with self.interaction.lock:
             misheard = list(backend.misheard)
         if misheard and corrections_mod.mentions(text, misheard):
             return None  # written before the correction: never spoken
@@ -2810,7 +2846,8 @@ class SidebandWorker:
         with self.interaction.lock:
             last_any = self.interaction.progress_spoken_at
             if (now - backend.started < PROGRESS_AFTER_S or backend.status not in RS.WORKING
-                    or (last_any and now - last_any < self.update_every(PROGRESS_EVERY_S) and not urgent)):
+                    or (last_any and now - last_any < self.update_every(PROGRESS_EVERY_S) and not urgent)
+                    or (self.task_spoke_recently(backend, now) and not urgent)):
                 return False
             self.interaction.progress_spoken_at = now  # claim the slot before reading the card
         card = await asyncio.to_thread(self.card_line, backend.idem_key)
@@ -2829,6 +2866,11 @@ class SidebandWorker:
             backend.spoken_at = now
         await self.append("session.commentary.append", backend.say_id, line)
         return True
+
+    def task_spoke_recently(self, backend: BackendRun, now: float) -> bool:
+        """This task said an unprompted line under its spacing ago (TASK_PULSE_EVERY_S, or the user's
+        interval when longer): its next card change only updates the screen (SPK-562)."""
+        return bool(backend.spoken_at) and now - backend.spoken_at < max(TASK_PULSE_EVERY_S, self.update_every())
 
     # -- the call pulse: never minutes of silence while work runs ------------------------------
     def update_every(self, default: float | None = None) -> float:
@@ -2988,7 +3030,7 @@ class SidebandWorker:
                 wait = stale_wait(every, r.pulse_idle)
             else:
                 continue  # the card says what was said last time: nothing to say
-            if now - max(r.spoken_at, last) < wait:
+            if now - max(r.spoken_at, last) < wait or self.task_spoke_recently(r, now):
                 continue
             picks.append((not new, r.spoken_at, r, card))
         if not picks:

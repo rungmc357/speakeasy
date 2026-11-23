@@ -148,11 +148,12 @@ def test_unchanged_card_stays_quiet_then_the_quiet_spell_is_said_with_back_off(s
     tool(service, backend, clock, "read_file", "cart.py", "c1")
     said = run_quiet(worker, clock, 110)  # same card line ("Reading cart.py") all along
     assert [line for _, line in said] == ["Reading cart.py."]
-    # Two minutes with no step: the card says so ("No new steps · 2 min"), and so does the voice,
-    # then only as the clock moves on, each time waiting longer.
+    # No new step: the card says so ("No new steps · 3 min"), and so does the voice once the task's
+    # own spacing allows (TASK_PULSE_EVERY_S, SPK-562), then only as the clock moves on, each time
+    # waiting longer.
     said = run_quiet(worker, clock, 900)
     lines, times = [line for _, line in said], [t for t, _ in said]
-    assert lines[0] == "No new steps for about two minutes."
+    assert lines[0] == "No new steps for about three minutes."
     gaps = [b - a for a, b in zip(times, times[1:])]
     assert gaps and gaps[0] >= calls.PULSE_IDLE_EVERY_S and all(b >= a for a, b in zip(gaps, gaps[1:]))
     assert all(g <= calls.PULSE_STALE_MAX_S + calls.PULSE_TICK_S for g in gaps)
@@ -183,11 +184,13 @@ def test_recap_is_only_said_when_it_changed(service, clock):
     tool(service, backend, clock, "read_file", "cart.py", "c1")
     clock.t += calls.PULSE_EVERY_S + 1
     assert tick(worker) and spoken(worker)[-1] == "Reading cart.py."  # "So far: read a file" adds nothing
+    clock.t += calls.TASK_PULSE_EVERY_S - 10  # one task's lines are this far apart (SPK-562)
     tool(service, backend, clock, "patch", "cart.py", "c2")
-    clock.t += calls.PULSE_EVERY_S + 1
+    clock.t += 11
     assert tick(worker) and "So far: read a file, edited cart.py." in spoken(worker)[-1]
+    clock.t += calls.TASK_PULSE_EVERY_S - 10
     tool(service, backend, clock, "read_file", "totals.py", "c3")
-    clock.t += calls.PULSE_EVERY_S + 1
+    clock.t += 11
     assert tick(worker) and spoken(worker)[-1] == "Reading totals.py."  # same recap: not again
 
 
@@ -241,8 +244,9 @@ def test_no_double_speak_with_a_status_the_task_wrote(service, clock):
     event = {"event": "message.interim", "text": "STATUS: Checking the cart code\nDETAIL: Found the failing assertion in cart.py"}
     asyncio.run(worker._handle_hermes_event(backend, event))
     assert len(spoken(worker)) == 1
-    # ...and once the next status speaks, the pulse waits a full interval after it.
-    clock.t += calls.PROGRESS_EVERY_S
+    # ...and once the next status speaks (the task's own spacing, SPK-562), the pulse waits a full
+    # interval after it.
+    clock.t += calls.TASK_PULSE_EVERY_S
     asyncio.run(worker._handle_hermes_event(backend, {"event": "message.interim",
                                                       "text": "STATUS: Fixing the cart code\nDETAIL: Patched cart.py and rerunning"}))
     assert spoken(worker)[-1] == "Fixing the cart code. Patched cart.py and rerunning."
@@ -302,7 +306,7 @@ def test_muted_status_is_held_but_heads_up_is_not(service, clock):
                                                       "text": "STATUS: Fixing the broken helper\nDETAIL: The helper failed to start"}))
     assert spoken(worker) == ["Fixing the broken helper. The helper failed to start."]
     worker.interaction.mic_muted = False  # unmuted, a normal status is said once the spacing allows
-    clock.t += calls.PROGRESS_EVERY_S + 1
+    clock.t += calls.TASK_PULSE_EVERY_S + 1  # the heads-up was this task's line: its spacing counts
     asyncio.run(worker._handle_hermes_event(backend, {"event": "message.interim",
                                                       "text": "STATUS: Checking the router\nDETAIL: Found the router bug"}))
     assert spoken(worker)[-1] == "Checking the router. Found the router bug."
@@ -394,7 +398,9 @@ def test_cadence_follows_the_interval_setting(service, clock, every):
             times.append(clock.t - start)
     assert times[0] <= 20  # the early first line is not part of the setting
     gaps = [b - a for a, b in zip(times, times[1:])]
-    assert gaps and all(every <= g <= every + calls.PULSE_TICK_S for g in gaps)
+    # One task: its own spacing (TASK_PULSE_EVERY_S, SPK-562) or the setting when that is longer.
+    spacing = max(every, calls.TASK_PULSE_EVERY_S)
+    assert gaps and all(spacing <= g <= spacing + calls.PULSE_TICK_S for g in gaps)
 
 
 def test_toggling_mute_mid_call(service, clock):
