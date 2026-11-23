@@ -5103,15 +5103,67 @@ class SidebandWorker:
             decision = router.fallback_decision(request)
         return (candidates, cand_ms), (decision, int((time.monotonic() - t) * 1000))
 
+    def warm_candidates(self) -> None:
+        """At call start: read the chat list the call's requests are matched against, off the user's
+        wait (SPK-442). The first hand-off of every call spent 4.4-7.2 s reading it on cold pages."""
+        try:
+            if not self.rt.settings()["continuity"]["enabled"]:
+                return
+        except Exception:
+            return
+        with self.interaction.lock:
+            running = self.__dict__.get("cand_warming")
+            if running is not None and not running.done():
+                return
+            fut: concurrent.futures.Future[Any] = concurrent.futures.Future()
+            self.cand_warming = fut
+
+        def read() -> None:
+            t = time.monotonic()
+            try:
+                base = continuity.prepare(self.rt.state_db)
+            except Exception as exc:  # never let warming break a call
+                logger.warning("speakeasy: chat list warm-up failed: %s", type(exc).__name__)
+                base = None
+            if base is not None:
+                self.cand_base = base
+                logger.info("speakeasy: chat list ready for this call (%d chats, %d ms)", len(base.convs),
+                            int((time.monotonic() - t) * 1000))
+            fut.set_result(base)
+
+        threading.Thread(target=read, daemon=True, name="speakeasy-chats-warm").start()
+
+    async def _candidate_base(self) -> continuity.Base | None:
+        """The call's prepared chat list: the warm-up's (waited for when it is still reading, the
+        same work), a fresh enough earlier one, or a new read that later requests reuse."""
+        warming = self.__dict__.get("cand_warming")
+        if warming is not None and not warming.done():
+            try:
+                await asyncio.wrap_future(warming)
+            except Exception:
+                pass
+        base = self.__dict__.get("cand_base")
+        if base is not None and base.fresh():
+            if not base.fresh(continuity.BASE_TTL_S / 2):
+                self.warm_candidates()  # aging: read again in the background for the next request
+            return base
+        base = await asyncio.to_thread(continuity.prepare, self.rt.state_db)
+        if base is not None:
+            self.cand_base = base
+        return base
+
     async def conversation_candidates(self, request: str) -> list[continuity.Candidate]:
         """Existing chats this request might continue: the ones voice work was last sent to, the
         most recently active, and the ones whose recent messages mention what was asked."""
         if not request or not self.rt.settings()["continuity"]["enabled"]:
             return []
         try:
-            found = await asyncio.to_thread(continuity.conversations_with_context, self.rt.state_db, request)
+            base = await self._candidate_base()
+            found = await asyncio.to_thread(continuity.conversations_with_context, self.rt.state_db, request,
+                                            base=base)
             placements = self.store.recent_placements()
-            ranked = await asyncio.to_thread(continuity.with_placements, self.rt.state_db, found, placements)
+            ranked = await asyncio.to_thread(continuity.with_placements, self.rt.state_db, found, placements,
+                                             recent=base.convs if base is not None else None)
             settings = self.rt.routable()
             # Only chats in the home target or an approved channel; a thread elsewhere is never picked up.
             return [c for c in ranked if channels.allows_conversation(

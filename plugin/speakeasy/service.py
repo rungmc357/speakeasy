@@ -1312,8 +1312,13 @@ class VoiceService(SecureInputMixin):
         self.note_call_event()
         self.store.complete_session(request_id, client_result)
         stages.mark("admit")
-        self._start_worker(interaction, provider, transport).start()
+        worker = self._start_worker(interaction, provider, transport)
+        worker.start()
         stages.mark("worker")
+        # The chats a request could continue, read now instead of on the first hand-off (SPK-442).
+        warm = getattr(worker, "warm_candidates", None)
+        if callable(warm):
+            warm()
         stages.note("provider", provider)
         stages.log()
         # Weather is the most common quick question: have the home forecast ready before it's asked.

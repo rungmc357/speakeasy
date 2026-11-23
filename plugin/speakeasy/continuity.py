@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import re
 import sqlite3
 import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 MAX_CANDIDATES = 40
 RECENT_DAYS = 21
@@ -136,7 +139,8 @@ def recent_conversations(state_db: Path, *, days: int = RECENT_DAYS, limit: int 
     return out
 
 
-def conversation_by_session(state_db: Path, session_id: str) -> Conversation | None:
+def conversation_by_session(state_db: Path, session_id: str,
+                            recent: list[Conversation] | None = None) -> Conversation | None:
     """The chat a session belongs to, backed by that chat's CURRENT live session. A Discord thread
     or Telegram chat keeps its id while Hermes swaps the session behind it (/new, a session switch,
     an auto-reset, compression); continuing the old session id would write into a dead session
@@ -144,7 +148,8 @@ def conversation_by_session(state_db: Path, session_id: str) -> Conversation | N
     conv = _conversation_row(state_db, session_id)
     if conv is None:
         return None
-    live = next((c for c in recent_conversations(state_db) if c.target == conv.target), None)
+    live = next((c for c in (recent if recent is not None else recent_conversations(state_db))
+                 if c.target == conv.target), None)
     return live or conv
 
 
@@ -198,7 +203,7 @@ MAX_SNIPPETS = 3
 SNIPPET_CHARS = 160
 POOL = 150          # recent chats searched by content (the model sees at most ``limit`` of them)
 MIN_SCORE = 2.0     # about one rare shared word, or several less rare ones
-SEARCH_BUDGET_S = 1.5  # the content search runs before routing, so it is on the user's wait
+SEARCH_BUDGET_S = 1.2  # the content search runs before routing, so it is on the user's wait (a hard stop)
 # Gateway scaffolding around a user's words; stripped so the model sees what the person said.
 _NOISE = re.compile(
     r"\[(?:Triggering message id|Image attached|Gateway message origin|IMPORTANT: Background)[^\]]*\]"
@@ -219,13 +224,13 @@ class Candidate:
 
 
 def with_placements(state_db: Path, candidates: list[Candidate], placements: list[dict[str, Any]],
-                    limit: int = 8) -> list[Candidate]:
+                    limit: int = 8, recent: list[Conversation] | None = None) -> list[Candidate]:
     """Mark (or add) the chats voice work was recently sent into. Placements name the session at
     the time; the chat may be backed by a newer session now, so match by chat, not session."""
     by_chat = {_chat_key(c.conv): c for c in candidates}
     order = [_chat_key(c.conv) for c in candidates]
     for placed in placements:
-        conv = conversation_by_session(state_db, placed["session_id"])
+        conv = conversation_by_session(state_db, placed["session_id"], recent)
         if conv is None:
             continue
         key = _chat_key(conv)
@@ -233,7 +238,8 @@ def with_placements(state_db: Path, candidates: list[Candidate], placements: lis
         if current is not None and current.voice_at:
             continue  # newest placement already recorded
         if current is None:
-            live = next((c for c in recent_conversations(state_db) if _chat_key(c) == key), None)
+            live = next((c for c in (recent if recent is not None else recent_conversations(state_db))
+                         if _chat_key(c) == key), None)
             if live is None:
                 continue  # that chat is gone or ended
             current = Candidate(live, ())
@@ -299,15 +305,82 @@ def _term_sessions(db: sqlite3.Connection, term: str, since: float, sessions: li
                 WHERE messages_fts MATCH ? AND f.rowid >= ? AND m.timestamp > ? AND m.role = 'user' {_HUMAN}
                   AND m.session_id IN ({marks})""",
             ('"' + term.replace('"', "") + '"', floor, since, *sessions)).fetchall()
-    except sqlite3.Error:  # no full-text index (older Hermes): a plain scan
-        rows = db.execute(
-            f"""SELECT DISTINCT m.session_id FROM messages m WHERE m.timestamp > ? AND m.role = 'user' {_HUMAN}
-                AND m.session_id IN ({marks}) AND m.content LIKE ?""", (since, *sessions, f"%{term}%")).fetchall()
+    except sqlite3.Error as exc:  # no full-text index (older Hermes): a plain scan
+        if _interrupted(exc):
+            raise _OverBudget from exc  # out of time, not out of an index: never fall back to a scan
+        try:
+            rows = db.execute(
+                f"""SELECT DISTINCT m.session_id FROM messages m WHERE m.timestamp > ? AND m.role = 'user' {_HUMAN}
+                    AND m.session_id IN ({marks}) AND m.content LIKE ?""", (since, *sessions, f"%{term}%")).fetchall()
+        except sqlite3.Error as again:
+            if _interrupted(again):
+                raise _OverBudget from again
+            raise
     return {r[0] for r in rows}
 
 
+def _interrupted(exc: BaseException) -> bool:
+    return "interrupt" in str(exc).lower()
+
+
+class _OverBudget(Exception):
+    """A word search ran past the search budget and was stopped mid-query."""
+
+
+def _budgeted(db: sqlite3.Connection, deadline: float) -> None:
+    """Stop any query on *db* that is still running at *deadline* (monotonic). The budget was only
+    checked between words, so one word on cold pages of a large history ran 3-6 s by itself: the
+    first hand-off of a call waited 4.4-7.2 s on this search (SPK-442)."""
+    db.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 2000)
+
+
+# -- the part of the lookup that doesn't depend on the words (SPK-442) ---------------------------
+#
+# Which chats are live, where the lookback window starts, and each chat's latest user lines are
+# the same for every request in a call. Read once when the call starts (on cold disk pages of a
+# multi-GB history that is most of the first hand-off's wait) and reused by each request, so a
+# request only pays for searching its own words.
+
+BASE_TTL_S = 120.0       # a call's prepared chat list is reused this long, then read again
+BASE_SNIPPETS = 8        # chats whose latest lines are read ahead (the always-offered recent ones)
+
+
+@dataclasses.dataclass
+class Base:
+    convs: list[Conversation]
+    since: float
+    floor: int
+    days: int
+    made: float                                   # time.monotonic() when read
+    snippets: dict[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+
+    def fresh(self, max_age: float = BASE_TTL_S) -> bool:
+        return time.monotonic() - self.made < max_age
+
+
+def prepare(state_db: Path, *, days: int = RECENT_DAYS, now: float | None = None,
+            snippets: int = BASE_SNIPPETS) -> Base | None:
+    """Read the request-independent part of ``conversations_with_context`` (read-only)."""
+    convs = recent_conversations(state_db, days=days, now=now, limit=POOL)
+    since = (now or time.time()) - days * 86400
+    if not convs:
+        return Base([], since, 0, days, time.monotonic())
+    db = _open(state_db)
+    if db is None:
+        return None
+    try:
+        base = Base(convs, since, _recent_floor(db, since), days, time.monotonic())
+        for c in convs[:snippets]:
+            base.snippets[c.session_id] = _snippets(db, c.session_id)
+        return base
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
+
+
 def conversations_with_context(state_db: Path, request: str, *, days: int = RECENT_DAYS,
-                               limit: int = 8, now: float | None = None) -> list[Candidate]:
+                               limit: int = 8, now: float | None = None, base: Base | None = None) -> list[Candidate]:
     """The chats worth showing the routing model: the most recently active ones plus the ones
     whose recent messages talk about what was asked, each with the user's latest lines.
 
@@ -319,29 +392,39 @@ def conversations_with_context(state_db: Path, request: str, *, days: int = RECE
     or compressed is still one chat, and its newest live session is the one to continue.
     """
     import math
-    convs = recent_conversations(state_db, days=days, now=now, limit=POOL)
+    if base is not None and base.days == days:
+        convs = base.convs
+    else:
+        base = None
+        convs = recent_conversations(state_db, days=days, now=now, limit=POOL)
     if not convs:
         return []
     db = _open(state_db)
     if db is None:
-        return [Candidate(c, ()) for c in convs[:limit]]
+        return [Candidate(c, base.snippets.get(c.session_id, ()) if base else ()) for c in convs[:limit]]
     try:
         scores: dict[str, float] = {}
         terms = sorted(_words(request), key=len, reverse=True)[:10]
         if terms:
-            since = (now or time.time()) - days * 86400
+            since = base.since if base else (now or time.time()) - days * 86400
             ids = [c.session_id for c in convs]
-            floor = _recent_floor(db, since)
             deadline = time.monotonic() + SEARCH_BUDGET_S
+            floor = base.floor if base else _recent_floor(db, since)
+            _budgeted(db, deadline)   # a hard stop, mid-query too (SPK-442)
             for term in terms:
                 if time.monotonic() > deadline:
                     break  # routing waits on this: the rarest (longest) words were searched first
-                found = _term_sessions(db, term, since, ids, floor)
+                try:
+                    found = _term_sessions(db, term, since, ids, floor)
+                except _OverBudget:
+                    logger.info("speakeasy: chat search stopped at its %.1f s budget", SEARCH_BUDGET_S)
+                    break
                 if not found or len(found) > len(ids) * 0.5:
                     continue  # absent, or so common it says nothing about which chat
                 weight = math.log(len(ids) / len(found))
                 for sid in found:
                     scores[sid] = scores.get(sid, 0.0) + weight
+            db.set_progress_handler(None, 0)
         recent = convs[:max(1, limit - 3)]
         topical = sorted((c for c in convs if scores.get(c.session_id, 0) >= MIN_SCORE),
                          key=lambda c: (-scores[c.session_id], -c.last_active))
@@ -349,7 +432,9 @@ def conversations_with_context(state_db: Path, request: str, *, days: int = RECE
         for c in [*recent[:3], *topical[:limit - 3], *recent[3:]]:
             if c not in picked and len(picked) < limit:
                 picked.append(c)
-        return [Candidate(c, _snippets(db, c.session_id), round(scores.get(c.session_id, 0.0), 2)) for c in picked]
+        known = base.snippets if base else {}
+        return [Candidate(c, known[c.session_id] if c.session_id in known else _snippets(db, c.session_id),
+                          round(scores.get(c.session_id, 0.0), 2)) for c in picked]
     except sqlite3.Error:
         return [Candidate(c, ()) for c in convs[:limit]]
     finally:
