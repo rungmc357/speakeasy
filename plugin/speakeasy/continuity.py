@@ -446,7 +446,7 @@ def _topic_words(text: str) -> set[str]:
     for w in re.findall(r"[a-z0-9]+", (text or "").lower()):
         if len(w) < 2 or w in _STOP or w in _VAGUE or w.isdigit():
             continue
-        out.add(w[:-1] if w.endswith("s") and not w.endswith("ss") and len(w) > 3 else w)
+        out.add(w[:-1] if w.endswith("s") and not w.endswith("ss") and len(w) >= 3 else w)
     return out
 
 
@@ -460,8 +460,13 @@ def refers_to(request: str, cand: Candidate) -> bool:
         return False
     conv = cand.conv
     topic = conv.name.split(" / ")[-1] if conv.name else ""
-    about = _topic_words(" ".join((conv.title, topic, *(_clean_line(t) for t in (cand.voice_request, *cand.snippets)))))
-    return bool(asked & about)
+    named = _topic_words(" ".join((conv.title, topic, _clean_line(cand.voice_request))))
+    if asked & named:
+        return True
+    # Only its recent talk to go on: one shared word is too thin ("tickets" in a packing list is not
+    # the show's tickets), so the subject must overlap on at least two words.
+    talk = _topic_words(" ".join(_clean_line(t) for t in cand.snippets))
+    return len(asked & talk) >= 2
 
 
 def best_by_content(request: str, candidates: list[Candidate]) -> Conversation | None:

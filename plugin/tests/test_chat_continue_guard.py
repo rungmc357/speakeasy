@@ -45,6 +45,19 @@ def test_stopwords_and_time_words_alone_never_make_a_match():
     assert CallWorker.pick_conversation("what were we doing this weekend?", model, cands, chats) is None
 
 
+def test_one_shared_word_with_old_talk_is_not_enough():
+    # A packing chat that mentioned train tickets is not where a show's ticket price lives.
+    packing = continuity.Conversation("s_pack", "discord", "778", "thread", "778", "42", "111",
+                                      "Server / #home / Trip packing list", "Trip packing list", time.time())
+    talk = ("[sam] passports and the train tickets go in the blue bag",)
+    cands = [continuity.Candidate(packing, talk)]
+    chats = [router.Chat("c1", packing.where, talk)]
+    model = router.Decision([], conversation="c1", source="model")
+    assert CallWorker.pick_conversation(FRESH_ASK, model, cands, chats) is None
+    named = CallWorker.pick_conversation("add sunscreen to the trip packing list", model, cands, chats)
+    assert named is not None and named.session_id == "s_pack"
+
+
 def _start_call(server, service, key):
     status, session = http(server.base_url, "POST", "/voice/sessions", {"sdp": SDP}, server.token,
                            {"Idempotency-Key": key})
