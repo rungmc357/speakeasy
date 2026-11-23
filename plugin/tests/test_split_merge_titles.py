@@ -22,6 +22,12 @@ def quick(monkeypatch):
     monkeypatch.setattr(calls, "SETTLE_S", 0.2)
 
 
+def _own_titles_landed(before: set) -> bool:
+    # PENDING is process-wide: in a full suite another test's push can sit there for good. Wait only
+    # for the session names this test started.
+    return not (session_titles.PENDING - before)
+
+
 def _request_line(context: str) -> str:
     return next((l[len("Request: "):] for l in context.splitlines() if l.startswith("Request: ")), "")
 
@@ -73,6 +79,7 @@ def _ask(worker, delegation_id, words, at):
 
 
 def test_merged_split_never_names_the_next_task(server, service, hermes, caplog):
+    before = set(session_titles.PENDING)
     seen: list[str] = []
     service.rt.route_call = _route
     service.rt.title_call = _titler(seen)
@@ -98,7 +105,7 @@ def test_merged_split_never_names_the_next_task(server, service, hermes, caplog)
     assert "train" in train.lower(), titles
     assert "calendar" in calendar.lower() and "train" not in calendar.lower(), titles
     assert "train" not in weather.lower(), titles
-    wait_for(lambda: not session_titles.PENDING, timeout=10)  # session names land before teardown
+    wait_for(lambda: _own_titles_landed(before), timeout=10)  # session names land before teardown
 
 
 def test_told_elsewhere_matches_other_requests_only():
@@ -110,6 +117,7 @@ def test_told_elsewhere_matches_other_requests_only():
 
 
 def test_a_short_ask_still_sees_what_the_voice_offered(server, service, hermes):
+    before = set(session_titles.PENDING)
     seen: list[str] = []
     service.rt.title_call = lambda context: seen.append(context) or "Book the noodle place for two"
     _, worker = start_call(server, service)
@@ -121,4 +129,4 @@ def test_a_short_ask_still_sees_what_the_voice_offered(server, service, hermes):
     wait_for(lambda: len(seen) >= 2, timeout=10)
     ctx = next(c for c in seen if "Book that one" in c.splitlines()[0])
     assert "corner noodle bar" in ctx  # the voice's own words stay, for what "that one" is
-    wait_for(lambda: not session_titles.PENDING, timeout=10)
+    wait_for(lambda: _own_titles_landed(before), timeout=10)
