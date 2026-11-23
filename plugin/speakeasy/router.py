@@ -1846,7 +1846,7 @@ _DISPUTE_SUBJ = r"(?:it|they|that|this|those|these|he|she|the\s+\w+(?:\s+\w+)?)"
 _DISPUTE_ADV = r"(?:literally|actually|really|definitely|clearly|totally|so)"
 _DISPUTE = re.compile(
     r"(?i)(?:"
-    # "No it's not", "no, they aren't", "nope it isn't", "no they're literally not off"
+    # "No it's not", "no, they aren't", "nope it isn't", "no they're really not off"
     rf"^\W*(?:(?:um+|uh+|oh|well|wait|but)\W+)*(?:no|nope|nah)\b\W*{_DISPUTE_SUBJ}"
     rf"\s*(?:'s|'re|\s+is|\s+are|\s+was|\s+were)?(?:\s+{_DISPUTE_ADV})*\s*(?:not|n't|isn't|aren't|wasn't|weren't|still)\b"
     # "That didn't work", "it didn't close", "you didn't do it"
