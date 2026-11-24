@@ -33,6 +33,8 @@ let package = Package(
             .product(name: "Sparkle", package: "Sparkle"),
         ]),
         .testTarget(name: "SpeakeasyCoreTests", dependencies: ["SpeakeasyCore"], resources: [.copy("Contract")]),
+        // The Mac app's own views, drawn for real (SpeakeasyCoreTests links no views).
+        .testTarget(name: "SpeakeasyAppTests", dependencies: ["Speakeasy", "SpeakeasyClient", "SpeakeasyCore"]),
     ],
     swiftLanguageModes: [.v5]
 )
