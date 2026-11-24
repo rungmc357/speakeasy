@@ -226,10 +226,24 @@ class PushNotifier:
         self._events: dict[str, dict[str, Any]] = {}
         self._withdrawn: dict[str, float] = {}  # needs_you keys that closed (never woken for again)
         self._lock = threading.Lock()
-        self.queue: "queue.Queue[tuple[str, dict[str, Any], str]] | None" = None
+        self.queue: "queue.Queue[tuple[str, dict[str, Any], str] | None] | None" = None
+        self.closed = False
+        self._close_lock = threading.Lock()  # a wake-up never lands behind the stop marker
+        self.thread: threading.Thread | None = None
         if background:
             self.queue = queue.Queue()
-            threading.Thread(target=self._worker, daemon=True, name="speakeasy-push").start()
+            self.thread = threading.Thread(target=self._worker, daemon=True, name="speakeasy-push")
+            self.thread.start()
+
+    def close(self) -> None:
+        """Stop the sender thread once the wake-ups already queued have gone out (the service closes; a
+        reload builds a new notifier with its own thread, so this one must not outlive it, SPK-565)."""
+        with self._close_lock:
+            if self.closed:
+                return
+            self.closed = True
+            if self.queue is not None:
+                self.queue.put(None)
 
     def config(self) -> dict[str, Any]:
         return self.settings().get("push") or {"enabled": True, "relay_url": DEFAULT_RELAY, "presence_s": 45}
@@ -442,7 +456,13 @@ class PushNotifier:
         if sealed:
             payload["sealed"] = sealed
         if self.queue is not None:
-            self.queue.put((device_id, payload, kind))
+            with self._close_lock:
+                if not self.closed:
+                    self.queue.put((device_id, payload, kind))
+                    return
+            # Closed already (a job finishing as the service closes): still send it, on its own thread.
+            threading.Thread(target=self._send, args=(device_id, payload, kind), daemon=True,
+                             name="speakeasy-push-late").start()
         else:
             self._send(device_id, payload, kind)
 
@@ -468,6 +488,9 @@ class PushNotifier:
     def _worker(self) -> None:
         assert self.queue is not None
         while True:
-            device_id, payload, kind = self.queue.get()
-            self._send(device_id, payload, kind)
+            item = self.queue.get()
+            if item is None:
+                self.queue.task_done()
+                return
+            self._send(*item)
             self.queue.task_done()

@@ -5,6 +5,7 @@ import threading
 import time
 
 import thread_hygiene
+from fakes import FakeTransport
 from speakeasy.calls import Notices
 
 
@@ -66,11 +67,32 @@ def test_a_notice_posted_after_close_still_goes_out():
     assert not notices.post("late", "The draft is ready")  # still deduplicated
 
 
-def test_service_close_ends_its_notice_sender(service):
-    sender = service.notices.thread
-    assert sender is not None and sender.is_alive()
+def test_service_close_ends_its_notice_and_push_senders(home):
+    from speakeasy.service import VoiceService
+    service = VoiceService(home, notifier=None, start_threads=True, codex_factory=FakeTransport,
+                           codex_login=lambda binary: (True, "Signed in to Codex."))
+    senders = [service.notices.thread, service.push.thread]
+    assert all(t is not None and t.is_alive() for t in senders)
     service.close()
-    assert _wait(lambda: not sender.is_alive())
+    assert _wait(lambda: not any(t.is_alive() for t in senders))
+
+
+def test_push_sender_sends_what_is_queued_then_ends_when_closed():
+    from speakeasy.push import PushNotifier
+    sent: list[str] = []
+
+    class Relay:
+        def send(self, payload):
+            sent.append(payload["kind"])
+            return {"ok": True}
+
+    push = PushNotifier(devices=None, settings=lambda: {}, relay=Relay())
+    push._send = lambda device_id, payload, kind=None: push.relay.send(payload)  # the relay call only
+    for n in range(2):
+        push.queue.put(("dev", {"kind": f"wake {n}"}, "result"))
+    push.close()
+    assert _wait(lambda: not push.thread.is_alive())
+    assert sent == ["wake 0", "wake 1"]
 
 
 def test_file_guard_names_the_threads_a_file_leaves_behind(monkeypatch):
@@ -90,3 +112,20 @@ def test_file_guard_names_the_threads_a_file_leaves_behind(monkeypatch):
         for t in leaked:
             t.join(2)
     assert guard.problem("tests/test_example.py") is None
+
+
+def test_run_guard_catches_a_slow_creep_no_single_file_trips(monkeypatch):
+    monkeypatch.setattr(thread_hygiene, "GRACE_S", 0.2)
+    stop = threading.Event()
+    earlier = [threading.Thread(target=stop.wait, name="speakeasy-creep", daemon=True)
+               for _ in range(thread_hygiene.RUN_LIMIT)]
+    for t in earlier:
+        t.start()
+    try:
+        guard = thread_hygiene.FileGuard()  # this file starts nothing; earlier ones left the pile
+        problem = guard.problem("tests/test_example.py")
+        assert problem is not None and "for the whole run" in problem and "speakeasy-creep ×" in problem
+    finally:
+        stop.set()
+        for t in earlier:
+            t.join(2)

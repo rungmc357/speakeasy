@@ -929,6 +929,7 @@ class VoiceService(SecureInputMixin):
         if self._text_worker is not None:
             self._text_worker.stop()
         self.notices.close()  # its sender thread finishes what is queued, then ends with the service
+        self.push.close()     # likewise the push sender
         # Last: the state store. A reload builds a new one on the same file, and a connection left open
         # here kept stale -wal/-shm handles that failed every later open with "disk I/O error" (SPK-443).
         try:
