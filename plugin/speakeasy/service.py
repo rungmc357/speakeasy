@@ -67,7 +67,7 @@ from . import projects as P_
 from .store import StateStore
 from .suggest import SuggestError, suggest
 from .threads import ThreadRunner, capability, sync_routes
-from .plain_errors import CONFIG_LEFT_UNCHANGED, TYPED_SEND_FAILED, VOICE_START_FAILED
+from .plain_errors import CONFIG_LEFT_UNCHANGED, CONNECT_FAILED, TYPED_SEND_FAILED, VOICE_START_FAILED
 from .text import ID_RE, MAX_CARDS, MAX_ROOM_CHARS, TERMINAL, notice_text, safe_room_text, split_result, vague_title
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,8 @@ MAX_SDP = 96 * 1024
 # F4: an automatic reload waits this long after any call is asked for, admitted, abandoned or ended,
 # so it never lands between an app's connect retries (they come a few seconds apart).
 CALL_SETTLE_S = 60.0
+# SPK-581: how often a call that hasn't gone live checks that the app is still attached to it.
+UNATTENDED_CHECK_S = 2.0
 UPDATE_LOG_EVERY_S = 30.0   # a waiting plugin update is logged when it starts waiting, then this often
 
 CAPABILITIES = {"card_actions": True, "job_progress": True, "spoken_choices": True, "summary_points": True,
@@ -1339,12 +1341,16 @@ class VoiceService(SecureInputMixin):
                     interaction.room_nudged = False
         with self.lock:
             self.interactions[interaction_id] = interaction
+        if source is not None:
+            interaction.went_live = True  # SPK-581: a resume continues a live conversation
         self.note_call_event()
         self.store.complete_session(request_id, client_result)
         stages.mark("admit")
         worker = self._start_worker(interaction, provider, transport)
         worker.start()
         stages.mark("worker")
+        if source is None:
+            self._watch_unattended(interaction)
         # The chats a request could continue, read now instead of on the first hand-off (SPK-442).
         warm = getattr(worker, "warm_candidates", None)
         if callable(warm):
@@ -1642,19 +1648,7 @@ class VoiceService(SecureInputMixin):
             interaction.abandoned = True
             interaction.end_reason = "client_gave_up"
         self.note_call_event()   # the app's retry is seconds away; the plugin must still be warm
-        worker = interaction.worker
-        try:
-            if hasattr(worker, "end_call"):
-                worker.end_call("abandoned")
-            elif worker is not None:
-                worker.stop_transport()
-        except Exception as exc:
-            logger.info("speakeasy: closing a gave-up call's session failed: %s", type(exc).__name__)
-        try:
-            if worker is not None:
-                worker.call_closed()  # once per call: logs call.end reason=client_gave_up
-        except Exception as exc:
-            logger.info("speakeasy: closing a gave-up call failed: %s", type(exc).__name__)
+        self._close_unjoined(interaction, "gave-up")
         with interaction.lock:
             if interaction.finalization == "open":
                 interaction.finalization = "incomplete"
@@ -1662,6 +1656,97 @@ class VoiceService(SecureInputMixin):
         logger.info("speakeasy: call.client_gave_up id=%s: the app hung up before the session reply; "
                     "its voice session was closed", interaction_id)
         return True
+
+    @staticmethod
+    def _close_unjoined(interaction: Interaction, what: str) -> None:
+        """Stop the voice session of a call nobody joined and log its one call.end line."""
+        worker = interaction.worker
+        try:
+            if hasattr(worker, "end_call"):
+                worker.end_call("abandoned")
+            elif worker is not None:
+                worker.stop_transport()
+        except Exception as exc:
+            logger.info("speakeasy: closing a %s call's session failed: %s", what, type(exc).__name__)
+        try:
+            if worker is not None:
+                worker.call_closed()  # once per call: logs call.end with the call's end_reason
+        except Exception as exc:
+            logger.info("speakeasy: closing a %s call failed: %s", what, type(exc).__name__)
+
+    # -- SPK-581: calls that never went live -------------------------------------------------------
+    def client_seen(self, interaction_id: str) -> None:
+        """The app asked something about this call (any /voice/interactions/{id} request)."""
+        with self.lock:
+            interaction = self.interactions.get(interaction_id)
+        if interaction is not None:
+            interaction.client_seen_at = time.monotonic()
+
+    @staticmethod
+    def stream_attached(interaction: Interaction, delta: int) -> None:
+        """A call's event stream opened (+1) or closed (-1): the app is attached while one is open."""
+        with interaction.lock:
+            interaction.stream_listeners = max(0, interaction.stream_listeners + delta)
+            interaction.client_seen_at = time.monotonic()
+
+    def call_live(self, interaction_id: str) -> dict[str, Any]:
+        """``POST /voice/interactions/{id}/live``: the app's audio is up (its call went live)."""
+        interaction = self.interaction(interaction_id)
+        worker = interaction.worker
+        if worker is not None and hasattr(worker, "mark_live"):
+            worker.mark_live("app")
+        else:
+            with interaction.lock:
+                interaction.went_live = True
+        return {"interaction_id": interaction_id, "live": True}
+
+    def _watch_unattended(self, interaction: Interaction) -> None:
+        """Until the call goes live, check every UNATTENDED_CHECK_S that someone is attached to it.
+        A never-live call with no event stream open and no request from the app for
+        calls.UNATTENDED_S (the app was killed, or went away mid-connect) is closed with its voice
+        session as ``unattended``, so no realtime voice runs, and bills, for a call nobody is on."""
+        from . import calls as calls_mod
+
+        def check() -> None:
+            if self._stop.is_set():
+                return
+            with interaction.lock:
+                open_call = (not interaction.went_live and interaction.finalization == "open"
+                             and not interaction.paused and not interaction.drop_held
+                             and interaction.successor is None and not interaction.call_closed
+                             and not interaction.abandoned and interaction.end_reason is None)
+                if not open_call:
+                    return
+                idle = time.monotonic() - interaction.client_seen_at
+                attached = interaction.stream_listeners > 0
+                reap = not attached and idle >= calls_mod.UNATTENDED_S and not interaction.runs
+                if reap:
+                    interaction.abandoned = True
+                    interaction.end_reason = "unattended"
+                    interaction.error = CONNECT_FAILED  # before the transport stops: an app that comes back reads it
+            if not reap:
+                timer = threading.Timer(UNATTENDED_CHECK_S, check)
+                timer.daemon = True
+                timer.start()
+                return
+            self.note_call_event()
+            self._close_unjoined(interaction, "unattended")
+            with interaction.lock:
+                if interaction.finalization == "open":
+                    interaction.finalization = "incomplete"
+                interaction.status = "error"
+            worker = interaction.worker
+            if worker is not None and hasattr(worker, "publish"):
+                try:
+                    worker.publish()  # an app that comes back sees "Couldn't connect"
+                except Exception as exc:
+                    logger.info("speakeasy: publishing an unattended call's end failed: %s", type(exc).__name__)
+            logger.warning("speakeasy: call.unattended id=%s: nobody was attached to a call that never went "
+                           "live for %.0f s; its voice session was closed", interaction.interaction_id, idle)
+
+        timer = threading.Timer(UNATTENDED_CHECK_S, check)
+        timer.daemon = True
+        timer.start()
 
     def pause_expired(self, interaction: Interaction) -> None:
         with interaction.lock:

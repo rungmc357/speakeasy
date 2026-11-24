@@ -103,6 +103,10 @@ public enum CallReconnect {
     public static let serverAskedDelay: TimeInterval = 0.2
     /// The plugin's end reason for a call someone hung up (End on this or another device).
     public static let hungUpReason = "user"
+    /// SPK-581: the server's `closed` reason when the voice provider went away before the call ever
+    /// went live, and the line shown when the server sent none.
+    public static let connectFailedReason = "connect_failed"
+    public static let connectFailedMessage = "Couldn't connect. Try again."
     /// The plugin's refusal reason when a reconnect's resume finds the call was hung up.
     public static let endedRefusal = "ended"
     /// A connection attempt that hasn't gone live by then is stuck.
@@ -749,6 +753,10 @@ public func reduce(_ state: VoiceState, _ event: VoiceEvent, now: Date) -> Voice
                 s.heldCallsToEnd.append(admitted)   // the attempt's own session is ended on the server too
             }
             s.phase = .ended(fin)
+        } else if reason == CallReconnect.connectFailedReason, case .connecting(let c) = s.phase, c.reconnect == 0 {
+            // SPK-581: the voice provider went away before this call ever went live. The attempt has
+            // failed, so it shows as a failed connect with its retry, not an ended call.
+            failCall(&s, error ?? CallReconnect.connectFailedMessage)
         } else {
             closed(&s, fin)
         }

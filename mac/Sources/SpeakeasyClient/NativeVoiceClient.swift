@@ -383,6 +383,7 @@ public final class NativeVoiceClient: VoiceCallClient {
         if case .inputDelta = event { roomCall?.noteHeardUser() }
         if old.connection != .live && new.connection == .live {
             markConnect(.live)
+            postCallLive()
             micCheck.connectionOpened()
             micRepairPending = false
             if new.micHealth != micCheck.health { dispatch(.micHealth(micCheck.health)) }
@@ -654,6 +655,14 @@ public final class NativeVoiceClient: VoiceCallClient {
     private func reportMic(_ note: String) {
         guard let api, let id = model.state.interactionID else { return }
         Task { _ = try? await api.post("/voice/interactions/\(id)/mic-check", ["note": String(note.prefix(400))]) }
+    }
+
+    /// SPK-581: tell the plugin the call's audio is up. Until then a voice-provider drop is a failed
+    /// connect (ended at once, "Couldn't connect"), not a dropped call held for a reconnect. Best
+    /// effort: an older plugin answers 404 and keeps treating every drop as a live one.
+    private func postCallLive() {
+        guard !previewMode, let api, let id = model.state.interactionID else { return }
+        Task { _ = try? await api.post("/voice/interactions/\(id)/live", [:]) }
     }
 
     private func applySideEffects(from old: VoiceState, to new: VoiceState) {

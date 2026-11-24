@@ -133,6 +133,7 @@ def same_machine(peer: str, headers: Any) -> bool:
     forwarded = (headers.get("X-Forwarded-For") or headers.get("X-Real-IP") or "").split(",")[0]
     return bool(forwarded.strip()) and _is_own_address(forwarded)
 _ID = r"([A-Za-z0-9_-]+)"
+_CALL_PATH = re.compile(r"/voice/interactions/([A-Za-z0-9_-]+)(?:/|$)")
 # A Hermes session id (percent-encoded in the path; history.SAFE_ID_RE checks it once decoded).
 _SESSION = r"([A-Za-z0-9_:@.+=%-]{1,200})"
 # A Home item id (now.py: q:/s:/t:/call:/g:stopped: + its id), as one path segment. The apps
@@ -497,6 +498,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(scrub_bytes(f"id: {seq}\nevent: {kind}\ndata: {data}\n\n".encode()))
         self.wfile.flush()
 
+    def _note_call_client(self, path: str) -> None:
+        """SPK-581: any request about a call says the app is still there (unattended-call reaper)."""
+        call = _CALL_PATH.match(path)
+        if call:
+            self.service.client_seen(call.group(1))
+
     def _events(self, interaction: Interaction) -> None:
         """Live SSE stream: snapshot (or resume via Last-Event-ID), deduped changes, heartbeat, closed."""
         store, feed = self.service.store, interaction.feed
@@ -661,6 +668,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, self.service.push_event(self._auth(presence=False), push_event.group(1)))
                 return
             device_id = self._auth()
+            self._note_call_client(path)
             staged_preview = re.fullmatch(rf"/voice/attachments/{_ID}/preview", path)
             if staged_preview:
                 data, mime = self.service.staged_preview(device_id, staged_preview.group(1))
@@ -704,9 +712,11 @@ class Handler(BaseHTTPRequestHandler):
             if events:
                 interaction = self.service.interaction(events.group(1))
                 self.service.push.stream_opened(device_id)  # the app is open while its stream is
+                self.service.stream_attached(interaction, +1)  # SPK-581: someone is on this call
                 try:
                     self._events(interaction)
                 finally:
+                    self.service.stream_attached(interaction, -1)
                     self.service.push.stream_closed(device_id)
                 return
             audio = re.fullmatch(rf"/voice/interactions/{_ID}/audio", path)
@@ -832,6 +842,7 @@ class Handler(BaseHTTPRequestHandler):
                                     unquote(voice_note.group(1)))
                 return
             device_id = self._auth()
+            self._note_call_client(path)
             secret = re.fullmatch(r"/voice/secrets/(sec_[A-Za-z0-9_-]{16,40})", path)
             if secret:
                 self._secret_answer(secret.group(1), device_id)
@@ -1009,11 +1020,13 @@ class Handler(BaseHTTPRequestHandler):
             if capture:
                 self._reply(200, self.service.capture_status(capture.group(1), capture.group(2), self._body()))
                 return
-            action = re.fullmatch(rf"/voice/interactions/{_ID}/(end|pause|approval|cancel-backend|skip-tour|early-request|mic-check|mic|answer|screen|focus|input-text)", path)
+            action = re.fullmatch(rf"/voice/interactions/{_ID}/(end|pause|approval|cancel-backend|skip-tour|early-request|mic-check|mic|answer|screen|focus|input-text|live)", path)
             if not action:
                 raise ServiceError(404, "not found")
             interaction_id, verb = action.groups()
-            if verb == "screen":
+            if verb == "live":  # SPK-581: the app's audio is up; a provider drop now holds the call
+                self._reply(200, self.service.call_live(interaction_id))
+            elif verb == "screen":
                 self._reply(200, self.service.set_screen(interaction_id, self._body()))
             elif verb == "input-text":
                 self._reply(200, self.service.input_text(interaction_id, self._body()))
