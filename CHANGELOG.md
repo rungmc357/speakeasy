@@ -2,6 +2,11 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.59: newer call voice, cleaner thread pages
+
+- **Calls on your own OpenAI key use gpt-live-1.1.** It resumes after a pause noticeably faster, and falls back to gpt-live-1 if your account isn't offered it. ChatGPT sign-in calls follow the voice OpenAI serves there. *(plugin)*
+- **Card decisions read as what they were.** After you tap Approve, Send, Save draft or Decline on a card, the thread shows a quiet line ("Approved on the card") instead of internal text that looked like a message you wrote. *(plugin)*
+
 ## Plugin 0.3.58: Home tells you when it's done
 
 - **Home says when a job finishes.** When a job you started from Home is done, Home says so in the chat, in its own words, once. *(plugin)*
