@@ -123,7 +123,8 @@ final class ModelChoiceTests: XCTestCase {
         XCTAssertNil(plain.body["model"]); XCTAssertNil(plain.body["reasoning"])
         XCTAssertEqual(JobModelDefaults(model: nil, reasoning: .high).patchBody as NSDictionary,
                        ["jobs": ["model": "", "reasoning": "high"]])
-        XCTAssertEqual(JobModelDefaults(settingsJSON: ["jobs": ["model": "a/b", "reasoning": ""]]),
+        // The server's reply is wrapped in "settings" (SPK-404; see the test below).
+        XCTAssertEqual(JobModelDefaults(settingsJSON: ["settings": ["jobs": ["model": "a/b", "reasoning": ""]]]),
                        JobModelDefaults(model: "a/b", reasoning: nil))
     }
 
