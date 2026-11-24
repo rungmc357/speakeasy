@@ -58,7 +58,7 @@ from .settings import DEFAULT_UPDATE_INTERVAL_S, valid_delivery_target
 from .prompt import builder as P
 from . import text as text_mod
 from .store import fold_tasks
-from .plain_errors import STREAM_ENDED_EARLY, TASK_START_FAILED, THREAD_WAIT_LOST, VOICE_LOST
+from .plain_errors import CONNECT_FAILED, STREAM_ENDED_EARLY, TASK_START_FAILED, THREAD_WAIT_LOST, VOICE_LOST
 from .text import (ID_RE, MAX_TRANSCRIPT, TERMINAL, clean_transcript, delivery_text, derive_tool_status,
                    interim_progress, live_images_in, notice_text, safe_user_text, short_title, home_title, split_result,
                    fallback_title,
@@ -70,6 +70,11 @@ logger = logging.getLogger(__name__)
 # reconnect into the same conversation, and how long a dropped call is held for it to do so.
 MAX_AUTO_RESUMES = 2
 DROP_HOLD_S = 45.0
+# SPK-581: a call that never went live (no word from either side, no handoff, the app never said its
+# audio started) has nothing to reconnect into. A provider drop then ends the attempt at once as
+# ``connect_failed``, and a never-live call with no app attached (no event stream, no request) for
+# this long is closed with its voice session as ``unattended``.
+UNATTENDED_S = 20.0
 
 
 # A greeting, a bare filler sound or how-are-you small talk on its own is never work ("hey", "yo
@@ -838,6 +843,13 @@ class Interaction:
     paused_at: float | None = None  # when it paused (Home's ``paused_call``, QA74 #20)
     # The app gave up on this call before it went live (a stalled connection retried elsewhere).
     abandoned: bool = False
+    # SPK-581: the call went live: the voice heard or said something, made a handoff, or the app
+    # reported its audio started (POST .../live). A resumed leg continues a live conversation.
+    went_live: bool = False
+    # SPK-581: who is attached: open event streams for this call, and when the app last showed up
+    # (admission, a stream opening or closing, a request about this call), monotonic.
+    stream_listeners: int = 0
+    client_seen_at: float = dataclasses.field(default_factory=time.monotonic)
     # How the call ended, for agent.log and the call log: "user" (End), "provider" (the voice
     # provider dropped it and it wasn't resumed), "expired" (paused too long), "error". None = open.
     end_reason: str | None = None
@@ -1779,6 +1791,16 @@ class SidebandWorker:
             self.rt.call_log.record(self.interaction.interaction_id, history, self.call_tasks(),
                                     self.interaction.device_id, client=self.interaction.client, reason=reason)
 
+    def mark_live(self, how: str) -> None:
+        """SPK-581: the call went live (``how``: voice / app). Once per call; from any thread."""
+        with self.interaction.lock:
+            if self.interaction.went_live:
+                return
+            self.interaction.went_live = True
+            started = getattr(self, "connected_at", None)
+        after = int((time.monotonic() - started) * 1000) if isinstance(started, (int, float)) and started else -1
+        logger.info("speakeasy: call.live id=%s by=%s after_ms=%d", self.interaction.interaction_id, how, after)
+
     # -- the provider dropped the call: hold it for the app to reconnect -----------------------------
     def call_drop(self, reason: str) -> None:
         """The voice provider's connection went away under a live call (no End, Pause or cap asked
@@ -1786,12 +1808,22 @@ class SidebandWorker:
         and the app is told to reconnect (``reconnect_required``): its resume continues the same
         conversation in a fresh voice session. Past the cap, or if nobody reconnects within
         DROP_HOLD_S, it ends as dropped (reason "provider")."""
-        used, capped = 0, False
+        used, capped, before_live = 0, False, False
         with self.interaction.lock:
             if self.interaction.finalization != "open" or self.interaction.paused or self.interaction.drop_held:
                 # SPK-458: a hang-up (or pause) recorded first wins over a late drop report: the call
                 # is never held for a reconnect, re-ended as dropped or told to reconnect.
                 hung_up = True
+            elif not self.interaction.went_live:
+                # SPK-581: the call never went live (the app's audio never started, nobody said a
+                # word): there is no conversation to hold or resume. The attempt ends now as a failed
+                # connect the app can retry, never a 45 s "Reconnecting…" logged as a provider drop.
+                hung_up, before_live = False, True
+                self.interaction.dropped_at = time.time()
+                self.interaction.finalization = "incomplete"
+                self.interaction.status = "error"
+                self.interaction.end_reason = "connect_failed"
+                self.interaction.error = CONNECT_FAILED
             else:
                 hung_up = False
                 used = self.interaction.drop_count
@@ -1809,6 +1841,12 @@ class SidebandWorker:
             logger.info("speakeasy: call.drop id=%s reason=%s ignored: the call already ended or paused",
                         self.interaction.interaction_id, reason)
             self.call_closed()
+            return
+        if before_live:
+            logger.warning("speakeasy: call.drop id=%s reason=%s before_live=true held=false: the call never "
+                           "went live; ended as connect_failed", self.interaction.interaction_id, reason)
+            self.call_closed()
+            self.publish()  # the app's "Couldn't connect", now
             return
         if capped:
             logger.warning("speakeasy: call.drop id=%s reason=%s resumed=false gap_ms=0 cap=%d",
@@ -1999,6 +2037,7 @@ class SidebandWorker:
                 # The assistant talking on this Mac: duck its volume until the voice goes quiet.
                 self.rt.duck.note(speaker, self.interaction.interaction_id)
             if speaker == "user":
+                self.mark_live("voice")  # SPK-581: the user was heard, so the call's audio is up
                 self.listen_for_stop()
             else:
                 self.watch_acknowledgement()
@@ -2014,6 +2053,7 @@ class SidebandWorker:
             if delegation_id in self.delegations:
                 return
             self.delegations.add(delegation_id)
+            self.mark_live("handoff")
             self.touch()
             # delegation.created is the documented utterance boundary: freeze the transcript now.
             context = self.context(int(event.get("offset_ms", 0)))

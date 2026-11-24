@@ -517,7 +517,7 @@ class CodexSidebandWorker(SidebandWorker):
                         self.interaction.finalization = "incomplete"
                         self.interaction.status = "error"
                         self.interaction.end_reason = self.interaction.end_reason or "error"
-                        self.interaction.error = "Voice transport ended without a confirmed close"
+                        self.interaction.error = self.interaction.error or "Voice transport ended without a confirmed close"
             self.call_closed()
             if self.dispatch_tasks:
                 await asyncio.gather(*self.dispatch_tasks, return_exceptions=True)
@@ -632,6 +632,7 @@ class CodexSidebandWorker(SidebandWorker):
                            handoff_id in self.delegations)
             return
         logger.info("speakeasy: Codex handoff received (%s chars)", len(request))
+        self.mark_live("handoff")  # SPK-581
         # The voice sometimes hands off the same words again when nothing came back quickly;
         # that repeat would reach the running task as a duplicate follow-up.
         said, now = clean_transcript(request).strip().lower(), time.monotonic()

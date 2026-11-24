@@ -12,6 +12,9 @@ VOICE_START_FAILED = "The voice service didn't answer. Try again in a moment."
 VOICE_UNREACHABLE = "Couldn't reach the voice service. Try again in a moment."
 # A live call's voice connection dropped. The apps key on the "Voice connection lost" start.
 VOICE_LOST = "Voice connection lost."
+# A call's voice went away before the call ever went live (SPK-581): the connect failed, so the app
+# offers a fresh try instead of a "Reconnecting…" wait.
+CONNECT_FAILED = "Couldn't connect. Try again."
 # A typed message during a call didn't reach the voice.
 TYPED_SEND_FAILED = "Couldn't get that message to the call. Try sending it again."
 # A handoff or run that never got going (no better reason is known).
