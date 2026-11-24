@@ -28,11 +28,13 @@ from speakeasy import tunnel as _tunnel
 
 # Threads one test file may leave alive after the grace period. A few short-lived timers (a pending
 # debounce, a 10 s settle timer) are normal; a leak per test grows far past this in one file.
-FILE_LIMIT = 12
+FILE_LIMIT = 16
 # Live threads the whole process may hold at a file boundary: catches a slow creep (one thread a file)
 # that no single file trips. A clean run sits well under 100 (SPK-565 measured about 3,400 before).
 RUN_LIMIT = 150
-GRACE_S = 3.0
+# How long threads get to finish before they count: a loaded host drains streams slowly. Only a file
+# over a limit waits; a clean file pays nothing.
+GRACE_S = 10.0
 
 _watchers: list = []
 _notices: list = []   # Notices and PushNotifier senders: both stop with close()

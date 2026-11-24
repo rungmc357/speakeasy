@@ -1,4 +1,6 @@
 """Commands in answers: never spoken, and always copyable on their own."""
+import threading
+
 from speakeasy import text as T
 from speakeasy.prompt import builder as P
 
@@ -56,6 +58,7 @@ def test_chat_delivery_posts_each_command_alone():
 
     board = NoticeBoard.__new__(NoticeBoard)
     board.store, board.notifier = Store(), object()
+    board.closed, board._close_lock, board.thread = False, threading.Lock(), None
     board.target = lambda: "discord:1"
 
     class Q:
