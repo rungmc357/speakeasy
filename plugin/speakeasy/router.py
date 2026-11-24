@@ -672,7 +672,9 @@ class Chat:
 class Decision:
     parts: list[Part]
     channel: str | None = None     # an opted-in channel label picked by topic, or None
-    source: str = "fallback"       # "model" | "marked" | "fallback"
+    # What picked it: "model" | "marked" | "focus" | "quick" | "fragment" | "just_started" | "refers_back" |
+    # "jev" | "fallback", or "kept_apart" when a picked task was about another build (SPK-172).
+    source: str = "fallback"
     latency_ms: int = 0
     conversation: str | None = None  # a Chat.ref to continue in, or None
     show: bool = False             # the user wants to SEE something (what it looks like), not just hear it
@@ -1403,7 +1405,37 @@ def decide(request: str, tasks: list[OpenTask], marked_task_id: Any = None, topi
            focus: Focus | None = None) -> Decision:
     """Route one handoff. A task id the voice model marked wins outright (no model call). A focused
     task is a strong prior: the model is told the user is looking at it and sends the request there
-    unless it is clearly unrelated; without a model answer the request goes to the focused task."""
+    unless it is clearly unrelated; without a model answer the request goes to the focused task.
+    Whoever picked it, a request never joins a task about a different build or ticket (SPK-172)."""
+    decision = _decide(request, tasks, marked_task_id=marked_task_id, topics=topics, call=call, timeout=timeout,
+                       chats=chats, call_so_far=call_so_far, replied_task_id=replied_task_id, jev_place=jev_place,
+                       focus=focus)
+    return _keep_apart(decision, tasks)
+
+
+def _keep_apart(decision: Decision, tasks: list[OpenTask]) -> Decision:
+    """A follow-up to a task about another build or release ("push forty-one" onto release 42's task)
+    becomes its own new task, and the decision's source says so ("kept_apart"). The task's whole request
+    is read, "(following up: ...)" included: after one follow-up its build is often only named there.
+    A correction stays ("no, I meant forty-three"): the running job should switch."""
+    about = {t.task_id: t.request for t in tasks}
+
+    def other(p: Part) -> bool:
+        return (p.kind == "follow_up" and not corrects(p.request)
+                and recap.names_other_number(about.get(p.task_id or "", ""), p.request))
+
+    if not any(other(p) for p in decision.parts):
+        return decision
+    logger.info("speakeasy: the request names another build than the task it was sent to (%s): a new task",
+                decision.source)
+    return dataclasses.replace(decision, parts=[Part(NEW, p.request) if other(p) else p for p in decision.parts],
+                               source="kept_apart")
+
+
+def _decide(request: str, tasks: list[OpenTask], *, marked_task_id: Any, topics: list[Topic] | None,
+            call: Callable[[list[dict[str, str]]], str | None] | None, timeout: float, chats: list[Chat] | None,
+            call_so_far: str, replied_task_id: str | None,
+            jev_place: Callable[..., dict[str, Any] | None] | None, focus: Focus | None) -> Decision:
     request = (request or "").strip()
     topics = topics or []
     open_tasks = tasks[-MAX_OPEN_TASKS:]
@@ -1804,11 +1836,47 @@ _CORRECTION_VERB = re.compile(
     r"(?i)^(?:please\s+)?(?:turn|switch|set|make|dim|brighten|open|close|play|pause|stop|start|send|book|"
     r"check|find|look|get|put|move|add|remove|cancel|use|go|do|keep|leave|change|show|tell|text|email|call)\b")
 _LEADING_JUNK = re.compile(r"(?i)^(?:(?:or|our|and|but|so|um+|uh+|er+|oh|the)\s+)+")
+# Said first, these correct only when a correction or the fix alone follows ("sorry, forty-three", "make that
+# forty-three"); "sorry to bother you, push forty-one" is manners. Only `corrects` reads them: "sorry" opens
+# too many sentences for `correction` to rewrite a request on it.
+_SOFT_LEAD = re.compile(r"(?i)^\W*(?:sorry|make\s+that)\b[\s,.;:!-]+(?!to\b)(?P<rest>\S.*)$")
+_FIX_WORDS = 5  # a fix is a few words; more is a sentence of its own
 
 
 def correction(request: str) -> tuple[str, str] | None:
     """("phrase", "guest room") for "Our guest room, sorry"; ("replace", "turn them on") for "no, turn
     them on"; None when it isn't a correction. A bare "no" is an answer, never a correction."""
+    found = _correction(request)
+    if found is None or found[0] == "replace":
+        return found
+    phrase = found[1]
+    if is_fragment(phrase) or not re.search(r"[a-z]{3,}", phrase.lower()):
+        return None
+    if all(re.sub(r"[^a-z]", "", w) in _FRAGMENT_WORDS | {"er", "erm", "be", ""} for w in phrase.lower().split()):
+        return None
+    return found
+
+
+def corrects(request: str) -> bool:
+    """Whether the words put right what was just asked instead of asking for something else, so they stay
+    with its task (SPK-172). What `correction` reads, also when the fix is too little to rewrite a request
+    with ("no, 43"), and "sorry" or "make that" said first when a correction or only the fix follows
+    ("sorry, forty-three"). A polite opener before a request is not one ("no problem, go ahead with
+    forty-one", "sorry to bother you, push forty-one", "sorry, one more thing: push forty-one")."""
+    text = " ".join((request or "").split())
+    if _correction(text) is not None:
+        return True
+    soft = _SOFT_LEAD.match(text)
+    if not soft:
+        return False
+    rest = soft.group("rest")
+    only_the_fix = not (re.search(r"[,;:]\s", rest) or _CORRECTION_VERB.match(rest) or len(rest.split()) > _FIX_WORDS)
+    return only_the_fix or corrects(rest)
+
+
+def _correction(request: str) -> tuple[str, str] | None:
+    """`correction` before it asks whether a phrase says enough to rewrite a request with: ("phrase", "43")
+    for "no, 43". One reading of the correction words for both `correction` and `corrects`."""
     text = " ".join((request or "").split())
     if not text or len(text.split()) > 12:
         return None
@@ -1830,9 +1898,7 @@ def correction(request: str) -> tuple[str, str] | None:
     # "living room... guest room": what came before the break is the slip, the rest is the fix.
     rest = re.split(r"\s*(?:\.{2,}|…|—|--)\s*", rest)[-1]
     phrase = _LEADING_JUNK.sub("", rest).strip(" ,.;:!-")
-    if not phrase or len(phrase.split()) > 5 or is_fragment(phrase) or not re.search(r"[a-z]{3,}", phrase.lower()):
-        return None
-    if all(re.sub(r"[^a-z]", "", w) in _FRAGMENT_WORDS | {"er", "erm", "be", ""} for w in phrase.lower().split()):
+    if not phrase or len(phrase.split()) > _FIX_WORDS:
         return None
     return "phrase", phrase
 
