@@ -6,9 +6,7 @@ import Speech
 #endif
 #if os(macOS)
 import CoreAudio
-#elseif os(iOS)
-import WebRTC
-#elseif os(visionOS)
+#elseif canImport(LiveKitWebRTC)
 import LiveKitWebRTC
 #endif
 

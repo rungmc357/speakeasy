@@ -1,9 +1,7 @@
 import AVFoundation
 import Foundation
 import Speech
-#if os(iOS)
-import WebRTC
-#elseif os(visionOS)
+#if canImport(LiveKitWebRTC)
 import LiveKitWebRTC
 #endif
 

@@ -614,6 +614,9 @@ public final class NativeVoiceClient: VoiceCallClient {
         parts.append("out " + (outs.isEmpty ? "none" : outs))
         parts.append(NativeCallEngine.sharedAudioSummary())
         #endif
+        #if canImport(LiveKitWebRTC)
+        if let call = engine as? NativeCallEngine { parts.append(call.deviceAudio.summary) }
+        #endif
         return parts.joined(separator: ", ")
     }
 
@@ -894,7 +897,6 @@ public final class NativeVoiceClient: VoiceCallClient {
         armConnectWatchdog(api)
         if skipEarlyCapture { stopEarlyCapture() } else { startEarlyCapture() }
         connectionUsedEarlyCapture = earlyCapture != nil
-        if earlyCapture == nil { NativeCallEngine.resetSharedAudio() }
         let engine = NativeCallEngine()
         self.engine = engine
         if earlyCapture != nil { engine.holdAudio() }
