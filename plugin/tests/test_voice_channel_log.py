@@ -1,4 +1,6 @@
 """The voice channel is a complete log: work that lands elsewhere leaves a pointer there."""
+import threading
+
 from speakeasy.calls import Notices
 from speakeasy.prompt import builder as P
 
@@ -25,6 +27,7 @@ class Q:
 def board(home="discord:100"):
     b = Notices.__new__(Notices)
     b.store, b.notifier, b.queue = Store(), object(), Q()
+    b.closed, b._close_lock, b.thread = False, threading.Lock(), None
     b.target = lambda: home
     return b
 

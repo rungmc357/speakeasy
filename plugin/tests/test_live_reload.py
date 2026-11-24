@@ -42,6 +42,10 @@ def plugin(home, tmp_path):
     shutil.copytree(SRC, pkg, ignore=shutil.ignore_patterns("__pycache__"))
     _set_version(pkg, "1.0.0")
     sys.path.insert(0, str(root))
+    # The OpenAI voice, not Codex: with Codex every load warms a spare by starting whatever Codex app
+    # is installed on the test machine, and each reload left its app-server and reader threads (SPK-565).
+    from speakeasy.settings import Settings
+    Settings(home).patch({"voice": {"provider": "openai"}})
     reloader_mod = importlib.import_module(f"{name}.reloader")
     port = _free_port()
     r = reloader_mod.LiveReloader(name, pkg, home, "127.0.0.1", port, check_s=3600)  # ticks driven by the test

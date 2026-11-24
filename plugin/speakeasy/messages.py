@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import contextvars
 
 # Send identity follows asyncio tasks and to_thread calls, never words or timing. The marker is
@@ -420,8 +421,14 @@ def make_text_worker(rt: Any) -> "SidebandWorker":
         def start(self) -> None:
             ready = threading.Event()
 
+            # The loop's blocking helpers (run_in_executor) get an executor this worker owns, so stop()
+            # can end those threads too: a stopped loop's default executor otherwise keeps its idle
+            # threads for the life of the process, a few more on every reload (SPK-565).
+            self.executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix="speakeasy-typed-io")
+
             def runner() -> None:
                 self.loop = asyncio.new_event_loop()
+                self.loop.set_default_executor(self.executor)
                 asyncio.set_event_loop(self.loop)
                 ready.set()
                 self.loop.run_forever()
@@ -437,6 +444,9 @@ def make_text_worker(rt: Any) -> "SidebandWorker":
         def stop(self) -> None:
             if self.loop is not None and not self.loop.is_closed():
                 self.loop.call_soon_threadsafe(self.loop.stop)
+            executor = getattr(self, "executor", None)
+            if executor is not None:
+                executor.shutdown(wait=False)  # idle threads end now; a running helper ends when it returns
 
     interaction = Interaction(interaction_id=TYPED_INTERACTION + secrets.token_hex(12), live_session_id="typed",
                               status="closed", finalization="confirmed", call_closed=True)

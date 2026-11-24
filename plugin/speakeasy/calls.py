@@ -1204,9 +1204,23 @@ class Notices:
 
     def __init__(self, store: Any, notifier: Any | None, target: Callable[[], str], names: Callable[[], P.Names]):
         self.store, self.notifier, self.target, self.names = store, notifier, target, names
-        self.queue: "queue.Queue[tuple[str, str, str]]" = queue.Queue()
+        self.queue: "queue.Queue[tuple[str, str, str] | None]" = queue.Queue()
+        self.closed = False
+        self._close_lock = threading.Lock()  # a post never lands behind the stop marker
+        self.thread: threading.Thread | None = None
         if notifier is not None:
-            threading.Thread(target=self._worker, daemon=True, name="speakeasy-notices").start()
+            self.thread = threading.Thread(target=self._worker, daemon=True, name="speakeasy-notices")
+            self.thread.start()
+
+    def close(self) -> None:
+        """Stop the sender thread once the notices already queued have gone out (the service closes;
+        a reload builds a new one with its own thread, so this one must not outlive it)."""
+        with self._close_lock:
+            if self.closed:
+                return
+            self.closed = True
+            if self.thread is not None:
+                self.queue.put(None)
 
     def post(self, dedupe_key: str, text: str, limit: int = 600, target: str | None = None) -> bool:
         target = target or self.target()
@@ -1215,7 +1229,13 @@ class Notices:
         try:
             if not self.store.claim_notice(dedupe_key):
                 return False
-            self.queue.put((dedupe_key, target, text[:limit]))
+            with self._close_lock:
+                if not self.closed:
+                    self.queue.put((dedupe_key, target, text[:limit]))
+                    return True
+            # A late notice (a call wrapping up as the service closes) still goes out, on its own thread.
+            threading.Thread(target=self._send, args=(dedupe_key, target, text[:limit]), daemon=True,
+                             name="speakeasy-notice-late").start()
             return True
         except Exception as exc:  # never break the voice path
             logger.warning("speakeasy: notice enqueue failed: %s", type(exc).__name__)
@@ -1223,16 +1243,22 @@ class Notices:
 
     def _worker(self) -> None:
         while True:
-            key, target, text = self.queue.get()
-            try:
-                outcome = "sent" if self.notifier.send(target, text) else "failed"
-            except Exception as exc:
-                outcome = f"failed: {type(exc).__name__}"
-            try:
-                self.store.notice_outcome(key, outcome)
-            except Exception:
-                pass
+            item = self.queue.get()
+            if item is None:
+                self.queue.task_done()
+                return
+            self._send(*item)
             self.queue.task_done()
+
+    def _send(self, key: str, target: str, text: str) -> None:
+        try:
+            outcome = "sent" if self.notifier.send(target, text) else "failed"
+        except Exception as exc:
+            outcome = f"failed: {type(exc).__name__}"
+        try:
+            self.store.notice_outcome(key, outcome)
+        except Exception:
+            pass
 
     def still_working(self, run_id: str, request: str | None, short_status: str | None) -> None:
         self.post(f"still:{run_id}", P.still_working_notice(request, short_status))

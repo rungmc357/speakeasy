@@ -604,7 +604,7 @@ class VoiceService(SecureInputMixin):
                     self.files._first_scan(wait=0)
                 except Exception as exc:
                     logger.info("speakeasy: files warm-up skipped (%s)", type(exc).__name__)
-        timer = threading.Timer(FILES_WARM_AFTER_S, warm)
+        timer = self._files_warm = threading.Timer(FILES_WARM_AFTER_S, warm)
         timer.daemon = True
         timer.name = "speakeasy-files-warm"
         timer.start()
@@ -930,6 +930,9 @@ class VoiceService(SecureInputMixin):
 
     def close(self) -> None:
         self._stop.set()
+        warm = getattr(self, "_files_warm", None)
+        if warm is not None:
+            warm.cancel()  # a reload that lands before the Files warm-up must not leave its timer behind
         try:
             self.hand_over_runs()  # the next code (a reload) follows them on from here
         except Exception:
@@ -952,6 +955,8 @@ class VoiceService(SecureInputMixin):
         self.codex_signin.close()  # a waiting sign-in's Codex child must not outlive the service
         if self._text_worker is not None:
             self._text_worker.stop()
+        self.notices.close()  # its sender thread finishes what is queued, then ends with the service
+        self.push.close()     # likewise the push sender
         # Last: the state store. A reload builds a new one on the same file, and a connection left open
         # here kept stale -wal/-shm handles that failed every later open with "disk I/O error" (SPK-443).
         try:
