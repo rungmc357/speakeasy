@@ -156,13 +156,14 @@ public final class VoicePanelModel: ObservableObject {
     }
     /// Card buttons with a request in flight ("task|view|action").
     @Published public var cardActionBusy: Set<String> = []
-    public func runCardAction(taskID: String, card: ViewCard, action: CardAction) {
+    public func runCardAction(taskID: String, card: ViewCard, action: CardAction, done: ((Bool) -> Void)? = nil) {
         let key = "\(taskID)|\(card.viewIndex)|\(action.id)"
-        guard !cardActionBusy.contains(key) else { return }
+        guard !cardActionBusy.contains(key) else { done?(false); return }
         cardActionBusy.insert(key)
         onCardAction(taskID, card, action) { [weak self] ok, message in
             self?.cardActionBusy.remove(key)
             self?.showToast(message, ok: ok)
+            done?(ok)
         }
     }
     /// Job-view sections the user opened ("job|details", "job|steps").

@@ -258,19 +258,37 @@ private struct MacPostedResult: View {
     @Environment(\.cardStyle) private var style
     @State private var card: ViewCard?
     @State private var bump = 0
+    /// Why the card's last button didn't go (SPK-364): the card is back on Draft, and this says so.
+    @State private var refused: String?
+    @ObservedObject private var memory = EmailCardMemory.shared
+
+    /// The line leaves with the next tap (its Undo window included) or once Hermes's status moves.
+    private var refusalStands: Bool {
+        guard let info = card.flatMap({ EmailCardInfo($0) }) else { return true }
+        return info.refusalStands(memory.phase[info.draftID])
+    }
 
     var body: some View {
         Group {
             if let card {
-                // The job's done line is on its card where it was asked: the email comes alone.
-                ViewCardView(card)
-                    .environment(\.cardSend, { action in send(action, card: card) })
-                    .cardSurface(style)
-                    .frame(maxWidth: 520, alignment: .leading)
-                    .accessibilityIdentifier("mac-now-result")
+                VStack(alignment: .leading, spacing: 6) {
+                    // The job's done line is on its card where it was asked: the email comes alone.
+                    ViewCardView(card)
+                        .environment(\.cardSend, { action in await send(action, card: card) })
+                        .cardSurface(style)
+                        .frame(maxWidth: 520, alignment: .leading)
+                        .accessibilityIdentifier("mac-now-result")
+                    if let refused, refusalStands {
+                        Text(refused).font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("mac-now-result-refused")
+                    }
+                }
             }
         }
         .task(id: "\(item.updatedAt?.timeIntervalSince1970 ?? 0)|\(bump)") { await load() }
+        // Dropped, not only hidden: an Undo of the retry must not bring the old line back.
+        .onChange(of: refusalStands) { _, stands in if !stands { refused = nil } }
     }
 
     private func load() async {
@@ -278,14 +296,22 @@ private struct MacPostedResult: View {
         if let info = try? await api.work(runID: runID), let pick = ResultCardPick.pick(info.views) { card = pick }
     }
 
-    private func send(_ action: CardAction, card: ViewCard) {
-        guard let api = now.api() else { return }
+    private func send(_ action: CardAction, card: ViewCard) async -> Bool {
+        guard let api = now.api() else { refused = "Couldn't reach your Hermes. Try again."; return false }
         let value: Any? = { if case .null = action.value { return nil }; return action.value.foundation }()
-        Task {
-            _ = try? await api.cardAction(interactionID: nil, runID: runID, view: card.number - 1, action: action.id, value: value)
-            try? await Task.sleep(for: .milliseconds(400))
-            bump += 1   // the server settled the new draft: draw it
+        refused = nil
+        let took: Bool
+        do {
+            _ = try await api.cardAction(interactionID: nil, runID: runID, view: card.number - 1, action: action.id, value: value)
+            took = true
+        } catch is ServerClient.HTTPError {
+            refused = "That didn't go through. Try again."; took = false
+        } catch {
+            refused = "Couldn't reach your Hermes. Try again."; took = false
         }
+        try? await Task.sleep(for: .milliseconds(400))
+        bump += 1   // the server settled the new draft: draw it
+        return took
     }
 }
 
