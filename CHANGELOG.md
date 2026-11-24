@@ -2,8 +2,17 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
-## Next plugin update
+## Plugin 0.3.60: steadier calls and cleaner task routing
 
+- **Room commands cover the whole room.** Asking to switch off a room's lights covers every light named for that room, and when you say it didn't work, the room is checked again instead of the claim being repeated. *(plugin)*
+- **"That didn't work" re-checks the last answer** instead of starting a duplicate job named after the complaint. *(plugin)*
+- **Fewer accidental tasks.** When the voice asks you to repeat yourself, no task starts, and short lines said to someone else in the room aren't treated as requests. *(plugin)*
+- **Corrections land cleanly.** A spoken correction rewrites the request instead of being pasted into it, and card titles come from what you actually asked; when one ask splits into two tasks, each gets its own title. *(plugin)*
+- **New questions start new work.** A new question only continues an existing chat when it names it or shares its subject. *(plugin)*
+- **A calmer call voice.** It says outcomes rather than machinery, never reads out a bracketed sound tag, and speaks at most one unprompted progress line per task every couple of minutes. *(plugin)*
+- **Home's instant reply doesn't guess.** The first line acknowledges and leaves the facts to the job. *(plugin)*
+- **Calls connect faster.** The pre-warmed voice is retried when a warm-up fails and replaced before it ages out, and a connect the phone gave up on is cancelled on the server. *(plugin)*
+- **Email cards end on Sent or Didn't send,** and Save or a refused Send gives the buttons back. *(plugin)*
 - **A call that can't connect says so.** If the voice service drops before a call has started, the attempt ends within a few seconds with "Couldn't connect. Try again." instead of a long "Reconnecting…" wait, and a connect nobody is on any more is closed with its voice. A drop in the middle of a conversation still reconnects you as before. *(plugin)*
 
 ## Plugin 0.3.59: newer call voice, cleaner thread pages
