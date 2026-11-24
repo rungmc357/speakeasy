@@ -13,6 +13,26 @@ def test_a_follow_up_sent_into_a_running_task_shows_only_what_was_written():
     assert user_words(spoken) == ("user", "and the footer too")
 
 
+def test_a_steer_after_other_text_in_the_same_row_shows_only_the_words():
+    """SPK-584: a steer that arrives in one turn with the app's screenshot request, or merged after a task
+    brief, kept its "Fold it into the work …" instruction (and the screenshot request) in the bubble."""
+    from speakeasy.history import SCREENSHOT_NOTE, user_words
+    from speakeasy.prompt import builder as P
+    oob = "[OUT-OF-BAND USER MESSAGE — a direct message from the user]\n{}\n[/OUT-OF-BAND USER MESSAGE]"
+    steer = "Sam just added to this task by voice: why is the porch light still off Fold it into the work you are doing; do not start over."
+    assert user_words(oob.format(P.SCREENSHOT_STEER + "\n" + steer)) == ("user", "why is the porch light still off")
+    assert user_words(oob.format(P.SCREENSHOT_STEER)) == ("note", SCREENSHOT_NOTE)
+    typed = "Sam typed to this task: also the side gate Fold it into the work you are doing; do not start over."
+    assert user_words(oob.format(steer + "\n" + typed)) == (
+        "user", "why is the porch light still off\n\nalso the side gate")
+    brief = ("You are the assistant handling one task that Sam gave you by voice. Do the work.\n\n"
+             "Recent timestamped voice transcript (revision 1):\nUser:  hey there\nAssistant:  Hi.\n"
+             "User:  Check the porch light schedule\n\n" + oob.format(steer))
+    kind, words = user_words(brief)
+    assert kind == "user" and words == "Check the porch light schedule\n\nwhy is the porch light still off"
+    assert "Fold it into" not in user_words("move the shed Fold it into the work you are doing; do not start over.")[1]
+
+
 def test_a_typed_follow_up_with_a_picture_is_not_called_voice():
     from speakeasy.prompt import builder as P
     names = P.Names(user_name="Sam")

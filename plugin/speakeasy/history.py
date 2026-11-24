@@ -202,6 +202,15 @@ _SPEAKEASY_BRIEF = re.compile(r"Recent timestamped voice transcript|Recent messa
 _USER_LINE = re.compile(r"^(?:\[[^\]]{1,40}\]\s*)?(?:User|You)\s*:\s*(.+)$", re.M)
 _ADDED = re.compile(r"^.{1,60}? (?:just added to this task(?: by voice| by typing)?|typed to this task):?\s*(.+?)"
                     r"(?:\s*Fold it into the work.*)?$", re.S)
+# Where a steer starts inside a longer row (SPK-584): after the screenshot request the app sent into the
+# same turn, or after a task brief Hermes merged it into. Only a line that starts a steer counts.
+_ADDED_START = re.compile(r"(?m)^[^\n]{1,60}? (?:just added to this task(?: by voice| by typing)?|typed to this task):")
+# The app's "show me what you're looking at" steer (prompt.builder.SCREENSHOT_STEER): the person asked to
+# see the screen; the instruction itself is for the task.
+_SCREENSHOT_ASK = re.compile(r"\s*The user wants to see what you are looking at\. Take a screenshot of what you are "
+                             r"working on right now \(or render your current result\) and share it by including "
+                             r"MEDIA:<absolute path> in your next message, then carry on with the task\.")
+SCREENSHOT_NOTE = "Asked to see the screen"
 # A correction steer (prompt.builder.correction_steer_text): only the person's own words show.
 _CORRECTION = re.compile(r'^Correction from .{1,60}?, who (?:said|typed): "(.+?)"\. ', re.S)
 # A later turn in a task's session (prompt.builder.build_follow_up_prompt): its first line holds the
@@ -245,7 +254,8 @@ _TASK_NOTES = re.compile(
     r"\s*\(They want to SEE this\b[^\n]*?MEDIA:<absolute path>\.?\)"
     r"|\s*This is about the task in this thread: apply it to that work now\."
     r"(?: If it answers a question you asked [^\n]{1,60}?, act on the answer\.)?"
-    r"|\s*\(This is an update of the Speakeasy voice plugin\b.*?switches over after the call\.\)", re.S)
+    r"|\s*\(This is an update of the Speakeasy voice plugin\b.*?switches over after the call\.\)"
+    r"|\s*Fold it into the work you are doing; do not start over\.", re.S)
 # A later relayed request inside the same row (two steers the gateway delivered together).
 _RELAYED_LINE = re.compile(r"(?m)^[ \t]*(?:\[[^\]\n]{1,60}\][ \t]*)?\[Voice(?: request)?,? from [^\]\n]{1,60}\][ \t]*", re.I)
 # The echo line a relayed request asks for: "Voice: <the request>" first.
@@ -733,6 +743,27 @@ def _user_words(content: str, cut: list[str] | None = None) -> tuple[str, str]:
     relayed = relayed_words(text[:TEXT_CHARS])
     if relayed is not None:
         return ("user", relayed) if relayed else ("note", "Request from Speakeasy")
+    # A steer that follows other text in the same row (SPK-584): the screenshot request sent into the
+    # same turn, or a task brief Hermes merged it into. The steer's words show, after the brief's ask.
+    steer = None
+    starts = list(_ADDED_START.finditer(text.strip()))
+    if starts and (starts[0].start() > 0 or len(starts) > 1):
+        text = text.strip()
+        ends = [m.start() for m in starts[1:]] + [len(text)]
+        words = [w for w in (_added_words(text[m.start():end]) for m, end in zip(starts, ends)) if w]
+        if words:
+            steer = "\n\n".join(words)
+            text = text[:starts[0].start()].rstrip()
+    if _SCREENSHOT_ASK.search(text):
+        text = _SCREENSHOT_ASK.sub("", text).strip()
+        if not text:
+            return ("user", steer) if steer else ("note", SCREENSHOT_NOTE)
+    if steer is not None:
+        if not text.strip():
+            return "user", steer
+        said = _USER_LINE.findall(text) if _SPEAKEASY_BRIEF.search(text) else []
+        asked = (_LOOKING_AT.sub("", said[-1]).strip() or said[-1].strip()) if said else drop_task_notes(text)
+        return "user", (asked + "\n\n" + steer).strip()
     follow = _FOLLOW_UP.match(text.lstrip())
     if follow:
         return "user", _LOOKING_AT.sub("", follow.group(1)).strip() or follow.group(1).strip()
@@ -743,11 +774,18 @@ def _user_words(content: str, cut: list[str] | None = None) -> tuple[str, str]:
     corrected = _CORRECTION.match(text.strip())
     if corrected:
         return "user", corrected.group(1).strip()
-    added = _ADDED.match(text.strip())
-    if added:
-        words = _SHARED.sub("", added.group(1))
-        return "user", drop_task_notes(_LOOKING_AT.sub("", drop_task_notes(words)))
+    if _ADDED.match(text.strip()):
+        return "user", _added_words(text)
     return "user", drop_task_notes(text) or text
+
+
+def _added_words(steer: str) -> str:
+    """The person's words in one steer ("Sam typed to this task: … Fold it into the work …"), or ""."""
+    added = _ADDED.match(steer.strip())
+    if not added:
+        return ""
+    words = _SHARED.sub("", added.group(1))
+    return drop_task_notes(_LOOKING_AT.sub("", drop_task_notes(words)))
 
 
 # -- a Kanban worker's session: its card as a compact header, its updates as messages -------------
