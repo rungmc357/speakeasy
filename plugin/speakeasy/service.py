@@ -580,7 +580,7 @@ class VoiceService(SecureInputMixin):
                     self.files._first_scan(wait=0)
                 except Exception as exc:
                     logger.info("speakeasy: files warm-up skipped (%s)", type(exc).__name__)
-        timer = threading.Timer(FILES_WARM_AFTER_S, warm)
+        timer = self._files_warm = threading.Timer(FILES_WARM_AFTER_S, warm)
         timer.daemon = True
         timer.name = "speakeasy-files-warm"
         timer.start()
@@ -906,6 +906,9 @@ class VoiceService(SecureInputMixin):
 
     def close(self) -> None:
         self._stop.set()
+        warm = getattr(self, "_files_warm", None)
+        if warm is not None:
+            warm.cancel()  # a reload that lands before the Files warm-up must not leave its timer behind
         try:
             self.hand_over_runs()  # the next code (a reload) follows them on from here
         except Exception:

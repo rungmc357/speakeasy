@@ -109,7 +109,12 @@ class FakeHermes(BaseHTTPRequestHandler):
             for event in run.get("pre_events", []):
                 self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
                 self.wfile.flush()
-            run["done"].wait(10)
+            deadline = time.monotonic() + 10
+            while not run["done"].wait(0.05):
+                if self.state.closed:
+                    return  # the fake Hermes closed: end the stream now (it used to hold on for 10 s)
+                if time.monotonic() >= deadline:
+                    break
             for event in run["events"]:
                 self.wfile.write(b"data: " + json.dumps(event).encode() + b"\n\n")
             self.wfile.flush()
