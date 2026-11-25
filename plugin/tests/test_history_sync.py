@@ -329,6 +329,18 @@ def test_no_redundant_bubbles():
 
 # -- (J) two clients on one plugin stay in step ------------------------------------------------------
 
+_OPEN: list["Client"] = []
+
+
+@pytest.fixture(autouse=True)
+def _close_open_clients():
+    """Every client below holds a live history stream; close it when its test ends, so no reader
+    thread (and no server-side subscription) outlives the test that started it."""
+    yield
+    while _OPEN:
+        _OPEN.pop().close()
+
+
 class Client:
     """One paired device: its own token and its own live history stream."""
 
@@ -339,18 +351,33 @@ class Client:
         assert status == 201
         self.server, self.token, self.events = server, paired["token"], []
         self._ready = threading.Event()
-        threading.Thread(target=self._listen, daemon=True).start()
+        self._stream: dict = {}
+        self._thread = threading.Thread(target=self._listen, daemon=True)
+        self._thread.start()
+        _OPEN.append(self)
         assert self._ready.wait(5)
 
     def _listen(self):
         req = urllib.request.Request(self.server.base_url + "/voice/history/events",
                                      headers={"Authorization": f"Bearer {self.token}"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            for raw in resp:
-                line = raw.decode().strip()
-                if line.startswith("event:"):
-                    self.events.append((time.monotonic(), line.split(":", 1)[1].strip()))
-                    self._ready.set()
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                self._stream["sock"] = resp.fp.raw._sock   # so closing this device unblocks the read
+                for raw in resp:
+                    line = raw.decode().strip()
+                    if line.startswith("event:"):
+                        self.events.append((time.monotonic(), line.split(":", 1)[1].strip()))
+                        self._ready.set()
+        except OSError as exc:
+            if not self._stream.get("closing"):
+                self._stream["error"] = exc
+
+    def close(self) -> None:
+        from fakes import stop_stream
+        try:
+            stop_stream(self._stream, self._thread)
+        except AssertionError:      # the test's own assertions are the report; teardown stays quiet
+            pass
 
     def get(self, path):
         from fakes import http

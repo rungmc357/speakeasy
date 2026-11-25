@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from fakes import http, wait_for
+from fakes import http, stop_stream, wait_for
 from speakeasy import history as H
 from speakeasy import now as N
 from test_history import NOW, add_msg, add_session, get, make_db, never_routed, post, state  # noqa: F401
@@ -441,33 +441,49 @@ def test_answering_a_question_off_a_call_goes_to_the_task_that_asked(server, ser
     assert not any(i["kind"] == "question" for i in service.now({})["items"])
 
 
-def _listen(server, query, got, ready):
+def _listen(server, query, got, ready, want, stream):
+    """Read one live event stream until ``want`` events arrive. ``stream`` lets the test close the
+    subscription: a stream the test has stopped needing stays open on the server, so a listener left
+    to its own socket timeout only fails later, inside an unrelated test, as a thread exception."""
     import urllib.request
     req = urllib.request.Request(server.base_url + "/voice/history/events" + query,
                                  headers={"Authorization": f"Bearer {server.token}"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        for raw in resp:
-            line = raw.decode().strip()
-            if line.startswith("event:"):
-                got.append(line.split(":", 1)[1].strip())
-                ready.set()
-            if len(got) >= 3:
-                return
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            stream["sock"] = resp.fp.raw._sock   # so the test can unblock this read
+            for raw in resp:
+                line = raw.decode().strip()
+                if line.startswith("event:"):
+                    got.append(line.split(":", 1)[1].strip())
+                    ready.set()
+                if len(got) >= want:
+                    return
+    except OSError as exc:          # the test closing the stream; reported only if it did not ask
+        if not stream.get("closing"):
+            stream["error"] = exc
 
 
 def test_only_apps_that_ask_get_now_events(server, service):
     import threading
     new, old = [], []
     ready_new, ready_old = threading.Event(), threading.Event()
-    threading.Thread(target=_listen, args=(server, "?now=1", new, ready_new), daemon=True).start()
-    threading.Thread(target=_listen, args=(server, "", old, ready_old), daemon=True).start()
-    assert ready_new.wait(5) and ready_old.wait(5)
-    task(service.store, "ev1", "working", session="s_ev1")
-    service._now_changed()
-    service.history_events.publish("session_updated", {"session_id": "s_ev1"})
-    wait_for(lambda: len(new) >= 3 and len(old) >= 2, timeout=5)
-    assert new[:3] == ["reset", "now", "session_updated"]
-    assert old[:2] == ["reset", "session_updated"]
+    watchers = []
+    for query, got, ready, want in (("?now=1", new, ready_new, 3), ("", old, ready_old, 2)):
+        stream: dict[str, object] = {}
+        thread = threading.Thread(target=_listen, args=(server, query, got, ready, want, stream), daemon=True)
+        watchers.append((stream, thread))
+        thread.start()
+    try:
+        assert ready_new.wait(5) and ready_old.wait(5)
+        task(service.store, "ev1", "working", session="s_ev1")
+        service._now_changed()
+        service.history_events.publish("session_updated", {"session_id": "s_ev1"})
+        wait_for(lambda: len(new) >= 3 and len(old) >= 2, timeout=5)
+        assert new[:3] == ["reset", "now", "session_updated"]
+        assert old[:2] == ["reset", "session_updated"]   # a plain stream never carries "now" events
+    finally:
+        for stream, thread in watchers:
+            stop_stream(stream, thread)
 
 
 def test_capability_and_now_event(server, service):

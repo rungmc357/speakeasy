@@ -568,6 +568,28 @@ def wait_for(predicate: Callable[[], Any], timeout: float = 10.0) -> Any:
     raise AssertionError("condition not met in time")
 
 
+def stop_stream(stream: dict[str, Any], thread: threading.Thread) -> None:
+    """Close one live event stream and join the thread reading it.
+
+    The server keeps a subscription open until the client goes away, so a reader left to its own
+    socket timeout either hangs on (heartbeats keep it alive) or raises inside whatever test happens
+    to be running later. A test that opens a stream closes it here, in a finally.
+    ``stream`` is filled in by the reader: ``sock`` (from the open response), ``closing`` once this
+    was called, and ``error`` if the stream failed without being asked to stop.
+    """
+    import socket
+    stream["closing"] = True
+    sock = stream.get("sock")
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)   # wakes the blocked read; close() alone may not
+        except OSError:
+            pass
+    thread.join(5)
+    assert not thread.is_alive(), "the event-stream reader thread outlived its test"
+    assert "error" not in stream, f"the event stream failed on its own: {stream.get('error')!r}"
+
+
 def http(base: str, method: str, path: str, body: Any = None, token: str | None = None,
          headers: dict[str, str] | None = None) -> tuple[int, Any]:
     data = None if body is None else json.dumps(body).encode()
