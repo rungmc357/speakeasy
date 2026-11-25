@@ -71,8 +71,11 @@ final class MacHomeComposerModel: ObservableObject {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.image, .mpeg4Movie, .quickTimeMovie, .pdf, .plainText, .json]
-        panel.message = "Add a clip, picture or document. Videos: up to 10 MB and 2 minutes."
+        let gate = VideoAttachmentGate(status())
+        panel.allowedContentTypes = gate.offered([.image, .pdf, .plainText, .json])
+        panel.message = gate.offersVideos
+            ? "Add a clip, picture or document. Videos: up to 10 MB and 2 minutes."
+            : "Add a picture or document."
         panel.begin { [weak self] result in
             guard result == .OK else { return }
             Task { @MainActor in self?.addFiles(panel.urls) }
@@ -81,7 +84,12 @@ final class MacHomeComposerModel: ObservableObject {
 
     func addFiles(_ urls: [URL]) {
         guard !sending, !recording else { return }
+        let gate = VideoAttachmentGate(status())
         for url in urls {
+            // Before the count guard so a refused video takes no slot.
+            if let refusal = gate.refusal(for: url, contentType: try? url.resourceValues(forKeys: [.contentTypeKey]).contentType) {
+                notice = refusal; continue
+            }
             guard picks.count < AttachmentPolicy.maxAttachments else {
                 notice = "You can attach up to three items."; break
             }
@@ -138,6 +146,8 @@ final class MacHomeComposerModel: ObservableObject {
     }
 
     var api: () -> ServerClient? = { nil }
+    /// The paired Hermes's current status, read on each admission; nil until it loads (SPK-230).
+    var status: () -> ServerStatus? = { nil }
     var recorder: VoiceMessageRecording = VoiceMessageRecorder()
     let now: MacNowModel
     /// Screenshots: nothing leaves the Mac; sending only adds the working card.
