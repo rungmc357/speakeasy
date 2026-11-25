@@ -9,6 +9,9 @@ stop used to live on for the rest of the run. A full serial run reached about 3,
   ``Notices``, ``PushNotifier``) so ``stop_leftovers()`` can end whichever ones a test left running, together with the
   fakes' own registries (``FakeLiveWorker.live``, ``FakeHermesServer.live``). Tests that close their
   service and server properly lose nothing; the rest are cleaned up for them.
+* Every call's delayed steps (``calls.CallTimers``: a held drop's 45 s expiry, a paused call's
+  15 min expiry, the screen hold, the unattended check) are cancelled after each test. They used to
+  fire into later tests' runs and touch a closed store (SPK-596); the service cancels them on close.
 * ``FileGuard`` compares the live threads before and after a test file. Threads the file started
   that are still alive after a short grace period are a leak; more than ``FILE_LIMIT`` of them fails
   the file with the thread names, so the growth is caught where it starts.
@@ -20,6 +23,7 @@ import functools
 import re
 import threading
 import time
+import weakref
 
 from fakes import FakeHermesServer, FakeLiveWorker
 from speakeasy import calls as _calls
@@ -38,6 +42,9 @@ GRACE_S = 10.0
 
 _watchers: list = []
 _notices: list = []   # Notices and PushNotifier senders: both stop with close()
+_call_timers: "weakref.WeakSet" = weakref.WeakSet()   # every calls.CallTimers (one per service)
+# A call timer thread (``speakeasy-call-timer-*``) alive after its file: none may be (SPK-596).
+CALL_TIMER_PREFIX = "speakeasy-call-timer-"
 
 
 def track() -> None:
@@ -63,6 +70,14 @@ def track() -> None:
         if self.thread is not None:
             _notices.append(self)
 
+    real_timers_init = _calls.CallTimers.__init__
+
+    @functools.wraps(real_timers_init)
+    def timers_init(self, *args, **kwargs):
+        real_timers_init(self, *args, **kwargs)
+        _call_timers.add(self)
+
+    _calls.CallTimers.__init__ = timers_init  # type: ignore[method-assign]
     _tunnel.TunnelWatcher.start = start  # type: ignore[method-assign]
     _calls.Notices.__init__ = init  # type: ignore[method-assign]
     _push.PushNotifier.__init__ = push_init  # type: ignore[method-assign]
@@ -71,6 +86,8 @@ def track() -> None:
 def stop_leftovers() -> None:
     """End every tracked helper still running. Each stop is idempotent, so a test that already
     closed its service/server is unaffected."""
+    for timers in list(_call_timers):
+        timers.cancel_pending()
     while _watchers:
         _watchers.pop().stop()
     while _notices:
@@ -99,7 +116,8 @@ class FileGuard:
         while True:
             alive = [t for t in threading.enumerate() if t.is_alive()]
             left = [t for t in alive if t not in self.before]
-            if (len(left) <= FILE_LIMIT and len(alive) <= RUN_LIMIT) or time.monotonic() >= deadline:
+            timers = [t for t in left if t.name.startswith(CALL_TIMER_PREFIX)]
+            if (len(left) <= FILE_LIMIT and len(alive) <= RUN_LIMIT and not timers) or time.monotonic() >= deadline:
                 return left, alive
             time.sleep(0.1)
 
@@ -107,6 +125,10 @@ class FileGuard:
         left, alive = self._settle()
         fix = ("Stop the servers, call workers and executors its tests start (close the service, "
                "server.stop(), worker.stop_loop()).")
+        timers = [t for t in left if t.name.startswith(CALL_TIMER_PREFIX)]
+        if timers:
+            return (f"{path} left {len(timers)} call timer(s) pending after its tests: {_names(timers)}. "
+                    "Schedule a call's delayed steps with rt.timers.later() and close the service.")
         if len(left) > FILE_LIMIT:
             return (f"{path} left {len(left)} background threads running after its tests "
                     f"(limit {FILE_LIMIT}): {_names(left)}. {fix}")

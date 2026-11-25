@@ -86,6 +86,12 @@ def write_state(home, state) -> None:
     state_file(home).write_text(state if isinstance(state, str) else json.dumps(state))
 
 
+def retry_scheduled(d: Ducker) -> bool:
+    """The worker has scheduled its next restore try (the set failed and it set a new deadline)."""
+    with d._cond:
+        return d._deadline is not None
+
+
 def duck_threads() -> int:
     return sum(t.name == "speakeasy-duck" and t.is_alive() for t in threading.enumerate())
 
@@ -333,7 +339,7 @@ def test_a_failed_timed_restore_is_retried_a_few_times(tmp_path, make, monkeypat
     wait_for(lambda: vol.sets == [30])
     vol.settable = False
     clock.now += 0.6                                # the quiet spell ends, but the set fails
-    wait_for(lambda: vol.failed_sets == 1)
+    wait_for(lambda: vol.failed_sets == 1 and retry_scheduled(d))
     vol.settable = True
     clock.now += duck.RESTORE_RETRY_S + 0.1         # no new speech: the retry puts it back
     wait_for(lambda: vol.sets == [30, 60])
@@ -349,7 +355,9 @@ def test_restore_retries_are_bounded(tmp_path, make, monkeypatch):
     vol.settable = False
     clock.now += 0.6
     for attempt in range(1, duck.RESTORE_RETRIES + 2):
-        wait_for(lambda: vol.failed_sets == attempt)
+        # The fake clock may only move on once the worker has set the retry's deadline: moved
+        # earlier, the deadline lands after the new time and never arrives (SPK-596, a loaded host).
+        wait_for(lambda: vol.failed_sets == attempt and (attempt > duck.RESTORE_RETRIES or retry_scheduled(d)))
         clock.now += duck.RESTORE_RETRY_S + 0.1
     vol.settable = True
     clock.now += 10 * duck.RESTORE_RETRY_S          # out of retries: it waits for the next restore

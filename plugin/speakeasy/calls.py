@@ -561,6 +561,56 @@ class ServiceError(Exception):
         self.reason = reason  # a short code the app maps to its own line (attachment refusals)
 
 
+class CallTimers:
+    """Every delayed step a call schedules (a held drop's expiry, the screen hold and its "Not sent"
+    line, pause expiry, the unattended check): cancelled together when the service closes. Before,
+    each was a bare daemon Timer that outlived its service, so a 45 s drop hold or a 15 min pause
+    could fire after a live reload (or into the next test) and write to a closed store (SPK-596)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._live: set[threading.Timer] = set()
+        self.closed = False
+
+    def later(self, delay: float, fn: Callable[..., Any], *args: Any) -> threading.Timer | None:
+        """Run ``fn(*args)`` on its own thread after ``delay`` seconds, unless closed first.
+        None when already closed (nothing is scheduled)."""
+        def run() -> None:
+            with self._lock:
+                self._live.discard(timer)
+                if self.closed:
+                    return
+            fn(*args)
+
+        timer = threading.Timer(delay, run)
+        timer.daemon = True
+        timer.name = f"speakeasy-call-timer-{getattr(fn, '__name__', 'step')}"
+        with self._lock:
+            if self.closed:
+                return None
+            self._live.add(timer)
+        timer.start()
+        return timer
+
+    def pending(self) -> int:
+        with self._lock:
+            return len(self._live)
+
+    def cancel_pending(self) -> int:
+        """Cancel the steps scheduled so far (later ones still run); how many were cancelled."""
+        with self._lock:
+            live, self._live = list(self._live), set()
+        for timer in live:
+            timer.cancel()
+        return len(live)
+
+    def close(self) -> None:
+        """Cancel every pending step; later() schedules nothing afterwards (idempotent)."""
+        with self._lock:
+            self.closed = True
+        self.cancel_pending()
+
+
 @dataclasses.dataclass
 class Runtime:
     """Everything a worker needs besides the call itself (built once by the server)."""
@@ -632,6 +682,8 @@ class Runtime:
     # Home's stack row for a run closes as done (home_state.dealt_with) once its approval is
     # answered, wherever it was answered. None = nothing to close.
     dealt_with: Callable[[str], Any] | None = None
+    # The calls' delayed steps (CallTimers): the service cancels them all when it closes.
+    timers: CallTimers = dataclasses.field(default_factory=CallTimers)
 
     def approval_dealt_with(self, run_id: str | None, request_id: str | None = None) -> None:
         if run_id and self.dealt_with is not None:
@@ -1075,6 +1127,8 @@ def publish_state(store: Any, interaction: Interaction, assistant_name: str = "H
 
     Never call while holding interaction.lock. Unchanged payloads are deduplicated.
     """
+    if getattr(store, "closed", False) is True:
+        return  # the service closed (reload, shutdown): a call thread still winding down has nothing to publish
     feed = interaction.feed
     with feed.publish_lock:
         if feed.closed_id is not None:
@@ -1860,9 +1914,7 @@ class SidebandWorker:
             "interaction_id": self.interaction.interaction_id, "reason": reason,
             "attempt": used + 1, "max": MAX_AUTO_RESUMES, "hold_s": DROP_HOLD_S})
         self.publish()  # now, not after the call's handoffs settle: the app shows "Reconnecting…"
-        timer = threading.Timer(DROP_HOLD_S, self.drop_expired)
-        timer.daemon = True
-        timer.start()
+        self.rt.timers.later(DROP_HOLD_S, self.drop_expired)
 
     def drop_expired(self) -> None:
         """Nobody reconnected into a held drop in time: it ends as dropped."""
@@ -3320,15 +3372,24 @@ class SidebandWorker:
         """Every handoff ends visibly. The voice already said "on it", and the app shows "Waiting for
         <name>" until a task row appears; an exception here used to vanish into the background task,
         leaving that waiting line up forever."""
+        collected = False
         try:
             await self._dispatch(delegation_id, revision, context, marked)
         except asyncio.CancelledError:
+            raise
+        except GeneratorExit:
+            # Garbage-collected after its loop stopped mid-handoff: this then runs on whatever thread
+            # the collector interrupted, possibly one holding another loop's executor lock, and
+            # publishing Home from here deadlocked it (SPK-596). The call's loop is gone: let go quietly.
+            collected = True
             raise
         except Exception as exc:
             logger.warning("speakeasy: handoff failed before the task started (%s: %s)",
                            type(exc).__name__, str(exc)[:200])
             await self._handoff_failed(delegation_id, revision, exc)
         finally:
+            if collected:
+                return
             self.handoff_card_done(delegation_id)  # however it ended, its held Working card goes
             self.handoff_rooms.pop(delegation_id, None)  # this handoff's work is over (or never started)
             if delegation_id.startswith(TYPED_WORK_PREFIX) and delegation_id not in self.releasing:
@@ -5160,9 +5221,7 @@ class SidebandWorker:
         if attachments.screen_on:
             self.sharing_turned_on()  # it came on while this request was settling
             return
-        timer = threading.Timer(HOLD_S, self.end_hold, args=("expired", held.token))
-        timer.daemon = True
-        timer.start()
+        self.rt.timers.later(HOLD_S, self.end_hold, "expired", held.token)
         logger.info("speakeasy: request held until screen sharing comes on (up to %d s)", int(HOLD_S))
         self.publish()
         self.interaction.feed.publish("screen.hint", {"reason": "screen_off"})
@@ -5183,9 +5242,7 @@ class SidebandWorker:
             outcome = {"state": "not_sent", "text": P.HOLD_NOT_SENT, "since": time.time()}
             self.interaction.hold = outcome
         logger.info("speakeasy: held request not sent (%s)", reason)
-        clear = threading.Timer(HOLD_OUTCOME_S, self._clear_hold_outcome, args=(outcome,))
-        clear.daemon = True
-        clear.start()
+        self.rt.timers.later(HOLD_OUTCOME_S, self._clear_hold_outcome, outcome)
         self.publish()
         if reason in {"expired", "superseded"}:
             self.speak_from_thread("session.thinking.append", P.HOLD_DROPPED_NOTE)

@@ -449,7 +449,7 @@ class FakeLiveWorker(SidebandWorker):
         loop = getattr(self, "loop", None)
         if loop is not None and not loop.is_closed():
             try:
-                loop.call_soon_threadsafe(loop.stop)
+                loop.call_soon_threadsafe(self._wind_down, loop)
             except RuntimeError:
                 pass
         if self.thread is not None and self.thread is not threading.current_thread():
@@ -459,6 +459,24 @@ class FakeLiveWorker(SidebandWorker):
             executor.shutdown(wait=False)
         if self in FakeLiveWorker.live:
             FakeLiveWorker.live.remove(self)
+
+    @staticmethod
+    def _wind_down(loop: asyncio.AbstractEventLoop) -> None:
+        """Cancel the loop's pending tasks and let them finish on this loop, then stop it. Stopping
+        with tasks still pending left their coroutines to the garbage collector, which closes them
+        on whatever thread it interrupts: a handoff's ``finally`` then ran inside another worker's
+        executor lock and deadlocked the whole suite (SPK-596)."""
+        tasks = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        if not tasks:
+            loop.stop()
+            return
+        for task in tasks:
+            task.cancel()
+
+        async def drain() -> None:
+            await asyncio.wait(tasks, timeout=2.0)
+            loop.stop()
+        loop.create_task(drain())
 
     async def _send(self, kind: str, delegation_id: str | None, content: str) -> None:
         self.sent.append((kind, delegation_id, content))

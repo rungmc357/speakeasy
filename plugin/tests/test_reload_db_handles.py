@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 
 import pytest
 
@@ -59,6 +60,22 @@ def test_a_store_closes_once_and_close_all_reaches_every_open_one(home):
     assert b.closed
 
 
+def _checkpoint(store, timeout: float = 10.0) -> None:
+    """Move the WAL into the main file. The running server's own threads share this connection and
+    may be mid-statement (its start-up sweeps), which fails the checkpoint with "database table is
+    locked" (SPK-596): hold the store's lock and retry until they're done."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with store._lock:
+                store._db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
 def test_disk_io_error_from_stale_handles_is_recovered_with_a_new_file(plugin, caplog):
     """The live incident end to end: a connection left over from an older generation, its -wal/-shm
     deleted underneath it. Opening the file again in this process fails; the reload moves a checked
@@ -67,7 +84,7 @@ def test_disk_io_error_from_stale_handles_is_recovered_with_a_new_file(plugin, c
     db = r.db_path
     store = r.server.service.store
     store.set_meta("spk443-probe", "kept")
-    store._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")   # in the main file, as the live one was
+    _checkpoint(store)                                     # in the main file, as the live one was
     leaked = sqlite3.connect(db, check_same_thread=False)  # an old generation's connection
     leaked.execute("PRAGMA journal_mode=WAL")
     leaked.execute("SELECT count(*) FROM meta").fetchone()

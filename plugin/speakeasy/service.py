@@ -936,6 +936,7 @@ class VoiceService(SecureInputMixin):
 
     def close(self) -> None:
         self._stop.set()
+        self.rt.timers.close()  # no call's drop hold, pause expiry or unattended check fires after this (SPK-596)
         warm = getattr(self, "_files_warm", None)
         if warm is not None:
             warm.cancel()  # a reload that lands before the Files warm-up must not leave its timer behind
@@ -1606,9 +1607,7 @@ class VoiceService(SecureInputMixin):
                 pass
         # Captures and uploads stop with the pause; the app re-sends its pending things on resume.
         end_shared(self.rt, interaction, "paused")
-        timer = threading.Timer(PAUSE_NOTICE_AFTER_S, self.pause_expired, args=(interaction,))
-        timer.daemon = True
-        timer.start()
+        self.rt.timers.later(PAUSE_NOTICE_AFTER_S, self.pause_expired, interaction)
         publish_state(self.store, interaction, self.settings.get()["assistant_name"])
         return self._pause_reply(interaction)
 
@@ -1734,9 +1733,7 @@ class VoiceService(SecureInputMixin):
                     interaction.end_reason = "unattended"
                     interaction.error = CONNECT_FAILED  # before the transport stops: an app that comes back reads it
             if not reap:
-                timer = threading.Timer(UNATTENDED_CHECK_S, check)
-                timer.daemon = True
-                timer.start()
+                self.rt.timers.later(UNATTENDED_CHECK_S, check)
                 return
             self.note_call_event()
             self._close_unjoined(interaction, "unattended")
@@ -1753,9 +1750,7 @@ class VoiceService(SecureInputMixin):
             logger.warning("speakeasy: call.unattended id=%s: nobody was attached to a call that never went "
                            "live for %.0f s; its voice session was closed", interaction.interaction_id, idle)
 
-        timer = threading.Timer(UNATTENDED_CHECK_S, check)
-        timer.daemon = True
-        timer.start()
+        self.rt.timers.later(UNATTENDED_CHECK_S, check)
 
     def pause_expired(self, interaction: Interaction) -> None:
         with interaction.lock:
