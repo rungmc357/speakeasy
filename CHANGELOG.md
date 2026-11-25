@@ -2,6 +2,12 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.61: the model you pick stays picked
+
+- **A model picked during a call sticks.** Choosing or changing the New work model while you're on a call now applies to every task that call starts, including when the call picks up an earlier conversation. *(plugin)*
+- **Profile keeps your New work model.** Your saved New work model no longer snaps back to the default, and changing Reasoning no longer clears it. *(plugin, with the iPhone app and the Mac app)*
+- **Session pages show only your words.** A message you type into a running task appears on its page exactly as you wrote it, without the wording Speakeasy adds to deliver it. *(plugin)*
+
 ## Plugin 0.3.60: steadier calls and cleaner task routing
 
 - **Room commands cover the whole room.** Asking to switch off a room's lights covers every light named for that room, and when you say it didn't work, the room is checked again instead of the claim being repeated. *(plugin)*
