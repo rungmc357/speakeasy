@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Plugin 0.3.62 · iPhone build 93: calls keep your music, videos only where they work
+
+- **Calls keep your music playing.** On iPhone and iPad a call now plays alongside whatever is already playing, lowers it only while someone is speaking, and gives the audio back even when a call ends badly. *(iPhone build 93)*
+- **Videos are offered only to a Hermes that takes them.** The Mac Home composer and the iPhone attachment pickers offer videos when your plugin accepts them; with an older plugin you see a one-line hint to update instead of a Retry that can't work. *(plugin + iPhone build 93 and the next Mac app)*
+- **Direct chats show their work like Home.** The thinking and work block in a chat uses the same translucent rounded panel as Home. *(iPhone build 93 and the next Mac app)*
+- **Home keeps your last message readable.** It sits under the History chip at full strength instead of fading out, and lines you scroll with your finger never show beside the chip. On the iPhone Duo's outer screen with the keyboard up, the chip steps aside so the widget you're replying to stays in sight. *(iPhone build 93)*
+- **Steadier calls after an update.** A call's pending timers stop with the plugin when it reloads, so nothing from an old call fires afterwards. *(plugin)*
+
 ## Plugin 0.3.61: the model you pick stays picked
 
 - **A model picked during a call sticks.** Choosing or changing the New work model while you're on a call now applies to every task that call starts, including when the call picks up an earlier conversation. *(plugin)*
