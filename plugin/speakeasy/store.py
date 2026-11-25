@@ -425,8 +425,9 @@ class StateStore:
                 self._db.execute("ALTER TABLE runs ADD COLUMN question_answer TEXT")  # its answer's words, when known
             if "context" not in columns:  # its last model call when it finished: model + context fill (context_use.py)
                 self._db.execute("ALTER TABLE runs ADD COLUMN context TEXT")
-            # A chosen model/reasoning (models.py): scope "session:<hermes session id>" (Use for this chat)
-            # or "task:<idem key>" (one task: a voice preset, a new chat's first job).
+            # A chosen model/reasoning (models.py): scope "session:<hermes session id>" (Use for this chat),
+            # "task:<idem key>" (one task: a voice preset, a new chat's first job), or
+            # "interaction:<call id>" (New work as changed during that call: its tasks follow it, SPK-361).
             self._db.execute("""CREATE TABLE IF NOT EXISTS model_choices (
                 scope TEXT PRIMARY KEY, model TEXT, reasoning TEXT, updated REAL NOT NULL)""")
             # A message sent "when it's done" (mode queue): held here, across reloads, until the task it
@@ -564,14 +565,16 @@ class StateStore:
 
     # -- model choices (models.py) ------------------------------------------------------------------
 
-    def set_model_choice(self, scope: str, model: str | None, reasoning: str | None) -> None:
-        """Save a choice; both halves None removes it (back to the default)."""
+    def set_model_choice(self, scope: str, model: str | None, reasoning: str | None,
+                         updated: float | None = None) -> None:
+        """Save a choice; both halves None removes it (back to the default). *updated* keeps the time a
+        copied choice was first made (a resumed call's pick, SPK-361)."""
         with self._lock, self._db:
             if model is None and reasoning is None:
                 self._db.execute("DELETE FROM model_choices WHERE scope=?", (scope,))
             else:
                 self._db.execute("INSERT OR REPLACE INTO model_choices (scope, model, reasoning, updated) "
-                                 "VALUES (?,?,?,?)", (scope, model, reasoning, time.time()))
+                                 "VALUES (?,?,?,?)", (scope, model, reasoning, updated or time.time()))
 
     def model_choice(self, scope: str) -> dict[str, Any] | None:
         with self._lock:
