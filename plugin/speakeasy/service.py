@@ -1220,6 +1220,11 @@ class VoiceService(SecureInputMixin):
         if outcome == "created" and self.view():
             # Profile switching: the call's work runs on the profile the app looks at.
             self.store.set_agent("interaction:" + interaction_id, self.view())
+        if outcome == "created" and source is not None:
+            # A resumed call is the same call: a model picked on it still decides its tasks (SPK-361).
+            if (held := self.store.model_choice("interaction:" + source.interaction_id)) is not None:
+                self.store.set_model_choice("interaction:" + interaction_id, held["model"], held["reasoning"],
+                                            updated=held["updated"])
         if outcome == "conflict":
             raise ServiceError(409, "Idempotency-Key reused with a different SDP or room")
         if outcome == "pending":
@@ -3702,12 +3707,16 @@ class VoiceService(SecureInputMixin):
         return qualified or model
 
     def _next_choice(self, sid: str | None, *, idem: str | None = None, task_id: str | None = None,
-                     request: str | None = None) -> tuple[dict[str, Any] | None, str | None]:
+                     request: str | None = None, call: dict[str, Any] | None = None
+                     ) -> tuple[dict[str, Any] | None, str | None]:
         """One prediction/dispatch resolver. Explicit preferences are never replaced by served fallback.
 
         A chat pick newer than a task pick supersedes it; a newer task pick is local to that task.
         Existing Hermes sessions retain their known route before new-chat defaults. A bare model is
         qualified only by an unambiguous catalog match; unknown routes fail rather than silently switch.
+        *call*: the New work model picked during the call that runs this task (``interaction:`` scope).
+        Newer than the chat's and the task's own picks, it decides the task, a continued conversation
+        too, in place of the conversation's own route (SPK-361).
         """
         canonical, chain = self._model_context(sid, idem)
         chat = self._chat_choice(canonical)
@@ -3722,13 +3731,19 @@ class VoiceService(SecureInputMixin):
         task_ids += [(self.store.run_row(k) or {}).get("delegation_id") for k in chain]
         tasks = [t for tid in task_ids if tid and (t := self.store.model_choice("task:" + tid))]
         task = max(tasks, key=lambda t: t["updated"]) if tasks else None
+        picked = MD.call_pick(call, chat, task)
+        if picked:
+            layers.append(("call", {"model": None if picked["model"] == "default" else picked["model"],
+                                    "reasoning": picked["reasoning"]}))
+            # The call's pick stands in for the task's, the chat's and the conversation's own route.
+            task, chat = None, None
         if task and (not chat or task["updated"] > chat["updated"]):
             layers.append(("task", task))
-        follows_default = bool(chat and chat.get("model") == "default")
+        follows_default = bool(picked) or bool(chat and chat.get("model") == "default")
         layers.append(("chat", None if follows_default else chat))
         for key in chain:
             earlier = self.store.run_model(key)
-            if earlier and earlier.get("source") in {"voice", "task"} and not chat:
+            if earlier and earlier.get("source") in {"voice", "task"} and not chat and not picked:
                 layers.append((earlier["source"], earlier))
         meta = H.session_meta(self.rt.state_db, canonical) if canonical else None
         if not follows_default and not (chat or {}).get("model") and meta and meta.get("model"):
@@ -3780,7 +3795,12 @@ class VoiceService(SecureInputMixin):
             if session_id:
                 self.store.set_agent("session:" + session_id, agent)
             return {"agent": agent}
-        choice, _ = self._next_choice(session_id, idem=idem, task_id=task_id, request=request)
+        # A pick made during the call that runs this task (not text typed on a task's page, which
+        # follows that page's chip). The typed text worker's interaction never gets one (SPK-361).
+        interaction_id = (self.store.run_row(idem) or {}).get("interaction_id")
+        call = (self.store.model_choice("interaction:" + interaction_id)
+                if interaction_id and not M.is_message_id(task_id) else None)
+        choice, _ = self._next_choice(session_id, idem=idem, task_id=task_id, request=request, call=call)
         if choice and (choice.get("unavailable") or (choice.get("model") and "/" not in choice["model"])):
             raise ServiceError(409, "This conversation's model is unavailable or unknown. Choose a model before sending.", reason="model")
         record: dict[str, Any] = {"model": (choice or {}).get("model"), "reasoning": (choice or {}).get("reasoning"),
@@ -5964,19 +5984,38 @@ class VoiceService(SecureInputMixin):
             raise ServiceError(409, CONFIG_LEFT_UNCHANGED) from None
 
     def patch_settings(self, body: dict[str, Any]) -> dict[str, Any]:
-        if isinstance(body, dict) and isinstance(body.get("jobs"), dict):
+        jobs = isinstance(body, dict) and isinstance(body.get("jobs"), dict)
+        if jobs:
             self._check_job_models(body["jobs"])
         if isinstance(body, dict) and ("server" in body or "address_drop" in body):
             # Where the server is published is decided on the computer, never from a paired device.
             raise ServiceError(403, "server addresses are set on the computer that runs Hermes "
                                     "(hermes voice setup / hermes voice config)")
+        before = self.settings.get()["jobs"] if jobs else None
         try:
             saved = self.settings.patch(body)
         except SettingsError as exc:
             raise ServiceError(400, str(exc)) from None
+        if before is not None:
+            self._note_call_pick(before, saved["jobs"])
         if isinstance(body, dict) and "delivery" in body:
             self.sync_thread_routes(saved)
         return {"settings": saved}
+
+    def _note_call_pick(self, before: dict[str, Any], after: dict[str, Any]) -> None:
+        """New work changed. Picked while a call is on (a paused one counts, as for ``busy``), every task
+        that call runs from now on uses it, conversations it continues too. The pick belongs to that
+        call only: a later call's continued conversations keep their own model (SPK-210, SPK-361)."""
+        if (before.get("model"), before.get("reasoning")) == (after.get("model"), after.get("reasoning")):
+            return
+        with self.lock:
+            live = [i.interaction_id for i in self.interactions.values()
+                    if not i.call_closed or (i.paused and not i.pause_bookkept)]
+        for iid in live:
+            self.store.set_model_choice("interaction:" + iid, after.get("model") or "default",
+                                        after.get("reasoning") or None)
+        if live:
+            logger.info("speakeasy: New work changed during a call; that call's tasks use it")
 
     def thread_channels(self, s: dict[str, Any]) -> list[dict[str, Any]]:
         """Every destination that wants a thread per task: opted-in channels, plus the default."""
