@@ -21,18 +21,6 @@ Speakeasy has two parts that update separately: the **Mac app** (updates through
 - **Email cards end on Sent or Didn't send,** and Save or a refused Send gives the buttons back. *(plugin)*
 - **A call that can't connect says so.** If the voice service drops before a call has started, the attempt ends within a few seconds with "Couldn't connect. Try again." instead of a long "Reconnecting…" wait, and a connect nobody is on any more is closed with its voice. A drop in the middle of a conversation still reconnects you as before. *(plugin)*
 
-## Plugin 0.3.60: calls connect faster, fewer call mistakes
-
-- **Calls connect in about 2 seconds.** The pre-started voice session is kept ready: a failed warm-up retries, and an old one stays in service until its replacement is up. *(plugin)*
-- **Device control checks what actually happened.** After switching lights or devices, the voice reports their real state, and "they're not off" re-checks and fixes the missed device instead of repeating itself. *(plugin)*
-- **A correction continues the same task.** Pushback no longer starts duplicate tasks, and the complaint never becomes a card title. *(plugin)*
-- **"Didn't catch that" never starts a task**, and side conversation doesn't start jobs. *(plugin)*
-- **A call the phone gave up on is shut down right away** instead of lingering on the server. *(plugin)*
-- **Split and corrected asks keep clean titles**, and a new question only goes into an existing chat when it clearly belongs there. *(plugin)*
-- **The first task of a call starts faster** (about 2.7 s instead of 5–9 s). *(plugin)*
-- **The voice talks about outcomes, not plumbing**, says "still on it" at most once every 2.5 minutes per task, and Home's quick replies no longer guess at answers a job is still looking up. *(plugin)*
-- **The email card ends on Sent or Didn't send.** *(plugin)*
-
 ## Plugin 0.3.59: newer call voice, cleaner thread pages
 
 - **Calls on your own OpenAI key use gpt-live-1.1.** It resumes after a pause noticeably faster, and falls back to gpt-live-1 if your account isn't offered it. ChatGPT sign-in calls follow the voice OpenAI serves there. *(plugin)*
