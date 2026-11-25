@@ -56,6 +56,15 @@ public final class NativeCallEngine: NSObject, RTCPeerConnectionDelegate, RTCDat
     #if canImport(LiveKitWebRTC)
     private let audioSession = CallAudioSession()
     private var device: RTCAudioDeviceModule { factory.audioDeviceModule }
+
+    /// An engine dropped without `close()` (a replaced or abandoned connection) still stops its audio
+    /// and hands the session back, so other apps' audio never stays lowered after the call (SPK-406).
+    deinit {
+        guard !closed else { return }
+        if peer != nil { device.setEngineAvailability(.off) }
+        audioSession.give()
+        peer?.close()
+    }
     #endif
 
     #if os(macOS)
