@@ -97,16 +97,11 @@ def test_repeat_pause_starts_one_expiry_timer(server, service, hermes, monkeypat
     session, _ = start_call(server, service, "req_cs_4")
     started = []
 
-    class CountingTimer:
-        def __init__(self, interval, fn, args=()):
-            started.append(interval)
-            self.daemon = True
+    def later(delay, fn, *args):
+        if fn == service.pause_expired:
+            started.append(delay)
 
-        def start(self):
-            pass
-
-    import speakeasy.service as service_mod
-    monkeypatch.setattr(service_mod.threading, "Timer", CountingTimer)
+    monkeypatch.setattr(service.rt.timers, "later", later)
     service.pause(session["interaction_id"])
     service.pause(session["interaction_id"])
     service.pause(session["interaction_id"], idle_minutes=10)

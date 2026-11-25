@@ -6,7 +6,7 @@ import time
 
 import thread_hygiene
 from fakes import FakeTransport
-from speakeasy.calls import Notices
+from speakeasy.calls import CallTimers, Notices
 
 
 class _Store:
@@ -129,3 +129,41 @@ def test_run_guard_catches_a_slow_creep_no_single_file_trips(monkeypatch):
         stop.set()
         for t in earlier:
             t.join(2)
+
+
+def test_call_timers_run_then_cancel_on_close():
+    timers, ran = CallTimers(), []
+    timers.later(0.01, ran.append, "soon")
+    assert _wait(lambda: ran == ["soon"]) and timers.pending() == 0
+    timers.later(30, ran.append, "much later")
+    assert timers.pending() == 1
+    timers.close()
+    timers.close()  # twice is fine
+    assert timers.pending() == 0 and timers.later(0.01, ran.append, "after close") is None
+    assert _wait(lambda: not [t for t in threading.enumerate()
+                              if t.name.startswith(thread_hygiene.CALL_TIMER_PREFIX) and t.is_alive()])
+    time.sleep(0.05)
+    assert ran == ["soon"]
+
+
+def test_guard_fails_a_file_that_leaves_a_call_timer_pending(monkeypatch):
+    monkeypatch.setattr(thread_hygiene, "GRACE_S", 0.2)
+    guard = thread_hygiene.FileGuard()
+    timer = threading.Timer(30, lambda: None)
+    timer.name = thread_hygiene.CALL_TIMER_PREFIX + "drop_expired"
+    timer.daemon = True
+    timer.start()
+    try:
+        problem = guard.problem("tests/test_example.py")
+    finally:
+        timer.cancel()
+    assert problem and "call timer" in problem and "drop_expired" in problem
+
+
+def test_leftover_call_timers_are_cancelled_after_each_test():
+    timers, ran = CallTimers(), []
+    timers.later(0.3, ran.append, "late")
+    thread_hygiene.stop_leftovers()
+    assert timers.pending() == 0 and not timers.closed   # cancelled, still usable by a module-wide service
+    time.sleep(0.5)
+    assert ran == []

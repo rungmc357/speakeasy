@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import queue
+import threading
+import time
 
 import pytest
 
@@ -188,3 +190,22 @@ def test_a_pause_is_not_a_drop(server, service, codex):
     codex[0].provider_reset()
     wait_for(lambda: interaction.paused and interaction.call_closed, 5)
     assert not interaction.drop_held and events(interaction, "reconnect_required") == []
+
+
+def test_a_held_drop_never_ends_after_the_service_closed(server, service, codex, monkeypatch):
+    """SPK-596: the 45 s drop hold was a bare timer that outlived its service, so it ended the call
+    after a reload (or in a later test) and wrote to a closed store. Closing cancels it."""
+    monkeypatch.setattr(calls_mod, "DROP_HOLD_S", 0.3)
+    interaction = live_call_with_a_task(server, service, codex, key="req_drop_closed")
+    ended = []
+    real = interaction.worker.finish_held
+    monkeypatch.setattr(interaction.worker, "finish_held", lambda *a, **k: ended.append(a) or real(*a, **k))
+    codex[0].provider_reset()
+    wait_for(lambda: interaction.drop_held, 5)
+    assert service.rt.timers.pending() >= 1
+    service.close()
+    assert service.rt.timers.pending() == 0
+    assert service.rt.timers.later(0.01, ended.append, "after close") is None  # nothing new is scheduled
+    time.sleep(0.8)
+    assert ended == [] and interaction.drop_held
+    assert not [t for t in threading.enumerate() if t.name.startswith("speakeasy-call-timer-") and t.is_alive()]
