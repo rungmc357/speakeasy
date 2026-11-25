@@ -130,8 +130,8 @@ public struct ReplyWorkCard: View {
                 }.padding(14)
             }
         }
-        .background(RoundedRectangle(cornerRadius: 16).fill(Color.primary.opacity(0.045)))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
+        // SPK-492: the same work-panel surface as Home's live panel (one token, one look).
+        .background(WorkPanelSurface())
     }
 
     private func evidence(_ call: JobActivityItem) -> some View {
