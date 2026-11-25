@@ -1,6 +1,7 @@
 """SPK-565: background threads end when their owner closes, and the per-file thread guard catches a leak."""
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 
@@ -167,3 +168,53 @@ def test_leftover_call_timers_are_cancelled_after_each_test():
     assert timers.pending() == 0 and not timers.closed   # cancelled, still usable by a module-wide service
     time.sleep(0.5)
     assert ran == []
+
+
+class _Pending:
+    def __await__(self):
+        yield
+
+
+def _handoff(done):
+    from types import SimpleNamespace
+    from speakeasy.calls import SidebandWorker
+
+    async def never(*args):
+        await _Pending()
+    worker = SimpleNamespace(_dispatch=never, handoff_card_done=done.append, handoff_rooms={}, releasing=set())
+    return SidebandWorker.dispatch(worker, "dl_invented", 1, "context")
+
+
+def test_a_garbage_collected_handoff_does_no_work_on_the_collecting_thread():
+    """SPK-596: a handoff left pending when its loop stopped was closed by the garbage collector on
+    another thread, inside that thread's executor lock; its finally published Home and deadlocked."""
+    done: list = []
+    coro = _handoff(done)
+    coro.send(None)
+    coro.close()                     # what the collector does to an abandoned coroutine
+    assert done == []
+    cancelled = _handoff(done)
+    cancelled.send(None)
+    try:
+        cancelled.throw(asyncio.CancelledError())
+    except asyncio.CancelledError:
+        pass
+    assert done == ["dl_invented"]   # a real cancellation still lets go of its Working card
+
+
+def test_stopping_a_fake_worker_finishes_its_pending_tasks_on_its_own_loop():
+    from fakes import FakeLiveWorker
+    worker = FakeLiveWorker.__new__(FakeLiveWorker)
+    worker.thread, worker.ready = None, threading.Event()
+    FakeLiveWorker.start(worker)
+    ran_on: list = []
+
+    async def waits():
+        try:
+            await asyncio.sleep(60)
+        finally:
+            ran_on.append(threading.current_thread() is worker.thread)
+    asyncio.run_coroutine_threadsafe(waits(), worker.loop)
+    time.sleep(0.05)
+    worker.stop_loop()
+    assert ran_on == [True] and not worker.thread.is_alive()

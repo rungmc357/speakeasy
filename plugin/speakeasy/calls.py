@@ -3372,15 +3372,24 @@ class SidebandWorker:
         """Every handoff ends visibly. The voice already said "on it", and the app shows "Waiting for
         <name>" until a task row appears; an exception here used to vanish into the background task,
         leaving that waiting line up forever."""
+        collected = False
         try:
             await self._dispatch(delegation_id, revision, context, marked)
         except asyncio.CancelledError:
+            raise
+        except GeneratorExit:
+            # Garbage-collected after its loop stopped mid-handoff: this then runs on whatever thread
+            # the collector interrupted, possibly one holding another loop's executor lock, and
+            # publishing Home from here deadlocked it (SPK-596). The call's loop is gone: let go quietly.
+            collected = True
             raise
         except Exception as exc:
             logger.warning("speakeasy: handoff failed before the task started (%s: %s)",
                            type(exc).__name__, str(exc)[:200])
             await self._handoff_failed(delegation_id, revision, exc)
         finally:
+            if collected:
+                return
             self.handoff_card_done(delegation_id)  # however it ended, its held Working card goes
             self.handoff_rooms.pop(delegation_id, None)  # this handoff's work is over (or never started)
             if delegation_id.startswith(TYPED_WORK_PREFIX) and delegation_id not in self.releasing:
