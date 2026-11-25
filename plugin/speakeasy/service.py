@@ -144,6 +144,10 @@ FILES_WARM_AFTER_S = 20.0  # after start, build the Files index in the backgroun
 # POST /voice/attachments (+ DELETE /voice/attachments/{id}): pictures and files staged on a device,
 # then sent with a typed message or new job by id (``attachments`` on /voice/work[/{id}/message]).
 CAPABILITIES["attachments"] = True
+# Videos (MP4, QuickTime) among those staged files (SPK-220 staging). The composers offer videos
+# only when it's true, or to 0.3.47 (the first plugin that staged videos, released before the flag);
+# older plugins refuse a staged video (SPK-230).
+CAPABILITIES["video_attachments"] = True
 # GET /voice/secrets + POST /voice/secrets/{id}: a key a skill needs, or the Mac password for one sudo
 # command, typed into a secure card and handed to Hermes, never to the model (secure_input.py).
 CAPABILITIES["secret_input"] = True
