@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Mac app 0.3.24 · iPhone build 94: approvals in Mac chats, a cleaner pull for History
+
+- **Approvals show up in Mac chats.** A card waiting for your OK now sits under the reply that sent it, with its action button (Post, Send, Buy…) and a cancel, and settles in place once you act; the same preview sent twice shows once. An open decision shows its context, what each option means and risks, and the recommended pick with its reason. *(Mac app 0.3.24)*
+- **The Mac call bar is filled edge to edge.** Its fill, tint and rounded corners cover the whole floating bar instead of a strip inside it. *(Mac app 0.3.24)*
+- **Pulling down for History while typing** puts the keyboard away and opens the full chat in one go. *(iPhone build 94)*
+- **Largest text on a small iPhone:** after you send, Home's first screen shows the first line of the answer and of a widget, not only your own message. *(iPhone build 94)*
+- **iPhone Duo outer screen:** Work's first screen reaches Scheduled at the default text size. *(iPhone build 94)*
+
 ## Plugin 0.3.62 · iPhone build 93: calls keep your music, videos only where they work
 
 - **Calls keep your music playing.** On iPhone and iPad a call now plays alongside whatever is already playing, lowers it only while someone is speaking, and gives the audio back even when a call ends badly. *(iPhone build 93)*
