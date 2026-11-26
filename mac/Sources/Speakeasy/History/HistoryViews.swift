@@ -678,6 +678,8 @@ struct HistorySessionView: View {
                                 workCard(ReplyWorkLayout.fallback(job), job: job)
                                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                             }
+                            // SPK-540: an approval card sits under the reply that sent it.
+                            ForEach(thread.confirms.after[m.id] ?? []) { HistoryConfirmCard(item: $0, store: store) }
                         }
                         ForEach(workThread.tail) { work in
                             workCard(work, job: ReplyWorkLayout.job(for: work, in: c))
@@ -685,6 +687,8 @@ struct HistorySessionView: View {
                         ForEach(layout.pinned, id: \.lineID) { job in
                             workCard(ReplyWorkLayout.fallback(job), job: job).transition(.opacity)
                         }
+                        // One whose reply isn't on this page goes at the end, above the composer.
+                        ForEach(thread.confirms.tail) { HistoryConfirmCard(item: $0, store: store) }
                         if let panel = store.panel { HistoryReviewCards(panel: panel, conversation: c) }
 
                         ForEach(store.waiting(thread)) { HistoryWaitingCard(waiting: $0, store: store) }
@@ -1473,6 +1477,50 @@ struct HistoryHelpersCard: View {
     }
 }
 
+/// An approval card a task in this chat sent (SPK-540, the Mac half of SPK-522): the shared preview
+/// card (what will be posted, sent or bought, exactly), and while it's pending its own Approve
+/// (the button names the action: Post, Send, Buy for $X) and a quiet ✕ Cancel, which post that
+/// exact preview's action on the task's run. Approved, done (with its receipt) and cancelled
+/// cards show their outcome in place, with no live buttons.
+struct HistoryConfirmCard: View {
+    let item: SessionConfirms.Item
+    @ObservedObject var store: HistoryStore
+
+    var body: some View {
+        let busy = store.answering.contains(item.id)
+        let pending = SessionConfirms.pending(item)
+        let actions = item.card.actions
+        VStack(alignment: .leading, spacing: 8) {
+            ViewCardView(item.card)
+            if pending, !actions.isEmpty {
+                HStack(spacing: 10) {
+                    ForEach(actions.filter { $0.id != "cancel" }) { action in
+                        HistoryPillButton(title: busy ? "Sending…" : action.label, primary: true) {
+                            store.runConfirm(item, action: action)
+                        }
+                        .accessibilityIdentifier("history-confirm-approve")
+                    }
+                    if let cancel = actions.first(where: { $0.id == "cancel" }) {
+                        Button { store.runConfirm(item, action: cancel) } label: {
+                            Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                                .frame(width: 26, height: 26).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Cancel. Nothing is sent.")
+                        .accessibilityLabel(cancel.label)
+                        .accessibilityIdentifier("history-confirm-cancel")
+                    }
+                }
+                .disabled(busy)
+            }
+        }
+        .frame(maxWidth: 560, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("history-confirm")
+        .id(item.id)
+    }
+}
+
 /// Something the session waits on: an approval or a question (a task's, or one a message sent
 /// through Hermes hit). Buttons answer it; typing below answers in your own words.
 struct HistoryWaitingCard: View {
@@ -1486,13 +1534,39 @@ struct HistoryWaitingCard: View {
                      dismiss: waiting.questionRunID == nil ? nil : { withAnimation(.snappy) { store.dismiss(waiting) } }) {
             Text(waiting.text).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+            if let d = waiting.decision {
+                // SPK-540: the decision as Home and the job page draw it: what it's about, why it
+                // matters, what it affects, then each option with its detail, risk and the
+                // recommended one (with why). Not just the option titles.
+                if let context = d.context {
+                    Text(context).font(.system(size: 12)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+                if let affects = d.affects {
+                    Label(affects, systemImage: "scope").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(spacing: 6) {
+                    ForEach(Array(d.options.enumerated()), id: \.offset) { i, option in
+                        DecisionOptionRow(number: i + 1, option: option, recommended: i == d.recommended,
+                                          why: i == d.recommended ? d.why : nil, chosen: false, dimmed: false,
+                                          enabled: !busy) { store.answer(waiting, choice: option.text) }
+                    }
+                }
+                .opacity(busy ? 0.6 : 1)
+                .accessibilityIdentifier("history-question-options")
+                if d.recommended == nil, let why = d.why {
+                    Text("Why it matters: \(why)").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if let command = waiting.command {
                 Text(command).font(.system(size: 11, design: .monospaced)).foregroundStyle(Color.primary.opacity(0.82))
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 8).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Live.well))
             }
-            if !waiting.choices.isEmpty {
+            if !waiting.choices.isEmpty && waiting.decision == nil {
                 WrapLayout(spacing: 6) {
                     ForEach(Array(waiting.choices.enumerated()), id: \.offset) { i, c in
                         HistoryPillButton(title: Self.label(c, kind: waiting.kind, task: waiting.runID != nil), primary: waiting.kind == .approval && i == 0) {

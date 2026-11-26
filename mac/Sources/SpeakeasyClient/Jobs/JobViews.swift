@@ -1127,7 +1127,7 @@ private struct BriefFrame: ViewModifier {
     }
 }
 
-struct DecisionOptionRow: View {
+public struct DecisionOptionRow: View {
     @Environment(\.jobTextScale) private var s
     var number: Int
     var option: DecisionOption
@@ -1140,6 +1140,14 @@ struct DecisionOptionRow: View {
     var compact = false
     var action: () -> Void
     @State private var hover = false
+
+    /// An option of a decision with its detail, risk and recommended mark (the Mac chat page's
+    /// decision card uses it too, SPK-540).
+    public init(number: Int, option: DecisionOption, recommended: Bool, why: String?, chosen: Bool, dimmed: Bool,
+                enabled: Bool, compact: Bool = false, action: @escaping () -> Void) {
+        self.number = number; self.option = option; self.recommended = recommended; self.why = why
+        self.chosen = chosen; self.dimmed = dimmed; self.enabled = enabled; self.compact = compact; self.action = action
+    }
     /// Under the title, past the number badge.
     private var indent: CGFloat { JobLook.touch ? 32 : 26 }
 
