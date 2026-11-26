@@ -1495,21 +1495,15 @@ struct HistoryConfirmCard: View {
             if pending, !actions.isEmpty {
                 HStack(spacing: 10) {
                     ForEach(actions.filter { $0.id != "cancel" }) { action in
-                        Button { store.runConfirm(item, action: action) } label: {
-                            HStack(spacing: 6) {
-                                if busy { ProgressView().controlSize(.small) }
-                                Text(action.label).font(.system(size: 13, weight: .semibold))
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 30)
+                        HistoryPillButton(title: busy ? "Sending…" : action.label, primary: true) {
+                            store.runConfirm(item, action: action)
                         }
-                        .buttonStyle(.borderedProminent).buttonBorderShape(.capsule)
-                        .tint(Live.brass).foregroundStyle(JobLook.brassInk)
                         .accessibilityIdentifier("history-confirm-approve")
                     }
                     if let cancel = actions.first(where: { $0.id == "cancel" }) {
                         Button { store.runConfirm(item, action: cancel) } label: {
-                            Image(systemName: "xmark").font(.system(size: 12, weight: .semibold))
-                                .frame(width: 30, height: 30).contentShape(Rectangle())
+                            Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                                .frame(width: 26, height: 26).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
                         .help("Cancel. Nothing is sent.")
