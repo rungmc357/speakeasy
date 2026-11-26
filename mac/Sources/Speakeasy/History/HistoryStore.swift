@@ -31,6 +31,8 @@ protocol HistoryBackend: AnyObject {
     func skills() async throws -> [SlashSkill]
     /// A voice note (servers with `voice_notes`): the recording itself is the message.
     func sendVoiceNote(_ note: VoiceNoteRequest) async throws -> VoiceNoteReply
+    /// A card's button (an approval card's Approve or Cancel) on the task's run (`card_actions`).
+    func cardAction(runID: String, view: Int, action: String, value: Any?) async throws
 }
 
 /// What the row's context menu (and swipes) do to a conversation.
@@ -50,12 +52,20 @@ extension HistoryBackend {
     func sendVoiceNote(_ note: VoiceNoteRequest) async throws -> VoiceNoteReply {
         throw ServerClient.HTTPError(status: 404, message: "Your Hermes can't take voice messages yet.")
     }
+    func cardAction(runID: String, view: Int, action: String, value: Any?) async throws {
+        throw ServerClient.HTTPError(status: 404, message: "Your Hermes needs a plugin update for this button.")
+    }
 }
 
 @MainActor
 final class LiveHistoryBackend: HistoryBackend {
     let api: ServerClient
     init(api: ServerClient) { self.api = api }
+    /// An approval card's button in a chat thread (SPK-540): the same exact-preview card-action
+    /// route Home and the iPhone use, on the task's run.
+    func cardAction(runID: String, view: Int, action: String, value: Any?) async throws {
+        _ = try await api.cardAction(interactionID: nil, runID: runID, view: view, action: action, value: value)
+    }
     func page(_ query: HistoryQuery) async throws -> HistoryPage { try await api.historyPage(query) }
     func conversation(_ sessionID: String) async throws -> HistoryConversation { try await api.historySession(sessionID) }
     func send(_ request: HistoryMessageRequest) async throws -> HistoryMessageReply { try await api.sendToSession(request) }
@@ -682,6 +692,22 @@ final class HistoryStore: ObservableObject {
                 }
             } catch { self?.answerError = Self.message(error) }
             self?.answering.remove(waiting.id)
+            self?.load(sessionID)
+        }
+    }
+
+    /// An approval card's Approve or Cancel in this thread (SPK-540): posts that exact preview's
+    /// action on its task's run, then reloads so the card changes state in place (approved, done
+    /// with its receipt, cancelled). One tap per card at a time.
+    func runConfirm(_ item: SessionConfirms.Item, action: CardAction) {
+        guard let sessionID = target?.sessionID, let backend, !answering.contains(item.id) else { return }
+        answering.insert(item.id); answerError = nil
+        let value: Any? = { if case .null = action.value { return nil }; return action.value.foundation }()
+        Task { [weak self] in
+            do {
+                try await backend.cardAction(runID: item.runID, view: item.card.viewIndex, action: action.id, value: value)
+            } catch { self?.answerError = Self.message(error) }
+            self?.answering.remove(item.id)
             self?.load(sessionID)
         }
     }

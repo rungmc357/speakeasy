@@ -321,6 +321,9 @@ public struct HistoryWaiting: Equatable, Sendable, Identifiable {
     public var runID: String?
     /// A task's question: the task that asked (its buttons and "Reply…" answer that task, ✕ dismisses it).
     public var questionRunID: String?
+    /// A task's question read as a decision brief (context, why, affects, option details, the
+    /// recommended one), when the task sent one.
+    public var decision: Decision? = nil
 
     public init(id: String, kind: Kind, text: String, command: String? = nil, choices: [String],
                 runID: String? = nil, questionRunID: String? = nil) {
@@ -333,6 +336,8 @@ public struct HistoryWaiting: Equatable, Sendable, Identifiable {
 public struct HistoryThread: Equatable, Sendable {
     public var messages: [HistoryThreadMessage]
     public var waiting: [HistoryWaiting]
+    /// Approval cards (`confirm` views) its tasks sent, placed under their replies (SPK-540).
+    public var confirms = SessionConfirms.Placement()
     public var helpers: [JobSubagent]
     public var toolCallCount: Int
 
@@ -379,13 +384,17 @@ public struct HistoryThread: Equatable, Sendable {
         }
         for job in c.waitingQuestions {
             guard let d = job.decision else { continue }
-            waiting.append(HistoryWaiting(id: "job-\(job.runID ?? d.question)", kind: .question, text: d.question,
-                                          choices: d.options.map(\.text), questionRunID: job.runID))
+            var w = HistoryWaiting(id: "job-\(job.runID ?? d.question)", kind: .question, text: d.question,
+                                   choices: d.options.map(\.text), questionRunID: job.runID)
+            w.decision = d   // SPK-540: the page draws its context, why, recommendation and option details
+            waiting.append(w)
         }
         var seen = Set<String>()
         self.helpers = c.jobs.flatMap(\.subagents).filter { seen.insert($0.id).inserted }
         self.messages = outbox.merged(into: out, session: c.id)
         self.waiting = waiting
+        // SPK-540: the approval cards its tasks sent (Post, Send, Buy…), under the reply that sent each.
+        self.confirms = SessionConfirms.place(messages: out, jobs: c.jobs)
         self.toolCallCount = out.reduce(0) { $0 + $1.tools.count }
     }
 }

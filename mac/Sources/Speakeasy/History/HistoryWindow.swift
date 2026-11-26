@@ -116,6 +116,12 @@ final class DemoHistoryBackend: HistoryBackend {
         return HistoryMessageReply(via: .task, runID: "run_demo")
     }
 
+    /// Approval-card taps (run, view index, action), for checks.
+    var cardActions: [(String, Int, String)] = []
+    func cardAction(runID: String, view: Int, action: String, value: Any?) async throws {
+        cardActions.append((runID, view, action))
+    }
+
     var models = ModelCatalog.sample
     var sessionModels: [SessionModelRequest] = []
     var modelAliases: [String: String] = [:]
