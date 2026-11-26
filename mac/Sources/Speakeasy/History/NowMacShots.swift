@@ -53,9 +53,8 @@ enum NowMacShots {
                     let idle = VoicePanelModel()
                     try await shot(MacNowPopover(now: now, voice: idle, open: { _ in }, more: {}),
                                    size: NSSize(width: 360, height: 560), path: "\(dir)/popover-offcall-\(appearance).png")
-                    try await shot(MacNowCallControls(voice: voice, openHome: {}, floating: true)
-                                    .clipShape(RoundedRectangle(cornerRadius: 14)),
-                                   size: NSSize(width: 320, height: 56), path: "\(dir)/callbar-\(appearance).png")
+                    // SPK-543: the real floating surface in a clear window, as the panel floats it.
+                    try await callBarCheck(voice: voice, path: "\(dir)/callbar-\(appearance).png")
                     try await shot(HistoryRootView(store: store, voice: voice),
                                    size: NSSize(width: 760, height: 640), path: "\(dir)/home-narrow-\(appearance).png")
                     // SPK-535: nothing open on the right, so Home takes the whole narrow window.
@@ -101,7 +100,7 @@ enum NowMacShots {
                     await now.refresh()
                 }
                 store.stop(); now.stop(); panel.hide()
-                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; Home composer send; thread follows a send (SPK-533); 24 screenshots")
+                print("NOW_MAC_SMOKE PASS: floating, Home-frontmost and call-ended visibility; Home composer send; thread follows a send (SPK-533); 24 screenshots; call bar filled edge to edge (SPK-543)")
                 NSApp.terminate(nil)
             } catch {
                 print("NOW_MAC_SMOKE FAILED: \(error)")
@@ -236,11 +235,35 @@ enum NowMacShots {
         return home
     }
 
-    private static func shot<V: View>(_ root: V, size: NSSize, path: String) async throws {
+    /// SPK-543: the floating call bar is filled edge to edge. Shoots `MacNowVoiceSurface` (what the
+    /// panel hosts) on a clear window and reads back its alpha: the top and bottom rows of the centre
+    /// column must be filled (they were see-through when the fill stopped 4.5 pt short), and the
+    /// corner pixel must stay clear (the rounded clip is on the bar's own outline).
+    private static func callBarCheck(voice: VoicePanelModel, path: String) async throws {
+        let size = NSSize(width: MacNowLayout.callBarSize.width, height: MacNowLayout.callBarSize.height)
+        let rep = try await shot(MacNowVoiceSurface(voice: voice), size: size, path: path, clear: true)
+        let mid = rep.pixelsWide / 2, last = rep.pixelsHigh - 1
+        func alpha(_ x: Int, _ y: Int) -> CGFloat { rep.colorAt(x: x, y: y)?.alphaComponent ?? 0 }
+        for y in [0, 1, last - 1, last] {
+            precondition(alpha(mid, y) > 0.5, "SPK-543: the call bar must be filled at row \(y) of its centre column (alpha \(alpha(mid, y)))")
+        }
+        precondition(alpha(0, 0) < 0.1 && alpha(rep.pixelsWide - 1, last) < 0.1,
+                     "SPK-543: the call bar's corners must be rounded off its own 320 × 56 outline")
+        print("callbar fill: \(rep.pixelsWide)x\(rep.pixelsHigh) px, centre column filled top to bottom, corners clear")
+    }
+
+    @discardableResult
+    private static func shot<V: View>(_ root: V, size: NSSize, path: String, clear: Bool = false) async throws -> NSBitmapImageRep {
         let view = NSHostingView(rootView: root)
         view.sizingOptions = []
         let w = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
         w.isReleasedWhenClosed = false
+        if clear {
+            w.isOpaque = false
+            w.backgroundColor = .clear
+            view.wantsLayer = true
+            view.layer?.backgroundColor = .clear
+        }
         w.contentView = view
         kept.append(w)
         w.center(); w.makeKeyAndOrderFront(nil)
@@ -252,5 +275,6 @@ enum NowMacShots {
         try data.write(to: URL(fileURLWithPath: path))
         w.orderOut(nil)
         print("shot: \(path)")
+        return image
     }
 }

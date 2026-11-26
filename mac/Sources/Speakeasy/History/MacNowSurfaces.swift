@@ -63,6 +63,11 @@ struct MacNowCallControls: View {
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, floating ? 12 : 14).padding(.vertical, floating ? 8 : 14)
+        // SPK-543: the floating bar takes its full 320 × 56 before the fill and tint are drawn, so
+        // they reach the bar's top and bottom edges. Sized after them, the fill stopped 4.5 pt short
+        // and the rounded clip cut the 56 pt outline, leaving see-through strips over the desktop.
+        .frame(width: floating ? MacNowLayout.callBarSize.width : nil,
+               height: floating ? MacNowLayout.callBarSize.height : nil)
         .background(floating ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(HistoryLook.window))
         .background(JobLook.brass.opacity(floating ? 0.08 : 0))
         .help(openHome == nil ? "" : "Open Speakeasy")
@@ -72,13 +77,13 @@ struct MacNowCallControls: View {
 
 /// The legacy panel remains available to old servers. Home-capable servers get only the call bar.
 struct MacNowVoiceSurface: View {
+    static let callBarCorner: CGFloat = 14
     @ObservedObject var voice: VoicePanelModel
     @ObservedObject var presentation = MacNowPresentation.shared
     var body: some View {
         if presentation.enabled && voice.state.connection.isOpen && !voice.state.workOnly {
             MacNowCallControls(voice: voice, openHome: presentation.openHome, floating: true)
-                .frame(width: MacNowLayout.callBarSize.width, height: MacNowLayout.callBarSize.height)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .clipShape(RoundedRectangle(cornerRadius: MacNowVoiceSurface.callBarCorner))
         } else {
             VoicePanelView(model: voice)
         }
