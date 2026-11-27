@@ -316,7 +316,7 @@ struct MetricCard: View {
                 }
                 .cardFont(11.5).foregroundStyle(.secondary)
             }
-            let foot = [EventTimes.stamp(card["as_of"].string).map { "As of \($0)" }].compactMap { $0 }
+            let foot = [EventTimes.stamp(CardTime.asOf(card["as_of"])).map { "As of \($0)" }].compactMap { $0 }
             if !foot.isEmpty && fit != .compact { Text(foot.joined(separator: " · ")).cardFont(11.5).foregroundStyle(.secondary) }
         }
     }

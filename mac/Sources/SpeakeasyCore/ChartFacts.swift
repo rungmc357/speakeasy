@@ -7,7 +7,7 @@ import Foundation
 /// Card fields (all optional except `labels`/`series`): `metric` (what the numbers are, "Share
 /// price"), `sort` (`high_first` | `low_first` | `as_listed`), `order_by` (what decided a listed
 /// order when it isn't the plotted number, "index weight"), `source`, `as_of` (ISO 8601 time or
-/// date, or the source's own words), `delayed`.
+/// date, epoch seconds as the plugin stamps stored results, or the source's own words), `delayed`.
 public struct ChartFacts: Equatable, Sendable {
     public enum Order: Equatable, Sendable {
         case highFirst, lowFirst
@@ -78,7 +78,7 @@ public struct ChartFacts: Equatable, Sendable {
         self.unit = card["unit"].string
         self.decimals = Self.decimals(rows.flatMap { $0.values.compactMap { $0 } }, unit: card["unit"].string)
         self.ranked = style != "line" && !timeLike && !rows.isEmpty && rows.count <= Self.maxRankedRows
-        let fresh = Self.freshness(source: card["source"].string, asOf: card["as_of"].string,
+        let fresh = Self.freshness(source: card["source"].string, asOf: CardTime.asOf(card["as_of"]),
                                    delayed: card["delayed"].bool == true, now: now, calendar: calendar)
         self.freshness = fresh.text
         self.stale = fresh.stale
@@ -173,7 +173,9 @@ public struct ChartFacts: Equatable, Sendable {
         var parts: [String] = []
         var stale = false
         if let source = source?.trimmingCharacters(in: .whitespaces), !source.isEmpty { parts.append(source) }
-        if let raw = asOf?.trimmingCharacters(in: .whitespaces), !raw.isEmpty {
+        // An epoch count (the plugin's stored-result stamp) reads as the time it is (SPK-456); a
+        // bare count that is no time at all says nothing rather than printing its digits.
+        if let raw = CardTime.text(asOf) {
             if let (date, hasTime) = parseTime(raw, timeZone: calendar.timeZone) {
                 stale = now.timeIntervalSince(date) > staleAfter
                 let time = DateFormatter(); time.locale = Locale(identifier: "en_US"); time.calendar = calendar

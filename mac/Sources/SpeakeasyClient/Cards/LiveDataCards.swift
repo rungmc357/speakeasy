@@ -42,7 +42,8 @@ struct QuoteCard: View {
             let points = card["points"].doubles
             // A slim widget: the price row and a short sparkline; the full card the taller chart and its time.
             if points.count > 2 { Sparkline(points: points, up: up, height: slim ? 30 : 56) }
-            if !slim, let asOf = card["as_of"].string {
+            // "As of 3:42 PM" from a time (the plugin stamps epoch seconds), the source's words as given.
+            if !slim, let asOf = CardTime.quoteLine(card["as_of"]) {
                 Text(asOf).cardFont(11).foregroundStyle(.secondary)
             }
         }
