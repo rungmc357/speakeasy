@@ -228,8 +228,8 @@ public struct ShareNotice: Equatable, Sendable {
 
 /// The panel's line for a refusal reason: the plugin's (`too_many`, `too_large`, `unsupported`,
 /// `ended`, `sent`, `permission`, `not_declared`), an `AttachmentFailure` from encoding a drop, or
-/// the client's own (`old_plugin`, `no_images`, `no_vision`, `remove_failed`, `toggle_failed`). Nil when there's
-/// nothing to say (the call ended; a capture request closed).
+/// the client's own (`old_plugin`, `no_images`, `no_vision`, `remove_failed`, `toggle_failed`,
+/// `pairing_changed`). Nil when there's nothing to say (the call ended; a capture request closed).
 public func shareRefusalLine(_ reason: String?) -> String? {
     switch reason {
     case "ended", "closed": return nil
@@ -244,6 +244,7 @@ public func shareRefusalLine(_ reason: String?) -> String? {
     case "no_vision": return "Your Hermes can't read pictures"
     case "remove_failed": return "Couldn't remove that. Try again."
     case "toggle_failed": return "Screen sharing didn't change. Try again."
+    case "pairing_changed": return "Pairing changed · add it again"
     default: return "Couldn't attach that"
     }
 }
@@ -279,6 +280,10 @@ public struct PendingAttachment: Equatable, Sendable, Identifiable {
     public var seen = false
     /// The ✕ was pressed; hidden while the plugin lets go of it.
     public var removing = false
+    /// Dropped or pasted with no call open: kept past the ended call or the closed board, and sent
+    /// with the next call. Stays set until a request takes it, so a call that fails or ends before
+    /// one did gives it back to the call after.
+    public var forNextCall = false
 
     public init(id: String, kind: Kind, name: String, byteCount: Int) {
         self.id = id; self.kind = kind; self.name = name; self.byteCount = byteCount
@@ -348,6 +353,8 @@ public struct CallSharing: Equatable, Sendable {
     public init() {}
 
     static let capturesKept = 32
+    /// The status line after a drop with no call open.
+    public static let nextCallLine = "Goes with your next call"
     /// A plugin listing that doesn't name an upload this long after it landed means it was sent
     /// (covers polling, where the "pending" moment can fall between two polls).
     public static let unseenGrace: TimeInterval = 3
@@ -374,6 +381,15 @@ public struct CallSharing: Equatable, Sendable {
     /// still looks live). A new session's id takes them all.
     public func uploadable(to interactionID: String) -> [PendingAttachment] {
         attachments.filter { $0.phase == .local && !$0.removing && $0.deferredFor != interactionID }
+    }
+
+    /// Whether `id` is on its way to `interactionID` right now. An upload's answer counts only then:
+    /// a call that closed leaves its uploads running, and by the time one answers the file may wait
+    /// again or already be going to the next call. `.uploaded` and `.uploadDeferred` name their call
+    /// and are checked as they're applied; `.refused` names none, so the client asks this before it
+    /// reports an upload that failed.
+    public func isUploading(_ id: String, to interactionID: String) -> Bool {
+        attachments.contains { $0.id == id && $0.phase == .uploading && $0.interactionID == interactionID }
     }
 
     // MARK: Events
@@ -442,6 +458,8 @@ public struct CallSharing: Equatable, Sendable {
             item.interactionID = nil
             item.deferredFor = nil
             attachments.append(item)
+            // With no call open, say where it went (a refusal from the same drop keeps the line).
+            if item.forNextCall, notice?.isFresh(at: now) != true { notice = ShareNotice(text: Self.nextCallLine, at: now) }
 
         case .uploading(let id, let interactionID):
             update(id) { item in
@@ -478,6 +496,8 @@ public struct CallSharing: Equatable, Sendable {
 
         case .refused(let id, let reason):
             guard let item = attachments.first(where: { $0.id == id }) else { return }
+            // A late answer from the upload to a call that closed: it waits for the next call as it is.
+            if item.forNextCall && item.phase == .local { return }
             drop(id)
             if !item.removing, let line = shareRefusalLine(reason) { notice = ShareNotice(text: line, at: now) }
 
@@ -536,10 +556,12 @@ public struct CallSharing: Equatable, Sendable {
         for index in attachments.indices { attachments[index].deferredFor = nil }
     }
 
-    /// The call paused (`paused`) or ended. Paused keeps the pictures and files not sent yet (the
-    /// plugin dropped its copies; they go again after Resume); ones already claimed by a request
-    /// went with it. Ended keeps nothing.
-    public mutating func callClosed(paused: Bool) {
+    /// The call paused (`paused`) or ended, or no call is open. Paused keeps the pictures and files
+    /// not sent yet (the plugin dropped its copies; they go again after Resume); ones already claimed
+    /// by a request went with it. Ended keeps nothing of the call's, only what was dropped with no
+    /// call open (`forNextCall`) and no request took. `closing`: the call closed just now, so its
+    /// line goes too.
+    public mutating func callClosed(paused: Bool, closing: Bool = true) {
         resetScreen()
         if paused {
             attachments.removeAll { $0.phase == .sending || ($0.removing && $0.phase != .uploading) }
@@ -549,10 +571,42 @@ public struct CallSharing: Equatable, Sendable {
                 attachments[index].seen = false
             }
         } else {
-            attachments = []
-            notice = nil
+            attachments = waitingForNextCall
+            if closing { notice = nil }
             declared = nil
         }
+    }
+
+    /// A new call (or the board): nothing of the last one, except what was dropped for the next call.
+    public func carriedToNextCall() -> CallSharing {
+        var next = CallSharing()
+        next.attachments = waitingForNextCall
+        return next
+    }
+
+    /// Dropped with no call open and not taken by a request: back on this device as they were
+    /// dropped. A call that failed or ended before a request used them gives them back (its uploads
+    /// went with it); one a request claimed went with that request.
+    private var waitingForNextCall: [PendingAttachment] {
+        attachments.filter { $0.forNextCall && !$0.removing && $0.phase != .sending }.map { waiting in
+            var item = waiting
+            item.phase = .local
+            item.serverID = nil
+            item.interactionID = nil
+            item.deferredFor = nil
+            item.uploadedAt = nil
+            item.seen = false
+            return item
+        }
+    }
+
+    /// The app is paired with another Hermes now (re-paired, unpaired, another address): what waited
+    /// for the next call was dropped for the old one and never goes to a different one. The events
+    /// that take it off the panel and say so; none when the pairing is the same or nothing waited.
+    public func pairingChanged(from old: AppConfig, to new: AppConfig) -> [SharingEvent] {
+        let waiting = attachments.filter(\.forNextCall)
+        guard old != new, !waiting.isEmpty else { return [] }
+        return waiting.map { .removed($0.id) } + [.notice("pairing_changed")]
     }
 
     /// Old notices fade.

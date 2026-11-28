@@ -32,6 +32,15 @@ final class AttachmentEventTests: XCTestCase {
         return InteractionSnapshot(json: object)!
     }
 
+    /// An upload to `interactionID` that failed outright (no answer, or an HTTP error that isn't
+    /// "this call isn't taking uploads"), as the client reports it
+    /// (`NativeVoiceClient.uploadWaitingAttachments`): only while the item is still that upload's.
+    private func uploadFailed(_ id: String, reason: String?, to interactionID: String, from state: VoiceState,
+                              at now: Date) -> VoiceState {
+        guard state.sharing.isUploading(id, to: interactionID) else { return state }
+        return run([.sharing(.refused(id, reason: reason))], from: state, at: now)
+    }
+
     // MARK: Events from the plugin
 
     func testCaptureEventParsesIntoARequestWithItsID() {
@@ -465,6 +474,229 @@ final class AttachmentEventTests: XCTestCase {
         XCTAssertEqual(s.sharing.attachments, [])
         XCTAssertNil(s.sharing.hold)
         XCTAssertEqual(s.sharing.button, .unavailable)
+    }
+
+    func testADropWithNoCallOpenWaitsForTheNextCall() {
+        // After a call ended: kept, with a line that says where it went.
+        let ended = run([.endRequested, .serverClosed(.complete, error: nil)], from: ready())
+        var s = run([.sharing(.added(picture("p1"))), .tick], from: ended, at: t0 + 5)
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1"], "not wiped by the closed call")
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, true)
+        XCTAssertEqual(s.sharing.notice?.text, CallSharing.nextCallLine)
+        XCTAssertEqual(present(s).secondary, CallSharing.nextCallLine, "on the status line with no call")
+        XCTAssertEqual(present(s).tone, .success)
+
+        // The next call carries it and is what that call uploads once admitted.
+        s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_2")], from: s, at: t0 + 6)
+        XCTAssertEqual(s.sharing.uploadable(to: "vi_2").map(\.id), ["p1"])
+        XCTAssertNil(s.sharing.notice, "a new call starts with a clean status line")
+        s = run([.sharing(.uploading("p1", interactionID: "vi_2")),
+                 .sharing(.uploaded("p1", serverID: "att_1", interactionID: "vi_2"))], from: s, at: t0 + 7)
+        XCTAssertEqual(s.sharing.attachments.first?.phase, .pending)
+        // A request takes it: it went with that call, and nothing of it is left when the call ends.
+        s = reduce(s, .interaction(snapshot(["attachments": [["id": "att_1", "kind": "picture", "state": "sending"]]], id: "vi_2")),
+                   now: t0 + 7.5)
+        XCTAssertEqual(s.sharing.attachments.first?.phase, .sending)
+        s = run([.endRequested, .serverClosed(.complete, error: nil)], from: s, at: t0 + 8)
+        XCTAssertEqual(s.sharing.attachments, [], "sent with a request: gone with the call, as before")
+    }
+
+    func testNextCallFilesComeBackWhenThatCallClosesBeforeARequestUsesThem() {
+        // Dropped with no call open, then uploaded as the next call was admitted (still connecting):
+        // p1 landed, p2 is on its way.
+        func admitted(then events: [VoiceEvent]) -> VoiceState {
+            let waiting = run([.sharing(.added(picture("p1"))), .sharing(.added(picture("p2")))])
+            let s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_1"),
+                         .sharing(.uploading("p1", interactionID: "vi_1")), .sharing(.uploading("p2", interactionID: "vi_1")),
+                         .sharing(.uploaded("p1", serverID: "att_1", interactionID: "vi_1"))], from: waiting, at: t0 + 1)
+            XCTAssertEqual(s.sharing.attachments.map(\.phase), [.pending, .uploading])
+            return run(events, from: s, at: t0 + 2)
+        }
+        let closes: [(String, [VoiceEvent])] = [
+            ("the connect failed", [.failed("Couldn't connect")]),
+            ("the connection dropped", [.transportLost]),
+            ("hung up while connecting", [.endRequested, .serverClosed(.complete, error: nil)]),
+            ("hung up with nothing asked", [.sessionStarted, .endRequested, .serverClosed(.complete, error: nil)]),
+            ("turned away by the call, which then dropped", [.sharing(.uploadDeferred("p2", interactionID: "vi_1")), .transportLost]),
+        ]
+        for (what, events) in closes {
+            var s = admitted(then: events)
+            XCTAssertFalse(s.connection.isOpen, what)
+            XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1", "p2"], "\(what): no request used them, they still wait")
+            XCTAssertEqual(s.sharing.attachments.map(\.phase), [.local, .local], what)
+            XCTAssertEqual(s.sharing.attachments.map(\.serverID), [nil, nil], "\(what): the plugin's copies went with that call")
+            // A late answer from that call's upload (it landed; it failed) changes nothing.
+            s = run([.sharing(.uploaded("p2", serverID: "att_2", interactionID: "vi_1")), .sharing(.refused("p2", reason: nil))],
+                    from: s, at: t0 + 3)
+            XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1", "p2"], what)
+            XCTAssertEqual(s.sharing.attachments.map(\.phase), [.local, .local], what)
+            // The next call takes them.
+            s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_2")], from: s, at: t0 + 4)
+            XCTAssertEqual(s.sharing.uploadable(to: "vi_2").map(\.id), ["p1", "p2"], what)
+        }
+        // A call replaced outright gives them back the same way: nothing stays "uploaded" to the old one.
+        let replaced = admitted(then: []).sharing.carriedToNextCall()
+        XCTAssertEqual(replaced.attachments.map(\.id), ["p1", "p2"])
+        XCTAssertEqual(replaced.attachments.map(\.phase), [.local, .local])
+        XCTAssertEqual(replaced.uploadable(to: "vi_2").map(\.id), ["p1", "p2"])
+    }
+
+    func testALateAnswerFromAClosedCallsUploadLeavesTheNextCallsUploadAlone() {
+        // Dropped with no call open. Call vi_1 admits it and starts its upload, then closes before any
+        // request; the file waits again; call vi_2 admits it and starts its own upload.
+        func reuploading(closedBy close: [VoiceEvent]) -> VoiceState {
+            let waiting = run([.sharing(.added(picture("p1")))])
+            var s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_1"),
+                         .sharing(.uploading("p1", interactionID: "vi_1"))], from: waiting, at: t0 + 1)
+            XCTAssertEqual(s.sharing.attachments.map(\.phase), [.uploading])
+            XCTAssertTrue(s.sharing.isUploading("p1", to: "vi_1"))
+            XCTAssertTrue(run([.sharing(.removing("p1"))], from: s).sharing.isUploading("p1", to: "vi_1"),
+                          "the ✕ mid-upload: its answer still takes it back off")
+            s = run(close, from: s, at: t0 + 2)
+            XCTAssertEqual(s.sharing.attachments.map(\.phase), [.local])
+            XCTAssertEqual(s.sharing.attachments.map(\.interactionID), [nil])
+            XCTAssertFalse(s.sharing.isUploading("p1", to: "vi_1"), "waiting again: no longer that call's upload")
+            s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_2"),
+                     .sharing(.uploading("p1", interactionID: "vi_2"))], from: s, at: t0 + 3)
+            XCTAssertEqual(s.sharing.attachments.map(\.phase), [.uploading])
+            XCTAssertEqual(s.sharing.attachments.map(\.interactionID), ["vi_2"])
+            XCTAssertTrue(s.sharing.isUploading("p1", to: "vi_2"))
+            XCTAssertFalse(s.sharing.isUploading("p1", to: "vi_1"), "the new call's upload, not the closed call's")
+            return s
+        }
+        let closes: [(String, [VoiceEvent])] = [
+            ("the connect failed", [.failed("Couldn't connect")]),
+            ("the connection dropped", [.transportLost]),
+            ("hung up while connecting", [.endRequested, .serverClosed(.complete, error: nil)]),
+        ]
+        // What vi_1's abandoned upload can still answer, whenever it finishes.
+        let lateAnswers: [(String, (VoiceState) -> VoiceState)] = [
+            ("it landed", { self.run([.sharing(.uploaded("p1", serverID: "att_old", interactionID: "vi_1"))], from: $0, at: self.t0 + 4) }),
+            ("that call turned it away", { self.run([.sharing(.uploadDeferred("p1", interactionID: "vi_1"))], from: $0, at: self.t0 + 4) }),
+            ("it got no answer", { self.uploadFailed("p1", reason: nil, to: "vi_1", from: $0, at: self.t0 + 4) }),
+            ("it was refused", { self.uploadFailed("p1", reason: "too_large", to: "vi_1", from: $0, at: self.t0 + 4) }),
+        ]
+        for (closed, close) in closes {
+            for (late, answer) in lateAnswers {
+                let what = "\(closed), then its upload answered late (\(late))"
+                let before = reuploading(closedBy: close)
+                let s = answer(before)
+                XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1"], "\(what): still the new call's")
+                XCTAssertNil(s.sharing.notice, "\(what): nothing to say")
+                XCTAssertEqual(s.sharing, before.sharing, "\(what): the new call's upload is as it was")
+
+                // The new call's own answers count as ever.
+                let landed = run([.sharing(.uploaded("p1", serverID: "att_2", interactionID: "vi_2"))], from: s, at: t0 + 5)
+                XCTAssertEqual(landed.sharing.attachments.map(\.phase), [.pending], what)
+                XCTAssertEqual(landed.sharing.attachments.map(\.serverID), ["att_2"], what)
+                let turnedAway = run([.sharing(.uploadDeferred("p1", interactionID: "vi_2"))], from: s, at: t0 + 5)
+                XCTAssertEqual(turnedAway.sharing.attachments.map(\.phase), [.local], what)
+                XCTAssertEqual(turnedAway.sharing.attachments.map(\.deferredFor), ["vi_2"], what)
+                let refused = uploadFailed("p1", reason: "too_large", to: "vi_2", from: s, at: t0 + 5)
+                XCTAssertEqual(refused.sharing.attachments, [], what)
+                XCTAssertEqual(refused.sharing.notice?.text, "That's too big to send", what)
+
+                // Nor does the old upload's failure take back what the new call already holds.
+                let held = uploadFailed("p1", reason: nil, to: "vi_1", from: landed, at: t0 + 6)
+                XCTAssertEqual(held.sharing, landed.sharing, "\(what): held by the new call, a failure of the old upload changes nothing")
+            }
+        }
+    }
+
+    func testADropRightAfterARefusalKeepsTheRefusalLine() {
+        // One drop with no call open, two things in it: one can't be attached and says why, the
+        // other is kept for the next call without taking that line.
+        let ended = run([.endRequested, .serverClosed(.complete, error: nil)], from: ready())
+        var s = run([.sharing(.notice("unsupported")), .sharing(.added(picture("p1")))], from: ended, at: t0 + 5)
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1"], "kept all the same")
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, true)
+        XCTAssertEqual(s.sharing.notice?.text, "Only pictures and files", "why the other one didn't attach stays on the line")
+        // Once that line is old, a drop says where it went again.
+        s = run([.sharing(.added(picture("p2")))], from: s, at: t0 + 5 + ShareNotice.lifetime + 1)
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1", "p2"])
+        XCTAssertEqual(s.sharing.notice?.text, CallSharing.nextCallLine)
+    }
+
+    func testADropAfterAFailedCallKeepsTheErrorLine() {
+        let failed = run([.startRequested, .failed("Couldn't reach your Hermes")])
+        XCTAssertEqual(present(failed).secondary, "Couldn't reach your Hermes")
+        var s = run([.sharing(.added(picture("p1")))], from: failed, at: t0 + 5)
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1"], "the drop is kept all the same")
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, true)
+        XCTAssertEqual(present(s).secondary, "Couldn't reach your Hermes", "why the call failed stays on the status line")
+        XCTAssertEqual(present(s).tone, .error)
+        // A refused drop doesn't take the line either.
+        s = run([.sharing(.notice("unsupported"))], from: s, at: t0 + 6)
+        XCTAssertEqual(present(s).secondary, "Couldn't reach your Hermes")
+        XCTAssertEqual(present(s).tone, .error)
+        s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_2")], from: s, at: t0 + 7)
+        XCTAssertEqual(s.sharing.uploadable(to: "vi_2").map(\.id), ["p1"], "and goes with the next call")
+    }
+
+    func testFilesWaitingForTheNextCallNeverGoToAnotherHermes() {
+        let home = AppConfig(serverURL: URL(string: "https://home.example.ts.net"), deviceToken: "tok_home")
+        let office = AppConfig(serverURL: URL(string: "https://office.example.ts.net"), deviceToken: "tok_office")
+        let waiting = run([.sharing(.added(picture("p1"))), .sharing(.added(picture("p2")))])
+        XCTAssertEqual(waiting.sharing.pairingChanged(from: home, to: home), [], "settings reloaded, same Hermes: they still wait")
+
+        // Re-paired, unpaired, or the same address with another device token: all a different pairing.
+        let unpaired = AppConfig(serverURL: home.serverURL, deviceToken: nil)
+        let repaired = AppConfig(serverURL: home.serverURL, deviceToken: "tok_other")
+        for other in [office, unpaired, repaired] {
+            let events = waiting.sharing.pairingChanged(from: home, to: other)
+            var s = run(events.map { .sharing($0) }, from: waiting, at: t0 + 1)
+            XCTAssertEqual(s.sharing.attachments, [], "off the panel, so the client lets go of their bytes")
+            XCTAssertEqual(present(s).secondary, "Pairing changed · add it again")
+            s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_9")], from: s, at: t0 + 2)
+            XCTAssertEqual(s.sharing.uploadable(to: "vi_9"), [], "the next call, on the other Hermes, has nothing to upload")
+        }
+
+        // One already uploaded to a call on the old Hermes that no request took would wait again: gone too.
+        var s = run([.startRequested, .sharing(.declared(.ready)), .sessionAdmitted(interactionID: "vi_1"),
+                     .sharing(.uploading("p1", interactionID: "vi_1")),
+                     .sharing(.uploaded("p1", serverID: "att_1", interactionID: "vi_1")), .endRequested], from: waiting, at: t0 + 1)
+        s = run(s.sharing.pairingChanged(from: home, to: office).map { .sharing($0) } + [.serverClosed(.complete, error: nil)],
+                from: s, at: t0 + 2)
+        XCTAssertEqual(s.sharing.attachments, [])
+
+        // A drop during a call is that call's: it ends with the call, nothing to say.
+        let inCall = run([.sharing(.added(picture("p3")))], from: ready())
+        XCTAssertEqual(inCall.sharing.pairingChanged(from: home, to: office), [])
+        XCTAssertEqual(VoiceState().sharing.pairingChanged(from: home, to: office), [], "nothing waited: no line")
+    }
+
+    func testADropWhileHangingUpWaitsForTheNextCall() {
+        var s = run([.endRequested, .sharing(.added(picture("p1")))], from: ready())
+        XCTAssertEqual(s.connection, .ending)
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, true, "this call can't take it any more")
+        s = run([.serverClosed(.complete, error: nil)], from: s, at: t0 + 1)
+        XCTAssertEqual(s.connection, .ended(.complete))
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1"], "not lost when the hang-up lands")
+        // Pausing closes the session too, but that call stays open: the drop is the call's, sent after Resume.
+        let pausing = run([.pauseRequested, .sharing(.added(picture("p2")))], from: ready())
+        XCTAssertEqual(pausing.connection, .ending)
+        XCTAssertEqual(pausing.sharing.attachments.first?.forNextCall, false)
+    }
+
+    func testADropOnTheBoardSurvivesClosingItAndKeepsTheCap() {
+        var s = run([.workOnlyOpened] + (1...4).map { .sharing(.added(picture("p\($0)"))) })
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1", "p2", "p3"])
+        XCTAssertEqual(s.sharing.notice?.text, "Up to 3 at a time", "the cap holds with no call")
+        s = run([.reset], from: s)
+        XCTAssertEqual(s.sharing.visibleAttachments.map(\.id), ["p1", "p2", "p3"], "closing the board keeps them")
+        s = run([.sharing(.removing("p2"))], from: s)
+        XCTAssertEqual(s.sharing.attachments.map(\.id), ["p1", "p3"], "the ✕ still takes one off")
+        s = run([.startRequested], from: s)
+        XCTAssertEqual(s.sharing.uploadable(to: "vi_1").map(\.id), ["p1", "p3"])
+    }
+
+    func testADropDuringACallIsStillTheCalls() {
+        let s = run([.sharing(.added(picture("p1")))], from: ready())
+        XCTAssertEqual(s.sharing.attachments.first?.forNextCall, false)
+        XCTAssertNil(s.sharing.notice, "no next-call line during a call")
+        let paused = run([.pauseRequested, .sessionClosed, .sharing(.added(picture("p2")))], from: s)
+        XCTAssertEqual(paused.connection, .paused)
+        XCTAssertEqual(paused.sharing.attachments.map(\.forNextCall), [false, false], "a paused call is still open")
     }
 
     // MARK: Requests
