@@ -2,6 +2,14 @@
 
 Speakeasy has two parts that update separately: the **Mac app** (updates through Check for Updates) and the **Hermes plugin** (updates when you run `hermes plugins update speakeasy`; the running plugin then loads the new version without a gateway restart). Each entry says which one it came with.
 
+## Mac app 0.3.25 · iPhone build 96: readable "As of" times, steadier Home widgets
+
+- **"As of" times read like times.** Chart, quote and number cards show "As of 3:42 PM" (or the date, when it isn't today) instead of a long raw number. *(Mac app 0.3.25 and iPhone build 96)*
+- **Home's widgets stay put when the keyboard moves.** Bringing the keyboard up or putting it away no longer makes the widgets blink out and back or jump in size. *(iPhone build 96)*
+- **A queued message doesn't blur the chat.** With a message waiting to send after the current task, the conversation above it stays as sharp as with nothing queued. *(iPhone build 96)*
+- **iPhone Duo outer screen:** a quick short swipe down on Home opens the full chat. *(iPhone build 96)*
+- **Share diagnostics.** Slowdown and crash reports now stay on your iPhone, and Settings → About has a Share diagnostics row to send them when you choose. *(iPhone build 96)*
+
 ## Mac app 0.3.24 · iPhone build 94: approvals in Mac chats, a cleaner pull for History
 
 - **Approvals show up in Mac chats.** A card waiting for your OK now sits under the reply that sent it, with its action button (Post, Send, Buy…) and a cancel, and settles in place once you act; the same preview sent twice shows once. An open decision shows its context, what each option means and risks, and the recommended pick with its reason. *(Mac app 0.3.24)*
