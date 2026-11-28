@@ -16,19 +16,34 @@ enum PanelSmoke {
     private static var retained: NativeVoiceClient?
 
     static func run(config: AppConfig, snapshotDir: String?) {
+        // SPEAKEASY_PANEL_SMOKE_ONLY=look-at-this,ended runs just those cases (unattended runs skip `drag`,
+        // whose press into transcript text can wait forever for a real mouse-up).
+        let selected: [PanelSmokeSelection.Case]
+        do {
+            selected = try PanelSmokeSelection.resolve(
+                only: ProcessInfo.processInfo.environment["SPEAKEASY_PANEL_SMOKE_ONLY"], snapshotDir: snapshotDir)
+        } catch {
+            print("panel-smoke FAILED: \(error)")
+            exit(1)
+        }
+        let dir = PanelSmokeSelection.directory(snapshotDir)
         let client = NativeVoiceClient(config: config)
         retained = client
         // A remembered orb-mode preference (from a preview run) would fold every check below.
         let savedOrb = client.model.slim
         client.model.slim = false
         Task { @MainActor in
-            await workScroll(client)
-            await workStatusWraps(client)
-            await transcriptScroll(client)
-            await drag(client)
-            await endedPanel(client)
-            await lookAtThis(client, dir: snapshotDir)
-            if let dir = snapshotDir { await snapshots(client, dir: dir) }
+            for smokeCase in selected {
+                switch smokeCase {
+                case .workScroll: await workScroll(client)
+                case .workStatus: await workStatusWraps(client)
+                case .transcriptScroll: await transcriptScroll(client)
+                case .drag: await drag(client)
+                case .ended: await endedPanel(client)
+                case .lookAtThis: await lookAtThis(client, dir: dir)
+                case .snapshots: if let dir { await snapshots(client, dir: dir) }
+                }
+            }
             client.model.slim = savedOrb
             print("panel-smoke " + (ok ? "ok" : "FAILED"))
             log.forEach { print("  " + $0) }
